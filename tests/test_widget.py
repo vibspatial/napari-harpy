@@ -55,6 +55,7 @@ def test_widget_can_be_instantiated(qtbot) -> None:
 
     assert widget is not None
     assert widget.selected_segmentation_name is None
+    assert widget.selected_table_name is None
 
 
 def test_spatialdata_label_options_are_deduplicated_per_dataset() -> None:
@@ -95,8 +96,11 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot) -> None:
         "blobs_labels",
         "blobs_multiscale_labels",
     ]
+    assert widget.table_combo.count() == 1
+    assert widget.table_combo.itemText(0) == "table"
     assert widget.selected_segmentation_name == "blobs_labels"
     assert widget.selected_spatialdata is sdata
+    assert widget.selected_table_name == "table"
 
 
 def test_widget_refreshes_when_a_spatialdata_layer_is_added(qtbot) -> None:
@@ -112,4 +116,22 @@ def test_widget_refreshes_when_a_spatialdata_layer_is_added(qtbot) -> None:
 
     assert widget.segmentation_combo.count() == 2
     assert widget.segmentation_combo.itemText(0) == "blobs_labels"
+    assert widget.table_combo.count() == 1
+    assert widget.table_combo.itemText(0) == "table"
     assert widget.selected_segmentation_name == "blobs_labels"
+    assert widget.selected_table_name == "table"
+
+
+def test_widget_updates_table_dropdown_when_segmentation_changes(qtbot) -> None:
+    _, layer = make_blobs_labels_layer()
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.segmentation_combo.setCurrentIndex(1)
+
+    assert widget.selected_segmentation_name == "blobs_multiscale_labels"
+    assert widget.table_combo.count() == 0
+    assert not widget.table_combo.isEnabled()
+    assert widget.selected_table_name is None

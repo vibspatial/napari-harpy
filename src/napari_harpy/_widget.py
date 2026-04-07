@@ -5,7 +5,11 @@ from typing import TYPE_CHECKING
 from qtpy.QtCore import QSignalBlocker
 from qtpy.QtWidgets import QComboBox, QFormLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
-from napari_harpy._spatialdata import SpatialDataLabelsOption, get_spatialdata_label_options
+from napari_harpy._spatialdata import (
+    SpatialDataLabelsOption,
+    get_annotating_table_names,
+    get_spatialdata_label_options,
+)
 
 if TYPE_CHECKING:
     import napari
@@ -19,7 +23,9 @@ class HarpyWidget(QWidget):
         super().__init__()
         self._viewer = napari_viewer
         self._label_options: list[SpatialDataLabelsOption] = []
-        self._selected_option: SpatialDataLabelsOption | None = None
+        self._selected_label_option: SpatialDataLabelsOption | None = None
+        self._table_names: list[str] = []
+        self._selected_table_name: str | None = None
 
         layout = QVBoxLayout(self)
 
@@ -42,6 +48,10 @@ class HarpyWidget(QWidget):
         self.segmentation_combo.setObjectName("segmentation_mask_combo")
         self.segmentation_combo.currentIndexChanged.connect(self._on_segmentation_changed)
 
+        self.table_combo = QComboBox()
+        self.table_combo.setObjectName("annotation_table_combo")
+        self.table_combo.currentIndexChanged.connect(self._on_table_changed)
+
         self.refresh_button = QPushButton("Refresh")
         self.refresh_button.clicked.connect(self.refresh_segmentation_masks)
         self.refresh_button.setEnabled(napari_viewer is not None)
@@ -50,6 +60,7 @@ class HarpyWidget(QWidget):
         self.selection_status.setWordWrap(True)
 
         selector_layout.addRow("Segmentation mask", self.segmentation_combo)
+        selector_layout.addRow("Table", self.table_combo)
 
         layout.addWidget(title)
         layout.addWidget(subtitle)
@@ -65,16 +76,21 @@ class HarpyWidget(QWidget):
     @property
     def selected_segmentation_name(self) -> str | None:
         """Return the currently selected labels element name."""
-        return None if self._selected_option is None else self._selected_option.label_name
+        return None if self._selected_label_option is None else self._selected_label_option.label_name
 
     @property
     def selected_spatialdata(self) -> SpatialData | None:
         """Return the SpatialData object that owns the current labels selection."""
-        return None if self._selected_option is None else self._selected_option.sdata
+        return None if self._selected_label_option is None else self._selected_label_option.sdata
+
+    @property
+    def selected_table_name(self) -> str | None:
+        """Return the currently selected annotation table name."""
+        return self._selected_table_name
 
     def refresh_segmentation_masks(self) -> None:
         """Refresh the segmentation mask choices from viewer-linked SpatialData layers."""
-        previous_identity = None if self._selected_option is None else self._selected_option.identity
+        previous_identity = None if self._selected_label_option is None else self._selected_label_option.identity
         self._label_options = get_spatialdata_label_options(self._viewer)
 
         with QSignalBlocker(self.segmentation_combo):
@@ -92,9 +108,10 @@ class HarpyWidget(QWidget):
                 self.segmentation_combo.setCurrentIndex(-1)
 
         if self.segmentation_combo.currentIndex() >= 0:
-            self._set_selected_option(self.segmentation_combo.currentIndex())
+            self._set_selected_label_option(self.segmentation_combo.currentIndex())
         else:
-            self._selected_option = None
+            self._selected_label_option = None
+            self._refresh_table_names()
             self._update_selection_status()
 
     def _connect_viewer_events(self) -> None:
@@ -113,14 +130,15 @@ class HarpyWidget(QWidget):
         self.refresh_segmentation_masks()
 
     def _on_segmentation_changed(self, index: int) -> None:
-        self._set_selected_option(index)
+        self._set_selected_label_option(index)
 
-    def _set_selected_option(self, index: int) -> None:
+    def _set_selected_label_option(self, index: int) -> None:
         if index < 0 or index >= len(self._label_options):
-            self._selected_option = None
+            self._selected_label_option = None
         else:
-            self._selected_option = self._label_options[index]
+            self._selected_label_option = self._label_options[index]
 
+        self._refresh_table_names()
         self._update_selection_status()
 
     def _find_option_index(self, identity: tuple[int, str] | None) -> int | None:
@@ -129,6 +147,53 @@ class HarpyWidget(QWidget):
 
         for index, option in enumerate(self._label_options):
             if option.identity == identity:
+                return index
+
+        return None
+
+    def _refresh_table_names(self) -> None:
+        previous_table_name = self._selected_table_name
+
+        if self.selected_spatialdata is None or self.selected_segmentation_name is None:
+            self._table_names = []
+        else:
+            self._table_names = get_annotating_table_names(self.selected_spatialdata, self.selected_segmentation_name)
+
+        with QSignalBlocker(self.table_combo):
+            self.table_combo.clear()
+            for table_name in self._table_names:
+                self.table_combo.addItem(table_name)
+
+            has_tables = bool(self._table_names)
+            self.table_combo.setEnabled(has_tables)
+
+            next_index = self._find_table_index(previous_table_name)
+            if has_tables:
+                self.table_combo.setCurrentIndex(0 if next_index is None else next_index)
+            else:
+                self.table_combo.setCurrentIndex(-1)
+
+        if self.table_combo.currentIndex() >= 0:
+            self._set_selected_table_name(self.table_combo.currentIndex())
+        else:
+            self._selected_table_name = None
+
+    def _on_table_changed(self, index: int) -> None:
+        self._set_selected_table_name(index)
+        self._update_selection_status()
+
+    def _set_selected_table_name(self, index: int) -> None:
+        if index < 0 or index >= len(self._table_names):
+            self._selected_table_name = None
+        else:
+            self._selected_table_name = self._table_names[index]
+
+    def _find_table_index(self, table_name: str | None) -> int | None:
+        if table_name is None:
+            return None
+
+        for index, candidate in enumerate(self._table_names):
+            if candidate == table_name:
                 return index
 
         return None
@@ -145,12 +210,33 @@ class HarpyWidget(QWidget):
             return
 
         count = len(self._label_options)
-        plural = "s" if count != 1 else ""
+        mask_plural = "s" if count != 1 else ""
 
-        if self._selected_option is None:
-            self.selection_status.setText(f"Found {count} segmentation mask{plural}. Select one to continue.")
+        if self._selected_label_option is None:
+            self.selection_status.setText(f"Found {count} segmentation mask{mask_plural}. Select one to continue.")
+            return
+
+        if not self._table_names:
+            self.selection_status.setText(
+                f"Found {count} segmentation mask{mask_plural}. "
+                f"Selected segmentation: {self._selected_label_option.display_name}. "
+                "No annotating tables found for this segmentation."
+            )
+            return
+
+        table_count = len(self._table_names)
+        table_plural = "s" if table_count != 1 else ""
+
+        if self._selected_table_name is None:
+            self.selection_status.setText(
+                f"Found {count} segmentation mask{mask_plural}. "
+                f"Selected segmentation: {self._selected_label_option.display_name}. "
+                f"Found {table_count} table{table_plural}. Select one to continue."
+            )
             return
 
         self.selection_status.setText(
-            f"Found {count} segmentation mask{plural}. Selected: {self._selected_option.display_name}."
+            f"Found {count} segmentation mask{mask_plural}. "
+            f"Selected segmentation: {self._selected_label_option.display_name}. "
+            f"Table: {self._selected_table_name}."
         )
