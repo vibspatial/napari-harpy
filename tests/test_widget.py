@@ -55,6 +55,7 @@ def test_widget_can_be_instantiated(qtbot) -> None:
     assert widget is not None
     assert widget.selected_segmentation_name is None
     assert widget.selected_table_name is None
+    assert widget.selected_feature_key is None
 
 
 def test_spatialdata_label_options_are_deduplicated_per_dataset(sdata_blobs: SpatialData) -> None:
@@ -97,9 +98,14 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_bl
     ]
     assert widget.table_combo.count() == 1
     assert widget.table_combo.itemText(0) == "table"
+    assert widget.feature_matrix_combo.count() == 2
+    assert [
+        widget.feature_matrix_combo.itemText(index) for index in range(widget.feature_matrix_combo.count())
+    ] == ["features_1", "features_2"]
     assert widget.selected_segmentation_name == "blobs_labels"
     assert widget.selected_spatialdata is sdata_blobs
     assert widget.selected_table_name == "table"
+    assert widget.selected_feature_key == "features_1"
 
 
 def test_widget_refreshes_when_a_spatialdata_layer_is_added(qtbot, sdata_blobs: SpatialData) -> None:
@@ -117,8 +123,11 @@ def test_widget_refreshes_when_a_spatialdata_layer_is_added(qtbot, sdata_blobs: 
     assert widget.segmentation_combo.itemText(0) == "blobs_labels"
     assert widget.table_combo.count() == 1
     assert widget.table_combo.itemText(0) == "table"
+    assert widget.feature_matrix_combo.count() == 2
+    assert widget.feature_matrix_combo.itemText(0) == "features_1"
     assert widget.selected_segmentation_name == "blobs_labels"
     assert widget.selected_table_name == "table"
+    assert widget.selected_feature_key == "features_1"
 
 
 def test_widget_updates_table_dropdown_when_segmentation_changes(qtbot, sdata_blobs: SpatialData) -> None:
@@ -134,3 +143,18 @@ def test_widget_updates_table_dropdown_when_segmentation_changes(qtbot, sdata_bl
     assert widget.table_combo.count() == 0
     assert not widget.table_combo.isEnabled()
     assert widget.selected_table_name is None
+    assert widget.feature_matrix_combo.count() == 0
+    assert not widget.feature_matrix_combo.isEnabled()
+    assert widget.selected_feature_key is None
+
+
+def test_widget_updates_selected_feature_key_when_feature_matrix_changes(qtbot, sdata_blobs: SpatialData) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.feature_matrix_combo.setCurrentIndex(1)
+
+    assert widget.selected_feature_key == "features_2"

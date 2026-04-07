@@ -72,6 +72,12 @@ def get_annotating_table_names(sdata: SpatialData, label_name: str) -> list[str]
     return sorted(get_element_annotators(sdata, label_name))
 
 
+def get_table_obsm_keys(sdata: SpatialData, table_name: str) -> list[str]:
+    """Return the available feature matrix keys from `adata.obsm` for a table in a SpatialData object."""
+    table = sdata[table_name]
+    return sorted(table.obsm.keys())
+
+
 def _get_unique_spatialdata_objects(layers: Any) -> list[SpatialData]:
     unique_sdatas: list[SpatialData] = []
     seen_ids: set[int] = set()

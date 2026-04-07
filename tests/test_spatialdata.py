@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from spatialdata import SpatialData
 
-from napari_harpy._spatialdata import get_annotating_table_names
+from napari_harpy._spatialdata import get_annotating_table_names, get_table_obsm_keys
 
 
 def test_get_annotating_table_names_returns_tables_for_annotated_label(sdata_blobs: SpatialData) -> None:
@@ -24,3 +24,9 @@ def test_sdata_blobs_fixture_adds_dummy_feature_matrices(sdata_blobs: SpatialDat
     assert "features_2" in table.obsm
     assert table.obsm["features_1"].shape == (table.n_obs, 4)
     assert table.obsm["features_2"].shape == (table.n_obs, 2)
+
+
+def test_get_table_obsm_keys_returns_sorted_feature_matrix_keys(sdata_blobs: SpatialData) -> None:
+    obsm_keys = get_table_obsm_keys(sdata_blobs, "table")
+
+    assert obsm_keys == ["features_1", "features_2"]

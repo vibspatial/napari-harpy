@@ -9,6 +9,7 @@ from napari_harpy._spatialdata import (
     SpatialDataLabelsOption,
     get_annotating_table_names,
     get_spatialdata_label_options,
+    get_table_obsm_keys,
 )
 
 if TYPE_CHECKING:
@@ -26,6 +27,8 @@ class HarpyWidget(QWidget):
         self._selected_label_option: SpatialDataLabelsOption | None = None
         self._table_names: list[str] = []
         self._selected_table_name: str | None = None
+        self._feature_matrix_keys: list[str] = []
+        self._selected_feature_key: str | None = None
 
         layout = QVBoxLayout(self)
 
@@ -52,6 +55,10 @@ class HarpyWidget(QWidget):
         self.table_combo.setObjectName("annotation_table_combo")
         self.table_combo.currentIndexChanged.connect(self._on_table_changed)
 
+        self.feature_matrix_combo = QComboBox()
+        self.feature_matrix_combo.setObjectName("feature_matrix_combo")
+        self.feature_matrix_combo.currentIndexChanged.connect(self._on_feature_matrix_changed)
+
         self.refresh_button = QPushButton("Refresh")
         self.refresh_button.clicked.connect(self.refresh_segmentation_masks)
         self.refresh_button.setEnabled(napari_viewer is not None)
@@ -61,6 +68,7 @@ class HarpyWidget(QWidget):
 
         selector_layout.addRow("Segmentation mask", self.segmentation_combo)
         selector_layout.addRow("Table", self.table_combo)
+        selector_layout.addRow("Feature matrix", self.feature_matrix_combo)
 
         layout.addWidget(title)
         layout.addWidget(subtitle)
@@ -87,6 +95,11 @@ class HarpyWidget(QWidget):
     def selected_table_name(self) -> str | None:
         """Return the currently selected annotation table name."""
         return self._selected_table_name
+
+    @property
+    def selected_feature_key(self) -> str | None:
+        """Return the currently selected feature matrix key from `adata.obsm`."""
+        return self._selected_feature_key
 
     def refresh_segmentation_masks(self) -> None:
         """Refresh the segmentation mask choices from viewer-linked SpatialData layers."""
@@ -177,6 +190,7 @@ class HarpyWidget(QWidget):
             self._set_selected_table_name(self.table_combo.currentIndex())
         else:
             self._selected_table_name = None
+            self._refresh_feature_matrix_keys()
 
     def _on_table_changed(self, index: int) -> None:
         self._set_selected_table_name(index)
@@ -188,12 +202,61 @@ class HarpyWidget(QWidget):
         else:
             self._selected_table_name = self._table_names[index]
 
+        self._refresh_feature_matrix_keys()
+
     def _find_table_index(self, table_name: str | None) -> int | None:
         if table_name is None:
             return None
 
         for index, candidate in enumerate(self._table_names):
             if candidate == table_name:
+                return index
+
+        return None
+
+    def _refresh_feature_matrix_keys(self) -> None:
+        previous_feature_key = self._selected_feature_key
+
+        if self.selected_spatialdata is None or self.selected_table_name is None:
+            self._feature_matrix_keys = []
+        else:
+            self._feature_matrix_keys = get_table_obsm_keys(self.selected_spatialdata, self.selected_table_name)
+
+        with QSignalBlocker(self.feature_matrix_combo):
+            self.feature_matrix_combo.clear()
+            for feature_key in self._feature_matrix_keys:
+                self.feature_matrix_combo.addItem(feature_key)
+
+            has_feature_matrices = bool(self._feature_matrix_keys)
+            self.feature_matrix_combo.setEnabled(has_feature_matrices)
+
+            next_index = self._find_feature_matrix_index(previous_feature_key)
+            if has_feature_matrices:
+                self.feature_matrix_combo.setCurrentIndex(0 if next_index is None else next_index)
+            else:
+                self.feature_matrix_combo.setCurrentIndex(-1)
+
+        if self.feature_matrix_combo.currentIndex() >= 0:
+            self._set_selected_feature_key(self.feature_matrix_combo.currentIndex())
+        else:
+            self._selected_feature_key = None
+
+    def _on_feature_matrix_changed(self, index: int) -> None:
+        self._set_selected_feature_key(index)
+        self._update_selection_status()
+
+    def _set_selected_feature_key(self, index: int) -> None:
+        if index < 0 or index >= len(self._feature_matrix_keys):
+            self._selected_feature_key = None
+        else:
+            self._selected_feature_key = self._feature_matrix_keys[index]
+
+    def _find_feature_matrix_index(self, feature_key: str | None) -> int | None:
+        if feature_key is None:
+            return None
+
+        for index, candidate in enumerate(self._feature_matrix_keys):
+            if candidate == feature_key:
                 return index
 
         return None
@@ -235,8 +298,30 @@ class HarpyWidget(QWidget):
             )
             return
 
+        if not self._feature_matrix_keys:
+            self.selection_status.setText(
+                f"Found {count} segmentation mask{mask_plural}. "
+                f"Selected segmentation: {self._selected_label_option.display_name}. "
+                f"Table: {self._selected_table_name}. "
+                "No feature matrices found in `adata.obsm`."
+            )
+            return
+
+        feature_count = len(self._feature_matrix_keys)
+        feature_label = "feature matrix" if feature_count == 1 else "feature matrices"
+
+        if self._selected_feature_key is None:
+            self.selection_status.setText(
+                f"Found {count} segmentation mask{mask_plural}. "
+                f"Selected segmentation: {self._selected_label_option.display_name}. "
+                f"Table: {self._selected_table_name}. "
+                f"Found {feature_count} {feature_label}. Select one to continue."
+            )
+            return
+
         self.selection_status.setText(
             f"Found {count} segmentation mask{mask_plural}. "
             f"Selected segmentation: {self._selected_label_option.display_name}. "
-            f"Table: {self._selected_table_name}."
+            f"Table: {self._selected_table_name}. "
+            f"Feature matrix: {self._selected_feature_key}."
         )
