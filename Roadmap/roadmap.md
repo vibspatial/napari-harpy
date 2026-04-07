@@ -128,9 +128,9 @@ A minimal napari plugin package that can be discovered and opened in napari.
 
 ### Exit criteria
 
-- `pip install -e ".[dev]"` succeeds.
-- napari can discover the plugin.
-- A dock widget opens without errors.
+- [x] `pip install -e ".[dev]"` succeeds.
+- [x] napari can discover the plugin.
+- [x] A dock widget opens without errors.
 
 ### Phase 1: SpatialData discovery and validation
 
