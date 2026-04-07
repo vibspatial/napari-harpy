@@ -1,0 +1,13 @@
+name: napari-harpy
+display_name: napari-harpy
+schema_version: 0.1.0
+categories:
+  - Annotation
+contributions:
+  commands:
+    - id: napari-harpy.object_classifier
+      title: Open object classifier widget
+      python_name: napari_harpy._widget:HarpyWidget
+  widgets:
+    - command: napari-harpy.object_classifier
+      display_name: Object Classifier

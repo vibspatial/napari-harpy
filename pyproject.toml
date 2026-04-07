@@ -4,8 +4,8 @@ requires = [ "hatchling" ]
 
 [project]
 name = "napari-harpy"
-version = "0.3.6"
-description = "single-cell spatial omics analysis that makes you happy."
+version = "0.0.1"
+description = "A napari plugin for interactive object classification on SpatialData datasets."
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
 license = { file = "LICENSE" }
@@ -14,16 +14,12 @@ authors = [
 ]
 
 keywords = [
-    "spatial-omics",
-    "spatial-transcriptomics",
-    "spatial-proteomics",
-    "bioinformatics",
-    "single-cell",
+    "napari",
+    "plugin",
+    "object-classification",
     "image-analysis",
     "spatialdata",
     "anndata",
-    "scanpy",
-    "scverse",
 ]
 
 classifiers = [
@@ -47,6 +43,7 @@ dependencies = [
     "harpy-analysis @ git+https://github.com/saeyslab/harpy.git@main",
     "napari[all]>=0.4.18",
     "napari-spatialdata>=0.2.6",
+    "pandas<3.0",
 ]
 
 # TODO: change to dependency-groups once pip has support https://github.com/pypa/pip/issues/12963
@@ -74,6 +71,9 @@ dev = [
     "napari-harpy[test,docs]",
 ]
 
+[project.entry-points."napari.manifest"]
+napari-harpy = "napari_harpy:napari.yaml"
+
 [project.urls]
 Homepage = "https://github.com/saeyslab/harpy"
 Documentation = "https://harpy.readthedocs.io/en/latest/"
@@ -86,8 +86,8 @@ VIBSpatialCatalyst = "https://vib.be/en/technologies/technology-portfolio/spatia
 
 
 [tool.coverage.run]
-source = ["harpy"]
-omit = ["src/harpy/_tests/*", "experiments/*", "src/harpy/widgets/*", "src/harpy/externals/*", "docs/*" ]
+source = ["napari_harpy"]
+omit = ["tests/*", "docs/*"]
 
 [tool.ruff]
 src = ["src"]
@@ -135,7 +135,10 @@ ignore = [
 extend-include = ["*.ipynb"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/harpy"]
+packages = ["src/napari_harpy"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/napari_harpy/napari.yaml" = "napari_harpy/napari.yaml"
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -158,12 +161,13 @@ convention = "numpy"
 
 [tool.ruff.per-file-ignores]
 "docs/*" = ["I"]
+"tests/*" = ["D"]
 "**/_tests/*" = ["D"]
 "*/__init__.py" = ["F401"]
 "**/test_data/*" = ["ALL"]
 
 [tool.pytest.ini_options]
-testpaths = ['src/harpy/_tests']
+testpaths = ['tests']
 xfail_strict = true
 addopts = [
   "--import-mode=importlib", # allow using test files with same name

@@ -120,11 +120,11 @@ A minimal napari plugin package that can be discovered and opened in napari.
 
 ### Tasks
 
-- Clean up package layout so the project is installable as a napari plugin.
-- Add a minimal `src/` package structure for `napari_harpy`.
-- Register the plugin entry point.
-- Add a first widget or dock widget placeholder.
-- Add a small developer note on how to run the plugin locally.
+- [x] Clean up package layout so the project is installable as a napari plugin.
+- [x] Add a minimal `src/` package structure for `napari_harpy`.
+- [x] Register the plugin entry point.
+- [x] Add a first widget or dock widget placeholder.
+- [x] Add a small developer note on how to run the plugin locally.
 
 ### Exit criteria
 
@@ -140,19 +140,19 @@ The plugin can detect whether the active napari session contains a compatible `S
 
 ### Tasks
 
-- Identify how `napari-spatialdata` exposes the loaded `SpatialData` object and linked layers.
-- Detect available segmentation masks.
-- Detect annotation tables linked through `TableModel`.
-- Detect candidate ROI shapes layers.
-- Validate that the selected table contains:
-  - valid region and instance mapping
-  - at least one `.obsm` entry
-- Validate ROI inputs:
-  - `None` means full dataset
-  - shapes layer is compatible with the segmentation coordinate system
-  - selected ROI geometry is acceptable for MVP, for example a square or rectangular region
-- Define how ROI selection is presented in the UI.
-- Surface clear validation errors in the UI.
+- [ ] Identify how `napari-spatialdata` exposes the loaded `SpatialData` object and linked layers.
+- [ ] Detect available segmentation masks.
+- [ ] Detect annotation tables linked through `TableModel`.
+- [ ] Detect candidate ROI shapes layers.
+- [ ] Validate that the selected table contains:
+  - [ ] valid region and instance mapping
+  - [ ] at least one `.obsm` entry
+- [ ] Validate ROI inputs:
+  - [ ] `None` means full dataset
+  - [ ] shapes layer is compatible with the segmentation coordinate system
+  - [ ] selected ROI geometry is acceptable for MVP, for example a square or rectangular region
+- [ ] Define how ROI selection is presented in the UI.
+- [ ] Surface clear validation errors in the UI.
 
 ### Exit criteria
 
@@ -169,18 +169,18 @@ The user can assign class labels to segmented objects from napari.
 
 ### Tasks
 
-- Define the simplest annotation interaction model for MVP.
-- Add UI elements for:
-  - current class label
-  - apply label to current selection
-  - clear label for current selection
-- Respect active ROI state:
-  - if ROI is `None`, annotations operate on the full segmentation
-  - if ROI is set, annotations only apply to objects inside the subset
-- Resolve napari object selection to segmentation instance ids.
-- Map instance ids to `adata.obs` rows via `instance_key`.
-- Initialize `adata.obs["user_class"]` if missing.
-- Store labels as nullable values until annotated.
+- [ ] Define the simplest annotation interaction model for MVP.
+- [ ] Add UI elements for:
+  - [ ] current class label
+  - [ ] apply label to current selection
+  - [ ] clear label for current selection
+- [ ] Respect active ROI state:
+  - [ ] if ROI is `None`, annotations operate on the full segmentation
+  - [ ] if ROI is set, annotations only apply to objects inside the subset
+- [ ] Resolve napari object selection to segmentation instance ids.
+- [ ] Map instance ids to `adata.obs` rows via `instance_key`.
+- [ ] Initialize `adata.obs["user_class"]` if missing.
+- [ ] Store labels as nullable values until annotated.
 
 ### Exit criteria
 
@@ -197,23 +197,23 @@ The plugin retrains a classifier in the background whenever annotations change.
 
 ### Tasks
 
-- Define training eligibility rules:
-  - enough labeled samples
-  - at least two classes
-  - feature matrix shape matches table rows
-- If ROI is active, train only on rows inside the current ROI subset.
-- Add a `RandomForestClassifier` training pipeline.
-- Train on labeled rows only.
-- Use async worker execution with napari threading.
-- Use a debounced background training loop:
-  - every annotation change schedules a retrain
-  - wait about 200 to 500 ms so bursts of clicks collapse into one job
-  - train in a worker thread
-  - when training finishes, run prediction on all objects
-  - update layer coloring and overlays on the main thread
-- Prefer napari's `@thread_worker` pattern for training jobs and UI-safe completion handling.
-- Implement stale-job cancellation or stale-result dropping so only the newest fit is applied.
-- Capture training metadata in `adata.uns["classifier_config"]`.
+- [ ] Define training eligibility rules:
+  - [ ] enough labeled samples
+  - [ ] at least two classes
+  - [ ] feature matrix shape matches table rows
+- [ ] If ROI is active, train only on rows inside the current ROI subset.
+- [ ] Add a `RandomForestClassifier` training pipeline.
+- [ ] Train on labeled rows only.
+- [ ] Use async worker execution with napari threading.
+- [ ] Use a debounced background training loop:
+  - [ ] every annotation change schedules a retrain
+  - [ ] wait about 200 to 500 ms so bursts of clicks collapse into one job
+  - [ ] train in a worker thread
+  - [ ] when training finishes, run prediction on all objects
+  - [ ] update layer coloring and overlays on the main thread
+- [ ] Prefer napari's `@thread_worker` pattern for training jobs and UI-safe completion handling.
+- [ ] Implement stale-job cancellation or stale-result dropping so only the newest fit is applied.
+- [ ] Capture training metadata in `adata.uns["classifier_config"]`.
 
 ### Exit criteria
 
@@ -230,14 +230,14 @@ Objects are recolored live by predicted class.
 
 ### Tasks
 
-- Predict classes for all objects after each successful fit.
-- If ROI is active, predict only for objects in the active subset and define how out-of-ROI objects are displayed.
-- Compute and store:
-  - `pred_class`
-  - `pred_confidence`
-- Decide representation for unlabeled or not-yet-predicted objects.
-- Push updated layer properties into the segmentation layer.
-- Add a stable colormap for class ids.
+- [ ] Predict classes for all objects after each successful fit.
+- [ ] If ROI is active, predict only for objects in the active subset and define how out-of-ROI objects are displayed.
+- [ ] Compute and store:
+  - [ ] `pred_class`
+  - [ ] `pred_confidence`
+- [ ] Decide representation for unlabeled or not-yet-predicted objects.
+- [ ] Push updated layer properties into the segmentation layer.
+- [ ] Add a stable colormap for class ids.
 
 ### Exit criteria
 
@@ -254,15 +254,15 @@ User annotations and predictions survive reloads.
 
 ### Tasks
 
-- Confirm the exact Harpy write-back API to persist tables into the zarr-backed `SpatialData` store.
-- Update or replace the linked table safely.
-- If ROI is active, write back changes only for rows inside the ROI subset and leave rows outside untouched.
-- Decide when saves happen:
-  - immediately after annotation
-  - after prediction refresh
-  - manual save button
-- Add minimal error handling for write failures.
-- Ensure persisted metadata includes `classifier_config`.
+- [ ] Confirm the exact Harpy write-back API to persist tables into the zarr-backed `SpatialData` store.
+- [ ] Update or replace the linked table safely.
+- [ ] If ROI is active, write back changes only for rows inside the ROI subset and leave rows outside untouched.
+- [ ] Decide when saves happen:
+  - [ ] immediately after annotation
+  - [ ] after prediction refresh
+  - [ ] manual save button
+- [ ] Add minimal error handling for write failures.
+- [ ] Ensure persisted metadata includes `classifier_config`.
 
 ### Exit criteria
 
@@ -278,15 +278,15 @@ The first usable version is stable enough for iterative testing.
 
 ### Tasks
 
-- Add tests for:
-  - table validation
-  - annotation-to-row mapping
-  - ROI subsetting and row membership
-  - training eligibility
-  - stale-job protection
-- Add lightweight logging for key transitions.
-- Improve user-facing error messages.
-- Test on one small real zarr-backed `SpatialData` example.
+- [ ] Add tests for:
+  - [ ] table validation
+  - [ ] annotation-to-row mapping
+  - [ ] ROI subsetting and row membership
+  - [ ] training eligibility
+  - [ ] stale-job protection
+- [ ] Add lightweight logging for key transitions.
+- [ ] Improve user-facing error messages.
+- [ ] Test on one small real zarr-backed `SpatialData` example.
 
 ### Exit criteria
 
