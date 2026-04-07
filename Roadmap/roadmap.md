@@ -140,8 +140,8 @@ The plugin can detect whether the active napari session contains a compatible `S
 
 ### Tasks
 
-- [ ] Identify how `napari-spatialdata` exposes the loaded `SpatialData` object and linked layers.
-- [ ] Detect available segmentation masks.
+- [x] Identify how `napari-spatialdata` exposes the loaded `SpatialData` object and linked layers.
+- [x] Detect available segmentation masks.
 - [ ] Detect annotation tables linked through `TableModel`.
 - [ ] Detect candidate ROI shapes layers.
 - [ ] Validate that the selected table contains:
