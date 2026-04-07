@@ -80,6 +80,7 @@ coverage.xml
 .hypothesis/
 .napari_cache
 .codex
+.codex-home/
 
 # Translations
 *.mo
