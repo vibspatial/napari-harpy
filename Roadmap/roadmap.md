@@ -37,7 +37,7 @@ For the first minimal viable product, the plugin should:
 
 - Selecting one segmentation layer and its linked annotation table
 - Selecting one `adata.obsm` entry as features
-- Optional ROI selection from a compatible shapes layer
+- Optional ROI selection from a compatible shapes layer, added after the core annotation, training, and prediction flow
 - Manual class annotation of segmented objects
 - Background random forest training and prediction refresh
 - Live object recoloring by predicted class
@@ -140,26 +140,19 @@ The plugin can detect whether the active napari session contains a compatible `S
 
 ### Tasks
 
-- [ ] Identify how `napari-spatialdata` exposes the loaded `SpatialData` object and linked layers.
-- [ ] Detect available segmentation masks.
-- [ ] Detect annotation tables linked through `TableModel`.
-- [ ] Detect candidate ROI shapes layers.
-- [ ] Validate that the selected table contains:
-  - [ ] valid region and instance mapping
-  - [ ] at least one `.obsm` entry
-- [ ] Validate ROI inputs:
-  - [ ] `None` means full dataset
-  - [ ] shapes layer is compatible with the segmentation coordinate system
-  - [ ] selected ROI geometry is acceptable for MVP, for example a square or rectangular region
-- [ ] Define how ROI selection is presented in the UI.
-- [ ] Surface clear validation errors in the UI.
+- [x] Identify how `napari-spatialdata` exposes the loaded `SpatialData` object and linked layers.
+- [x] Detect available segmentation masks.
+- [X] Detect annotation tables linked through `TableModel`.
+- [X] Validate that the selected table contains:
+  - [X] valid region and instance mapping
+  - [X] at least one `.obsm` entry
+- [x] Surface clear validation errors in the UI.
 
 ### Exit criteria
 
-- User can select a valid segmentation/table pair.
-- User can select a valid `adata.obsm` key.
-- User can select `None` or a valid ROI layer.
-- Invalid datasets fail with understandable messages.
+- [x] User can select a valid segmentation/table pair.
+- [x] User can select a valid `adata.obsm` key.
+- [x] Invalid datasets fail with understandable messages.
 
 ### Phase 2: Basic annotation workflow
 
@@ -174,9 +167,6 @@ The user can assign class labels to segmented objects from napari.
   - [ ] current class label
   - [ ] apply label to current selection
   - [ ] clear label for current selection
-- [ ] Respect active ROI state:
-  - [ ] if ROI is `None`, annotations operate on the full segmentation
-  - [ ] if ROI is set, annotations only apply to objects inside the subset
 - [ ] Resolve napari object selection to segmentation instance ids.
 - [ ] Map instance ids to `adata.obs` rows via `instance_key`.
 - [ ] Initialize `adata.obs["user_class"]` if missing.
@@ -187,7 +177,6 @@ The user can assign class labels to segmented objects from napari.
 - User can label selected objects with class ids.
 - Labels are stored in `adata.obs["user_class"]`.
 - Relabeling an object updates the table correctly.
-- Objects outside the active ROI are ignored or clearly blocked from annotation.
 
 ### Phase 3: Background random forest training
 
@@ -201,7 +190,6 @@ The plugin retrains a classifier in the background whenever annotations change.
   - [ ] enough labeled samples
   - [ ] at least two classes
   - [ ] feature matrix shape matches table rows
-- [ ] If ROI is active, train only on rows inside the current ROI subset.
 - [ ] Add a `RandomForestClassifier` training pipeline.
 - [ ] Train on labeled rows only.
 - [ ] Use async worker execution with napari threading.
@@ -220,7 +208,6 @@ The plugin retrains a classifier in the background whenever annotations change.
 - Label edits trigger background retraining.
 - UI remains responsive during training.
 - Older jobs do not overwrite newer results.
-- ROI changes trigger a clean recomputation of the working subset and model state.
 
 ### Phase 4: Live prediction updates in the viewer
 
@@ -246,7 +233,38 @@ Objects are recolored live by predicted class.
 - Untrained or invalid states are visually clear.
 - ROI-restricted predictions are visually understandable.
 
-### Phase 5: Persistence to SpatialData / zarr
+### Phase 5: ROI selection and subsetting
+
+### Outcome
+
+The user can optionally constrain annotation and model updates to a valid ROI chosen from a shapes layer.
+
+### Tasks
+
+- [ ] Detect candidate ROI shapes layers.
+- [ ] Define how ROI selection is presented in the UI.
+- [ ] Add an ROI menu with `None` and compatible shapes layers.
+- [ ] Validate ROI inputs:
+  - [ ] `None` means full dataset
+  - [ ] shapes layer is compatible with the segmentation coordinate system
+  - [ ] selected ROI geometry is acceptable for MVP, for example a square or rectangular region
+- [ ] Apply `spatialdata.bounding_box_query` to derive the working subset when ROI is selected.
+- [ ] Track table rows and segmentation objects inside the active ROI.
+- [ ] Respect active ROI state for annotation:
+  - [ ] if ROI is `None`, annotations operate on the full segmentation
+  - [ ] if ROI is set, annotations only apply to objects inside the subset
+- [ ] Respect active ROI state for training:
+  - [ ] if ROI is active, train only on rows inside the current ROI subset
+- [ ] Trigger a clean recomputation of the working subset and model state when ROI changes.
+
+### Exit criteria
+
+- User can select `None` or a valid ROI layer.
+- Invalid ROI inputs fail with understandable messages.
+- Objects outside the active ROI are ignored or clearly blocked from annotation.
+- ROI changes trigger a clean recomputation of the working subset and model state.
+
+### Phase 6: Persistence to SpatialData / zarr
 
 ### Outcome
 
@@ -270,7 +288,7 @@ User annotations and predictions survive reloads.
 - Persisted data remains linked to the segmentation via table metadata.
 - ROI-limited edits do not accidentally overwrite rows outside the ROI.
 
-### Phase 6: MVP hardening
+### Phase 7: MVP hardening
 
 ### Outcome
 
@@ -379,7 +397,7 @@ The first slice we should implement after this roadmap:
 1. make the package installable as a napari plugin
 2. add a dock widget skeleton
 3. inspect the active `SpatialData` object from `napari-spatialdata`
-4. list available segmentation masks, linked tables, ROI shapes layers, and `.obsm` keys in the UI
+4. list available segmentation masks, linked tables, and `.obsm` keys in the UI
 
 This gives us the integration backbone before we build annotation and training.
 

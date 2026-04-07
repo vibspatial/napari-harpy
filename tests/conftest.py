@@ -3,7 +3,26 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import numpy as np
+import pytest
+from spatialdata import SpatialData
+from spatialdata.datasets import blobs
+
 SRC = Path(__file__).resolve().parents[1] / "src"
 
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
+
+
+@pytest.fixture
+def sdata_blobs() -> SpatialData:
+    """Return a small SpatialData test object with dummy feature matrices in `table.obsm`."""
+    sdata = blobs()
+    table = sdata["table"]
+    n_obs = table.n_obs
+    rng = np.random.default_rng(seed=0)
+
+    table.obsm["features_1"] = rng.normal(size=(n_obs, 4))
+    table.obsm["features_2"] = rng.normal(size=(n_obs, 2))
+
+    return sdata
