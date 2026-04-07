@@ -1,0 +1,170 @@
+[build-system]
+build-backend = "hatchling.build"
+requires = [ "hatchling" ]
+
+[project]
+name = "napari-harpy"
+version = "0.3.6"
+description = "single-cell spatial omics analysis that makes you happy."
+readme = "README.md"
+requires-python = ">=3.11,<3.15"
+license = { file = "LICENSE" }
+authors = [
+    { name = "VIB spatial catalyst" }
+]
+
+keywords = [
+    "spatial-omics",
+    "spatial-transcriptomics",
+    "spatial-proteomics",
+    "bioinformatics",
+    "single-cell",
+    "image-analysis",
+    "spatialdata",
+    "anndata",
+    "scanpy",
+    "scverse",
+]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+
+dependencies = [
+    "harpy-analysis @ git+https://github.com/saeyslab/harpy.git@main",
+    "napari[all]>=0.4.18",
+    "napari-spatialdata>=0.2.6",
+]
+
+# TODO: change to dependency-groups once pip has support https://github.com/pypa/pip/issues/12963
+[project.optional-dependencies]
+test = [
+    "opencv-python-headless",
+    "pytest",
+    "pytest-cov",
+    "pytest-qt", # only necessary for unit testing deprecated plugin
+    "tox",
+]
+docs = [
+    "sphinx>=4.5",
+    "sphinx-book-theme>=1.0.0",
+    "sphinx_rtd_theme",
+    "myst-nb",
+    "sphinxcontrib-bibtex>=1.0.0",
+    "sphinx-autodoc-typehints",
+    "sphinx-design",
+    "sphinx-copybutton",
+]
+dev = [
+    "pre-commit",
+    "twine>=4.0.2",
+    "napari-harpy[test,docs]",
+]
+
+[project.urls]
+Homepage = "https://github.com/saeyslab/harpy"
+Documentation = "https://harpy.readthedocs.io/en/latest/"
+Repository = "https://github.com/saeyslab/harpy"
+Issues = "https://github.com/saeyslab/harpy/issues"
+Changelog = "https://github.com/saeyslab/harpy/releases"
+Paper = "https://doi.org/10.1093/bioinformatics/btag122"
+SaeysLab = "https://saeyslab.sites.vib.be/en"
+VIBSpatialCatalyst = "https://vib.be/en/technologies/technology-portfolio/spatial-catalyst"
+
+
+[tool.coverage.run]
+source = ["harpy"]
+omit = ["src/harpy/_tests/*", "experiments/*", "src/harpy/widgets/*", "src/harpy/externals/*", "docs/*" ]
+
+[tool.ruff]
+src = ["src"]
+line-length = 120
+select = [
+    "F",  # Errors detected by Pyflakes
+    "E",  # Error detected by Pycodestyle
+    "W",  # Warning detected by Pycodestyle
+    "I",  # isort
+    "D",  # pydocstyle
+    "B",  # flake8-bugbear
+    "TID",  # flake8-tidy-imports
+    "C4",  # flake8-comprehensions
+    "BLE",  # flake8-blind-except
+    "UP",  # pyupgrade
+    "RUF100",  # Report unused noqa directives
+]
+ignore = [
+    # line too long -> we accept long comment lines; formatter gets rid of long code lines
+    "E501",
+    # Do not assign a lambda expression, use a def -> lambda expression assignments are convenient
+    "E731",
+    # allow I, O, l as variable names -> I is the identity matrix
+    "E741",
+    # Missing docstring in public package
+    "D104",
+    # Missing docstring in public module
+    "D100",
+    # Missing docstring in __init__
+    "D107",
+    # Errors from function calls in argument defaults. These are fine when the result is immutable.
+    "B008",
+    # __magic__ methods are are often self-explanatory, allow missing docstrings
+    "D105",
+    # first line should end with a period [Bug: doesn't work with single-line docstrings]
+    "D400",
+    # First line should be in imperative mood; try rephrasing
+    "D401",
+    ## Disable one in each pair of mutually incompatible rules
+    # We don’t want a blank line before a class docstring
+    "D203",
+    # We want docstrings to start immediately after the opening triple quote
+    "D213",
+]
+extend-include = ["*.ipynb"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/harpy"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.envs.default]
+installer = "uv"
+features = [ "dev" ]
+
+[tool.hatch.envs.docs]
+features = [ "dev" ]
+scripts.build = "sphinx-build -M html docs docs/_build {args}"
+scripts.open = "python -m webbrowser -t docs/_build/html/index.html"
+scripts.clean = "git clean -fdX -- {args:docs}"
+
+[tool.hatch.envs.hatch-test]
+features = [ "dev" ]
+
+[tool.ruff.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.per-file-ignores]
+"docs/*" = ["I"]
+"**/_tests/*" = ["D"]
+"*/__init__.py" = ["F401"]
+"**/test_data/*" = ["ALL"]
+
+[tool.pytest.ini_options]
+testpaths = ['src/harpy/_tests']
+xfail_strict = true
+addopts = [
+  "--import-mode=importlib", # allow using test files with same name
+]

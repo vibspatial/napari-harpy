@@ -1,0 +1,123 @@
+# Custom
+scripts/code_ownership.py
+configs/allocate/*
+configs/annotate/*
+configs/clean/*
+configs/dataset/*
+configs/experiment/*
+configs/local/*
+configs/segmentation/*
+configs/visualize/*
+data
+spatial
+logs
+.env
+.autoenv
+
+notebooks
+
+# Add exection for example configs for resolve and vizgen
+!configs/allocate/resolve_liver.yaml
+!configs/allocate/vizgen_example.yaml
+!configs/annotate/resolve_liver.yaml
+!configs/clean/resolve_liver.yaml
+!configs/clean/vizgen_example.yaml
+!configs/dataset/resolve_liver.yaml
+!configs/dataset/resolve_liver_2.yaml
+!configs/dataset/vizgen_example.yaml
+!configs/experiment/resolve_liver.yaml
+!configs/experiment/vizgen_example.yaml
+!configs/local/default.example.yaml
+!configs/segmentation/cellpose_resolve_liver.yaml
+!configs/segmentation/cellpose_vizgen_example.yaml
+!configs/visualize/resolve_liver.yaml
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+#  Usually these files are written by a python script from a template
+#  before PyInstaller builds the exe, so as to inject date/other infos into it.
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*,cover
+.hypothesis/
+.napari_cache
+.codex
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+local_settings.py
+
+# Flask instance folder
+instance/
+
+# Sphinx documentation
+/docs/generated/
+/docs/_build/
+
+# MkDocs documentation
+/site/
+
+# PyBuilder
+target/
+
+# Pycharm and VSCode
+.idea/
+venv/
+.vscode/
+
+# IPython Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# OS
+.DS_Store
+
+# written by setuptools_scm
+**/_version.py
+
+# asv benchmarks
+.asv/**
