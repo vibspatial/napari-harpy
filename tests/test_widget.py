@@ -4,7 +4,7 @@ from collections.abc import Callable
 from types import SimpleNamespace
 
 from napari.layers import Labels
-from spatialdata.datasets import blobs
+from spatialdata import SpatialData
 
 from napari_harpy._spatialdata import get_spatialdata_label_options
 from napari_harpy._widget import HarpyWidget
@@ -38,14 +38,13 @@ class DummyViewer:
         self.layers = DummyLayers(layers)
 
 
-def make_blobs_labels_layer(label_name: str = "blobs_labels") -> tuple[object, Labels]:
-    sdata = blobs()
+def make_blobs_labels_layer(sdata: SpatialData, label_name: str = "blobs_labels") -> Labels:
     layer = Labels(
         sdata.labels[label_name],
         name=label_name,
         metadata={"sdata": sdata, "name": label_name},
     )
-    return sdata, layer
+    return layer
 
 
 def test_widget_can_be_instantiated(qtbot) -> None:
@@ -58,7 +57,7 @@ def test_widget_can_be_instantiated(qtbot) -> None:
     assert widget.selected_table_name is None
 
 
-def test_spatialdata_label_options_are_deduplicated_per_dataset() -> None:
+def test_spatialdata_label_options_are_deduplicated_per_dataset(sdata_blobs: SpatialData) -> None:
     """Avoid duplicate dropdown entries when multiple layers share one SpatialData object.
 
     In a real napari-spatialdata session, the viewer can contain multiple layers that all
@@ -68,11 +67,11 @@ def test_spatialdata_label_options_are_deduplicated_per_dataset() -> None:
     This test uses two layers pointing to the same `sdata` to verify that we deduplicate at the
     dataset level and expose each labels element only once.
     """
-    sdata, first_layer = make_blobs_labels_layer("blobs_labels")
+    first_layer = make_blobs_labels_layer(sdata_blobs, "blobs_labels")
     second_layer = Labels(
-        sdata.labels["blobs_labels"],
+        sdata_blobs.labels["blobs_labels"],
         name="blobs_labels_duplicate",
-        metadata={"sdata": sdata, "name": "blobs_labels"},
+        metadata={"sdata": sdata_blobs, "name": "blobs_labels"},
     )
     viewer = DummyViewer(layers=[first_layer, second_layer])
 
@@ -84,8 +83,8 @@ def test_spatialdata_label_options_are_deduplicated_per_dataset() -> None:
     ]
 
 
-def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot) -> None:
-    sdata, layer = make_blobs_labels_layer()
+def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_blobs: SpatialData) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
     widget = HarpyWidget(viewer)
@@ -99,18 +98,18 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot) -> None:
     assert widget.table_combo.count() == 1
     assert widget.table_combo.itemText(0) == "table"
     assert widget.selected_segmentation_name == "blobs_labels"
-    assert widget.selected_spatialdata is sdata
+    assert widget.selected_spatialdata is sdata_blobs
     assert widget.selected_table_name == "table"
 
 
-def test_widget_refreshes_when_a_spatialdata_layer_is_added(qtbot) -> None:
+def test_widget_refreshes_when_a_spatialdata_layer_is_added(qtbot, sdata_blobs: SpatialData) -> None:
     viewer = DummyViewer()
     widget = HarpyWidget(viewer)
     qtbot.addWidget(widget)
 
     assert widget.segmentation_combo.count() == 0
 
-    _, layer = make_blobs_labels_layer()
+    layer = make_blobs_labels_layer(sdata_blobs)
     viewer.layers.append(layer)
     viewer.layers.events.inserted.emit(layer)
 
@@ -122,8 +121,8 @@ def test_widget_refreshes_when_a_spatialdata_layer_is_added(qtbot) -> None:
     assert widget.selected_table_name == "table"
 
 
-def test_widget_updates_table_dropdown_when_segmentation_changes(qtbot) -> None:
-    _, layer = make_blobs_labels_layer()
+def test_widget_updates_table_dropdown_when_segmentation_changes(qtbot, sdata_blobs: SpatialData) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
     widget = HarpyWidget(viewer)
