@@ -18,7 +18,18 @@ if TYPE_CHECKING:
 
 
 class HarpyWidget(QWidget):
-    """Phase 1 widget for selecting a segmentation mask from SpatialData labels."""
+    """Phase 1 widget for selecting segmentation, table, and feature inputs.
+
+    The widget does not retrieve a `SpatialData` object directly from the napari
+    viewer itself. Instead, it inspects the current viewer layers and looks for
+    `napari-spatialdata` metadata stored as `layer.metadata["sdata"]`.
+
+    From those viewer-linked `SpatialData` objects, the widget exposes:
+
+    - segmentation masks from `sdata.labels`
+    - annotating tables for the selected segmentation
+    - feature matrix keys from `table.obsm`
+    """
 
     def __init__(self, napari_viewer: napari.Viewer | None = None) -> None:
         super().__init__()
@@ -114,6 +125,8 @@ class HarpyWidget(QWidget):
             has_options = bool(self._label_options)
             self.segmentation_combo.setEnabled(has_options)
 
+            # If the previously selected label is still available after a refresh,
+            # keep it selected instead of resetting the user back to the first item.
             next_index = self._find_option_index(previous_identity)
             if has_options:
                 self.segmentation_combo.setCurrentIndex(0 if next_index is None else next_index)

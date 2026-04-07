@@ -16,8 +16,9 @@ class SpatialDataLabelsOption:
     """A selectable labels element discovered from a viewer-linked SpatialData object."""
 
     label_name: str
+    # User-facing text for the dropdown. This may include the dataset name to
+    # disambiguate equal label names coming from different SpatialData objects.
     display_name: str
-    dataset_name: str
     sdata: SpatialData
 
     @property
@@ -27,7 +28,16 @@ class SpatialDataLabelsOption:
 
 
 def get_spatialdata_label_options(viewer: Any | None) -> list[SpatialDataLabelsOption]:
-    """Collect labels elements exposed by `napari-spatialdata` in the current viewer."""
+    """Collect selectable labels elements from viewer layers linked by `napari-spatialdata`.
+
+    This helper scans the current napari viewer for layers whose metadata contains an
+    associated `SpatialData` object under `layer.metadata["sdata"]`, as provided by
+    `napari-spatialdata`. The discovered datasets are deduplicated, and all available
+    entries from `sdata.labels` are returned as `SpatialDataLabelsOption` objects.
+
+    The returned options carry both the label name and the originating `SpatialData`
+    object so the widget can safely support viewers containing multiple datasets.
+    """
     if viewer is None:
         return []
 
@@ -39,11 +49,7 @@ def get_spatialdata_label_options(viewer: Any | None) -> list[SpatialDataLabelsO
     if not sdatas:
         return []
 
-    label_name_counts = Counter(
-        label_name
-        for sdata in sdatas
-        for label_name in _get_label_names(sdata)
-    )
+    label_name_counts = Counter(label_name for sdata in sdatas for label_name in _get_label_names(sdata))
 
     options: list[SpatialDataLabelsOption] = []
     multiple_sdatas = len(sdatas) > 1
@@ -51,6 +57,9 @@ def get_spatialdata_label_options(viewer: Any | None) -> list[SpatialDataLabelsO
     for index, sdata in enumerate(sdatas, start=1):
         dataset_name = _get_dataset_name(sdata, index)
         for label_name in _get_label_names(sdata):
+            # Build the text shown in the combo box. We keep the raw
+            # `label_name` for program logic and only append the dataset name
+            # when the user may need help distinguishing otherwise identical labels.
             display_name = label_name
             if multiple_sdatas or label_name_counts[label_name] > 1:
                 display_name = f"{label_name} ({dataset_name})"
@@ -59,7 +68,6 @@ def get_spatialdata_label_options(viewer: Any | None) -> list[SpatialDataLabelsO
                 SpatialDataLabelsOption(
                     label_name=label_name,
                     display_name=display_name,
-                    dataset_name=dataset_name,
                     sdata=sdata,
                 )
             )
