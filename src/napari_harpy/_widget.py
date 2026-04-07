@@ -6,10 +6,9 @@ from qtpy.QtCore import QSignalBlocker
 from qtpy.QtWidgets import QComboBox, QFormLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from napari_harpy._spatialdata import (
+    SpatialDataAdapter,
     SpatialDataLabelsOption,
-    get_annotating_table_names,
-    get_spatialdata_label_options,
-    get_table_obsm_keys,
+    SpatialDataTableMetadata,
 )
 
 if TYPE_CHECKING:
@@ -34,6 +33,7 @@ class HarpyWidget(QWidget):
     def __init__(self, napari_viewer: napari.Viewer | None = None) -> None:
         super().__init__()
         self._viewer = napari_viewer
+        self._spatialdata_adapter = SpatialDataAdapter(napari_viewer)
         self._label_options: list[SpatialDataLabelsOption] = []
         self._selected_label_option: SpatialDataLabelsOption | None = None
         self._table_names: list[str] = []
@@ -112,10 +112,18 @@ class HarpyWidget(QWidget):
         """Return the currently selected feature matrix key from `adata.obsm`."""
         return self._selected_feature_key
 
+    @property
+    def selected_table_metadata(self) -> SpatialDataTableMetadata | None:
+        """Return the linkage metadata for the current table selection."""
+        if self.selected_spatialdata is None or self.selected_table_name is None:
+            return None
+
+        return self._spatialdata_adapter.get_table_metadata(self.selected_spatialdata, self.selected_table_name)
+
     def refresh_segmentation_masks(self) -> None:
         """Refresh the segmentation mask choices from viewer-linked SpatialData layers."""
         previous_identity = None if self._selected_label_option is None else self._selected_label_option.identity
-        self._label_options = get_spatialdata_label_options(self._viewer)
+        self._label_options = self._spatialdata_adapter.get_label_options()
 
         with QSignalBlocker(self.segmentation_combo):
             self.segmentation_combo.clear()
@@ -183,7 +191,9 @@ class HarpyWidget(QWidget):
         if self.selected_spatialdata is None or self.selected_segmentation_name is None:
             self._table_names = []
         else:
-            self._table_names = get_annotating_table_names(self.selected_spatialdata, self.selected_segmentation_name)
+            self._table_names = self._spatialdata_adapter.get_annotating_table_names(
+                self.selected_spatialdata, self.selected_segmentation_name
+            )
 
         with QSignalBlocker(self.table_combo):
             self.table_combo.clear()
@@ -233,7 +243,9 @@ class HarpyWidget(QWidget):
         if self.selected_spatialdata is None or self.selected_table_name is None:
             self._feature_matrix_keys = []
         else:
-            self._feature_matrix_keys = get_table_obsm_keys(self.selected_spatialdata, self.selected_table_name)
+            self._feature_matrix_keys = self._spatialdata_adapter.get_table_obsm_keys(
+                self.selected_spatialdata, self.selected_table_name
+            )
 
         with QSignalBlocker(self.feature_matrix_combo):
             self.feature_matrix_combo.clear()

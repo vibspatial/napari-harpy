@@ -106,6 +106,10 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_bl
     assert widget.selected_spatialdata is sdata_blobs
     assert widget.selected_table_name == "table"
     assert widget.selected_feature_key == "features_1"
+    assert widget.selected_table_metadata is not None
+    assert widget.selected_table_metadata.region_key == "region"
+    assert widget.selected_table_metadata.instance_key == "instance_id"
+    assert widget.selected_table_metadata.regions == ("blobs_labels",)
     assert widget.validation_status.isHidden()
     assert widget.validation_status.text() == ""
 

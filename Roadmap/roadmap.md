@@ -80,8 +80,9 @@ For the first minimal viable product, the plugin should:
 ### Main plugin components
 
 - `SpatialDataAdapter`
+  - Stays intentionally thin and delegates table semantics to `spatialdata` rather than reimplementing them.
   - Finds compatible segmentation layers, linked tables, and candidate ROI shapes layers.
-  - Resolves `region_key` and `instance_key`.
+  - Resolves table linkage metadata such as `region`, `region_key`, and `instance_key`.
   - Exposes available `adata.obsm` keys.
 
 - `ROIController`
@@ -159,6 +160,11 @@ The plugin can detect whether the active napari session contains a compatible `S
 ### Outcome
 
 The user can assign class labels to segmented objects from napari.
+
+### Implementation note
+
+Keep `HarpyWidget` focused on UI state. Viewer and `SpatialData` discovery should live in a thin
+`SpatialDataAdapter` so Phase 2 annotation logic does not accumulate inside the widget.
 
 ### Tasks
 
