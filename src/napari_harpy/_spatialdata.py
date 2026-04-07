@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from spatialdata import get_element_annotators
+
 if TYPE_CHECKING:
     from spatialdata import SpatialData
 
@@ -63,6 +65,11 @@ def get_spatialdata_label_options(viewer: Any | None) -> list[SpatialDataLabelsO
             )
 
     return options
+
+
+def get_annotating_table_names(sdata: SpatialData, label_name: str) -> list[str]:
+    """Return the table names that annotate a labels element in a SpatialData object."""
+    return sorted(get_element_annotators(sdata, label_name))
 
 
 def _get_unique_spatialdata_objects(layers: Any) -> list[SpatialData]:
