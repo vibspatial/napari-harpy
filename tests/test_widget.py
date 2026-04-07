@@ -58,6 +58,15 @@ def test_widget_can_be_instantiated(qtbot) -> None:
 
 
 def test_spatialdata_label_options_are_deduplicated_per_dataset() -> None:
+    """Avoid duplicate dropdown entries when multiple layers share one SpatialData object.
+
+    In a real napari-spatialdata session, the viewer can contain multiple layers that all
+    reference the same `SpatialData` dataset through `layer.metadata["sdata"]`. If we expanded
+    `sdata.labels` once per layer, the segmentation dropdown would repeat the same label names.
+
+    This test uses two layers pointing to the same `sdata` to verify that we deduplicate at the
+    dataset level and expose each labels element only once.
+    """
     sdata, first_layer = make_blobs_labels_layer("blobs_labels")
     second_layer = Labels(
         sdata.labels["blobs_labels"],
