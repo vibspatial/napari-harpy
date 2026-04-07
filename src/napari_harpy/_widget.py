@@ -9,6 +9,7 @@ from napari_harpy._spatialdata import SpatialDataLabelsOption, get_spatialdata_l
 
 if TYPE_CHECKING:
     import napari
+    from spatialdata import SpatialData
 
 
 class HarpyWidget(QWidget):
@@ -67,7 +68,7 @@ class HarpyWidget(QWidget):
         return None if self._selected_option is None else self._selected_option.label_name
 
     @property
-    def selected_spatialdata(self) -> object | None:
+    def selected_spatialdata(self) -> SpatialData | None:
         """Return the SpatialData object that owns the current labels selection."""
         return None if self._selected_option is None else self._selected_option.sdata
 

@@ -3,7 +3,10 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from spatialdata import SpatialData
 
 
 @dataclass(frozen=True)
@@ -13,7 +16,7 @@ class SpatialDataLabelsOption:
     label_name: str
     display_name: str
     dataset_name: str
-    sdata: object
+    sdata: SpatialData
 
     @property
     def identity(self) -> tuple[int, str]:
@@ -62,8 +65,8 @@ def get_spatialdata_label_options(viewer: Any | None) -> list[SpatialDataLabelsO
     return options
 
 
-def _get_unique_spatialdata_objects(layers: Any) -> list[object]:
-    unique_sdatas: list[object] = []
+def _get_unique_spatialdata_objects(layers: Any) -> list[SpatialData]:
+    unique_sdatas: list[SpatialData] = []
     seen_ids: set[int] = set()
 
     for layer in layers:
@@ -85,12 +88,12 @@ def _get_unique_spatialdata_objects(layers: Any) -> list[object]:
     return unique_sdatas
 
 
-def _get_label_names(sdata: object) -> list[str]:
+def _get_label_names(sdata: SpatialData) -> list[str]:
     labels = getattr(sdata, "labels", {})
     return sorted(labels.keys())
 
 
-def _get_dataset_name(sdata: object, index: int) -> str:
+def _get_dataset_name(sdata: SpatialData, index: int) -> str:
     for attr in ("path", "_path", "name"):
         value = getattr(sdata, attr, None)
         if value:
