@@ -47,14 +47,11 @@ class HarpyWidget(QWidget):
         title.setStyleSheet("font-size: 18px; font-weight: 600;")
 
         subtitle = QLabel(
-            "Phase 1 setup.\n"
-            "Select the segmentation mask to classify from the active SpatialData object."
+            "Phase 1 setup.\nSelect the segmentation mask to classify from the active SpatialData object."
         )
         subtitle.setWordWrap(True)
 
-        self.viewer_status = QLabel(
-            "Viewer connected." if napari_viewer is not None else "Viewer not connected."
-        )
+        self.viewer_status = QLabel("Viewer connected." if napari_viewer is not None else "Viewer not connected.")
         self.viewer_status.setWordWrap(True)
 
         selector_layout = QFormLayout()
@@ -74,8 +71,11 @@ class HarpyWidget(QWidget):
         self.refresh_button.clicked.connect(self.refresh_segmentation_masks)
         self.refresh_button.setEnabled(napari_viewer is not None)
 
-        self.selection_status = QLabel()
-        self.selection_status.setWordWrap(True)
+        self.validation_status = QLabel()
+        self.validation_status.setObjectName("validation_status")
+        self.validation_status.setWordWrap(True)
+        self.validation_status.setStyleSheet("color: #b45309; font-weight: 600;")
+        self.validation_status.hide()
 
         selector_layout.addRow("Segmentation mask", self.segmentation_combo)
         selector_layout.addRow("Table", self.table_combo)
@@ -86,7 +86,7 @@ class HarpyWidget(QWidget):
         layout.addWidget(self.viewer_status)
         layout.addLayout(selector_layout)
         layout.addWidget(self.refresh_button)
-        layout.addWidget(self.selection_status)
+        layout.addWidget(self.validation_status)
         layout.addStretch(1)
 
         self._connect_viewer_events()
@@ -275,66 +275,16 @@ class HarpyWidget(QWidget):
         return None
 
     def _update_selection_status(self) -> None:
-        if self._viewer is None:
-            self.selection_status.setText("Connect the widget to a napari viewer to discover segmentation masks.")
-            return
+        self._update_validation_status()
 
-        if not self._label_options:
-            self.selection_status.setText(
-                "Load a SpatialData labels layer with napari-spatialdata to populate the segmentation menu."
+    def _update_validation_status(self) -> None:
+        message = None
+
+        if self.selected_table_name is not None and not self._feature_matrix_keys:
+            message = (
+                "Warning: the selected table does not contain any feature matrices in `.obsm`. "
+                "Add one before continuing."
             )
-            return
 
-        count = len(self._label_options)
-        mask_plural = "s" if count != 1 else ""
-
-        if self._selected_label_option is None:
-            self.selection_status.setText(f"Found {count} segmentation mask{mask_plural}. Select one to continue.")
-            return
-
-        if not self._table_names:
-            self.selection_status.setText(
-                f"Found {count} segmentation mask{mask_plural}. "
-                f"Selected segmentation: {self._selected_label_option.display_name}. "
-                "No annotating tables found for this segmentation."
-            )
-            return
-
-        table_count = len(self._table_names)
-        table_plural = "s" if table_count != 1 else ""
-
-        if self._selected_table_name is None:
-            self.selection_status.setText(
-                f"Found {count} segmentation mask{mask_plural}. "
-                f"Selected segmentation: {self._selected_label_option.display_name}. "
-                f"Found {table_count} table{table_plural}. Select one to continue."
-            )
-            return
-
-        if not self._feature_matrix_keys:
-            self.selection_status.setText(
-                f"Found {count} segmentation mask{mask_plural}. "
-                f"Selected segmentation: {self._selected_label_option.display_name}. "
-                f"Table: {self._selected_table_name}. "
-                "No feature matrices found in `adata.obsm`."
-            )
-            return
-
-        feature_count = len(self._feature_matrix_keys)
-        feature_label = "feature matrix" if feature_count == 1 else "feature matrices"
-
-        if self._selected_feature_key is None:
-            self.selection_status.setText(
-                f"Found {count} segmentation mask{mask_plural}. "
-                f"Selected segmentation: {self._selected_label_option.display_name}. "
-                f"Table: {self._selected_table_name}. "
-                f"Found {feature_count} {feature_label}. Select one to continue."
-            )
-            return
-
-        self.selection_status.setText(
-            f"Found {count} segmentation mask{mask_plural}. "
-            f"Selected segmentation: {self._selected_label_option.display_name}. "
-            f"Table: {self._selected_table_name}. "
-            f"Feature matrix: {self._selected_feature_key}."
-        )
+        self.validation_status.setText("" if message is None else message)
+        self.validation_status.setVisible(message is not None)

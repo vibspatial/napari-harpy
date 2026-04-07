@@ -106,6 +106,8 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_bl
     assert widget.selected_spatialdata is sdata_blobs
     assert widget.selected_table_name == "table"
     assert widget.selected_feature_key == "features_1"
+    assert widget.validation_status.isHidden()
+    assert widget.validation_status.text() == ""
 
 
 def test_widget_refreshes_when_a_spatialdata_layer_is_added(qtbot, sdata_blobs: SpatialData) -> None:
@@ -177,4 +179,5 @@ def test_widget_handles_tables_without_obsm_entries(qtbot, sdata_blobs: SpatialD
     assert not widget.feature_matrix_combo.isEnabled()
     assert widget.selected_table_name == "table"
     assert widget.selected_feature_key is None
-    assert "No feature matrices found in `adata.obsm`." in widget.selection_status.text()
+    assert not widget.validation_status.isHidden()
+    assert "does not contain any feature matrices in `.obsm`" in widget.validation_status.text()
