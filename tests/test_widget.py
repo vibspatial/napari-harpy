@@ -158,3 +158,23 @@ def test_widget_updates_selected_feature_key_when_feature_matrix_changes(qtbot, 
     widget.feature_matrix_combo.setCurrentIndex(1)
 
     assert widget.selected_feature_key == "features_2"
+
+
+def test_widget_handles_tables_without_obsm_entries(qtbot, sdata_blobs: SpatialData) -> None:
+    table = sdata_blobs["table"]
+    for key in list(table.obsm.keys()):
+        del table.obsm[key]
+
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    assert widget.table_combo.count() == 1
+    assert widget.table_combo.itemText(0) == "table"
+    assert widget.feature_matrix_combo.count() == 0
+    assert not widget.feature_matrix_combo.isEnabled()
+    assert widget.selected_table_name == "table"
+    assert widget.selected_feature_key is None
+    assert "No feature matrices found in `adata.obsm`." in widget.selection_status.text()

@@ -142,11 +142,11 @@ The plugin can detect whether the active napari session contains a compatible `S
 
 - [x] Identify how `napari-spatialdata` exposes the loaded `SpatialData` object and linked layers.
 - [x] Detect available segmentation masks.
-- [ ] Detect annotation tables linked through `TableModel`.
+- [X] Detect annotation tables linked through `TableModel`.
 - [ ] Detect candidate ROI shapes layers.
-- [ ] Validate that the selected table contains:
-  - [ ] valid region and instance mapping
-  - [ ] at least one `.obsm` entry
+- [X] Validate that the selected table contains:
+  - [X] valid region and instance mapping
+  - [X] at least one `.obsm` entry
 - [ ] Validate ROI inputs:
   - [ ] `None` means full dataset
   - [ ] shapes layer is compatible with the segmentation coordinate system

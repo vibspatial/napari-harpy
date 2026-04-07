@@ -122,3 +122,5 @@ venv/
 
 # asv benchmarks
 .asv/**
+
+agents.md
