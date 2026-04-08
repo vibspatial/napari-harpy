@@ -94,6 +94,27 @@ class SpatialDataAdapter:
 
         return None
 
+    def set_active_layer(self, layer: Any | None) -> bool:
+        """Make the given napari layer the active viewer layer when supported."""
+        if layer is None:
+            return False
+
+        layers = getattr(self._viewer, "layers", None)
+        selection = getattr(layers, "selection", None)
+        if selection is None:
+            return False
+
+        select_only = getattr(selection, "select_only", None)
+        if callable(select_only):
+            select_only(layer)
+            return True
+
+        if hasattr(selection, "active"):
+            selection.active = layer
+            return True
+
+        return False
+
     def get_annotating_table_names(self, sdata: SpatialData, label_name: str) -> list[str]:
         """Return the tables that annotate a labels element."""
         return sorted(get_element_annotators(sdata, label_name))

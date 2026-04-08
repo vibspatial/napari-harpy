@@ -67,6 +67,7 @@ docs = [
 ]
 dev = [
     "pre-commit",
+    "ruff",
     "twine>=4.0.2",
     "napari-harpy[test,docs]",
 ]
