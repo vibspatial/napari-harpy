@@ -105,6 +105,9 @@ class AnnotationController:
             if selected_label_emitter is not None:
                 self._clear_default_selected_label()
                 selected_label_emitter.connect(self._on_layer_selected_label_changed)
+            # Attach our own picker for every bound labels layer because
+            # napari marks multiscale labels as non-editable, which disables
+            # napari's native pick-mode selection for those layers.
             self._connect_mouse_pick_events()
 
             # Start without an active picked instance. We clear napari's default
