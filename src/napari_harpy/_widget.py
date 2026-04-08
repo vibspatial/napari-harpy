@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 from qtpy.QtCore import QSignalBlocker
 from qtpy.QtWidgets import QComboBox, QFormLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
+from napari_harpy._annotation import AnnotationController
 from napari_harpy._spatialdata import (
     SpatialDataAdapter,
     SpatialDataLabelsOption,
@@ -17,7 +18,7 @@ if TYPE_CHECKING:
 
 
 class HarpyWidget(QWidget):
-    """Phase 1 widget for selecting segmentation, table, and feature inputs.
+    """Phase 2 widget for selecting inputs and picking segmentation objects.
 
     The widget does not retrieve a `SpatialData` object directly from the napari
     viewer itself. Instead, it inspects the current viewer layers and looks for
@@ -28,12 +29,17 @@ class HarpyWidget(QWidget):
     - segmentation masks from `sdata.labels`
     - annotating tables for the selected segmentation
     - feature matrix keys from `table.obsm`
+    - the currently picked segmentation instance id from the active `Labels` layer
     """
 
     def __init__(self, napari_viewer: napari.Viewer | None = None) -> None:
         super().__init__()
         self._viewer = napari_viewer
         self._spatialdata_adapter = SpatialDataAdapter(napari_viewer)
+        self._annotation_controller = AnnotationController(
+            self._spatialdata_adapter,
+            on_selected_instance_changed=self._on_selected_instance_changed,
+        )
         self._label_options: list[SpatialDataLabelsOption] = []
         self._selected_label_option: SpatialDataLabelsOption | None = None
         self._table_names: list[str] = []
@@ -47,7 +53,7 @@ class HarpyWidget(QWidget):
         title.setStyleSheet("font-size: 18px; font-weight: 600;")
 
         subtitle = QLabel(
-            "Phase 1 setup.\nSelect the segmentation mask to classify from the active SpatialData object."
+            "Phase 2 setup.\nSelect the segmentation mask and use Pick mode in napari to choose an object."
         )
         subtitle.setWordWrap(True)
 
@@ -71,11 +77,20 @@ class HarpyWidget(QWidget):
         self.refresh_button.clicked.connect(self.refresh_segmentation_masks)
         self.refresh_button.setEnabled(napari_viewer is not None)
 
+        self.pick_button = QPushButton("Enable Pick Mode")
+        self.pick_button.setObjectName("pick_mode_button")
+        self.pick_button.clicked.connect(self._enable_pick_mode)
+        self.pick_button.setEnabled(False)
+
         self.validation_status = QLabel()
         self.validation_status.setObjectName("validation_status")
         self.validation_status.setWordWrap(True)
         self.validation_status.setStyleSheet("color: #b45309; font-weight: 600;")
         self.validation_status.hide()
+
+        self.selection_status = QLabel("Selection: choose a segmentation mask to enable object picking.")
+        self.selection_status.setObjectName("selection_status")
+        self.selection_status.setWordWrap(True)
 
         selector_layout.addRow("Segmentation mask", self.segmentation_combo)
         selector_layout.addRow("Table", self.table_combo)
@@ -86,6 +101,8 @@ class HarpyWidget(QWidget):
         layout.addWidget(self.viewer_status)
         layout.addLayout(selector_layout)
         layout.addWidget(self.refresh_button)
+        layout.addWidget(self.pick_button)
+        layout.addWidget(self.selection_status)
         layout.addWidget(self.validation_status)
         layout.addStretch(1)
 
@@ -111,6 +128,11 @@ class HarpyWidget(QWidget):
     def selected_feature_key(self) -> str | None:
         """Return the currently selected feature matrix key from `adata.obsm`."""
         return self._selected_feature_key
+
+    @property
+    def selected_instance_id(self) -> int | None:
+        """Return the currently picked segmentation instance id."""
+        return self._annotation_controller.selected_instance_id
 
     @property
     def selected_table_metadata(self) -> SpatialDataTableMetadata | None:
@@ -145,6 +167,7 @@ class HarpyWidget(QWidget):
             self._set_selected_label_option(self.segmentation_combo.currentIndex())
         else:
             self._selected_label_option = None
+            self._annotation_controller.bind(None, None)
             self._refresh_table_names()
             self._update_selection_status()
 
@@ -172,6 +195,7 @@ class HarpyWidget(QWidget):
         else:
             self._selected_label_option = self._label_options[index]
 
+        self._annotation_controller.bind(self.selected_spatialdata, self.selected_segmentation_name)
         self._refresh_table_names()
         self._update_selection_status()
 
@@ -288,6 +312,7 @@ class HarpyWidget(QWidget):
 
     def _update_selection_status(self) -> None:
         self._update_validation_status()
+        self._update_annotation_status()
 
     def _update_validation_status(self) -> None:
         message = None
@@ -300,3 +325,35 @@ class HarpyWidget(QWidget):
 
         self.validation_status.setText("" if message is None else message)
         self.validation_status.setVisible(message is not None)
+
+    def _update_annotation_status(self) -> None:
+        labels_layer = self._annotation_controller.labels_layer
+
+        if self.selected_segmentation_name is None:
+            message = "Selection: choose a segmentation mask to enable object picking."
+        elif labels_layer is None:
+            message = (
+                "Selection: the chosen segmentation is known in SpatialData but is not currently loaded as a "
+                "napari Labels layer."
+            )
+        elif self.selected_instance_id is None:
+            message = (
+                f"Selection: bound to `{self.selected_segmentation_name}`. Enable Pick mode and click an object "
+                "in the viewer."
+            )
+        else:
+            message = (
+                f"Selection: bound to `{self.selected_segmentation_name}`. "
+                f"Current instance id: {self.selected_instance_id}."
+            )
+
+        self.pick_button.setEnabled(labels_layer is not None)
+        self.selection_status.setText(message)
+
+    def _enable_pick_mode(self) -> None:
+        if self._annotation_controller.activate_pick_mode():
+            self._update_annotation_status()
+
+    def _on_selected_instance_changed(self, instance_id: int | None) -> None:
+        del instance_id
+        self._update_annotation_status()

@@ -58,6 +58,28 @@ class SpatialDataAdapter:
         """Collect selectable labels elements from the current viewer."""
         return _get_spatialdata_label_options_from_viewer(self._viewer)
 
+    def get_labels_layer(self, sdata: SpatialData, label_name: str) -> Any | None:
+        """Return the concrete napari labels layer for a selected SpatialData labels element."""
+        layers = getattr(self._viewer, "layers", None)
+        if layers is None:
+            return None
+
+        for layer in layers:
+            metadata = getattr(layer, "metadata", None)
+            if not isinstance(metadata, dict):
+                continue
+
+            if metadata.get("sdata") is not sdata:
+                continue
+
+            if metadata.get("name") != label_name:
+                continue
+
+            if _is_pickable_labels_layer(layer):
+                return layer
+
+        return None
+
     def get_annotating_table_names(self, sdata: SpatialData, label_name: str) -> list[str]:
         """Return the tables that annotate a labels element."""
         return sorted(get_element_annotators(sdata, label_name))
@@ -197,6 +219,11 @@ def _get_unique_spatialdata_objects(layers: Any) -> list[SpatialData]:
         unique_sdatas.append(sdata)
 
     return unique_sdatas
+
+
+def _is_pickable_labels_layer(layer: Any) -> bool:
+    events = getattr(layer, "events", None)
+    return hasattr(layer, "selected_label") and getattr(events, "selected_label", None) is not None
 
 
 def _get_label_names(sdata: SpatialData) -> list[str]:

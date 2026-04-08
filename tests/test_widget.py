@@ -110,6 +110,9 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_bl
     assert widget.selected_table_metadata.region_key == "region"
     assert widget.selected_table_metadata.instance_key == "instance_id"
     assert widget.selected_table_metadata.regions == ("blobs_labels",)
+    assert widget.selected_instance_id is None
+    assert widget.pick_button.isEnabled()
+    assert "Enable Pick mode" in widget.selection_status.text()
     assert widget.validation_status.isHidden()
     assert widget.validation_status.text() == ""
 
@@ -164,6 +167,49 @@ def test_widget_updates_selected_feature_key_when_feature_matrix_changes(qtbot, 
     widget.feature_matrix_combo.setCurrentIndex(1)
 
     assert widget.selected_feature_key == "features_2"
+
+
+def test_widget_tracks_picked_instance_id_from_labels_layer(qtbot, sdata_blobs: SpatialData) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    layer.selected_label = 5
+
+    assert widget.selected_instance_id == 5
+    assert "Current instance id: 5." in widget.selection_status.text()
+
+
+def test_widget_enables_pick_mode_for_bound_labels_layer(qtbot, sdata_blobs: SpatialData) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.pick_button.click()
+
+    assert str(layer.mode) == "pick"
+
+
+def test_widget_disables_pick_mode_when_selected_segmentation_layer_is_not_loaded(
+    qtbot, sdata_blobs: SpatialData
+) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.segmentation_combo.setCurrentIndex(1)
+    layer.selected_label = 9
+
+    assert widget.selected_segmentation_name == "blobs_multiscale_labels"
+    assert widget.selected_instance_id is None
+    assert not widget.pick_button.isEnabled()
+    assert "not currently loaded as a napari Labels layer" in widget.selection_status.text()
 
 
 def test_widget_handles_tables_without_obsm_entries(qtbot, sdata_blobs: SpatialData) -> None:
