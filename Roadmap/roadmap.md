@@ -232,6 +232,9 @@ For MVP, this phase only needs to guarantee persistence of annotation columns su
 `adata.obs["user_class"]`. The same sync pathway can later be extended to prediction fields and
 classifier metadata.
 
+`Sync to zarr` should be strictly memory -> disk. It should not also imply reloading the store back
+into the viewer.
+
 ### Tasks
 
 - [ ] Add a `Sync to zarr` action in the widget.
@@ -239,20 +242,56 @@ classifier metadata.
   - [ ] treat the selected in-memory `SpatialData` table as authoritative while the session is open
   - [ ] persist the current `adata.obs[...]` values for the selected table
 - [ ] Implement a `PersistenceController` or equivalent write-back helper.
+- [ ] Support partial table persistence:
+  - [ ] locate the selected table path in the backed `SpatialData` store
+  - [ ] rewrite only the `obs` element for the selected table rather than rewriting the whole store
 - [ ] Write the updated table back into the zarr-backed `SpatialData` store safely.
 - [ ] Surface success and failure states clearly in the UI.
 - [ ] Decide and document what happens after sync:
-  - [ ] whether the in-memory `SpatialData` object remains authoritative
-  - [ ] whether a viewer rescan or explicit reload is needed to pick up external zarr changes
+  - [ ] keep the current in-memory `SpatialData` table authoritative after a successful sync
+  - [ ] do not automatically reload the store as part of sync
 - [ ] Keep the sync step manual for MVP rather than automatically syncing on every click.
 
 ### Exit criteria
 
 - [ ] User can annotate objects, click `Sync to zarr`, and persist `adata.obs["user_class"]` to disk.
 - [ ] Sync failures are visible and do not silently discard in-memory edits.
-- [ ] The roadmap clearly distinguishes viewer rescan from disk sync or reload.
+- [ ] The roadmap clearly distinguishes viewer rescan, disk sync, and disk reload.
 
-### Phase 4: Background random forest training
+### Phase 4: Reload from zarr
+
+### Outcome
+
+The user can explicitly reload backed table state from zarr into the active napari session when the
+on-disk store changed outside the current in-memory workflow.
+
+### Implementation note
+
+`Reload from zarr` should be strictly disk -> memory. Keep it separate from `Sync to zarr`.
+
+For MVP, prefer reloading the current table and refreshing the relevant layer metadata over trying to
+rebuild the entire viewer from scratch. This phase is mainly about safely picking up external changes
+such as newly written `.obs` columns or new `.obsm[...]` entries.
+
+### Tasks
+
+- [ ] Add a `Reload from zarr` action in the widget.
+- [ ] Read the backed `SpatialData` store again from `sdata.path`.
+- [ ] Decide reload scope for MVP:
+  - [ ] prefer reloading the currently selected table first
+  - [ ] document whether full-`SpatialData` reload is deferred
+- [ ] Refresh the in-memory `SpatialData` table reference after reload.
+- [ ] Refresh viewer-linked cached metadata that depends on table contents, including joined `adata` state.
+- [ ] Trigger the necessary widget and layer refresh so new `.obs` columns or `.obsm[...]` keys become visible.
+- [ ] Surface clear UI messaging if reload would discard unsynced in-memory edits.
+
+### Exit criteria
+
+- [ ] User can click `Reload from zarr` and pick up on-disk table changes in the widget.
+- [ ] Reload updates relevant table-derived UI state such as feature keys.
+- [ ] Reload behavior is clearly separated from viewer rescan and from sync.
+
+### Phase 5: Background random forest training
 
 ### Outcome
 
@@ -283,7 +322,7 @@ The plugin retrains a classifier in the background whenever annotations change.
 - UI remains responsive during training.
 - Older jobs do not overwrite newer results.
 
-### Phase 5: Live prediction updates in the viewer
+### Phase 6: Live prediction updates in the viewer
 
 ### Outcome
 
@@ -307,7 +346,7 @@ Objects are recolored live by predicted class.
 - Untrained or invalid states are visually clear.
 - ROI-restricted predictions are visually understandable.
 
-### Phase 6: ROI selection and subsetting
+### Phase 7: ROI selection and subsetting
 
 ### Outcome
 
