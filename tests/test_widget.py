@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 from napari.layers import Labels
 from napari.utils.colormaps import DirectLabelColormap
-from spatialdata import SpatialData
+from spatialdata import SpatialData, read_zarr
 
 from napari_harpy._annotation import USER_CLASS_COLUMN
 from napari_harpy._spatialdata import get_spatialdata_label_options
@@ -119,6 +119,8 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_bl
     assert widget.selected_table_metadata.regions == ("blobs_labels",)
     assert widget.selected_instance_id is None
     assert widget.refresh_button.text() == "Rescan Viewer"
+    assert widget.sync_button.text() == "Sync to zarr"
+    assert not widget.sync_button.isEnabled()
     assert str(layer.mode) == "pick"
     assert viewer.layers.selection.active is layer
     assert "Click an object in the viewer." in widget.selection_status.text()
@@ -315,3 +317,34 @@ def test_widget_recolors_layer_from_user_class_annotations(qtbot, sdata_blobs: S
     assert not np.allclose(layer.colormap.color_dict[5], layer.colormap.color_dict[6])
     assert USER_CLASS_COLUMN in layer.features.columns
     assert layer.features.set_index("index").loc[5, USER_CLASS_COLUMN] == 4
+
+
+def test_widget_enables_sync_for_backed_spatialdata(qtbot, backed_sdata_blobs: SpatialData) -> None:
+    layer = make_blobs_labels_layer(backed_sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    assert widget.sync_button.isEnabled()
+    assert "Write `table`.obs to" in widget.sync_button.toolTip()
+
+
+def test_widget_syncs_user_class_to_backed_zarr(qtbot, backed_sdata_blobs: SpatialData) -> None:
+    layer = make_blobs_labels_layer(backed_sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    layer.selected_label = 5
+    widget.class_spinbox.setValue(3)
+    widget.apply_class_button.click()
+    widget.sync_button.click()
+
+    reread = read_zarr(backed_sdata_blobs.path)
+    mask = (reread["table"].obs["region"] == "blobs_labels") & (reread["table"].obs["instance_id"] == 5)
+
+    assert widget.sync_button.isEnabled()
+    assert "Synced `table`.obs to `tables/table`." == widget.sync_feedback.text()
+    assert reread["table"].obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
