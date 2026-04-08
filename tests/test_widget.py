@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -11,7 +12,7 @@ from spatialdata import SpatialData, read_zarr
 
 import napari_harpy._annotation as annotation_module
 from napari_harpy._annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN, _default_user_class_colors
-from napari_harpy._classifier import CLASSIFIER_CONFIG_KEY, PRED_CLASS_COLUMN
+from napari_harpy._classifier import CLASSIFIER_CONFIG_KEY, PRED_CLASS_COLUMN, PRED_CONFIDENCE_COLUMN
 from napari_harpy._spatialdata import get_spatialdata_label_options
 from napari_harpy._widget import HarpyWidget
 
@@ -78,6 +79,7 @@ def test_widget_can_be_instantiated(qtbot) -> None:
     assert widget.selected_segmentation_name is None
     assert widget.selected_table_name is None
     assert widget.selected_feature_key is None
+    assert widget.selected_color_by == "user_class"
 
 
 def test_spatialdata_label_options_are_deduplicated_per_dataset(sdata_blobs: SpatialData) -> None:
@@ -125,10 +127,17 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_bl
         "features_1",
         "features_2",
     ]
+    assert widget.color_by_combo.count() == 3
+    assert [widget.color_by_combo.itemText(index) for index in range(widget.color_by_combo.count())] == [
+        "user_class",
+        "pred_class",
+        "pred_confidence",
+    ]
     assert widget.selected_segmentation_name == "blobs_labels"
     assert widget.selected_spatialdata is sdata_blobs
     assert widget.selected_table_name == "table"
     assert widget.selected_feature_key == "features_1"
+    assert widget.selected_color_by == "user_class"
     assert widget.selected_table_metadata is not None
     assert widget.selected_table_metadata.region_key == "region"
     assert widget.selected_table_metadata.instance_key == "instance_id"
@@ -198,6 +207,18 @@ def test_widget_updates_selected_feature_key_when_feature_matrix_changes(qtbot, 
 
     assert widget.selected_feature_key == "features_2"
     assert "feature matrix changed" in widget.classifier_feedback.text()
+
+
+def test_widget_updates_color_by_mode_when_selection_changes(qtbot, sdata_blobs: SpatialData) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.color_by_combo.setCurrentIndex(1)
+
+    assert widget.selected_color_by == "pred_class"
 
 
 def test_widget_tracks_picked_instance_id_from_labels_layer(qtbot, sdata_blobs: SpatialData) -> None:
@@ -368,8 +389,6 @@ def test_widget_recolors_layer_from_user_class_annotations(qtbot, sdata_blobs: S
     assert layer.colormap.color_dict[5][3] > 0
     assert layer.colormap.color_dict[6][3] > 0
     assert not np.allclose(layer.colormap.color_dict[5], layer.colormap.color_dict[6])
-    assert USER_CLASS_COLUMN in layer.features.columns
-    assert layer.features.set_index("index").loc[5, USER_CLASS_COLUMN] == 4
 
 
 def test_widget_logs_warning_when_existing_user_class_colors_are_overwritten(
@@ -400,9 +419,10 @@ def test_widget_enables_sync_for_backed_spatialdata(qtbot, backed_sdata_blobs: S
 
     widget = HarpyWidget(viewer)
     qtbot.addWidget(widget)
+    expected_table_path = Path(backed_sdata_blobs.path) / "tables" / "table"
 
     assert widget.sync_button.isEnabled()
-    assert "Write `table` annotation state to" in widget.sync_button.toolTip()
+    assert widget.sync_button.toolTip() == f"Write `table` table state to `{expected_table_path}`."
 
 
 def test_widget_syncs_user_class_to_backed_zarr(qtbot, backed_sdata_blobs: SpatialData) -> None:
@@ -411,6 +431,7 @@ def test_widget_syncs_user_class_to_backed_zarr(qtbot, backed_sdata_blobs: Spati
 
     widget = HarpyWidget(viewer)
     qtbot.addWidget(widget)
+    expected_table_path = Path(backed_sdata_blobs.path) / "tables" / "table"
 
     layer.selected_label = 5
     widget.class_spinbox.setValue(3)
@@ -421,7 +442,7 @@ def test_widget_syncs_user_class_to_backed_zarr(qtbot, backed_sdata_blobs: Spati
     mask = (reread["table"].obs["region"] == "blobs_labels") & (reread["table"].obs["instance_id"] == 5)
 
     assert widget.sync_button.isEnabled()
-    assert "Synced `table` annotation state to `tables/table`." == widget.sync_feedback.text()
+    assert widget.sync_feedback.text() == f"Synced `table` table state to `{expected_table_path}`."
     assert isinstance(reread["table"].obs[USER_CLASS_COLUMN].dtype, pd.CategoricalDtype)
     assert list(reread["table"].obs[USER_CLASS_COLUMN].cat.categories) == [0, 3]
     assert reread["table"].obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
@@ -458,6 +479,58 @@ def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs:
     assert pred_class.loc[24] == 2
     assert "model is up to date" in widget.classifier_feedback.text()
     assert table.uns[CLASSIFIER_CONFIG_KEY]["trained"] is True
+
+
+def test_widget_colors_predictions_using_user_class_palette_in_pred_class_mode(qtbot, sdata_blobs: SpatialData) -> None:
+    table = sdata_blobs["table"]
+    instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
+    table.obsm["features_1"] = np.column_stack(
+        [
+            (instance_ids > 13).astype(np.float64),
+            instance_ids.astype(np.float64) / instance_ids.max(),
+        ]
+    )
+
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    layer.selected_label = 1
+    widget.class_spinbox.setValue(1)
+    widget.apply_class_button.click()
+
+    layer.selected_label = 24
+    widget.class_spinbox.setValue(2)
+    widget.apply_class_button.click()
+
+    qtbot.waitUntil(lambda: int(table.obs[PRED_CLASS_COLUMN].sum()) > 0, timeout=5000)
+
+    assert not np.allclose(layer.colormap.color_dict[1], layer.colormap.color_dict[5])
+
+    widget.color_by_combo.setCurrentIndex(widget.color_by_combo.findData("pred_class"))
+
+    assert np.allclose(layer.colormap.color_dict[1], layer.colormap.color_dict[5])
+    assert np.allclose(layer.colormap.color_dict[24], layer.colormap.color_dict[26])
+
+
+def test_widget_colors_confidence_continuously_in_pred_confidence_mode(qtbot, sdata_blobs: SpatialData) -> None:
+    table = sdata_blobs["table"]
+    table.obs[PRED_CONFIDENCE_COLUMN] = pd.Series(
+        np.linspace(0.0, 1.0, table.n_obs),
+        index=table.obs.index,
+        dtype="float64",
+    )
+
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.color_by_combo.setCurrentIndex(widget.color_by_combo.findData("pred_confidence"))
+
+    assert isinstance(layer.colormap, DirectLabelColormap)
+    assert not np.allclose(layer.colormap.color_dict[1], layer.colormap.color_dict[24])
 
 
 def test_widget_rescans_viewer_without_retraining_same_classifier_context(qtbot, monkeypatch, sdata_blobs: SpatialData) -> None:

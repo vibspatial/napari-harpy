@@ -7,7 +7,6 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 from matplotlib import rcParams
-from napari.utils.colormaps import DirectLabelColormap
 from scanpy.plotting.palettes import default_20, default_28, default_102
 
 from napari_harpy._spatialdata import SpatialDataAdapter, SpatialDataTableMetadata
@@ -118,8 +117,6 @@ class AnnotationController:
             self._set_selected_instance_id(None)
 
         self._normalize_existing_annotation_state()
-        self.refresh_layer_colors()
-        self.refresh_layer_features()
 
     def activate_layer(self) -> bool:
         """Activate the bound labels layer for annotation interactions."""
@@ -156,47 +153,6 @@ class AnnotationController:
     def clear_current_class(self) -> None:
         """Reset the current object's user class back to the unlabeled state."""
         self._set_current_class(UNLABELED_CLASS)
-
-    def refresh_layer_colors(self) -> None:
-        """Recolor the bound labels layer from the current user-class assignments."""
-        if self._labels_layer is None:
-            return
-
-        color_lookup = self._get_user_class_color_lookup()
-        unlabeled_color = color_lookup.get(UNLABELED_CLASS, UNLABELED_COLOR)
-        color_dict: dict[int | None, str] = {
-            None: unlabeled_color,
-            0: "transparent",
-        }
-        user_class_by_instance = self._get_user_class_by_instance()
-        for instance_id in _get_visible_instance_ids(self._labels_layer):
-            if instance_id <= 0:
-                continue
-
-            class_id = int(user_class_by_instance.get(instance_id, UNLABELED_CLASS))
-            color_dict[instance_id] = color_lookup.get(class_id, unlabeled_color)
-
-        self._labels_layer.colormap = DirectLabelColormap(color_dict=color_dict, background_value=0)
-        refresh = getattr(self._labels_layer, "refresh", None)
-        if callable(refresh):
-            refresh()
-
-    def refresh_layer_features(self) -> None:
-        """Expose the current user classes as layer features for hover/status display."""
-        if self._labels_layer is None:
-            return
-
-        instance_ids = [instance_id for instance_id in _get_visible_instance_ids(self._labels_layer) if instance_id > 0]
-        user_class_by_instance = self._get_user_class_by_instance()
-        features = pd.DataFrame(
-            {
-                "index": instance_ids,
-                USER_CLASS_COLUMN: [
-                    int(user_class_by_instance.get(instance_id, UNLABELED_CLASS)) for instance_id in instance_ids
-                ],
-            }
-        )
-        self._labels_layer.features = features
 
     def _disconnect_selected_label_events(self) -> None:
         selected_label_emitter = getattr(getattr(self._labels_layer, "events", None), "selected_label", None)
@@ -278,8 +234,6 @@ class AnnotationController:
         user_class_values = _to_user_class_values(table.obs[USER_CLASS_COLUMN])
         user_class_values.loc[matching_rows] = int(class_id)
         _set_user_class_annotation_state(table, user_class_values)
-        self.refresh_layer_colors()
-        self.refresh_layer_features()
         if self._on_annotation_changed is not None:
             self._on_annotation_changed()
 
@@ -310,23 +264,6 @@ class AnnotationController:
             obs[metadata.instance_key] == self._selected_instance_id
         )
 
-    def _get_user_class_by_instance(self) -> pd.Series:
-        table = self._get_bound_table()
-        metadata = self._selected_table_metadata
-        if table is None or metadata is None or self._selected_label_name is None:
-            return pd.Series(dtype="int64")
-
-        region_rows = table.obs.loc[
-            table.obs[metadata.region_key] == self._selected_label_name, [metadata.instance_key]
-        ].copy()
-        if USER_CLASS_COLUMN in table.obs:
-            region_rows[USER_CLASS_COLUMN] = _to_user_class_values(table.obs.loc[region_rows.index, USER_CLASS_COLUMN])
-        else:
-            region_rows[USER_CLASS_COLUMN] = UNLABELED_CLASS
-
-        region_rows = region_rows.drop_duplicates(subset=[metadata.instance_key], keep="last")
-        return region_rows.set_index(metadata.instance_key)[USER_CLASS_COLUMN]
-
     def _clear_default_selected_label(self) -> None:
         if self._labels_layer is None:
             return
@@ -346,19 +283,6 @@ class AnnotationController:
             return
 
         self.ensure_annotation_column(USER_CLASS_COLUMN)
-
-    def _get_user_class_color_lookup(self) -> dict[int, str]:
-        table = self._get_bound_table()
-        if table is None or USER_CLASS_COLUMN not in table.obs:
-            return {UNLABELED_CLASS: UNLABELED_COLOR}
-
-        categories = _get_user_class_categories(_to_user_class_values(table.obs[USER_CLASS_COLUMN]))
-        colors = _normalize_color_sequence(table.uns.get(USER_CLASS_COLORS_KEY))
-        if colors is None or len(colors) < len(categories):
-            colors = _default_user_class_colors(categories)
-
-        return dict(zip(categories, colors[: len(categories)], strict=False))
-
 
 def _default_user_class_colors(categories: Sequence[int]) -> list[str]:
     """Return colors for the given user classes.

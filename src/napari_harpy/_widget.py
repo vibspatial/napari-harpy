@@ -13,6 +13,13 @@ from napari_harpy._spatialdata import (
     SpatialDataLabelsOption,
     SpatialDataTableMetadata,
 )
+from napari_harpy._viewer_styling import (
+    COLOR_BY_OPTIONS,
+    COLOR_BY_PRED_CLASS,
+    COLOR_BY_PRED_CONFIDENCE,
+    COLOR_BY_USER_CLASS,
+    ViewerStylingController,
+)
 
 if TYPE_CHECKING:
     import napari
@@ -47,6 +54,7 @@ class HarpyWidget(QWidget):
             self._spatialdata_adapter,
             on_state_changed=self._on_classifier_state_changed,
         )
+        self._viewer_styling_controller = ViewerStylingController(self._spatialdata_adapter)
         self._persistence_controller = PersistenceController(self._spatialdata_adapter)
         self._label_options: list[SpatialDataLabelsOption] = []
         self._selected_label_option: SpatialDataLabelsOption | None = None
@@ -80,6 +88,13 @@ class HarpyWidget(QWidget):
         self.feature_matrix_combo = QComboBox()
         self.feature_matrix_combo.setObjectName("feature_matrix_combo")
         self.feature_matrix_combo.currentIndexChanged.connect(self._on_feature_matrix_changed)
+
+        self.color_by_combo = QComboBox()
+        self.color_by_combo.setObjectName("color_by_combo")
+        for color_by in COLOR_BY_OPTIONS:
+            self.color_by_combo.addItem(color_by, color_by)
+        self.color_by_combo.setCurrentIndex(self.color_by_combo.findData(COLOR_BY_USER_CLASS))
+        self.color_by_combo.currentIndexChanged.connect(self._on_color_by_changed)
 
         self.class_spinbox = QSpinBox()
         self.class_spinbox.setObjectName("user_class_spinbox")
@@ -138,6 +153,7 @@ class HarpyWidget(QWidget):
         selector_layout.addRow("Segmentation mask", self.segmentation_combo)
         selector_layout.addRow("Table", self.table_combo)
         selector_layout.addRow("Feature matrix", self.feature_matrix_combo)
+        selector_layout.addRow("Color by", self.color_by_combo)
         selector_layout.addRow("User class", self.class_spinbox)
 
         layout.addWidget(title)
@@ -185,6 +201,11 @@ class HarpyWidget(QWidget):
         return self._annotation_controller.selected_instance_id
 
     @property
+    def selected_color_by(self) -> str:
+        """Return the current labels-layer coloring mode."""
+        return self._viewer_styling_controller.color_by
+
+    @property
     def selected_table_metadata(self) -> SpatialDataTableMetadata | None:
         """Return the linkage metadata for the current table selection."""
         if self.selected_spatialdata is None or self.selected_table_name is None:
@@ -220,7 +241,9 @@ class HarpyWidget(QWidget):
             self._refresh_table_names()
             self._annotation_controller.bind(None, None, None)
             self._classifier_controller.bind(None, None, None, None)
+            self._viewer_styling_controller.bind(None, None, None)
             self._persistence_controller.bind(None, None)
+            self._refresh_layer_styling()
             self._update_selection_status()
 
     def _connect_viewer_events(self) -> None:
@@ -259,8 +282,12 @@ class HarpyWidget(QWidget):
         )
         if classifier_context_changed:
             self._classifier_controller.mark_dirty(reason="the segmentation selection changed")
+        self._viewer_styling_controller.bind(
+            self.selected_spatialdata, self.selected_segmentation_name, self.selected_table_name
+        )
         self._persistence_controller.bind(self.selected_spatialdata, self.selected_table_name)
         self._annotation_controller.activate_layer()
+        self._refresh_layer_styling()
         self._set_annotation_feedback("")
         self._set_sync_feedback("")
         self._update_selection_status()
@@ -316,8 +343,12 @@ class HarpyWidget(QWidget):
         )
         if classifier_context_changed:
             self._classifier_controller.mark_dirty(reason="the annotation table changed")
+        self._viewer_styling_controller.bind(
+            self.selected_spatialdata, self.selected_segmentation_name, self.selected_table_name
+        )
         self._persistence_controller.bind(self.selected_spatialdata, self.selected_table_name)
         self._annotation_controller.activate_layer()
+        self._refresh_layer_styling()
         self._set_annotation_feedback("")
         self._set_sync_feedback("")
         self._update_selection_status()
@@ -360,7 +391,16 @@ class HarpyWidget(QWidget):
         )
         if classifier_context_changed:
             self._classifier_controller.mark_dirty(reason="the feature matrix changed")
+        self._refresh_layer_styling()
         self._update_selection_status()
+
+    def _on_color_by_changed(self, index: int) -> None:
+        color_by = self.color_by_combo.itemData(index)
+        if not isinstance(color_by, str):
+            return
+
+        self._viewer_styling_controller.set_color_by(color_by)
+        self._refresh_layer_styling()
 
     def _set_selected_table_name(self, index: int) -> None:
         if index < 0 or index >= len(self._table_names):
@@ -378,6 +418,7 @@ class HarpyWidget(QWidget):
         self._update_validation_status()
         self._update_annotation_status()
         self._update_annotation_controls()
+        self._update_color_by_controls()
         self._update_classifier_controls()
         self._update_sync_controls()
 
@@ -487,12 +528,35 @@ class HarpyWidget(QWidget):
         elif not can_sync:
             tooltip = "The selected SpatialData dataset is not backed by zarr."
         else:
+            table_store_path = self._persistence_controller.selected_table_store_path
+            destination = (
+                self.selected_spatialdata.path
+                if table_store_path is None
+                else table_store_path
+            )
             tooltip = (
-                f"Write `{self.selected_table_name}` annotation state "
-                f"to `{self.selected_spatialdata.path}`."
+                f"Write `{self.selected_table_name}` table state "
+                f"to `{destination}`."
             )
 
         self.sync_button.setToolTip(tooltip)
+
+    def _update_color_by_controls(self) -> None:
+        has_table = self.selected_table_name is not None
+        self.color_by_combo.setEnabled(has_table)
+
+        if not has_table:
+            tooltip = "Choose an annotation table before changing the labels-layer coloring mode."
+        elif self.selected_color_by == COLOR_BY_USER_CLASS:
+            tooltip = "Color the labels layer by `user_class`."
+        elif self.selected_color_by == COLOR_BY_PRED_CLASS:
+            tooltip = "Color the labels layer by `pred_class` using the stable user-class palette."
+        elif self.selected_color_by == COLOR_BY_PRED_CONFIDENCE:
+            tooltip = "Color the labels layer by continuous `pred_confidence` values."
+        else:
+            tooltip = "Choose how to color the labels layer."
+
+        self.color_by_combo.setToolTip(tooltip)
 
     def _update_classifier_controls(self) -> None:
         can_retrain = self._classifier_controller.can_retrain
@@ -513,13 +577,19 @@ class HarpyWidget(QWidget):
 
     def _sync_to_zarr(self) -> None:
         try:
-            table_path = self._persistence_controller.sync_table_state()
+            self._persistence_controller.sync_table_state()
         except ValueError as error:
             self._set_sync_feedback(str(error), error=True)
             return
 
+        table_store_path = self._persistence_controller.selected_table_store_path
+        destination = (
+            self.selected_spatialdata.path
+            if table_store_path is None or self.selected_spatialdata is None
+            else table_store_path
+        )
         self._set_sync_feedback(
-            f"Synced `{self.selected_table_name}` annotation state to `{table_path}`.",
+            f"Synced `{self.selected_table_name}` table state to `{destination}`.",
             error=False,
         )
 
@@ -538,6 +608,7 @@ class HarpyWidget(QWidget):
 
     def _on_annotation_changed(self) -> None:
         self._classifier_controller.mark_dirty(reason="the annotations changed")
+        self._refresh_layer_styling()
         self._classifier_controller.schedule_retrain()
         self._update_selection_status()
 
@@ -546,9 +617,13 @@ class HarpyWidget(QWidget):
             self._classifier_controller.status_message,
             kind=self._classifier_controller.status_kind,
         )
+        self._refresh_layer_styling()
         self._update_classifier_controls()
 
     def _retrain_classifier(self) -> None:
         self._classifier_controller.mark_dirty(reason="the user requested a retrain")
         self._classifier_controller.retrain_now()
         self._update_selection_status()
+
+    def _refresh_layer_styling(self) -> None:
+        self._viewer_styling_controller.refresh()
