@@ -166,9 +166,13 @@ The user can assign class labels to segmented objects from napari.
 Keep `HarpyWidget` focused on UI state. Viewer and `SpatialData` discovery should live in a thin
 `SpatialDataAdapter` so Phase 2 annotation logic does not accumulate inside the widget.
 
-For MVP, "current selection" means the currently picked object in the napari `Labels` layer.
-The controller should listen to the labels layer's `selected_label` and treat that value as the
-selected segmentation instance id.
+For MVP, "current selection" means the currently selected object in the napari `Labels` layer.
+The controller should keep `layer.selected_label` in sync with viewer clicks and treat that value
+as the selected segmentation instance id.
+
+Because napari does not support native pick mode for multiscale labels layers, the plugin may need
+its own mouse-picking callback to keep selection working consistently across both single-scale and
+multiscale segmentations.
 
 Do not edit the segmentation data itself. The segmentation layer remains an immutable instance-id
 map and should be recolored via a direct instance-id-to-color mapping.
@@ -181,8 +185,9 @@ If an existing palette is present, `napari-harpy` may overwrite it with its gene
 
 ### Suggested controller API
 
-- `AnnotationController.bind(...)`: resolve the concrete `Labels` layer for the current widget selection and connect
-  to `layer.events.selected_label`.
+- `AnnotationController.bind(...)`: resolve the concrete `Labels` layer for the current widget selection, connect
+  to `layer.events.selected_label`, and attach any custom mouse-picking callbacks needed for
+  multiscale labels support.
 - `ensure_annotation_column("user_class")`: create or fill the annotation column with `0`.
 - `apply_current_class()`: read `labels_layer.selected_label`; if it is `> 0`, update the backing table row(s) where
   `region_key == selected_segmentation_name` and `instance_key == selected_label`.
@@ -196,7 +201,7 @@ If an existing palette is present, `napari-harpy` may overwrite it with its gene
 ### Tasks
 
 - [x] Define the simplest annotation interaction model for MVP:
-  - [x] use napari `Labels` pick mode to choose the current object
+  - [x] use viewer clicks to choose the current object, including multiscale labels layers
   - [x] treat `layer.selected_label` as the current instance id
 - [ ] Add UI elements for:
   - [x] current class label
