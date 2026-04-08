@@ -6,8 +6,8 @@ import napari
 from napari_spatialdata import Interactive
 from spatialdata import read_zarr
 
-# SDATA_PATH = Path("/Users/arne.defauw/VIB/DATA/test_data/sdata_blobs.zarr")
-SDATA_PATH = Path("/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium.zarr")
+SDATA_PATH = Path("/Users/arne.defauw/VIB/DATA/test_data/sdata_blobs.zarr")
+# SDATA_PATH = Path("/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium.zarr")
 
 
 def main() -> None:
