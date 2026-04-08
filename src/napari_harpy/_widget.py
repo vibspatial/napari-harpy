@@ -6,6 +6,7 @@ from qtpy.QtCore import QSignalBlocker
 from qtpy.QtWidgets import QComboBox, QFormLayout, QLabel, QPushButton, QSpinBox, QVBoxLayout, QWidget
 
 from napari_harpy._annotation import UNLABELED_CLASS, AnnotationController
+from napari_harpy._persistence import PersistenceController
 from napari_harpy._spatialdata import (
     SpatialDataAdapter,
     SpatialDataLabelsOption,
@@ -40,6 +41,7 @@ class HarpyWidget(QWidget):
             self._spatialdata_adapter,
             on_selected_instance_changed=self._on_selected_instance_changed,
         )
+        self._persistence_controller = PersistenceController(self._spatialdata_adapter)
         self._label_options: list[SpatialDataLabelsOption] = []
         self._selected_label_option: SpatialDataLabelsOption | None = None
         self._table_names: list[str] = []
@@ -82,6 +84,11 @@ class HarpyWidget(QWidget):
         self.refresh_button.clicked.connect(self.refresh_segmentation_masks)
         self.refresh_button.setEnabled(napari_viewer is not None)
 
+        self.sync_button = QPushButton("Sync to zarr")
+        self.sync_button.setObjectName("sync_to_zarr_button")
+        self.sync_button.clicked.connect(self._sync_to_zarr)
+        self.sync_button.setEnabled(False)
+
         self.validation_status = QLabel()
         self.validation_status.setObjectName("validation_status")
         self.validation_status.setWordWrap(True)
@@ -107,6 +114,11 @@ class HarpyWidget(QWidget):
         self.annotation_feedback.setWordWrap(True)
         self.annotation_feedback.hide()
 
+        self.sync_feedback = QLabel()
+        self.sync_feedback.setObjectName("sync_feedback")
+        self.sync_feedback.setWordWrap(True)
+        self.sync_feedback.hide()
+
         selector_layout.addRow("Segmentation mask", self.segmentation_combo)
         selector_layout.addRow("Table", self.table_combo)
         selector_layout.addRow("Feature matrix", self.feature_matrix_combo)
@@ -117,10 +129,12 @@ class HarpyWidget(QWidget):
         layout.addWidget(self.viewer_status)
         layout.addLayout(selector_layout)
         layout.addWidget(self.refresh_button)
+        layout.addWidget(self.sync_button)
         layout.addWidget(self.apply_class_button)
         layout.addWidget(self.clear_class_button)
         layout.addWidget(self.selection_status)
         layout.addWidget(self.annotation_feedback)
+        layout.addWidget(self.sync_feedback)
         layout.addWidget(self.validation_status)
         layout.addStretch(1)
 
@@ -187,6 +201,7 @@ class HarpyWidget(QWidget):
             self._selected_label_option = None
             self._refresh_table_names()
             self._annotation_controller.bind(None, None, None)
+            self._persistence_controller.bind(None, None)
             self._update_selection_status()
 
     def _connect_viewer_events(self) -> None:
@@ -217,8 +232,10 @@ class HarpyWidget(QWidget):
         self._annotation_controller.bind(
             self.selected_spatialdata, self.selected_segmentation_name, self.selected_table_name
         )
-        self._annotation_controller.activate_pick_mode()
+        self._persistence_controller.bind(self.selected_spatialdata, self.selected_table_name)
+        self._annotation_controller.activate_layer()
         self._set_annotation_feedback("")
+        self._set_sync_feedback("")
         self._update_selection_status()
 
     def _find_option_index(self, identity: tuple[int, str] | None) -> int | None:
@@ -264,8 +281,10 @@ class HarpyWidget(QWidget):
         self._annotation_controller.bind(
             self.selected_spatialdata, self.selected_segmentation_name, self.selected_table_name
         )
-        self._annotation_controller.activate_pick_mode()
+        self._persistence_controller.bind(self.selected_spatialdata, self.selected_table_name)
+        self._annotation_controller.activate_layer()
         self._set_annotation_feedback("")
+        self._set_sync_feedback("")
         self._update_selection_status()
 
     def _refresh_feature_matrix_keys(self) -> None:
@@ -316,6 +335,7 @@ class HarpyWidget(QWidget):
         self._update_validation_status()
         self._update_annotation_status()
         self._update_annotation_controls()
+        self._update_sync_controls()
 
     def _update_validation_status(self) -> None:
         message = None
@@ -400,6 +420,41 @@ class HarpyWidget(QWidget):
             "color: #b91c1c; font-weight: 600;" if error else "color: #166534; font-weight: 600;"
         )
         self.annotation_feedback.setVisible(bool(message))
+
+    def _update_sync_controls(self) -> None:
+        can_sync = self._persistence_controller.can_sync
+        self.sync_button.setEnabled(can_sync)
+
+        if self.selected_spatialdata is None or self.selected_table_name is None:
+            tooltip = "Choose a backed SpatialData annotation table to enable sync."
+        elif not can_sync:
+            tooltip = "The selected SpatialData dataset is not backed by zarr."
+        else:
+            tooltip = (
+                f"Write `{self.selected_table_name}` annotation state "
+                f"to `{self.selected_spatialdata.path}`."
+            )
+
+        self.sync_button.setToolTip(tooltip)
+
+    def _sync_to_zarr(self) -> None:
+        try:
+            table_path = self._persistence_controller.sync_table_state()
+        except ValueError as error:
+            self._set_sync_feedback(str(error), error=True)
+            return
+
+        self._set_sync_feedback(
+            f"Synced `{self.selected_table_name}` annotation state to `{table_path}`.",
+            error=False,
+        )
+
+    def _set_sync_feedback(self, message: str, *, error: bool = False) -> None:
+        self.sync_feedback.setText(message)
+        self.sync_feedback.setStyleSheet(
+            "color: #b91c1c; font-weight: 600;" if error else "color: #166534; font-weight: 600;"
+        )
+        self.sync_feedback.setVisible(bool(message))
 
     def _on_selected_instance_changed(self, instance_id: int | None) -> None:
         del instance_id

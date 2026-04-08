@@ -41,6 +41,7 @@ classifiers = [
 
 dependencies = [
     "harpy-analysis @ git+https://github.com/saeyslab/harpy.git@main",
+    "loguru",
     "napari[all]>=0.4.18",
     "napari-spatialdata>=0.2.6",
     "pandas<3.0",

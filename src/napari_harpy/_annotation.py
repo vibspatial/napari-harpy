@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
+from loguru import logger
+from matplotlib import rcParams
 from napari.utils.colormaps import DirectLabelColormap
+from scanpy.plotting.palettes import default_20, default_28, default_102
 
 from napari_harpy._spatialdata import SpatialDataAdapter, SpatialDataTableMetadata
 
@@ -14,20 +17,9 @@ if TYPE_CHECKING:
     from spatialdata import SpatialData
 
 USER_CLASS_COLUMN = "user_class"
+USER_CLASS_COLORS_KEY = f"{USER_CLASS_COLUMN}_colors"
 UNLABELED_CLASS = 0
 UNLABELED_COLOR = "#80808099"
-CLASS_COLORS = (
-    "#1f77b4ff",
-    "#d62728ff",
-    "#2ca02cff",
-    "#ff7f0eff",
-    "#9467bdff",
-    "#8c564bff",
-    "#e377c2ff",
-    "#17becfff",
-    "#bcbd22ff",
-    "#7f7f7fff",
-)
 
 
 class AnnotationController:
@@ -46,6 +38,7 @@ class AnnotationController:
         self._selected_table_name: str | None = None
         self._selected_table_metadata: SpatialDataTableMetadata | None = None
         self._selected_instance_id: int | None = None
+        self._mouse_pick_callback: Callable[[Any, Any], None] = self._on_layer_mouse_pick
 
     @property
     def labels_layer(self) -> Any | None:
@@ -72,7 +65,7 @@ class AnnotationController:
         if USER_CLASS_COLUMN not in table.obs:
             return UNLABELED_CLASS
 
-        values = pd.to_numeric(table.obs.loc[matching_rows, USER_CLASS_COLUMN], errors="coerce").fillna(UNLABELED_CLASS)
+        values = _to_user_class_values(table.obs.loc[matching_rows, USER_CLASS_COLUMN])
         return int(values.iloc[0])
 
     @property
@@ -105,43 +98,54 @@ class AnnotationController:
 
         if layer_changed:
             self._disconnect_selected_label_events()
+            self._disconnect_mouse_pick_events()
             self._labels_layer = next_layer
 
             selected_label_emitter = getattr(getattr(self._labels_layer, "events", None), "selected_label", None)
             if selected_label_emitter is not None:
                 self._clear_default_selected_label()
                 selected_label_emitter.connect(self._on_layer_selected_label_changed)
+            # Attach our own picker for every bound labels layer because
+            # napari marks multiscale labels as non-editable, which disables
+            # napari's native pick-mode selection for those layers.
+            self._connect_mouse_pick_events()
 
             # Start without an active picked instance. We clear napari's default
             # `selected_label == 1` above so a real first click on instance `1`
             # is no longer ambiguous.
             self._set_selected_instance_id(None)
 
+        self._normalize_existing_annotation_state()
         self.refresh_layer_colors()
         self.refresh_layer_features()
 
-    def activate_pick_mode(self) -> bool:
-        """Put the bound labels layer into napari pick mode."""
+    def activate_layer(self) -> bool:
+        """Activate the bound labels layer for annotation interactions."""
         if self._labels_layer is None:
             return False
 
         self._spatialdata_adapter.set_active_layer(self._labels_layer)
 
-        if hasattr(self._labels_layer, "mode"):
-            self._labels_layer.mode = "pick"
+        # We always attach our own mouse picker in `bind()` because napari
+        # does not support pick mode for multiscale labels layers. If we uncomment below code we can
+        # still request napari's native pick mode for editable layers so
+        # the cursor/interaction state stays aligned with normal labels UX.
+        # For consistency, we comment latter code.
+        # if hasattr(self._labels_layer, "mode"):
+        #    self._labels_layer.mode = "pick"
 
         return True
 
     def ensure_annotation_column(self, column_name: str = USER_CLASS_COLUMN) -> None:
-        """Ensure the user annotation column exists and contains integer class ids."""
+        """Ensure the user annotation column exists as a categorical integer label column."""
         table = self._require_bound_table()
         if column_name not in table.obs:
-            table.obs[column_name] = pd.Series(UNLABELED_CLASS, index=table.obs.index, dtype="int64")
+            values = pd.Series(UNLABELED_CLASS, index=table.obs.index, dtype="int64", name=column_name)
+            _set_user_class_annotation_state(table, values)
             return
 
-        table.obs[column_name] = (
-            pd.to_numeric(table.obs[column_name], errors="coerce").fillna(UNLABELED_CLASS).astype("int64")
-        )
+        values = _to_user_class_values(table.obs[column_name])
+        _set_user_class_annotation_state(table, values)
 
     def apply_class(self, class_id: int) -> None:
         """Assign the given user class to the currently picked instance."""
@@ -156,8 +160,10 @@ class AnnotationController:
         if self._labels_layer is None:
             return
 
+        color_lookup = self._get_user_class_color_lookup()
+        unlabeled_color = color_lookup.get(UNLABELED_CLASS, UNLABELED_COLOR)
         color_dict: dict[int | None, str] = {
-            None: UNLABELED_COLOR,
+            None: unlabeled_color,
             0: "transparent",
         }
         user_class_by_instance = self._get_user_class_by_instance()
@@ -166,7 +172,7 @@ class AnnotationController:
                 continue
 
             class_id = int(user_class_by_instance.get(instance_id, UNLABELED_CLASS))
-            color_dict[instance_id] = _class_to_color(class_id)
+            color_dict[instance_id] = color_lookup.get(class_id, unlabeled_color)
 
         self._labels_layer.colormap = DirectLabelColormap(color_dict=color_dict, background_value=0)
         refresh = getattr(self._labels_layer, "refresh", None)
@@ -200,6 +206,36 @@ class AnnotationController:
             disconnect(self._on_layer_selected_label_changed)
         except (RuntimeError, TypeError, ValueError):
             return
+
+    def _connect_mouse_pick_events(self) -> None:
+        callbacks = getattr(self._labels_layer, "mouse_drag_callbacks", None)
+        if callbacks is None or self._mouse_pick_callback in callbacks:
+            return
+
+        callbacks.append(self._mouse_pick_callback)
+
+    def _disconnect_mouse_pick_events(self) -> None:
+        callbacks = getattr(self._labels_layer, "mouse_drag_callbacks", None)
+        if callbacks is None:
+            return
+
+        try:
+            callbacks.remove(self._mouse_pick_callback)
+        except ValueError:
+            return
+
+    def _on_layer_mouse_pick(self, layer: Any, event: object | None = None) -> None:
+        if layer is not self._labels_layer:
+            return
+
+        instance_id = _get_positive_label_from_mouse_event(layer, event)
+        if instance_id is None:
+            return
+
+        try:
+            layer.selected_label = instance_id
+        except (AttributeError, TypeError, ValueError):
+            self._set_selected_instance_id(instance_id)
 
     def _on_layer_selected_label_changed(self, event: object | None = None) -> None:
         del event
@@ -237,7 +273,9 @@ class AnnotationController:
                 f"No table row matches segmentation `{self._selected_label_name}` and instance id `{self._selected_instance_id}`."
             )
 
-        table.obs.loc[matching_rows, USER_CLASS_COLUMN] = int(class_id)
+        user_class_values = _to_user_class_values(table.obs[USER_CLASS_COLUMN])
+        user_class_values.loc[matching_rows] = int(class_id)
+        _set_user_class_annotation_state(table, user_class_values)
         self.refresh_layer_colors()
         self.refresh_layer_features()
 
@@ -278,14 +316,7 @@ class AnnotationController:
             table.obs[metadata.region_key] == self._selected_label_name, [metadata.instance_key]
         ].copy()
         if USER_CLASS_COLUMN in table.obs:
-            region_rows[USER_CLASS_COLUMN] = (
-                pd.to_numeric(
-                    table.obs.loc[region_rows.index, USER_CLASS_COLUMN],
-                    errors="coerce",
-                )
-                .fillna(UNLABELED_CLASS)
-                .astype("int64")
-            )
+            region_rows[USER_CLASS_COLUMN] = _to_user_class_values(table.obs.loc[region_rows.index, USER_CLASS_COLUMN])
         else:
             region_rows[USER_CLASS_COLUMN] = UNLABELED_CLASS
 
@@ -305,12 +336,121 @@ class AnnotationController:
         except (AttributeError, TypeError, ValueError):
             return
 
+    def _normalize_existing_annotation_state(self) -> None:
+        table = self._get_bound_table()
+        if table is None or USER_CLASS_COLUMN not in table.obs:
+            return
 
-def _class_to_color(class_id: int) -> str:
-    if class_id <= UNLABELED_CLASS:
-        return UNLABELED_COLOR
+        self.ensure_annotation_column(USER_CLASS_COLUMN)
 
-    return CLASS_COLORS[(class_id - 1) % len(CLASS_COLORS)]
+    def _get_user_class_color_lookup(self) -> dict[int, str]:
+        table = self._get_bound_table()
+        if table is None or USER_CLASS_COLUMN not in table.obs:
+            return {UNLABELED_CLASS: UNLABELED_COLOR}
+
+        categories = _get_user_class_categories(_to_user_class_values(table.obs[USER_CLASS_COLUMN]))
+        colors = _normalize_color_sequence(table.uns.get(USER_CLASS_COLORS_KEY))
+        if colors is None or len(colors) < len(categories):
+            colors = _default_user_class_colors(categories)
+
+        return dict(zip(categories, colors[: len(categories)], strict=False))
+
+
+def _default_user_class_colors(categories: Sequence[int]) -> list[str]:
+    """Return colors for the given user classes.
+
+    Class ``0`` is always the reserved unlabeled color. Positive class ids are
+    mapped onto the default categorical palette starting at index ``0`` for
+    class ``1``.
+    """
+    return [
+        UNLABELED_COLOR if _is_unlabeled_class(class_id) else _default_labeled_user_class_color(class_id)
+        for class_id in categories
+    ]
+
+
+def _default_labeled_user_class_color(class_id: int) -> str:
+    palette_index = _user_class_palette_index(class_id)
+    palette = _default_labeled_user_class_colors(palette_index + 1)
+    return palette[palette_index]
+
+
+def _is_unlabeled_class(class_id: int) -> bool:
+    return class_id == UNLABELED_CLASS
+
+
+def _user_class_palette_index(class_id: int) -> int:
+    if _is_unlabeled_class(class_id):
+        raise ValueError("The unlabeled class does not map to the labeled-user-class palette.")
+    if class_id < UNLABELED_CLASS:
+        raise ValueError("Class ids must be zero or positive integers.")
+
+    return class_id - 1
+
+
+def _default_labeled_user_class_colors(length: int) -> list[str]:
+    """Return the default categorical palette used by spatialdata-plot/scanpy."""
+    if len(rcParams["axes.prop_cycle"].by_key()["color"]) >= length:
+        color_cycle = rcParams["axes.prop_cycle"]()
+        palette = [next(color_cycle)["color"] for _ in range(length)]
+    elif length <= 20:
+        palette = list(default_20)
+    elif length <= 28:
+        palette = list(default_28)
+    elif length <= len(default_102):
+        palette = list(default_102)
+    else:
+        palette = ["grey" for _ in range(length)]
+
+    return palette[:length]
+
+
+def _to_user_class_values(values: pd.Series) -> pd.Series:
+    numeric_values = pd.to_numeric(values.astype("string"), errors="coerce").fillna(UNLABELED_CLASS).astype("int64")
+    numeric_values.name = USER_CLASS_COLUMN
+    return numeric_values
+
+
+def _get_user_class_categories(values: pd.Series) -> list[int]:
+    normalized_values = _to_user_class_values(values)
+    return sorted({UNLABELED_CLASS, *normalized_values.tolist()})
+
+
+def _set_user_class_annotation_state(table: AnnData, values: pd.Series) -> None:
+    """Normalize `user_class` state and regenerate the corresponding color palette.
+
+    For now, `napari-harpy` treats `user_class_colors` as derived state from the
+    current class ids. If a different palette already exists, it is overwritten and
+    a warning is logged so that this behavior is visible during development.
+    """
+    normalized_values = _to_user_class_values(values)
+    categories = _get_user_class_categories(normalized_values)
+    generated_colors = _default_user_class_colors(categories)
+    existing_colors = _normalize_color_sequence(table.uns.get(USER_CLASS_COLORS_KEY))
+    if existing_colors is not None and existing_colors != generated_colors:
+        logger.warning(
+            f"Overwriting existing `{USER_CLASS_COLORS_KEY}` palette in `table.uns`. "
+            f"Current napari-harpy behavior regenerates this palette from `{USER_CLASS_COLUMN}` categories."
+        )
+    table.obs[USER_CLASS_COLUMN] = pd.Series(
+        pd.Categorical(normalized_values, categories=categories),
+        index=normalized_values.index,
+        name=USER_CLASS_COLUMN,
+    )
+    table.uns[USER_CLASS_COLORS_KEY] = generated_colors
+
+
+def _normalize_color_sequence(value: object) -> list[str] | None:
+    if value is None:
+        return None
+
+    if isinstance(value, np.ndarray):
+        return [str(item) for item in value.tolist()]
+
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value]
+
+    return [str(value)]
 
 
 def _get_visible_instance_ids(layer: Any) -> list[int]:
@@ -331,4 +471,39 @@ def _get_visible_instance_ids(layer: Any) -> list[int]:
 def _get_positive_selected_label(layer: Any) -> int | None:
     selected_label = getattr(layer, "selected_label", 0)
     instance_id = int(selected_label)
+    return instance_id if instance_id > 0 else None
+
+
+def _get_positive_label_from_mouse_event(layer: Any, event: object | None = None) -> int | None:
+    get_value = getattr(layer, "get_value", None)
+    if not callable(get_value) or event is None:
+        return None
+
+    dims_displayed = getattr(event, "dims_displayed", None)
+    if dims_displayed is None:
+        dims_displayed = list(getattr(getattr(layer, "_slice_input", None), "displayed", []))
+
+    try:
+        value = get_value(
+            getattr(event, "position", None),
+            view_direction=getattr(event, "view_direction", None),
+            dims_displayed=dims_displayed,
+            world=True,
+        )
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+    if isinstance(value, tuple):
+        if not value:
+            return None
+        value = value[-1]
+
+    if value is None:
+        return None
+
+    try:
+        instance_id = int(value)
+    except (TypeError, ValueError):
+        return None
+
     return instance_id if instance_id > 0 else None

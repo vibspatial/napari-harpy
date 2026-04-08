@@ -166,9 +166,13 @@ The user can assign class labels to segmented objects from napari.
 Keep `HarpyWidget` focused on UI state. Viewer and `SpatialData` discovery should live in a thin
 `SpatialDataAdapter` so Phase 2 annotation logic does not accumulate inside the widget.
 
-For MVP, "current selection" means the currently picked object in the napari `Labels` layer.
-The controller should listen to the labels layer's `selected_label` and treat that value as the
-selected segmentation instance id.
+For MVP, "current selection" means the currently selected object in the napari `Labels` layer.
+The controller should keep `layer.selected_label` in sync with viewer clicks and treat that value
+as the selected segmentation instance id.
+
+Because napari does not support native pick mode for multiscale labels layers, the plugin may need
+its own mouse-picking callback to keep selection working consistently across both single-scale and
+multiscale segmentations.
 
 Do not edit the segmentation data itself. The segmentation layer remains an immutable instance-id
 map and should be recolored via a direct instance-id-to-color mapping.
@@ -176,10 +180,14 @@ map and should be recolored via a direct instance-id-to-color mapping.
 Use `adata.obs["user_class"]` as an integer annotation column with `0` meaning "unlabeled" and
 `1, 2, 3, ...` reserved for user classes. Clearing a label resets it to `0`.
 
+For now, treat `adata.uns["user_class_colors"]` as derived state from the current user classes.
+If an existing palette is present, `napari-harpy` may overwrite it with its generated palette and we log when this happens.
+
 ### Suggested controller API
 
-- `AnnotationController.bind(...)`: resolve the concrete `Labels` layer for the current widget selection and connect
-  to `layer.events.selected_label`.
+- `AnnotationController.bind(...)`: resolve the concrete `Labels` layer for the current widget selection, connect
+  to `layer.events.selected_label`, and attach any custom mouse-picking callbacks needed for
+  multiscale labels support.
 - `ensure_annotation_column("user_class")`: create or fill the annotation column with `0`.
 - `apply_current_class()`: read `labels_layer.selected_label`; if it is `> 0`, update the backing table row(s) where
   `region_key == selected_segmentation_name` and `instance_key == selected_label`.
@@ -193,7 +201,7 @@ Use `adata.obs["user_class"]` as an integer annotation column with `0` meaning "
 ### Tasks
 
 - [x] Define the simplest annotation interaction model for MVP:
-  - [x] use napari `Labels` pick mode to choose the current object
+  - [x] use viewer clicks to choose the current object, including multiscale labels layers
   - [x] treat `layer.selected_label` as the current instance id
 - [ ] Add UI elements for:
   - [x] current class label
@@ -232,27 +240,66 @@ For MVP, this phase only needs to guarantee persistence of annotation columns su
 `adata.obs["user_class"]`. The same sync pathway can later be extended to prediction fields and
 classifier metadata.
 
+`Sync to zarr` should be strictly memory -> disk. It should not also imply reloading the store back
+into the viewer.
+
 ### Tasks
 
-- [ ] Add a `Sync to zarr` action in the widget.
-- [ ] Define the write-back source of truth:
-  - [ ] treat the selected in-memory `SpatialData` table as authoritative while the session is open
-  - [ ] persist the current `adata.obs[...]` values for the selected table
-- [ ] Implement a `PersistenceController` or equivalent write-back helper.
-- [ ] Write the updated table back into the zarr-backed `SpatialData` store safely.
-- [ ] Surface success and failure states clearly in the UI.
-- [ ] Decide and document what happens after sync:
-  - [ ] whether the in-memory `SpatialData` object remains authoritative
-  - [ ] whether a viewer rescan or explicit reload is needed to pick up external zarr changes
-- [ ] Keep the sync step manual for MVP rather than automatically syncing on every click.
+- [x] Add a `Sync to zarr` action in the widget.
+- [x] Define the write-back source of truth:
+  - [x] treat the selected in-memory `SpatialData` table as authoritative while the session is open
+  - [x] persist the current `adata.obs[...]` values for the selected table
+- [x] Implement a `PersistenceController` or equivalent write-back helper.
+- [x] Support partial table persistence:
+  - [x] locate the selected table path in the backed `SpatialData` store
+  - [x] rewrite only the `obs` element for the selected table rather than rewriting the whole store
+- [x] Write the updated table back into the zarr-backed `SpatialData` store safely.
+- [x] Surface success and failure states clearly in the UI.
+- [x] Decide and document what happens after sync:
+  - [x] keep the current in-memory `SpatialData` table authoritative after a successful sync
+  - [x] do not automatically reload the store as part of sync
+- [x] Keep the sync step manual for MVP rather than automatically syncing on every click.
 
 ### Exit criteria
 
-- [ ] User can annotate objects, click `Sync to zarr`, and persist `adata.obs["user_class"]` to disk.
-- [ ] Sync failures are visible and do not silently discard in-memory edits.
-- [ ] The roadmap clearly distinguishes viewer rescan from disk sync or reload.
+- [x] User can annotate objects, click `Sync to zarr`, and persist `adata.obs["user_class"]` to disk.
+- [x] Sync failures are visible and do not silently discard in-memory edits.
+- [x] The roadmap clearly distinguishes viewer rescan, disk sync, and disk reload.
 
-### Phase 4: Background random forest training
+### Phase 4: Reload from zarr
+
+### Outcome
+
+The user can explicitly reload backed table state from zarr into the active napari session when the
+on-disk store changed outside the current in-memory workflow.
+
+### Implementation note
+
+`Reload from zarr` should be strictly disk -> memory. Keep it separate from `Sync to zarr`.
+
+For MVP, prefer reloading the current table and refreshing the relevant layer metadata over trying to
+rebuild the entire viewer from scratch. This phase is mainly about safely picking up external changes
+such as newly written `.obs` columns or new `.obsm[...]` entries.
+
+### Tasks
+
+- [ ] Add a `Reload from zarr` action in the widget.
+- [ ] Read the backed `SpatialData` store again from `sdata.path`.
+- [ ] Decide reload scope for MVP:
+  - [ ] prefer reloading the currently selected table first
+  - [ ] document whether full-`SpatialData` reload is deferred
+- [ ] Refresh the in-memory `SpatialData` table reference after reload.
+- [ ] Refresh viewer-linked cached metadata that depends on table contents, including joined `adata` state.
+- [ ] Trigger the necessary widget and layer refresh so new `.obs` columns or `.obsm[...]` keys become visible.
+- [ ] Surface clear UI messaging if reload would discard unsynced in-memory edits.
+
+### Exit criteria
+
+- [ ] User can click `Reload from zarr` and pick up on-disk table changes in the widget.
+- [ ] Reload updates relevant table-derived UI state such as feature keys.
+- [ ] Reload behavior is clearly separated from viewer rescan and from sync.
+
+### Phase 5: Background random forest training
 
 ### Outcome
 
@@ -283,7 +330,7 @@ The plugin retrains a classifier in the background whenever annotations change.
 - UI remains responsive during training.
 - Older jobs do not overwrite newer results.
 
-### Phase 5: Live prediction updates in the viewer
+### Phase 6: Live prediction updates in the viewer
 
 ### Outcome
 
@@ -307,7 +354,7 @@ Objects are recolored live by predicted class.
 - Untrained or invalid states are visually clear.
 - ROI-restricted predictions are visually understandable.
 
-### Phase 6: ROI selection and subsetting
+### Phase 7: ROI selection and subsetting
 
 ### Outcome
 
