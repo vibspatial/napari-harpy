@@ -237,6 +237,8 @@ class HarpyWidget(QWidget):
         if self.segmentation_combo.currentIndex() >= 0:
             self._set_selected_label_option(self.segmentation_combo.currentIndex())
         else:
+            # No valid segmentation remains after the refresh, so clear every
+            # controller and dependent UI element back to the unbound state.
             self._selected_label_option = None
             self._refresh_table_names()
             self._annotation_controller.bind(None, None, None)
