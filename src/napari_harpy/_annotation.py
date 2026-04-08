@@ -116,15 +116,20 @@ class AnnotationController:
         self.refresh_layer_colors()
         self.refresh_layer_features()
 
-    def activate_pick_mode(self) -> bool:
-        """Put the bound labels layer into napari pick mode."""
+    def activate_layer(self) -> bool:
+        """Activate the bound labels layer for annotation interactions."""
         if self._labels_layer is None:
             return False
 
         self._spatialdata_adapter.set_active_layer(self._labels_layer)
 
-        if hasattr(self._labels_layer, "mode"):
-            self._labels_layer.mode = "pick"
+        # We always attach our own mouse picker in `bind()` because napari
+        # does not support pick mode for multiscale labels layers. If we uncomment below code we can
+        # still request napari's native pick mode for editable layers so
+        # the cursor/interaction state stays aligned with normal labels UX.
+        # For consistency, we comment latter code.
+        # if hasattr(self._labels_layer, "mode"):
+        #    self._labels_layer.mode = "pick"
 
         return True
 
@@ -355,7 +360,10 @@ def _default_user_class_colors(categories: Sequence[int]) -> list[str]:
     mapped onto the default categorical palette starting at index ``0`` for
     class ``1``.
     """
-    return [UNLABELED_COLOR if _is_unlabeled_class(class_id) else _default_labeled_user_class_color(class_id) for class_id in categories]
+    return [
+        UNLABELED_COLOR if _is_unlabeled_class(class_id) else _default_labeled_user_class_color(class_id)
+        for class_id in categories
+    ]
 
 
 def _default_labeled_user_class_color(class_id: int) -> str:

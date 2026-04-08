@@ -233,7 +233,7 @@ class HarpyWidget(QWidget):
             self.selected_spatialdata, self.selected_segmentation_name, self.selected_table_name
         )
         self._persistence_controller.bind(self.selected_spatialdata, self.selected_table_name)
-        self._annotation_controller.activate_pick_mode()
+        self._annotation_controller.activate_layer()
         self._set_annotation_feedback("")
         self._set_sync_feedback("")
         self._update_selection_status()
@@ -282,7 +282,7 @@ class HarpyWidget(QWidget):
             self.selected_spatialdata, self.selected_segmentation_name, self.selected_table_name
         )
         self._persistence_controller.bind(self.selected_spatialdata, self.selected_table_name)
-        self._annotation_controller.activate_pick_mode()
+        self._annotation_controller.activate_layer()
         self._set_annotation_feedback("")
         self._set_sync_feedback("")
         self._update_selection_status()
