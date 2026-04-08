@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from spatialdata import SpatialData
 
-from napari_harpy._spatialdata import get_annotating_table_names, get_table_obsm_keys
+from napari_harpy._spatialdata import (
+    SpatialDataAdapter,
+    get_annotating_table_names,
+    get_table_metadata,
+    get_table_obsm_keys,
+)
 
 
 def test_get_annotating_table_names_returns_tables_for_annotated_label(sdata_blobs: SpatialData) -> None:
@@ -30,3 +35,23 @@ def test_get_table_obsm_keys_returns_sorted_feature_matrix_keys(sdata_blobs: Spa
     obsm_keys = get_table_obsm_keys(sdata_blobs, "table")
 
     assert obsm_keys == ["features_1", "features_2"]
+
+
+def test_spatialdata_adapter_resolves_table_metadata(sdata_blobs: SpatialData) -> None:
+    adapter = SpatialDataAdapter()
+
+    metadata = adapter.get_table_metadata(sdata_blobs, "table")
+
+    assert metadata.table_name == "table"
+    assert metadata.region_key == "region"
+    assert metadata.instance_key == "instance_id"
+    assert metadata.regions == ("blobs_labels",)
+    assert metadata.annotates("blobs_labels")
+    assert not metadata.annotates("blobs_multiscale_labels")
+
+
+def test_get_table_metadata_returns_table_linkage(sdata_blobs: SpatialData) -> None:
+    metadata = get_table_metadata(sdata_blobs, "table")
+
+    assert metadata.region_key == "region"
+    assert metadata.instance_key == "instance_id"

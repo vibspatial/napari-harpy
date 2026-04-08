@@ -80,8 +80,9 @@ For the first minimal viable product, the plugin should:
 ### Main plugin components
 
 - `SpatialDataAdapter`
+  - Stays intentionally thin and delegates table semantics to `spatialdata` rather than reimplementing them.
   - Finds compatible segmentation layers, linked tables, and candidate ROI shapes layers.
-  - Resolves `region_key` and `instance_key`.
+  - Resolves table linkage metadata such as `region`, `region_key`, and `instance_key`.
   - Exposes available `adata.obsm` keys.
 
 - `ROIController`
@@ -107,7 +108,7 @@ For the first minimal viable product, the plugin should:
   - Refreshes layer properties when predictions change.
 
 - `PersistenceController`
-  - Writes table updates back to disk.
+  - Writes table updates back to disk through an explicit sync action.
   - Centralizes save policy and error handling.
 
 ## Step-by-Step Implementation Plan
@@ -160,25 +161,98 @@ The plugin can detect whether the active napari session contains a compatible `S
 
 The user can assign class labels to segmented objects from napari.
 
+### Implementation note
+
+Keep `HarpyWidget` focused on UI state. Viewer and `SpatialData` discovery should live in a thin
+`SpatialDataAdapter` so Phase 2 annotation logic does not accumulate inside the widget.
+
+For MVP, "current selection" means the currently picked object in the napari `Labels` layer.
+The controller should listen to the labels layer's `selected_label` and treat that value as the
+selected segmentation instance id.
+
+Do not edit the segmentation data itself. The segmentation layer remains an immutable instance-id
+map and should be recolored via a direct instance-id-to-color mapping.
+
+Use `adata.obs["user_class"]` as an integer annotation column with `0` meaning "unlabeled" and
+`1, 2, 3, ...` reserved for user classes. Clearing a label resets it to `0`.
+
+### Suggested controller API
+
+- `AnnotationController.bind(...)`: resolve the concrete `Labels` layer for the current widget selection and connect
+  to `layer.events.selected_label`.
+- `ensure_annotation_column("user_class")`: create or fill the annotation column with `0`.
+- `apply_current_class()`: read `labels_layer.selected_label`; if it is `> 0`, update the backing table row(s) where
+  `region_key == selected_segmentation_name` and `instance_key == selected_label`.
+- `clear_current_label()`: set the current object's `user_class` back to `0`.
+- `refresh_layer_colors()`: build `instance_id -> color` for all visible ids in `layer.metadata["indices"]`, then
+  assign a direct colormap.
+- `refresh_layer_features()`: optionally set
+  `layer.features = DataFrame({"user_class": ..., "index": instance_ids})` so hover and status reflect the
+  annotation state.
+
 ### Tasks
 
-- [ ] Define the simplest annotation interaction model for MVP.
+- [x] Define the simplest annotation interaction model for MVP:
+  - [x] use napari `Labels` pick mode to choose the current object
+  - [x] treat `layer.selected_label` as the current instance id
 - [ ] Add UI elements for:
-  - [ ] current class label
-  - [ ] apply label to current selection
-  - [ ] clear label for current selection
-- [ ] Resolve napari object selection to segmentation instance ids.
-- [ ] Map instance ids to `adata.obs` rows via `instance_key`.
-- [ ] Initialize `adata.obs["user_class"]` if missing.
-- [ ] Store labels as nullable values until annotated.
+  - [x] current class label
+  - [x ] apply label to current picked object
+  - [x] clear label for current picked object
+  - [x] optional readout of the currently picked instance id
+- [x] Resolve the picked napari label to a segmentation instance id.
+- [x] Map instance ids to `adata.obs` rows via `instance_key` and `region_key`.
+- [x] Initialize `adata.obs["user_class"]` if missing, using `0` for unlabeled.
+- [x] Recolor the active segmentation layer from `user_class` values without modifying segmentation ids.
+- [x] Keep background transparent and define a stable unlabeled color for class `0`.
 
 ### Exit criteria
 
-- User can label selected objects with class ids.
-- Labels are stored in `adata.obs["user_class"]`.
-- Relabeling an object updates the table correctly.
+- [x] User can pick a segmented object and assign it a class id.
+- [x] Labels are stored in `adata.obs["user_class"]` with `0` representing unlabeled.
+- [x] Clearing an annotation resets `user_class` to `0`.
+- [x] The existing segmentation layer is recolored from `user_class` without changing instance ids.
+- [x] Relabeling an object updates the table and viewer correctly.
 
-### Phase 3: Background random forest training
+
+
+### Phase 3: Manual table sync to zarr
+
+### Outcome
+
+The user can explicitly persist `adata.obs[...]` updates from the active annotation table back to the
+zarr-backed `SpatialData` store.
+
+### Implementation note
+
+Start with a manual sync button rather than autosave. After Phase 2, the in-memory table is the source
+of truth for annotation edits, and this phase adds an explicit write-back step to disk.
+
+For MVP, this phase only needs to guarantee persistence of annotation columns such as
+`adata.obs["user_class"]`. The same sync pathway can later be extended to prediction fields and
+classifier metadata.
+
+### Tasks
+
+- [ ] Add a `Sync to zarr` action in the widget.
+- [ ] Define the write-back source of truth:
+  - [ ] treat the selected in-memory `SpatialData` table as authoritative while the session is open
+  - [ ] persist the current `adata.obs[...]` values for the selected table
+- [ ] Implement a `PersistenceController` or equivalent write-back helper.
+- [ ] Write the updated table back into the zarr-backed `SpatialData` store safely.
+- [ ] Surface success and failure states clearly in the UI.
+- [ ] Decide and document what happens after sync:
+  - [ ] whether the in-memory `SpatialData` object remains authoritative
+  - [ ] whether a viewer rescan or explicit reload is needed to pick up external zarr changes
+- [ ] Keep the sync step manual for MVP rather than automatically syncing on every click.
+
+### Exit criteria
+
+- [ ] User can annotate objects, click `Sync to zarr`, and persist `adata.obs["user_class"]` to disk.
+- [ ] Sync failures are visible and do not silently discard in-memory edits.
+- [ ] The roadmap clearly distinguishes viewer rescan from disk sync or reload.
+
+### Phase 4: Background random forest training
 
 ### Outcome
 
@@ -209,7 +283,7 @@ The plugin retrains a classifier in the background whenever annotations change.
 - UI remains responsive during training.
 - Older jobs do not overwrite newer results.
 
-### Phase 4: Live prediction updates in the viewer
+### Phase 5: Live prediction updates in the viewer
 
 ### Outcome
 
@@ -233,7 +307,7 @@ Objects are recolored live by predicted class.
 - Untrained or invalid states are visually clear.
 - ROI-restricted predictions are visually understandable.
 
-### Phase 5: ROI selection and subsetting
+### Phase 6: ROI selection and subsetting
 
 ### Outcome
 

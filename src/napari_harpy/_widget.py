@@ -3,13 +3,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from qtpy.QtCore import QSignalBlocker
-from qtpy.QtWidgets import QComboBox, QFormLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from qtpy.QtWidgets import QComboBox, QFormLayout, QLabel, QPushButton, QSpinBox, QVBoxLayout, QWidget
 
+from napari_harpy._annotation import UNLABELED_CLASS, AnnotationController
 from napari_harpy._spatialdata import (
+    SpatialDataAdapter,
     SpatialDataLabelsOption,
-    get_annotating_table_names,
-    get_spatialdata_label_options,
-    get_table_obsm_keys,
+    SpatialDataTableMetadata,
 )
 
 if TYPE_CHECKING:
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 
 class HarpyWidget(QWidget):
-    """Phase 1 widget for selecting segmentation, table, and feature inputs.
+    """Phase 2 widget for selecting inputs and picking segmentation objects.
 
     The widget does not retrieve a `SpatialData` object directly from the napari
     viewer itself. Instead, it inspects the current viewer layers and looks for
@@ -29,11 +29,17 @@ class HarpyWidget(QWidget):
     - segmentation masks from `sdata.labels`
     - annotating tables for the selected segmentation
     - feature matrix keys from `table.obsm`
+    - the currently picked segmentation instance id from the active `Labels` layer
     """
 
     def __init__(self, napari_viewer: napari.Viewer | None = None) -> None:
         super().__init__()
         self._viewer = napari_viewer
+        self._spatialdata_adapter = SpatialDataAdapter(napari_viewer)
+        self._annotation_controller = AnnotationController(
+            self._spatialdata_adapter,
+            on_selected_instance_changed=self._on_selected_instance_changed,
+        )
         self._label_options: list[SpatialDataLabelsOption] = []
         self._selected_label_option: SpatialDataLabelsOption | None = None
         self._table_names: list[str] = []
@@ -47,7 +53,7 @@ class HarpyWidget(QWidget):
         title.setStyleSheet("font-size: 18px; font-weight: 600;")
 
         subtitle = QLabel(
-            "Phase 1 setup.\nSelect the segmentation mask to classify from the active SpatialData object."
+            "Phase 2 setup.\nSelect the segmentation mask and use Pick mode in napari to choose an object."
         )
         subtitle.setWordWrap(True)
 
@@ -67,7 +73,12 @@ class HarpyWidget(QWidget):
         self.feature_matrix_combo.setObjectName("feature_matrix_combo")
         self.feature_matrix_combo.currentIndexChanged.connect(self._on_feature_matrix_changed)
 
-        self.refresh_button = QPushButton("Refresh")
+        self.class_spinbox = QSpinBox()
+        self.class_spinbox.setObjectName("user_class_spinbox")
+        self.class_spinbox.setRange(1, 999)
+        self.class_spinbox.setValue(1)
+
+        self.refresh_button = QPushButton("Rescan Viewer")
         self.refresh_button.clicked.connect(self.refresh_segmentation_masks)
         self.refresh_button.setEnabled(napari_viewer is not None)
 
@@ -77,15 +88,39 @@ class HarpyWidget(QWidget):
         self.validation_status.setStyleSheet("color: #b45309; font-weight: 600;")
         self.validation_status.hide()
 
+        self.selection_status = QLabel("Selection: choose a segmentation mask to enable object picking.")
+        self.selection_status.setObjectName("selection_status")
+        self.selection_status.setWordWrap(True)
+
+        self.apply_class_button = QPushButton("Apply Class")
+        self.apply_class_button.setObjectName("apply_class_button")
+        self.apply_class_button.clicked.connect(self._apply_current_class)
+        self.apply_class_button.setEnabled(False)
+
+        self.clear_class_button = QPushButton("Clear Class")
+        self.clear_class_button.setObjectName("clear_class_button")
+        self.clear_class_button.clicked.connect(self._clear_current_class)
+        self.clear_class_button.setEnabled(False)
+
+        self.annotation_feedback = QLabel()
+        self.annotation_feedback.setObjectName("annotation_feedback")
+        self.annotation_feedback.setWordWrap(True)
+        self.annotation_feedback.hide()
+
         selector_layout.addRow("Segmentation mask", self.segmentation_combo)
         selector_layout.addRow("Table", self.table_combo)
         selector_layout.addRow("Feature matrix", self.feature_matrix_combo)
+        selector_layout.addRow("User class", self.class_spinbox)
 
         layout.addWidget(title)
         layout.addWidget(subtitle)
         layout.addWidget(self.viewer_status)
         layout.addLayout(selector_layout)
         layout.addWidget(self.refresh_button)
+        layout.addWidget(self.apply_class_button)
+        layout.addWidget(self.clear_class_button)
+        layout.addWidget(self.selection_status)
+        layout.addWidget(self.annotation_feedback)
         layout.addWidget(self.validation_status)
         layout.addStretch(1)
 
@@ -112,10 +147,23 @@ class HarpyWidget(QWidget):
         """Return the currently selected feature matrix key from `adata.obsm`."""
         return self._selected_feature_key
 
+    @property
+    def selected_instance_id(self) -> int | None:
+        """Return the currently picked segmentation instance id."""
+        return self._annotation_controller.selected_instance_id
+
+    @property
+    def selected_table_metadata(self) -> SpatialDataTableMetadata | None:
+        """Return the linkage metadata for the current table selection."""
+        if self.selected_spatialdata is None or self.selected_table_name is None:
+            return None
+
+        return self._spatialdata_adapter.get_table_metadata(self.selected_spatialdata, self.selected_table_name)
+
     def refresh_segmentation_masks(self) -> None:
         """Refresh the segmentation mask choices from viewer-linked SpatialData layers."""
         previous_identity = None if self._selected_label_option is None else self._selected_label_option.identity
-        self._label_options = get_spatialdata_label_options(self._viewer)
+        self._label_options = self._spatialdata_adapter.get_label_options()
 
         with QSignalBlocker(self.segmentation_combo):
             self.segmentation_combo.clear()
@@ -138,6 +186,7 @@ class HarpyWidget(QWidget):
         else:
             self._selected_label_option = None
             self._refresh_table_names()
+            self._annotation_controller.bind(None, None, None)
             self._update_selection_status()
 
     def _connect_viewer_events(self) -> None:
@@ -165,6 +214,11 @@ class HarpyWidget(QWidget):
             self._selected_label_option = self._label_options[index]
 
         self._refresh_table_names()
+        self._annotation_controller.bind(
+            self.selected_spatialdata, self.selected_segmentation_name, self.selected_table_name
+        )
+        self._annotation_controller.activate_pick_mode()
+        self._set_annotation_feedback("")
         self._update_selection_status()
 
     def _find_option_index(self, identity: tuple[int, str] | None) -> int | None:
@@ -178,35 +232,72 @@ class HarpyWidget(QWidget):
         return None
 
     def _refresh_table_names(self) -> None:
-        previous_table_name = self._selected_table_name
+        previous_table_name = self.selected_table_name
 
         if self.selected_spatialdata is None or self.selected_segmentation_name is None:
             self._table_names = []
         else:
-            self._table_names = get_annotating_table_names(self.selected_spatialdata, self.selected_segmentation_name)
+            self._table_names = self._spatialdata_adapter.get_annotating_table_names(
+                self.selected_spatialdata, self.selected_segmentation_name
+            )
 
         with QSignalBlocker(self.table_combo):
             self.table_combo.clear()
             for table_name in self._table_names:
-                self.table_combo.addItem(table_name)
+                self.table_combo.addItem(table_name, table_name)
 
             has_tables = bool(self._table_names)
             self.table_combo.setEnabled(has_tables)
 
-            next_index = self._find_table_index(previous_table_name)
+            next_index = -1 if previous_table_name is None else self.table_combo.findData(previous_table_name)
             if has_tables:
-                self.table_combo.setCurrentIndex(0 if next_index is None else next_index)
+                self.table_combo.setCurrentIndex(0 if next_index < 0 else next_index)
             else:
                 self.table_combo.setCurrentIndex(-1)
 
-        if self.table_combo.currentIndex() >= 0:
-            self._set_selected_table_name(self.table_combo.currentIndex())
-        else:
-            self._selected_table_name = None
-            self._refresh_feature_matrix_keys()
+        self._set_selected_table_name(self.table_combo.currentIndex())
+        self._refresh_feature_matrix_keys()
 
     def _on_table_changed(self, index: int) -> None:
         self._set_selected_table_name(index)
+        self._refresh_feature_matrix_keys()
+        self._annotation_controller.bind(
+            self.selected_spatialdata, self.selected_segmentation_name, self.selected_table_name
+        )
+        self._annotation_controller.activate_pick_mode()
+        self._set_annotation_feedback("")
+        self._update_selection_status()
+
+    def _refresh_feature_matrix_keys(self) -> None:
+        previous_feature_key = self.selected_feature_key
+
+        if self.selected_spatialdata is None or self.selected_table_name is None:
+            self._feature_matrix_keys = []
+        else:
+            self._feature_matrix_keys = self._spatialdata_adapter.get_table_obsm_keys(
+                self.selected_spatialdata, self.selected_table_name
+            )
+
+        with QSignalBlocker(self.feature_matrix_combo):
+            self.feature_matrix_combo.clear()
+            for feature_key in self._feature_matrix_keys:
+                self.feature_matrix_combo.addItem(feature_key, feature_key)
+
+            has_feature_matrices = bool(self._feature_matrix_keys)
+            self.feature_matrix_combo.setEnabled(has_feature_matrices)
+
+            next_index = (
+                -1 if previous_feature_key is None else self.feature_matrix_combo.findData(previous_feature_key)
+            )
+            if has_feature_matrices:
+                self.feature_matrix_combo.setCurrentIndex(0 if next_index < 0 else next_index)
+            else:
+                self.feature_matrix_combo.setCurrentIndex(-1)
+
+        self._set_selected_feature_key(self.feature_matrix_combo.currentIndex())
+
+    def _on_feature_matrix_changed(self, index: int) -> None:
+        self._set_selected_feature_key(index)
         self._update_selection_status()
 
     def _set_selected_table_name(self, index: int) -> None:
@@ -215,72 +306,21 @@ class HarpyWidget(QWidget):
         else:
             self._selected_table_name = self._table_names[index]
 
-        self._refresh_feature_matrix_keys()
-
-    def _find_table_index(self, table_name: str | None) -> int | None:
-        if table_name is None:
-            return None
-
-        for index, candidate in enumerate(self._table_names):
-            if candidate == table_name:
-                return index
-
-        return None
-
-    def _refresh_feature_matrix_keys(self) -> None:
-        previous_feature_key = self._selected_feature_key
-
-        if self.selected_spatialdata is None or self.selected_table_name is None:
-            self._feature_matrix_keys = []
-        else:
-            self._feature_matrix_keys = get_table_obsm_keys(self.selected_spatialdata, self.selected_table_name)
-
-        with QSignalBlocker(self.feature_matrix_combo):
-            self.feature_matrix_combo.clear()
-            for feature_key in self._feature_matrix_keys:
-                self.feature_matrix_combo.addItem(feature_key)
-
-            has_feature_matrices = bool(self._feature_matrix_keys)
-            self.feature_matrix_combo.setEnabled(has_feature_matrices)
-
-            next_index = self._find_feature_matrix_index(previous_feature_key)
-            if has_feature_matrices:
-                self.feature_matrix_combo.setCurrentIndex(0 if next_index is None else next_index)
-            else:
-                self.feature_matrix_combo.setCurrentIndex(-1)
-
-        if self.feature_matrix_combo.currentIndex() >= 0:
-            self._set_selected_feature_key(self.feature_matrix_combo.currentIndex())
-        else:
-            self._selected_feature_key = None
-
-    def _on_feature_matrix_changed(self, index: int) -> None:
-        self._set_selected_feature_key(index)
-        self._update_selection_status()
-
     def _set_selected_feature_key(self, index: int) -> None:
         if index < 0 or index >= len(self._feature_matrix_keys):
             self._selected_feature_key = None
         else:
             self._selected_feature_key = self._feature_matrix_keys[index]
 
-    def _find_feature_matrix_index(self, feature_key: str | None) -> int | None:
-        if feature_key is None:
-            return None
-
-        for index, candidate in enumerate(self._feature_matrix_keys):
-            if candidate == feature_key:
-                return index
-
-        return None
-
     def _update_selection_status(self) -> None:
         self._update_validation_status()
+        self._update_annotation_status()
+        self._update_annotation_controls()
 
     def _update_validation_status(self) -> None:
         message = None
 
-        if self.selected_table_name is not None and not self._feature_matrix_keys:
+        if self.selected_table_name is not None and self.feature_matrix_combo.count() == 0:
             message = (
                 "Warning: the selected table does not contain any feature matrices in `.obsm`. "
                 "Add one before continuing."
@@ -288,3 +328,81 @@ class HarpyWidget(QWidget):
 
         self.validation_status.setText("" if message is None else message)
         self.validation_status.setVisible(message is not None)
+
+    def _update_annotation_status(self) -> None:
+        labels_layer = self._annotation_controller.labels_layer
+
+        if self.selected_segmentation_name is None:
+            message = "Selection: choose a segmentation mask to enable object picking."
+        elif labels_layer is None:
+            message = (
+                "Selection: the chosen segmentation is known in SpatialData but is not currently loaded as a "
+                "napari Labels layer."
+            )
+        elif self.selected_instance_id is None:
+            message = (
+                f"Selection: bound to `{self.selected_segmentation_name}`. Click an object "
+                "in the viewer."
+            )
+        else:
+            current_user_class = self._annotation_controller.current_user_class
+            current_class_label = (
+                "unlabeled" if current_user_class in (None, UNLABELED_CLASS) else str(current_user_class)
+            )
+            message = (
+                f"Selection: bound to `{self.selected_segmentation_name}`. "
+                f"Current instance id: {self.selected_instance_id}. "
+                f"Current class: {current_class_label}."
+            )
+
+        self.selection_status.setText(message)
+
+    def _update_annotation_controls(self) -> None:
+        has_table = self.selected_table_name is not None
+        current_user_class = self._annotation_controller.current_user_class
+
+        self.class_spinbox.setEnabled(has_table)
+        self.apply_class_button.setEnabled(self._annotation_controller.can_annotate)
+        self.clear_class_button.setEnabled(
+            self._annotation_controller.can_annotate and current_user_class not in (None, UNLABELED_CLASS)
+        )
+
+    def _apply_current_class(self) -> None:
+        class_id = self.class_spinbox.value()
+        try:
+            self._annotation_controller.apply_class(class_id)
+        except ValueError as error:
+            self._set_annotation_feedback(str(error), error=True)
+            return
+
+        self._set_annotation_feedback(
+            f"Assigned class {class_id} to instance id {self.selected_instance_id}.",
+            error=False,
+        )
+        self._update_selection_status()
+
+    def _clear_current_class(self) -> None:
+        try:
+            self._annotation_controller.clear_current_class()
+        except ValueError as error:
+            self._set_annotation_feedback(str(error), error=True)
+            return
+
+        self._set_annotation_feedback(
+            f"Cleared the user class for instance id {self.selected_instance_id}.",
+            error=False,
+        )
+        self._update_selection_status()
+
+    def _set_annotation_feedback(self, message: str, *, error: bool = False) -> None:
+        self.annotation_feedback.setText(message)
+        self.annotation_feedback.setStyleSheet(
+            "color: #b91c1c; font-weight: 600;" if error else "color: #166534; font-weight: 600;"
+        )
+        self.annotation_feedback.setVisible(bool(message))
+
+    def _on_selected_instance_changed(self, instance_id: int | None) -> None:
+        del instance_id
+        self._set_annotation_feedback("")
+        self._update_annotation_status()
+        self._update_annotation_controls()

@@ -14,8 +14,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 
-@pytest.fixture
-def sdata_blobs() -> SpatialData:
+def _make_sdata_blobs() -> SpatialData:
     """Return a small SpatialData test object with dummy feature matrices in `table.obsm`."""
     sdata = blobs()
     table = sdata["table"]
@@ -26,3 +25,9 @@ def sdata_blobs() -> SpatialData:
     table.obsm["features_2"] = rng.normal(size=(n_obs, 2))
 
     return sdata
+
+
+@pytest.fixture
+def sdata_blobs() -> SpatialData:
+    """Return an in-memory SpatialData test object with dummy feature matrices."""
+    return _make_sdata_blobs()
