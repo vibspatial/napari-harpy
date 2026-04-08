@@ -381,21 +381,6 @@ def _normalize_color_sequence(value: object) -> list[str] | None:
     return [str(value)]
 
 
-def _get_visible_instance_ids(layer: Any) -> list[int]:
-    metadata = getattr(layer, "metadata", None)
-    if isinstance(metadata, dict) and "indices" in metadata:
-        raw_indices = metadata["indices"]
-    else:
-        raw_indices = np.unique(np.asarray(getattr(layer, "data", np.array([], dtype=int))))
-
-    instance_ids = {
-        int(value)
-        for value in np.asarray(raw_indices).ravel().tolist()
-        if isinstance(value, (int, np.integer)) or (isinstance(value, float) and float(value).is_integer())
-    }
-    return sorted(instance_ids)
-
-
 def _get_positive_selected_label(layer: Any) -> int | None:
     selected_label = getattr(layer, "selected_label", 0)
     instance_id = int(selected_label)

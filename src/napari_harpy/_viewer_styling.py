@@ -13,7 +13,6 @@ from napari_harpy._annotation import (
     USER_CLASS_COLORS_KEY,
     USER_CLASS_COLUMN,
     _default_labeled_user_class_color,
-    _get_visible_instance_ids,
     _normalize_color_sequence,
 )
 from napari_harpy._classifier import PRED_CLASS_COLUMN, PRED_CONFIDENCE_COLUMN
@@ -91,28 +90,28 @@ class ViewerStylingController:
         if self._labels_layer is None:
             return
 
+        feature_rows = self._get_region_feature_rows()
         color_dict: dict[int | None, Any] = {
             None: UNLABELED_COLOR,
             0: "transparent",
         }
-        instance_ids = [instance_id for instance_id in _get_visible_instance_ids(self._labels_layer) if instance_id > 0]
+        instance_ids = feature_rows.index.to_numpy(dtype=np.int64, copy=False)
 
         if self._color_by == COLOR_BY_PRED_CONFIDENCE:
-            confidence_by_instance = self._get_numeric_values_by_instance(PRED_CONFIDENCE_COLUMN, default_value=np.nan)
             cmap = colormaps[PRED_CONFIDENCE_COLORMAP]
             for instance_id in instance_ids:
-                confidence = float(confidence_by_instance.get(instance_id, np.nan))
+                confidence = float(feature_rows.at[instance_id, PRED_CONFIDENCE_COLUMN])
                 if np.isnan(confidence):
                     color_dict[instance_id] = MISSING_CONTINUOUS_COLOR
                 else:
                     color_dict[instance_id] = cmap(float(np.clip(confidence, 0.0, 1.0)))
         else:
-            class_by_instance = self._get_class_values_by_instance(self._color_by)
+            class_by_instance = feature_rows[self._color_by]
             class_color_lookup = self._get_class_color_lookup(extra_class_values=class_by_instance)
             unlabeled_color = class_color_lookup.get(UNLABELED_CLASS, UNLABELED_COLOR)
             color_dict[None] = unlabeled_color
             for instance_id in instance_ids:
-                class_id = int(class_by_instance.get(instance_id, UNLABELED_CLASS))
+                class_id = int(class_by_instance.at[instance_id])
                 color_dict[instance_id] = class_color_lookup.get(class_id, unlabeled_color)
 
         self._labels_layer.colormap = DirectLabelColormap(color_dict=color_dict, background_value=0)
@@ -125,27 +124,7 @@ class ViewerStylingController:
         if self._labels_layer is None:
             return
 
-        instance_ids = [instance_id for instance_id in _get_visible_instance_ids(self._labels_layer) if instance_id > 0]
-        user_class_by_instance = self._get_class_values_by_instance(USER_CLASS_COLUMN)
-        pred_class_by_instance = self._get_class_values_by_instance(PRED_CLASS_COLUMN)
-        pred_confidence_by_instance = self._get_numeric_values_by_instance(
-            PRED_CONFIDENCE_COLUMN,
-            default_value=np.nan,
-        )
-        self._labels_layer.features = pd.DataFrame(
-            {
-                "index": instance_ids,
-                USER_CLASS_COLUMN: [
-                    int(user_class_by_instance.get(instance_id, UNLABELED_CLASS)) for instance_id in instance_ids
-                ],
-                PRED_CLASS_COLUMN: [
-                    int(pred_class_by_instance.get(instance_id, UNLABELED_CLASS)) for instance_id in instance_ids
-                ],
-                PRED_CONFIDENCE_COLUMN: [
-                    float(pred_confidence_by_instance.get(instance_id, np.nan)) for instance_id in instance_ids
-                ],
-            }
-        )
+        self._labels_layer.features = self._get_region_feature_rows().reset_index()
 
     def _get_bound_table(self) -> AnnData | None:
         if self._selected_spatialdata is None or self._selected_table_name is None:
@@ -153,39 +132,58 @@ class ViewerStylingController:
 
         return self._spatialdata_adapter.get_table(self._selected_spatialdata, self._selected_table_name)
 
-    def _get_class_values_by_instance(self, column_name: str) -> pd.Series:
+    def _get_region_rows_by_instance(self) -> pd.DataFrame:
         table = self._get_bound_table()
         metadata = self._selected_table_metadata
         if table is None or metadata is None or self._selected_label_name is None:
-            return pd.Series(dtype="int64")
+            return pd.DataFrame(index=pd.Index([], dtype="int64", name="index"))
 
         region_rows = table.obs.loc[
-            table.obs[metadata.region_key] == self._selected_label_name, [metadata.instance_key]
+            table.obs[metadata.region_key] == self._selected_label_name
         ].copy()
-        if column_name in table.obs:
-            region_rows[column_name] = _to_class_values(table.obs.loc[region_rows.index, column_name], column_name)
-        else:
-            region_rows[column_name] = UNLABELED_CLASS
-
+        instance_ids = pd.to_numeric(region_rows[metadata.instance_key], errors="coerce")
+        region_rows = region_rows.loc[instance_ids.notna()].copy()
+        region_rows[metadata.instance_key] = instance_ids.loc[region_rows.index].astype("int64")
+        region_rows = region_rows.loc[region_rows[metadata.instance_key] > 0].copy()
         region_rows = region_rows.drop_duplicates(subset=[metadata.instance_key], keep="last")
-        return region_rows.set_index(metadata.instance_key)[column_name]
+        return region_rows.set_index(metadata.instance_key)
 
-    def _get_numeric_values_by_instance(self, column_name: str, *, default_value: float) -> pd.Series:
-        table = self._get_bound_table()
-        metadata = self._selected_table_metadata
-        if table is None or metadata is None or self._selected_label_name is None:
-            return pd.Series(dtype="float64")
+    def _get_region_feature_rows(self) -> pd.DataFrame:
+        region_rows = self._get_region_rows_by_instance()
+        feature_rows = pd.DataFrame(index=region_rows.index.astype("int64", copy=False))
+        feature_rows.index.name = "index"
 
-        region_rows = table.obs.loc[
-            table.obs[metadata.region_key] == self._selected_label_name, [metadata.instance_key]
-        ].copy()
-        if column_name in table.obs:
-            region_rows[column_name] = _to_numeric_values(table.obs.loc[region_rows.index, column_name], column_name)
+        if USER_CLASS_COLUMN in region_rows:
+            feature_rows[USER_CLASS_COLUMN] = _to_class_values(region_rows[USER_CLASS_COLUMN], USER_CLASS_COLUMN)
         else:
-            region_rows[column_name] = default_value
+            feature_rows[USER_CLASS_COLUMN] = pd.Series(
+                UNLABELED_CLASS,
+                index=feature_rows.index,
+                dtype="int64",
+            )
 
-        region_rows = region_rows.drop_duplicates(subset=[metadata.instance_key], keep="last")
-        return region_rows.set_index(metadata.instance_key)[column_name]
+        if PRED_CLASS_COLUMN in region_rows:
+            feature_rows[PRED_CLASS_COLUMN] = _to_class_values(region_rows[PRED_CLASS_COLUMN], PRED_CLASS_COLUMN)
+        else:
+            feature_rows[PRED_CLASS_COLUMN] = pd.Series(
+                UNLABELED_CLASS,
+                index=feature_rows.index,
+                dtype="int64",
+            )
+
+        if PRED_CONFIDENCE_COLUMN in region_rows:
+            feature_rows[PRED_CONFIDENCE_COLUMN] = _to_numeric_values(
+                region_rows[PRED_CONFIDENCE_COLUMN],
+                PRED_CONFIDENCE_COLUMN,
+            )
+        else:
+            feature_rows[PRED_CONFIDENCE_COLUMN] = pd.Series(
+                np.nan,
+                index=feature_rows.index,
+                dtype="float64",
+            )
+
+        return feature_rows
 
     def _get_class_color_lookup(self, *, extra_class_values: pd.Series | None = None) -> dict[int, str]:
         table = self._get_bound_table()
