@@ -389,6 +389,8 @@ def test_widget_recolors_layer_from_user_class_annotations(qtbot, sdata_blobs: S
     assert layer.colormap.color_dict[5][3] > 0
     assert layer.colormap.color_dict[6][3] > 0
     assert not np.allclose(layer.colormap.color_dict[5], layer.colormap.color_dict[6])
+    assert USER_CLASS_COLUMN in layer.features.columns
+    assert layer.features.set_index("index").loc[5, USER_CLASS_COLUMN] == 4
 
 
 def test_widget_logs_warning_when_existing_user_class_colors_are_overwritten(
@@ -512,6 +514,7 @@ def test_widget_colors_predictions_using_user_class_palette_in_pred_class_mode(q
 
     assert np.allclose(layer.colormap.color_dict[1], layer.colormap.color_dict[5])
     assert np.allclose(layer.colormap.color_dict[24], layer.colormap.color_dict[26])
+    assert PRED_CLASS_COLUMN in layer.features.columns
 
 
 def test_widget_colors_confidence_continuously_in_pred_confidence_mode(qtbot, sdata_blobs: SpatialData) -> None:
@@ -531,6 +534,27 @@ def test_widget_colors_confidence_continuously_in_pred_confidence_mode(qtbot, sd
 
     assert isinstance(layer.colormap, DirectLabelColormap)
     assert not np.allclose(layer.colormap.color_dict[1], layer.colormap.color_dict[24])
+    assert PRED_CONFIDENCE_COLUMN in layer.features.columns
+
+
+def test_widget_exposes_label_metadata_in_napari_status_bar(qtbot, sdata_blobs: SpatialData) -> None:
+    table = sdata_blobs["table"]
+    mask = (table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5)
+    table.obs.loc[mask, USER_CLASS_COLUMN] = pd.Categorical([4], categories=[0, 4])[0]
+    table.obs.loc[mask, PRED_CLASS_COLUMN] = 2
+    table.obs.loc[mask, PRED_CONFIDENCE_COLUMN] = 0.95
+
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    coords = tuple(float(value) for value in np.argwhere(np.asarray(sdata_blobs.labels["blobs_labels"]) == 5)[0])
+    status = layer.get_status(position=coords, view_direction=np.array([1.0, 0.0]), dims_displayed=[0, 1])
+
+    assert "user_class: 4" in status["value"]
+    assert "pred_class: 2" in status["value"]
+    assert "pred_confidence: 0.95" in status["value"]
 
 
 def test_widget_rescans_viewer_without_retraining_same_classifier_context(qtbot, monkeypatch, sdata_blobs: SpatialData) -> None:

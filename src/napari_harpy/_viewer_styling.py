@@ -82,8 +82,9 @@ class ViewerStylingController:
         self._color_by = color_by
 
     def refresh(self) -> None:
-        """Refresh labels-layer colors from the current table state."""
+        """Refresh labels-layer colors and features from the current table state."""
         self.refresh_layer_colors()
+        self.refresh_layer_features()
 
     def refresh_layer_colors(self) -> None:
         """Apply the current `color_by` mode to the bound labels layer."""
@@ -118,6 +119,33 @@ class ViewerStylingController:
         refresh = getattr(self._labels_layer, "refresh", None)
         if callable(refresh):
             refresh()
+
+    def refresh_layer_features(self) -> None:
+        """Expose current label and prediction values as napari layer features."""
+        if self._labels_layer is None:
+            return
+
+        instance_ids = [instance_id for instance_id in _get_visible_instance_ids(self._labels_layer) if instance_id > 0]
+        user_class_by_instance = self._get_class_values_by_instance(USER_CLASS_COLUMN)
+        pred_class_by_instance = self._get_class_values_by_instance(PRED_CLASS_COLUMN)
+        pred_confidence_by_instance = self._get_numeric_values_by_instance(
+            PRED_CONFIDENCE_COLUMN,
+            default_value=np.nan,
+        )
+        self._labels_layer.features = pd.DataFrame(
+            {
+                "index": instance_ids,
+                USER_CLASS_COLUMN: [
+                    int(user_class_by_instance.get(instance_id, UNLABELED_CLASS)) for instance_id in instance_ids
+                ],
+                PRED_CLASS_COLUMN: [
+                    int(pred_class_by_instance.get(instance_id, UNLABELED_CLASS)) for instance_id in instance_ids
+                ],
+                PRED_CONFIDENCE_COLUMN: [
+                    float(pred_confidence_by_instance.get(instance_id, np.nan)) for instance_id in instance_ids
+                ],
+            }
+        )
 
     def _get_bound_table(self) -> AnnData | None:
         if self._selected_spatialdata is None or self._selected_table_name is None:
