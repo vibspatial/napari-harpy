@@ -166,23 +166,53 @@ The user can assign class labels to segmented objects from napari.
 Keep `HarpyWidget` focused on UI state. Viewer and `SpatialData` discovery should live in a thin
 `SpatialDataAdapter` so Phase 2 annotation logic does not accumulate inside the widget.
 
+For MVP, "current selection" means the currently picked object in the napari `Labels` layer.
+The controller should listen to the labels layer's `selected_label` and treat that value as the
+selected segmentation instance id.
+
+Do not edit the segmentation data itself. The segmentation layer remains an immutable instance-id
+map and should be recolored via a direct instance-id-to-color mapping.
+
+Use `adata.obs["user_class"]` as an integer annotation column with `0` meaning "unlabeled" and
+`1, 2, 3, ...` reserved for user classes. Clearing a label resets it to `0`.
+
+### Suggested controller API
+
+- `AnnotationController.bind(...)`: resolve the concrete `Labels` layer for the current widget selection and connect
+  to `layer.events.selected_label`.
+- `ensure_annotation_column("user_class")`: create or fill the annotation column with `0`.
+- `apply_current_class()`: read `labels_layer.selected_label`; if it is `> 0`, update the backing table row(s) where
+  `region_key == selected_segmentation_name` and `instance_key == selected_label`.
+- `clear_current_label()`: set the current object's `user_class` back to `0`.
+- `refresh_layer_colors()`: build `instance_id -> color` for all visible ids in `layer.metadata["indices"]`, then
+  assign a direct colormap.
+- `refresh_layer_features()`: optionally set
+  `layer.features = DataFrame({"user_class": ..., "index": instance_ids})` so hover and status reflect the
+  annotation state.
+
 ### Tasks
 
-- [ ] Define the simplest annotation interaction model for MVP.
+- [ ] Define the simplest annotation interaction model for MVP:
+  - [ ] use napari `Labels` pick mode to choose the current object
+  - [ ] treat `layer.selected_label` as the current instance id
 - [ ] Add UI elements for:
   - [ ] current class label
-  - [ ] apply label to current selection
-  - [ ] clear label for current selection
-- [ ] Resolve napari object selection to segmentation instance ids.
-- [ ] Map instance ids to `adata.obs` rows via `instance_key`.
-- [ ] Initialize `adata.obs["user_class"]` if missing.
-- [ ] Store labels as nullable values until annotated.
+  - [ ] apply label to current picked object
+  - [ ] clear label for current picked object
+  - [ ] optional readout of the currently picked instance id
+- [ ] Resolve the picked napari label to a segmentation instance id.
+- [ ] Map instance ids to `adata.obs` rows via `instance_key` and `region_key`.
+- [ ] Initialize `adata.obs["user_class"]` if missing, using `0` for unlabeled.
+- [ ] Recolor the active segmentation layer from `user_class` values without modifying segmentation ids.
+- [ ] Keep background transparent and define a stable unlabeled color for class `0`.
 
 ### Exit criteria
 
-- User can label selected objects with class ids.
-- Labels are stored in `adata.obs["user_class"]`.
-- Relabeling an object updates the table correctly.
+- User can pick a segmented object and assign it a class id.
+- Labels are stored in `adata.obs["user_class"]` with `0` representing unlabeled.
+- Clearing an annotation resets `user_class` to `0`.
+- The existing segmentation layer is recolored from `user_class` without changing instance ids.
+- Relabeling an object updates the table and viewer correctly.
 
 ### Phase 3: Background random forest training
 
