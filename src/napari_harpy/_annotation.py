@@ -397,6 +397,8 @@ def _get_positive_label_from_mouse_event(layer: Any, event: object | None = None
         dims_displayed = list(getattr(getattr(layer, "_slice_input", None), "displayed", []))
 
     try:
+        # Query napari for the picked label value at the cursor instead of
+        # scanning `layer.data`, so large lazy labels layers stay out-of-core.
         value = get_value(
             getattr(event, "position", None),
             view_direction=getattr(event, "view_direction", None),
