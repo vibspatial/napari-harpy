@@ -6,6 +6,7 @@ from qtpy.QtCore import QSignalBlocker
 from qtpy.QtWidgets import QComboBox, QFormLayout, QLabel, QPushButton, QSpinBox, QVBoxLayout, QWidget
 
 from napari_harpy._annotation import UNLABELED_CLASS, AnnotationController
+from napari_harpy._classifier import ClassifierController
 from napari_harpy._persistence import PersistenceController
 from napari_harpy._spatialdata import (
     SpatialDataAdapter,
@@ -40,6 +41,11 @@ class HarpyWidget(QWidget):
         self._annotation_controller = AnnotationController(
             self._spatialdata_adapter,
             on_selected_instance_changed=self._on_selected_instance_changed,
+            on_annotation_changed=self._on_annotation_changed,
+        )
+        self._classifier_controller = ClassifierController(
+            self._spatialdata_adapter,
+            on_state_changed=self._on_classifier_state_changed,
         )
         self._persistence_controller = PersistenceController(self._spatialdata_adapter)
         self._label_options: list[SpatialDataLabelsOption] = []
@@ -84,6 +90,11 @@ class HarpyWidget(QWidget):
         self.refresh_button.clicked.connect(self.refresh_segmentation_masks)
         self.refresh_button.setEnabled(napari_viewer is not None)
 
+        self.retrain_button = QPushButton("Retrain")
+        self.retrain_button.setObjectName("retrain_button")
+        self.retrain_button.clicked.connect(self._retrain_classifier)
+        self.retrain_button.setEnabled(False)
+
         self.sync_button = QPushButton("Sync to zarr")
         self.sync_button.setObjectName("sync_to_zarr_button")
         self.sync_button.clicked.connect(self._sync_to_zarr)
@@ -114,6 +125,11 @@ class HarpyWidget(QWidget):
         self.annotation_feedback.setWordWrap(True)
         self.annotation_feedback.hide()
 
+        self.classifier_feedback = QLabel()
+        self.classifier_feedback.setObjectName("classifier_feedback")
+        self.classifier_feedback.setWordWrap(True)
+        self.classifier_feedback.hide()
+
         self.sync_feedback = QLabel()
         self.sync_feedback.setObjectName("sync_feedback")
         self.sync_feedback.setWordWrap(True)
@@ -129,11 +145,13 @@ class HarpyWidget(QWidget):
         layout.addWidget(self.viewer_status)
         layout.addLayout(selector_layout)
         layout.addWidget(self.refresh_button)
+        layout.addWidget(self.retrain_button)
         layout.addWidget(self.sync_button)
         layout.addWidget(self.apply_class_button)
         layout.addWidget(self.clear_class_button)
         layout.addWidget(self.selection_status)
         layout.addWidget(self.annotation_feedback)
+        layout.addWidget(self.classifier_feedback)
         layout.addWidget(self.sync_feedback)
         layout.addWidget(self.validation_status)
         layout.addStretch(1)
@@ -201,6 +219,7 @@ class HarpyWidget(QWidget):
             self._selected_label_option = None
             self._refresh_table_names()
             self._annotation_controller.bind(None, None, None)
+            self._classifier_controller.bind(None, None, None, None)
             self._persistence_controller.bind(None, None)
             self._update_selection_status()
 
@@ -232,6 +251,14 @@ class HarpyWidget(QWidget):
         self._annotation_controller.bind(
             self.selected_spatialdata, self.selected_segmentation_name, self.selected_table_name
         )
+        classifier_context_changed = self._classifier_controller.bind(
+            self.selected_spatialdata,
+            self.selected_segmentation_name,
+            self.selected_table_name,
+            self.selected_feature_key,
+        )
+        if classifier_context_changed:
+            self._classifier_controller.mark_dirty(reason="the segmentation selection changed")
         self._persistence_controller.bind(self.selected_spatialdata, self.selected_table_name)
         self._annotation_controller.activate_layer()
         self._set_annotation_feedback("")
@@ -281,6 +308,14 @@ class HarpyWidget(QWidget):
         self._annotation_controller.bind(
             self.selected_spatialdata, self.selected_segmentation_name, self.selected_table_name
         )
+        classifier_context_changed = self._classifier_controller.bind(
+            self.selected_spatialdata,
+            self.selected_segmentation_name,
+            self.selected_table_name,
+            self.selected_feature_key,
+        )
+        if classifier_context_changed:
+            self._classifier_controller.mark_dirty(reason="the annotation table changed")
         self._persistence_controller.bind(self.selected_spatialdata, self.selected_table_name)
         self._annotation_controller.activate_layer()
         self._set_annotation_feedback("")
@@ -317,6 +352,14 @@ class HarpyWidget(QWidget):
 
     def _on_feature_matrix_changed(self, index: int) -> None:
         self._set_selected_feature_key(index)
+        classifier_context_changed = self._classifier_controller.bind(
+            self.selected_spatialdata,
+            self.selected_segmentation_name,
+            self.selected_table_name,
+            self.selected_feature_key,
+        )
+        if classifier_context_changed:
+            self._classifier_controller.mark_dirty(reason="the feature matrix changed")
         self._update_selection_status()
 
     def _set_selected_table_name(self, index: int) -> None:
@@ -335,6 +378,7 @@ class HarpyWidget(QWidget):
         self._update_validation_status()
         self._update_annotation_status()
         self._update_annotation_controls()
+        self._update_classifier_controls()
         self._update_sync_controls()
 
     def _update_validation_status(self) -> None:
@@ -421,6 +465,19 @@ class HarpyWidget(QWidget):
         )
         self.annotation_feedback.setVisible(bool(message))
 
+    def _set_classifier_feedback(self, message: str, *, kind: str = "info") -> None:
+        color_by_kind = {
+            "error": "#b91c1c",
+            "warning": "#b45309",
+            "success": "#166534",
+            "info": "#1d4ed8",
+        }
+        self.classifier_feedback.setText(message)
+        self.classifier_feedback.setStyleSheet(
+            f"color: {color_by_kind.get(kind, '#1d4ed8')}; font-weight: 600;"
+        )
+        self.classifier_feedback.setVisible(bool(message))
+
     def _update_sync_controls(self) -> None:
         can_sync = self._persistence_controller.can_sync
         self.sync_button.setEnabled(can_sync)
@@ -436,6 +493,23 @@ class HarpyWidget(QWidget):
             )
 
         self.sync_button.setToolTip(tooltip)
+
+    def _update_classifier_controls(self) -> None:
+        can_retrain = self._classifier_controller.can_retrain
+        self.retrain_button.setEnabled(can_retrain)
+
+        if self.selected_spatialdata is None or self.selected_table_name is None:
+            tooltip = "Choose a segmentation and annotation table to enable retraining."
+        elif self.selected_feature_key is None:
+            tooltip = "Choose a feature matrix before retraining the classifier."
+        elif self._classifier_controller.is_training:
+            tooltip = "A classifier retraining job is currently running."
+        elif self._classifier_controller.is_dirty:
+            tooltip = "The classifier model is stale. Click to retrain and refresh predictions."
+        else:
+            tooltip = "Retrain the classifier using the current annotations and feature matrix."
+
+        self.retrain_button.setToolTip(tooltip)
 
     def _sync_to_zarr(self) -> None:
         try:
@@ -461,3 +535,20 @@ class HarpyWidget(QWidget):
         self._set_annotation_feedback("")
         self._update_annotation_status()
         self._update_annotation_controls()
+
+    def _on_annotation_changed(self) -> None:
+        self._classifier_controller.mark_dirty(reason="the annotations changed")
+        self._classifier_controller.schedule_retrain()
+        self._update_selection_status()
+
+    def _on_classifier_state_changed(self) -> None:
+        self._set_classifier_feedback(
+            self._classifier_controller.status_message,
+            kind=self._classifier_controller.status_kind,
+        )
+        self._update_classifier_controls()
+
+    def _retrain_classifier(self) -> None:
+        self._classifier_controller.mark_dirty(reason="the user requested a retrain")
+        self._classifier_controller.retrain_now()
+        self._update_selection_status()
