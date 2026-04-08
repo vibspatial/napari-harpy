@@ -90,6 +90,11 @@ class HarpyWidget(QWidget):
         self.refresh_button.clicked.connect(self.refresh_segmentation_masks)
         self.refresh_button.setEnabled(napari_viewer is not None)
 
+        self.retrain_button = QPushButton("Retrain")
+        self.retrain_button.setObjectName("retrain_button")
+        self.retrain_button.clicked.connect(self._retrain_classifier)
+        self.retrain_button.setEnabled(False)
+
         self.sync_button = QPushButton("Sync to zarr")
         self.sync_button.setObjectName("sync_to_zarr_button")
         self.sync_button.clicked.connect(self._sync_to_zarr)
@@ -140,6 +145,7 @@ class HarpyWidget(QWidget):
         layout.addWidget(self.viewer_status)
         layout.addLayout(selector_layout)
         layout.addWidget(self.refresh_button)
+        layout.addWidget(self.retrain_button)
         layout.addWidget(self.sync_button)
         layout.addWidget(self.apply_class_button)
         layout.addWidget(self.clear_class_button)
@@ -245,12 +251,14 @@ class HarpyWidget(QWidget):
         self._annotation_controller.bind(
             self.selected_spatialdata, self.selected_segmentation_name, self.selected_table_name
         )
-        self._classifier_controller.bind(
+        classifier_context_changed = self._classifier_controller.bind(
             self.selected_spatialdata,
             self.selected_segmentation_name,
             self.selected_table_name,
             self.selected_feature_key,
         )
+        if classifier_context_changed:
+            self._classifier_controller.mark_dirty(reason="the segmentation selection changed")
         self._persistence_controller.bind(self.selected_spatialdata, self.selected_table_name)
         self._annotation_controller.activate_layer()
         self._set_annotation_feedback("")
@@ -300,12 +308,14 @@ class HarpyWidget(QWidget):
         self._annotation_controller.bind(
             self.selected_spatialdata, self.selected_segmentation_name, self.selected_table_name
         )
-        self._classifier_controller.bind(
+        classifier_context_changed = self._classifier_controller.bind(
             self.selected_spatialdata,
             self.selected_segmentation_name,
             self.selected_table_name,
             self.selected_feature_key,
         )
+        if classifier_context_changed:
+            self._classifier_controller.mark_dirty(reason="the annotation table changed")
         self._persistence_controller.bind(self.selected_spatialdata, self.selected_table_name)
         self._annotation_controller.activate_layer()
         self._set_annotation_feedback("")
@@ -342,12 +352,14 @@ class HarpyWidget(QWidget):
 
     def _on_feature_matrix_changed(self, index: int) -> None:
         self._set_selected_feature_key(index)
-        self._classifier_controller.bind(
+        classifier_context_changed = self._classifier_controller.bind(
             self.selected_spatialdata,
             self.selected_segmentation_name,
             self.selected_table_name,
             self.selected_feature_key,
         )
+        if classifier_context_changed:
+            self._classifier_controller.mark_dirty(reason="the feature matrix changed")
         self._update_selection_status()
 
     def _set_selected_table_name(self, index: int) -> None:
@@ -366,6 +378,7 @@ class HarpyWidget(QWidget):
         self._update_validation_status()
         self._update_annotation_status()
         self._update_annotation_controls()
+        self._update_classifier_controls()
         self._update_sync_controls()
 
     def _update_validation_status(self) -> None:
@@ -481,6 +494,23 @@ class HarpyWidget(QWidget):
 
         self.sync_button.setToolTip(tooltip)
 
+    def _update_classifier_controls(self) -> None:
+        can_retrain = self._classifier_controller.can_retrain
+        self.retrain_button.setEnabled(can_retrain)
+
+        if self.selected_spatialdata is None or self.selected_table_name is None:
+            tooltip = "Choose a segmentation and annotation table to enable retraining."
+        elif self.selected_feature_key is None:
+            tooltip = "Choose a feature matrix before retraining the classifier."
+        elif self._classifier_controller.is_training:
+            tooltip = "A classifier retraining job is currently running."
+        elif self._classifier_controller.is_dirty:
+            tooltip = "The classifier model is stale. Click to retrain and refresh predictions."
+        else:
+            tooltip = "Retrain the classifier using the current annotations and feature matrix."
+
+        self.retrain_button.setToolTip(tooltip)
+
     def _sync_to_zarr(self) -> None:
         try:
             table_path = self._persistence_controller.sync_table_state()
@@ -507,6 +537,7 @@ class HarpyWidget(QWidget):
         self._update_annotation_controls()
 
     def _on_annotation_changed(self) -> None:
+        self._classifier_controller.mark_dirty(reason="the annotations changed")
         self._classifier_controller.schedule_retrain()
         self._update_selection_status()
 
@@ -515,3 +546,9 @@ class HarpyWidget(QWidget):
             self._classifier_controller.status_message,
             kind=self._classifier_controller.status_kind,
         )
+        self._update_classifier_controls()
+
+    def _retrain_classifier(self) -> None:
+        self._classifier_controller.mark_dirty(reason="the user requested a retrain")
+        self._classifier_controller.retrain_now()
+        self._update_selection_status()

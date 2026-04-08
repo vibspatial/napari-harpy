@@ -39,7 +39,6 @@ def test_classifier_controller_trains_on_labeled_rows_and_predicts_active_object
     controller = ClassifierController(
         SpatialDataAdapter(),
         debounce_interval_ms=0,
-        auto_retrain_on_bind=False,
     )
     controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
     controller.schedule_retrain(immediate=True)
@@ -71,7 +70,6 @@ def test_classifier_controller_resets_predictions_when_only_one_class_is_labeled
     controller = ClassifierController(
         SpatialDataAdapter(),
         debounce_interval_ms=0,
-        auto_retrain_on_bind=False,
     )
     controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
     controller.schedule_retrain(immediate=True)
@@ -99,7 +97,6 @@ def test_classifier_controller_validates_feature_matrix_shape(qtbot, monkeypatch
     controller = ClassifierController(
         SpatialDataAdapter(),
         debounce_interval_ms=0,
-        auto_retrain_on_bind=False,
     )
     controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
     controller.schedule_retrain(immediate=True)
@@ -142,7 +139,6 @@ def test_classifier_controller_drops_stale_results(qtbot, monkeypatch, sdata_blo
     controller = ClassifierController(
         SpatialDataAdapter(),
         debounce_interval_ms=0,
-        auto_retrain_on_bind=False,
     )
     controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
     controller.schedule_retrain(immediate=True)
@@ -154,3 +150,46 @@ def test_classifier_controller_drops_stale_results(qtbot, monkeypatch, sdata_blo
     assert call_log == [1, 2]
     assert table.obs[PRED_CLASS_COLUMN].eq(2).all()
     assert controller.status_kind == "success"
+
+
+def test_classifier_controller_bind_is_passive_until_marked_dirty(
+    qtbot, monkeypatch, sdata_blobs: SpatialData
+) -> None:
+    _set_deterministic_features(sdata_blobs)
+    _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
+
+    call_log: list[int] = []
+
+    def fake_fit(job):
+        call_log.append(job.job_id)
+        return classifier_module.ClassifierJobResult(
+            job_id=job.job_id,
+            feature_key=job.feature_key,
+            label_name=job.label_name,
+            table_name=job.table_name,
+            active_positions=job.active_positions,
+            pred_classes=np.full(job.active_positions.shape, 1, dtype=np.int64),
+            pred_confidences=np.full(job.active_positions.shape, 0.9, dtype=np.float64),
+            trained_at="2026-04-08T12:00:00+00:00",
+            model_params=dict(classifier_module.RANDOM_FOREST_PARAMS),
+            eligibility=job.eligibility,
+        )
+
+    monkeypatch.setattr(classifier_module, "_fit_classifier_job", fake_fit)
+
+    controller = ClassifierController(SpatialDataAdapter(), debounce_interval_ms=0)
+    context_changed = controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
+
+    assert context_changed is True
+    assert controller.is_dirty is False
+    assert controller.status_message == "Classifier: model is up to date."
+    assert call_log == []
+
+    controller.mark_dirty(reason="the feature matrix changed")
+
+    assert controller.is_dirty is True
+    assert "Classifier: model is stale because the feature matrix changed" == controller.status_message
+
+    controller.retrain_now()
+    qtbot.waitUntil(lambda: call_log == [1], timeout=5000)
+    assert controller.is_dirty is False

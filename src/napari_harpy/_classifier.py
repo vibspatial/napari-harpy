@@ -126,12 +126,10 @@ class ClassifierController:
         spatialdata_adapter: SpatialDataAdapter | None = None,
         *,
         debounce_interval_ms: int = DEFAULT_RETRAIN_DEBOUNCE_MS,
-        auto_retrain_on_bind: bool = True,
         on_state_changed: Any | None = None,
     ) -> None:
         self._spatialdata_adapter = spatialdata_adapter or SpatialDataAdapter()
         self._debounce_interval_ms = max(0, int(debounce_interval_ms))
-        self._auto_retrain_on_bind = auto_retrain_on_bind
         self._on_state_changed = on_state_changed
 
         self._selected_spatialdata: SpatialData | None = None
@@ -143,6 +141,7 @@ class ClassifierController:
         self._latest_requested_job_id = 0
         self._active_worker_job_id: int | None = None
         self._active_worker: Any | None = None
+        self._is_dirty = False
 
         self._status_message = "Classifier: choose an annotation table and feature matrix."
         self._status_kind = "warning"
@@ -167,13 +166,23 @@ class ClassifierController:
         """Return whether a classifier worker is currently active."""
         return self._active_worker is not None
 
+    @property
+    def is_dirty(self) -> bool:
+        """Return whether the current classifier outputs are stale."""
+        return self._is_dirty
+
+    @property
+    def can_retrain(self) -> bool:
+        """Return whether the current classifier inputs support a retrain request."""
+        return self._get_bound_table() is not None and self._selected_feature_key is not None and not self.is_training
+
     def bind(
         self,
         sdata: SpatialData | None,
         label_name: str | None,
         table_name: str | None,
         feature_key: str | None,
-    ) -> None:
+    ) -> bool:
         """Bind the controller to the currently selected SpatialData inputs."""
         next_table_metadata = None
         if sdata is not None and table_name is not None:
@@ -197,36 +206,48 @@ class ClassifierController:
 
         table = self._get_bound_table()
         if table is None:
+            self._is_dirty = False
             self._set_status("Classifier: choose an annotation table and feature matrix.", kind="warning")
-            return
+            return context_changed
 
         self._ensure_prediction_columns(table)
 
-        if self._auto_retrain_on_bind:
-            self.schedule_retrain()
+        self._update_idle_status()
+        return context_changed
+
+    def mark_dirty(self, reason: str | None = None) -> None:
+        """Mark the current classifier outputs as stale after an input change."""
+        if self._get_bound_table() is None:
+            self._is_dirty = False
+            self._set_status("Classifier: choose an annotation table and feature matrix.", kind="warning")
             return
 
-        if self._selected_feature_key is None:
-            self._set_status("Classifier: choose a feature matrix to enable training.", kind="warning")
-            return
+        self._is_dirty = True
+        self._update_idle_status(reason=reason)
 
-        self._set_status("Classifier: ready to retrain when annotations change.", kind="info")
+    def retrain_now(self) -> bool:
+        """Immediately retrain the classifier for the current inputs."""
+        return self.schedule_retrain(immediate=True)
 
     def schedule_retrain(self, *, immediate: bool = False) -> bool:
         """Schedule a background retraining job for the current classifier inputs."""
         if self._get_bound_table() is None:
             self._set_status("Classifier: choose an annotation table and feature matrix.", kind="warning")
             return False
+        if self._selected_feature_key is None:
+            self._set_status("Classifier: choose a feature matrix before retraining.", kind="warning")
+            return False
 
         self._latest_requested_job_id += 1
         self._debounce_timer.stop()
         self._cancel_active_worker()
+        self._is_dirty = True
 
         if immediate or self._debounce_interval_ms == 0:
             self._launch_retrain_job(self._latest_requested_job_id)
         else:
             self._debounce_timer.start()
-            self._set_status("Classifier: retraining scheduled.", kind="info")
+            self._set_status("Classifier: model is stale. Retraining is scheduled.", kind="info")
 
         return True
 
@@ -466,6 +487,7 @@ class ClassifierController:
             trained=False,
             trained_at=None,
         )
+        self._is_dirty = True
         self._set_status(f"Classifier: {eligibility.reason}", kind="warning")
 
     def _on_worker_returned(self, job_id: int, result: ClassifierJobResult) -> None:
@@ -485,11 +507,9 @@ class ClassifierController:
             trained=True,
             trained_at=result.trained_at,
         )
+        self._is_dirty = False
         self._set_status(
-            (
-                f"Classifier: updated predictions for {result.eligibility.active_row_count} objects "
-                f"from `{result.feature_key}`."
-            ),
+            f"Classifier: model is up to date. Updated predictions for {result.eligibility.active_row_count} objects.",
             kind="success",
         )
 
@@ -511,6 +531,7 @@ class ClassifierController:
                 trained=False,
                 trained_at=None,
             )
+        self._is_dirty = True
         self._set_status(f"Classifier: training failed: {error}", kind="error")
 
     def _on_worker_finished(self, job_id: int) -> None:
@@ -592,6 +613,27 @@ class ClassifierController:
         self._status_kind = kind
         if self._on_state_changed is not None:
             self._on_state_changed()
+
+    def _update_idle_status(self, *, reason: str | None = None) -> None:
+        if self._get_bound_table() is None:
+            self._set_status("Classifier: choose an annotation table and feature matrix.", kind="warning")
+            return
+
+        if self._selected_feature_key is None:
+            self._set_status("Classifier: choose a feature matrix to enable training.", kind="warning")
+            return
+
+        if self.is_training:
+            return
+
+        if self._is_dirty:
+            if reason is None:
+                self._set_status("Classifier: model is stale. Click Retrain to refresh predictions.", kind="warning")
+            else:
+                self._set_status(f"Classifier: model is stale because {reason}", kind="warning")
+            return
+
+        self._set_status("Classifier: model is up to date.", kind="success")
 
 
 def _normalize_feature_matrix(feature_matrix: Any, n_obs: int) -> Any:

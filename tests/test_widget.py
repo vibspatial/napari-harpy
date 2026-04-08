@@ -135,13 +135,16 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_bl
     assert widget.selected_table_metadata.regions == ("blobs_labels",)
     assert widget.selected_instance_id is None
     assert widget.refresh_button.text() == "Rescan Viewer"
+    assert widget.retrain_button.text() == "Retrain"
     assert widget.sync_button.text() == "Sync to zarr"
     assert not widget.sync_button.isEnabled()
+    assert widget.retrain_button.isEnabled()
     assert str(layer.mode) == "pick"
     assert viewer.layers.selection.active is layer
     assert "Click an object in the viewer." in widget.selection_status.text()
     assert widget.validation_status.isHidden()
     assert widget.validation_status.text() == ""
+    assert "model is stale" in widget.classifier_feedback.text()
 
 
 def test_widget_refreshes_when_a_spatialdata_layer_is_added(qtbot, sdata_blobs: SpatialData) -> None:
@@ -194,6 +197,7 @@ def test_widget_updates_selected_feature_key_when_feature_matrix_changes(qtbot, 
     widget.feature_matrix_combo.setCurrentIndex(1)
 
     assert widget.selected_feature_key == "features_2"
+    assert "feature matrix changed" in widget.classifier_feedback.text()
 
 
 def test_widget_tracks_picked_instance_id_from_labels_layer(qtbot, sdata_blobs: SpatialData) -> None:
@@ -452,5 +456,43 @@ def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs:
     pred_class = table.obs.set_index("instance_id")[PRED_CLASS_COLUMN]
     assert pred_class.loc[1] == 1
     assert pred_class.loc[24] == 2
-    assert "updated predictions" in widget.classifier_feedback.text()
+    assert "model is up to date" in widget.classifier_feedback.text()
     assert table.uns[CLASSIFIER_CONFIG_KEY]["trained"] is True
+
+
+def test_widget_rescans_viewer_without_retraining_same_classifier_context(qtbot, monkeypatch, sdata_blobs: SpatialData) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    retrain_calls: list[bool] = []
+
+    def fake_retrain(*, immediate: bool = False) -> bool:
+        retrain_calls.append(immediate)
+        return True
+
+    monkeypatch.setattr(widget._classifier_controller, "schedule_retrain", fake_retrain)
+
+    widget.refresh_button.click()
+
+    assert retrain_calls == []
+
+
+def test_widget_retrain_button_triggers_manual_retraining(qtbot, monkeypatch, sdata_blobs: SpatialData) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    retrain_calls: list[bool] = []
+
+    def fake_retrain_now() -> bool:
+        retrain_calls.append(True)
+        return True
+
+    monkeypatch.setattr(widget._classifier_controller, "retrain_now", fake_retrain_now)
+
+    widget.retrain_button.click()
+
+    assert retrain_calls == [True]
