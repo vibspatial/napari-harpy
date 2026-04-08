@@ -266,7 +266,62 @@ into the viewer.
 - [x] Sync failures are visible and do not silently discard in-memory edits.
 - [x] The roadmap clearly distinguishes viewer rescan, disk sync, and disk reload.
 
-### Phase 4: Reload from zarr
+### Phase 4: Background random forest training
+
+### Outcome
+
+The plugin retrains a classifier in the background whenever annotations change.
+
+### Tasks
+
+- [ ] Define training eligibility rules:
+  - [ ] enough labeled samples
+  - [ ] at least two classes
+  - [ ] feature matrix shape matches table rows
+- [ ] Add a `RandomForestClassifier` training pipeline.
+- [ ] Train on labeled rows only.
+- [ ] Use async worker execution with napari threading.
+- [ ] Use a debounced background training loop:
+  - [ ] every annotation change schedules a retrain
+  - [ ] wait about 200 to 500 ms so bursts of clicks collapse into one job
+  - [ ] train in a worker thread
+  - [ ] when training finishes, run prediction on all objects
+  - [ ] update layer coloring and overlays on the main thread
+- [ ] Prefer napari's `@thread_worker` pattern for training jobs and UI-safe completion handling.
+- [ ] Implement stale-job cancellation or stale-result dropping so only the newest fit is applied.
+- [ ] Capture training metadata in `adata.uns["classifier_config"]`.
+
+### Exit criteria
+
+- Label edits trigger background retraining.
+- UI remains responsive during training.
+- Older jobs do not overwrite newer results.
+
+### Phase 5: Live prediction updates in the viewer
+
+### Outcome
+
+Objects are recolored live by predicted class.
+
+### Tasks
+
+- [ ] Predict classes for all objects after each successful fit.
+- [ ] If ROI is active, predict only for objects in the active subset and define how out-of-ROI objects are displayed.
+- [ ] Compute and store:
+  - [ ] `pred_class`
+  - [ ] `pred_confidence`
+- [ ] Decide representation for unlabeled or not-yet-predicted objects.
+- [ ] Push updated layer properties into the segmentation layer.
+- [ ] Add a stable colormap for class ids.
+
+### Exit criteria
+
+- Prediction updates are visible immediately after training finishes.
+- Objects are colored by `pred_class`.
+- Untrained or invalid states are visually clear.
+- ROI-restricted predictions are visually understandable.
+
+### Phase 6: Reload from zarr
 
 ### Outcome
 
@@ -299,61 +354,6 @@ such as newly written `.obs` columns or new `.obsm[...]` entries.
 - [ ] Reload updates relevant table-derived UI state such as feature keys.
 - [ ] Reload behavior is clearly separated from viewer rescan and from sync.
 
-### Phase 5: Background random forest training
-
-### Outcome
-
-The plugin retrains a classifier in the background whenever annotations change.
-
-### Tasks
-
-- [ ] Define training eligibility rules:
-  - [ ] enough labeled samples
-  - [ ] at least two classes
-  - [ ] feature matrix shape matches table rows
-- [ ] Add a `RandomForestClassifier` training pipeline.
-- [ ] Train on labeled rows only.
-- [ ] Use async worker execution with napari threading.
-- [ ] Use a debounced background training loop:
-  - [ ] every annotation change schedules a retrain
-  - [ ] wait about 200 to 500 ms so bursts of clicks collapse into one job
-  - [ ] train in a worker thread
-  - [ ] when training finishes, run prediction on all objects
-  - [ ] update layer coloring and overlays on the main thread
-- [ ] Prefer napari's `@thread_worker` pattern for training jobs and UI-safe completion handling.
-- [ ] Implement stale-job cancellation or stale-result dropping so only the newest fit is applied.
-- [ ] Capture training metadata in `adata.uns["classifier_config"]`.
-
-### Exit criteria
-
-- Label edits trigger background retraining.
-- UI remains responsive during training.
-- Older jobs do not overwrite newer results.
-
-### Phase 6: Live prediction updates in the viewer
-
-### Outcome
-
-Objects are recolored live by predicted class.
-
-### Tasks
-
-- [ ] Predict classes for all objects after each successful fit.
-- [ ] If ROI is active, predict only for objects in the active subset and define how out-of-ROI objects are displayed.
-- [ ] Compute and store:
-  - [ ] `pred_class`
-  - [ ] `pred_confidence`
-- [ ] Decide representation for unlabeled or not-yet-predicted objects.
-- [ ] Push updated layer properties into the segmentation layer.
-- [ ] Add a stable colormap for class ids.
-
-### Exit criteria
-
-- Prediction updates are visible immediately after training finishes.
-- Objects are colored by `pred_class`.
-- Untrained or invalid states are visually clear.
-- ROI-restricted predictions are visually understandable.
-
 ### Phase 7: ROI selection and subsetting
 
 ### Outcome
@@ -385,7 +385,7 @@ The user can optionally constrain annotation and model updates to a valid ROI ch
 - Objects outside the active ROI are ignored or clearly blocked from annotation.
 - ROI changes trigger a clean recomputation of the working subset and model state.
 
-### Phase 6: Persistence to SpatialData / zarr
+### Phase 8: Persistence to SpatialData / zarr
 
 ### Outcome
 
@@ -409,7 +409,7 @@ User annotations and predictions survive reloads.
 - Persisted data remains linked to the segmentation via table metadata.
 - ROI-limited edits do not accidentally overwrite rows outside the ROI.
 
-### Phase 7: MVP hardening
+### Phase 9: MVP hardening
 
 ### Outcome
 
