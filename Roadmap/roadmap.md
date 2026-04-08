@@ -108,7 +108,7 @@ For the first minimal viable product, the plugin should:
   - Refreshes layer properties when predictions change.
 
 - `PersistenceController`
-  - Writes table updates back to disk.
+  - Writes table updates back to disk through an explicit sync action.
   - Centralizes save policy and error handling.
 
 ## Step-by-Step Implementation Plan
@@ -208,13 +208,51 @@ Use `adata.obs["user_class"]` as an integer annotation column with `0` meaning "
 
 ### Exit criteria
 
-- User can pick a segmented object and assign it a class id.
-- Labels are stored in `adata.obs["user_class"]` with `0` representing unlabeled.
-- Clearing an annotation resets `user_class` to `0`.
-- The existing segmentation layer is recolored from `user_class` without changing instance ids.
-- Relabeling an object updates the table and viewer correctly.
+- [x] User can pick a segmented object and assign it a class id.
+- [x] Labels are stored in `adata.obs["user_class"]` with `0` representing unlabeled.
+- [x] Clearing an annotation resets `user_class` to `0`.
+- [x] The existing segmentation layer is recolored from `user_class` without changing instance ids.
+- [x] Relabeling an object updates the table and viewer correctly.
 
-### Phase 3: Background random forest training
+
+
+### Phase 3: Manual table sync to zarr
+
+### Outcome
+
+The user can explicitly persist `adata.obs[...]` updates from the active annotation table back to the
+zarr-backed `SpatialData` store.
+
+### Implementation note
+
+Start with a manual sync button rather than autosave. After Phase 2, the in-memory table is the source
+of truth for annotation edits, and this phase adds an explicit write-back step to disk.
+
+For MVP, this phase only needs to guarantee persistence of annotation columns such as
+`adata.obs["user_class"]`. The same sync pathway can later be extended to prediction fields and
+classifier metadata.
+
+### Tasks
+
+- [ ] Add a `Sync to zarr` action in the widget.
+- [ ] Define the write-back source of truth:
+  - [ ] treat the selected in-memory `SpatialData` table as authoritative while the session is open
+  - [ ] persist the current `adata.obs[...]` values for the selected table
+- [ ] Implement a `PersistenceController` or equivalent write-back helper.
+- [ ] Write the updated table back into the zarr-backed `SpatialData` store safely.
+- [ ] Surface success and failure states clearly in the UI.
+- [ ] Decide and document what happens after sync:
+  - [ ] whether the in-memory `SpatialData` object remains authoritative
+  - [ ] whether a viewer rescan or explicit reload is needed to pick up external zarr changes
+- [ ] Keep the sync step manual for MVP rather than automatically syncing on every click.
+
+### Exit criteria
+
+- [ ] User can annotate objects, click `Sync to zarr`, and persist `adata.obs["user_class"]` to disk.
+- [ ] Sync failures are visible and do not silently discard in-memory edits.
+- [ ] The roadmap clearly distinguishes viewer rescan from disk sync or reload.
+
+### Phase 4: Background random forest training
 
 ### Outcome
 
@@ -245,7 +283,7 @@ The plugin retrains a classifier in the background whenever annotations change.
 - UI remains responsive during training.
 - Older jobs do not overwrite newer results.
 
-### Phase 4: Live prediction updates in the viewer
+### Phase 5: Live prediction updates in the viewer
 
 ### Outcome
 
@@ -269,7 +307,7 @@ Objects are recolored live by predicted class.
 - Untrained or invalid states are visually clear.
 - ROI-restricted predictions are visually understandable.
 
-### Phase 5: ROI selection and subsetting
+### Phase 6: ROI selection and subsetting
 
 ### Outcome
 
