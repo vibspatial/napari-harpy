@@ -42,10 +42,6 @@ class HarpyWidget(QWidget):
         )
         self._label_options: list[SpatialDataLabelsOption] = []
         self._selected_label_option: SpatialDataLabelsOption | None = None
-        self._table_names: list[str] = []
-        self._selected_table_name: str | None = None
-        self._feature_matrix_keys: list[str] = []
-        self._selected_feature_key: str | None = None
 
         layout = QVBoxLayout(self)
 
@@ -122,12 +118,12 @@ class HarpyWidget(QWidget):
     @property
     def selected_table_name(self) -> str | None:
         """Return the currently selected annotation table name."""
-        return self._selected_table_name
+        return self._current_combo_value(self.table_combo)
 
     @property
     def selected_feature_key(self) -> str | None:
         """Return the currently selected feature matrix key from `adata.obsm`."""
-        return self._selected_feature_key
+        return self._current_combo_value(self.feature_matrix_combo)
 
     @property
     def selected_instance_id(self) -> int | None:
@@ -209,106 +205,68 @@ class HarpyWidget(QWidget):
 
         return None
 
+    def _current_combo_value(self, combo: QComboBox) -> str | None:
+        value = combo.currentData()
+        return value if isinstance(value, str) else None
+
     def _refresh_table_names(self) -> None:
-        previous_table_name = self._selected_table_name
+        previous_table_name = self.selected_table_name
 
         if self.selected_spatialdata is None or self.selected_segmentation_name is None:
-            self._table_names = []
+            table_names: list[str] = []
         else:
-            self._table_names = self._spatialdata_adapter.get_annotating_table_names(
+            table_names = self._spatialdata_adapter.get_annotating_table_names(
                 self.selected_spatialdata, self.selected_segmentation_name
             )
 
         with QSignalBlocker(self.table_combo):
             self.table_combo.clear()
-            for table_name in self._table_names:
-                self.table_combo.addItem(table_name)
+            for table_name in table_names:
+                self.table_combo.addItem(table_name, table_name)
 
-            has_tables = bool(self._table_names)
+            has_tables = bool(table_names)
             self.table_combo.setEnabled(has_tables)
 
-            next_index = self._find_table_index(previous_table_name)
+            next_index = -1 if previous_table_name is None else self.table_combo.findData(previous_table_name)
             if has_tables:
-                self.table_combo.setCurrentIndex(0 if next_index is None else next_index)
+                self.table_combo.setCurrentIndex(0 if next_index < 0 else next_index)
             else:
                 self.table_combo.setCurrentIndex(-1)
 
-        if self.table_combo.currentIndex() >= 0:
-            self._set_selected_table_name(self.table_combo.currentIndex())
-        else:
-            self._selected_table_name = None
-            self._refresh_feature_matrix_keys()
-
-    def _on_table_changed(self, index: int) -> None:
-        self._set_selected_table_name(index)
-        self._update_selection_status()
-
-    def _set_selected_table_name(self, index: int) -> None:
-        if index < 0 or index >= len(self._table_names):
-            self._selected_table_name = None
-        else:
-            self._selected_table_name = self._table_names[index]
-
         self._refresh_feature_matrix_keys()
 
-    def _find_table_index(self, table_name: str | None) -> int | None:
-        if table_name is None:
-            return None
-
-        for index, candidate in enumerate(self._table_names):
-            if candidate == table_name:
-                return index
-
-        return None
+    def _on_table_changed(self, index: int) -> None:
+        del index
+        self._refresh_feature_matrix_keys()
+        self._update_selection_status()
 
     def _refresh_feature_matrix_keys(self) -> None:
-        previous_feature_key = self._selected_feature_key
+        previous_feature_key = self.selected_feature_key
 
         if self.selected_spatialdata is None or self.selected_table_name is None:
-            self._feature_matrix_keys = []
+            feature_matrix_keys: list[str] = []
         else:
-            self._feature_matrix_keys = self._spatialdata_adapter.get_table_obsm_keys(
+            feature_matrix_keys = self._spatialdata_adapter.get_table_obsm_keys(
                 self.selected_spatialdata, self.selected_table_name
             )
 
         with QSignalBlocker(self.feature_matrix_combo):
             self.feature_matrix_combo.clear()
-            for feature_key in self._feature_matrix_keys:
-                self.feature_matrix_combo.addItem(feature_key)
+            for feature_key in feature_matrix_keys:
+                self.feature_matrix_combo.addItem(feature_key, feature_key)
 
-            has_feature_matrices = bool(self._feature_matrix_keys)
+            has_feature_matrices = bool(feature_matrix_keys)
             self.feature_matrix_combo.setEnabled(has_feature_matrices)
 
-            next_index = self._find_feature_matrix_index(previous_feature_key)
+            next_index = -1 if previous_feature_key is None else self.feature_matrix_combo.findData(previous_feature_key)
             if has_feature_matrices:
-                self.feature_matrix_combo.setCurrentIndex(0 if next_index is None else next_index)
+                self.feature_matrix_combo.setCurrentIndex(0 if next_index < 0 else next_index)
             else:
                 self.feature_matrix_combo.setCurrentIndex(-1)
 
-        if self.feature_matrix_combo.currentIndex() >= 0:
-            self._set_selected_feature_key(self.feature_matrix_combo.currentIndex())
-        else:
-            self._selected_feature_key = None
-
     def _on_feature_matrix_changed(self, index: int) -> None:
-        self._set_selected_feature_key(index)
+        del index
         self._update_selection_status()
-
-    def _set_selected_feature_key(self, index: int) -> None:
-        if index < 0 or index >= len(self._feature_matrix_keys):
-            self._selected_feature_key = None
-        else:
-            self._selected_feature_key = self._feature_matrix_keys[index]
-
-    def _find_feature_matrix_index(self, feature_key: str | None) -> int | None:
-        if feature_key is None:
-            return None
-
-        for index, candidate in enumerate(self._feature_matrix_keys):
-            if candidate == feature_key:
-                return index
-
-        return None
 
     def _update_selection_status(self) -> None:
         self._update_validation_status()
@@ -317,7 +275,7 @@ class HarpyWidget(QWidget):
     def _update_validation_status(self) -> None:
         message = None
 
-        if self.selected_table_name is not None and not self._feature_matrix_keys:
+        if self.selected_table_name is not None and self.feature_matrix_combo.count() == 0:
             message = (
                 "Warning: the selected table does not contain any feature matrices in `.obsm`. "
                 "Add one before continuing."

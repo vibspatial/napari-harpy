@@ -59,7 +59,21 @@ class SpatialDataAdapter:
         return _get_spatialdata_label_options_from_viewer(self._viewer)
 
     def get_labels_layer(self, sdata: SpatialData, label_name: str) -> Any | None:
-        """Return the concrete napari labels layer for a selected SpatialData labels element."""
+        """Return the loaded napari labels layer for a selected SpatialData labels element.
+
+        This method does not retrieve the labels data directly from ``sdata.labels``.
+        Instead, it scans the current napari viewer for an already loaded layer whose
+        metadata links it back to the given ``SpatialData`` object and labels name.
+
+        A match requires all of the following:
+
+        - ``layer.metadata["sdata"] is sdata``
+        - ``layer.metadata["name"] == label_name``
+        - the layer behaves like a pickable napari ``Labels`` layer
+
+        This means a labels element can exist in ``sdata`` but still return ``None``
+        here if that segmentation is not currently loaded as a napari layer.
+        """
         layers = getattr(self._viewer, "layers", None)
         if layers is None:
             return None
