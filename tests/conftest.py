@@ -1,12 +1,31 @@
 from __future__ import annotations
 
+import atexit
+import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
 import pytest
 from spatialdata import SpatialData, read_zarr
 from spatialdata.datasets import blobs
+
+TEST_HOME = Path(tempfile.mkdtemp(prefix="napari-harpy-test-home-"))
+TEST_CACHE = TEST_HOME / ".cache"
+TEST_CONFIG = TEST_HOME / ".config"
+
+TEST_CACHE.mkdir(parents=True, exist_ok=True)
+TEST_CONFIG.mkdir(parents=True, exist_ok=True)
+
+os.environ["HOME"] = str(TEST_HOME)
+os.environ["XDG_CACHE_HOME"] = str(TEST_CACHE)
+os.environ["XDG_CONFIG_HOME"] = str(TEST_CONFIG)
+os.environ["NAPARI_CONFIG"] = str(TEST_CONFIG / "napari")
+os.environ["NAPARI_CACHE_DIR"] = str(TEST_CACHE / "napari")
+
+atexit.register(shutil.rmtree, TEST_HOME, ignore_errors=True)
 
 SRC = Path(__file__).resolve().parents[1] / "src"
 

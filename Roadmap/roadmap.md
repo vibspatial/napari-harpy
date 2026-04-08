@@ -277,7 +277,7 @@ The plugin retrains a classifier in the background whenever annotations change.
 - [ ] Define training eligibility rules:
   - [ ] enough labeled samples
   - [ ] at least two classes
-  - [ ] feature matrix shape matches table rows
+  - [ ] feature matrix shape matches table rows -> I believe this is by construction if you use an AnnData table.
 - [ ] Add a `RandomForestClassifier` training pipeline.
 - [ ] Train on labeled rows only.
 - [ ] Use async worker execution with napari threading.

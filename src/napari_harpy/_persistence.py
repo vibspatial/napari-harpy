@@ -7,6 +7,7 @@ import anndata as ad
 import zarr
 
 from napari_harpy._annotation import USER_CLASS_COLORS_KEY
+from napari_harpy._classifier import CLASSIFIER_CONFIG_KEY
 from napari_harpy._spatialdata import SpatialDataAdapter
 
 if TYPE_CHECKING:
@@ -56,6 +57,8 @@ class PersistenceController:
         ad.io.write_elem(table_group, "obs", table.obs)
         if USER_CLASS_COLORS_KEY in table.uns:
             ad.io.write_elem(table_group["uns"], USER_CLASS_COLORS_KEY, table.uns[USER_CLASS_COLORS_KEY])
+        if CLASSIFIER_CONFIG_KEY in table.uns:
+            ad.io.write_elem(table_group["uns"], CLASSIFIER_CONFIG_KEY, table.uns[CLASSIFIER_CONFIG_KEY])
         return table_path
 
     def _require_selected_spatialdata(self) -> SpatialData:

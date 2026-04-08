@@ -11,6 +11,7 @@ from spatialdata import SpatialData, read_zarr
 
 import napari_harpy._annotation as annotation_module
 from napari_harpy._annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN, _default_user_class_colors
+from napari_harpy._classifier import CLASSIFIER_CONFIG_KEY, PRED_CLASS_COLUMN
 from napari_harpy._spatialdata import get_spatialdata_label_options
 from napari_harpy._widget import HarpyWidget
 
@@ -421,3 +422,35 @@ def test_widget_syncs_user_class_to_backed_zarr(qtbot, backed_sdata_blobs: Spati
     assert list(reread["table"].obs[USER_CLASS_COLUMN].cat.categories) == [0, 3]
     assert reread["table"].obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
     assert list(reread["table"].uns[USER_CLASS_COLORS_KEY]) == _default_user_class_colors([0, 3])
+
+
+def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs: SpatialData) -> None:
+    table = sdata_blobs["table"]
+    instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
+    table.obsm["features_1"] = np.column_stack(
+        [
+            (instance_ids > 13).astype(np.float64),
+            instance_ids.astype(np.float64) / instance_ids.max(),
+        ]
+    )
+
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    layer.selected_label = 1
+    widget.class_spinbox.setValue(1)
+    widget.apply_class_button.click()
+
+    layer.selected_label = 24
+    widget.class_spinbox.setValue(2)
+    widget.apply_class_button.click()
+
+    qtbot.waitUntil(lambda: int(table.obs[PRED_CLASS_COLUMN].sum()) > 0, timeout=5000)
+
+    pred_class = table.obs.set_index("instance_id")[PRED_CLASS_COLUMN]
+    assert pred_class.loc[1] == 1
+    assert pred_class.loc[24] == 2
+    assert "updated predictions" in widget.classifier_feedback.text()
+    assert table.uns[CLASSIFIER_CONFIG_KEY]["trained"] is True

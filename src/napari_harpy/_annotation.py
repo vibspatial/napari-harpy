@@ -29,9 +29,11 @@ class AnnotationController:
         self,
         spatialdata_adapter: SpatialDataAdapter,
         on_selected_instance_changed: Callable[[int | None], None] | None = None,
+        on_annotation_changed: Callable[[], None] | None = None,
     ) -> None:
         self._spatialdata_adapter = spatialdata_adapter
         self._on_selected_instance_changed = on_selected_instance_changed
+        self._on_annotation_changed = on_annotation_changed
         self._labels_layer: Any | None = None
         self._selected_spatialdata: SpatialData | None = None
         self._selected_label_name: str | None = None
@@ -127,12 +129,12 @@ class AnnotationController:
         self._spatialdata_adapter.set_active_layer(self._labels_layer)
 
         # We always attach our own mouse picker in `bind()` because napari
-        # does not support pick mode for multiscale labels layers. If we uncomment below code we can
-        # still request napari's native pick mode for editable layers so
-        # the cursor/interaction state stays aligned with normal labels UX.
-        # For consistency, we comment latter code.
-        # if hasattr(self._labels_layer, "mode"):
-        #    self._labels_layer.mode = "pick"
+        # does not support pick mode for multiscale labels layers. For
+        # single-scale editable labels we still request napari's native pick
+        # mode so the cursor/interaction state stays aligned with normal
+        # labels UX.
+        if hasattr(self._labels_layer, "mode") and bool(getattr(self._labels_layer, "editable", False)):
+            self._labels_layer.mode = "pick"
 
         return True
 
@@ -278,6 +280,8 @@ class AnnotationController:
         _set_user_class_annotation_state(table, user_class_values)
         self.refresh_layer_colors()
         self.refresh_layer_features()
+        if self._on_annotation_changed is not None:
+            self._on_annotation_changed()
 
     def _get_bound_table(self) -> AnnData | None:
         if self._selected_spatialdata is None or self._selected_table_name is None:
