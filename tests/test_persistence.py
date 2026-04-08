@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 from spatialdata import SpatialData, read_zarr
 
-from napari_harpy._annotation import CLASS_COLORS, UNLABELED_COLOR, USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
+from napari_harpy._annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
 from napari_harpy._persistence import PersistenceController
 from napari_harpy._spatialdata import SpatialDataAdapter
 
@@ -25,7 +25,7 @@ def test_persistence_controller_syncs_table_obs_and_colors_to_backed_store(backe
         [0] * (backed_sdata_blobs["table"].n_obs - 1) + [2],
         categories=[0, 2],
     )
-    backed_sdata_blobs["table"].uns[USER_CLASS_COLORS_KEY] = [UNLABELED_COLOR, CLASS_COLORS[1]]
+    backed_sdata_blobs["table"].uns[USER_CLASS_COLORS_KEY] = ["#111111", "#222222"]
 
     table_path = controller.sync_table_state()
     reread = read_zarr(backed_sdata_blobs.path)
@@ -35,5 +35,5 @@ def test_persistence_controller_syncs_table_obs_and_colors_to_backed_store(backe
     assert isinstance(reread["table"].obs[USER_CLASS_COLUMN].dtype, pd.CategoricalDtype)
     assert list(reread["table"].obs[USER_CLASS_COLUMN].cat.categories) == [0, 2]
     assert reread["table"].obs[USER_CLASS_COLUMN].tolist().count(2) == 1
-    assert list(reread["table"].uns[USER_CLASS_COLORS_KEY]) == [UNLABELED_COLOR, CLASS_COLORS[1]]
+    assert list(reread["table"].uns[USER_CLASS_COLORS_KEY]) == ["#111111", "#222222"]
     assert sorted(reread["table"].obsm.keys()) == ["features_1", "features_2"]
