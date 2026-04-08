@@ -38,6 +38,7 @@ class AnnotationController:
         self._selected_table_name: str | None = None
         self._selected_table_metadata: SpatialDataTableMetadata | None = None
         self._selected_instance_id: int | None = None
+        self._mouse_pick_callback: Callable[[Any, Any], None] = self._on_layer_mouse_pick
 
     @property
     def labels_layer(self) -> Any | None:
@@ -97,12 +98,14 @@ class AnnotationController:
 
         if layer_changed:
             self._disconnect_selected_label_events()
+            self._disconnect_mouse_pick_events()
             self._labels_layer = next_layer
 
             selected_label_emitter = getattr(getattr(self._labels_layer, "events", None), "selected_label", None)
             if selected_label_emitter is not None:
                 self._clear_default_selected_label()
                 selected_label_emitter.connect(self._on_layer_selected_label_changed)
+            self._connect_mouse_pick_events()
 
             # Start without an active picked instance. We clear napari's default
             # `selected_label == 1` above so a real first click on instance `1`
@@ -195,6 +198,36 @@ class AnnotationController:
             disconnect(self._on_layer_selected_label_changed)
         except (RuntimeError, TypeError, ValueError):
             return
+
+    def _connect_mouse_pick_events(self) -> None:
+        callbacks = getattr(self._labels_layer, "mouse_drag_callbacks", None)
+        if callbacks is None or self._mouse_pick_callback in callbacks:
+            return
+
+        callbacks.append(self._mouse_pick_callback)
+
+    def _disconnect_mouse_pick_events(self) -> None:
+        callbacks = getattr(self._labels_layer, "mouse_drag_callbacks", None)
+        if callbacks is None:
+            return
+
+        try:
+            callbacks.remove(self._mouse_pick_callback)
+        except ValueError:
+            return
+
+    def _on_layer_mouse_pick(self, layer: Any, event: object | None = None) -> None:
+        if layer is not self._labels_layer:
+            return
+
+        instance_id = _get_positive_label_from_mouse_event(layer, event)
+        if instance_id is None:
+            return
+
+        try:
+            layer.selected_label = instance_id
+        except (AttributeError, TypeError, ValueError):
+            self._set_selected_instance_id(instance_id)
 
     def _on_layer_selected_label_changed(self, event: object | None = None) -> None:
         del event
@@ -427,4 +460,39 @@ def _get_visible_instance_ids(layer: Any) -> list[int]:
 def _get_positive_selected_label(layer: Any) -> int | None:
     selected_label = getattr(layer, "selected_label", 0)
     instance_id = int(selected_label)
+    return instance_id if instance_id > 0 else None
+
+
+def _get_positive_label_from_mouse_event(layer: Any, event: object | None = None) -> int | None:
+    get_value = getattr(layer, "get_value", None)
+    if not callable(get_value) or event is None:
+        return None
+
+    dims_displayed = getattr(event, "dims_displayed", None)
+    if dims_displayed is None:
+        dims_displayed = list(getattr(getattr(layer, "_slice_input", None), "displayed", []))
+
+    try:
+        value = get_value(
+            getattr(event, "position", None),
+            view_direction=getattr(event, "view_direction", None),
+            dims_displayed=dims_displayed,
+            world=True,
+        )
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+    if isinstance(value, tuple):
+        if not value:
+            return None
+        value = value[-1]
+
+    if value is None:
+        return None
+
+    try:
+        instance_id = int(value)
+    except (TypeError, ValueError):
+        return None
+
     return instance_id if instance_id > 0 else None

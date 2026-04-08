@@ -56,6 +56,18 @@ def make_blobs_labels_layer(sdata: SpatialData, label_name: str = "blobs_labels"
     return layer
 
 
+def make_multiscale_blobs_labels_layer(sdata: SpatialData, label_name: str = "blobs_labels") -> Labels:
+    base_data = np.asarray(sdata.labels[label_name])
+    multiscale_data = [base_data, base_data[::2, ::2]]
+    indices = [int(value) for value in np.unique(base_data).tolist() if int(value) > 0]
+    layer = Labels(
+        multiscale_data,
+        name=label_name,
+        metadata={"sdata": sdata, "name": label_name, "indices": indices},
+    )
+    return layer
+
+
 def test_widget_can_be_instantiated(qtbot) -> None:
     widget = HarpyWidget()
 
@@ -221,6 +233,33 @@ def test_widget_automatically_enables_pick_mode_for_bound_labels_layer(qtbot, sd
 
     assert str(layer.mode) == "pick"
     assert viewer.layers.selection.active is layer
+
+
+def test_widget_picks_multiscale_labels_layers_without_napari_pick_mode(qtbot, sdata_blobs: SpatialData) -> None:
+    layer = make_multiscale_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    assert str(layer.mode) == "pan_zoom"
+    assert viewer.layers.selection.active is layer
+
+    coords = tuple(float(value) for value in np.argwhere(np.asarray(sdata_blobs.labels["blobs_labels"]) == 5)[0])
+    event = SimpleNamespace(position=coords, view_direction=None, dims_displayed=[0, 1])
+    layer.mouse_drag_callbacks[-1](layer, event)
+
+    assert widget.selected_instance_id == 5
+    assert widget.apply_class_button.isEnabled()
+
+    widget.class_spinbox.setValue(7)
+    widget.apply_class_button.click()
+
+    table = sdata_blobs["table"]
+    mask = (table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5)
+
+    assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [7]
+    assert "Assigned class 7" in widget.annotation_feedback.text()
 
 
 def test_widget_disables_pick_mode_when_selected_segmentation_layer_is_not_loaded(
