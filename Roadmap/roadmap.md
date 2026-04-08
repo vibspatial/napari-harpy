@@ -196,15 +196,15 @@ Use `adata.obs["user_class"]` as an integer annotation column with `0` meaning "
   - [x] use napari `Labels` pick mode to choose the current object
   - [x] treat `layer.selected_label` as the current instance id
 - [ ] Add UI elements for:
-  - [ ] current class label
-  - [ ] apply label to current picked object
-  - [ ] clear label for current picked object
-  - [ ] optional readout of the currently picked instance id
-- [ ] Resolve the picked napari label to a segmentation instance id.
-- [ ] Map instance ids to `adata.obs` rows via `instance_key` and `region_key`.
-- [ ] Initialize `adata.obs["user_class"]` if missing, using `0` for unlabeled.
-- [ ] Recolor the active segmentation layer from `user_class` values without modifying segmentation ids.
-- [ ] Keep background transparent and define a stable unlabeled color for class `0`.
+  - [x] current class label
+  - [x ] apply label to current picked object
+  - [x] clear label for current picked object
+  - [x] optional readout of the currently picked instance id
+- [x] Resolve the picked napari label to a segmentation instance id.
+- [x] Map instance ids to `adata.obs` rows via `instance_key` and `region_key`.
+- [x] Initialize `adata.obs["user_class"]` if missing, using `0` for unlabeled.
+- [x] Recolor the active segmentation layer from `user_class` values without modifying segmentation ids.
+- [x] Keep background transparent and define a stable unlabeled color for class `0`.
 
 ### Exit criteria
 

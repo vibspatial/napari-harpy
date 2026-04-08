@@ -183,7 +183,9 @@ class AnnotationController:
         features = pd.DataFrame(
             {
                 "index": instance_ids,
-                USER_CLASS_COLUMN: [int(user_class_by_instance.get(instance_id, UNLABELED_CLASS)) for instance_id in instance_ids],
+                USER_CLASS_COLUMN: [
+                    int(user_class_by_instance.get(instance_id, UNLABELED_CLASS)) for instance_id in instance_ids
+                ],
             }
         )
         self._labels_layer.features = features
@@ -272,7 +274,9 @@ class AnnotationController:
         if table is None or metadata is None or self._selected_label_name is None:
             return pd.Series(dtype="int64")
 
-        region_rows = table.obs.loc[table.obs[metadata.region_key] == self._selected_label_name, [metadata.instance_key]].copy()
+        region_rows = table.obs.loc[
+            table.obs[metadata.region_key] == self._selected_label_name, [metadata.instance_key]
+        ].copy()
         if USER_CLASS_COLUMN in table.obs:
             region_rows[USER_CLASS_COLUMN] = (
                 pd.to_numeric(
@@ -300,6 +304,7 @@ class AnnotationController:
             self._labels_layer.selected_label = 0
         except (AttributeError, TypeError, ValueError):
             return
+
 
 def _class_to_color(class_id: int) -> str:
     if class_id <= UNLABELED_CLASS:
