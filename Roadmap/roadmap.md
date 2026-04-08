@@ -192,9 +192,9 @@ Use `adata.obs["user_class"]` as an integer annotation column with `0` meaning "
 
 ### Tasks
 
-- [ ] Define the simplest annotation interaction model for MVP:
-  - [ ] use napari `Labels` pick mode to choose the current object
-  - [ ] treat `layer.selected_label` as the current instance id
+- [x] Define the simplest annotation interaction model for MVP:
+  - [x] use napari `Labels` pick mode to choose the current object
+  - [x] treat `layer.selected_label` as the current instance id
 - [ ] Add UI elements for:
   - [ ] current class label
   - [ ] apply label to current picked object
