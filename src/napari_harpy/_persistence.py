@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import anndata as ad
 import zarr
 
+from napari_harpy._annotation import USER_CLASS_COLORS_KEY
 from napari_harpy._spatialdata import SpatialDataAdapter
 
 if TYPE_CHECKING:
@@ -43,15 +44,18 @@ class PersistenceController:
         self._selected_spatialdata = sdata
         self._selected_table_name = table_name
 
-    def sync_table_obs(self) -> str:
-        """Write the current table `.obs` back to the backed zarr store."""
+    def sync_table_state(self) -> str:
+        """Write the current table annotation state back to the backed zarr store."""
         sdata = self._require_selected_spatialdata()
         table_name = self._require_selected_table_name()
         table = self._spatialdata_adapter.get_table(sdata, table_name)
         table_path = self._resolve_table_path(sdata, table, table_name)
 
         root = zarr.open_group(self.selected_store_path, mode="a", use_consolidated=False)
-        ad.io.write_elem(root[table_path], "obs", table.obs)
+        table_group = root[table_path]
+        ad.io.write_elem(table_group, "obs", table.obs)
+        if USER_CLASS_COLORS_KEY in table.uns:
+            ad.io.write_elem(table_group["uns"], USER_CLASS_COLORS_KEY, table.uns[USER_CLASS_COLORS_KEY])
         return table_path
 
     def _require_selected_spatialdata(self) -> SpatialData:

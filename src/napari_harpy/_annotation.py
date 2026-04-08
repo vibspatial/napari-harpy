@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -13,7 +14,10 @@ if TYPE_CHECKING:
     from anndata import AnnData
     from spatialdata import SpatialData
 
+logger = logging.getLogger(__name__)
+
 USER_CLASS_COLUMN = "user_class"
+USER_CLASS_COLORS_KEY = f"{USER_CLASS_COLUMN}_colors"
 UNLABELED_CLASS = 0
 UNLABELED_COLOR = "#80808099"
 CLASS_COLORS = (
@@ -72,7 +76,7 @@ class AnnotationController:
         if USER_CLASS_COLUMN not in table.obs:
             return UNLABELED_CLASS
 
-        values = pd.to_numeric(table.obs.loc[matching_rows, USER_CLASS_COLUMN], errors="coerce").fillna(UNLABELED_CLASS)
+        values = _to_user_class_values(table.obs.loc[matching_rows, USER_CLASS_COLUMN])
         return int(values.iloc[0])
 
     @property
@@ -117,6 +121,7 @@ class AnnotationController:
             # is no longer ambiguous.
             self._set_selected_instance_id(None)
 
+        self._normalize_existing_annotation_state()
         self.refresh_layer_colors()
         self.refresh_layer_features()
 
@@ -133,15 +138,15 @@ class AnnotationController:
         return True
 
     def ensure_annotation_column(self, column_name: str = USER_CLASS_COLUMN) -> None:
-        """Ensure the user annotation column exists and contains integer class ids."""
+        """Ensure the user annotation column exists as a categorical integer label column."""
         table = self._require_bound_table()
         if column_name not in table.obs:
-            table.obs[column_name] = pd.Series(UNLABELED_CLASS, index=table.obs.index, dtype="int64")
+            values = pd.Series(UNLABELED_CLASS, index=table.obs.index, dtype="int64", name=column_name)
+            _set_user_class_annotation_state(table, values)
             return
 
-        table.obs[column_name] = (
-            pd.to_numeric(table.obs[column_name], errors="coerce").fillna(UNLABELED_CLASS).astype("int64")
-        )
+        values = _to_user_class_values(table.obs[column_name])
+        _set_user_class_annotation_state(table, values)
 
     def apply_class(self, class_id: int) -> None:
         """Assign the given user class to the currently picked instance."""
@@ -237,7 +242,9 @@ class AnnotationController:
                 f"No table row matches segmentation `{self._selected_label_name}` and instance id `{self._selected_instance_id}`."
             )
 
-        table.obs.loc[matching_rows, USER_CLASS_COLUMN] = int(class_id)
+        user_class_values = _to_user_class_values(table.obs[USER_CLASS_COLUMN])
+        user_class_values.loc[matching_rows] = int(class_id)
+        _set_user_class_annotation_state(table, user_class_values)
         self.refresh_layer_colors()
         self.refresh_layer_features()
 
@@ -278,14 +285,7 @@ class AnnotationController:
             table.obs[metadata.region_key] == self._selected_label_name, [metadata.instance_key]
         ].copy()
         if USER_CLASS_COLUMN in table.obs:
-            region_rows[USER_CLASS_COLUMN] = (
-                pd.to_numeric(
-                    table.obs.loc[region_rows.index, USER_CLASS_COLUMN],
-                    errors="coerce",
-                )
-                .fillna(UNLABELED_CLASS)
-                .astype("int64")
-            )
+            region_rows[USER_CLASS_COLUMN] = _to_user_class_values(table.obs.loc[region_rows.index, USER_CLASS_COLUMN])
         else:
             region_rows[USER_CLASS_COLUMN] = UNLABELED_CLASS
 
@@ -305,12 +305,64 @@ class AnnotationController:
         except (AttributeError, TypeError, ValueError):
             return
 
+    def _normalize_existing_annotation_state(self) -> None:
+        table = self._get_bound_table()
+        if table is None or USER_CLASS_COLUMN not in table.obs:
+            return
+
+        self.ensure_annotation_column(USER_CLASS_COLUMN)
+
 
 def _class_to_color(class_id: int) -> str:
     if class_id <= UNLABELED_CLASS:
         return UNLABELED_COLOR
 
     return CLASS_COLORS[(class_id - 1) % len(CLASS_COLORS)]
+
+
+def _to_user_class_values(values: pd.Series) -> pd.Series:
+    numeric_values = pd.to_numeric(values.astype("string"), errors="coerce").fillna(UNLABELED_CLASS).astype("int64")
+    numeric_values.name = USER_CLASS_COLUMN
+    return numeric_values
+
+
+def _set_user_class_annotation_state(table: AnnData, values: pd.Series) -> None:
+    """Normalize `user_class` state and regenerate the corresponding color palette.
+
+    For now, `napari-harpy` treats `user_class_colors` as derived state from the
+    current class ids. If a different palette already exists, it is overwritten and
+    a warning is logged so that this behavior is visible during development.
+    """
+    normalized_values = _to_user_class_values(values)
+    categories = sorted({UNLABELED_CLASS, *normalized_values.tolist()})
+    generated_colors = [_class_to_color(int(class_id)) for class_id in categories]
+    existing_colors = _normalize_color_sequence(table.uns.get(USER_CLASS_COLORS_KEY))
+    if existing_colors is not None and existing_colors != generated_colors:
+        logger.warning(
+            "Overwriting existing `%s` palette in `table.uns`. "
+            "Current napari-harpy behavior regenerates this palette from `%s` categories.",
+            USER_CLASS_COLORS_KEY,
+            USER_CLASS_COLUMN,
+        )
+    table.obs[USER_CLASS_COLUMN] = pd.Series(
+        pd.Categorical(normalized_values, categories=categories),
+        index=normalized_values.index,
+        name=USER_CLASS_COLUMN,
+    )
+    table.uns[USER_CLASS_COLORS_KEY] = generated_colors
+
+
+def _normalize_color_sequence(value: object) -> list[str] | None:
+    if value is None:
+        return None
+
+    if isinstance(value, np.ndarray):
+        return [str(item) for item in value.tolist()]
+
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value]
+
+    return [str(value)]
 
 
 def _get_visible_instance_ids(layer: Any) -> list[int]:

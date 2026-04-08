@@ -430,19 +430,22 @@ class HarpyWidget(QWidget):
         elif not can_sync:
             tooltip = "The selected SpatialData dataset is not backed by zarr."
         else:
-            tooltip = f"Write `{self.selected_table_name}`.obs to `{self.selected_spatialdata.path}`."
+            tooltip = (
+                f"Write `{self.selected_table_name}` annotation state "
+                f"to `{self.selected_spatialdata.path}`."
+            )
 
         self.sync_button.setToolTip(tooltip)
 
     def _sync_to_zarr(self) -> None:
         try:
-            table_path = self._persistence_controller.sync_table_obs()
+            table_path = self._persistence_controller.sync_table_state()
         except ValueError as error:
             self._set_sync_feedback(str(error), error=True)
             return
 
         self._set_sync_feedback(
-            f"Synced `{self.selected_table_name}`.obs to `{table_path}`.",
+            f"Synced `{self.selected_table_name}` annotation state to `{table_path}`.",
             error=False,
         )
 

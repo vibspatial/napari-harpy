@@ -176,6 +176,9 @@ map and should be recolored via a direct instance-id-to-color mapping.
 Use `adata.obs["user_class"]` as an integer annotation column with `0` meaning "unlabeled" and
 `1, 2, 3, ...` reserved for user classes. Clearing a label resets it to `0`.
 
+For now, treat `adata.uns["user_class_colors"]` as derived state from the current user classes.
+If an existing palette is present, `napari-harpy` may overwrite it with its generated palette and we log when this happens.
+
 ### Suggested controller API
 
 - `AnnotationController.bind(...)`: resolve the concrete `Labels` layer for the current widget selection and connect
@@ -237,26 +240,26 @@ into the viewer.
 
 ### Tasks
 
-- [ ] Add a `Sync to zarr` action in the widget.
-- [ ] Define the write-back source of truth:
-  - [ ] treat the selected in-memory `SpatialData` table as authoritative while the session is open
-  - [ ] persist the current `adata.obs[...]` values for the selected table
-- [ ] Implement a `PersistenceController` or equivalent write-back helper.
-- [ ] Support partial table persistence:
-  - [ ] locate the selected table path in the backed `SpatialData` store
-  - [ ] rewrite only the `obs` element for the selected table rather than rewriting the whole store
-- [ ] Write the updated table back into the zarr-backed `SpatialData` store safely.
-- [ ] Surface success and failure states clearly in the UI.
-- [ ] Decide and document what happens after sync:
-  - [ ] keep the current in-memory `SpatialData` table authoritative after a successful sync
-  - [ ] do not automatically reload the store as part of sync
-- [ ] Keep the sync step manual for MVP rather than automatically syncing on every click.
+- [x] Add a `Sync to zarr` action in the widget.
+- [x] Define the write-back source of truth:
+  - [x] treat the selected in-memory `SpatialData` table as authoritative while the session is open
+  - [x] persist the current `adata.obs[...]` values for the selected table
+- [x] Implement a `PersistenceController` or equivalent write-back helper.
+- [x] Support partial table persistence:
+  - [x] locate the selected table path in the backed `SpatialData` store
+  - [x] rewrite only the `obs` element for the selected table rather than rewriting the whole store
+- [x] Write the updated table back into the zarr-backed `SpatialData` store safely.
+- [x] Surface success and failure states clearly in the UI.
+- [x] Decide and document what happens after sync:
+  - [x] keep the current in-memory `SpatialData` table authoritative after a successful sync
+  - [x] do not automatically reload the store as part of sync
+- [x] Keep the sync step manual for MVP rather than automatically syncing on every click.
 
 ### Exit criteria
 
-- [ ] User can annotate objects, click `Sync to zarr`, and persist `adata.obs["user_class"]` to disk.
-- [ ] Sync failures are visible and do not silently discard in-memory edits.
-- [ ] The roadmap clearly distinguishes viewer rescan, disk sync, and disk reload.
+- [x] User can annotate objects, click `Sync to zarr`, and persist `adata.obs["user_class"]` to disk.
+- [x] Sync failures are visible and do not silently discard in-memory edits.
+- [x] The roadmap clearly distinguishes viewer rescan, disk sync, and disk reload.
 
 ### Phase 4: Reload from zarr
 
