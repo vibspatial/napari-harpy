@@ -1,4 +1,6 @@
-# napari-harpy
+<p align="center">
+  <img src="docs/_static/logo.png" alt="Harpy logo" width="200">
+</p>
 
 `napari-harpy` is a napari plugin for interactive object classification on `SpatialData` datasets.
 
