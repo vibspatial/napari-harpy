@@ -332,25 +332,25 @@ The recoloring step should happen on the main thread after worker completion. We
 - [x] Compute and store:
   - [x] `pred_class`
   - [x] `pred_confidence`
-- [ ] Decide representation for unlabeled or not-yet-predicted objects.
-- [ ] Add a `Color by` dropdown to the widget.
-- [ ] Support `Color by = user_class`.
-- [ ] Support `Color by = pred_class`.
-- [ ] Support `Color by = pred_confidence`.
-- [ ] Update layer coloring on the main thread when classifier results arrive.
-- [ ] Reuse the stable user-class palette when coloring by `pred_class`, even if some categories are absent.
-- [ ] Add a continuous colormap for `pred_confidence` in `[0, 1]`.
-- [ ] Define fallback styling for missing/`NaN` prediction confidence values.
-- [ ] Refresh the active labels layer when the `Color by` selection changes.
+- [x] Decide representation for unlabeled or not-yet-predicted objects.
+- [x] Add a `Color by` dropdown to the widget.
+- [x] Support `Color by = user_class`.
+- [x] Support `Color by = pred_class`.
+- [x] Support `Color by = pred_confidence`.
+- [x] Update layer coloring on the main thread when classifier results arrive.
+- [x] Reuse the stable user-class palette when coloring by `pred_class`, even if some categories are absent.
+- [x] Add a continuous colormap for `pred_confidence` in `[0, 1]`.
+- [x] Define fallback styling for missing/`NaN` prediction confidence values.
+- [x] Refresh the active labels layer when the `Color by` selection changes.
 
 ### Exit criteria
 
-- Prediction updates are visible immediately after training finishes.
-- The user can switch layer styling between `user_class`, `pred_class`, and `pred_confidence`.
-- `pred_class` uses the same stable class colors as `user_class`.
-- `pred_confidence` uses a continuous colormap with a clear missing-value fallback.
-- Untrained or invalid states are visually clear.
-- ROI-restricted predictions are visually understandable.
+- [x] Prediction updates are visible immediately after training finishes.
+- [x] The user can switch layer styling between `user_class`, `pred_class`, and `pred_confidence`.
+- [x] `pred_class` uses the same stable class colors as `user_class`.
+- [x] `pred_confidence` uses a continuous colormap with a clear missing-value fallback.
+- [x] Untrained or invalid states are visually clear.
+- [] ROI-restricted predictions are visually understandable.
 
 ### Phase 6: Reload from zarr
 
