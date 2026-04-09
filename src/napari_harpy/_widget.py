@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from html import escape
 from typing import TYPE_CHECKING
 
 from qtpy.QtCore import QSignalBlocker
@@ -121,7 +122,7 @@ class HarpyWidget(QWidget):
         self.validation_status.setStyleSheet("color: #b45309; font-weight: 600;")
         self.validation_status.hide()
 
-        self.selection_status = QLabel("Selection: choose a segmentation mask to enable object picking.")
+        self.selection_status = QLabel()
         self.selection_status.setObjectName("selection_status")
         self.selection_status.setWordWrap(True)
 
@@ -441,31 +442,51 @@ class HarpyWidget(QWidget):
         missing_table_row_message = self._annotation_controller.missing_table_row_message
 
         if self.selected_segmentation_name is None:
-            message = "Selection: choose a segmentation mask to enable object picking."
+            self._set_selection_status(
+                title="Selection",
+                lines=["Choose a segmentation mask to enable object picking."],
+                kind="info",
+            )
         elif labels_layer is None:
-            message = (
-                "Selection: the chosen segmentation is known in SpatialData but is not currently loaded as a "
-                "napari Labels layer."
+            self._set_selection_status(
+                title="Selection",
+                lines=[
+                    "The chosen segmentation is known in SpatialData but is not currently loaded as a napari Labels layer."
+                ],
+                kind="warning",
             )
         elif self.selected_instance_id is None:
-            message = (
-                f"Selection: bound to `{self.selected_segmentation_name}`. Click an object "
-                "in the viewer."
+            self._set_selection_status(
+                title="Selection",
+                lines=[
+                    f"Bound to {self.selected_segmentation_name}.",
+                    "Click an object in the viewer.",
+                ],
+                kind="info",
             )
         elif missing_table_row_message is not None:
-            message = f"Selection: {missing_table_row_message}"
+            self._set_selection_status(
+                title="Selection Warning",
+                lines=[
+                    f"Bound to {self.selected_segmentation_name}.",
+                    missing_table_row_message,
+                ],
+                kind="warning",
+            )
         else:
             current_user_class = self._annotation_controller.current_user_class
             current_class_label = (
                 "unlabeled" if current_user_class in (None, UNLABELED_CLASS) else str(current_user_class)
             )
-            message = (
-                f"Selection: bound to `{self.selected_segmentation_name}`. "
-                f"Current instance id: {self.selected_instance_id}. "
-                f"Current class: {current_class_label}."
+            self._set_selection_status(
+                title="Selection Ready",
+                lines=[
+                    f"Bound to {self.selected_segmentation_name}.",
+                    f"Current instance id: {self.selected_instance_id}.",
+                    f"Current class: {current_class_label}.",
+                ],
+                kind="success",
             )
-
-        self.selection_status.setText(message)
 
     def _update_annotation_controls(self) -> None:
         has_table = self.selected_table_name is not None
@@ -525,6 +546,30 @@ class HarpyWidget(QWidget):
             f"color: {color_by_kind.get(kind, '#166534')}; font-weight: 600;"
         )
         self.annotation_feedback.setVisible(bool(message))
+
+    def _set_selection_status(self, title: str, lines: list[str], *, kind: str) -> None:
+        palette_by_kind = {
+            "info": {"text": "#1d4ed8", "border": "#93c5fd", "background": "#eff6ff"},
+            "warning": {"text": "#b45309", "border": "#fdba74", "background": "#fff7ed"},
+            "success": {"text": "#166534", "border": "#86efac", "background": "#f0fdf4"},
+        }
+        palette = palette_by_kind.get(kind, palette_by_kind["info"])
+        formatted_lines = "<br>".join(f"<span>{escape(line)}</span>" for line in lines)
+        self.selection_status.setText(
+            "<div>"
+            f"<span style='font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;'>"
+            f"{escape(title)}</span><br>"
+            f"{formatted_lines}"
+            "</div>"
+        )
+        self.selection_status.setStyleSheet(
+            "font-weight: 500; "
+            f"color: {palette['text']}; "
+            f"background-color: {palette['background']}; "
+            f"border: 1px solid {palette['border']}; "
+            "border-radius: 8px; "
+            "padding: 10px 12px;"
+        )
 
     def _set_classifier_feedback(self, message: str, *, kind: str = "info") -> None:
         color_by_kind = {
