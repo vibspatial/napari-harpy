@@ -405,7 +405,8 @@ def test_widget_warns_when_selected_label_is_missing_from_annotation_table(
     assert "Selected instance id 5 is not present in annotation table" in widget.annotation_feedback.text()
     assert "#b45309" in widget.annotation_feedback.styleSheet()
     assert USER_CLASS_COLUMN not in table.obs
-    assert warnings == [widget.annotation_feedback.text()]
+    assert warnings == [widget._annotation_controller.missing_table_row_message]
+    assert warnings[0] in widget.annotation_feedback.text()
 
 
 def test_widget_recolors_layer_from_user_class_annotations(qtbot, sdata_blobs: SpatialData) -> None:

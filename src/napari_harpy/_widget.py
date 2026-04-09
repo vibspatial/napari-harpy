@@ -536,33 +536,63 @@ class HarpyWidget(QWidget):
         self._update_selection_status()
 
     def _set_annotation_feedback(self, message: str, *, kind: str = "success") -> None:
-        color_by_kind = {
-            "error": "#b91c1c",
-            "warning": "#b45309",
-            "success": "#166534",
+        if not message:
+            self.annotation_feedback.setText("")
+            self.annotation_feedback.setVisible(False)
+            return
+
+        title_by_kind = {
+            "error": "Annotation Error",
+            "warning": "Annotation Warning",
+            "success": "Annotation Updated",
         }
-        self.annotation_feedback.setText(message)
-        self.annotation_feedback.setStyleSheet(
-            f"color: {color_by_kind.get(kind, '#166534')}; font-weight: 600;"
+        self._set_status_card(
+            self.annotation_feedback,
+            title=title_by_kind.get(kind, "Annotation"),
+            lines=[message],
+            kind=kind,
         )
-        self.annotation_feedback.setVisible(bool(message))
 
     def _set_selection_status(self, title: str, lines: list[str], *, kind: str) -> None:
+        self._set_status_card(self.selection_status, title=title, lines=lines, kind=kind)
+
+    def _set_classifier_feedback(self, message: str, *, kind: str = "info") -> None:
+        if not message:
+            self.classifier_feedback.setText("")
+            self.classifier_feedback.setVisible(False)
+            return
+
+        title_by_kind = {
+            "error": "Classifier Error",
+            "warning": "Classifier Warning",
+            "success": "Classifier Ready",
+            "info": "Classifier",
+        }
+        body = message.removeprefix("Classifier: ").strip()
+        self._set_status_card(
+            self.classifier_feedback,
+            title=title_by_kind.get(kind, "Classifier"),
+            lines=[body],
+            kind=kind,
+        )
+
+    def _set_status_card(self, label: QLabel, *, title: str, lines: list[str], kind: str) -> None:
         palette_by_kind = {
             "info": {"text": "#1d4ed8", "border": "#93c5fd", "background": "#eff6ff"},
             "warning": {"text": "#b45309", "border": "#fdba74", "background": "#fff7ed"},
             "success": {"text": "#166534", "border": "#86efac", "background": "#f0fdf4"},
+            "error": {"text": "#b91c1c", "border": "#fca5a5", "background": "#fef2f2"},
         }
         palette = palette_by_kind.get(kind, palette_by_kind["info"])
         formatted_lines = "<br>".join(f"<span>{escape(line)}</span>" for line in lines)
-        self.selection_status.setText(
+        label.setText(
             "<div>"
             f"<span style='font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;'>"
             f"{escape(title)}</span><br>"
             f"{formatted_lines}"
             "</div>"
         )
-        self.selection_status.setStyleSheet(
+        label.setStyleSheet(
             "font-weight: 500; "
             f"color: {palette['text']}; "
             f"background-color: {palette['background']}; "
@@ -570,19 +600,7 @@ class HarpyWidget(QWidget):
             "border-radius: 8px; "
             "padding: 10px 12px;"
         )
-
-    def _set_classifier_feedback(self, message: str, *, kind: str = "info") -> None:
-        color_by_kind = {
-            "error": "#b91c1c",
-            "warning": "#b45309",
-            "success": "#166534",
-            "info": "#1d4ed8",
-        }
-        self.classifier_feedback.setText(message)
-        self.classifier_feedback.setStyleSheet(
-            f"color: {color_by_kind.get(kind, '#1d4ed8')}; font-weight: 600;"
-        )
-        self.classifier_feedback.setVisible(bool(message))
+        label.setVisible(bool(lines))
 
     def _update_sync_controls(self) -> None:
         can_sync = self._persistence_controller.can_sync
