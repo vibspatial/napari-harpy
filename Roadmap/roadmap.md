@@ -286,7 +286,7 @@ The plugin retrains a classifier in the background whenever annotations change.
   - [x] wait about 200 to 500 ms so bursts of clicks collapse into one job
   - [x] train in a worker thread
   - [x] when training finishes, run prediction on all objects
-  - [ ] update layer coloring and overlays on the main thread
+  - [x] update layer coloring and overlays on the main thread
 - [x] Prefer napari's `@thread_worker` pattern for training jobs and UI-safe completion handling.
 - [x] Implement stale-job cancellation or stale-result dropping so only the newest fit is applied.
 - [x] Capture training metadata in `adata.uns["classifier_config"]`.
@@ -302,6 +302,11 @@ The plugin retrains a classifier in the background whenever annotations change.
 ### Outcome
 
 Objects are recolored live from selectable table-derived state.
+
+### Status update
+
+The full-table prediction and viewer-coloring workflow described in this phase is implemented.
+ROI-restricted prediction behavior is intentionally deferred to Phase 7.
 
 ### Implementation note
 
@@ -329,6 +334,7 @@ The recoloring step should happen on the main thread after worker completion. We
 
 - [x] Predict classes for all objects after each successful fit.
 - [ ] If ROI is active, predict only for objects in the active subset and define how out-of-ROI objects are displayed.
+  Deferred to Phase 7 ROI support.
 - [x] Compute and store:
   - [x] `pred_class`
   - [x] `pred_confidence`
@@ -350,7 +356,8 @@ The recoloring step should happen on the main thread after worker completion. We
 - [x] `pred_class` uses the same stable class colors as `user_class`.
 - [x] `pred_confidence` uses a continuous colormap with a clear missing-value fallback.
 - [x] Untrained or invalid states are visually clear.
-- [] ROI-restricted predictions are visually understandable.
+- [ ] ROI-restricted predictions are visually understandable.
+  Deferred to Phase 7 ROI support.
 
 ### Phase 6: Reload from zarr
 
