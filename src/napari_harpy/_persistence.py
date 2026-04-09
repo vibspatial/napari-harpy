@@ -1,18 +1,32 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import anndata as ad
 import zarr
+from spatialdata.models import TableModel
 
 from napari_harpy._annotation import USER_CLASS_COLORS_KEY
 from napari_harpy._classifier import CLASSIFIER_CONFIG_KEY
 from napari_harpy._spatialdata import SpatialDataAdapter
 
 if TYPE_CHECKING:
+    import pandas as pd
     from anndata import AnnData
     from spatialdata import SpatialData
+
+
+@dataclass(frozen=True)
+class TableDiskSnapshot:
+    """Partial table state reloaded directly from the backed zarr store."""
+
+    table_name: str
+    table_path: str
+    obs: pd.DataFrame
+    obsm: dict[str, Any]
+    uns: dict[str, Any]
 
 
 class PersistenceController:
@@ -33,6 +47,11 @@ class PersistenceController:
         )
 
     @property
+    def can_reload(self) -> bool:
+        """Return whether the currently selected table can be reloaded from zarr."""
+        return self.can_sync
+
+    @property
     def selected_store_path(self) -> Path | None:
         """Return the backed zarr path for the current SpatialData selection."""
         if self._selected_spatialdata is None or self._selected_spatialdata.path is None:
@@ -43,7 +62,7 @@ class PersistenceController:
     @property
     def selected_table_store_path(self) -> Path | None:
         """Return the full on-disk zarr path for the current table selection."""
-        if not self.can_sync:
+        if not self.can_reload:
             return None
 
         sdata = self._require_selected_spatialdata()
@@ -61,6 +80,52 @@ class PersistenceController:
         self._selected_spatialdata = sdata
         self._selected_table_name = table_name
 
+    def read_table_snapshot_from_disk(self) -> TableDiskSnapshot:
+        """Read the selected table's `obs`, `obsm`, and `uns` directly from zarr."""
+        sdata = self._require_selected_spatialdata(action="reloading from zarr")
+        table_name = self._require_selected_table_name(action="reloading from zarr")
+        table = self._spatialdata_adapter.get_table(sdata, table_name)
+        table_path = self._resolve_table_path(sdata, table, table_name)
+
+        root = zarr.open_group(self.selected_store_path, mode="r", use_consolidated=False)
+        table_group = root[table_path]
+        obs = ad.io.read_elem(table_group["obs"])
+        obsm = ad.io.read_elem(table_group["obsm"])
+        uns = ad.io.read_elem(table_group["uns"])
+
+        return TableDiskSnapshot(
+            table_name=table_name,
+            table_path=table_path,
+            obs=obs,
+            obsm=obsm,
+            uns=uns,
+        )
+
+    def replace_selected_table(self, snapshot: TableDiskSnapshot) -> str:
+        """Replace the selected in-memory table with a reloaded snapshot."""
+        sdata = self._require_selected_spatialdata(action="reloading from zarr")
+        table_name = self._require_selected_table_name(action="reloading from zarr")
+        current_table = self._spatialdata_adapter.get_table(sdata, table_name)
+        table_path = self._resolve_table_path(sdata, current_table, table_name)
+        if snapshot.table_name != table_name or snapshot.table_path != table_path:
+            raise ValueError(
+                f"Reload snapshot targets `{snapshot.table_name}` at `{snapshot.table_path}`, "
+                f"but the current selection is `{table_name}` at `{table_path}`."
+            )
+
+        current_table.obs = snapshot.obs
+        # Shallow-copy the mapping to avoid aliasing the transient snapshot.
+        # The arrays stored in `obsm` are not copied by `dict(...)`.
+        current_table.obsm = dict(snapshot.obsm)
+        current_table.uns = dict(snapshot.uns)
+        TableModel.validate(current_table)
+        return table_path
+
+    def reload_table_state(self) -> str:
+        """Reload the selected table's partial state from disk into the current SpatialData object."""
+        snapshot = self.read_table_snapshot_from_disk()
+        return self.replace_selected_table(snapshot)
+
     def sync_table_state(self) -> str:
         """Write the current table annotation state back to the backed zarr store."""
         sdata = self._require_selected_spatialdata()
@@ -77,18 +142,18 @@ class PersistenceController:
             ad.io.write_elem(table_group["uns"], CLASSIFIER_CONFIG_KEY, table.uns[CLASSIFIER_CONFIG_KEY])
         return table_path
 
-    def _require_selected_spatialdata(self) -> SpatialData:
+    def _require_selected_spatialdata(self, *, action: str = "syncing to zarr") -> SpatialData:
         if self._selected_spatialdata is None:
-            raise ValueError("Choose a SpatialData dataset before syncing to zarr.")
+            raise ValueError(f"Choose a SpatialData dataset before {action}.")
 
         if not self._selected_spatialdata.is_backed() or self._selected_spatialdata.path is None:
             raise ValueError("The selected SpatialData dataset is not backed by zarr.")
 
         return self._selected_spatialdata
 
-    def _require_selected_table_name(self) -> str:
+    def _require_selected_table_name(self, *, action: str = "syncing to zarr") -> str:
         if self._selected_table_name is None:
-            raise ValueError("Choose an annotation table before syncing to zarr.")
+            raise ValueError(f"Choose an annotation table before {action}.")
 
         return self._selected_table_name
 

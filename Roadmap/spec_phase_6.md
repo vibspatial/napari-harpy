@@ -128,6 +128,52 @@ regenerated after reload instead of patched column by column.
 
 This is the safest approach and best matches how `napari-spatialdata` created it in the first place.
 
+#### How the cache should be regenerated
+
+Harpy should rebuild `layer.metadata["adata"]` from the refreshed in-memory `SpatialData` table after a
+successful reload.
+
+The intended implementation is:
+
+1. reload disk state into `sdata.tables[table_name]`
+2. resolve the currently bound napari layer for the selected spatial element
+3. construct a fresh joined `AnnData` for that layer using the selected `sdata`, `table_name`, and
+   `label_name`
+4. use the same join semantics as `napari-spatialdata`:
+   - `join_spatialelement_table(...)`
+   - `how="left"`
+   - `match_rows="left"`
+5. replace only the table-derived metadata fields:
+   - `layer.metadata["adata"]`
+   - `layer.metadata["region_key"]`
+   - `layer.metadata["instance_key"]`
+   - `layer.metadata["table_names"]` if it is being refreshed
+6. leave non-table metadata untouched:
+   - `layer.metadata["sdata"]`
+   - `layer.metadata["name"]`
+   - `layer.metadata["indices"]`
+   - coordinate-system metadata
+   - affine/view state
+7. run the normal Harpy refresh steps after the metadata cache replacement:
+   - feature matrix dropdown refresh
+   - selection status refresh
+   - layer color refresh
+   - layer features refresh
+   - classifier status refresh
+
+Important implementation note:
+
+- Harpy should not import or depend on a private helper from `napari-spatialdata` for this.
+- Harpy should reproduce the same behavior with the public `spatialdata.join_spatialelement_table(...)`
+  API.
+
+Fallback rule:
+
+- if the selected table is reloaded successfully but the corresponding labels layer is not currently loaded in
+  the viewer, skip the metadata-cache refresh step
+- in that case the authoritative state in `sdata.tables[table_name]` is still updated, and the next bind/load
+  of that layer should see the refreshed table
+
 ## Core Decision For Phase 6
 
 Phase 6 should formalize this authority model:

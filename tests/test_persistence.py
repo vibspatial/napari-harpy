@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import anndata as ad
+import numpy as np
 import pandas as pd
 import pytest
+import zarr
 from spatialdata import SpatialData, read_zarr
 
 from napari_harpy._annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
@@ -57,3 +60,64 @@ def test_persistence_controller_syncs_table_obs_and_colors_to_backed_store(backe
     assert list(reread["table"].uns[USER_CLASS_COLORS_KEY]) == ["#111111", "#222222"]
     assert reread["table"].uns[CLASSIFIER_CONFIG_KEY]["feature_key"] == "features_1"
     assert sorted(reread["table"].obsm.keys()) == ["features_1", "features_2"]
+
+
+def _write_disk_snapshot_payload(
+    backed_sdata_blobs: SpatialData,
+) -> tuple[pd.DataFrame, dict[str, np.ndarray], dict[str, object]]:
+    table = backed_sdata_blobs["table"]
+    obs = table.obs.copy()
+    obs["disk_user_class"] = pd.Categorical([0] * (table.n_obs - 1) + [7], categories=[0, 7])
+
+    obsm = dict(table.obsm)
+    obsm["disk_features"] = np.arange(table.n_obs, dtype=np.float64).reshape(table.n_obs, 1)
+
+    uns = dict(table.uns)
+    uns["disk_flag"] = {"source": "disk"}
+
+    root = zarr.open_group(backed_sdata_blobs.path, mode="a", use_consolidated=False)
+    table_group = root["tables/table"]
+    ad.io.write_elem(table_group, "obs", obs)
+    ad.io.write_elem(table_group, "obsm", obsm)
+    ad.io.write_elem(table_group, "uns", uns)
+    return obs, obsm, uns
+
+
+def test_persistence_controller_reads_selected_table_snapshot_from_backed_store(
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    controller = PersistenceController(SpatialDataAdapter())
+    controller.bind(backed_sdata_blobs, "table")
+    disk_obs, disk_obsm, disk_uns = _write_disk_snapshot_payload(backed_sdata_blobs)
+
+    snapshot = controller.read_table_snapshot_from_disk()
+
+    assert snapshot.table_name == "table"
+    assert snapshot.table_path == "tables/table"
+    assert snapshot.obs.equals(disk_obs)
+    assert sorted(snapshot.obsm.keys()) == sorted(disk_obsm.keys())
+    assert np.array_equal(snapshot.obsm["disk_features"], disk_obsm["disk_features"])
+    assert snapshot.uns["disk_flag"] == disk_uns["disk_flag"]
+    assert "disk_user_class" not in backed_sdata_blobs["table"].obs
+    assert "disk_features" not in backed_sdata_blobs["table"].obsm
+    assert "disk_flag" not in backed_sdata_blobs["table"].uns
+
+
+def test_persistence_controller_replaces_selected_table_with_reloaded_snapshot(
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    controller = PersistenceController(SpatialDataAdapter())
+    controller.bind(backed_sdata_blobs, "table")
+    _write_disk_snapshot_payload(backed_sdata_blobs)
+    original_table = backed_sdata_blobs["table"]
+
+    table_path = controller.reload_table_state()
+    reloaded_table = backed_sdata_blobs["table"]
+
+    assert table_path == "tables/table"
+    assert reloaded_table is original_table
+    assert "disk_user_class" in reloaded_table.obs
+    assert "disk_features" in reloaded_table.obsm
+    assert reloaded_table.uns["disk_flag"] == {"source": "disk"}
+    assert list(reloaded_table.var_names) == list(original_table.var_names)
+    assert backed_sdata_blobs.locate_element(reloaded_table) == ["tables/table"]
