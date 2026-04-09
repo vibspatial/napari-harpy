@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from html import escape
+from pathlib import Path
 from typing import TYPE_CHECKING
 
-from qtpy.QtCore import QSignalBlocker
+from qtpy.QtCore import QSignalBlocker, Qt
+from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import QComboBox, QFormLayout, QLabel, QPushButton, QSpinBox, QVBoxLayout, QWidget
 
 from napari_harpy._annotation import UNLABELED_CLASS, AnnotationController
@@ -63,19 +65,11 @@ class HarpyWidget(QWidget):
         self._selected_table_name: str | None = None
         self._feature_matrix_keys: list[str] = []
         self._selected_feature_key: str | None = None
+        self._logo_path = Path(__file__).resolve().parents[2] / "docs" / "_static" / "logo.png"
 
         layout = QVBoxLayout(self)
 
-        title = QLabel("napari-harpy")
-        title.setStyleSheet("font-size: 18px; font-weight: 600;")
-
-        subtitle = QLabel(
-            "Phase 2 setup.\nSelect the segmentation mask and use Pick mode in napari to choose an object."
-        )
-        subtitle.setWordWrap(True)
-
-        self.viewer_status = QLabel("Viewer connected." if napari_viewer is not None else "Viewer not connected.")
-        self.viewer_status.setWordWrap(True)
+        title = self._create_header_logo()
 
         selector_layout = QFormLayout()
         self.segmentation_combo = QComboBox()
@@ -158,8 +152,6 @@ class HarpyWidget(QWidget):
         selector_layout.addRow("User class", self.class_spinbox)
 
         layout.addWidget(title)
-        layout.addWidget(subtitle)
-        layout.addWidget(self.viewer_status)
         layout.addLayout(selector_layout)
         layout.addWidget(self.refresh_button)
         layout.addWidget(self.retrain_button)
@@ -175,6 +167,21 @@ class HarpyWidget(QWidget):
 
         self._connect_viewer_events()
         self.refresh_segmentation_masks()
+
+    def _create_header_logo(self) -> QLabel:
+        logo_label = QLabel()
+        logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        logo_pixmap = QPixmap(str(self._logo_path))
+        if not logo_pixmap.isNull():
+            logo_label.setPixmap(
+                logo_pixmap.scaledToWidth(120, Qt.TransformationMode.SmoothTransformation)
+            )
+            return logo_label
+
+        logo_label.setText("napari-harpy")
+        logo_label.setStyleSheet("font-size: 18px; font-weight: 600;")
+        return logo_label
 
     @property
     def selected_segmentation_name(self) -> str | None:
