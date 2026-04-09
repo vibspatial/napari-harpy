@@ -48,12 +48,23 @@ class _SelectionTableState:
         return self.matching_rows is not None and bool(self.matching_rows.any())
 
     @property
+    def instance_key_name(self) -> str | None:
+        return None if self.metadata is None else self.metadata.instance_key
+
+    @property
     def missing_table_row_message(self) -> str | None:
-        if self.label_name is None or self.table_name is None or self.instance_id is None or self.has_table_row:
+        instance_key_name = self.instance_key_name
+        if (
+            self.label_name is None
+            or self.table_name is None
+            or self.instance_id is None
+            or instance_key_name is None
+            or self.has_table_row
+        ):
             return None
 
         return (
-            f"Selected instance id {self.instance_id} is not present in annotation table "
+            f"Selected {instance_key_name} {self.instance_id} is not present in annotation table "
             f"`{self.table_name}` for segmentation `{self.label_name}` and cannot receive a user class."
         )
 
@@ -111,6 +122,11 @@ class AnnotationController:
     def missing_table_row_message(self) -> str | None:
         """Return a user-facing warning when the selected object is missing from the table."""
         return self._get_selection_table_state().missing_table_row_message
+
+    @property
+    def selected_instance_key_name(self) -> str | None:
+        """Return the active table's instance key name for the current selection, if any."""
+        return self._get_selection_table_state().instance_key_name
 
     @property
     def can_annotate(self) -> bool:

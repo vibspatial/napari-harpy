@@ -478,11 +478,12 @@ class HarpyWidget(QWidget):
             current_class_label = (
                 "unlabeled" if current_user_class in (None, UNLABELED_CLASS) else str(current_user_class)
             )
+            instance_key_name = self._selected_instance_key_name()
             self._set_selection_status(
                 title="Selection Ready",
                 lines=[
                     f"Bound to {self.selected_segmentation_name}.",
-                    f"Current instance id: {self.selected_instance_id}.",
+                    f"Current {instance_key_name}: {self.selected_instance_id}.",
                     f"Current class: {current_class_label}.",
                 ],
                 kind="success",
@@ -512,7 +513,7 @@ class HarpyWidget(QWidget):
             return
 
         self._set_annotation_feedback(
-            f"Assigned class {class_id} to instance id {self.selected_instance_id}.",
+            f"Assigned class {class_id} to {self._selected_instance_key_name()} {self.selected_instance_id}.",
             kind="success",
         )
         self._update_selection_status()
@@ -530,7 +531,7 @@ class HarpyWidget(QWidget):
             return
 
         self._set_annotation_feedback(
-            f"Cleared the user class for instance id {self.selected_instance_id}.",
+            f"Cleared the user class for {self._selected_instance_key_name()} {self.selected_instance_id}.",
             kind="success",
         )
         self._update_selection_status()
@@ -601,6 +602,13 @@ class HarpyWidget(QWidget):
             "padding: 10px 12px;"
         )
         label.setVisible(bool(lines))
+
+    def _selected_instance_key_name(self) -> str:
+        instance_key_name = self._annotation_controller.selected_instance_key_name
+        if instance_key_name is not None:
+            return instance_key_name
+
+        return "label value"
 
     def _update_sync_controls(self) -> None:
         can_sync = self._persistence_controller.can_sync

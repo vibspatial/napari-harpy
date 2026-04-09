@@ -9,6 +9,7 @@ import pandas as pd
 from napari.layers import Labels
 from napari.utils.colormaps import DirectLabelColormap
 from spatialdata import SpatialData, read_zarr
+from spatialdata.models import TableModel
 
 import napari_harpy._annotation as annotation_module
 from napari_harpy._annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN, _default_user_class_colors
@@ -68,6 +69,12 @@ def make_multiscale_blobs_labels_layer(sdata: SpatialData, label_name: str = "bl
         metadata={"sdata": sdata, "name": label_name, "indices": indices},
     )
     return layer
+
+
+def rename_table_instance_key(sdata: SpatialData, *, table_name: str = "table", instance_key: str) -> None:
+    table = sdata[table_name]
+    table.obs = table.obs.rename(columns={"instance_id": instance_key})
+    table.uns[TableModel.ATTRS_KEY][TableModel.INSTANCE_KEY] = instance_key
 
 
 def test_widget_can_be_instantiated(qtbot) -> None:
@@ -232,7 +239,7 @@ def test_widget_tracks_picked_instance_id_from_labels_layer(qtbot, sdata_blobs: 
 
     assert widget.selected_instance_id == 5
     assert widget.apply_class_button.isEnabled()
-    assert "Current instance id: 5." in widget.selection_status.text()
+    assert "Current instance_id: 5." in widget.selection_status.text()
     assert "Current class: unlabeled." in widget.selection_status.text()
 
 
@@ -247,7 +254,7 @@ def test_widget_accepts_first_pick_when_instance_id_is_one(qtbot, sdata_blobs: S
 
     assert widget.selected_instance_id == 1
     assert widget.apply_class_button.isEnabled()
-    assert "Current instance id: 1." in widget.selection_status.text()
+    assert "Current instance_id: 1." in widget.selection_status.text()
 
 
 def test_widget_automatically_enables_pick_mode_for_bound_labels_layer(qtbot, sdata_blobs: SpatialData) -> None:
@@ -350,6 +357,25 @@ def test_widget_applies_user_class_to_picked_instance(qtbot, sdata_blobs: Spatia
     assert "Assigned class 3" in widget.annotation_feedback.text()
 
 
+def test_widget_uses_table_instance_key_name_in_status_and_annotation_feedback(
+    qtbot, sdata_blobs: SpatialData
+) -> None:
+    rename_table_instance_key(sdata_blobs, instance_key="cell_id")
+
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    layer.selected_label = 5
+    widget.class_spinbox.setValue(3)
+    widget.apply_class_button.click()
+
+    assert "Current cell_id: 5." in widget.selection_status.text()
+    assert "Assigned class 3 to cell_id 5." in widget.annotation_feedback.text()
+
+
 def test_widget_can_clear_user_class_for_picked_instance(qtbot, sdata_blobs: SpatialData) -> None:
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
@@ -376,8 +402,9 @@ def test_widget_can_clear_user_class_for_picked_instance(qtbot, sdata_blobs: Spa
 def test_widget_warns_when_selected_label_is_missing_from_annotation_table(
     qtbot, monkeypatch, sdata_blobs: SpatialData
 ) -> None:
+    rename_table_instance_key(sdata_blobs, instance_key="cell_id")
     table = sdata_blobs["table"]
-    keep_mask = ~((table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5))
+    keep_mask = ~((table.obs["region"] == "blobs_labels") & (table.obs["cell_id"] == 5))
     table._inplace_subset_obs(keep_mask.to_numpy())
 
     warnings: list[str] = []
@@ -396,13 +423,13 @@ def test_widget_warns_when_selected_label_is_missing_from_annotation_table(
     layer.selected_label = 5
 
     assert not widget.apply_class_button.isEnabled()
-    assert "Selected instance id 5 is not present in annotation table" in widget.selection_status.text()
+    assert "Selected cell_id 5 is not present in annotation table" in widget.selection_status.text()
     assert "cannot receive a user class" in widget.selection_status.text()
 
     widget.class_spinbox.setValue(3)
     widget._apply_current_class()
 
-    assert "Selected instance id 5 is not present in annotation table" in widget.annotation_feedback.text()
+    assert "Selected cell_id 5 is not present in annotation table" in widget.annotation_feedback.text()
     assert "#b45309" in widget.annotation_feedback.styleSheet()
     assert USER_CLASS_COLUMN not in table.obs
     assert warnings == [widget._annotation_controller.missing_table_row_message]
