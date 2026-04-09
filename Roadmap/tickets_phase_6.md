@@ -112,22 +112,22 @@ Read the current table snapshot from zarr and reject unsafe partial reloads befo
 
 - P6-01
 
-## P6-03: Apply Reload Snapshot Atomically To In-Memory Table
+## P6-03: Apply Validated Reload Snapshot To In-Memory Table
 
 ### Goal
 
-Replace the selected in-memory table state from the validated disk snapshot in one controlled step.
+Replace the selected in-memory table state from the validated disk snapshot in a controlled in-place update.
 
 ### Scope
 
 - update `sdata.tables[table_name]`
 - keep `sdata` authoritative
-- avoid partially mutated table state
+- keep mutation lightweight and limited to the validated reload payload
 
 ### Required work
 
 - define a snapshot payload object or equivalent internal structure
-- apply the snapshot atomically to the selected table
+- apply the validated snapshot to the selected table without rebuilding the full `AnnData`
 - replace:
   - `table.obs`
   - `table.obsm`
@@ -142,7 +142,7 @@ Replace the selected in-memory table state from the validated disk snapshot in o
 ### Acceptance criteria
 
 - successful reload updates the selected `sdata.tables[table_name]`
-- failed reload leaves the previous in-memory table unchanged
+- all expected validation failures occur before any in-memory mutation
 - Harpy controllers continue to read the refreshed table through `sdata[table_name]`
 
 ### Depends on

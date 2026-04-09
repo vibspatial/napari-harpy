@@ -239,6 +239,9 @@ class PersistenceController:
     def reload_table_state(self) -> str:
         """Reload the selected table's partial state from disk into the current SpatialData object."""
         snapshot = self.read_table_snapshot_from_disk()
+        # Reload uses a validated in-place update of `obs`, `obsm`, and `uns`.
+        # We intentionally do not build a second full AnnData object for a
+        # strictly atomic swap because this code path is meant to avoid that cost.
         self.validate_reload_snapshot(snapshot)
         return self.replace_selected_table(snapshot)
 
