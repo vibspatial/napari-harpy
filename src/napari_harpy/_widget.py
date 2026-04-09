@@ -252,7 +252,7 @@ class HarpyWidget(QWidget):
             self._annotation_controller.bind(None, None, None)
             self._classifier_controller.bind(None, None, None, None)
             self._viewer_styling_controller.bind(None, None, None)
-            self._persistence_controller.bind(None, None)
+            self._persistence_controller.bind(None, None, None)
             self._refresh_layer_styling()
             self._update_selection_status()
 
@@ -295,7 +295,9 @@ class HarpyWidget(QWidget):
         self._viewer_styling_controller.bind(
             self.selected_spatialdata, self.selected_segmentation_name, self.selected_table_name
         )
-        self._persistence_controller.bind(self.selected_spatialdata, self.selected_table_name)
+        self._persistence_controller.bind(
+            self.selected_spatialdata, self.selected_table_name, self.selected_segmentation_name
+        )
         self._annotation_controller.activate_layer()
         self._refresh_layer_styling()
         self._set_annotation_feedback("")
@@ -356,7 +358,9 @@ class HarpyWidget(QWidget):
         self._viewer_styling_controller.bind(
             self.selected_spatialdata, self.selected_segmentation_name, self.selected_table_name
         )
-        self._persistence_controller.bind(self.selected_spatialdata, self.selected_table_name)
+        self._persistence_controller.bind(
+            self.selected_spatialdata, self.selected_table_name, self.selected_segmentation_name
+        )
         self._annotation_controller.activate_layer()
         self._refresh_layer_styling()
         self._set_annotation_feedback("")

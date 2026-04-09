@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import anndata as ad
+import pandas as pd
 import zarr
 from spatialdata.models import TableModel
 
@@ -13,7 +15,6 @@ from napari_harpy._classifier import CLASSIFIER_CONFIG_KEY
 from napari_harpy._spatialdata import SpatialDataAdapter
 
 if TYPE_CHECKING:
-    import pandas as pd
     from anndata import AnnData
     from spatialdata import SpatialData
 
@@ -35,6 +36,7 @@ class PersistenceController:
     def __init__(self, spatialdata_adapter: SpatialDataAdapter | None = None) -> None:
         self._spatialdata_adapter = spatialdata_adapter or SpatialDataAdapter()
         self._selected_spatialdata: SpatialData | None = None
+        self._selected_label_name: str | None = None
         self._selected_table_name: str | None = None
 
     @property
@@ -75,9 +77,10 @@ class PersistenceController:
 
         return store_path / table_path
 
-    def bind(self, sdata: SpatialData | None, table_name: str | None) -> None:
+    def bind(self, sdata: SpatialData | None, table_name: str | None, label_name: str | None = None) -> None:
         """Bind persistence to the selected SpatialData table."""
         self._selected_spatialdata = sdata
+        self._selected_label_name = label_name
         self._selected_table_name = table_name
 
     def read_table_snapshot_from_disk(self) -> TableDiskSnapshot:
@@ -121,9 +124,116 @@ class PersistenceController:
         TableModel.validate(current_table)
         return table_path
 
+    def validate_reload_snapshot(self, snapshot: TableDiskSnapshot) -> None:
+        """Validate that a disk snapshot can safely replace the selected in-memory table state."""
+        sdata = self._require_selected_spatialdata(action="validating reload state")
+        table_name = self._require_selected_table_name(action="validating reload state")
+        current_table = self._spatialdata_adapter.get_table(sdata, table_name)
+        table_path = self._resolve_table_path(sdata, current_table, table_name)
+
+        if snapshot.table_name != table_name or snapshot.table_path != table_path:
+            raise ValueError(
+                f"Reload snapshot targets `{snapshot.table_name}` at `{snapshot.table_path}`, "
+                f"but the current selection is `{table_name}` at `{table_path}`."
+            )
+
+        if not isinstance(snapshot.obs, pd.DataFrame):
+            raise ValueError(f"Reload snapshot for table `{table_name}` has invalid `obs`; expected a DataFrame.")
+
+        if not isinstance(snapshot.obsm, Mapping):
+            raise ValueError(f"Reload snapshot for table `{table_name}` has invalid `obsm`; expected a mapping.")
+
+        if not isinstance(snapshot.uns, Mapping):
+            raise ValueError(f"Reload snapshot for table `{table_name}` has invalid `uns`; expected a mapping.")
+
+        attrs = snapshot.uns.get(TableModel.ATTRS_KEY)
+        if not isinstance(attrs, Mapping):
+            raise ValueError(
+                f"Reload snapshot for table `{table_name}` is missing `{TableModel.ATTRS_KEY}` metadata in `uns`."
+            )
+
+        current_attrs = current_table.uns.get(TableModel.ATTRS_KEY)
+        if not isinstance(current_attrs, Mapping):
+            raise ValueError(
+                f"The current in-memory table `{table_name}` is missing `{TableModel.ATTRS_KEY}` metadata in `uns`."
+            )
+
+        region_key = attrs.get(TableModel.REGION_KEY_KEY)
+        instance_key = attrs.get(TableModel.INSTANCE_KEY)
+        if not region_key or not instance_key:
+            raise ValueError(
+                f"Reload snapshot for table `{table_name}` is missing required SpatialData table linkage metadata."
+            )
+
+        current_region_key = current_attrs.get(TableModel.REGION_KEY_KEY)
+        current_instance_key = current_attrs.get(TableModel.INSTANCE_KEY)
+        if region_key != current_region_key:
+            raise ValueError(
+                f"Cannot reload table `{table_name}`: disk snapshot uses region key `{region_key}` but the current "
+                f"in-memory table uses `{current_region_key}`."
+            )
+
+        if instance_key != current_instance_key:
+            raise ValueError(
+                f"Cannot reload table `{table_name}`: disk snapshot uses instance key `{instance_key}` but the "
+                f"current in-memory table uses `{current_instance_key}`."
+            )
+
+        if region_key not in snapshot.obs.columns:
+            raise ValueError(
+                f"Reload snapshot for table `{table_name}` is missing required obs column `{region_key}`."
+            )
+
+        if instance_key not in snapshot.obs.columns:
+            raise ValueError(
+                f"Reload snapshot for table `{table_name}` is missing required obs column `{instance_key}`."
+            )
+
+        if len(snapshot.obs) != current_table.n_obs:
+            raise ValueError(
+                f"Cannot reload table `{table_name}`: disk snapshot has {len(snapshot.obs)} rows but the in-memory "
+                f"table has {current_table.n_obs}. Partial reload requires unchanged row identity and order."
+            )
+
+        if not snapshot.obs.index.equals(current_table.obs_names):
+            raise ValueError(
+                f"Cannot reload table `{table_name}`: disk snapshot obs_names do not exactly match the in-memory "
+                "table. Partial reload requires unchanged row identity and order."
+            )
+
+        current_instance_values = current_table.obs[current_instance_key].astype("string")
+        snapshot_instance_values = snapshot.obs[instance_key].astype("string")
+        if not snapshot_instance_values.equals(current_instance_values):
+            raise ValueError(
+                f"Cannot reload table `{table_name}`: disk snapshot `{instance_key}` values do not exactly match "
+                "the current in-memory table row by row."
+            )
+
+        for key, value in snapshot.obsm.items():
+            shape = getattr(value, "shape", None)
+            if shape is None or len(shape) == 0:
+                raise ValueError(
+                    f"Reload snapshot for table `{table_name}` has invalid `obsm[{key!r}]`; expected an array-like "
+                    "value with a leading observation dimension."
+                )
+            if int(shape[0]) != len(snapshot.obs):
+                raise ValueError(
+                    f"Reload snapshot for table `{table_name}` has invalid `obsm[{key!r}]` with leading dimension "
+                    f"{shape[0]}; expected {len(snapshot.obs)} rows."
+                )
+
+        if self._selected_label_name is not None:
+            regions = _normalize_regions(attrs.get(TableModel.REGION_KEY))
+            if self._selected_label_name not in regions:
+                raise ValueError(
+                    f"Cannot reload table `{table_name}` for segmentation `{self._selected_label_name}`: "
+                    "the disk snapshot no longer annotates the selected segmentation."
+                )
+
     def reload_table_state(self) -> str:
         """Reload the selected table's partial state from disk into the current SpatialData object."""
         snapshot = self.read_table_snapshot_from_disk()
+        self.validate_reload_snapshot(snapshot)
         return self.replace_selected_table(snapshot)
 
     def sync_table_state(self) -> str:
@@ -168,3 +278,13 @@ class PersistenceController:
             )
 
         return table_paths[0]
+
+
+def _normalize_regions(region: str | list[str] | None) -> tuple[str, ...]:
+    if region is None:
+        return ()
+
+    if isinstance(region, str):
+        return (region,)
+
+    return tuple(str(label_name) for label_name in region)

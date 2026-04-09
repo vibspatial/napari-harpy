@@ -75,12 +75,22 @@ def _write_disk_snapshot_payload(
     uns = dict(table.uns)
     uns["disk_flag"] = {"source": "disk"}
 
+    _write_disk_snapshot_state(backed_sdata_blobs, obs=obs, obsm=obsm, uns=uns)
+    return obs, obsm, uns
+
+
+def _write_disk_snapshot_state(
+    backed_sdata_blobs: SpatialData,
+    *,
+    obs: pd.DataFrame,
+    obsm: dict[str, object],
+    uns: dict[str, object],
+) -> None:
     root = zarr.open_group(backed_sdata_blobs.path, mode="a", use_consolidated=False)
     table_group = root["tables/table"]
     ad.io.write_elem(table_group, "obs", obs)
     ad.io.write_elem(table_group, "obsm", obsm)
     ad.io.write_elem(table_group, "uns", uns)
-    return obs, obsm, uns
 
 
 def test_persistence_controller_reads_selected_table_snapshot_from_backed_store(
@@ -121,3 +131,98 @@ def test_persistence_controller_replaces_selected_table_with_reloaded_snapshot(
     assert reloaded_table.uns["disk_flag"] == {"source": "disk"}
     assert list(reloaded_table.var_names) == list(original_table.var_names)
     assert backed_sdata_blobs.locate_element(reloaded_table) == ["tables/table"]
+
+
+def test_persistence_controller_rejects_reload_when_row_count_changed(
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    controller = PersistenceController(SpatialDataAdapter())
+    controller.bind(backed_sdata_blobs, "table", "blobs_labels")
+    table = backed_sdata_blobs["table"]
+
+    obs = table.obs.iloc[:-1].copy()
+    obsm = {key: value[:-1] for key, value in table.obsm.items()}
+    uns = dict(table.uns)
+    _write_disk_snapshot_state(backed_sdata_blobs, obs=obs, obsm=obsm, uns=uns)
+
+    with pytest.raises(ValueError, match="requires unchanged row identity and order"):
+        controller.reload_table_state()
+
+    assert backed_sdata_blobs["table"].n_obs == table.n_obs
+    assert backed_sdata_blobs["table"].obs.index.equals(table.obs.index)
+
+
+def test_persistence_controller_rejects_reload_when_obs_names_order_changed(
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    controller = PersistenceController(SpatialDataAdapter())
+    controller.bind(backed_sdata_blobs, "table", "blobs_labels")
+    table = backed_sdata_blobs["table"]
+    reversed_positions = np.arange(table.n_obs - 1, -1, -1)
+
+    obs = table.obs.iloc[reversed_positions].copy()
+    obsm = {key: value[reversed_positions] for key, value in table.obsm.items()}
+    uns = dict(table.uns)
+    _write_disk_snapshot_state(backed_sdata_blobs, obs=obs, obsm=obsm, uns=uns)
+
+    with pytest.raises(ValueError, match="obs_names do not exactly match"):
+        controller.reload_table_state()
+
+    assert backed_sdata_blobs["table"].obs.index.equals(table.obs.index)
+
+
+def test_persistence_controller_rejects_reload_when_instance_key_values_changed_rowwise(
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    controller = PersistenceController(SpatialDataAdapter())
+    controller.bind(backed_sdata_blobs, "table", "blobs_labels")
+    table = backed_sdata_blobs["table"]
+
+    obs = table.obs.copy()
+    swapped = obs["instance_id"].to_numpy(copy=True)
+    swapped[[0, 1]] = swapped[[1, 0]]
+    obs["instance_id"] = swapped
+    obsm = dict(table.obsm)
+    uns = dict(table.uns)
+    _write_disk_snapshot_state(backed_sdata_blobs, obs=obs, obsm=obsm, uns=uns)
+
+    with pytest.raises(ValueError, match="instance_id` values do not exactly match"):
+        controller.reload_table_state()
+
+    assert backed_sdata_blobs["table"].obs["instance_id"].equals(table.obs["instance_id"])
+
+
+def test_persistence_controller_rejects_reload_when_spatialdata_attrs_missing(
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    controller = PersistenceController(SpatialDataAdapter())
+    controller.bind(backed_sdata_blobs, "table", "blobs_labels")
+    table = backed_sdata_blobs["table"]
+
+    obs = table.obs.copy()
+    obsm = dict(table.obsm)
+    uns = {"disk_flag": {"source": "disk"}}
+    _write_disk_snapshot_state(backed_sdata_blobs, obs=obs, obsm=obsm, uns=uns)
+
+    with pytest.raises(ValueError, match="missing `spatialdata_attrs` metadata"):
+        controller.reload_table_state()
+
+
+def test_persistence_controller_rejects_reload_when_selected_segmentation_is_no_longer_annotated(
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    controller = PersistenceController(SpatialDataAdapter())
+    controller.bind(backed_sdata_blobs, "table", "blobs_labels")
+    table = backed_sdata_blobs["table"]
+
+    obs = table.obs.copy()
+    obsm = dict(table.obsm)
+    uns = dict(table.uns)
+    uns["spatialdata_attrs"] = {
+        **uns["spatialdata_attrs"],
+        "region": ["different_labels"],
+    }
+    _write_disk_snapshot_state(backed_sdata_blobs, obs=obs, obsm=obsm, uns=uns)
+
+    with pytest.raises(ValueError, match="no longer annotates the selected segmentation"):
+        controller.reload_table_state()
