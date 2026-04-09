@@ -40,6 +40,22 @@ class PersistenceController:
 
         return Path(self._selected_spatialdata.path)
 
+    @property
+    def selected_table_store_path(self) -> Path | None:
+        """Return the full on-disk zarr path for the current table selection."""
+        if not self.can_sync:
+            return None
+
+        sdata = self._require_selected_spatialdata()
+        table_name = self._require_selected_table_name()
+        table = self._spatialdata_adapter.get_table(sdata, table_name)
+        table_path = self._resolve_table_path(sdata, table, table_name)
+        store_path = self.selected_store_path
+        if store_path is None:
+            return None
+
+        return store_path / table_path
+
     def bind(self, sdata: SpatialData | None, table_name: str | None) -> None:
         """Bind persistence to the selected SpatialData table."""
         self._selected_spatialdata = sdata

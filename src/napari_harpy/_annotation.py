@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
 from loguru import logger
 from matplotlib import rcParams
-from napari.utils.colormaps import DirectLabelColormap
 from scanpy.plotting.palettes import default_20, default_28, default_102
 
 from napari_harpy._spatialdata import SpatialDataAdapter, SpatialDataTableMetadata
@@ -20,6 +20,53 @@ USER_CLASS_COLUMN = "user_class"
 USER_CLASS_COLORS_KEY = f"{USER_CLASS_COLUMN}_colors"
 UNLABELED_CLASS = 0
 UNLABELED_COLOR = "#80808099"
+
+
+@dataclass(frozen=True)
+class _SelectionTableState:
+    """Current selection state relative to the bound annotation table."""
+
+    table: AnnData | None
+    metadata: SpatialDataTableMetadata | None
+    label_name: str | None
+    table_name: str | None
+    instance_id: int | None
+    matching_rows: pd.Series | None
+
+    @property
+    def has_annotation_binding(self) -> bool:
+        return (
+            self.table is not None
+            and self.metadata is not None
+            and self.label_name is not None
+            and self.table_name is not None
+            and self.instance_id is not None
+        )
+
+    @property
+    def has_table_row(self) -> bool:
+        return self.matching_rows is not None and bool(self.matching_rows.any())
+
+    @property
+    def instance_key_name(self) -> str | None:
+        return None if self.metadata is None else self.metadata.instance_key
+
+    @property
+    def missing_table_row_message(self) -> str | None:
+        instance_key_name = self.instance_key_name
+        if (
+            self.label_name is None
+            or self.table_name is None
+            or self.instance_id is None
+            or instance_key_name is None
+            or self.has_table_row
+        ):
+            return None
+
+        return (
+            f"Selected {instance_key_name} {self.instance_id} is not present in annotation table "
+            f"`{self.table_name}` for segmentation `{self.label_name}` and cannot receive a user class."
+        )
 
 
 class AnnotationController:
@@ -55,32 +102,37 @@ class AnnotationController:
     @property
     def current_user_class(self) -> int | None:
         """Return the stored user class for the currently picked instance, if any."""
-        table = self._get_bound_table()
-        metadata = self._selected_table_metadata
-        if table is None or metadata is None or self._selected_label_name is None or self._selected_instance_id is None:
+        state = self._get_selection_table_state()
+        matching_rows = state.matching_rows
+        if state.table is None or matching_rows is None or not state.has_table_row:
             return None
 
-        matching_rows = self._matching_rows_mask(table.obs, metadata)
-        if not matching_rows.any():
-            return None
-
-        if USER_CLASS_COLUMN not in table.obs:
+        if USER_CLASS_COLUMN not in state.table.obs:
             return UNLABELED_CLASS
 
-        values = _to_user_class_values(table.obs.loc[matching_rows, USER_CLASS_COLUMN])
+        values = _to_user_class_values(state.table.obs.loc[matching_rows, USER_CLASS_COLUMN])
         return int(values.iloc[0])
+
+    @property
+    def selected_instance_has_table_row(self) -> bool:
+        """Return whether the current selection is represented in the bound annotation table."""
+        return self._get_selection_table_state().has_table_row
+
+    @property
+    def missing_table_row_message(self) -> str | None:
+        """Return a user-facing warning when the selected object is missing from the table."""
+        return self._get_selection_table_state().missing_table_row_message
+
+    @property
+    def selected_instance_key_name(self) -> str | None:
+        """Return the active table's instance key name for the current selection, if any."""
+        return self._get_selection_table_state().instance_key_name
 
     @property
     def can_annotate(self) -> bool:
         """Return whether the current selection can be written back to the annotation table."""
-        return (
-            self._labels_layer is not None
-            and self._selected_spatialdata is not None
-            and self._selected_table_name is not None
-            and self._selected_table_metadata is not None
-            and self._selected_label_name is not None
-            and self._selected_instance_id is not None
-        )
+        state = self._get_selection_table_state()
+        return self._labels_layer is not None and state.has_annotation_binding and state.has_table_row
 
     def bind(self, sdata: SpatialData | None, label_name: str | None, table_name: str | None = None) -> None:
         """Bind the controller to the selected labels layer and annotation table."""
@@ -118,8 +170,6 @@ class AnnotationController:
             self._set_selected_instance_id(None)
 
         self._normalize_existing_annotation_state()
-        self.refresh_layer_colors()
-        self.refresh_layer_features()
 
     def activate_layer(self) -> bool:
         """Activate the bound labels layer for annotation interactions."""
@@ -149,54 +199,13 @@ class AnnotationController:
         values = _to_user_class_values(table.obs[column_name])
         _set_user_class_annotation_state(table, values)
 
-    def apply_class(self, class_id: int) -> None:
+    def apply_class(self, class_id: int) -> str | None:
         """Assign the given user class to the currently picked instance."""
-        self._set_current_class(class_id)
+        return self._set_current_class(class_id)
 
-    def clear_current_class(self) -> None:
+    def clear_current_class(self) -> str | None:
         """Reset the current object's user class back to the unlabeled state."""
-        self._set_current_class(UNLABELED_CLASS)
-
-    def refresh_layer_colors(self) -> None:
-        """Recolor the bound labels layer from the current user-class assignments."""
-        if self._labels_layer is None:
-            return
-
-        color_lookup = self._get_user_class_color_lookup()
-        unlabeled_color = color_lookup.get(UNLABELED_CLASS, UNLABELED_COLOR)
-        color_dict: dict[int | None, str] = {
-            None: unlabeled_color,
-            0: "transparent",
-        }
-        user_class_by_instance = self._get_user_class_by_instance()
-        for instance_id in _get_visible_instance_ids(self._labels_layer):
-            if instance_id <= 0:
-                continue
-
-            class_id = int(user_class_by_instance.get(instance_id, UNLABELED_CLASS))
-            color_dict[instance_id] = color_lookup.get(class_id, unlabeled_color)
-
-        self._labels_layer.colormap = DirectLabelColormap(color_dict=color_dict, background_value=0)
-        refresh = getattr(self._labels_layer, "refresh", None)
-        if callable(refresh):
-            refresh()
-
-    def refresh_layer_features(self) -> None:
-        """Expose the current user classes as layer features for hover/status display."""
-        if self._labels_layer is None:
-            return
-
-        instance_ids = [instance_id for instance_id in _get_visible_instance_ids(self._labels_layer) if instance_id > 0]
-        user_class_by_instance = self._get_user_class_by_instance()
-        features = pd.DataFrame(
-            {
-                "index": instance_ids,
-                USER_CLASS_COLUMN: [
-                    int(user_class_by_instance.get(instance_id, UNLABELED_CLASS)) for instance_id in instance_ids
-                ],
-            }
-        )
-        self._labels_layer.features = features
+        return self._set_current_class(UNLABELED_CLASS)
 
     def _disconnect_selected_label_events(self) -> None:
         selected_label_emitter = getattr(getattr(self._labels_layer, "events", None), "selected_label", None)
@@ -256,32 +265,48 @@ class AnnotationController:
         if self._on_selected_instance_changed is not None:
             self._on_selected_instance_changed(instance_id)
 
-    def _set_current_class(self, class_id: int) -> None:
+    def _set_current_class(self, class_id: int) -> str | None:
+        """Write the selected user class for the current pick.
+
+        The current selection must be fully bound to a segmentation, annotation
+        table, and picked instance id. If the selected label has a matching row
+        in the table, this normalizes the `user_class` column, updates the
+        matching observation, and triggers the annotation-changed callback.
+
+        If the picked label is present in the segmentation mask but absent from
+        the annotation table, no table state is changed. Instead, a warning is
+        logged and the user-facing warning message is returned so the widget can
+        display it in the UI.
+        """
         if class_id < UNLABELED_CLASS:
             raise ValueError("Class ids must be zero or positive integers.")
 
-        table = self._require_bound_table()
-        metadata = self._require_selected_table_metadata()
-
-        if self._selected_label_name is None:
+        state = self._get_selection_table_state()
+        if state.table is None:
+            raise ValueError("Choose an annotation table before annotating.")
+        if state.metadata is None:
+            raise ValueError("Choose an annotation table before annotating.")
+        if state.label_name is None:
             raise ValueError("Choose a segmentation mask before annotating.")
-        if self._selected_instance_id is None:
+        if state.instance_id is None:
             raise ValueError("Pick an object in the viewer before annotating.")
 
-        self.ensure_annotation_column(USER_CLASS_COLUMN)
-        matching_rows = self._matching_rows_mask(table.obs, metadata)
-        if not matching_rows.any():
-            raise ValueError(
-                f"No table row matches segmentation `{self._selected_label_name}` and instance id `{self._selected_instance_id}`."
-            )
+        matching_rows = state.matching_rows
+        if matching_rows is None or not state.has_table_row:
+            message = state.missing_table_row_message
+            if message is None:
+                raise RuntimeError("Missing-table-row warning was requested for a selection that still has a table row.")
+            logger.warning(message)
+            return message
 
-        user_class_values = _to_user_class_values(table.obs[USER_CLASS_COLUMN])
+        self.ensure_annotation_column(USER_CLASS_COLUMN)
+
+        user_class_values = _to_user_class_values(state.table.obs[USER_CLASS_COLUMN])
         user_class_values.loc[matching_rows] = int(class_id)
-        _set_user_class_annotation_state(table, user_class_values)
-        self.refresh_layer_colors()
-        self.refresh_layer_features()
+        _set_user_class_annotation_state(state.table, user_class_values)
         if self._on_annotation_changed is not None:
             self._on_annotation_changed()
+        return None
 
     def _get_bound_table(self) -> AnnData | None:
         if self._selected_spatialdata is None or self._selected_table_name is None:
@@ -296,12 +321,6 @@ class AnnotationController:
 
         return table
 
-    def _require_selected_table_metadata(self) -> SpatialDataTableMetadata:
-        if self._selected_table_metadata is None:
-            raise ValueError("Choose an annotation table before annotating.")
-
-        return self._selected_table_metadata
-
     def _matching_rows_mask(self, obs: pd.DataFrame, metadata: SpatialDataTableMetadata) -> pd.Series:
         if self._selected_label_name is None or self._selected_instance_id is None:
             return pd.Series(False, index=obs.index)
@@ -310,22 +329,26 @@ class AnnotationController:
             obs[metadata.instance_key] == self._selected_instance_id
         )
 
-    def _get_user_class_by_instance(self) -> pd.Series:
+    def _get_selection_table_state(self) -> _SelectionTableState:
         table = self._get_bound_table()
         metadata = self._selected_table_metadata
-        if table is None or metadata is None or self._selected_label_name is None:
-            return pd.Series(dtype="int64")
+        matching_rows = None
+        if (
+            table is not None
+            and metadata is not None
+            and self._selected_label_name is not None
+            and self._selected_instance_id is not None
+        ):
+            matching_rows = self._matching_rows_mask(table.obs, metadata)
 
-        region_rows = table.obs.loc[
-            table.obs[metadata.region_key] == self._selected_label_name, [metadata.instance_key]
-        ].copy()
-        if USER_CLASS_COLUMN in table.obs:
-            region_rows[USER_CLASS_COLUMN] = _to_user_class_values(table.obs.loc[region_rows.index, USER_CLASS_COLUMN])
-        else:
-            region_rows[USER_CLASS_COLUMN] = UNLABELED_CLASS
-
-        region_rows = region_rows.drop_duplicates(subset=[metadata.instance_key], keep="last")
-        return region_rows.set_index(metadata.instance_key)[USER_CLASS_COLUMN]
+        return _SelectionTableState(
+            table=table,
+            metadata=metadata,
+            label_name=self._selected_label_name,
+            table_name=self._selected_table_name,
+            instance_id=self._selected_instance_id,
+            matching_rows=matching_rows,
+        )
 
     def _clear_default_selected_label(self) -> None:
         if self._labels_layer is None:
@@ -346,19 +369,6 @@ class AnnotationController:
             return
 
         self.ensure_annotation_column(USER_CLASS_COLUMN)
-
-    def _get_user_class_color_lookup(self) -> dict[int, str]:
-        table = self._get_bound_table()
-        if table is None or USER_CLASS_COLUMN not in table.obs:
-            return {UNLABELED_CLASS: UNLABELED_COLOR}
-
-        categories = _get_user_class_categories(_to_user_class_values(table.obs[USER_CLASS_COLUMN]))
-        colors = _normalize_color_sequence(table.uns.get(USER_CLASS_COLORS_KEY))
-        if colors is None or len(colors) < len(categories):
-            colors = _default_user_class_colors(categories)
-
-        return dict(zip(categories, colors[: len(categories)], strict=False))
-
 
 def _default_user_class_colors(categories: Sequence[int]) -> list[str]:
     """Return colors for the given user classes.
@@ -457,21 +467,6 @@ def _normalize_color_sequence(value: object) -> list[str] | None:
     return [str(value)]
 
 
-def _get_visible_instance_ids(layer: Any) -> list[int]:
-    metadata = getattr(layer, "metadata", None)
-    if isinstance(metadata, dict) and "indices" in metadata:
-        raw_indices = metadata["indices"]
-    else:
-        raw_indices = np.unique(np.asarray(getattr(layer, "data", np.array([], dtype=int))))
-
-    instance_ids = {
-        int(value)
-        for value in np.asarray(raw_indices).ravel().tolist()
-        if isinstance(value, (int, np.integer)) or (isinstance(value, float) and float(value).is_integer())
-    }
-    return sorted(instance_ids)
-
-
 def _get_positive_selected_label(layer: Any) -> int | None:
     selected_label = getattr(layer, "selected_label", 0)
     instance_id = int(selected_label)
@@ -488,6 +483,8 @@ def _get_positive_label_from_mouse_event(layer: Any, event: object | None = None
         dims_displayed = list(getattr(getattr(layer, "_slice_input", None), "displayed", []))
 
     try:
+        # Query napari for the picked label value at the cursor instead of
+        # scanning `layer.data`, so large lazy labels layers stay out-of-core.
         value = get_value(
             getattr(event, "position", None),
             view_direction=getattr(event, "view_direction", None),

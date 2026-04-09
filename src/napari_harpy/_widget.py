@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from html import escape
+from pathlib import Path
 from typing import TYPE_CHECKING
 
-from qtpy.QtCore import QSignalBlocker
+from qtpy.QtCore import QSignalBlocker, Qt
+from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import QComboBox, QFormLayout, QLabel, QPushButton, QSpinBox, QVBoxLayout, QWidget
 
 from napari_harpy._annotation import UNLABELED_CLASS, AnnotationController
@@ -12,6 +15,13 @@ from napari_harpy._spatialdata import (
     SpatialDataAdapter,
     SpatialDataLabelsOption,
     SpatialDataTableMetadata,
+)
+from napari_harpy._viewer_styling import (
+    COLOR_BY_OPTIONS,
+    COLOR_BY_PRED_CLASS,
+    COLOR_BY_PRED_CONFIDENCE,
+    COLOR_BY_USER_CLASS,
+    ViewerStylingController,
 )
 
 if TYPE_CHECKING:
@@ -47,6 +57,7 @@ class HarpyWidget(QWidget):
             self._spatialdata_adapter,
             on_state_changed=self._on_classifier_state_changed,
         )
+        self._viewer_styling_controller = ViewerStylingController(self._spatialdata_adapter)
         self._persistence_controller = PersistenceController(self._spatialdata_adapter)
         self._label_options: list[SpatialDataLabelsOption] = []
         self._selected_label_option: SpatialDataLabelsOption | None = None
@@ -54,19 +65,11 @@ class HarpyWidget(QWidget):
         self._selected_table_name: str | None = None
         self._feature_matrix_keys: list[str] = []
         self._selected_feature_key: str | None = None
+        self._logo_path = Path(__file__).resolve().parents[2] / "docs" / "_static" / "logo.png"
 
         layout = QVBoxLayout(self)
 
-        title = QLabel("napari-harpy")
-        title.setStyleSheet("font-size: 18px; font-weight: 600;")
-
-        subtitle = QLabel(
-            "Phase 2 setup.\nSelect the segmentation mask and use Pick mode in napari to choose an object."
-        )
-        subtitle.setWordWrap(True)
-
-        self.viewer_status = QLabel("Viewer connected." if napari_viewer is not None else "Viewer not connected.")
-        self.viewer_status.setWordWrap(True)
+        title = self._create_header_logo()
 
         selector_layout = QFormLayout()
         self.segmentation_combo = QComboBox()
@@ -80,6 +83,13 @@ class HarpyWidget(QWidget):
         self.feature_matrix_combo = QComboBox()
         self.feature_matrix_combo.setObjectName("feature_matrix_combo")
         self.feature_matrix_combo.currentIndexChanged.connect(self._on_feature_matrix_changed)
+
+        self.color_by_combo = QComboBox()
+        self.color_by_combo.setObjectName("color_by_combo")
+        for color_by in COLOR_BY_OPTIONS:
+            self.color_by_combo.addItem(color_by, color_by)
+        self.color_by_combo.setCurrentIndex(self.color_by_combo.findData(COLOR_BY_USER_CLASS))
+        self.color_by_combo.currentIndexChanged.connect(self._on_color_by_changed)
 
         self.class_spinbox = QSpinBox()
         self.class_spinbox.setObjectName("user_class_spinbox")
@@ -106,7 +116,7 @@ class HarpyWidget(QWidget):
         self.validation_status.setStyleSheet("color: #b45309; font-weight: 600;")
         self.validation_status.hide()
 
-        self.selection_status = QLabel("Selection: choose a segmentation mask to enable object picking.")
+        self.selection_status = QLabel()
         self.selection_status.setObjectName("selection_status")
         self.selection_status.setWordWrap(True)
 
@@ -138,11 +148,10 @@ class HarpyWidget(QWidget):
         selector_layout.addRow("Segmentation mask", self.segmentation_combo)
         selector_layout.addRow("Table", self.table_combo)
         selector_layout.addRow("Feature matrix", self.feature_matrix_combo)
+        selector_layout.addRow("Color by", self.color_by_combo)
         selector_layout.addRow("User class", self.class_spinbox)
 
         layout.addWidget(title)
-        layout.addWidget(subtitle)
-        layout.addWidget(self.viewer_status)
         layout.addLayout(selector_layout)
         layout.addWidget(self.refresh_button)
         layout.addWidget(self.retrain_button)
@@ -158,6 +167,21 @@ class HarpyWidget(QWidget):
 
         self._connect_viewer_events()
         self.refresh_segmentation_masks()
+
+    def _create_header_logo(self) -> QLabel:
+        logo_label = QLabel()
+        logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        logo_pixmap = QPixmap(str(self._logo_path))
+        if not logo_pixmap.isNull():
+            logo_label.setPixmap(
+                logo_pixmap.scaledToWidth(120, Qt.TransformationMode.SmoothTransformation)
+            )
+            return logo_label
+
+        logo_label.setText("napari-harpy")
+        logo_label.setStyleSheet("font-size: 18px; font-weight: 600;")
+        return logo_label
 
     @property
     def selected_segmentation_name(self) -> str | None:
@@ -183,6 +207,11 @@ class HarpyWidget(QWidget):
     def selected_instance_id(self) -> int | None:
         """Return the currently picked segmentation instance id."""
         return self._annotation_controller.selected_instance_id
+
+    @property
+    def selected_color_by(self) -> str:
+        """Return the current labels-layer coloring mode."""
+        return self._viewer_styling_controller.color_by
 
     @property
     def selected_table_metadata(self) -> SpatialDataTableMetadata | None:
@@ -216,11 +245,15 @@ class HarpyWidget(QWidget):
         if self.segmentation_combo.currentIndex() >= 0:
             self._set_selected_label_option(self.segmentation_combo.currentIndex())
         else:
+            # No valid segmentation remains after the refresh, so clear every
+            # controller and dependent UI element back to the unbound state.
             self._selected_label_option = None
             self._refresh_table_names()
             self._annotation_controller.bind(None, None, None)
             self._classifier_controller.bind(None, None, None, None)
+            self._viewer_styling_controller.bind(None, None, None)
             self._persistence_controller.bind(None, None)
+            self._refresh_layer_styling()
             self._update_selection_status()
 
     def _connect_viewer_events(self) -> None:
@@ -259,8 +292,12 @@ class HarpyWidget(QWidget):
         )
         if classifier_context_changed:
             self._classifier_controller.mark_dirty(reason="the segmentation selection changed")
+        self._viewer_styling_controller.bind(
+            self.selected_spatialdata, self.selected_segmentation_name, self.selected_table_name
+        )
         self._persistence_controller.bind(self.selected_spatialdata, self.selected_table_name)
         self._annotation_controller.activate_layer()
+        self._refresh_layer_styling()
         self._set_annotation_feedback("")
         self._set_sync_feedback("")
         self._update_selection_status()
@@ -316,8 +353,12 @@ class HarpyWidget(QWidget):
         )
         if classifier_context_changed:
             self._classifier_controller.mark_dirty(reason="the annotation table changed")
+        self._viewer_styling_controller.bind(
+            self.selected_spatialdata, self.selected_segmentation_name, self.selected_table_name
+        )
         self._persistence_controller.bind(self.selected_spatialdata, self.selected_table_name)
         self._annotation_controller.activate_layer()
+        self._refresh_layer_styling()
         self._set_annotation_feedback("")
         self._set_sync_feedback("")
         self._update_selection_status()
@@ -360,7 +401,16 @@ class HarpyWidget(QWidget):
         )
         if classifier_context_changed:
             self._classifier_controller.mark_dirty(reason="the feature matrix changed")
+        self._refresh_layer_styling()
         self._update_selection_status()
+
+    def _on_color_by_changed(self, index: int) -> None:
+        color_by = self.color_by_combo.itemData(index)
+        if not isinstance(color_by, str):
+            return
+
+        self._viewer_styling_controller.set_color_by(color_by)
+        self._refresh_layer_styling()
 
     def _set_selected_table_name(self, index: int) -> None:
         if index < 0 or index >= len(self._table_names):
@@ -378,6 +428,7 @@ class HarpyWidget(QWidget):
         self._update_validation_status()
         self._update_annotation_status()
         self._update_annotation_controls()
+        self._update_color_by_controls()
         self._update_classifier_controls()
         self._update_sync_controls()
 
@@ -395,31 +446,55 @@ class HarpyWidget(QWidget):
 
     def _update_annotation_status(self) -> None:
         labels_layer = self._annotation_controller.labels_layer
+        missing_table_row_message = self._annotation_controller.missing_table_row_message
 
         if self.selected_segmentation_name is None:
-            message = "Selection: choose a segmentation mask to enable object picking."
+            self._set_selection_status(
+                title="Selection",
+                lines=["Choose a segmentation mask to enable object picking."],
+                kind="info",
+            )
         elif labels_layer is None:
-            message = (
-                "Selection: the chosen segmentation is known in SpatialData but is not currently loaded as a "
-                "napari Labels layer."
+            self._set_selection_status(
+                title="Selection",
+                lines=[
+                    "The chosen segmentation is known in SpatialData but is not currently loaded as a napari Labels layer."
+                ],
+                kind="warning",
             )
         elif self.selected_instance_id is None:
-            message = (
-                f"Selection: bound to `{self.selected_segmentation_name}`. Click an object "
-                "in the viewer."
+            self._set_selection_status(
+                title="Selection",
+                lines=[
+                    f"Bound to {self.selected_segmentation_name}.",
+                    "Click an object in the viewer.",
+                ],
+                kind="info",
+            )
+        elif missing_table_row_message is not None:
+            self._set_selection_status(
+                title="Selection Warning",
+                lines=[
+                    f"Bound to {self.selected_segmentation_name}.",
+                    missing_table_row_message,
+                ],
+                kind="warning",
             )
         else:
             current_user_class = self._annotation_controller.current_user_class
             current_class_label = (
                 "unlabeled" if current_user_class in (None, UNLABELED_CLASS) else str(current_user_class)
             )
-            message = (
-                f"Selection: bound to `{self.selected_segmentation_name}`. "
-                f"Current instance id: {self.selected_instance_id}. "
-                f"Current class: {current_class_label}."
+            instance_key_name = self._selected_instance_key_name()
+            self._set_selection_status(
+                title="Selection Ready",
+                lines=[
+                    f"Bound to {self.selected_segmentation_name}.",
+                    f"Current {instance_key_name}: {self.selected_instance_id}.",
+                    f"Current class: {current_class_label}.",
+                ],
+                kind="success",
             )
-
-        self.selection_status.setText(message)
 
     def _update_annotation_controls(self) -> None:
         has_table = self.selected_table_name is not None
@@ -434,49 +509,113 @@ class HarpyWidget(QWidget):
     def _apply_current_class(self) -> None:
         class_id = self.class_spinbox.value()
         try:
-            self._annotation_controller.apply_class(class_id)
+            warning_message = self._annotation_controller.apply_class(class_id)
         except ValueError as error:
-            self._set_annotation_feedback(str(error), error=True)
+            self._set_annotation_feedback(str(error), kind="error")
+            return
+
+        if warning_message is not None:
+            self._set_annotation_feedback(warning_message, kind="warning")
+            self._update_selection_status()
             return
 
         self._set_annotation_feedback(
-            f"Assigned class {class_id} to instance id {self.selected_instance_id}.",
-            error=False,
+            f"Assigned class {class_id} to {self._selected_instance_key_name()} {self.selected_instance_id}.",
+            kind="success",
         )
         self._update_selection_status()
 
     def _clear_current_class(self) -> None:
         try:
-            self._annotation_controller.clear_current_class()
+            warning_message = self._annotation_controller.clear_current_class()
         except ValueError as error:
-            self._set_annotation_feedback(str(error), error=True)
+            self._set_annotation_feedback(str(error), kind="error")
+            return
+
+        if warning_message is not None:
+            self._set_annotation_feedback(warning_message, kind="warning")
+            self._update_selection_status()
             return
 
         self._set_annotation_feedback(
-            f"Cleared the user class for instance id {self.selected_instance_id}.",
-            error=False,
+            f"Cleared the user class for {self._selected_instance_key_name()} {self.selected_instance_id}.",
+            kind="success",
         )
         self._update_selection_status()
 
-    def _set_annotation_feedback(self, message: str, *, error: bool = False) -> None:
-        self.annotation_feedback.setText(message)
-        self.annotation_feedback.setStyleSheet(
-            "color: #b91c1c; font-weight: 600;" if error else "color: #166534; font-weight: 600;"
+    def _set_annotation_feedback(self, message: str, *, kind: str = "success") -> None:
+        if not message:
+            self.annotation_feedback.setText("")
+            self.annotation_feedback.setVisible(False)
+            return
+
+        title_by_kind = {
+            "error": "Annotation Error",
+            "warning": "Annotation Warning",
+            "success": "Annotation Updated",
+        }
+        self._set_status_card(
+            self.annotation_feedback,
+            title=title_by_kind.get(kind, "Annotation"),
+            lines=[message],
+            kind=kind,
         )
-        self.annotation_feedback.setVisible(bool(message))
+
+    def _set_selection_status(self, title: str, lines: list[str], *, kind: str) -> None:
+        self._set_status_card(self.selection_status, title=title, lines=lines, kind=kind)
 
     def _set_classifier_feedback(self, message: str, *, kind: str = "info") -> None:
-        color_by_kind = {
-            "error": "#b91c1c",
-            "warning": "#b45309",
-            "success": "#166534",
-            "info": "#1d4ed8",
+        if not message:
+            self.classifier_feedback.setText("")
+            self.classifier_feedback.setVisible(False)
+            return
+
+        title_by_kind = {
+            "error": "Classifier Error",
+            "warning": "Classifier Warning",
+            "success": "Classifier Ready",
+            "info": "Classifier",
         }
-        self.classifier_feedback.setText(message)
-        self.classifier_feedback.setStyleSheet(
-            f"color: {color_by_kind.get(kind, '#1d4ed8')}; font-weight: 600;"
+        body = message.removeprefix("Classifier: ").strip()
+        self._set_status_card(
+            self.classifier_feedback,
+            title=title_by_kind.get(kind, "Classifier"),
+            lines=[body],
+            kind=kind,
         )
-        self.classifier_feedback.setVisible(bool(message))
+
+    def _set_status_card(self, label: QLabel, *, title: str, lines: list[str], kind: str) -> None:
+        palette_by_kind = {
+            "info": {"text": "#1d4ed8", "border": "#93c5fd", "background": "#eff6ff"},
+            "warning": {"text": "#b45309", "border": "#fdba74", "background": "#fff7ed"},
+            "success": {"text": "#166534", "border": "#86efac", "background": "#f0fdf4"},
+            "error": {"text": "#b91c1c", "border": "#fca5a5", "background": "#fef2f2"},
+        }
+        palette = palette_by_kind.get(kind, palette_by_kind["info"])
+        formatted_lines = "<br>".join(f"<span>{escape(line)}</span>" for line in lines)
+        label.setText(
+            "<div>"
+            f"<span style='font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;'>"
+            f"{escape(title)}</span><br>"
+            f"{formatted_lines}"
+            "</div>"
+        )
+        label.setStyleSheet(
+            "font-weight: 500; "
+            f"color: {palette['text']}; "
+            f"background-color: {palette['background']}; "
+            f"border: 1px solid {palette['border']}; "
+            "border-radius: 8px; "
+            "padding: 10px 12px;"
+        )
+        label.setVisible(bool(lines))
+
+    def _selected_instance_key_name(self) -> str:
+        instance_key_name = self._annotation_controller.selected_instance_key_name
+        if instance_key_name is not None:
+            return instance_key_name
+
+        return "label value"
 
     def _update_sync_controls(self) -> None:
         can_sync = self._persistence_controller.can_sync
@@ -487,12 +626,35 @@ class HarpyWidget(QWidget):
         elif not can_sync:
             tooltip = "The selected SpatialData dataset is not backed by zarr."
         else:
+            table_store_path = self._persistence_controller.selected_table_store_path
+            destination = (
+                self.selected_spatialdata.path
+                if table_store_path is None
+                else table_store_path
+            )
             tooltip = (
-                f"Write `{self.selected_table_name}` annotation state "
-                f"to `{self.selected_spatialdata.path}`."
+                f"Write `{self.selected_table_name}` table state "
+                f"to `{destination}`."
             )
 
         self.sync_button.setToolTip(tooltip)
+
+    def _update_color_by_controls(self) -> None:
+        has_table = self.selected_table_name is not None
+        self.color_by_combo.setEnabled(has_table)
+
+        if not has_table:
+            tooltip = "Choose an annotation table before changing the labels-layer coloring mode."
+        elif self.selected_color_by == COLOR_BY_USER_CLASS:
+            tooltip = "Color the labels layer by `user_class`."
+        elif self.selected_color_by == COLOR_BY_PRED_CLASS:
+            tooltip = "Color the labels layer by `pred_class` using the stable user-class palette."
+        elif self.selected_color_by == COLOR_BY_PRED_CONFIDENCE:
+            tooltip = "Color the labels layer by continuous `pred_confidence` values."
+        else:
+            tooltip = "Choose how to color the labels layer."
+
+        self.color_by_combo.setToolTip(tooltip)
 
     def _update_classifier_controls(self) -> None:
         can_retrain = self._classifier_controller.can_retrain
@@ -513,13 +675,19 @@ class HarpyWidget(QWidget):
 
     def _sync_to_zarr(self) -> None:
         try:
-            table_path = self._persistence_controller.sync_table_state()
+            self._persistence_controller.sync_table_state()
         except ValueError as error:
             self._set_sync_feedback(str(error), error=True)
             return
 
+        table_store_path = self._persistence_controller.selected_table_store_path
+        destination = (
+            self.selected_spatialdata.path
+            if table_store_path is None or self.selected_spatialdata is None
+            else table_store_path
+        )
         self._set_sync_feedback(
-            f"Synced `{self.selected_table_name}` annotation state to `{table_path}`.",
+            f"Synced `{self.selected_table_name}` table state to `{destination}`.",
             error=False,
         )
 
@@ -538,6 +706,7 @@ class HarpyWidget(QWidget):
 
     def _on_annotation_changed(self) -> None:
         self._classifier_controller.mark_dirty(reason="the annotations changed")
+        self._refresh_layer_styling()
         self._classifier_controller.schedule_retrain()
         self._update_selection_status()
 
@@ -546,9 +715,13 @@ class HarpyWidget(QWidget):
             self._classifier_controller.status_message,
             kind=self._classifier_controller.status_kind,
         )
+        self._refresh_layer_styling()
         self._update_classifier_controls()
 
     def _retrain_classifier(self) -> None:
         self._classifier_controller.mark_dirty(reason="the user requested a retrain")
         self._classifier_controller.retrain_now()
         self._update_selection_status()
+
+    def _refresh_layer_styling(self) -> None:
+        self._viewer_styling_controller.refresh()

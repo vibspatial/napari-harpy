@@ -274,22 +274,22 @@ The plugin retrains a classifier in the background whenever annotations change.
 
 ### Tasks
 
-- [ ] Define training eligibility rules:
-  - [ ] enough labeled samples
-  - [ ] at least two classes
-  - [ ] feature matrix shape matches table rows -> I believe this is by construction if you use an AnnData table.
-- [ ] Add a `RandomForestClassifier` training pipeline.
-- [ ] Train on labeled rows only.
-- [ ] Use async worker execution with napari threading.
-- [ ] Use a debounced background training loop:
-  - [ ] every annotation change schedules a retrain
-  - [ ] wait about 200 to 500 ms so bursts of clicks collapse into one job
-  - [ ] train in a worker thread
-  - [ ] when training finishes, run prediction on all objects
-  - [ ] update layer coloring and overlays on the main thread
-- [ ] Prefer napari's `@thread_worker` pattern for training jobs and UI-safe completion handling.
-- [ ] Implement stale-job cancellation or stale-result dropping so only the newest fit is applied.
-- [ ] Capture training metadata in `adata.uns["classifier_config"]`.
+- [x] Define training eligibility rules:
+  - [x] enough labeled samples
+  - [x] at least two classes
+  - [x] feature matrix shape matches table rows -> I believe this is by construction if you use an AnnData table.
+- [x] Add a `RandomForestClassifier` training pipeline.
+- [x] Train on labeled rows only.
+- [x] Use async worker execution with napari threading.
+- [x] Use a debounced background training loop:
+  - [x] every annotation change schedules a retrain
+  - [x] wait about 200 to 500 ms so bursts of clicks collapse into one job
+  - [x] train in a worker thread
+  - [x] when training finishes, run prediction on all objects
+  - [x] update layer coloring and overlays on the main thread
+- [x] Prefer napari's `@thread_worker` pattern for training jobs and UI-safe completion handling.
+- [x] Implement stale-job cancellation or stale-result dropping so only the newest fit is applied.
+- [x] Capture training metadata in `adata.uns["classifier_config"]`.
 
 ### Exit criteria
 
@@ -301,25 +301,63 @@ The plugin retrains a classifier in the background whenever annotations change.
 
 ### Outcome
 
-Objects are recolored live by predicted class.
+Objects are recolored live from selectable table-derived state.
+
+### Status update
+
+The full-table prediction and viewer-coloring workflow described in this phase is implemented.
+ROI-restricted prediction behavior is intentionally deferred to Phase 7.
+
+### Implementation note
+
+Add a `Color by` dropdown to the widget so the user can explicitly choose how the active labels layer is
+styled. For MVP, start with:
+
+- `user_class`
+- `pred_class`
+- `pred_confidence`
+
+Default to `user_class` so annotation remains the clearest first interaction.
+
+For `pred_class`, reuse the same class-id-to-color mapping as `user_class` rather than generating a new
+palette from only the predicted categories currently present. This keeps class `1`, class `2`, and so on
+visually stable even when some categories are temporarily absent from predictions.
+
+For `pred_confidence`, treat the values as continuous in `[0, 1]` and use a continuous colormap.
+`NaN` or missing confidence values should map to a clear fallback color so the "not yet predicted" state
+remains visible.
+
+The recoloring step should happen on the main thread after worker completion. We can defer richer
+"overlays" beyond layer recoloring and basic viewer status readouts if they are not needed for MVP.
 
 ### Tasks
 
-- [ ] Predict classes for all objects after each successful fit.
+- [x] Predict classes for all objects after each successful fit.
 - [ ] If ROI is active, predict only for objects in the active subset and define how out-of-ROI objects are displayed.
-- [ ] Compute and store:
-  - [ ] `pred_class`
-  - [ ] `pred_confidence`
-- [ ] Decide representation for unlabeled or not-yet-predicted objects.
-- [ ] Push updated layer properties into the segmentation layer.
-- [ ] Add a stable colormap for class ids.
+  Deferred to Phase 7 ROI support.
+- [x] Compute and store:
+  - [x] `pred_class`
+  - [x] `pred_confidence`
+- [x] Decide representation for unlabeled or not-yet-predicted objects.
+- [x] Add a `Color by` dropdown to the widget.
+- [x] Support `Color by = user_class`.
+- [x] Support `Color by = pred_class`.
+- [x] Support `Color by = pred_confidence`.
+- [x] Update layer coloring on the main thread when classifier results arrive.
+- [x] Reuse the stable user-class palette when coloring by `pred_class`, even if some categories are absent.
+- [x] Add a continuous colormap for `pred_confidence` in `[0, 1]`.
+- [x] Define fallback styling for missing/`NaN` prediction confidence values.
+- [x] Refresh the active labels layer when the `Color by` selection changes.
 
 ### Exit criteria
 
-- Prediction updates are visible immediately after training finishes.
-- Objects are colored by `pred_class`.
-- Untrained or invalid states are visually clear.
-- ROI-restricted predictions are visually understandable.
+- [x] Prediction updates are visible immediately after training finishes.
+- [x] The user can switch layer styling between `user_class`, `pred_class`, and `pred_confidence`.
+- [x] `pred_class` uses the same stable class colors as `user_class`.
+- [x] `pred_confidence` uses a continuous colormap with a clear missing-value fallback.
+- [x] Untrained or invalid states are visually clear.
+- [ ] ROI-restricted predictions are visually understandable.
+  Deferred to Phase 7 ROI support.
 
 ### Phase 6: Reload from zarr
 
