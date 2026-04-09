@@ -373,6 +373,41 @@ def test_widget_can_clear_user_class_for_picked_instance(qtbot, sdata_blobs: Spa
     assert "Cleared the user class" in widget.annotation_feedback.text()
 
 
+def test_widget_warns_when_selected_label_is_missing_from_annotation_table(
+    qtbot, monkeypatch, sdata_blobs: SpatialData
+) -> None:
+    table = sdata_blobs["table"]
+    keep_mask = ~((table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5))
+    table._inplace_subset_obs(keep_mask.to_numpy())
+
+    warnings: list[str] = []
+
+    class DummyLogger:
+        def warning(self, message: str) -> None:
+            warnings.append(message)
+
+    monkeypatch.setattr(annotation_module, "logger", DummyLogger())
+
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    layer.selected_label = 5
+
+    assert not widget.apply_class_button.isEnabled()
+    assert "Selected instance id 5 is not present in annotation table" in widget.selection_status.text()
+    assert "cannot receive a user class" in widget.selection_status.text()
+
+    widget.class_spinbox.setValue(3)
+    widget._apply_current_class()
+
+    assert "Selected instance id 5 is not present in annotation table" in widget.annotation_feedback.text()
+    assert "#b45309" in widget.annotation_feedback.styleSheet()
+    assert USER_CLASS_COLUMN not in table.obs
+    assert warnings == [widget.annotation_feedback.text()]
+
+
 def test_widget_recolors_layer_from_user_class_annotations(qtbot, sdata_blobs: SpatialData) -> None:
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])

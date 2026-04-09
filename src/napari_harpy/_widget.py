@@ -438,6 +438,7 @@ class HarpyWidget(QWidget):
 
     def _update_annotation_status(self) -> None:
         labels_layer = self._annotation_controller.labels_layer
+        missing_table_row_message = self._annotation_controller.missing_table_row_message
 
         if self.selected_segmentation_name is None:
             message = "Selection: choose a segmentation mask to enable object picking."
@@ -451,6 +452,8 @@ class HarpyWidget(QWidget):
                 f"Selection: bound to `{self.selected_segmentation_name}`. Click an object "
                 "in the viewer."
             )
+        elif missing_table_row_message is not None:
+            message = f"Selection: {missing_table_row_message}"
         else:
             current_user_class = self._annotation_controller.current_user_class
             current_class_label = (
@@ -477,34 +480,49 @@ class HarpyWidget(QWidget):
     def _apply_current_class(self) -> None:
         class_id = self.class_spinbox.value()
         try:
-            self._annotation_controller.apply_class(class_id)
+            warning_message = self._annotation_controller.apply_class(class_id)
         except ValueError as error:
-            self._set_annotation_feedback(str(error), error=True)
+            self._set_annotation_feedback(str(error), kind="error")
+            return
+
+        if warning_message is not None:
+            self._set_annotation_feedback(warning_message, kind="warning")
+            self._update_selection_status()
             return
 
         self._set_annotation_feedback(
             f"Assigned class {class_id} to instance id {self.selected_instance_id}.",
-            error=False,
+            kind="success",
         )
         self._update_selection_status()
 
     def _clear_current_class(self) -> None:
         try:
-            self._annotation_controller.clear_current_class()
+            warning_message = self._annotation_controller.clear_current_class()
         except ValueError as error:
-            self._set_annotation_feedback(str(error), error=True)
+            self._set_annotation_feedback(str(error), kind="error")
+            return
+
+        if warning_message is not None:
+            self._set_annotation_feedback(warning_message, kind="warning")
+            self._update_selection_status()
             return
 
         self._set_annotation_feedback(
             f"Cleared the user class for instance id {self.selected_instance_id}.",
-            error=False,
+            kind="success",
         )
         self._update_selection_status()
 
-    def _set_annotation_feedback(self, message: str, *, error: bool = False) -> None:
+    def _set_annotation_feedback(self, message: str, *, kind: str = "success") -> None:
+        color_by_kind = {
+            "error": "#b91c1c",
+            "warning": "#b45309",
+            "success": "#166534",
+        }
         self.annotation_feedback.setText(message)
         self.annotation_feedback.setStyleSheet(
-            "color: #b91c1c; font-weight: 600;" if error else "color: #166534; font-weight: 600;"
+            f"color: {color_by_kind.get(kind, '#166534')}; font-weight: 600;"
         )
         self.annotation_feedback.setVisible(bool(message))
 
