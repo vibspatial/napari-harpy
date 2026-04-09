@@ -445,10 +445,25 @@ class HarpyWidget(QWidget):
             self.selected_segmentation_name,
         )
         self._annotation_controller.activate_layer()
+        self._refresh_layer_metadata_cache()
         self._refresh_layer_styling()
         self._set_annotation_feedback("")
         self._set_sync_feedback("")
         self._update_selection_status()
+
+    def _refresh_layer_metadata_cache(self) -> bool:
+        if (
+            self.selected_spatialdata is None
+            or self.selected_segmentation_name is None
+            or self._effective_table_name() is None
+        ):
+            return False
+
+        return self._spatialdata_adapter.refresh_layer_table_metadata(
+            self.selected_spatialdata,
+            self.selected_segmentation_name,
+            self._effective_table_name(),
+        )
 
     def _update_selection_status(self) -> None:
         self._update_validation_status()
@@ -750,12 +765,14 @@ class HarpyWidget(QWidget):
         self._update_annotation_controls()
 
     def _on_annotation_changed(self) -> None:
+        self._refresh_layer_metadata_cache()
         self._classifier_controller.mark_dirty(reason="the annotations changed")
         self._refresh_layer_styling()
         self._classifier_controller.schedule_retrain()
         self._update_selection_status()
 
     def _on_classifier_state_changed(self) -> None:
+        self._refresh_layer_metadata_cache()
         self._set_classifier_feedback(
             self._classifier_controller.status_message,
             kind=self._classifier_controller.status_kind,
