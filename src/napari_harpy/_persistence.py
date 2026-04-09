@@ -127,106 +127,112 @@ class PersistenceController:
     def validate_reload_snapshot(self, snapshot: TableDiskSnapshot) -> None:
         """Validate that a disk snapshot can safely replace the selected in-memory table state."""
         sdata = self._require_selected_spatialdata(action="validating reload state")
-        table_name = self._require_selected_table_name(action="validating reload state")
-        current_table = self._spatialdata_adapter.get_table(sdata, table_name)
-        table_path = self._resolve_table_path(sdata, current_table, table_name)
+        current_table_name = self._require_selected_table_name(action="validating reload state")
+        current_table = self._spatialdata_adapter.get_table(sdata, current_table_name)
+        current_table_path = self._resolve_table_path(sdata, current_table, current_table_name)
 
-        if snapshot.table_name != table_name or snapshot.table_path != table_path:
+        if snapshot.table_name != current_table_name or snapshot.table_path != current_table_path:
             raise ValueError(
                 f"Reload snapshot targets `{snapshot.table_name}` at `{snapshot.table_path}`, "
-                f"but the current selection is `{table_name}` at `{table_path}`."
+                f"but the current selection is `{current_table_name}` at `{current_table_path}`."
             )
 
         if not isinstance(snapshot.obs, pd.DataFrame):
-            raise ValueError(f"Reload snapshot for table `{table_name}` has invalid `obs`; expected a DataFrame.")
+            raise ValueError(
+                f"Reload snapshot for table `{current_table_name}` has invalid `obs`; expected a DataFrame."
+            )
 
         if not isinstance(snapshot.obsm, Mapping):
-            raise ValueError(f"Reload snapshot for table `{table_name}` has invalid `obsm`; expected a mapping.")
+            raise ValueError(
+                f"Reload snapshot for table `{current_table_name}` has invalid `obsm`; expected a mapping."
+            )
 
         if not isinstance(snapshot.uns, Mapping):
-            raise ValueError(f"Reload snapshot for table `{table_name}` has invalid `uns`; expected a mapping.")
-
-        attrs = snapshot.uns.get(TableModel.ATTRS_KEY)
-        if not isinstance(attrs, Mapping):
             raise ValueError(
-                f"Reload snapshot for table `{table_name}` is missing `{TableModel.ATTRS_KEY}` metadata in `uns`."
+                f"Reload snapshot for table `{current_table_name}` has invalid `uns`; expected a mapping."
+            )
+
+        snapshot_attrs = snapshot.uns.get(TableModel.ATTRS_KEY)
+        if not isinstance(snapshot_attrs, Mapping):
+            raise ValueError(
+                f"Reload snapshot for table `{current_table_name}` is missing `{TableModel.ATTRS_KEY}` metadata in `uns`."
             )
 
         current_attrs = current_table.uns.get(TableModel.ATTRS_KEY)
         if not isinstance(current_attrs, Mapping):
             raise ValueError(
-                f"The current in-memory table `{table_name}` is missing `{TableModel.ATTRS_KEY}` metadata in `uns`."
+                f"The current in-memory table `{current_table_name}` is missing `{TableModel.ATTRS_KEY}` metadata in `uns`."
             )
 
-        region_key = attrs.get(TableModel.REGION_KEY_KEY)
-        instance_key = attrs.get(TableModel.INSTANCE_KEY)
-        if not region_key or not instance_key:
+        snapshot_region_key = snapshot_attrs.get(TableModel.REGION_KEY_KEY)
+        snapshot_instance_key = snapshot_attrs.get(TableModel.INSTANCE_KEY)
+        if not snapshot_region_key or not snapshot_instance_key:
             raise ValueError(
-                f"Reload snapshot for table `{table_name}` is missing required SpatialData table linkage metadata."
+                f"Reload snapshot for table `{current_table_name}` is missing required SpatialData table linkage metadata."
             )
 
         current_region_key = current_attrs.get(TableModel.REGION_KEY_KEY)
         current_instance_key = current_attrs.get(TableModel.INSTANCE_KEY)
-        if region_key != current_region_key:
+        if snapshot_region_key != current_region_key:
             raise ValueError(
-                f"Cannot reload table `{table_name}`: disk snapshot uses region key `{region_key}` but the current "
-                f"in-memory table uses `{current_region_key}`."
+                f"Cannot reload table `{current_table_name}`: disk snapshot uses region key `{snapshot_region_key}` but the "
+                f"current in-memory table uses `{current_region_key}`."
             )
 
-        if instance_key != current_instance_key:
+        if snapshot_instance_key != current_instance_key:
             raise ValueError(
-                f"Cannot reload table `{table_name}`: disk snapshot uses instance key `{instance_key}` but the "
+                f"Cannot reload table `{current_table_name}`: disk snapshot uses instance key `{snapshot_instance_key}` but the "
                 f"current in-memory table uses `{current_instance_key}`."
             )
 
-        if region_key not in snapshot.obs.columns:
+        if snapshot_region_key not in snapshot.obs.columns:
             raise ValueError(
-                f"Reload snapshot for table `{table_name}` is missing required obs column `{region_key}`."
+                f"Reload snapshot for table `{current_table_name}` is missing required obs column `{snapshot_region_key}`."
             )
 
-        if instance_key not in snapshot.obs.columns:
+        if snapshot_instance_key not in snapshot.obs.columns:
             raise ValueError(
-                f"Reload snapshot for table `{table_name}` is missing required obs column `{instance_key}`."
+                f"Reload snapshot for table `{current_table_name}` is missing required obs column `{snapshot_instance_key}`."
             )
 
         if len(snapshot.obs) != current_table.n_obs:
             raise ValueError(
-                f"Cannot reload table `{table_name}`: disk snapshot has {len(snapshot.obs)} rows but the in-memory "
+                f"Cannot reload table `{current_table_name}`: disk snapshot has {len(snapshot.obs)} rows but the in-memory "
                 f"table has {current_table.n_obs}. Partial reload requires unchanged row identity and order."
             )
 
         if not snapshot.obs.index.equals(current_table.obs_names):
             raise ValueError(
-                f"Cannot reload table `{table_name}`: disk snapshot obs_names do not exactly match the in-memory "
+                f"Cannot reload table `{current_table_name}`: disk snapshot obs_names do not exactly match the in-memory "
                 "table. Partial reload requires unchanged row identity and order."
             )
 
         current_instance_values = current_table.obs[current_instance_key].astype("string")
-        snapshot_instance_values = snapshot.obs[instance_key].astype("string")
+        snapshot_instance_values = snapshot.obs[snapshot_instance_key].astype("string")
         if not snapshot_instance_values.equals(current_instance_values):
             raise ValueError(
-                f"Cannot reload table `{table_name}`: disk snapshot `{instance_key}` values do not exactly match "
-                "the current in-memory table row by row."
+                f"Cannot reload table `{current_table_name}`: disk snapshot `{snapshot_instance_key}` values do not "
+                "exactly match the current in-memory table row by row."
             )
 
         for key, value in snapshot.obsm.items():
             shape = getattr(value, "shape", None)
             if shape is None or len(shape) == 0:
                 raise ValueError(
-                    f"Reload snapshot for table `{table_name}` has invalid `obsm[{key!r}]`; expected an array-like "
+                    f"Reload snapshot for table `{current_table_name}` has invalid `obsm[{key!r}]`; expected an array-like "
                     "value with a leading observation dimension."
                 )
             if int(shape[0]) != len(snapshot.obs):
                 raise ValueError(
-                    f"Reload snapshot for table `{table_name}` has invalid `obsm[{key!r}]` with leading dimension "
+                    f"Reload snapshot for table `{current_table_name}` has invalid `obsm[{key!r}]` with leading dimension "
                     f"{shape[0]}; expected {len(snapshot.obs)} rows."
                 )
 
         if self._selected_label_name is not None:
-            regions = _normalize_regions(attrs.get(TableModel.REGION_KEY))
+            regions = _normalize_regions(snapshot_attrs.get(TableModel.REGION_KEY))
             if self._selected_label_name not in regions:
                 raise ValueError(
-                    f"Cannot reload table `{table_name}` for segmentation `{self._selected_label_name}`: "
+                    f"Cannot reload table `{current_table_name}` for segmentation `{self._selected_label_name}`: "
                     "the disk snapshot no longer annotates the selected segmentation."
                 )
 
