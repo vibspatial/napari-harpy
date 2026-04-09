@@ -163,6 +163,26 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_bl
     assert "model is stale" in widget.classifier_feedback.text()
 
 
+def test_widget_surfaces_invalid_table_binding_for_duplicate_instance_ids(qtbot, sdata_blobs: SpatialData) -> None:
+    table = sdata_blobs["table"]
+    first_index, second_index = table.obs.index[:2]
+    table.obs.loc[second_index, "instance_id"] = table.obs.loc[first_index, "instance_id"]
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    assert widget.selected_table_name == "table"
+    assert not widget.validation_status.isHidden()
+    assert "contains duplicate values within that region" in widget.validation_status.text()
+    assert "contains duplicate values within that region" in widget.selection_status.text()
+    assert not widget.color_by_combo.isEnabled()
+    assert not widget.class_spinbox.isEnabled()
+    assert not widget.retrain_button.isEnabled()
+    assert not widget.sync_button.isEnabled()
+
+
 def test_widget_refreshes_when_a_spatialdata_layer_is_added(qtbot, sdata_blobs: SpatialData) -> None:
     viewer = DummyViewer()
     widget = HarpyWidget(viewer)

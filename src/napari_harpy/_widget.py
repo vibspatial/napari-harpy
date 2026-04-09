@@ -63,6 +63,7 @@ class HarpyWidget(QWidget):
         self._selected_label_option: SpatialDataLabelsOption | None = None
         self._table_names: list[str] = []
         self._selected_table_name: str | None = None
+        self._table_binding_error: str | None = None
         self._feature_matrix_keys: list[str] = []
         self._selected_feature_key: str | None = None
         self._logo_path = Path(__file__).resolve().parents[2] / "docs" / "_static" / "logo.png"
@@ -248,6 +249,7 @@ class HarpyWidget(QWidget):
             # No valid segmentation remains after the refresh, so clear every
             # controller and dependent UI element back to the unbound state.
             self._selected_label_option = None
+            self._table_binding_error = None
             self._refresh_table_names()
             self._annotation_controller.bind(None, None, None)
             self._classifier_controller.bind(None, None, None, None)
@@ -281,28 +283,7 @@ class HarpyWidget(QWidget):
             self._selected_label_option = self._label_options[index]
 
         self._refresh_table_names()
-        self._annotation_controller.bind(
-            self.selected_spatialdata, self.selected_segmentation_name, self.selected_table_name
-        )
-        classifier_context_changed = self._classifier_controller.bind(
-            self.selected_spatialdata,
-            self.selected_segmentation_name,
-            self.selected_table_name,
-            self.selected_feature_key,
-        )
-        if classifier_context_changed:
-            self._classifier_controller.mark_dirty(reason="the segmentation selection changed")
-        self._viewer_styling_controller.bind(
-            self.selected_spatialdata, self.selected_segmentation_name, self.selected_table_name
-        )
-        self._persistence_controller.bind(
-            self.selected_spatialdata, self.selected_table_name, self.selected_segmentation_name
-        )
-        self._annotation_controller.activate_layer()
-        self._refresh_layer_styling()
-        self._set_annotation_feedback("")
-        self._set_sync_feedback("")
-        self._update_selection_status()
+        self._bind_current_selection(dirty_reason="the segmentation selection changed")
 
     def _find_option_index(self, identity: tuple[int, str] | None) -> int | None:
         if identity is None:
@@ -344,28 +325,7 @@ class HarpyWidget(QWidget):
     def _on_table_changed(self, index: int) -> None:
         self._set_selected_table_name(index)
         self._refresh_feature_matrix_keys()
-        self._annotation_controller.bind(
-            self.selected_spatialdata, self.selected_segmentation_name, self.selected_table_name
-        )
-        classifier_context_changed = self._classifier_controller.bind(
-            self.selected_spatialdata,
-            self.selected_segmentation_name,
-            self.selected_table_name,
-            self.selected_feature_key,
-        )
-        if classifier_context_changed:
-            self._classifier_controller.mark_dirty(reason="the annotation table changed")
-        self._viewer_styling_controller.bind(
-            self.selected_spatialdata, self.selected_segmentation_name, self.selected_table_name
-        )
-        self._persistence_controller.bind(
-            self.selected_spatialdata, self.selected_table_name, self.selected_segmentation_name
-        )
-        self._annotation_controller.activate_layer()
-        self._refresh_layer_styling()
-        self._set_annotation_feedback("")
-        self._set_sync_feedback("")
-        self._update_selection_status()
+        self._bind_current_selection(dirty_reason="the annotation table changed")
 
     def _refresh_feature_matrix_keys(self) -> None:
         previous_feature_key = self.selected_feature_key
@@ -400,10 +360,10 @@ class HarpyWidget(QWidget):
         classifier_context_changed = self._classifier_controller.bind(
             self.selected_spatialdata,
             self.selected_segmentation_name,
-            self.selected_table_name,
+            self._effective_table_name(),
             self.selected_feature_key,
         )
-        if classifier_context_changed:
+        if classifier_context_changed and self._effective_table_name() is not None:
             self._classifier_controller.mark_dirty(reason="the feature matrix changed")
         self._refresh_layer_styling()
         self._update_selection_status()
@@ -428,6 +388,68 @@ class HarpyWidget(QWidget):
         else:
             self._selected_feature_key = self._feature_matrix_keys[index]
 
+    def _effective_table_name(self) -> str | None:
+        if self._table_binding_error is not None:
+            return None
+
+        return self.selected_table_name
+
+    def _validate_selected_table_binding(self) -> str | None:
+        if (
+            self.selected_spatialdata is None
+            or self.selected_segmentation_name is None
+            or self.selected_table_name is None
+        ):
+            return None
+
+        try:
+            self._spatialdata_adapter.validate_table_binding(
+                self.selected_spatialdata,
+                self.selected_segmentation_name,
+                self.selected_table_name,
+            )
+        except ValueError as error:
+            return str(error)
+
+        return None
+
+    def _bind_current_selection(self, *, dirty_reason: str | None = None) -> None:
+        self._table_binding_error = self._validate_selected_table_binding()
+        effective_table_name = self._effective_table_name()
+
+        self._annotation_controller.bind(
+            self.selected_spatialdata,
+            self.selected_segmentation_name,
+            effective_table_name,
+        )
+        classifier_context_changed = self._classifier_controller.bind(
+            self.selected_spatialdata,
+            self.selected_segmentation_name,
+            effective_table_name,
+            self.selected_feature_key,
+        )
+        if (
+            dirty_reason is not None
+            and classifier_context_changed
+            and effective_table_name is not None
+        ):
+            self._classifier_controller.mark_dirty(reason=dirty_reason)
+        self._viewer_styling_controller.bind(
+            self.selected_spatialdata,
+            self.selected_segmentation_name,
+            effective_table_name,
+        )
+        self._persistence_controller.bind(
+            self.selected_spatialdata,
+            effective_table_name,
+            self.selected_segmentation_name,
+        )
+        self._annotation_controller.activate_layer()
+        self._refresh_layer_styling()
+        self._set_annotation_feedback("")
+        self._set_sync_feedback("")
+        self._update_selection_status()
+
     def _update_selection_status(self) -> None:
         self._update_validation_status()
         self._update_annotation_status()
@@ -439,7 +461,9 @@ class HarpyWidget(QWidget):
     def _update_validation_status(self) -> None:
         message = None
 
-        if self.selected_table_name is not None and self.feature_matrix_combo.count() == 0:
+        if self._table_binding_error is not None:
+            message = self._table_binding_error
+        elif self.selected_table_name is not None and self.feature_matrix_combo.count() == 0:
             message = (
                 "Warning: the selected table does not contain any feature matrices in `.obsm`. "
                 "Add one before continuing."
@@ -463,6 +487,15 @@ class HarpyWidget(QWidget):
                 title="Selection",
                 lines=[
                     "The chosen segmentation is known in SpatialData but is not currently loaded as a napari Labels layer."
+                ],
+                kind="warning",
+            )
+        elif self._table_binding_error is not None:
+            self._set_selection_status(
+                title="Selection Warning",
+                lines=[
+                    f"Bound to {self.selected_segmentation_name}.",
+                    self._table_binding_error,
                 ],
                 kind="warning",
             )
@@ -501,7 +534,7 @@ class HarpyWidget(QWidget):
             )
 
     def _update_annotation_controls(self) -> None:
-        has_table = self.selected_table_name is not None
+        has_table = self._effective_table_name() is not None
         current_user_class = self._annotation_controller.current_user_class
 
         self.class_spinbox.setEnabled(has_table)
@@ -627,6 +660,8 @@ class HarpyWidget(QWidget):
 
         if self.selected_spatialdata is None or self.selected_table_name is None:
             tooltip = "Choose a backed SpatialData annotation table to enable sync."
+        elif self._table_binding_error is not None:
+            tooltip = self._table_binding_error
         elif not can_sync:
             tooltip = "The selected SpatialData dataset is not backed by zarr."
         else:
@@ -644,11 +679,15 @@ class HarpyWidget(QWidget):
         self.sync_button.setToolTip(tooltip)
 
     def _update_color_by_controls(self) -> None:
-        has_table = self.selected_table_name is not None
+        has_table = self._effective_table_name() is not None
         self.color_by_combo.setEnabled(has_table)
 
         if not has_table:
-            tooltip = "Choose an annotation table before changing the labels-layer coloring mode."
+            tooltip = (
+                self._table_binding_error
+                if self._table_binding_error is not None
+                else "Choose an annotation table before changing the labels-layer coloring mode."
+            )
         elif self.selected_color_by == COLOR_BY_USER_CLASS:
             tooltip = "Color the labels layer by `user_class`."
         elif self.selected_color_by == COLOR_BY_PRED_CLASS:
@@ -666,6 +705,8 @@ class HarpyWidget(QWidget):
 
         if self.selected_spatialdata is None or self.selected_table_name is None:
             tooltip = "Choose a segmentation and annotation table to enable retraining."
+        elif self._table_binding_error is not None:
+            tooltip = self._table_binding_error
         elif self.selected_feature_key is None:
             tooltip = "Choose a feature matrix before retraining the classifier."
         elif self._classifier_controller.is_training:
