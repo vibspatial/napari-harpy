@@ -4,17 +4,19 @@ import pandas as pd
 
 from napari_harpy._class_palette import (
     backfill_missing_class_colors,
-    build_class_categorical_series,
     default_class_colors,
     normalize_color_sequence,
+    set_class_obs_state,
     stored_palette_to_lookup,
 )
 
 
-def test_build_class_categorical_series_normalizes_values_and_categories() -> None:
+def test_set_class_obs_state_normalizes_values_and_categories() -> None:
     values = pd.Series(["7", None, "3", "7"], index=["a", "b", "c", "d"], name="pred_class")
+    table = type("DummyTable", (), {"obs": pd.DataFrame(index=values.index)})()
 
-    categorical_series, categories = build_class_categorical_series(values, column_name="pred_class")
+    categories = set_class_obs_state(table, values, column_name="pred_class")
+    categorical_series = table.obs["pred_class"]
 
     assert list(categorical_series.astype("int64")) == [7, 0, 3, 7]
     assert categories == [0, 3, 7]

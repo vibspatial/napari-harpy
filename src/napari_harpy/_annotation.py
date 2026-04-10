@@ -380,10 +380,6 @@ def _to_user_class_values(values: pd.Series) -> pd.Series:
     return normalize_class_values(values, column_name=USER_CLASS_COLUMN, unlabeled_class=UNLABELED_CLASS)
 
 
-def _to_class_values(values: pd.Series, *, column_name: str) -> pd.Series:
-    return normalize_class_values(values, column_name=column_name, unlabeled_class=UNLABELED_CLASS)
-
-
 def _set_user_class_annotation_state(table: AnnData, values: pd.Series) -> None:
     set_class_annotation_state(
         table,

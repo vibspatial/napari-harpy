@@ -28,13 +28,18 @@ def normalize_class_values(
     return numeric_values
 
 
-def extract_class_categories(
+def compute_canonical_class_categories(
     values: pd.Series,
     *,
     column_name: str | None = None,
     unlabeled_class: int = DEFAULT_UNLABELED_CLASS,
 ) -> list[int]:
-    """Return the canonical sorted class ids for a class-valued series."""
+    """Return the canonical category order for a class-valued series.
+
+    This helper is for write-time normalization. It always returns the sorted class ids
+    implied by the values, with the unlabeled class included, regardless of whether the
+    input series already has a categorical dtype or category ordering.
+    """
     normalized_values = normalize_class_values(
         values,
         column_name=column_name or values.name or "class",
@@ -43,42 +48,27 @@ def extract_class_categories(
     return sorted({unlabeled_class, *normalized_values.tolist()})
 
 
-def extract_stored_class_categories(
+def read_series_class_categories(
     values: pd.Series,
     *,
     column_name: str | None = None,
     unlabeled_class: int = DEFAULT_UNLABELED_CLASS,
 ) -> list[int]:
-    """Return category order as stored on the series, normalizing if needed."""
+    """Return category order as it is currently represented on the series.
+
+    This helper is for read-time interpretation of existing table state. If the series is
+    categorical, its stored category order is preserved so `uns` palettes can be read in
+    the same order. If the series is not categorical yet, this falls back to the canonical
+    sorted category order.
+    """
     if isinstance(values.dtype, pd.CategoricalDtype):
         return [int(value) for value in values.cat.categories]
 
-    return extract_class_categories(
+    return compute_canonical_class_categories(
         values,
         column_name=column_name or values.name or "class",
         unlabeled_class=unlabeled_class,
     )
-
-
-def build_class_categorical_series(
-    values: pd.Series,
-    *,
-    column_name: str,
-    unlabeled_class: int = DEFAULT_UNLABELED_CLASS,
-) -> tuple[pd.Series, list[int]]:
-    """Build the canonical categorical series stored in table.obs for a class column."""
-    normalized_values = normalize_class_values(values, column_name=column_name, unlabeled_class=unlabeled_class)
-    categories = extract_class_categories(
-        normalized_values,
-        column_name=column_name,
-        unlabeled_class=unlabeled_class,
-    )
-    categorical_series = pd.Series(
-        pd.Categorical(normalized_values, categories=categories),
-        index=normalized_values.index,
-        name=column_name,
-    )
-    return categorical_series, categories
 
 
 def default_class_colors(
@@ -200,12 +190,21 @@ def set_class_obs_state(
     unlabeled_class: int = DEFAULT_UNLABELED_CLASS,
 ) -> list[int]:
     """Canonicalize the class column stored in `table.obs` and return its categories."""
-    categorical_series, categories = build_class_categorical_series(
+    normalized_values = normalize_class_values(
         values,
         column_name=column_name,
         unlabeled_class=unlabeled_class,
     )
-    table.obs[column_name] = categorical_series
+    categories = compute_canonical_class_categories(
+        normalized_values,
+        column_name=column_name,
+        unlabeled_class=unlabeled_class,
+    )
+    table.obs[column_name] = pd.Series(
+        pd.Categorical(normalized_values, categories=categories),
+        index=normalized_values.index,
+        name=column_name,
+    )
     return categories
 
 

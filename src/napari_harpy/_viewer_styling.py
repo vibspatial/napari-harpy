@@ -15,9 +15,9 @@ from napari_harpy._annotation import (
 )
 from napari_harpy._class_palette import (
     backfill_missing_class_colors,
-    extract_stored_class_categories,
     normalize_class_values,
     normalize_color_sequence,
+    read_series_class_categories,
     stored_palette_to_lookup,
 )
 from napari_harpy._classifier import PRED_CLASS_COLORS_KEY, PRED_CLASS_COLUMN, PRED_CONFIDENCE_COLUMN
@@ -257,7 +257,7 @@ class ViewerStylingController:
                 unlabeled_color=unlabeled_color,
             )
 
-        column_categories = extract_stored_class_categories(
+        column_categories = read_series_class_categories(
             table.obs[category_column],
             column_name=category_column,
             unlabeled_class=unlabeled_class,
