@@ -228,7 +228,21 @@ class SpatialDataAdapter:
         return _normalize_layer_metadata_adata(adata)
 
     def refresh_layer_table_metadata(self, sdata: SpatialData, label_name: str, table_name: str) -> bool:
-        """Refresh table-derived metadata on the loaded napari layer for a labels element."""
+        """Refresh table-derived metadata on the loaded napari layer for a labels element.
+
+        Harpy originally tried to keep ``layer.metadata["adata"]`` refreshed as a
+        compatibility cache for ``napari-spatialdata`` so that edits to
+        ``sdata[table_name]`` would also be reflected in the currently loaded
+        labels layer metadata.
+
+        In practice, ``napari-spatialdata`` may later rebuild and overwrite that
+        cache from the authoritative ``sdata[table_name]`` table again when its
+        own widgets update. Because of that, Harpy no longer calls this helper as
+        part of the normal widget lifecycle and instead treats
+        ``sdata[table_name]`` as the only source of truth. This method is kept as
+        an explicit best-effort utility for cases where refreshing the layer
+        metadata cache is still useful.
+        """
         layer = self.get_labels_layer(sdata, label_name)
         if layer is None:
             return False

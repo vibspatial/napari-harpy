@@ -157,12 +157,7 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_bl
     assert widget.selected_table_metadata.region_key == "region"
     assert widget.selected_table_metadata.instance_key == "instance_id"
     assert widget.selected_table_metadata.regions == ("blobs_labels",)
-    assert layer.metadata["adata"] is not None
-    assert PRED_CLASS_COLUMN in layer.metadata["adata"].obs
-    assert PRED_CONFIDENCE_COLUMN in layer.metadata["adata"].obs
-    assert isinstance(layer.metadata["adata"].obs[PRED_CLASS_COLUMN].dtype, pd.CategoricalDtype)
-    assert USER_CLASS_COLORS_KEY not in layer.metadata["adata"].uns
-    assert PRED_CLASS_COLORS_KEY not in layer.metadata["adata"].uns
+    assert "adata" not in layer.metadata
     assert widget.selected_instance_id is None
     assert widget.refresh_button.text() == "Rescan Viewer"
     assert widget.retrain_button.text() == "Retrain"
@@ -387,11 +382,7 @@ def test_widget_applies_user_class_to_picked_instance(qtbot, sdata_blobs: Spatia
     assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
     assert int(table.obs.loc[table.obs["instance_id"] == 6, USER_CLASS_COLUMN].iloc[0]) == 0
     assert table.uns[USER_CLASS_COLORS_KEY] == default_class_colors([0, 3])
-    metadata_adata = layer.metadata["adata"]
-    metadata_mask = metadata_adata.obs["instance_id"] == 5
-    assert metadata_adata.obs.loc[metadata_mask, USER_CLASS_COLUMN].tolist() == [3]
-    assert list(metadata_adata.obs[USER_CLASS_COLUMN].cat.categories) == [0, 3]
-    assert USER_CLASS_COLORS_KEY not in metadata_adata.uns
+    assert "adata" not in layer.metadata
     assert "Current class: 3." in widget.selection_status.text()
     assert "Assigned class 3" in widget.annotation_feedback.text()
 
@@ -582,12 +573,7 @@ def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs:
     assert table.uns[PRED_CLASS_COLORS_KEY] == default_class_colors([0, 1, 2])
     assert pred_class.loc[1] == 1
     assert pred_class.loc[24] == 2
-    metadata_adata = layer.metadata["adata"]
-    metadata_pred_class = metadata_adata.obs.set_index("instance_id")[PRED_CLASS_COLUMN]
-    assert isinstance(metadata_adata.obs[PRED_CLASS_COLUMN].dtype, pd.CategoricalDtype)
-    assert PRED_CLASS_COLORS_KEY not in metadata_adata.uns
-    assert metadata_pred_class.loc[1] == 1
-    assert metadata_pred_class.loc[24] == 2
+    assert "adata" not in layer.metadata
     assert "model is up to date" in widget.classifier_feedback.text()
     assert table.uns[CLASSIFIER_CONFIG_KEY]["trained"] is True
 
