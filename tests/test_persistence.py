@@ -141,6 +141,34 @@ def test_persistence_controller_replaces_selected_table_with_reloaded_snapshot(
     assert backed_sdata_blobs.locate_element(reloaded_table) == ["tables/table"]
 
 
+def test_persistence_controller_reloads_obsm_key_written_directly_to_disk_group(
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    """Cover direct `tables/<table>/obsm/<key>` writes that future extensions will rely on.
+
+    This is an important regression test because plugin extensions may add new
+    feature matrices straight to the backed zarr group without rewriting the
+    full `obsm` mapping. Reload must continue to discover those incrementally
+    written keys and surface them on the in-memory table.
+    """
+    controller = PersistenceController(SpatialDataAdapter())
+    controller.bind(backed_sdata_blobs, "table")
+    table = backed_sdata_blobs["table"]
+    features_3 = np.arange(table.n_obs * 3, dtype=np.float32).reshape(table.n_obs, 3)
+
+    root = zarr.open_group(backed_sdata_blobs.path, mode="a", use_consolidated=False)
+    table_group = root["tables/table"]
+    ad.io.write_elem(table_group["obsm"], "features_3", features_3)
+
+    assert "features_3" not in table.obsm
+
+    table_path = controller.reload_table_state()
+
+    assert table_path == "tables/table"
+    assert sorted(table.obsm.keys()) == ["features_1", "features_2", "features_3"]
+    assert np.array_equal(table.obsm["features_3"], features_3)
+
+
 def test_persistence_controller_rejects_reload_when_row_count_changed(
     backed_sdata_blobs: SpatialData,
 ) -> None:
