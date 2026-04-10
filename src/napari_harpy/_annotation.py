@@ -1,15 +1,20 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-import numpy as np
 import pandas as pd
 from loguru import logger
-from matplotlib import rcParams
-from scanpy.plotting.palettes import default_20, default_28, default_102
 
+from napari_harpy._class_palette import (
+    DEFAULT_UNLABELED_CLASS,
+    DEFAULT_UNLABELED_COLOR,
+    build_class_categorical_series,
+    default_class_colors,
+    normalize_class_values,
+    normalize_color_sequence,
+)
 from napari_harpy._spatialdata import SpatialDataAdapter, SpatialDataTableMetadata
 
 if TYPE_CHECKING:
@@ -18,8 +23,8 @@ if TYPE_CHECKING:
 
 USER_CLASS_COLUMN = "user_class"
 USER_CLASS_COLORS_KEY = f"{USER_CLASS_COLUMN}_colors"
-UNLABELED_CLASS = 0
-UNLABELED_COLOR = "#80808099"
+UNLABELED_CLASS = DEFAULT_UNLABELED_CLASS
+UNLABELED_COLOR = DEFAULT_UNLABELED_COLOR
 
 
 @dataclass(frozen=True)
@@ -373,79 +378,12 @@ class AnnotationController:
         self.ensure_annotation_column(USER_CLASS_COLUMN)
 
 
-def _default_class_colors(categories: Sequence[int]) -> list[str]:
-    """Return colors for the given integer class ids.
-
-    Class ``0`` is always the reserved unlabeled color. Positive class ids are
-    mapped onto the default categorical palette starting at index ``0`` for
-    class ``1``.
-    """
-    return [
-        UNLABELED_COLOR if _is_unlabeled_class(class_id) else _default_labeled_user_class_color(class_id)
-        for class_id in categories
-    ]
-
-
-def _default_user_class_colors(categories: Sequence[int]) -> list[str]:
-    """Return colors for the given user classes."""
-    # TODO -> not used?
-    return _default_class_colors(categories)
-
-
-def _default_labeled_user_class_color(class_id: int) -> str:
-    palette_index = _user_class_palette_index(class_id)
-    palette = _default_labeled_user_class_colors(palette_index + 1)
-    return palette[palette_index]
-
-
-def _is_unlabeled_class(class_id: int) -> bool:
-    return class_id == UNLABELED_CLASS
-
-
-def _user_class_palette_index(class_id: int) -> int:
-    if _is_unlabeled_class(class_id):
-        raise ValueError("The unlabeled class does not map to the labeled-user-class palette.")
-    if class_id < UNLABELED_CLASS:
-        raise ValueError("Class ids must be zero or positive integers.")
-
-    return class_id - 1
-
-
-def _default_labeled_user_class_colors(length: int) -> list[str]:
-    """Return the default categorical palette used by spatialdata-plot/scanpy."""
-    if len(rcParams["axes.prop_cycle"].by_key()["color"]) >= length:
-        color_cycle = rcParams["axes.prop_cycle"]()
-        palette = [next(color_cycle)["color"] for _ in range(length)]
-    elif length <= 20:
-        palette = list(default_20)
-    elif length <= 28:
-        palette = list(default_28)
-    elif length <= len(default_102):
-        palette = list(default_102)
-    else:
-        palette = ["grey" for _ in range(length)]
-
-    return palette[:length]
-
-
 def _to_user_class_values(values: pd.Series) -> pd.Series:
-    return _to_class_values(values, column_name=USER_CLASS_COLUMN)
+    return normalize_class_values(values, column_name=USER_CLASS_COLUMN, unlabeled_class=UNLABELED_CLASS)
 
 
 def _to_class_values(values: pd.Series, *, column_name: str) -> pd.Series:
-    numeric_values = pd.to_numeric(values.astype("string"), errors="coerce").fillna(UNLABELED_CLASS).astype("int64")
-    numeric_values.name = column_name
-    return numeric_values
-
-
-def _get_user_class_categories(values: pd.Series) -> list[int]:
-    normalized_values = _to_user_class_values(values)
-    return _get_class_categories(normalized_values)
-
-
-def _get_class_categories(values: pd.Series) -> list[int]:
-    normalized_values = _to_class_values(values, column_name=values.name or USER_CLASS_COLUMN)
-    return sorted({UNLABELED_CLASS, *normalized_values.tolist()})
+    return normalize_class_values(values, column_name=column_name, unlabeled_class=UNLABELED_CLASS)
 
 
 def _set_user_class_annotation_state(table: AnnData, values: pd.Series) -> None:
@@ -466,41 +404,69 @@ def _set_class_annotation_state(
     keep_colors: bool = True,
     warn_on_palette_overwrite: bool = True,
 ) -> None:
-    """Normalize an integer class column and optionally regenerate its palette."""
-    normalized_values = _to_class_values(values, column_name=column_name)
-    categories = _get_class_categories(normalized_values)
-    table.obs[column_name] = pd.Series(
-        pd.Categorical(normalized_values, categories=categories),
-        index=normalized_values.index,
-        name=column_name,
-    )
+    """Normalize a class column in `table.obs` and explicitly sync its palette in `table.uns`.
+
+    This is the high-level mutating entry point for class annotation state. It first
+    canonicalizes the categorical values stored in `table.obs[column_name]`, then, when
+    `keep_colors` is enabled, it explicitly regenerates and writes the corresponding
+    `table.uns[colors_key]` palette via `_sync_class_palette_state(...)`.
+    """
+    categories = _set_class_obs_state(table, values, column_name=column_name)
 
     if not keep_colors or colors_key is None:
-        if colors_key is not None and colors_key in table.uns:
-            table.uns = {key: value for key, value in table.uns.items() if key != colors_key}
+        if colors_key is not None:
+            _drop_class_palette_state(table, colors_key=colors_key)
         return
 
-    generated_colors = _default_class_colors(categories)
-    existing_colors = _normalize_color_sequence(table.uns.get(colors_key))
+    _sync_class_palette_state(
+        table,
+        categories=categories,
+        column_name=column_name,
+        colors_key=colors_key,
+        warn_on_palette_overwrite=warn_on_palette_overwrite,
+    )
+
+
+def _set_class_obs_state(table: AnnData, values: pd.Series, *, column_name: str) -> list[int]:
+    """Canonicalize the class column stored in `table.obs` and return its categories."""
+    categorical_series, categories = build_class_categorical_series(
+        values,
+        column_name=column_name,
+        unlabeled_class=UNLABELED_CLASS,
+    )
+    table.obs[column_name] = categorical_series
+    return categories
+
+
+def _drop_class_palette_state(table: AnnData, *, colors_key: str) -> None:
+    """Remove the stored palette for one class column without mutating other `uns` entries."""
+    if colors_key not in table.uns:
+        return
+
+    table.uns = {key: value for key, value in table.uns.items() if key != colors_key}
+
+
+def _sync_class_palette_state(
+    table: AnnData,
+    *,
+    categories: list[int],
+    column_name: str,
+    colors_key: str,
+    warn_on_palette_overwrite: bool,
+) -> None:
+    """Regenerate and store the palette that corresponds to the canonical class categories."""
+    generated_colors = default_class_colors(
+        categories,
+        unlabeled_class=UNLABELED_CLASS,
+        unlabeled_color=UNLABELED_COLOR,
+    )
+    existing_colors = normalize_color_sequence(table.uns.get(colors_key))
     if warn_on_palette_overwrite and existing_colors is not None and existing_colors != generated_colors:
         logger.warning(
             f"Overwriting existing `{colors_key}` palette in `table.uns`. "
             f"Current napari-harpy behavior regenerates this palette from `{column_name}` categories."
         )
     table.uns[colors_key] = generated_colors
-
-
-def _normalize_color_sequence(value: object) -> list[str] | None:
-    if value is None:
-        return None
-
-    if isinstance(value, np.ndarray):
-        return [str(item) for item in value.tolist()]
-
-    if isinstance(value, (list, tuple)):
-        return [str(item) for item in value]
-
-    return [str(value)]
 
 
 def _get_positive_selected_label(layer: Any) -> int | None:

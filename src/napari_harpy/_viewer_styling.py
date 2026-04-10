@@ -12,8 +12,13 @@ from napari_harpy._annotation import (
     UNLABELED_COLOR,
     USER_CLASS_COLORS_KEY,
     USER_CLASS_COLUMN,
-    _default_labeled_user_class_color,
-    _normalize_color_sequence,
+)
+from napari_harpy._class_palette import (
+    backfill_missing_class_colors,
+    extract_stored_class_categories,
+    normalize_class_values,
+    normalize_color_sequence,
+    stored_palette_to_lookup,
 )
 from napari_harpy._classifier import PRED_CLASS_COLORS_KEY, PRED_CLASS_COLUMN, PRED_CONFIDENCE_COLUMN
 from napari_harpy._spatialdata import SpatialDataAdapter, SpatialDataTableMetadata
@@ -164,7 +169,11 @@ class ViewerStylingController:
         feature_rows.index.name = "index"
 
         if USER_CLASS_COLUMN in region_rows:
-            feature_rows[USER_CLASS_COLUMN] = _to_class_values(region_rows[USER_CLASS_COLUMN], USER_CLASS_COLUMN)
+            feature_rows[USER_CLASS_COLUMN] = normalize_class_values(
+                region_rows[USER_CLASS_COLUMN],
+                column_name=USER_CLASS_COLUMN,
+                unlabeled_class=UNLABELED_CLASS,
+            )
         else:
             feature_rows[USER_CLASS_COLUMN] = pd.Series(
                 UNLABELED_CLASS,
@@ -173,7 +182,11 @@ class ViewerStylingController:
             )
 
         if PRED_CLASS_COLUMN in region_rows:
-            feature_rows[PRED_CLASS_COLUMN] = _to_class_values(region_rows[PRED_CLASS_COLUMN], PRED_CLASS_COLUMN)
+            feature_rows[PRED_CLASS_COLUMN] = normalize_class_values(
+                region_rows[PRED_CLASS_COLUMN],
+                column_name=PRED_CLASS_COLUMN,
+                unlabeled_class=UNLABELED_CLASS,
+            )
         else:
             feature_rows[PRED_CLASS_COLUMN] = pd.Series(
                 UNLABELED_CLASS,
@@ -214,54 +227,61 @@ class ViewerStylingController:
         table = self._get_bound_table()
 
         categories = {unlabeled_class}
+        # Include every class id currently present in the bound table column, not just the active region.
         if table is not None and category_column in table.obs:
-            categories.update(_to_class_values(table.obs[category_column], category_column).tolist())
+            categories.update(
+                normalize_class_values(
+                    table.obs[category_column],
+                    column_name=category_column,
+                    unlabeled_class=unlabeled_class,
+                ).tolist()
+            )
         if extra_class_values is not None:
             categories.update(
-                _to_class_values(extra_class_values, extra_class_values.name or category_column).tolist()
+                normalize_class_values(
+                    extra_class_values,
+                    column_name=extra_class_values.name or category_column,
+                    unlabeled_class=unlabeled_class,
+                ).tolist()
             )
 
         sorted_categories = sorted(int(class_id) for class_id in categories)
-        lookup = {unlabeled_class: unlabeled_color}
-
         # Fall back to deterministic class-id colors when no table-backed palette is available.
+        # This branch is just a safety net, and typically does not happen.
         if table is None or category_column not in table.obs:
-            for class_id in sorted_categories:
-                if class_id == unlabeled_class:
-                    continue
-                lookup[class_id] = _default_labeled_user_class_color(class_id)
-            return lookup
+            # In the happy path, `_set_class_annotation_state(...)` has already kept the stored palette complete.
+            return backfill_missing_class_colors(
+                {unlabeled_class: unlabeled_color},
+                sorted_categories,
+                unlabeled_class=unlabeled_class,
+                unlabeled_color=unlabeled_color,
+            )
 
-        column_categories = _get_table_class_categories(table.obs[category_column], category_column)
-        existing_colors = _normalize_color_sequence(table.uns.get(colors_key))
+        column_categories = extract_stored_class_categories(
+            table.obs[category_column],
+            column_name=category_column,
+            unlabeled_class=unlabeled_class,
+        )
+        existing_colors = normalize_color_sequence(table.uns.get(colors_key))
         # Convert the stored ordered palette into an explicit class-id -> color lookup.
-        if existing_colors is not None:
-            for class_id, color in zip(column_categories, existing_colors[: len(column_categories)], strict=False):
-                lookup[int(class_id)] = color
+        lookup = stored_palette_to_lookup(
+            column_categories,
+            existing_colors,
+            unlabeled_class=unlabeled_class,
+            unlabeled_color=unlabeled_color,
+        )
 
         # Backfill any missing class ids with the deterministic default class palette.
-        for class_id in sorted_categories:
-            if class_id == unlabeled_class:
-                continue
-            lookup.setdefault(class_id, _default_labeled_user_class_color(class_id))
-
-        return lookup
-
-
-def _to_class_values(values: pd.Series, column_name: str) -> pd.Series:
-    numeric_values = pd.to_numeric(values.astype("string"), errors="coerce").fillna(UNLABELED_CLASS).astype("int64")
-    numeric_values.name = column_name
-    return numeric_values
+        # In the happy path, `_sync_class_palette_state(...)` has already covered every stored category.
+        return backfill_missing_class_colors(
+            lookup,
+            sorted_categories,
+            unlabeled_class=unlabeled_class,
+            unlabeled_color=unlabeled_color,
+        )
 
 
 def _to_numeric_values(values: pd.Series, column_name: str) -> pd.Series:
     numeric_values = pd.to_numeric(values, errors="coerce").astype("float64")
     numeric_values.name = column_name
     return numeric_values
-
-
-def _get_table_class_categories(values: pd.Series, column_name: str) -> list[int]:
-    if isinstance(values.dtype, pd.CategoricalDtype):
-        return [int(value) for value in values.cat.categories]
-
-    return sorted({UNLABELED_CLASS, *_to_class_values(values, column_name).tolist()})

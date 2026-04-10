@@ -13,13 +13,14 @@ from spatialdata import SpatialData, read_zarr
 from spatialdata.models import TableModel
 
 import napari_harpy._annotation as annotation_module
-from napari_harpy._annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN, _default_user_class_colors
+from napari_harpy._annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
 from napari_harpy._classifier import (
     CLASSIFIER_CONFIG_KEY,
     PRED_CLASS_COLORS_KEY,
     PRED_CLASS_COLUMN,
     PRED_CONFIDENCE_COLUMN,
 )
+from napari_harpy._class_palette import default_class_colors
 from napari_harpy._spatialdata import get_spatialdata_label_options
 from napari_harpy._widget import HarpyWidget
 
@@ -384,7 +385,7 @@ def test_widget_applies_user_class_to_picked_instance(qtbot, sdata_blobs: Spatia
     assert list(table.obs[USER_CLASS_COLUMN].cat.categories) == [0, 3]
     assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
     assert int(table.obs.loc[table.obs["instance_id"] == 6, USER_CLASS_COLUMN].iloc[0]) == 0
-    assert table.uns[USER_CLASS_COLORS_KEY] == _default_user_class_colors([0, 3])
+    assert table.uns[USER_CLASS_COLORS_KEY] == default_class_colors([0, 3])
     metadata_adata = layer.metadata["adata"]
     metadata_mask = metadata_adata.obs["instance_id"] == 5
     assert metadata_adata.obs.loc[metadata_mask, USER_CLASS_COLUMN].tolist() == [3]
@@ -431,7 +432,7 @@ def test_widget_can_clear_user_class_for_picked_instance(qtbot, sdata_blobs: Spa
     assert isinstance(table.obs[USER_CLASS_COLUMN].dtype, pd.CategoricalDtype)
     assert list(table.obs[USER_CLASS_COLUMN].cat.categories) == [0]
     assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [0]
-    assert table.uns[USER_CLASS_COLORS_KEY] == _default_user_class_colors([0])
+    assert table.uns[USER_CLASS_COLORS_KEY] == default_class_colors([0])
     assert "Current class: unlabeled." in widget.selection_status.text()
     assert "Cleared the user class" in widget.annotation_feedback.text()
 
@@ -548,7 +549,7 @@ def test_widget_syncs_user_class_to_backed_zarr(qtbot, backed_sdata_blobs: Spati
     assert isinstance(reread["table"].obs[USER_CLASS_COLUMN].dtype, pd.CategoricalDtype)
     assert list(reread["table"].obs[USER_CLASS_COLUMN].cat.categories) == [0, 3]
     assert reread["table"].obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
-    assert list(reread["table"].uns[USER_CLASS_COLORS_KEY]) == _default_user_class_colors([0, 3])
+    assert list(reread["table"].uns[USER_CLASS_COLORS_KEY]) == default_class_colors([0, 3])
 
 
 def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs: SpatialData) -> None:
@@ -579,7 +580,7 @@ def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs:
     pred_class = table.obs.set_index("instance_id")[PRED_CLASS_COLUMN]
     assert isinstance(table.obs[PRED_CLASS_COLUMN].dtype, pd.CategoricalDtype)
     assert list(table.obs[PRED_CLASS_COLUMN].cat.categories) == [0, 1, 2]
-    assert table.uns[PRED_CLASS_COLORS_KEY] == _default_user_class_colors([0, 1, 2])
+    assert table.uns[PRED_CLASS_COLORS_KEY] == default_class_colors([0, 1, 2])
     assert pred_class.loc[1] == 1
     assert pred_class.loc[24] == 2
     metadata_adata = layer.metadata["adata"]
