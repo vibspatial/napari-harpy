@@ -10,7 +10,8 @@ import pandas as pd
 from qtpy.QtCore import QTimer
 from sklearn.ensemble import RandomForestClassifier
 
-from napari_harpy._annotation import UNLABELED_CLASS, USER_CLASS_COLUMN, _set_class_annotation_state
+from napari_harpy._annotation import UNLABELED_CLASS, USER_CLASS_COLUMN
+from napari_harpy._class_palette import set_class_annotation_state
 from napari_harpy._spatialdata import SpatialDataAdapter, SpatialDataTableMetadata
 
 try:
@@ -678,7 +679,7 @@ def _get_pred_class_values(obs: pd.DataFrame, n_obs: int) -> pd.Series:
 
 
 def _set_pred_class_annotation_state(table: AnnData, values: pd.Series) -> None:
-    _set_class_annotation_state(
+    set_class_annotation_state(
         table,
         values,
         column_name=PRED_CLASS_COLUMN,

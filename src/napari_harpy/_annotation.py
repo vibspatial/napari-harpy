@@ -10,10 +10,8 @@ from loguru import logger
 from napari_harpy._class_palette import (
     DEFAULT_UNLABELED_CLASS,
     DEFAULT_UNLABELED_COLOR,
-    build_class_categorical_series,
-    default_class_colors,
     normalize_class_values,
-    normalize_color_sequence,
+    set_class_annotation_state,
 )
 from napari_harpy._spatialdata import SpatialDataAdapter, SpatialDataTableMetadata
 
@@ -387,86 +385,14 @@ def _to_class_values(values: pd.Series, *, column_name: str) -> pd.Series:
 
 
 def _set_user_class_annotation_state(table: AnnData, values: pd.Series) -> None:
-    _set_class_annotation_state(
+    set_class_annotation_state(
         table,
         values,
         column_name=USER_CLASS_COLUMN,
         colors_key=USER_CLASS_COLORS_KEY,
-    )
-
-
-def _set_class_annotation_state(
-    table: AnnData,
-    values: pd.Series,
-    *,
-    column_name: str,
-    colors_key: str | None = None,
-    keep_colors: bool = True,
-    warn_on_palette_overwrite: bool = True,
-) -> None:
-    """Normalize a class column in `table.obs` and explicitly sync its palette in `table.uns`.
-
-    This is the high-level mutating entry point for class annotation state. It first
-    canonicalizes the categorical values stored in `table.obs[column_name]`, then, when
-    `keep_colors` is enabled, it explicitly regenerates and writes the corresponding
-    `table.uns[colors_key]` palette via `_sync_class_palette_state(...)`.
-    """
-    categories = _set_class_obs_state(table, values, column_name=column_name)
-
-    if not keep_colors or colors_key is None:
-        if colors_key is not None:
-            _drop_class_palette_state(table, colors_key=colors_key)
-        return
-
-    _sync_class_palette_state(
-        table,
-        categories=categories,
-        column_name=column_name,
-        colors_key=colors_key,
-        warn_on_palette_overwrite=warn_on_palette_overwrite,
-    )
-
-
-def _set_class_obs_state(table: AnnData, values: pd.Series, *, column_name: str) -> list[int]:
-    """Canonicalize the class column stored in `table.obs` and return its categories."""
-    categorical_series, categories = build_class_categorical_series(
-        values,
-        column_name=column_name,
-        unlabeled_class=UNLABELED_CLASS,
-    )
-    table.obs[column_name] = categorical_series
-    return categories
-
-
-def _drop_class_palette_state(table: AnnData, *, colors_key: str) -> None:
-    """Remove the stored palette for one class column without mutating other `uns` entries."""
-    if colors_key not in table.uns:
-        return
-
-    table.uns = {key: value for key, value in table.uns.items() if key != colors_key}
-
-
-def _sync_class_palette_state(
-    table: AnnData,
-    *,
-    categories: list[int],
-    column_name: str,
-    colors_key: str,
-    warn_on_palette_overwrite: bool,
-) -> None:
-    """Regenerate and store the palette that corresponds to the canonical class categories."""
-    generated_colors = default_class_colors(
-        categories,
         unlabeled_class=UNLABELED_CLASS,
         unlabeled_color=UNLABELED_COLOR,
     )
-    existing_colors = normalize_color_sequence(table.uns.get(colors_key))
-    if warn_on_palette_overwrite and existing_colors is not None and existing_colors != generated_colors:
-        logger.warning(
-            f"Overwriting existing `{colors_key}` palette in `table.uns`. "
-            f"Current napari-harpy behavior regenerates this palette from `{column_name}` categories."
-        )
-    table.uns[colors_key] = generated_colors
 
 
 def _get_positive_selected_label(layer: Any) -> int | None:

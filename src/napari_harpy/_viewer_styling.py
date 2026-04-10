@@ -249,7 +249,7 @@ class ViewerStylingController:
         # Fall back to deterministic class-id colors when no table-backed palette is available.
         # This branch is just a safety net, and typically does not happen.
         if table is None or category_column not in table.obs:
-            # In the happy path, `_set_class_annotation_state(...)` has already kept the stored palette complete.
+            # In the happy path, `set_class_annotation_state(...)` has already kept the stored palette complete.
             return backfill_missing_class_colors(
                 {unlabeled_class: unlabeled_color},
                 sorted_categories,
@@ -272,7 +272,7 @@ class ViewerStylingController:
         )
 
         # Backfill any missing class ids with the deterministic default class palette.
-        # In the happy path, `_sync_class_palette_state(...)` has already covered every stored category.
+        # In the happy path, `sync_class_palette_state(...)` has already covered every stored category.
         return backfill_missing_class_colors(
             lookup,
             sorted_categories,

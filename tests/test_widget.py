@@ -13,6 +13,7 @@ from spatialdata import SpatialData, read_zarr
 from spatialdata.models import TableModel
 
 import napari_harpy._annotation as annotation_module
+import napari_harpy._class_palette as class_palette_module
 from napari_harpy._annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
 from napari_harpy._classifier import (
     CLASSIFIER_CONFIG_KEY,
@@ -509,7 +510,7 @@ def test_widget_logs_warning_when_existing_user_class_colors_are_overwritten(
         def warning(self, message: str) -> None:
             warnings.append(message)
 
-    monkeypatch.setattr(annotation_module, "logger", DummyLogger())
+    monkeypatch.setattr(class_palette_module, "logger", DummyLogger())
     widget = HarpyWidget(viewer)
     qtbot.addWidget(widget)
 

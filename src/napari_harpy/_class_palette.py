@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
+from loguru import logger
 from matplotlib import rcParams
 from scanpy.plotting.palettes import default_20, default_28, default_102
+
+if TYPE_CHECKING:
+    from anndata import AnnData
 
 DEFAULT_UNLABELED_CLASS = 0
 DEFAULT_UNLABELED_COLOR = "#80808099"
@@ -144,6 +149,97 @@ def backfill_missing_class_colors(
         filled_lookup.setdefault(class_id, default_labeled_class_color(class_id))
 
     return filled_lookup
+
+
+def set_class_annotation_state(
+    table: AnnData,
+    values: pd.Series,
+    *,
+    column_name: str,
+    colors_key: str | None = None,
+    keep_colors: bool = True,
+    warn_on_palette_overwrite: bool = True,
+    unlabeled_class: int = DEFAULT_UNLABELED_CLASS,
+    unlabeled_color: str = DEFAULT_UNLABELED_COLOR,
+) -> None:
+    """Normalize a class column in `table.obs` and explicitly sync its palette in `table.uns`.
+
+    This is the high-level mutating entry point for generic class annotation state. It first
+    canonicalizes the categorical values stored in `table.obs[column_name]`, then, when
+    `keep_colors` is enabled, it explicitly regenerates and writes the corresponding
+    `table.uns[colors_key]` palette via `sync_class_palette_state(...)`.
+    """
+    categories = set_class_obs_state(
+        table,
+        values,
+        column_name=column_name,
+        unlabeled_class=unlabeled_class,
+    )
+
+    if not keep_colors or colors_key is None:
+        if colors_key is not None:
+            drop_class_palette_state(table, colors_key=colors_key)
+        return
+
+    sync_class_palette_state(
+        table,
+        categories=categories,
+        column_name=column_name,
+        colors_key=colors_key,
+        warn_on_palette_overwrite=warn_on_palette_overwrite,
+        unlabeled_class=unlabeled_class,
+        unlabeled_color=unlabeled_color,
+    )
+
+
+def set_class_obs_state(
+    table: AnnData,
+    values: pd.Series,
+    *,
+    column_name: str,
+    unlabeled_class: int = DEFAULT_UNLABELED_CLASS,
+) -> list[int]:
+    """Canonicalize the class column stored in `table.obs` and return its categories."""
+    categorical_series, categories = build_class_categorical_series(
+        values,
+        column_name=column_name,
+        unlabeled_class=unlabeled_class,
+    )
+    table.obs[column_name] = categorical_series
+    return categories
+
+
+def drop_class_palette_state(table: AnnData, *, colors_key: str) -> None:
+    """Remove the stored palette for one class column without mutating other `uns` entries."""
+    if colors_key not in table.uns:
+        return
+
+    table.uns = {key: value for key, value in table.uns.items() if key != colors_key}
+
+
+def sync_class_palette_state(
+    table: AnnData,
+    *,
+    categories: list[int],
+    column_name: str,
+    colors_key: str,
+    warn_on_palette_overwrite: bool,
+    unlabeled_class: int = DEFAULT_UNLABELED_CLASS,
+    unlabeled_color: str = DEFAULT_UNLABELED_COLOR,
+) -> None:
+    """Regenerate and store the palette that corresponds to the canonical class categories."""
+    generated_colors = default_class_colors(
+        categories,
+        unlabeled_class=unlabeled_class,
+        unlabeled_color=unlabeled_color,
+    )
+    existing_colors = normalize_color_sequence(table.uns.get(colors_key))
+    if warn_on_palette_overwrite and existing_colors is not None and existing_colors != generated_colors:
+        logger.warning(
+            f"Overwriting existing `{colors_key}` palette in `table.uns`. "
+            f"Current napari-harpy behavior regenerates this palette from `{column_name}` categories."
+        )
+    table.uns[colors_key] = generated_colors
 
 
 def _class_palette_index(class_id: int) -> int:

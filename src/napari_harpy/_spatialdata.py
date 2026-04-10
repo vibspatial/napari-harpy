@@ -361,8 +361,8 @@ def _normalize_layer_metadata_adata(adata: AnnData) -> AnnData:
     from napari_harpy._annotation import (
         USER_CLASS_COLORS_KEY,
         USER_CLASS_COLUMN,
-        _set_class_annotation_state,
     )
+    from napari_harpy._class_palette import set_class_annotation_state
     from napari_harpy._classifier import PRED_CLASS_COLORS_KEY, PRED_CLASS_COLUMN
 
     color_keys_to_strip = {USER_CLASS_COLORS_KEY, PRED_CLASS_COLORS_KEY}
@@ -377,7 +377,7 @@ def _normalize_layer_metadata_adata(adata: AnnData) -> AnnData:
         column = adata.obs[column_name]
         needs_category_normalization = not isinstance(column.dtype, CategoricalDtype)
         if needs_category_normalization:
-            _set_class_annotation_state(
+            set_class_annotation_state(
                 adata,
                 column,
                 column_name=column_name,
