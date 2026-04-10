@@ -160,7 +160,47 @@ def test_persistence_controller_rejects_reload_when_row_count_changed(
     assert backed_sdata_blobs["table"].obs.index.equals(table.obs.index)
 
 
-def test_persistence_controller_rejects_reload_when_obs_names_order_changed(
+def test_persistence_controller_allows_reload_when_obs_names_change_but_rowwise_identity_matches(
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    controller = PersistenceController(SpatialDataAdapter())
+    controller.bind(backed_sdata_blobs, "table", "blobs_labels")
+    table = backed_sdata_blobs["table"]
+
+    obs = table.obs.copy()
+    obs.index = pd.Index([f"disk_row_{index}" for index in range(table.n_obs)], name=obs.index.name)
+    obsm = dict(table.obsm)
+    uns = dict(table.uns)
+    _write_disk_snapshot_state(backed_sdata_blobs, obs=obs, obsm=obsm, uns=uns)
+
+    table_path = controller.reload_table_state()
+
+    assert table_path == "tables/table"
+    assert backed_sdata_blobs["table"].obs.index.equals(obs.index)
+    assert backed_sdata_blobs["table"].obs["instance_id"].equals(obs["instance_id"])
+
+
+def test_persistence_controller_rejects_reload_when_region_key_values_changed_rowwise(
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    controller = PersistenceController(SpatialDataAdapter())
+    controller.bind(backed_sdata_blobs, "table", "blobs_labels")
+    table = backed_sdata_blobs["table"]
+
+    obs = table.obs.copy()
+    obs["region"] = obs["region"].astype(object)
+    obs.loc[obs.index[0], "region"] = "different_labels"
+    obsm = dict(table.obsm)
+    uns = dict(table.uns)
+    _write_disk_snapshot_state(backed_sdata_blobs, obs=obs, obsm=obsm, uns=uns)
+
+    with pytest.raises(ValueError, match="`region` values do not exactly match"):
+        controller.reload_table_state()
+
+    assert backed_sdata_blobs["table"].obs["region"].equals(table.obs["region"])
+
+
+def test_persistence_controller_rejects_reload_when_row_order_changed(
     backed_sdata_blobs: SpatialData,
 ) -> None:
     controller = PersistenceController(SpatialDataAdapter())
@@ -173,7 +213,7 @@ def test_persistence_controller_rejects_reload_when_obs_names_order_changed(
     uns = dict(table.uns)
     _write_disk_snapshot_state(backed_sdata_blobs, obs=obs, obsm=obsm, uns=uns)
 
-    with pytest.raises(ValueError, match="obs_names do not exactly match"):
+    with pytest.raises(ValueError, match="instance_id` values do not exactly match"):
         controller.reload_table_state()
 
     assert backed_sdata_blobs["table"].obs.index.equals(table.obs.index)

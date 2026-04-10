@@ -206,14 +206,16 @@ class PersistenceController:
                 f"table has {current_table.n_obs}. Partial reload requires unchanged row identity and order."
             )
 
-        if not snapshot.obs.index.equals(current_table.obs_names):
+        current_region_values = current_table.obs[current_region_key].astype("string").reset_index(drop=True)
+        snapshot_region_values = snapshot.obs[snapshot_region_key].astype("string").reset_index(drop=True)
+        if not snapshot_region_values.equals(current_region_values):
             raise ValueError(
-                f"Cannot reload table `{current_table_name}`: disk snapshot obs_names do not exactly match the in-memory "
-                "table. Partial reload requires unchanged row identity and order."
+                f"Cannot reload table `{current_table_name}`: disk snapshot `{snapshot_region_key}` values do not "
+                "exactly match the current in-memory table row by row."
             )
 
-        current_instance_values = current_table.obs[current_instance_key].astype("string")
-        snapshot_instance_values = snapshot.obs[snapshot_instance_key].astype("string")
+        current_instance_values = current_table.obs[current_instance_key].astype("string").reset_index(drop=True)
+        snapshot_instance_values = snapshot.obs[snapshot_instance_key].astype("string").reset_index(drop=True)
         if not snapshot_instance_values.equals(current_instance_values):
             raise ValueError(
                 f"Cannot reload table `{current_table_name}`: disk snapshot `{snapshot_instance_key}` values do not "
