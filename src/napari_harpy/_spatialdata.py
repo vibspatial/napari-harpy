@@ -213,7 +213,7 @@ class SpatialDataAdapter:
         region_view = table[region_mask, :]
         layer = self.get_labels_layer(sdata, label_name)
         if _layer_indices_align_with_region_view(layer, region_view, table_metadata.instance_key) is not False:
-            return region_view
+            return _normalize_layer_metadata_adata(region_view)
 
         _, adata = join_spatialelement_table(
             sdata=sdata,
@@ -225,7 +225,7 @@ class SpatialDataAdapter:
         if adata is None or adata.shape[0] == 0:
             return None
 
-        return adata
+        return _normalize_layer_metadata_adata(adata)
 
     def refresh_layer_table_metadata(self, sdata: SpatialData, label_name: str, table_name: str) -> bool:
         """Refresh table-derived metadata on the loaded napari layer for a labels element."""
@@ -353,6 +353,42 @@ def _layer_indices_align_with_region_view(layer: Any | None, region_view: AnnDat
         return False
 
     return bool(region_instances.isin(layer_indices).all())
+
+
+def _normalize_layer_metadata_adata(adata: AnnData) -> AnnData:
+    from pandas.api.types import CategoricalDtype
+
+    from napari_harpy._annotation import (
+        USER_CLASS_COLORS_KEY,
+        USER_CLASS_COLUMN,
+        _set_class_annotation_state,
+    )
+    from napari_harpy._classifier import PRED_CLASS_COLORS_KEY, PRED_CLASS_COLUMN
+
+    color_keys_to_strip = {USER_CLASS_COLORS_KEY, PRED_CLASS_COLORS_KEY}
+
+    for column_name, colors_key in (
+        (USER_CLASS_COLUMN, USER_CLASS_COLORS_KEY),
+        (PRED_CLASS_COLUMN, PRED_CLASS_COLORS_KEY),
+    ):
+        if column_name not in adata.obs:
+            continue
+
+        column = adata.obs[column_name]
+        needs_category_normalization = not isinstance(column.dtype, CategoricalDtype)
+        if needs_category_normalization:
+            _set_class_annotation_state(
+                adata,
+                column,
+                column_name=column_name,
+                colors_key=colors_key,
+                keep_colors=False,
+            )
+
+    if any(color_key in adata.uns for color_key in color_keys_to_strip):
+        adata.uns = {key: value for key, value in adata.uns.items() if key not in color_keys_to_strip}
+
+    return adata
 
 
 def _normalize_layer_indices(indices: Any) -> list[Any] | None:

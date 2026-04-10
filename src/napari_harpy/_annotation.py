@@ -295,7 +295,9 @@ class AnnotationController:
         if matching_rows is None or not state.has_table_row:
             message = state.missing_table_row_message
             if message is None:
-                raise RuntimeError("Missing-table-row warning was requested for a selection that still has a table row.")
+                raise RuntimeError(
+                    "Missing-table-row warning was requested for a selection that still has a table row."
+                )
             logger.warning(message)
             return message
 
@@ -370,8 +372,9 @@ class AnnotationController:
 
         self.ensure_annotation_column(USER_CLASS_COLUMN)
 
-def _default_user_class_colors(categories: Sequence[int]) -> list[str]:
-    """Return colors for the given user classes.
+
+def _default_class_colors(categories: Sequence[int]) -> list[str]:
+    """Return colors for the given integer class ids.
 
     Class ``0`` is always the reserved unlabeled color. Positive class ids are
     mapped onto the default categorical palette starting at index ``0`` for
@@ -381,6 +384,12 @@ def _default_user_class_colors(categories: Sequence[int]) -> list[str]:
         UNLABELED_COLOR if _is_unlabeled_class(class_id) else _default_labeled_user_class_color(class_id)
         for class_id in categories
     ]
+
+
+def _default_user_class_colors(categories: Sequence[int]) -> list[str]:
+    """Return colors for the given user classes."""
+    # TODO -> not used?
+    return _default_class_colors(categories)
 
 
 def _default_labeled_user_class_color(class_id: int) -> str:
@@ -420,38 +429,65 @@ def _default_labeled_user_class_colors(length: int) -> list[str]:
 
 
 def _to_user_class_values(values: pd.Series) -> pd.Series:
+    return _to_class_values(values, column_name=USER_CLASS_COLUMN)
+
+
+def _to_class_values(values: pd.Series, *, column_name: str) -> pd.Series:
     numeric_values = pd.to_numeric(values.astype("string"), errors="coerce").fillna(UNLABELED_CLASS).astype("int64")
-    numeric_values.name = USER_CLASS_COLUMN
+    numeric_values.name = column_name
     return numeric_values
 
 
 def _get_user_class_categories(values: pd.Series) -> list[int]:
     normalized_values = _to_user_class_values(values)
+    return _get_class_categories(normalized_values)
+
+
+def _get_class_categories(values: pd.Series) -> list[int]:
+    normalized_values = _to_class_values(values, column_name=values.name or USER_CLASS_COLUMN)
     return sorted({UNLABELED_CLASS, *normalized_values.tolist()})
 
 
 def _set_user_class_annotation_state(table: AnnData, values: pd.Series) -> None:
-    """Normalize `user_class` state and regenerate the corresponding color palette.
+    _set_class_annotation_state(
+        table,
+        values,
+        column_name=USER_CLASS_COLUMN,
+        colors_key=USER_CLASS_COLORS_KEY,
+    )
 
-    For now, `napari-harpy` treats `user_class_colors` as derived state from the
-    current class ids. If a different palette already exists, it is overwritten and
-    a warning is logged so that this behavior is visible during development.
-    """
-    normalized_values = _to_user_class_values(values)
-    categories = _get_user_class_categories(normalized_values)
-    generated_colors = _default_user_class_colors(categories)
-    existing_colors = _normalize_color_sequence(table.uns.get(USER_CLASS_COLORS_KEY))
-    if existing_colors is not None and existing_colors != generated_colors:
-        logger.warning(
-            f"Overwriting existing `{USER_CLASS_COLORS_KEY}` palette in `table.uns`. "
-            f"Current napari-harpy behavior regenerates this palette from `{USER_CLASS_COLUMN}` categories."
-        )
-    table.obs[USER_CLASS_COLUMN] = pd.Series(
+
+def _set_class_annotation_state(
+    table: AnnData,
+    values: pd.Series,
+    *,
+    column_name: str,
+    colors_key: str | None = None,
+    keep_colors: bool = True,
+    warn_on_palette_overwrite: bool = True,
+) -> None:
+    """Normalize an integer class column and optionally regenerate its palette."""
+    normalized_values = _to_class_values(values, column_name=column_name)
+    categories = _get_class_categories(normalized_values)
+    table.obs[column_name] = pd.Series(
         pd.Categorical(normalized_values, categories=categories),
         index=normalized_values.index,
-        name=USER_CLASS_COLUMN,
+        name=column_name,
     )
-    table.uns[USER_CLASS_COLORS_KEY] = generated_colors
+
+    if not keep_colors or colors_key is None:
+        if colors_key is not None and colors_key in table.uns:
+            table.uns = {key: value for key, value in table.uns.items() if key != colors_key}
+        return
+
+    generated_colors = _default_class_colors(categories)
+    existing_colors = _normalize_color_sequence(table.uns.get(colors_key))
+    if warn_on_palette_overwrite and existing_colors is not None and existing_colors != generated_colors:
+        logger.warning(
+            f"Overwriting existing `{colors_key}` palette in `table.uns`. "
+            f"Current napari-harpy behavior regenerates this palette from `{column_name}` categories."
+        )
+    table.uns[colors_key] = generated_colors
 
 
 def _normalize_color_sequence(value: object) -> list[str] | None:

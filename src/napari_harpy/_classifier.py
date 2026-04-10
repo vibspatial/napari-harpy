@@ -10,7 +10,7 @@ import pandas as pd
 from qtpy.QtCore import QTimer
 from sklearn.ensemble import RandomForestClassifier
 
-from napari_harpy._annotation import UNLABELED_CLASS, USER_CLASS_COLUMN
+from napari_harpy._annotation import UNLABELED_CLASS, USER_CLASS_COLUMN, _set_class_annotation_state
 from napari_harpy._spatialdata import SpatialDataAdapter, SpatialDataTableMetadata
 
 try:
@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 thread_worker = _resolve_thread_worker()
 
 PRED_CLASS_COLUMN = "pred_class"
+PRED_CLASS_COLORS_KEY = f"{PRED_CLASS_COLUMN}_colors"
 PRED_CONFIDENCE_COLUMN = "pred_confidence"
 CLASSIFIER_CONFIG_KEY = "classifier_config"
 
@@ -567,7 +568,7 @@ class ClassifierController:
     def _ensure_prediction_columns(self, table: AnnData) -> None:
         pred_class_values = _get_pred_class_values(table.obs, len(table.obs))
         pred_confidence_values = _get_pred_confidence_values(table.obs, len(table.obs))
-        table.obs[PRED_CLASS_COLUMN] = pred_class_values
+        _set_pred_class_annotation_state(table, pred_class_values)
         table.obs[PRED_CONFIDENCE_COLUMN] = pred_confidence_values
 
     def _set_predictions_for_active_rows(
@@ -581,7 +582,7 @@ class ClassifierController:
         pred_confidence_values = _get_pred_confidence_values(table.obs, len(table.obs))
         pred_class_values.iloc[active_positions] = np.asarray(pred_classes, dtype=np.int64)
         pred_confidence_values.iloc[active_positions] = np.asarray(pred_confidences, dtype=np.float64)
-        table.obs[PRED_CLASS_COLUMN] = pred_class_values
+        _set_pred_class_annotation_state(table, pred_class_values)
         table.obs[PRED_CONFIDENCE_COLUMN] = pred_confidence_values
 
     def _build_classifier_config(
@@ -674,6 +675,16 @@ def _get_pred_class_values(obs: pd.DataFrame, n_obs: int) -> pd.Series:
 
     values = pd.to_numeric(obs[PRED_CLASS_COLUMN].astype("string"), errors="coerce").fillna(UNLABELED_CLASS)
     return pd.Series(np.asarray(values, dtype=np.int64), index=obs.index, dtype="int64", name=PRED_CLASS_COLUMN)
+
+
+def _set_pred_class_annotation_state(table: AnnData, values: pd.Series) -> None:
+    _set_class_annotation_state(
+        table,
+        values,
+        column_name=PRED_CLASS_COLUMN,
+        colors_key=PRED_CLASS_COLORS_KEY,
+        warn_on_palette_overwrite=False,
+    )
 
 
 def _get_pred_confidence_values(obs: pd.DataFrame, n_obs: int) -> pd.Series:

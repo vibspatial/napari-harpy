@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+from matplotlib.colors import to_rgba
 from napari.layers import Labels
 from napari.utils.colormaps import DirectLabelColormap
 from spatialdata import SpatialData, read_zarr
@@ -13,7 +14,12 @@ from spatialdata.models import TableModel
 
 import napari_harpy._annotation as annotation_module
 from napari_harpy._annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN, _default_user_class_colors
-from napari_harpy._classifier import CLASSIFIER_CONFIG_KEY, PRED_CLASS_COLUMN, PRED_CONFIDENCE_COLUMN
+from napari_harpy._classifier import (
+    CLASSIFIER_CONFIG_KEY,
+    PRED_CLASS_COLORS_KEY,
+    PRED_CLASS_COLUMN,
+    PRED_CONFIDENCE_COLUMN,
+)
 from napari_harpy._spatialdata import get_spatialdata_label_options
 from napari_harpy._widget import HarpyWidget
 
@@ -152,6 +158,9 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_bl
     assert layer.metadata["adata"] is not None
     assert PRED_CLASS_COLUMN in layer.metadata["adata"].obs
     assert PRED_CONFIDENCE_COLUMN in layer.metadata["adata"].obs
+    assert isinstance(layer.metadata["adata"].obs[PRED_CLASS_COLUMN].dtype, pd.CategoricalDtype)
+    assert USER_CLASS_COLORS_KEY not in layer.metadata["adata"].uns
+    assert PRED_CLASS_COLORS_KEY not in layer.metadata["adata"].uns
     assert widget.selected_instance_id is None
     assert widget.refresh_button.text() == "Rescan Viewer"
     assert widget.retrain_button.text() == "Retrain"
@@ -380,7 +389,7 @@ def test_widget_applies_user_class_to_picked_instance(qtbot, sdata_blobs: Spatia
     metadata_mask = metadata_adata.obs["instance_id"] == 5
     assert metadata_adata.obs.loc[metadata_mask, USER_CLASS_COLUMN].tolist() == [3]
     assert list(metadata_adata.obs[USER_CLASS_COLUMN].cat.categories) == [0, 3]
-    assert list(metadata_adata.uns[USER_CLASS_COLORS_KEY]) == _default_user_class_colors([0, 3])
+    assert USER_CLASS_COLORS_KEY not in metadata_adata.uns
     assert "Current class: 3." in widget.selection_status.text()
     assert "Assigned class 3" in widget.annotation_feedback.text()
 
@@ -565,20 +574,25 @@ def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs:
     widget.class_spinbox.setValue(2)
     widget.apply_class_button.click()
 
-    qtbot.waitUntil(lambda: int(table.obs[PRED_CLASS_COLUMN].sum()) > 0, timeout=5000)
+    qtbot.waitUntil(lambda: table.obs[PRED_CLASS_COLUMN].astype("string").ne("0").any(), timeout=5000)
 
     pred_class = table.obs.set_index("instance_id")[PRED_CLASS_COLUMN]
+    assert isinstance(table.obs[PRED_CLASS_COLUMN].dtype, pd.CategoricalDtype)
+    assert list(table.obs[PRED_CLASS_COLUMN].cat.categories) == [0, 1, 2]
+    assert table.uns[PRED_CLASS_COLORS_KEY] == _default_user_class_colors([0, 1, 2])
     assert pred_class.loc[1] == 1
     assert pred_class.loc[24] == 2
     metadata_adata = layer.metadata["adata"]
     metadata_pred_class = metadata_adata.obs.set_index("instance_id")[PRED_CLASS_COLUMN]
+    assert isinstance(metadata_adata.obs[PRED_CLASS_COLUMN].dtype, pd.CategoricalDtype)
+    assert PRED_CLASS_COLORS_KEY not in metadata_adata.uns
     assert metadata_pred_class.loc[1] == 1
     assert metadata_pred_class.loc[24] == 2
     assert "model is up to date" in widget.classifier_feedback.text()
     assert table.uns[CLASSIFIER_CONFIG_KEY]["trained"] is True
 
 
-def test_widget_colors_predictions_using_user_class_palette_in_pred_class_mode(qtbot, sdata_blobs: SpatialData) -> None:
+def test_widget_colors_predictions_using_pred_class_palette_in_pred_class_mode(qtbot, sdata_blobs: SpatialData) -> None:
     table = sdata_blobs["table"]
     instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
     table.obsm["features_1"] = np.column_stack(
@@ -601,7 +615,10 @@ def test_widget_colors_predictions_using_user_class_palette_in_pred_class_mode(q
     widget.class_spinbox.setValue(2)
     widget.apply_class_button.click()
 
-    qtbot.waitUntil(lambda: int(table.obs[PRED_CLASS_COLUMN].sum()) > 0, timeout=5000)
+    qtbot.waitUntil(lambda: table.obs[PRED_CLASS_COLUMN].astype("string").ne("0").any(), timeout=5000)
+
+    table.uns[USER_CLASS_COLORS_KEY] = ["#80808099", "#ff0000", "#00ff00"]
+    table.uns[PRED_CLASS_COLORS_KEY] = ["#80808099", "#0000ff", "#ffff00"]
 
     assert not np.allclose(layer.colormap.color_dict[1], layer.colormap.color_dict[5])
 
@@ -609,6 +626,8 @@ def test_widget_colors_predictions_using_user_class_palette_in_pred_class_mode(q
 
     assert np.allclose(layer.colormap.color_dict[1], layer.colormap.color_dict[5])
     assert np.allclose(layer.colormap.color_dict[24], layer.colormap.color_dict[26])
+    assert np.allclose(layer.colormap.color_dict[1], np.asarray(to_rgba("#0000ff"), dtype=np.float32))
+    assert np.allclose(layer.colormap.color_dict[24], np.asarray(to_rgba("#ffff00"), dtype=np.float32))
     assert PRED_CLASS_COLUMN in layer.features.columns
 
 
