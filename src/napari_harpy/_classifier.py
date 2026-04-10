@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
@@ -128,11 +129,13 @@ class ClassifierController:
         spatialdata_adapter: SpatialDataAdapter | None = None,
         *,
         debounce_interval_ms: int = DEFAULT_RETRAIN_DEBOUNCE_MS,
-        on_state_changed: Any | None = None,
+        on_state_changed: Callable[[], None] | None = None,
+        on_table_state_changed: Callable[[], None] | None = None,
     ) -> None:
         self._spatialdata_adapter = spatialdata_adapter or SpatialDataAdapter()
         self._debounce_interval_ms = max(0, int(debounce_interval_ms))
         self._on_state_changed = on_state_changed
+        self._on_table_state_changed = on_table_state_changed
 
         self._selected_spatialdata: SpatialData | None = None
         self._selected_label_name: str | None = None
@@ -489,6 +492,7 @@ class ClassifierController:
             trained=False,
             trained_at=None,
         )
+        self._notify_table_state_changed()
         self._is_dirty = True
         self._set_status(f"Classifier: {eligibility.reason}", kind="warning")
 
@@ -509,6 +513,7 @@ class ClassifierController:
             trained=True,
             trained_at=result.trained_at,
         )
+        self._notify_table_state_changed()
         self._is_dirty = False
         self._set_status(
             f"Classifier: model is up to date. Updated predictions for {result.eligibility.active_row_count} objects.",
@@ -533,6 +538,7 @@ class ClassifierController:
                 trained=False,
                 trained_at=None,
             )
+            self._notify_table_state_changed()
         self._is_dirty = True
         self._set_status(f"Classifier: training failed: {error}", kind="error")
 
@@ -615,6 +621,10 @@ class ClassifierController:
         self._status_kind = kind
         if self._on_state_changed is not None:
             self._on_state_changed()
+
+    def _notify_table_state_changed(self) -> None:
+        if self._on_table_state_changed is not None:
+            self._on_table_state_changed()
 
     def _update_idle_status(self, *, reason: str | None = None) -> None:
         if self._get_bound_table() is None:

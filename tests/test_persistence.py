@@ -26,6 +26,28 @@ def test_persistence_controller_requires_backed_spatialdata(sdata_blobs: Spatial
         controller.sync_table_state()
 
 
+def test_persistence_controller_tracks_dirty_state_per_selected_table(
+    sdata_blobs: SpatialData,
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    controller = PersistenceController(SpatialDataAdapter())
+    controller.bind(sdata_blobs, "table")
+
+    assert controller.is_dirty is False
+
+    controller.mark_dirty()
+
+    assert controller.is_dirty is True
+
+    controller.bind(backed_sdata_blobs, "table")
+
+    assert controller.is_dirty is False
+
+    controller.bind(sdata_blobs, "table")
+
+    assert controller.is_dirty is True
+
+
 def test_persistence_controller_syncs_table_obs_and_colors_to_backed_store(backed_sdata_blobs: SpatialData) -> None:
     controller = PersistenceController(SpatialDataAdapter())
     controller.bind(backed_sdata_blobs, "table")
@@ -141,6 +163,59 @@ def test_persistence_controller_replaces_selected_table_with_reloaded_snapshot(
     assert backed_sdata_blobs.locate_element(reloaded_table) == ["tables/table"]
 
 
+def test_persistence_controller_clears_dirty_state_after_sync(backed_sdata_blobs: SpatialData) -> None:
+    controller = PersistenceController(SpatialDataAdapter())
+    controller.bind(backed_sdata_blobs, "table")
+    controller.mark_dirty()
+
+    assert controller.is_dirty is True
+
+    controller.sync_table_state()
+
+    assert controller.is_dirty is False
+
+
+def test_persistence_controller_clears_dirty_state_after_reload(backed_sdata_blobs: SpatialData) -> None:
+    controller = PersistenceController(SpatialDataAdapter())
+    controller.bind(backed_sdata_blobs, "table")
+    _write_disk_snapshot_payload(backed_sdata_blobs)
+    controller.mark_dirty()
+
+    assert controller.is_dirty is True
+
+    controller.reload_table_state()
+
+    assert controller.is_dirty is False
+
+
+def test_persistence_controller_reloads_obsm_key_written_directly_to_disk_group(
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    """Cover direct `tables/<table>/obsm/<key>` writes that future extensions will rely on.
+
+    This is an important regression test because plugin extensions may add new
+    feature matrices straight to the backed zarr group without rewriting the
+    full `obsm` mapping. Reload must continue to discover those incrementally
+    written keys and surface them on the in-memory table.
+    """
+    controller = PersistenceController(SpatialDataAdapter())
+    controller.bind(backed_sdata_blobs, "table")
+    table = backed_sdata_blobs["table"]
+    features_3 = np.arange(table.n_obs * 3, dtype=np.float32).reshape(table.n_obs, 3)
+
+    root = zarr.open_group(backed_sdata_blobs.path, mode="a", use_consolidated=False)
+    table_group = root["tables/table"]
+    ad.io.write_elem(table_group["obsm"], "features_3", features_3)
+
+    assert "features_3" not in table.obsm
+
+    table_path = controller.reload_table_state()
+
+    assert table_path == "tables/table"
+    assert sorted(table.obsm.keys()) == ["features_1", "features_2", "features_3"]
+    assert np.array_equal(table.obsm["features_3"], features_3)
+
+
 def test_persistence_controller_rejects_reload_when_row_count_changed(
     backed_sdata_blobs: SpatialData,
 ) -> None:
@@ -160,7 +235,47 @@ def test_persistence_controller_rejects_reload_when_row_count_changed(
     assert backed_sdata_blobs["table"].obs.index.equals(table.obs.index)
 
 
-def test_persistence_controller_rejects_reload_when_obs_names_order_changed(
+def test_persistence_controller_allows_reload_when_obs_names_change_but_rowwise_identity_matches(
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    controller = PersistenceController(SpatialDataAdapter())
+    controller.bind(backed_sdata_blobs, "table", "blobs_labels")
+    table = backed_sdata_blobs["table"]
+
+    obs = table.obs.copy()
+    obs.index = pd.Index([f"disk_row_{index}" for index in range(table.n_obs)], name=obs.index.name)
+    obsm = dict(table.obsm)
+    uns = dict(table.uns)
+    _write_disk_snapshot_state(backed_sdata_blobs, obs=obs, obsm=obsm, uns=uns)
+
+    table_path = controller.reload_table_state()
+
+    assert table_path == "tables/table"
+    assert backed_sdata_blobs["table"].obs.index.equals(obs.index)
+    assert backed_sdata_blobs["table"].obs["instance_id"].equals(obs["instance_id"])
+
+
+def test_persistence_controller_rejects_reload_when_region_key_values_changed_rowwise(
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    controller = PersistenceController(SpatialDataAdapter())
+    controller.bind(backed_sdata_blobs, "table", "blobs_labels")
+    table = backed_sdata_blobs["table"]
+
+    obs = table.obs.copy()
+    obs["region"] = obs["region"].astype(object)
+    obs.loc[obs.index[0], "region"] = "different_labels"
+    obsm = dict(table.obsm)
+    uns = dict(table.uns)
+    _write_disk_snapshot_state(backed_sdata_blobs, obs=obs, obsm=obsm, uns=uns)
+
+    with pytest.raises(ValueError, match="`region` values do not exactly match"):
+        controller.reload_table_state()
+
+    assert backed_sdata_blobs["table"].obs["region"].equals(table.obs["region"])
+
+
+def test_persistence_controller_rejects_reload_when_row_order_changed(
     backed_sdata_blobs: SpatialData,
 ) -> None:
     controller = PersistenceController(SpatialDataAdapter())
@@ -173,7 +288,7 @@ def test_persistence_controller_rejects_reload_when_obs_names_order_changed(
     uns = dict(table.uns)
     _write_disk_snapshot_state(backed_sdata_blobs, obs=obs, obsm=obsm, uns=uns)
 
-    with pytest.raises(ValueError, match="obs_names do not exactly match"):
+    with pytest.raises(ValueError, match="instance_id` values do not exactly match"):
         controller.reload_table_state()
 
     assert backed_sdata_blobs["table"].obs.index.equals(table.obs.index)

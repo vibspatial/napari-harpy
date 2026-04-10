@@ -9,6 +9,7 @@ from spatialdata import SpatialData
 import napari_harpy._spatialdata as spatialdata_module
 from napari_harpy._spatialdata import (
     SpatialDataAdapter,
+    SpatialDataViewerBinding,
     get_annotating_table_names,
     get_table_metadata,
     get_table_obsm_keys,
@@ -80,10 +81,10 @@ def test_spatialdata_adapter_rejects_duplicate_instance_ids_within_selected_regi
         adapter.validate_table_binding(sdata_blobs, "blobs_labels", "table")
 
 
-def test_spatialdata_adapter_builds_layer_metadata_adata_from_selected_table(sdata_blobs: SpatialData) -> None:
-    adapter = SpatialDataAdapter()
+def test_spatialdata_viewer_binding_builds_layer_metadata_adata_from_selected_table(sdata_blobs: SpatialData) -> None:
+    viewer_binding = SpatialDataViewerBinding()
 
-    metadata_adata = adapter.build_layer_metadata_adata(sdata_blobs, "blobs_labels", "table")
+    metadata_adata = viewer_binding.build_layer_metadata_adata(sdata_blobs, "blobs_labels", "table")
 
     assert metadata_adata is not None
     assert metadata_adata is not sdata_blobs["table"]
@@ -93,13 +94,13 @@ def test_spatialdata_adapter_builds_layer_metadata_adata_from_selected_table(sda
     assert "features_2" in metadata_adata.obsm
 
 
-def test_spatialdata_adapter_prefers_region_view_when_layer_indices_are_aligned(
+def test_spatialdata_viewer_binding_prefers_region_view_when_layer_indices_are_aligned(
     monkeypatch,
     sdata_blobs: SpatialData,
 ) -> None:
     layer = make_blobs_labels_layer(sdata_blobs)
     layer.metadata["indices"] = list(reversed(sdata_blobs["table"].obs["instance_id"].to_list()))
-    adapter = SpatialDataAdapter(SimpleNamespace(layers=[layer]))
+    viewer_binding = SpatialDataViewerBinding(SimpleNamespace(layers=[layer]))
 
     # check that we do not call join_spatialelement_table
     def _unexpected_join(*args, **kwargs):
@@ -107,20 +108,20 @@ def test_spatialdata_adapter_prefers_region_view_when_layer_indices_are_aligned(
 
     monkeypatch.setattr(spatialdata_module, "join_spatialelement_table", _unexpected_join)
 
-    metadata_adata = adapter.build_layer_metadata_adata(sdata_blobs, "blobs_labels", "table")
+    metadata_adata = viewer_binding.build_layer_metadata_adata(sdata_blobs, "blobs_labels", "table")
 
     assert metadata_adata is not None
     assert metadata_adata.is_view
     assert set(metadata_adata.obs["instance_id"]) == set(layer.metadata["indices"])
 
 
-def test_spatialdata_adapter_falls_back_to_join_when_layer_indices_are_misaligned(
+def test_spatialdata_viewer_binding_falls_back_to_join_when_layer_indices_are_misaligned(
     monkeypatch,
     sdata_blobs: SpatialData,
 ) -> None:
     layer = make_blobs_labels_layer(sdata_blobs)
     layer.metadata["indices"] = sdata_blobs["table"].obs["instance_id"].to_list()[:-1]
-    adapter = SpatialDataAdapter(SimpleNamespace(layers=[layer]))
+    viewer_binding = SpatialDataViewerBinding(SimpleNamespace(layers=[layer]))
     sentinel = sdata_blobs["table"].copy()
     sentinel.obs["from_join"] = range(sentinel.n_obs)
     join_called = False
@@ -132,14 +133,14 @@ def test_spatialdata_adapter_falls_back_to_join_when_layer_indices_are_misaligne
 
     monkeypatch.setattr(spatialdata_module, "join_spatialelement_table", _fake_join)
 
-    metadata_adata = adapter.build_layer_metadata_adata(sdata_blobs, "blobs_labels", "table")
+    metadata_adata = viewer_binding.build_layer_metadata_adata(sdata_blobs, "blobs_labels", "table")
 
     assert join_called is True
     assert metadata_adata is sentinel
     assert "from_join" in metadata_adata.obs
 
 
-def test_spatialdata_adapter_refreshes_only_table_derived_layer_metadata(sdata_blobs: SpatialData) -> None:
+def test_spatialdata_viewer_binding_refreshes_only_table_derived_layer_metadata(sdata_blobs: SpatialData) -> None:
     layer = make_blobs_labels_layer(sdata_blobs)
     layer.metadata["adata"] = "stale"
     layer.metadata["region_key"] = "old_region"
@@ -148,12 +149,12 @@ def test_spatialdata_adapter_refreshes_only_table_derived_layer_metadata(sdata_b
     layer.metadata["indices"] = [1, 2, 3]
     layer.metadata["custom_flag"] = "keep-me"
     viewer = SimpleNamespace(layers=[layer])
-    adapter = SpatialDataAdapter(viewer)
+    viewer_binding = SpatialDataViewerBinding(viewer)
 
     sdata_blobs["table"].obs["reloaded_obs"] = range(sdata_blobs["table"].n_obs)
     sdata_blobs["table"].obsm["reloaded_features"] = sdata_blobs["table"].obsm["features_1"][:, :1]
 
-    refreshed = adapter.refresh_layer_table_metadata(sdata_blobs, "blobs_labels", "table")
+    refreshed = viewer_binding.refresh_layer_table_metadata(sdata_blobs, "blobs_labels", "table")
 
     assert refreshed is True
     assert layer.metadata["adata"] is not None
@@ -166,11 +167,11 @@ def test_spatialdata_adapter_refreshes_only_table_derived_layer_metadata(sdata_b
     assert layer.metadata["custom_flag"] == "keep-me"
 
 
-def test_spatialdata_adapter_refresh_layer_table_metadata_returns_false_without_loaded_layer(
+def test_spatialdata_viewer_binding_refresh_layer_table_metadata_returns_false_without_loaded_layer(
     sdata_blobs: SpatialData,
 ) -> None:
-    adapter = SpatialDataAdapter(SimpleNamespace(layers=[]))
+    viewer_binding = SpatialDataViewerBinding(SimpleNamespace(layers=[]))
 
-    refreshed = adapter.refresh_layer_table_metadata(sdata_blobs, "blobs_labels", "table")
+    refreshed = viewer_binding.refresh_layer_table_metadata(sdata_blobs, "blobs_labels", "table")
 
     assert refreshed is False

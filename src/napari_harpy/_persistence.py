@@ -38,6 +38,7 @@ class PersistenceController:
         self._selected_spatialdata: SpatialData | None = None
         self._selected_label_name: str | None = None
         self._selected_table_name: str | None = None
+        self._dirty_table_keys: set[tuple[int, str]] = set()
 
     @property
     def can_sync(self) -> bool:
@@ -52,6 +53,12 @@ class PersistenceController:
     def can_reload(self) -> bool:
         """Return whether the currently selected table can be reloaded from zarr."""
         return self.can_sync
+
+    @property
+    def is_dirty(self) -> bool:
+        """Return whether the current selected table has unsynced local changes."""
+        selection_key = self._current_selection_key()
+        return selection_key is not None and selection_key in self._dirty_table_keys
 
     @property
     def selected_store_path(self) -> Path | None:
@@ -83,6 +90,22 @@ class PersistenceController:
         self._selected_label_name = label_name
         self._selected_table_name = table_name
 
+    def mark_dirty(self) -> None:
+        """Mark the current selected table as having unsynced local changes."""
+        selection_key = self._current_selection_key()
+        if selection_key is None:
+            return
+
+        self._dirty_table_keys.add(selection_key)
+
+    def clear_dirty(self) -> None:
+        """Clear the unsynced-local-changes marker for the current selected table."""
+        selection_key = self._current_selection_key()
+        if selection_key is None:
+            return
+
+        self._dirty_table_keys.discard(selection_key)
+
     def read_table_snapshot_from_disk(self) -> TableDiskSnapshot:
         """Read the selected table's `obs`, `obsm`, and `uns` directly from zarr."""
         sdata = self._require_selected_spatialdata(action="reloading from zarr")
@@ -104,8 +127,13 @@ class PersistenceController:
             uns=uns,
         )
 
-    def replace_selected_table(self, snapshot: TableDiskSnapshot) -> str:
-        """Replace the selected in-memory table with a reloaded snapshot."""
+    def replace_selected_table_state(self, snapshot: TableDiskSnapshot) -> str:
+        """Replace the selected table's in-memory state from a reloaded snapshot.
+
+        This is an in-place partial reload of ``obs``, ``obsm``, and ``uns`` on
+        the currently selected table object. We intentionally keep the existing
+        ``AnnData`` instance instead of swapping in a second full table object.
+        """
         sdata = self._require_selected_spatialdata(action="reloading from zarr")
         table_name = self._require_selected_table_name(action="reloading from zarr")
         current_table = self._spatialdata_adapter.get_table(sdata, table_name)
@@ -201,14 +229,16 @@ class PersistenceController:
                 f"table has {current_table.n_obs}. Partial reload requires unchanged row identity and order."
             )
 
-        if not snapshot.obs.index.equals(current_table.obs_names):
+        current_region_values = current_table.obs[current_region_key].astype("string").reset_index(drop=True)
+        snapshot_region_values = snapshot.obs[snapshot_region_key].astype("string").reset_index(drop=True)
+        if not snapshot_region_values.equals(current_region_values):
             raise ValueError(
-                f"Cannot reload table `{current_table_name}`: disk snapshot obs_names do not exactly match the in-memory "
-                "table. Partial reload requires unchanged row identity and order."
+                f"Cannot reload table `{current_table_name}`: disk snapshot `{snapshot_region_key}` values do not "
+                "exactly match the current in-memory table row by row."
             )
 
-        current_instance_values = current_table.obs[current_instance_key].astype("string")
-        snapshot_instance_values = snapshot.obs[snapshot_instance_key].astype("string")
+        current_instance_values = current_table.obs[current_instance_key].astype("string").reset_index(drop=True)
+        snapshot_instance_values = snapshot.obs[snapshot_instance_key].astype("string").reset_index(drop=True)
         if not snapshot_instance_values.equals(current_instance_values):
             raise ValueError(
                 f"Cannot reload table `{current_table_name}`: disk snapshot `{snapshot_instance_key}` values do not "
@@ -243,7 +273,9 @@ class PersistenceController:
         # We intentionally do not build a second full AnnData object for a
         # strictly atomic swap because this code path is meant to avoid that cost.
         self.validate_reload_snapshot(snapshot)
-        return self.replace_selected_table(snapshot)
+        table_path = self.replace_selected_table_state(snapshot)
+        self.clear_dirty()
+        return table_path
 
     def sync_table_state(self) -> str:
         """Write the current table annotation state back to the backed zarr store."""
@@ -261,6 +293,7 @@ class PersistenceController:
             ad.io.write_elem(table_group["uns"], PRED_CLASS_COLORS_KEY, table.uns[PRED_CLASS_COLORS_KEY])
         if CLASSIFIER_CONFIG_KEY in table.uns:
             ad.io.write_elem(table_group["uns"], CLASSIFIER_CONFIG_KEY, table.uns[CLASSIFIER_CONFIG_KEY])
+        self.clear_dirty()
         return table_path
 
     def _require_selected_spatialdata(self, *, action: str = "syncing to zarr") -> SpatialData:
@@ -289,6 +322,16 @@ class PersistenceController:
             )
 
         return table_paths[0]
+
+    def _current_selection_key(self) -> tuple[int, str] | None:
+        return self._selection_key(self._selected_spatialdata, self._selected_table_name)
+
+    @staticmethod
+    def _selection_key(sdata: SpatialData | None, table_name: str | None) -> tuple[int, str] | None:
+        if sdata is None or table_name is None:
+            return None
+
+        return (id(sdata), table_name)
 
 
 def _normalize_regions(region: str | list[str] | None) -> tuple[str, ...]:

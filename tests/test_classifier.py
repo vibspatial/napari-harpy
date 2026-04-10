@@ -37,10 +37,12 @@ def _set_user_classes(sdata: SpatialData, class_by_instance: dict[int, int]) -> 
 def test_classifier_controller_trains_on_labeled_rows_and_predicts_active_objects(qtbot, sdata_blobs: SpatialData) -> None:
     _set_deterministic_features(sdata_blobs)
     _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
+    table_state_changes: list[str] = []
 
     controller = ClassifierController(
         SpatialDataAdapter(),
         debounce_interval_ms=0,
+        on_table_state_changed=lambda: table_state_changes.append("changed"),
     )
     controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
     controller.schedule_retrain(immediate=True)
@@ -64,6 +66,7 @@ def test_classifier_controller_trains_on_labeled_rows_and_predicts_active_object
     assert table.uns[CLASSIFIER_CONFIG_KEY]["trained"] is True
     assert table.uns[CLASSIFIER_CONFIG_KEY]["class_labels_seen"] == [1, 2]
     assert controller.status_kind == "success"
+    assert table_state_changes == ["changed"]
 
 
 def test_classifier_controller_resets_predictions_when_only_one_class_is_labeled(
@@ -71,10 +74,12 @@ def test_classifier_controller_resets_predictions_when_only_one_class_is_labeled
 ) -> None:
     _set_deterministic_features(sdata_blobs)
     _set_user_classes(sdata_blobs, {1: 1, 2: 1})
+    table_state_changes: list[str] = []
 
     controller = ClassifierController(
         SpatialDataAdapter(),
         debounce_interval_ms=0,
+        on_table_state_changed=lambda: table_state_changes.append("changed"),
     )
     controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
     controller.schedule_retrain(immediate=True)
@@ -88,6 +93,7 @@ def test_classifier_controller_resets_predictions_when_only_one_class_is_labeled
     assert table.uns[CLASSIFIER_CONFIG_KEY]["eligible"] is False
     assert "two labeled classes" in table.uns[CLASSIFIER_CONFIG_KEY]["reason"]
     assert controller.status_kind == "warning"
+    assert table_state_changes == ["changed"]
 
 
 def test_classifier_controller_validates_feature_matrix_shape(qtbot, monkeypatch, sdata_blobs: SpatialData) -> None:
@@ -168,6 +174,7 @@ def test_classifier_controller_bind_is_passive_until_marked_dirty(
     _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
 
     call_log: list[int] = []
+    table_state_changes: list[str] = []
 
     def fake_fit(job):
         call_log.append(job.job_id)
@@ -186,13 +193,18 @@ def test_classifier_controller_bind_is_passive_until_marked_dirty(
 
     monkeypatch.setattr(classifier_module, "_fit_classifier_job", fake_fit)
 
-    controller = ClassifierController(SpatialDataAdapter(), debounce_interval_ms=0)
+    controller = ClassifierController(
+        SpatialDataAdapter(),
+        debounce_interval_ms=0,
+        on_table_state_changed=lambda: table_state_changes.append("changed"),
+    )
     context_changed = controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
 
     assert context_changed is True
     assert controller.is_dirty is False
     assert controller.status_message == "Classifier: model is up to date."
     assert call_log == []
+    assert table_state_changes == []
 
     controller.mark_dirty(reason="the feature matrix changed")
 
@@ -202,3 +214,32 @@ def test_classifier_controller_bind_is_passive_until_marked_dirty(
     controller.retrain_now()
     qtbot.waitUntil(lambda: call_log == [1], timeout=5000)
     assert controller.is_dirty is False
+    assert table_state_changes == ["changed"]
+
+
+def test_classifier_controller_notifies_table_state_change_when_training_errors(
+    qtbot, monkeypatch, sdata_blobs: SpatialData
+) -> None:
+    _set_deterministic_features(sdata_blobs)
+    _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
+    table_state_changes: list[str] = []
+
+    def raise_fit_error(job):
+        del job
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(classifier_module, "_fit_classifier_job", raise_fit_error)
+
+    controller = ClassifierController(
+        SpatialDataAdapter(),
+        debounce_interval_ms=0,
+        on_table_state_changed=lambda: table_state_changes.append("changed"),
+    )
+    controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
+    controller.schedule_retrain(immediate=True)
+
+    qtbot.waitUntil(lambda: controller.status_kind == "error", timeout=5000)
+
+    assert table_state_changes == ["changed"]
+    assert sdata_blobs["table"].uns[CLASSIFIER_CONFIG_KEY]["trained"] is False
+    assert "boom" in sdata_blobs["table"].uns[CLASSIFIER_CONFIG_KEY]["reason"]

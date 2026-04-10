@@ -13,22 +13,38 @@ For phase 6, the authoritative in-memory table remains:
 
 - `sdata.tables[table_name]`
 
-The napari layer cache remains derived state:
+Harpy intentionally does not try to regenerate the `napari-spatialdata`
+table cache stored on the napari layer as:
 
 - `layer.metadata["adata"]`
+
+That cache is derived viewer state owned by `napari-spatialdata`, and it may be
+overwritten there again from `sdata[table_name]`. Phase 6 therefore focuses on
+reloading the selected in-memory table and refreshing Harpy-owned UI and
+styling around that authoritative state.
+
+## Status Snapshot
+
+- Completed: `P6-01`, `P6-02`, `P6-03`
+- Removed from scope: former `P6-04` cache-regeneration work
+- Partially completed ahead of the original order: `P6-07`, `P6-08`
+- Remaining core work: `P6-05`, `P6-06`, then finish `P6-07` and `P6-08`
 
 ## Suggested Delivery Order
 
 1. P6-01
 2. P6-02
 3. P6-03
-4. P6-04
-5. P6-05
-6. P6-06
-7. P6-07
-8. P6-08
+4. P6-05
+5. P6-06
+6. P6-07
+7. P6-08
 
 ## P6-01: Add Reload-Specific Table IO API
+
+### Status
+
+Completed.
 
 ### Goal
 
@@ -68,6 +84,10 @@ memory -> disk sync path.
 - none
 
 ## P6-02: Implement Disk Snapshot Read And Validation
+
+### Status
+
+Completed.
 
 ### Goal
 
@@ -114,6 +134,10 @@ Read the current table snapshot from zarr and reject unsafe partial reloads befo
 
 ## P6-03: Apply Validated Reload Snapshot To In-Memory Table
 
+### Status
+
+Completed.
+
 ### Goal
 
 Replace the selected in-memory table state from the validated disk snapshot in a controlled in-place update.
@@ -149,56 +173,11 @@ Replace the selected in-memory table state from the validated disk snapshot in a
 
 - P6-02
 
-## P6-04: Regenerate Layer Metadata Cache From Refreshed Table
-
-### Goal
-
-Treat `layer.metadata["adata"]` as derived cache and rebuild it after reload.
-
-### Scope
-
-- add a Harpy-owned helper for cache regeneration
-- mirror `napari-spatialdata` join behavior through the public API
-- avoid direct dependency on private napari-spatialdata helpers
-
-### Required work
-
-- resolve the bound labels layer from the selected `sdata` and `label_name`
-- regenerate a fresh joined `AnnData` using:
-  - `spatialdata.join_spatialelement_table(...)`
-  - `how="left"`
-  - `match_rows="left"`
-- replace only table-derived metadata fields:
-  - `layer.metadata["adata"]`
-  - `layer.metadata["region_key"]`
-  - `layer.metadata["instance_key"]`
-  - optionally `layer.metadata["table_names"]`
-- leave non-table metadata unchanged:
-  - `layer.metadata["sdata"]`
-  - `layer.metadata["name"]`
-  - `layer.metadata["indices"]`
-  - coordinate-system metadata
-  - affine/view state
-- define fallback behavior when the layer is not loaded:
-  - skip cache regeneration
-  - keep refreshed table state in `sdata`
-
-### Suggested files
-
-- `src/napari_harpy/_spatialdata.py`
-- possibly `src/napari_harpy/_persistence.py`
-
-### Acceptance criteria
-
-- a successful reload regenerates `layer.metadata["adata"]` for the active layer
-- Harpy does not import private `napari-spatialdata` helper functions
-- non-table metadata survives unchanged
-
-### Depends on
-
-- P6-03
-
 ## P6-05: Add Dirty-State Tracking And Reload Decision Flow
+
+### Status
+
+Open.
 
 ### Goal
 
@@ -220,7 +199,7 @@ Prevent confusing loss of unsynced edits when the user requests reload.
   - successful sync
   - successful reload
 - support three user decisions when reload is requested while dirty:
-  - `Sync`
+  - `Write`
   - `Reload and discard local edits`
   - `Cancel`
 
@@ -233,7 +212,7 @@ Prevent confusing loss of unsynced edits when the user requests reload.
 ### Acceptance criteria
 
 - reload never silently discards unsynced changes
-- sync followed by reload works as one user path
+- write followed by reload works as one user path
 - cancel leaves the current in-memory state untouched
 
 ### Depends on
@@ -241,6 +220,10 @@ Prevent confusing loss of unsynced edits when the user requests reload.
 - P6-03
 
 ## P6-06: Freeze Async Classifier Work Around Reload
+
+### Status
+
+Open.
 
 ### Goal
 
@@ -278,6 +261,22 @@ Prevent stale background classifier work from writing into a freshly reloaded ta
 
 ## P6-07: Add Widget UI And Full Refresh Flow
 
+### Status
+
+Partially complete.
+
+Already implemented:
+
+- `Reload from zarr` button in the widget
+- basic reload wiring to `PersistenceController.reload_table_state()`
+- refresh of feature-matrix choices and selection status after reload
+- refresh of layer styling and persistence feedback after reload
+
+Still blocked on `P6-05` and `P6-06`:
+
+- dirty-state confirmation flow
+- classifier-safe reload behavior when async work is in flight
+
 ### Goal
 
 Expose `Reload from zarr` in the widget and refresh all table-derived UI state after success.
@@ -300,7 +299,6 @@ Expose `Reload from zarr` in the widget and refresh all table-derived UI state a
   - annotation feedback
   - sync/reload feedback
   - layer colors
-  - layer features
   - classifier feedback
 - preserve previously selected feature key if it still exists
 - otherwise fall back to the first available key or clear the selection
@@ -312,17 +310,32 @@ Expose `Reload from zarr` in the widget and refresh all table-derived UI state a
 ### Acceptance criteria
 
 - the widget exposes `Reload from zarr`
-- the reload flow is clearly separate from `Rescan Viewer` and `Sync to zarr`
+- the reload flow is clearly separate from `Rescan Viewer` and `Write to zarr`
 - new on-disk `obsm` keys become visible after reload
 - styling updates reflect reloaded `user_class`, `pred_class`, and `pred_confidence`
 
 ### Depends on
 
-- P6-04
 - P6-05
 - P6-06
 
 ## P6-08: Add Phase 6 Test Coverage
+
+### Status
+
+Partially complete.
+
+Already implemented:
+
+- persistence tests for disk snapshot reads and validation failures
+- persistence tests for in-place reload of `obs`, `obsm`, and `uns`
+- widget test coverage for `Reload from zarr`
+- widget test coverage that new on-disk `obsm` keys become visible after reload
+
+Still missing:
+
+- dirty-state / confirmation coverage from `P6-05`
+- stale-classifier-result coverage from `P6-06`
 
 ### Goal
 
@@ -340,8 +353,6 @@ Lock in the reload semantics with controller-level and widget-level tests.
 - reload refreshes prediction-driven layer styling
 - reload preserves selected feature key when still present
 - reload falls back when selected feature key disappears
-- reload regenerates `layer.metadata["adata"]`
-- reload handles the case where the bound labels layer is not currently loaded
 - reload is blocked or confirmed when local unsynced edits exist
 - reload aborts on `obs_names` mismatch
 - stale classifier worker results are ignored after reload
@@ -363,7 +374,6 @@ Lock in the reload semantics with controller-level and widget-level tests.
 - P6-01
 - P6-02
 - P6-03
-- P6-04
 - P6-05
 - P6-06
 - P6-07

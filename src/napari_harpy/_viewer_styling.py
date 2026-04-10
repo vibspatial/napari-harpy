@@ -21,7 +21,7 @@ from napari_harpy._class_palette import (
     stored_palette_to_lookup,
 )
 from napari_harpy._classifier import PRED_CLASS_COLORS_KEY, PRED_CLASS_COLUMN, PRED_CONFIDENCE_COLUMN
-from napari_harpy._spatialdata import SpatialDataAdapter, SpatialDataTableMetadata
+from napari_harpy._spatialdata import SpatialDataAdapter, SpatialDataTableMetadata, SpatialDataViewerBinding
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -43,8 +43,9 @@ PRED_CONFIDENCE_COLORMAP = "viridis"
 class ViewerStylingController:
     """Manage labels-layer styling from user labels and classifier outputs."""
 
-    def __init__(self, spatialdata_adapter: SpatialDataAdapter) -> None:
+    def __init__(self, spatialdata_adapter: SpatialDataAdapter, viewer_binding: SpatialDataViewerBinding) -> None:
         self._spatialdata_adapter = spatialdata_adapter
+        self._viewer_binding = viewer_binding
         self._labels_layer: Any | None = None
         self._selected_spatialdata: SpatialData | None = None
         self._selected_label_name: str | None = None
@@ -66,7 +67,7 @@ class ViewerStylingController:
         """Bind styling to the selected labels layer and annotation table."""
         next_layer = None
         if sdata is not None and label_name is not None:
-            next_layer = self._spatialdata_adapter.get_labels_layer(sdata, label_name)
+            next_layer = self._viewer_binding.get_labels_layer(sdata, label_name)
 
         next_table_metadata = None
         if sdata is not None and table_name is not None:

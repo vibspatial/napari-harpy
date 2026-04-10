@@ -4,8 +4,10 @@ from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
+import anndata as ad
 import numpy as np
 import pandas as pd
+import zarr
 from matplotlib.colors import to_rgba
 from napari.layers import Labels
 from napari.utils.colormaps import DirectLabelColormap
@@ -77,6 +79,20 @@ def make_multiscale_blobs_labels_layer(sdata: SpatialData, label_name: str = "bl
         metadata={"sdata": sdata, "name": label_name, "indices": indices},
     )
     return layer
+
+
+def _write_disk_table_state(
+    backed_sdata_blobs: SpatialData,
+    *,
+    obs: pd.DataFrame,
+    obsm: dict[str, object],
+    uns: dict[str, object],
+) -> None:
+    root = zarr.open_group(backed_sdata_blobs.path, mode="a", use_consolidated=False)
+    table_group = root["tables/table"]
+    ad.io.write_elem(table_group, "obs", obs)
+    ad.io.write_elem(table_group, "obsm", obsm)
+    ad.io.write_elem(table_group, "uns", uns)
 
 
 def rename_table_instance_key(sdata: SpatialData, *, table_name: str = "table", instance_key: str) -> None:
@@ -161,8 +177,10 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_bl
     assert widget.selected_instance_id is None
     assert widget.refresh_button.text() == "Rescan Viewer"
     assert widget.retrain_button.text() == "Retrain"
-    assert widget.sync_button.text() == "Sync to zarr"
+    assert widget.sync_button.text() == "Write Table to zarr"
+    assert widget.reload_button.text() == "Reload Table from zarr"
     assert not widget.sync_button.isEnabled()
+    assert not widget.reload_button.isEnabled()
     assert widget.retrain_button.isEnabled()
     assert str(layer.mode) == "pick"
     assert viewer.layers.selection.active is layer
@@ -190,6 +208,7 @@ def test_widget_surfaces_invalid_table_binding_for_duplicate_instance_ids(qtbot,
     assert not widget.class_spinbox.isEnabled()
     assert not widget.retrain_button.isEnabled()
     assert not widget.sync_button.isEnabled()
+    assert not widget.reload_button.isEnabled()
 
 
 def test_widget_refreshes_when_a_spatialdata_layer_is_added(qtbot, sdata_blobs: SpatialData) -> None:
@@ -515,7 +534,34 @@ def test_widget_enables_sync_for_backed_spatialdata(qtbot, backed_sdata_blobs: S
     expected_table_path = Path(backed_sdata_blobs.path) / "tables" / "table"
 
     assert widget.sync_button.isEnabled()
+    assert widget.reload_button.isEnabled()
     assert widget.sync_button.toolTip() == f"Write `table` table state to `{expected_table_path}`."
+    assert widget.reload_button.toolTip() == f"Reload `table` table state from `{expected_table_path}`."
+
+
+def test_widget_marks_persistence_dirty_on_annotation_change_and_clears_it_on_sync(
+    qtbot, monkeypatch, backed_sdata_blobs: SpatialData
+) -> None:
+    layer = make_blobs_labels_layer(backed_sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget._classifier_controller, "schedule_retrain", lambda *args, **kwargs: False)
+
+    layer.selected_label = 5
+    widget.class_spinbox.setValue(3)
+    widget.apply_class_button.click()
+
+    assert widget._persistence_controller.is_dirty is True
+    assert "Unsynced local table changes are present." in widget.sync_button.toolTip()
+    assert "Unsynced local table changes are present." in widget.reload_button.toolTip()
+
+    widget.sync_button.click()
+
+    assert widget._persistence_controller.is_dirty is False
+    assert "Unsynced local table changes are present." not in widget.sync_button.toolTip()
+    assert "Unsynced local table changes are present." not in widget.reload_button.toolTip()
 
 
 def test_widget_syncs_user_class_to_backed_zarr(qtbot, backed_sdata_blobs: SpatialData) -> None:
@@ -535,11 +581,86 @@ def test_widget_syncs_user_class_to_backed_zarr(qtbot, backed_sdata_blobs: Spati
     mask = (reread["table"].obs["region"] == "blobs_labels") & (reread["table"].obs["instance_id"] == 5)
 
     assert widget.sync_button.isEnabled()
-    assert widget.sync_feedback.text() == f"Synced `table` table state to `{expected_table_path}`."
+    assert widget.reload_button.isEnabled()
+    assert widget.persistence_feedback.text() == f"Wrote `table` table state to `{expected_table_path}`."
     assert isinstance(reread["table"].obs[USER_CLASS_COLUMN].dtype, pd.CategoricalDtype)
     assert list(reread["table"].obs[USER_CLASS_COLUMN].cat.categories) == [0, 3]
     assert reread["table"].obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
     assert list(reread["table"].uns[USER_CLASS_COLORS_KEY]) == default_class_colors([0, 3])
+
+
+def test_widget_marks_persistence_dirty_after_classifier_writes_results(
+    qtbot, backed_sdata_blobs: SpatialData
+) -> None:
+    table = backed_sdata_blobs["table"]
+    instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
+    table.obsm["features_1"] = np.column_stack(
+        [
+            (instance_ids > 13).astype(np.float64),
+            instance_ids.astype(np.float64) / instance_ids.max(),
+        ]
+    )
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(
+        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
+        categories=[0, 1, 2],
+    )
+
+    layer = make_blobs_labels_layer(backed_sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    assert widget._persistence_controller.is_dirty is False
+
+    widget.retrain_button.click()
+    qtbot.waitUntil(
+        lambda: widget._persistence_controller.is_dirty
+        and table.obs[PRED_CLASS_COLUMN].astype("string").ne("0").any(),
+        timeout=5000,
+    )
+
+    assert widget._persistence_controller.is_dirty is True
+    assert "Unsynced local table changes are present." in widget.sync_button.toolTip()
+    assert "Unsynced local table changes are present." in widget.reload_button.toolTip()
+
+
+def test_widget_reloads_table_state_from_backed_zarr(qtbot, backed_sdata_blobs: SpatialData) -> None:
+    layer = make_blobs_labels_layer(backed_sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    expected_table_path = Path(backed_sdata_blobs.path) / "tables" / "table"
+    table = backed_sdata_blobs["table"]
+
+    obs = table.obs.copy()
+    obs[USER_CLASS_COLUMN] = pd.Categorical(
+        [0] * (table.n_obs - 1) + [7],
+        categories=[0, 7],
+    )
+    obsm = dict(table.obsm)
+    obsm["disk_features"] = np.arange(table.n_obs, dtype=np.float64).reshape(table.n_obs, 1)
+    uns = dict(table.uns)
+    _write_disk_table_state(backed_sdata_blobs, obs=obs, obsm=obsm, uns=uns)
+
+    layer.selected_label = int(table.obs["instance_id"].iloc[-1])
+    widget.reload_button.click()
+
+    mask = (table.obs["region"] == "blobs_labels") & (
+        table.obs["instance_id"] == int(table.obs["instance_id"].iloc[-1])
+    )
+
+    assert widget.persistence_feedback.text() == f"Reloaded `table` table state from `{expected_table_path}`."
+    assert isinstance(table.obs[USER_CLASS_COLUMN].dtype, pd.CategoricalDtype)
+    assert list(table.obs[USER_CLASS_COLUMN].cat.categories) == [0, 7]
+    assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [7]
+    assert "disk_features" in table.obsm
+    feature_matrix_items = [
+        widget.feature_matrix_combo.itemText(index) for index in range(widget.feature_matrix_combo.count())
+    ]
+    assert feature_matrix_items == ["disk_features", "features_1", "features_2"]
+    assert widget.selected_feature_key == "features_1"
+    assert "Current class: 7." in widget.selection_status.text()
 
 
 def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs: SpatialData) -> None:

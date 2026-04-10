@@ -6,9 +6,9 @@ Provide a safe, explicit `Reload from zarr` action that refreshes the currently 
 without rebuilding the full `SpatialData` object and without letting Harpy, `SpatialData`, and napari layer
 metadata drift out of sync.
 
-This phase is intentionally separate from `Sync to zarr`.
+This phase is intentionally separate from `Write to zarr`.
 
-- `Sync to zarr` is memory -> disk
+- `Write to zarr` is memory -> disk
 - `Reload from zarr` is disk -> memory
 
 ## Investigation Context
@@ -218,7 +218,7 @@ This action must:
 - never silently discard unsynced in-memory edits
 - refresh the current widget and layer state after success
 - stay clearly separate from `Rescan Viewer`
-- stay clearly separate from `Sync to zarr`
+- stay clearly separate from `Write to zarr`
 
 ### Dirty-state rule
 
@@ -228,13 +228,13 @@ MVP interaction:
 
 1. If there are no unsynced edits, reload immediately.
 2. If there are unsynced edits, show a confirmation dialog with:
-   - `Sync`
+  - `Write`
    - `Reload and discard local edits`
    - `Cancel`
 
 Required semantics:
 
-- `Sync` performs memory -> disk first, then reloads from disk
+- `Write` performs memory -> disk first, then reloads from disk
 - `Reload and discard local edits` replaces in-memory state from disk
 - `Cancel` leaves everything unchanged
 
