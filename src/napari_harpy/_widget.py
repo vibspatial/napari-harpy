@@ -15,6 +15,7 @@ from napari_harpy._spatialdata import (
     SpatialDataAdapter,
     SpatialDataLabelsOption,
     SpatialDataTableMetadata,
+    SpatialDataViewerBinding,
 )
 from napari_harpy._viewer_styling import (
     COLOR_BY_OPTIONS,
@@ -47,9 +48,11 @@ class HarpyWidget(QWidget):
     def __init__(self, napari_viewer: napari.Viewer | None = None) -> None:
         super().__init__()
         self._viewer = napari_viewer
-        self._spatialdata_adapter = SpatialDataAdapter(napari_viewer)
+        self._spatialdata_adapter = SpatialDataAdapter()
+        self._viewer_binding = SpatialDataViewerBinding(napari_viewer, self._spatialdata_adapter)
         self._annotation_controller = AnnotationController(
             self._spatialdata_adapter,
+            self._viewer_binding,
             on_selected_instance_changed=self._on_selected_instance_changed,
             on_annotation_changed=self._on_annotation_changed,
         )
@@ -57,7 +60,10 @@ class HarpyWidget(QWidget):
             self._spatialdata_adapter,
             on_state_changed=self._on_classifier_state_changed,
         )
-        self._viewer_styling_controller = ViewerStylingController(self._spatialdata_adapter)
+        self._viewer_styling_controller = ViewerStylingController(
+            self._spatialdata_adapter,
+            self._viewer_binding,
+        )
         self._persistence_controller = PersistenceController(self._spatialdata_adapter)
         self._label_options: list[SpatialDataLabelsOption] = []
         self._selected_label_option: SpatialDataLabelsOption | None = None
@@ -225,7 +231,7 @@ class HarpyWidget(QWidget):
     def refresh_segmentation_masks(self) -> None:
         """Refresh the segmentation mask choices from viewer-linked SpatialData layers."""
         previous_identity = None if self._selected_label_option is None else self._selected_label_option.identity
-        self._label_options = self._spatialdata_adapter.get_label_options()
+        self._label_options = self._viewer_binding.get_label_options()
 
         with QSignalBlocker(self.segmentation_combo):
             self.segmentation_combo.clear()
