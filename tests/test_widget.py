@@ -15,13 +15,13 @@ from spatialdata.models import TableModel
 import napari_harpy._annotation as annotation_module
 import napari_harpy._class_palette as class_palette_module
 from napari_harpy._annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
+from napari_harpy._class_palette import default_class_colors
 from napari_harpy._classifier import (
     CLASSIFIER_CONFIG_KEY,
     PRED_CLASS_COLORS_KEY,
     PRED_CLASS_COLUMN,
     PRED_CONFIDENCE_COLUMN,
 )
-from napari_harpy._class_palette import default_class_colors
 from napari_harpy._spatialdata import get_spatialdata_label_options
 from napari_harpy._widget import HarpyWidget
 
@@ -396,9 +396,7 @@ def test_widget_applies_user_class_to_picked_instance(qtbot, sdata_blobs: Spatia
     assert "Assigned class 3" in widget.annotation_feedback.text()
 
 
-def test_widget_uses_table_instance_key_name_in_status_and_annotation_feedback(
-    qtbot, sdata_blobs: SpatialData
-) -> None:
+def test_widget_uses_table_instance_key_name_in_status_and_annotation_feedback(qtbot, sdata_blobs: SpatialData) -> None:
     rename_table_instance_key(sdata_blobs, instance_key="cell_id")
 
     layer = make_blobs_labels_layer(sdata_blobs)
@@ -495,7 +493,7 @@ def test_widget_recolors_layer_from_user_class_annotations(qtbot, sdata_blobs: S
     assert layer.features.set_index("index").loc[5, USER_CLASS_COLUMN] == 4
 
 
-def test_widget_logs_warning_when_existing_user_class_colors_are_overwritten(
+def test_widget_does_not_log_warning_when_existing_user_class_colors_are_overwritten(
     qtbot, monkeypatch, sdata_blobs: SpatialData
 ) -> None:
     table = sdata_blobs["table"]
@@ -514,7 +512,7 @@ def test_widget_logs_warning_when_existing_user_class_colors_are_overwritten(
     widget = HarpyWidget(viewer)
     qtbot.addWidget(widget)
 
-    assert any(f"Overwriting existing `{USER_CLASS_COLORS_KEY}` palette" in message for message in warnings)
+    assert warnings == []
 
 
 def test_widget_enables_sync_for_backed_spatialdata(qtbot, backed_sdata_blobs: SpatialData) -> None:
@@ -673,7 +671,9 @@ def test_widget_exposes_label_metadata_in_napari_status_bar(qtbot, sdata_blobs: 
     assert "pred_confidence: 0.95" in status["value"]
 
 
-def test_widget_rescans_viewer_without_retraining_same_classifier_context(qtbot, monkeypatch, sdata_blobs: SpatialData) -> None:
+def test_widget_rescans_viewer_without_retraining_same_classifier_context(
+    qtbot, monkeypatch, sdata_blobs: SpatialData
+) -> None:
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
     widget = HarpyWidget(viewer)

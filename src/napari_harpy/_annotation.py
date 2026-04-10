@@ -390,6 +390,7 @@ def _set_user_class_annotation_state(table: AnnData, values: pd.Series) -> None:
         values,
         column_name=USER_CLASS_COLUMN,
         colors_key=USER_CLASS_COLORS_KEY,
+        warn_on_palette_overwrite=False,
         unlabeled_class=UNLABELED_CLASS,
         unlabeled_color=UNLABELED_COLOR,
     )
