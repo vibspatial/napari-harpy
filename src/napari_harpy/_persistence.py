@@ -104,8 +104,13 @@ class PersistenceController:
             uns=uns,
         )
 
-    def replace_selected_table(self, snapshot: TableDiskSnapshot) -> str:
-        """Replace the selected in-memory table with a reloaded snapshot."""
+    def replace_selected_table_state(self, snapshot: TableDiskSnapshot) -> str:
+        """Replace the selected table's in-memory state from a reloaded snapshot.
+
+        This is an in-place partial reload of ``obs``, ``obsm``, and ``uns`` on
+        the currently selected table object. We intentionally keep the existing
+        ``AnnData`` instance instead of swapping in a second full table object.
+        """
         sdata = self._require_selected_spatialdata(action="reloading from zarr")
         table_name = self._require_selected_table_name(action="reloading from zarr")
         current_table = self._spatialdata_adapter.get_table(sdata, table_name)
@@ -243,7 +248,7 @@ class PersistenceController:
         # We intentionally do not build a second full AnnData object for a
         # strictly atomic swap because this code path is meant to avoid that cost.
         self.validate_reload_snapshot(snapshot)
-        return self.replace_selected_table(snapshot)
+        return self.replace_selected_table_state(snapshot)
 
     def sync_table_state(self) -> str:
         """Write the current table annotation state back to the backed zarr store."""

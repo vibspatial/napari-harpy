@@ -117,6 +117,11 @@ class HarpyWidget(QWidget):
         self.sync_button.clicked.connect(self._sync_to_zarr)
         self.sync_button.setEnabled(False)
 
+        self.reload_button = QPushButton("Reload from zarr")
+        self.reload_button.setObjectName("reload_from_zarr_button")
+        self.reload_button.clicked.connect(self._reload_from_zarr)
+        self.reload_button.setEnabled(False)
+
         self.validation_status = QLabel()
         self.validation_status.setObjectName("validation_status")
         self.validation_status.setWordWrap(True)
@@ -147,10 +152,10 @@ class HarpyWidget(QWidget):
         self.classifier_feedback.setWordWrap(True)
         self.classifier_feedback.hide()
 
-        self.sync_feedback = QLabel()
-        self.sync_feedback.setObjectName("sync_feedback")
-        self.sync_feedback.setWordWrap(True)
-        self.sync_feedback.hide()
+        self.persistence_feedback = QLabel()
+        self.persistence_feedback.setObjectName("persistence_feedback")
+        self.persistence_feedback.setWordWrap(True)
+        self.persistence_feedback.hide()
 
         selector_layout.addRow("Segmentation mask", self.segmentation_combo)
         selector_layout.addRow("Table", self.table_combo)
@@ -163,12 +168,13 @@ class HarpyWidget(QWidget):
         layout.addWidget(self.refresh_button)
         layout.addWidget(self.retrain_button)
         layout.addWidget(self.sync_button)
+        layout.addWidget(self.reload_button)
         layout.addWidget(self.apply_class_button)
         layout.addWidget(self.clear_class_button)
         layout.addWidget(self.selection_status)
         layout.addWidget(self.annotation_feedback)
         layout.addWidget(self.classifier_feedback)
-        layout.addWidget(self.sync_feedback)
+        layout.addWidget(self.persistence_feedback)
         layout.addWidget(self.validation_status)
         layout.addStretch(1)
 
@@ -289,7 +295,7 @@ class HarpyWidget(QWidget):
             self._selected_label_option = self._label_options[index]
 
         self._refresh_table_names()
-        self._bind_current_selection(dirty_reason="the segmentation selection changed")
+        self._bind_current_selection(classifier_dirty_reason="the segmentation selection changed")
 
     def _find_option_index(self, identity: tuple[int, str] | None) -> int | None:
         if identity is None:
@@ -331,7 +337,7 @@ class HarpyWidget(QWidget):
     def _on_table_changed(self, index: int) -> None:
         self._set_selected_table_name(index)
         self._refresh_feature_matrix_keys()
-        self._bind_current_selection(dirty_reason="the annotation table changed")
+        self._bind_current_selection(classifier_dirty_reason="the annotation table changed")
 
     def _refresh_feature_matrix_keys(self) -> None:
         previous_feature_key = self.selected_feature_key
@@ -419,7 +425,36 @@ class HarpyWidget(QWidget):
 
         return None
 
-    def _bind_current_selection(self, *, dirty_reason: str | None = None) -> None:
+    def _bind_current_selection(self, *, classifier_dirty_reason: str | None = None) -> None:
+        """Rebind every controller to the current widget selection.
+
+        This is the central handoff point from widget-level selection state to
+        the controllers. Whenever the selected segmentation, table, or feature
+        matrix context changes, we call this helper so each controller updates
+        which in-memory ``SpatialData`` object and table it should operate on.
+
+        Importantly, the controllers do not own independent copies of
+        ``SpatialData`` or ``AnnData``. They receive references to the current
+        in-memory objects and resolve the selected table from that authoritative
+        state. Rebinding here therefore "refreshes" controller state by
+        updating those references, not by materializing new table objects.
+
+        Before rebinding, the selected table is validated against the selected
+        labels layer. If the linkage is invalid, the table is intentionally
+        downgraded to an ``effective_table_name`` of ``None`` so the
+        controllers can stay bound to the current ``SpatialData``/labels
+        context without attempting table-backed operations that would be
+        inconsistent.
+
+        The method also:
+
+        - validates whether the selected table can annotate the selected labels layer
+        - propagates that effective binding to annotation, classifier, styling,
+          and persistence controllers
+        - marks classifier outputs dirty when the classifier selection context
+          changed in a way that invalidates them
+        - re-applies layer styling and refreshes the user-facing status cards
+        """
         self._table_binding_error = self._validate_selected_table_binding()
         effective_table_name = self._effective_table_name()
 
@@ -435,11 +470,11 @@ class HarpyWidget(QWidget):
             self.selected_feature_key,
         )
         if (
-            dirty_reason is not None
+            classifier_dirty_reason is not None
             and classifier_context_changed
             and effective_table_name is not None
         ):
-            self._classifier_controller.mark_dirty(reason=dirty_reason)
+            self._classifier_controller.mark_dirty(reason=classifier_dirty_reason)
         self._viewer_styling_controller.bind(
             self.selected_spatialdata,
             self.selected_segmentation_name,
@@ -453,7 +488,7 @@ class HarpyWidget(QWidget):
         self._annotation_controller.activate_layer()
         self._refresh_layer_styling()
         self._set_annotation_feedback("")
-        self._set_sync_feedback("")
+        self._set_persistence_feedback("")
         self._update_selection_status()
 
     def _update_selection_status(self) -> None:
@@ -462,7 +497,7 @@ class HarpyWidget(QWidget):
         self._update_annotation_controls()
         self._update_color_by_controls()
         self._update_classifier_controls()
-        self._update_sync_controls()
+        self._update_persistence_controls()
 
     def _update_validation_status(self) -> None:
         message = None
@@ -660,16 +695,21 @@ class HarpyWidget(QWidget):
 
         return "label value"
 
-    def _update_sync_controls(self) -> None:
+    def _update_persistence_controls(self) -> None:
         can_sync = self._persistence_controller.can_sync
+        can_reload = self._persistence_controller.can_reload
         self.sync_button.setEnabled(can_sync)
+        self.reload_button.setEnabled(can_reload)
 
         if self.selected_spatialdata is None or self.selected_table_name is None:
-            tooltip = "Choose a backed SpatialData annotation table to enable sync."
+            sync_tooltip = "Choose a backed SpatialData annotation table to enable sync."
+            reload_tooltip = "Choose a backed SpatialData annotation table to enable reload."
         elif self._table_binding_error is not None:
-            tooltip = self._table_binding_error
-        elif not can_sync:
-            tooltip = "The selected SpatialData dataset is not backed by zarr."
+            sync_tooltip = self._table_binding_error
+            reload_tooltip = self._table_binding_error
+        elif not can_sync or not can_reload:
+            sync_tooltip = "The selected SpatialData dataset is not backed by zarr."
+            reload_tooltip = "The selected SpatialData dataset is not backed by zarr."
         else:
             table_store_path = self._persistence_controller.selected_table_store_path
             destination = (
@@ -677,12 +717,17 @@ class HarpyWidget(QWidget):
                 if table_store_path is None
                 else table_store_path
             )
-            tooltip = (
+            sync_tooltip = (
                 f"Write `{self.selected_table_name}` table state "
                 f"to `{destination}`."
             )
+            reload_tooltip = (
+                f"Reload `{self.selected_table_name}` table state "
+                f"from `{destination}`."
+            )
 
-        self.sync_button.setToolTip(tooltip)
+        self.sync_button.setToolTip(sync_tooltip)
+        self.reload_button.setToolTip(reload_tooltip)
 
     def _update_color_by_controls(self) -> None:
         has_table = self._effective_table_name() is not None
@@ -728,7 +773,7 @@ class HarpyWidget(QWidget):
         try:
             self._persistence_controller.sync_table_state()
         except ValueError as error:
-            self._set_sync_feedback(str(error), error=True)
+            self._set_persistence_feedback(str(error), error=True)
             return
 
         table_store_path = self._persistence_controller.selected_table_store_path
@@ -737,17 +782,37 @@ class HarpyWidget(QWidget):
             if table_store_path is None or self.selected_spatialdata is None
             else table_store_path
         )
-        self._set_sync_feedback(
+        self._set_persistence_feedback(
             f"Synced `{self.selected_table_name}` table state to `{destination}`.",
             error=False,
         )
 
-    def _set_sync_feedback(self, message: str, *, error: bool = False) -> None:
-        self.sync_feedback.setText(message)
-        self.sync_feedback.setStyleSheet(
+    def _reload_from_zarr(self) -> None:
+        try:
+            self._persistence_controller.reload_table_state()
+        except ValueError as error:
+            self._set_persistence_feedback(str(error), error=True)
+            return
+
+        self._refresh_feature_matrix_keys()
+        self._bind_current_selection()
+        table_store_path = self._persistence_controller.selected_table_store_path
+        source = (
+            self.selected_spatialdata.path
+            if table_store_path is None or self.selected_spatialdata is None
+            else table_store_path
+        )
+        self._set_persistence_feedback(
+            f"Reloaded `{self.selected_table_name}` table state from `{source}`.",
+            error=False,
+        )
+
+    def _set_persistence_feedback(self, message: str, *, error: bool = False) -> None:
+        self.persistence_feedback.setText(message)
+        self.persistence_feedback.setStyleSheet(
             "color: #b91c1c; font-weight: 600;" if error else "color: #166534; font-weight: 600;"
         )
-        self.sync_feedback.setVisible(bool(message))
+        self.persistence_feedback.setVisible(bool(message))
 
     def _on_selected_instance_changed(self, instance_id: int | None) -> None:
         del instance_id
