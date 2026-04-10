@@ -10,10 +10,12 @@ import napari_harpy._classifier as classifier_module
 from napari_harpy._annotation import USER_CLASS_COLUMN
 from napari_harpy._classifier import (
     CLASSIFIER_CONFIG_KEY,
+    PRED_CLASS_COLORS_KEY,
     PRED_CLASS_COLUMN,
     PRED_CONFIDENCE_COLUMN,
     ClassifierController,
 )
+from napari_harpy._class_palette import default_class_colors
 from napari_harpy._spatialdata import SpatialDataAdapter
 
 
@@ -44,16 +46,19 @@ def test_classifier_controller_trains_on_labeled_rows_and_predicts_active_object
     controller.schedule_retrain(immediate=True)
 
     table = sdata_blobs["table"]
-    qtbot.waitUntil(lambda: int(table.obs[PRED_CLASS_COLUMN].sum()) > 0, timeout=5000)
+    qtbot.waitUntil(lambda: table.obs[PRED_CLASS_COLUMN].astype("string").ne("0").any(), timeout=5000)
 
     pred_class = table.obs.set_index("instance_id")[PRED_CLASS_COLUMN]
     pred_confidence = table.obs.set_index("instance_id")[PRED_CONFIDENCE_COLUMN]
 
+    assert isinstance(table.obs[PRED_CLASS_COLUMN].dtype, pd.CategoricalDtype)
+    assert list(table.obs[PRED_CLASS_COLUMN].cat.categories) == [0, 1, 2]
+    assert table.uns[PRED_CLASS_COLORS_KEY] == default_class_colors([0, 1, 2])
     assert pred_class.loc[1] == 1
     assert pred_class.loc[5] == 1
     assert pred_class.loc[24] == 2
     assert pred_class.loc[26] == 2
-    assert pred_class.min() >= 1
+    assert pd.to_numeric(pred_class.astype("string"), errors="coerce").min() >= 1
     assert pred_confidence.between(0.0, 1.0).all()
     assert table.uns[CLASSIFIER_CONFIG_KEY]["eligible"] is True
     assert table.uns[CLASSIFIER_CONFIG_KEY]["trained"] is True
@@ -76,8 +81,10 @@ def test_classifier_controller_resets_predictions_when_only_one_class_is_labeled
 
     table = sdata_blobs["table"]
 
+    assert isinstance(table.obs[PRED_CLASS_COLUMN].dtype, pd.CategoricalDtype)
     assert table.obs[PRED_CLASS_COLUMN].eq(0).all()
     assert table.obs[PRED_CONFIDENCE_COLUMN].isna().all()
+    assert table.uns[PRED_CLASS_COLORS_KEY] == default_class_colors([0])
     assert table.uns[CLASSIFIER_CONFIG_KEY]["eligible"] is False
     assert "two labeled classes" in table.uns[CLASSIFIER_CONFIG_KEY]["reason"]
     assert controller.status_kind == "warning"
@@ -101,8 +108,10 @@ def test_classifier_controller_validates_feature_matrix_shape(qtbot, monkeypatch
     controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
     controller.schedule_retrain(immediate=True)
 
+    assert isinstance(table.obs[PRED_CLASS_COLUMN].dtype, pd.CategoricalDtype)
     assert table.obs[PRED_CLASS_COLUMN].eq(0).all()
     assert table.obs[PRED_CONFIDENCE_COLUMN].isna().all()
+    assert table.uns[PRED_CLASS_COLORS_KEY] == default_class_colors([0])
     assert "rows but the table has" in table.uns[CLASSIFIER_CONFIG_KEY]["reason"]
     assert controller.status_kind == "warning"
 

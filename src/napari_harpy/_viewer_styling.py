@@ -12,10 +12,15 @@ from napari_harpy._annotation import (
     UNLABELED_COLOR,
     USER_CLASS_COLORS_KEY,
     USER_CLASS_COLUMN,
-    _default_labeled_user_class_color,
-    _normalize_color_sequence,
 )
-from napari_harpy._classifier import PRED_CLASS_COLUMN, PRED_CONFIDENCE_COLUMN
+from napari_harpy._class_palette import (
+    backfill_missing_class_colors,
+    normalize_class_values,
+    normalize_color_sequence,
+    read_series_class_categories,
+    stored_palette_to_lookup,
+)
+from napari_harpy._classifier import PRED_CLASS_COLORS_KEY, PRED_CLASS_COLUMN, PRED_CONFIDENCE_COLUMN
 from napari_harpy._spatialdata import SpatialDataAdapter, SpatialDataTableMetadata
 
 if TYPE_CHECKING:
@@ -107,7 +112,19 @@ class ViewerStylingController:
                     color_dict[instance_id] = cmap(float(np.clip(confidence, 0.0, 1.0)))
         else:
             class_by_instance = feature_rows[self._color_by]
-            class_color_lookup = self._get_class_color_lookup(extra_class_values=class_by_instance)
+            category_column = USER_CLASS_COLUMN
+            colors_key = USER_CLASS_COLORS_KEY
+            if self._color_by == COLOR_BY_PRED_CLASS:
+                category_column = PRED_CLASS_COLUMN
+                colors_key = PRED_CLASS_COLORS_KEY
+
+            class_color_lookup = self._get_class_color_lookup(
+                category_column=category_column,
+                colors_key=colors_key,
+                extra_class_values=class_by_instance,
+                unlabeled_class=UNLABELED_CLASS,
+                unlabeled_color=UNLABELED_COLOR,
+            )
             unlabeled_color = class_color_lookup.get(UNLABELED_CLASS, UNLABELED_COLOR)
             color_dict[None] = unlabeled_color
             for instance_id in instance_ids:
@@ -138,9 +155,7 @@ class ViewerStylingController:
         if table is None or metadata is None or self._selected_label_name is None:
             return pd.DataFrame(index=pd.Index([], dtype="int64", name="index"))
 
-        region_rows = table.obs.loc[
-            table.obs[metadata.region_key] == self._selected_label_name
-        ].copy()
+        region_rows = table.obs.loc[table.obs[metadata.region_key] == self._selected_label_name].copy()
         instance_ids = pd.to_numeric(region_rows[metadata.instance_key], errors="coerce")
         region_rows = region_rows.loc[instance_ids.notna()].copy()
         region_rows[metadata.instance_key] = instance_ids.loc[region_rows.index].astype("int64")
@@ -154,7 +169,11 @@ class ViewerStylingController:
         feature_rows.index.name = "index"
 
         if USER_CLASS_COLUMN in region_rows:
-            feature_rows[USER_CLASS_COLUMN] = _to_class_values(region_rows[USER_CLASS_COLUMN], USER_CLASS_COLUMN)
+            feature_rows[USER_CLASS_COLUMN] = normalize_class_values(
+                region_rows[USER_CLASS_COLUMN],
+                column_name=USER_CLASS_COLUMN,
+                unlabeled_class=UNLABELED_CLASS,
+            )
         else:
             feature_rows[USER_CLASS_COLUMN] = pd.Series(
                 UNLABELED_CLASS,
@@ -163,7 +182,11 @@ class ViewerStylingController:
             )
 
         if PRED_CLASS_COLUMN in region_rows:
-            feature_rows[PRED_CLASS_COLUMN] = _to_class_values(region_rows[PRED_CLASS_COLUMN], PRED_CLASS_COLUMN)
+            feature_rows[PRED_CLASS_COLUMN] = normalize_class_values(
+                region_rows[PRED_CLASS_COLUMN],
+                column_name=PRED_CLASS_COLUMN,
+                unlabeled_class=UNLABELED_CLASS,
+            )
         else:
             feature_rows[PRED_CLASS_COLUMN] = pd.Series(
                 UNLABELED_CLASS,
@@ -185,52 +208,80 @@ class ViewerStylingController:
 
         return feature_rows
 
-    def _get_class_color_lookup(self, *, extra_class_values: pd.Series | None = None) -> dict[int, str]:
+    def _get_class_color_lookup(
+        self,
+        *,
+        category_column: str,
+        colors_key: str,
+        unlabeled_class: int = UNLABELED_CLASS,
+        unlabeled_color: str = UNLABELED_COLOR,
+        extra_class_values: pd.Series | None = None,
+    ) -> dict[int, str]:
+        """Build a class-id -> color lookup for a discrete table column.
+
+        Stored palettes in ``table.uns[colors_key]`` are interpreted in category order
+        and used first. Any missing class ids are then backfilled with the deterministic
+        default class palette so labels coloring stays stable when palette state is
+        missing or incomplete.
+        """
         table = self._get_bound_table()
-        categories = {UNLABELED_CLASS}
-        if table is not None and USER_CLASS_COLUMN in table.obs:
-            categories.update(_to_class_values(table.obs[USER_CLASS_COLUMN], USER_CLASS_COLUMN).tolist())
+
+        categories = {unlabeled_class}
+        # Include every class id currently present in the bound table column, not just the active region.
+        if table is not None and category_column in table.obs:
+            categories.update(
+                normalize_class_values(
+                    table.obs[category_column],
+                    column_name=category_column,
+                    unlabeled_class=unlabeled_class,
+                ).tolist()
+            )
         if extra_class_values is not None:
-            categories.update(_to_class_values(extra_class_values, extra_class_values.name or USER_CLASS_COLUMN).tolist())
+            categories.update(
+                normalize_class_values(
+                    extra_class_values,
+                    column_name=extra_class_values.name or category_column,
+                    unlabeled_class=unlabeled_class,
+                ).tolist()
+            )
 
         sorted_categories = sorted(int(class_id) for class_id in categories)
-        lookup = {UNLABELED_CLASS: UNLABELED_COLOR}
+        # Fall back to deterministic class-id colors when no table-backed palette is available.
+        # This branch is just a safety net, and typically does not happen.
+        if table is None or category_column not in table.obs:
+            # In the happy path, `set_class_annotation_state(...)` has already kept the stored palette complete.
+            return backfill_missing_class_colors(
+                {unlabeled_class: unlabeled_color},
+                sorted_categories,
+                unlabeled_class=unlabeled_class,
+                unlabeled_color=unlabeled_color,
+            )
 
-        if table is None or USER_CLASS_COLUMN not in table.obs:
-            for class_id in sorted_categories:
-                if class_id == UNLABELED_CLASS:
-                    continue
-                lookup[class_id] = _default_labeled_user_class_color(class_id)
-            return lookup
+        column_categories = read_series_class_categories(
+            table.obs[category_column],
+            column_name=category_column,
+            unlabeled_class=unlabeled_class,
+        )
+        existing_colors = normalize_color_sequence(table.uns.get(colors_key))
+        # Convert the stored ordered palette into an explicit class-id -> color lookup.
+        lookup = stored_palette_to_lookup(
+            column_categories,
+            existing_colors,
+            unlabeled_class=unlabeled_class,
+            unlabeled_color=unlabeled_color,
+        )
 
-        user_categories = _get_table_user_class_categories(table.obs[USER_CLASS_COLUMN])
-        existing_colors = _normalize_color_sequence(table.uns.get(USER_CLASS_COLORS_KEY))
-        if existing_colors is not None:
-            for class_id, color in zip(user_categories, existing_colors[: len(user_categories)], strict=False):
-                lookup[int(class_id)] = color
-
-        for class_id in sorted_categories:
-            if class_id == UNLABELED_CLASS:
-                continue
-            lookup.setdefault(class_id, _default_labeled_user_class_color(class_id))
-
-        return lookup
-
-
-def _to_class_values(values: pd.Series, column_name: str) -> pd.Series:
-    numeric_values = pd.to_numeric(values.astype("string"), errors="coerce").fillna(UNLABELED_CLASS).astype("int64")
-    numeric_values.name = column_name
-    return numeric_values
+        # Backfill any missing class ids with the deterministic default class palette.
+        # In the happy path, `sync_class_palette_state(...)` has already covered every stored category.
+        return backfill_missing_class_colors(
+            lookup,
+            sorted_categories,
+            unlabeled_class=unlabeled_class,
+            unlabeled_color=unlabeled_color,
+        )
 
 
 def _to_numeric_values(values: pd.Series, column_name: str) -> pd.Series:
     numeric_values = pd.to_numeric(values, errors="coerce").astype("float64")
     numeric_values.name = column_name
     return numeric_values
-
-
-def _get_table_user_class_categories(values: pd.Series) -> list[int]:
-    if isinstance(values.dtype, pd.CategoricalDtype):
-        return [int(value) for value in values.cat.categories]
-
-    return sorted({UNLABELED_CLASS, *_to_class_values(values, USER_CLASS_COLUMN).tolist()})

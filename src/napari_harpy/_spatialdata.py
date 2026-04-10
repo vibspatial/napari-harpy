@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from spatialdata import get_element_annotators
+from spatialdata import get_element_annotators, join_spatialelement_table
 from spatialdata.models import TableModel
 
 if TYPE_CHECKING:
@@ -136,10 +137,115 @@ class SpatialDataAdapter:
             regions=_normalize_regions(attrs.get(TableModel.REGION_KEY)),
         )
 
+    def validate_table_binding(self, sdata: SpatialData, label_name: str, table_name: str) -> SpatialDataTableMetadata:
+        """Validate that a table can be safely bound to a selected labels element."""
+        table = self.get_table(sdata, table_name)
+        table_metadata = self.get_table_metadata(sdata, table_name)
+
+        if not table_metadata.annotates(label_name):
+            raise ValueError(
+                f"Table `{table_name}` does not annotate segmentation `{label_name}`."
+            )
+
+        if table_metadata.region_key not in table.obs.columns:
+            raise ValueError(
+                f"Table `{table_name}` is missing required obs column `{table_metadata.region_key}`."
+            )
+
+        if table_metadata.instance_key not in table.obs.columns:
+            raise ValueError(
+                f"Table `{table_name}` is missing required obs column `{table_metadata.instance_key}`."
+            )
+
+        region_rows = table.obs.loc[table.obs[table_metadata.region_key] == label_name]
+        if region_rows.empty:
+            return table_metadata
+
+        region_instances = region_rows[table_metadata.instance_key]
+        duplicate_instances = region_instances[region_instances.duplicated(keep=False)]
+        if not duplicate_instances.empty:
+            duplicate_labels = duplicate_instances.astype("string").drop_duplicates().tolist()
+            preview = ", ".join(duplicate_labels[:5])
+            if len(duplicate_labels) > 5:
+                preview += ", ..."
+            raise ValueError(
+                f"Table `{table_name}` cannot be bound to segmentation `{label_name}` because `{table_metadata.instance_key}` "
+                f"contains duplicate values within that region: {preview}."
+            )
+
+        return table_metadata
+
     def get_table_obsm_keys(self, sdata: SpatialData, table_name: str) -> list[str]:
         """Return available feature matrix keys from `adata.obsm`."""
         table = self.get_table(sdata, table_name)
         return sorted(table.obsm.keys())
+
+    def build_layer_metadata_adata(
+        self,
+        sdata: SpatialData,
+        label_name: str,
+        table_name: str,
+    ) -> AnnData | None:
+        """Build the AnnData stored as napari layer metadata for a labels element.
+
+        Harpy keeps ``sdata[table_name]`` as the authoritative in-memory table.
+        The napari layer metadata ``adata`` is only a compatibility cache for
+        ``napari-spatialdata``. To avoid materializing a second full AnnData
+        object on every refresh, we first try to expose a lightweight view of
+        just the rows for ``label_name``.
+
+        That region-only view is safe when its ``instance_key`` values are
+        compatible with the loaded layer's cached ``metadata["indices"]``.
+        ``napari-spatialdata`` later merges those indices against
+        ``adata.obs[instance_key]``, so the cheap path only requires the region
+        view to have unique instance ids and for those ids to be present in the
+        layer indices. If that compatibility check fails, we fall back to
+        ``join_spatialelement_table(..., how="left", match_rows="left")`` so
+        the cache matches ``napari-spatialdata``'s original layer-specific
+        semantics.
+        """
+        table = self.get_table(sdata, table_name)
+        table_metadata = self.get_table_metadata(sdata, table_name)
+        region_mask = (table.obs[table_metadata.region_key] == label_name).to_numpy(dtype=bool, copy=False)
+        if not region_mask.any():
+            return None
+
+        region_view = table[region_mask, :]
+        layer = self.get_labels_layer(sdata, label_name)
+        if _layer_indices_align_with_region_view(layer, region_view, table_metadata.instance_key) is not False:
+            return _normalize_layer_metadata_adata(region_view)
+
+        _, adata = join_spatialelement_table(
+            sdata=sdata,
+            spatial_element_names=label_name,
+            table_name=table_name,
+            how="left",
+            match_rows="left",
+        )
+        if adata is None or adata.shape[0] == 0:
+            return None
+
+        return _normalize_layer_metadata_adata(adata)
+
+    def refresh_layer_table_metadata(self, sdata: SpatialData, label_name: str, table_name: str) -> bool:
+        """Refresh table-derived metadata on the loaded napari layer for a labels element."""
+        layer = self.get_labels_layer(sdata, label_name)
+        if layer is None:
+            return False
+
+        metadata = getattr(layer, "metadata", None)
+        if not isinstance(metadata, dict):
+            metadata = {}
+            layer.metadata = metadata
+
+        table_metadata = self.get_table_metadata(sdata, table_name)
+        layer.metadata["adata"] = self.build_layer_metadata_adata(sdata, label_name, table_name)
+        layer.metadata["region_key"] = table_metadata.region_key
+        layer.metadata["instance_key"] = table_metadata.instance_key
+
+        table_names = self.get_annotating_table_names(sdata, label_name)
+        layer.metadata["table_names"] = table_names if table_names else None
+        return True
 
 
 def get_spatialdata_label_options(viewer: Any | None) -> list[SpatialDataLabelsOption]:
@@ -231,6 +337,71 @@ def _normalize_regions(region: str | list[str] | None) -> tuple[str, ...]:
         return (region,)
 
     return tuple(str(label_name) for label_name in region)
+
+
+def _layer_indices_align_with_region_view(layer: Any | None, region_view: AnnData, instance_key: str) -> bool | None:
+    metadata = getattr(layer, "metadata", None)
+    if not isinstance(metadata, dict):
+        return None
+
+    layer_indices = _normalize_layer_indices(metadata.get("indices"))
+    if layer_indices is None:
+        return None
+
+    region_instances = region_view.obs[instance_key]
+    if not region_instances.is_unique:
+        return False
+
+    return bool(region_instances.isin(layer_indices).all())
+
+
+def _normalize_layer_metadata_adata(adata: AnnData) -> AnnData:
+    from pandas.api.types import CategoricalDtype
+
+    from napari_harpy._annotation import (
+        USER_CLASS_COLORS_KEY,
+        USER_CLASS_COLUMN,
+    )
+    from napari_harpy._class_palette import set_class_annotation_state
+    from napari_harpy._classifier import PRED_CLASS_COLORS_KEY, PRED_CLASS_COLUMN
+
+    color_keys_to_strip = {USER_CLASS_COLORS_KEY, PRED_CLASS_COLORS_KEY}
+
+    for column_name, colors_key in (
+        (USER_CLASS_COLUMN, USER_CLASS_COLORS_KEY),
+        (PRED_CLASS_COLUMN, PRED_CLASS_COLORS_KEY),
+    ):
+        if column_name not in adata.obs:
+            continue
+
+        column = adata.obs[column_name]
+        needs_category_normalization = not isinstance(column.dtype, CategoricalDtype)
+        if needs_category_normalization:
+            set_class_annotation_state(
+                adata,
+                column,
+                column_name=column_name,
+                colors_key=colors_key,
+                keep_colors=False,
+            )
+
+    if any(color_key in adata.uns for color_key in color_keys_to_strip):
+        adata.uns = {key: value for key, value in adata.uns.items() if key not in color_keys_to_strip}
+
+    return adata
+
+
+def _normalize_layer_indices(indices: Any) -> list[Any] | None:
+    if indices is None or isinstance(indices, str | bytes):
+        return None
+
+    if not isinstance(indices, Sequence):
+        try:
+            indices = list(indices)
+        except TypeError:
+            return None
+
+    return [index for index in indices if index != 0]
 
 
 def _get_unique_spatialdata_objects(layers: Any) -> list[SpatialData]:
