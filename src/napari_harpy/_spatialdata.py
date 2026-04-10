@@ -203,6 +203,14 @@ class SpatialDataAdapter:
         ``join_spatialelement_table(..., how="left", match_rows="left")`` so
         the cache matches ``napari-spatialdata``'s original layer-specific
         semantics.
+
+        Harpy no longer uses this helper in the normal widget lifecycle for the
+        same reason described in :meth:`refresh_layer_table_metadata`:
+        ``napari-spatialdata`` may later rebuild ``layer.metadata["adata"]``
+        from the authoritative ``sdata[table_name]`` table again. As a result,
+        Harpy now treats ``sdata[table_name]`` as the only source of truth and
+        keeps this helper as an explicit cache-building utility rather than a
+        path that is relied on during normal interaction.
         """
         table = self.get_table(sdata, table_name)
         table_metadata = self.get_table_metadata(sdata, table_name)
