@@ -26,6 +26,28 @@ def test_persistence_controller_requires_backed_spatialdata(sdata_blobs: Spatial
         controller.sync_table_state()
 
 
+def test_persistence_controller_tracks_dirty_state_per_selected_table(
+    sdata_blobs: SpatialData,
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    controller = PersistenceController(SpatialDataAdapter())
+    controller.bind(sdata_blobs, "table")
+
+    assert controller.is_dirty is False
+
+    controller.mark_dirty()
+
+    assert controller.is_dirty is True
+
+    controller.bind(backed_sdata_blobs, "table")
+
+    assert controller.is_dirty is False
+
+    controller.bind(sdata_blobs, "table")
+
+    assert controller.is_dirty is True
+
+
 def test_persistence_controller_syncs_table_obs_and_colors_to_backed_store(backed_sdata_blobs: SpatialData) -> None:
     controller = PersistenceController(SpatialDataAdapter())
     controller.bind(backed_sdata_blobs, "table")
@@ -139,6 +161,31 @@ def test_persistence_controller_replaces_selected_table_with_reloaded_snapshot(
     assert reloaded_table.uns["disk_flag"] == {"source": "disk"}
     assert list(reloaded_table.var_names) == list(original_table.var_names)
     assert backed_sdata_blobs.locate_element(reloaded_table) == ["tables/table"]
+
+
+def test_persistence_controller_clears_dirty_state_after_sync(backed_sdata_blobs: SpatialData) -> None:
+    controller = PersistenceController(SpatialDataAdapter())
+    controller.bind(backed_sdata_blobs, "table")
+    controller.mark_dirty()
+
+    assert controller.is_dirty is True
+
+    controller.sync_table_state()
+
+    assert controller.is_dirty is False
+
+
+def test_persistence_controller_clears_dirty_state_after_reload(backed_sdata_blobs: SpatialData) -> None:
+    controller = PersistenceController(SpatialDataAdapter())
+    controller.bind(backed_sdata_blobs, "table")
+    _write_disk_snapshot_payload(backed_sdata_blobs)
+    controller.mark_dirty()
+
+    assert controller.is_dirty is True
+
+    controller.reload_table_state()
+
+    assert controller.is_dirty is False
 
 
 def test_persistence_controller_reloads_obsm_key_written_directly_to_disk_group(

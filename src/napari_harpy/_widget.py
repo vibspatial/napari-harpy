@@ -59,6 +59,7 @@ class HarpyWidget(QWidget):
         self._classifier_controller = ClassifierController(
             self._spatialdata_adapter,
             on_state_changed=self._on_classifier_state_changed,
+            on_table_state_changed=self._on_classifier_table_state_changed,
         )
         self._viewer_styling_controller = ViewerStylingController(
             self._spatialdata_adapter,
@@ -725,6 +726,9 @@ class HarpyWidget(QWidget):
                 f"Reload `{self.selected_table_name}` table state "
                 f"from `{destination}`."
             )
+            if self._persistence_controller.is_dirty:
+                sync_tooltip += " Unsynced local table changes are present."
+                reload_tooltip += " Unsynced local table changes are present."
 
         self.sync_button.setToolTip(sync_tooltip)
         self.reload_button.setToolTip(reload_tooltip)
@@ -786,6 +790,7 @@ class HarpyWidget(QWidget):
             f"Synced `{self.selected_table_name}` table state to `{destination}`.",
             error=False,
         )
+        self._update_selection_status()
 
     def _reload_from_zarr(self) -> None:
         try:
@@ -821,10 +826,15 @@ class HarpyWidget(QWidget):
         self._update_annotation_controls()
 
     def _on_annotation_changed(self) -> None:
+        self._mark_persistence_dirty()
         self._classifier_controller.mark_dirty(reason="the annotations changed")
         self._refresh_layer_styling()
         self._classifier_controller.schedule_retrain()
         self._update_selection_status()
+
+    def _on_classifier_table_state_changed(self) -> None:
+        self._mark_persistence_dirty()
+        self._update_persistence_controls()
 
     def _on_classifier_state_changed(self) -> None:
         self._set_classifier_feedback(
@@ -841,3 +851,7 @@ class HarpyWidget(QWidget):
 
     def _refresh_layer_styling(self) -> None:
         self._viewer_styling_controller.refresh()
+
+    def _mark_persistence_dirty(self) -> None:
+        self._persistence_controller.mark_dirty()
+        self._set_persistence_feedback("")

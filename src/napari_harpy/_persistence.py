@@ -38,6 +38,7 @@ class PersistenceController:
         self._selected_spatialdata: SpatialData | None = None
         self._selected_label_name: str | None = None
         self._selected_table_name: str | None = None
+        self._dirty_table_keys: set[tuple[int, str]] = set()
 
     @property
     def can_sync(self) -> bool:
@@ -52,6 +53,12 @@ class PersistenceController:
     def can_reload(self) -> bool:
         """Return whether the currently selected table can be reloaded from zarr."""
         return self.can_sync
+
+    @property
+    def is_dirty(self) -> bool:
+        """Return whether the current selected table has unsynced local changes."""
+        selection_key = self._current_selection_key()
+        return selection_key is not None and selection_key in self._dirty_table_keys
 
     @property
     def selected_store_path(self) -> Path | None:
@@ -82,6 +89,22 @@ class PersistenceController:
         self._selected_spatialdata = sdata
         self._selected_label_name = label_name
         self._selected_table_name = table_name
+
+    def mark_dirty(self) -> None:
+        """Mark the current selected table as having unsynced local changes."""
+        selection_key = self._current_selection_key()
+        if selection_key is None:
+            return
+
+        self._dirty_table_keys.add(selection_key)
+
+    def clear_dirty(self) -> None:
+        """Clear the unsynced-local-changes marker for the current selected table."""
+        selection_key = self._current_selection_key()
+        if selection_key is None:
+            return
+
+        self._dirty_table_keys.discard(selection_key)
 
     def read_table_snapshot_from_disk(self) -> TableDiskSnapshot:
         """Read the selected table's `obs`, `obsm`, and `uns` directly from zarr."""
@@ -250,7 +273,9 @@ class PersistenceController:
         # We intentionally do not build a second full AnnData object for a
         # strictly atomic swap because this code path is meant to avoid that cost.
         self.validate_reload_snapshot(snapshot)
-        return self.replace_selected_table_state(snapshot)
+        table_path = self.replace_selected_table_state(snapshot)
+        self.clear_dirty()
+        return table_path
 
     def sync_table_state(self) -> str:
         """Write the current table annotation state back to the backed zarr store."""
@@ -268,6 +293,7 @@ class PersistenceController:
             ad.io.write_elem(table_group["uns"], PRED_CLASS_COLORS_KEY, table.uns[PRED_CLASS_COLORS_KEY])
         if CLASSIFIER_CONFIG_KEY in table.uns:
             ad.io.write_elem(table_group["uns"], CLASSIFIER_CONFIG_KEY, table.uns[CLASSIFIER_CONFIG_KEY])
+        self.clear_dirty()
         return table_path
 
     def _require_selected_spatialdata(self, *, action: str = "syncing to zarr") -> SpatialData:
@@ -296,6 +322,16 @@ class PersistenceController:
             )
 
         return table_paths[0]
+
+    def _current_selection_key(self) -> tuple[int, str] | None:
+        return self._selection_key(self._selected_spatialdata, self._selected_table_name)
+
+    @staticmethod
+    def _selection_key(sdata: SpatialData | None, table_name: str | None) -> tuple[int, str] | None:
+        if sdata is None or table_name is None:
+            return None
+
+        return (id(sdata), table_name)
 
 
 def _normalize_regions(region: str | list[str] | None) -> tuple[str, ...]:

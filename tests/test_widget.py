@@ -539,6 +539,31 @@ def test_widget_enables_sync_for_backed_spatialdata(qtbot, backed_sdata_blobs: S
     assert widget.reload_button.toolTip() == f"Reload `table` table state from `{expected_table_path}`."
 
 
+def test_widget_marks_persistence_dirty_on_annotation_change_and_clears_it_on_sync(
+    qtbot, monkeypatch, backed_sdata_blobs: SpatialData
+) -> None:
+    layer = make_blobs_labels_layer(backed_sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget._classifier_controller, "schedule_retrain", lambda *args, **kwargs: False)
+
+    layer.selected_label = 5
+    widget.class_spinbox.setValue(3)
+    widget.apply_class_button.click()
+
+    assert widget._persistence_controller.is_dirty is True
+    assert "Unsynced local table changes are present." in widget.sync_button.toolTip()
+    assert "Unsynced local table changes are present." in widget.reload_button.toolTip()
+
+    widget.sync_button.click()
+
+    assert widget._persistence_controller.is_dirty is False
+    assert "Unsynced local table changes are present." not in widget.sync_button.toolTip()
+    assert "Unsynced local table changes are present." not in widget.reload_button.toolTip()
+
+
 def test_widget_syncs_user_class_to_backed_zarr(qtbot, backed_sdata_blobs: SpatialData) -> None:
     layer = make_blobs_labels_layer(backed_sdata_blobs)
     viewer = DummyViewer(layers=[layer])
@@ -562,6 +587,41 @@ def test_widget_syncs_user_class_to_backed_zarr(qtbot, backed_sdata_blobs: Spati
     assert list(reread["table"].obs[USER_CLASS_COLUMN].cat.categories) == [0, 3]
     assert reread["table"].obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
     assert list(reread["table"].uns[USER_CLASS_COLORS_KEY]) == default_class_colors([0, 3])
+
+
+def test_widget_marks_persistence_dirty_after_classifier_writes_results(
+    qtbot, backed_sdata_blobs: SpatialData
+) -> None:
+    table = backed_sdata_blobs["table"]
+    instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
+    table.obsm["features_1"] = np.column_stack(
+        [
+            (instance_ids > 13).astype(np.float64),
+            instance_ids.astype(np.float64) / instance_ids.max(),
+        ]
+    )
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(
+        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
+        categories=[0, 1, 2],
+    )
+
+    layer = make_blobs_labels_layer(backed_sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    assert widget._persistence_controller.is_dirty is False
+
+    widget.retrain_button.click()
+    qtbot.waitUntil(
+        lambda: widget._persistence_controller.is_dirty
+        and table.obs[PRED_CLASS_COLUMN].astype("string").ne("0").any(),
+        timeout=5000,
+    )
+
+    assert widget._persistence_controller.is_dirty is True
+    assert "Unsynced local table changes are present." in widget.sync_button.toolTip()
+    assert "Unsynced local table changes are present." in widget.reload_button.toolTip()
 
 
 def test_widget_reloads_table_state_from_backed_zarr(qtbot, backed_sdata_blobs: SpatialData) -> None:
