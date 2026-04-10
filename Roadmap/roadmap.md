@@ -240,12 +240,12 @@ For MVP, this phase only needs to guarantee persistence of annotation columns su
 `adata.obs["user_class"]`. The same sync pathway can later be extended to prediction fields and
 classifier metadata.
 
-`Sync to zarr` should be strictly memory -> disk. It should not also imply reloading the store back
+`Write to zarr` should be strictly memory -> disk. It should not also imply reloading the store back
 into the viewer.
 
 ### Tasks
 
-- [x] Add a `Sync to zarr` action in the widget.
+- [x] Add a `Write to zarr` action in the widget.
 - [x] Define the write-back source of truth:
   - [x] treat the selected in-memory `SpatialData` table as authoritative while the session is open
   - [x] persist the current `adata.obs[...]` values for the selected table
@@ -262,7 +262,7 @@ into the viewer.
 
 ### Exit criteria
 
-- [x] User can annotate objects, click `Sync to zarr`, and persist `adata.obs["user_class"]` to disk.
+- [x] User can annotate objects, click `Write to zarr`, and persist `adata.obs["user_class"]` to disk.
 - [x] Sync failures are visible and do not silently discard in-memory edits.
 - [x] The roadmap clearly distinguishes viewer rescan, disk sync, and disk reload.
 
@@ -368,7 +368,7 @@ on-disk store changed outside the current in-memory workflow.
 
 ### Implementation note
 
-`Reload from zarr` should be strictly disk -> memory. Keep it separate from `Sync to zarr`.
+`Reload from zarr` should be strictly disk -> memory. Keep it separate from `Write to zarr`.
 
 For MVP, prefer reloading the current table and refreshing the relevant layer metadata over trying to
 rebuild the entire viewer from scratch. This phase is mainly about safely picking up external changes

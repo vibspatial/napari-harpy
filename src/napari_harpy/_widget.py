@@ -113,12 +113,12 @@ class HarpyWidget(QWidget):
         self.retrain_button.clicked.connect(self._retrain_classifier)
         self.retrain_button.setEnabled(False)
 
-        self.sync_button = QPushButton("Sync to zarr")
+        self.sync_button = QPushButton("Write Table to zarr")
         self.sync_button.setObjectName("sync_to_zarr_button")
         self.sync_button.clicked.connect(self._sync_to_zarr)
         self.sync_button.setEnabled(False)
 
-        self.reload_button = QPushButton("Reload from zarr")
+        self.reload_button = QPushButton("Reload Table from zarr")
         self.reload_button.setObjectName("reload_from_zarr_button")
         self.reload_button.clicked.connect(self._reload_from_zarr)
         self.reload_button.setEnabled(False)
@@ -787,7 +787,7 @@ class HarpyWidget(QWidget):
             else table_store_path
         )
         self._set_persistence_feedback(
-            f"Synced `{self.selected_table_name}` table state to `{destination}`.",
+            f"Wrote `{self.selected_table_name}` table state to `{destination}`.",
             error=False,
         )
         self._update_selection_status()

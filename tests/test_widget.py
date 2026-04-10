@@ -177,8 +177,8 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_bl
     assert widget.selected_instance_id is None
     assert widget.refresh_button.text() == "Rescan Viewer"
     assert widget.retrain_button.text() == "Retrain"
-    assert widget.sync_button.text() == "Sync to zarr"
-    assert widget.reload_button.text() == "Reload from zarr"
+    assert widget.sync_button.text() == "Write Table to zarr"
+    assert widget.reload_button.text() == "Reload Table from zarr"
     assert not widget.sync_button.isEnabled()
     assert not widget.reload_button.isEnabled()
     assert widget.retrain_button.isEnabled()
@@ -582,7 +582,7 @@ def test_widget_syncs_user_class_to_backed_zarr(qtbot, backed_sdata_blobs: Spati
 
     assert widget.sync_button.isEnabled()
     assert widget.reload_button.isEnabled()
-    assert widget.persistence_feedback.text() == f"Synced `table` table state to `{expected_table_path}`."
+    assert widget.persistence_feedback.text() == f"Wrote `table` table state to `{expected_table_path}`."
     assert isinstance(reread["table"].obs[USER_CLASS_COLUMN].dtype, pd.CategoricalDtype)
     assert list(reread["table"].obs[USER_CLASS_COLUMN].cat.categories) == [0, 3]
     assert reread["table"].obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]

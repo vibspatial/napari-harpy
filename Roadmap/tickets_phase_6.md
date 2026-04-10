@@ -199,7 +199,7 @@ Prevent confusing loss of unsynced edits when the user requests reload.
   - successful sync
   - successful reload
 - support three user decisions when reload is requested while dirty:
-  - `Sync`
+  - `Write`
   - `Reload and discard local edits`
   - `Cancel`
 
@@ -212,7 +212,7 @@ Prevent confusing loss of unsynced edits when the user requests reload.
 ### Acceptance criteria
 
 - reload never silently discards unsynced changes
-- sync followed by reload works as one user path
+- write followed by reload works as one user path
 - cancel leaves the current in-memory state untouched
 
 ### Depends on
@@ -310,7 +310,7 @@ Expose `Reload from zarr` in the widget and refresh all table-derived UI state a
 ### Acceptance criteria
 
 - the widget exposes `Reload from zarr`
-- the reload flow is clearly separate from `Rescan Viewer` and `Sync to zarr`
+- the reload flow is clearly separate from `Rescan Viewer` and `Write to zarr`
 - new on-disk `obsm` keys become visible after reload
 - styling updates reflect reloaded `user_class`, `pred_class`, and `pred_confidence`
 
