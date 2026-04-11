@@ -4,7 +4,15 @@
 
 `napari-harpy` is a napari plugin for interactive object classification on `SpatialData` datasets.
 
-The current repository contains a working MVP for interactive annotation, background retraining, live prediction updates, and explicit sync back to a backed `SpatialData` store.
+The current repository contains a working non-ROI annotation and classification workflow for `SpatialData` tables loaded through `napari-spatialdata`.
+
+Today the plugin supports:
+
+- interactive manual annotation of segmentation instances
+- background `RandomForestClassifier` retraining
+- live prediction updates and labels recoloring
+- explicit write-back of in-memory table state to zarr
+- explicit reload of on-disk table state back into memory
 
 Current capabilities include:
 
@@ -24,7 +32,12 @@ Current capabilities include:
   - `user_class`
   - `pred_class`
   - `pred_confidence`
-- explicit sync of table state back to a zarr-backed `SpatialData` store
+- explicit `Write Table to zarr` of table state back to a zarr-backed `SpatialData` store
+- explicit `Reload Table from zarr` of on-disk table state into the current in-memory table
+- dirty-state tracking for in-memory table changes, with a reload decision flow:
+  - `Write local edits and reload`
+  - `Reload and discard local edits`
+  - `Cancel`
 
 Current limitation:
 
@@ -67,14 +80,10 @@ The script currently contains a hard-coded `SDATA_PATH`, so update that path as 
 
 ## Status
 
-The plugin has completed the current roadmap work through Phase 5 for the non-ROI workflow:
+The non-ROI workflow is implemented. You can load a compatible `SpatialData` object through `napari-spatialdata`, choose a segmentation/table pair and feature matrix, annotate objects, retrain the classifier in the background, inspect predictions through `Color by`, write table state to zarr, and reload table state back from zarr into memory.
 
-- Phase 1: `SpatialData` discovery and validation
-- Phase 2: basic manual annotation workflow
-- Phase 3: manual sync of annotation table state back to zarr
-- Phase 4: background random forest training
-- Phase 5: live prediction updates and viewer recoloring
+Main remaining roadmap work:
 
-At this point, you can load a compatible `SpatialData` object through `napari-spatialdata`, choose a segmentation/table pair and feature matrix, annotate objects with user classes, let the plugin retrain in the background, inspect predictions through the `Color by` menu, and persist the current table state with `Sync to zarr`.
-
-The main missing piece from the original MVP plan is ROI support. Future roadmap work focuses on ROI-aware workflows plus reload/persistence hardening.
+- classifier hardening around reload
+- ROI-aware annotation and prediction workflows
+- Further integration with [Harpy](https://github.com/saeyslab/harpy) for shallow and deep feature extraction.
