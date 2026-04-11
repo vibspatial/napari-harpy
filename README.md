@@ -2,7 +2,7 @@
   <img src="docs/_static/logo.png" alt="Harpy logo" width="200">
 </p>
 
-`napari-harpy` is a napari plugin for interactive object classification on `SpatialData` datasets.
+`napari-harpy` is a napari plugin for interactive object classification on `SpatialData` datasets, with planned integration with [Harpy](https://github.com/saeyslab/harpy) for shallow and deep feature extraction.
 
 The current repository contains a working non-ROI annotation and classification workflow for `SpatialData` tables loaded through `napari-spatialdata`.
 
