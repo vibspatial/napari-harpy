@@ -16,6 +16,7 @@ from spatialdata.models import TableModel
 
 import napari_harpy._annotation as annotation_module
 import napari_harpy._class_palette as class_palette_module
+import napari_harpy._widget as widget_module
 from napari_harpy._annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
 from napari_harpy._class_palette import default_class_colors
 from napari_harpy._classifier import (
@@ -622,6 +623,112 @@ def test_widget_marks_persistence_dirty_after_classifier_writes_results(
     assert widget._persistence_controller.is_dirty is True
     assert "Unsynced local table changes are present." in widget.sync_button.toolTip()
     assert "Unsynced local table changes are present." in widget.reload_button.toolTip()
+
+
+def test_widget_cancels_dirty_reload_when_user_chooses_cancel(
+    qtbot, monkeypatch, backed_sdata_blobs: SpatialData
+) -> None:
+    layer = make_blobs_labels_layer(backed_sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget._classifier_controller, "schedule_retrain", lambda *args, **kwargs: False)
+
+    table = backed_sdata_blobs["table"]
+    disk_obs = table.obs.copy()
+    disk_obs[USER_CLASS_COLUMN] = pd.Categorical([0] * table.n_obs, categories=[0])
+    _write_disk_table_state(backed_sdata_blobs, obs=disk_obs, obsm=dict(table.obsm), uns=dict(table.uns))
+
+    layer.selected_label = 5
+    widget.class_spinbox.setValue(3)
+    widget.apply_class_button.click()
+    monkeypatch.setattr(
+        widget,
+        "_prompt_dirty_reload_decision",
+        lambda: widget_module._DirtyReloadDecision.CANCEL,
+    )
+
+    widget.reload_button.click()
+
+    mask = (table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5)
+    reread = read_zarr(backed_sdata_blobs.path)
+    disk_mask = (reread["table"].obs["region"] == "blobs_labels") & (reread["table"].obs["instance_id"] == 5)
+
+    assert widget._persistence_controller.is_dirty is True
+    assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
+    assert reread["table"].obs.loc[disk_mask, USER_CLASS_COLUMN].tolist() == [0]
+
+
+def test_widget_dirty_reload_can_write_then_reload(
+    qtbot, monkeypatch, backed_sdata_blobs: SpatialData
+) -> None:
+    layer = make_blobs_labels_layer(backed_sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget._classifier_controller, "schedule_retrain", lambda *args, **kwargs: False)
+
+    expected_table_path = Path(backed_sdata_blobs.path) / "tables" / "table"
+    table = backed_sdata_blobs["table"]
+
+    layer.selected_label = 5
+    widget.class_spinbox.setValue(3)
+    widget.apply_class_button.click()
+    monkeypatch.setattr(
+        widget,
+        "_prompt_dirty_reload_decision",
+        lambda: widget_module._DirtyReloadDecision.WRITE,
+    )
+
+    widget.reload_button.click()
+
+    reread = read_zarr(backed_sdata_blobs.path)
+    mask = (table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5)
+    disk_mask = (reread["table"].obs["region"] == "blobs_labels") & (reread["table"].obs["instance_id"] == 5)
+
+    assert widget._persistence_controller.is_dirty is False
+    assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
+    assert reread["table"].obs.loc[disk_mask, USER_CLASS_COLUMN].tolist() == [3]
+    assert (
+        widget.persistence_feedback.text()
+        == f"Wrote local changes and reloaded `table` table state from `{expected_table_path}`."
+    )
+
+
+def test_widget_dirty_reload_can_discard_local_edits(
+    qtbot, monkeypatch, backed_sdata_blobs: SpatialData
+) -> None:
+    layer = make_blobs_labels_layer(backed_sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget._classifier_controller, "schedule_retrain", lambda *args, **kwargs: False)
+
+    expected_table_path = Path(backed_sdata_blobs.path) / "tables" / "table"
+    table = backed_sdata_blobs["table"]
+    disk_obs = table.obs.copy()
+    disk_obs[USER_CLASS_COLUMN] = pd.Categorical([0] * table.n_obs, categories=[0])
+    _write_disk_table_state(backed_sdata_blobs, obs=disk_obs, obsm=dict(table.obsm), uns=dict(table.uns))
+
+    layer.selected_label = 5
+    widget.class_spinbox.setValue(3)
+    widget.apply_class_button.click()
+    monkeypatch.setattr(
+        widget,
+        "_prompt_dirty_reload_decision",
+        lambda: widget_module._DirtyReloadDecision.RELOAD_DISCARD,
+    )
+
+    widget.reload_button.click()
+
+    mask = (table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5)
+    reread = read_zarr(backed_sdata_blobs.path)
+    disk_mask = (reread["table"].obs["region"] == "blobs_labels") & (reread["table"].obs["instance_id"] == 5)
+
+    assert widget._persistence_controller.is_dirty is False
+    assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [0]
+    assert reread["table"].obs.loc[disk_mask, USER_CLASS_COLUMN].tolist() == [0]
+    assert widget.persistence_feedback.text() == f"Reloaded `table` table state from `{expected_table_path}`."
 
 
 def test_widget_reloads_table_state_from_backed_zarr(qtbot, backed_sdata_blobs: SpatialData) -> None:
