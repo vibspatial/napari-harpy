@@ -1,12 +1,23 @@
 from __future__ import annotations
 
+from enum import Enum
 from html import escape
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from qtpy.QtCore import QSignalBlocker, Qt
 from qtpy.QtGui import QPixmap
-from qtpy.QtWidgets import QComboBox, QFormLayout, QLabel, QPushButton, QSpinBox, QVBoxLayout, QWidget
+from qtpy.QtWidgets import (
+    QComboBox,
+    QDialog,
+    QFormLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
 
 from napari_harpy._annotation import UNLABELED_CLASS, AnnotationController
 from napari_harpy._classifier import ClassifierController
@@ -28,6 +39,12 @@ from napari_harpy._viewer_styling import (
 if TYPE_CHECKING:
     import napari
     from spatialdata import SpatialData
+
+
+class _DirtyReloadDecision(Enum):
+    WRITE = "write"
+    RELOAD_DISCARD = "reload_discard"
+    CANCEL = "cancel"
 
 
 class HarpyWidget(QWidget):
@@ -188,9 +205,7 @@ class HarpyWidget(QWidget):
 
         logo_pixmap = QPixmap(str(self._logo_path))
         if not logo_pixmap.isNull():
-            logo_label.setPixmap(
-                logo_pixmap.scaledToWidth(120, Qt.TransformationMode.SmoothTransformation)
-            )
+            logo_label.setPixmap(logo_pixmap.scaledToWidth(120, Qt.TransformationMode.SmoothTransformation))
             return logo_label
 
         logo_label.setText("napari-harpy")
@@ -470,11 +485,7 @@ class HarpyWidget(QWidget):
             effective_table_name,
             self.selected_feature_key,
         )
-        if (
-            classifier_dirty_reason is not None
-            and classifier_context_changed
-            and effective_table_name is not None
-        ):
+        if classifier_dirty_reason is not None and classifier_context_changed and effective_table_name is not None:
             self._classifier_controller.mark_dirty(reason=classifier_dirty_reason)
         self._viewer_styling_controller.bind(
             self.selected_spatialdata,
@@ -713,19 +724,9 @@ class HarpyWidget(QWidget):
             reload_tooltip = "The selected SpatialData dataset is not backed by zarr."
         else:
             table_store_path = self._persistence_controller.selected_table_store_path
-            destination = (
-                self.selected_spatialdata.path
-                if table_store_path is None
-                else table_store_path
-            )
-            sync_tooltip = (
-                f"Write `{self.selected_table_name}` table state "
-                f"to `{destination}`."
-            )
-            reload_tooltip = (
-                f"Reload `{self.selected_table_name}` table state "
-                f"from `{destination}`."
-            )
+            destination = self.selected_spatialdata.path if table_store_path is None else table_store_path
+            sync_tooltip = f"Write `{self.selected_table_name}` table state to `{destination}`."
+            reload_tooltip = f"Reload `{self.selected_table_name}` table state from `{destination}`."
             if self._persistence_controller.is_dirty:
                 sync_tooltip += " Unsynced local table changes are present."
                 reload_tooltip += " Unsynced local table changes are present."
@@ -774,43 +775,159 @@ class HarpyWidget(QWidget):
         self.retrain_button.setToolTip(tooltip)
 
     def _sync_to_zarr(self) -> None:
+        # TODO: rename _sync_to_zarr to _write_to_zarr
+        self._write_selected_table_to_zarr()
+
+    def _write_selected_table_to_zarr(
+        self,
+        *,
+        show_feedback: bool = True,
+        feedback_message: str | None = None,
+    ) -> bool:
         try:
             self._persistence_controller.sync_table_state()
         except ValueError as error:
             self._set_persistence_feedback(str(error), error=True)
-            return
+            return False
 
-        table_store_path = self._persistence_controller.selected_table_store_path
-        destination = (
-            self.selected_spatialdata.path
-            if table_store_path is None or self.selected_spatialdata is None
-            else table_store_path
-        )
-        self._set_persistence_feedback(
-            f"Wrote `{self.selected_table_name}` table state to `{destination}`.",
-            error=False,
-        )
+        if show_feedback:
+            destination = self._selected_table_store_destination()
+            message = feedback_message or f"Wrote `{self.selected_table_name}` table state to `{destination}`."
+            self._set_persistence_feedback(message, error=False)
         self._update_selection_status()
+        return True
 
     def _reload_from_zarr(self) -> None:
+        if not self._persistence_controller.is_dirty:
+            self._reload_selected_table_from_zarr()
+            return
+
+        decision = self._prompt_dirty_reload_decision()
+        if decision is _DirtyReloadDecision.CANCEL:
+            return
+
+        if decision is _DirtyReloadDecision.WRITE:
+            if not self._write_selected_table_to_zarr(show_feedback=False):
+                return
+
+            source = self._selected_table_store_destination()
+            self._reload_selected_table_from_zarr(
+                feedback_message=f"Wrote local changes and reloaded `{self.selected_table_name}` table state from `{source}`.",
+            )
+            return
+
+        if decision is _DirtyReloadDecision.RELOAD_DISCARD:
+            self._reload_selected_table_from_zarr()
+            return
+
+        raise RuntimeError(f"Unhandled dirty reload decision: {decision!r}")
+
+    def _reload_selected_table_from_zarr(self, *, feedback_message: str | None = None) -> bool:
         try:
+            # For now the persistence layer reports expected reload failures as
+            # `ValueError` (selection/precondition issues, reload validation
+            # failures, and similar user-facing problems). A future cleanup may
+            # replace this broad catch with a dedicated reload error type once
+            # the persistence-layer error boundary is formalized.
             self._persistence_controller.reload_table_state()
         except ValueError as error:
             self._set_persistence_feedback(str(error), error=True)
-            return
+            return False
 
         self._refresh_feature_matrix_keys()
         self._bind_current_selection()
-        table_store_path = self._persistence_controller.selected_table_store_path
-        source = (
-            self.selected_spatialdata.path
-            if table_store_path is None or self.selected_spatialdata is None
-            else table_store_path
+        source = self._selected_table_store_destination()
+        message = feedback_message or f"Reloaded `{self.selected_table_name}` table state from `{source}`."
+        self._set_persistence_feedback(message, error=False)
+        return True
+
+    def _prompt_dirty_reload_decision(self) -> _DirtyReloadDecision:
+        table_name = self.selected_table_name
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Unsynced Table Changes")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(560)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
+
+        warning_message = (
+            f"Table `{escape(table_name)}` has in-memory changes that have not been written to zarr."
+            if table_name is not None
+            else "The selected table has in-memory changes that have not been written to zarr."
         )
-        self._set_persistence_feedback(
-            f"Reloaded `{self.selected_table_name}` table state from `{source}`.",
-            error=False,
+        warning_card = QLabel(
+            "<div>"
+            "<span style='font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;'>"
+            "Unsynced Changes</span><br>"
+            f"<span>{warning_message}</span>"
+            "</div>"
         )
+        warning_card.setWordWrap(True)
+        warning_card.setStyleSheet(
+            "font-weight: 500; "
+            "color: #b45309; "
+            "background-color: #fff7ed; "
+            "border: 1px solid #fdba74; "
+            "border-radius: 10px; "
+            "padding: 12px 14px;"
+        )
+        layout.addWidget(warning_card)
+
+        button_row = QHBoxLayout()
+        button_row.setSpacing(10)
+        button_row.addStretch(1)
+        write_button = QPushButton("Write local edits and reload")
+        discard_button = QPushButton("Reload and discard local edits")
+        cancel_button = QPushButton("Cancel")
+
+        write_button.setStyleSheet(
+            "QPushButton {"
+            "background-color: #166534; "
+            "color: white; "
+            "border: 1px solid #166534; "
+            "border-radius: 6px; "
+            "padding: 7px 14px; "
+            "font-weight: 600;}"
+            "QPushButton:hover { background-color: #15803d; border-color: #15803d; }"
+        )
+        discard_button.setStyleSheet(
+            "QPushButton {"
+            "background-color: #fff7ed; "
+            "color: #9a3412; "
+            "border: 1px solid #fdba74; "
+            "border-radius: 6px; "
+            "padding: 7px 14px; "
+            "font-weight: 600;}"
+            "QPushButton:hover { background-color: #ffedd5; }"
+        )
+        cancel_button.setStyleSheet(
+            "QPushButton {"
+            "background-color: #f9fafb; "
+            "color: #111827; "
+            "border: 1px solid #d1d5db; "
+            "border-radius: 6px; "
+            "padding: 7px 14px;}"
+            "QPushButton:hover { background-color: #f3f4f6; }"
+        )
+
+        button_row.addWidget(write_button)
+        button_row.addWidget(discard_button)
+        button_row.addWidget(cancel_button)
+        layout.addLayout(button_row)
+
+        write_button.clicked.connect(lambda: dialog.done(1))
+        discard_button.clicked.connect(lambda: dialog.done(2))
+        cancel_button.clicked.connect(dialog.reject)
+        cancel_button.setDefault(True)
+
+        result = dialog.exec()
+        if result == 1:
+            return _DirtyReloadDecision.WRITE
+        if result == 2:
+            return _DirtyReloadDecision.RELOAD_DISCARD
+        return _DirtyReloadDecision.CANCEL
 
     def _set_persistence_feedback(self, message: str, *, error: bool = False) -> None:
         self.persistence_feedback.setText(message)
@@ -855,3 +972,10 @@ class HarpyWidget(QWidget):
     def _mark_persistence_dirty(self) -> None:
         self._persistence_controller.mark_dirty()
         self._set_persistence_feedback("")
+
+    def _selected_table_store_destination(self) -> Path | str | None:
+        table_store_path = self._persistence_controller.selected_table_store_path
+        if table_store_path is None or self.selected_spatialdata is None:
+            return None if self.selected_spatialdata is None else self.selected_spatialdata.path
+
+        return table_store_path
