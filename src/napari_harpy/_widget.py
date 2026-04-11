@@ -9,9 +9,10 @@ from qtpy.QtCore import QSignalBlocker, Qt
 from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import (
     QComboBox,
+    QDialog,
     QFormLayout,
+    QHBoxLayout,
     QLabel,
-    QMessageBox,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -842,28 +843,84 @@ class HarpyWidget(QWidget):
 
     def _prompt_dirty_reload_decision(self) -> _DirtyReloadDecision:
         table_name = self.selected_table_name or "the selected table"
-        message_box = QMessageBox(self)
-        message_box.setIcon(QMessageBox.Icon.Warning)
-        message_box.setWindowTitle("Unsynced Table Changes")
-        message_box.setText(f"`{table_name}` has unsynced local changes.")
-        message_box.setInformativeText(
-            "Choose whether to write those changes to zarr before reloading, discard them, or cancel."
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Unsynced Table Changes")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(560)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
+
+        warning_card = QLabel(
+            "<div>"
+            "<span style='font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;'>"
+            "Unsynced Changes</span><br>"
+            f"<span>Table `{escape(table_name)}` has in-memory changes that have not been written to zarr.</span>"
+            "</div>"
+        )
+        warning_card.setWordWrap(True)
+        warning_card.setStyleSheet(
+            "font-weight: 500; "
+            "color: #b45309; "
+            "background-color: #fff7ed; "
+            "border: 1px solid #fdba74; "
+            "border-radius: 10px; "
+            "padding: 12px 14px;"
+        )
+        layout.addWidget(warning_card)
+
+        button_row = QHBoxLayout()
+        button_row.setSpacing(10)
+        button_row.addStretch(1)
+        write_button = QPushButton("Write local edits and reload")
+        discard_button = QPushButton("Reload and discard local edits")
+        cancel_button = QPushButton("Cancel")
+
+        write_button.setStyleSheet(
+            "QPushButton {"
+            "background-color: #166534; "
+            "color: white; "
+            "border: 1px solid #166534; "
+            "border-radius: 6px; "
+            "padding: 7px 14px; "
+            "font-weight: 600;}"
+            "QPushButton:hover { background-color: #15803d; border-color: #15803d; }"
+        )
+        discard_button.setStyleSheet(
+            "QPushButton {"
+            "background-color: #fff7ed; "
+            "color: #9a3412; "
+            "border: 1px solid #fdba74; "
+            "border-radius: 6px; "
+            "padding: 7px 14px; "
+            "font-weight: 600;}"
+            "QPushButton:hover { background-color: #ffedd5; }"
+        )
+        cancel_button.setStyleSheet(
+            "QPushButton {"
+            "background-color: #f9fafb; "
+            "color: #111827; "
+            "border: 1px solid #d1d5db; "
+            "border-radius: 6px; "
+            "padding: 7px 14px;}"
+            "QPushButton:hover { background-color: #f3f4f6; }"
         )
 
-        write_button = message_box.addButton("Write Table to zarr", QMessageBox.ButtonRole.AcceptRole)
-        discard_button = message_box.addButton(
-            "Reload and discard local edits",
-            QMessageBox.ButtonRole.DestructiveRole,
-        )
-        cancel_button = message_box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
-        message_box.setDefaultButton(cancel_button)
-        message_box.setEscapeButton(cancel_button)
-        message_box.exec()
+        button_row.addWidget(write_button)
+        button_row.addWidget(discard_button)
+        button_row.addWidget(cancel_button)
+        layout.addLayout(button_row)
 
-        clicked_button = message_box.clickedButton()
-        if clicked_button is write_button:
+        write_button.clicked.connect(lambda: dialog.done(1))
+        discard_button.clicked.connect(lambda: dialog.done(2))
+        cancel_button.clicked.connect(dialog.reject)
+        cancel_button.setDefault(True)
+
+        result = dialog.exec()
+        if result == 1:
             return _DirtyReloadDecision.WRITE
-        if clicked_button is discard_button:
+        if result == 2:
             return _DirtyReloadDecision.RELOAD_DISCARD
         return _DirtyReloadDecision.CANCEL
 
