@@ -842,7 +842,7 @@ class HarpyWidget(QWidget):
         return True
 
     def _prompt_dirty_reload_decision(self) -> _DirtyReloadDecision:
-        table_name = self.selected_table_name or "the selected table"
+        table_name = self.selected_table_name
         dialog = QDialog(self)
         dialog.setWindowTitle("Unsynced Table Changes")
         dialog.setModal(True)
@@ -852,11 +852,16 @@ class HarpyWidget(QWidget):
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(14)
 
+        warning_message = (
+            f"Table `{escape(table_name)}` has in-memory changes that have not been written to zarr."
+            if table_name is not None
+            else "The selected table has in-memory changes that have not been written to zarr."
+        )
         warning_card = QLabel(
             "<div>"
             "<span style='font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;'>"
             "Unsynced Changes</span><br>"
-            f"<span>Table `{escape(table_name)}` has in-memory changes that have not been written to zarr.</span>"
+            f"<span>{warning_message}</span>"
             "</div>"
         )
         warning_card.setWordWrap(True)
