@@ -25,10 +25,10 @@ styling around that authoritative state.
 
 ## Status Snapshot
 
-- Completed: `P6-01`, `P6-02`, `P6-03`
+- Completed: `P6-01`, `P6-02`, `P6-03`, `P6-05`, `P6-07`
 - Removed from scope: former `P6-04` cache-regeneration work
-- Partially completed ahead of the original order: `P6-07`, `P6-08`
-- Remaining core work: `P6-05`, `P6-06`, then finish `P6-07` and `P6-08`
+- Partially completed: `P6-08`
+- Remaining core work: `P6-06`, then finish `P6-08`
 
 ## Suggested Delivery Order
 
@@ -112,8 +112,8 @@ Read the current table snapshot from zarr and reject unsafe partial reloads befo
   - `uns` is a mapping
   - `uns["spatialdata_attrs"]` exists
   - current `n_obs` matches disk `n_obs`
-  - current `obs_names` match disk `obs_names`
-  - current `obs_names` order matches disk `obs_names` order
+  - current rowwise `region_key` values match the disk snapshot
+  - current rowwise `instance_key` values match the disk snapshot
   - all `obsm` entries have leading dimension `n_obs`
   - the selected table still annotates the selected segmentation
 
@@ -177,7 +177,19 @@ Replace the selected in-memory table state from the validated disk snapshot in a
 
 ### Status
 
-Open.
+Completed.
+
+Implemented:
+
+- per-selected-table dirty tracking in `PersistenceController`
+- dirty marking for annotation edits
+- dirty marking for classifier write paths that actually mutate the table
+- dirty clearing on successful write and successful reload
+- dirty-aware reload decision flow with:
+  - `Write local edits and reload`
+  - `Reload and discard local edits`
+  - `Cancel`
+- widget test coverage for all three decision branches
 
 ### Goal
 
@@ -263,23 +275,20 @@ Prevent stale background classifier work from writing into a freshly reloaded ta
 
 ### Status
 
-Partially complete.
+Completed.
 
 Already implemented:
 
-- `Reload from zarr` button in the widget
+- `Reload Table from zarr` button in the widget
+- `Write Table to zarr` button in the widget
 - basic reload wiring to `PersistenceController.reload_table_state()`
+- dirty-state confirmation flow in the widget
 - refresh of feature-matrix choices and selection status after reload
 - refresh of layer styling and persistence feedback after reload
 
-Still blocked on `P6-05` and `P6-06`:
-
-- dirty-state confirmation flow
-- classifier-safe reload behavior when async work is in flight
-
 ### Goal
 
-Expose `Reload from zarr` in the widget and refresh all table-derived UI state after success.
+Expose `Reload Table from zarr` in the widget and refresh all table-derived UI state after success.
 
 ### Scope
 
@@ -289,7 +298,7 @@ Expose `Reload from zarr` in the widget and refresh all table-derived UI state a
 
 ### Required work
 
-- add `Reload from zarr` button to the widget
+- add `Reload Table from zarr` button to the widget
 - enable it only when a backed selected table can be reloaded
 - wire in dirty-state confirmation behavior
 - refresh after successful reload:
@@ -309,15 +318,14 @@ Expose `Reload from zarr` in the widget and refresh all table-derived UI state a
 
 ### Acceptance criteria
 
-- the widget exposes `Reload from zarr`
-- the reload flow is clearly separate from `Rescan Viewer` and `Write to zarr`
+- the widget exposes `Reload Table from zarr`
+- the reload flow is clearly separate from `Rescan Viewer` and `Write Table to zarr`
 - new on-disk `obsm` keys become visible after reload
 - styling updates reflect reloaded `user_class`, `pred_class`, and `pred_confidence`
 
 ### Depends on
 
 - P6-05
-- P6-06
 
 ## P6-08: Add Phase 6 Test Coverage
 
@@ -329,12 +337,12 @@ Already implemented:
 
 - persistence tests for disk snapshot reads and validation failures
 - persistence tests for in-place reload of `obs`, `obsm`, and `uns`
-- widget test coverage for `Reload from zarr`
+- widget test coverage for `Reload Table from zarr`
 - widget test coverage that new on-disk `obsm` keys become visible after reload
+- dirty-state / confirmation coverage from `P6-05`
 
 Still missing:
 
-- dirty-state / confirmation coverage from `P6-05`
 - stale-classifier-result coverage from `P6-06`
 
 ### Goal
@@ -354,7 +362,8 @@ Lock in the reload semantics with controller-level and widget-level tests.
 - reload preserves selected feature key when still present
 - reload falls back when selected feature key disappears
 - reload is blocked or confirmed when local unsynced edits exist
-- reload aborts on `obs_names` mismatch
+- reload allows changed `obs_names` when rowwise region/instance identity is unchanged
+- reload aborts when rowwise region/instance identity changes
 - stale classifier worker results are ignored after reload
 
 ### Suggested files
