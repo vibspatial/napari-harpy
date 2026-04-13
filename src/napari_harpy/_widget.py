@@ -823,6 +823,7 @@ class HarpyWidget(QWidget):
         raise RuntimeError(f"Unhandled dirty reload decision: {decision!r}")
 
     def _reload_selected_table_from_zarr(self, *, feedback_message: str | None = None) -> bool:
+        self._classifier_controller.freeze_for_reload()
         try:
             # For now the persistence layer reports expected reload failures as
             # `ValueError` (selection/precondition issues, reload validation
@@ -836,6 +837,7 @@ class HarpyWidget(QWidget):
 
         self._refresh_feature_matrix_keys()
         self._bind_current_selection()
+        self._classifier_controller.reset_after_reload()
         source = self._selected_table_store_destination()
         message = feedback_message or f"Reloaded `{self.selected_table_name}` table state from `{source}`."
         self._set_persistence_feedback(message, error=False)
