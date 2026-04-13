@@ -23,7 +23,7 @@ def test_persistence_controller_requires_backed_spatialdata(sdata_blobs: Spatial
     controller.bind(sdata_blobs, "table")
 
     with pytest.raises(ValueError, match="not backed by zarr"):
-        controller.sync_table_state()
+        controller.write_table_state()
 
 
 def test_persistence_controller_tracks_dirty_state_per_selected_table(
@@ -74,7 +74,7 @@ def test_persistence_controller_syncs_table_obs_and_colors_to_backed_store(backe
         "trained": True,
     }
 
-    table_path = controller.sync_table_state()
+    table_path = controller.write_table_state()
     reread = read_zarr(backed_sdata_blobs.path)
 
     assert table_path == "tables/table"
@@ -170,7 +170,7 @@ def test_persistence_controller_clears_dirty_state_after_sync(backed_sdata_blobs
 
     assert controller.is_dirty is True
 
-    controller.sync_table_state()
+    controller.write_table_state()
 
     assert controller.is_dirty is False
 
