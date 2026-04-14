@@ -530,9 +530,7 @@ class HarpyWidget(QWidget):
     def _update_validation_status(self) -> None:
         message = None
 
-        if self._table_binding_error is not None:
-            message = self._table_binding_error
-        elif self.selected_table_name is not None and self.feature_matrix_combo.count() == 0:
+        if self.selected_table_name is not None and self.feature_matrix_combo.count() == 0:
             message = (
                 "Warning: the selected table does not contain any feature matrices in `.obsm`. "
                 "Add one before continuing."

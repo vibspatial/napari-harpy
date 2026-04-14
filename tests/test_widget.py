@@ -226,8 +226,8 @@ def test_widget_surfaces_invalid_table_binding_for_duplicate_instance_ids(qtbot,
     qtbot.addWidget(widget)
 
     assert widget.selected_table_name == "table"
-    assert not widget.validation_status.isHidden()
-    assert "contains duplicate values within that region" in widget.validation_status.text()
+    assert widget.validation_status.isHidden()
+    assert widget.validation_status.text() == ""
     assert "contains duplicate values within that region" in widget.selection_status.text()
     assert not widget.color_by_combo.isEnabled()
     assert not widget.class_spinbox.isEnabled()
