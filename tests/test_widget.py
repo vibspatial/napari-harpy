@@ -431,6 +431,28 @@ def test_widget_applies_user_class_to_picked_instance(qtbot, sdata_blobs: Spatia
     assert "Assigned class 3" in widget.annotation_feedback.text()
 
 
+def test_widget_apply_shortcut_applies_user_class_to_picked_instance(qtbot, sdata_blobs: SpatialData) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    layer.selected_label = 5
+    widget.class_spinbox.setValue(4)
+
+    assert widget.apply_class_button.toolTip().endswith("Shortcut: A.")
+    assert widget._annotation_shortcuts[0].key().toString() == "A"
+
+    widget._annotation_shortcuts[0].activated.emit()
+
+    table = sdata_blobs["table"]
+    mask = (table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5)
+
+    assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [4]
+    assert "Assigned class 4" in widget.annotation_feedback.text()
+
+
 def test_widget_uses_table_instance_key_name_in_status_and_annotation_feedback(qtbot, sdata_blobs: SpatialData) -> None:
     rename_table_instance_key(sdata_blobs, instance_key="cell_id")
 
@@ -468,6 +490,29 @@ def test_widget_can_clear_user_class_for_picked_instance(qtbot, sdata_blobs: Spa
     assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [0]
     assert table.uns[USER_CLASS_COLORS_KEY] == default_class_colors([0])
     assert "Current class: unlabeled." in widget.selection_status.text()
+    assert "Cleared the user class" in widget.annotation_feedback.text()
+
+
+def test_widget_clear_shortcut_clears_user_class_for_picked_instance(qtbot, sdata_blobs: SpatialData) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    layer.selected_label = 5
+    widget.class_spinbox.setValue(2)
+    widget.apply_class_button.click()
+
+    assert widget.clear_class_button.toolTip().endswith("Shortcut: C.")
+    assert widget._annotation_shortcuts[1].key().toString() == "C"
+
+    widget._annotation_shortcuts[1].activated.emit()
+
+    table = sdata_blobs["table"]
+    mask = (table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5)
+
+    assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [0]
     assert "Cleared the user class" in widget.annotation_feedback.text()
 
 

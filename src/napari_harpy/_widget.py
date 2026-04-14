@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from qtpy.QtCore import QSignalBlocker, Qt
-from qtpy.QtGui import QPixmap
+from qtpy.QtGui import QKeySequence, QPixmap, QShortcut
 from qtpy.QtWidgets import (
     QComboBox,
     QDialog,
@@ -45,6 +45,10 @@ class _DirtyReloadDecision(Enum):
     WRITE = "write"
     RELOAD_DISCARD = "reload_discard"
     CANCEL = "cancel"
+
+
+_APPLY_CLASS_SHORTCUT = "A"
+_CLEAR_CLASS_SHORTCUT = "C"
 
 
 class HarpyWidget(QWidget):
@@ -159,6 +163,7 @@ class HarpyWidget(QWidget):
         self.clear_class_button.setObjectName("clear_class_button")
         self.clear_class_button.clicked.connect(self._clear_current_class)
         self.clear_class_button.setEnabled(False)
+        self._annotation_shortcuts = self._create_annotation_shortcuts()
 
         self.annotation_feedback = QLabel()
         self.annotation_feedback.setObjectName("annotation_feedback")
@@ -198,6 +203,17 @@ class HarpyWidget(QWidget):
 
         self._connect_viewer_events()
         self.refresh_segmentation_masks()
+
+    def _create_annotation_shortcuts(self) -> list[QShortcut]:
+        apply_shortcut = QShortcut(QKeySequence(_APPLY_CLASS_SHORTCUT), self)
+        apply_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+        apply_shortcut.activated.connect(self._trigger_apply_class_shortcut)
+
+        clear_shortcut = QShortcut(QKeySequence(_CLEAR_CLASS_SHORTCUT), self)
+        clear_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+        clear_shortcut.activated.connect(self._trigger_clear_class_shortcut)
+
+        return [apply_shortcut, clear_shortcut]
 
     def _create_header_logo(self) -> QLabel:
         logo_label = QLabel()
@@ -589,12 +605,52 @@ class HarpyWidget(QWidget):
     def _update_annotation_controls(self) -> None:
         has_table = self._effective_table_name() is not None
         current_user_class = self._annotation_controller.current_user_class
+        can_apply = self._annotation_controller.can_annotate
+        can_clear = can_apply and current_user_class not in (None, UNLABELED_CLASS)
 
         self.class_spinbox.setEnabled(has_table)
-        self.apply_class_button.setEnabled(self._annotation_controller.can_annotate)
-        self.clear_class_button.setEnabled(
-            self._annotation_controller.can_annotate and current_user_class not in (None, UNLABELED_CLASS)
+        self.apply_class_button.setEnabled(can_apply)
+        self.clear_class_button.setEnabled(can_clear)
+
+        self.apply_class_button.setToolTip(
+            self._annotation_action_tooltip(
+                enabled=can_apply,
+                ready_message="Assign the selected user class to the picked object.",
+                unavailable_message="Pick an annotated object in the viewer before applying a class.",
+                shortcut_hint=_APPLY_CLASS_SHORTCUT,
+            )
         )
+        self.clear_class_button.setToolTip(
+            self._annotation_action_tooltip(
+                enabled=can_clear,
+                ready_message="Clear the current user class for the picked object.",
+                unavailable_message="Pick a labeled object before clearing its user class.",
+                shortcut_hint=_CLEAR_CLASS_SHORTCUT,
+            )
+        )
+
+    def _annotation_action_tooltip(
+        self,
+        *,
+        enabled: bool,
+        ready_message: str,
+        unavailable_message: str,
+        shortcut_hint: str,
+    ) -> str:
+        message = ready_message if enabled else unavailable_message
+        return f"{message} Shortcut: {shortcut_hint}."
+
+    def _trigger_apply_class_shortcut(self) -> None:
+        if not self.apply_class_button.isEnabled():
+            return
+
+        self._apply_current_class()
+
+    def _trigger_clear_class_shortcut(self) -> None:
+        if not self.clear_class_button.isEnabled():
+            return
+
+        self._clear_current_class()
 
     def _apply_current_class(self) -> None:
         class_id = self.class_spinbox.value()
