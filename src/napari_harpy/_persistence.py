@@ -149,6 +149,7 @@ class PersistenceController:
         # The arrays stored in `obsm` are not copied by `dict(...)`.
         current_table.obsm = dict(snapshot.obsm)
         current_table.uns = dict(snapshot.uns)
+        self._spatialdata_adapter.normalize_table_metadata(current_table)
         TableModel.validate(current_table)
         return table_path
 

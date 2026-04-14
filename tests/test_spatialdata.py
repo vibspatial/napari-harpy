@@ -3,8 +3,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from napari.layers import Labels
+import numpy as np
 import pytest
 from spatialdata import SpatialData
+from spatialdata.models import TableModel
 
 import napari_harpy._spatialdata as spatialdata_module
 from napari_harpy._spatialdata import (
@@ -79,6 +81,20 @@ def test_spatialdata_adapter_rejects_duplicate_instance_ids_within_selected_regi
 
     with pytest.raises(ValueError, match="contains duplicate values within that region"):
         adapter.validate_table_binding(sdata_blobs, "blobs_labels", "table")
+
+
+def test_spatialdata_adapter_normalizes_numpy_array_region_attrs_in_place(sdata_blobs: SpatialData) -> None:
+    adapter = SpatialDataAdapter()
+    table = sdata_blobs["table"]
+    table.uns[TableModel.ATTRS_KEY] = {
+        **table.uns[TableModel.ATTRS_KEY],
+        TableModel.REGION_KEY: np.array(["blobs_labels"]),
+    }
+
+    validated = adapter.get_table(sdata_blobs, "table")
+
+    assert validated is table
+    assert table.uns[TableModel.ATTRS_KEY][TableModel.REGION_KEY] == ["blobs_labels"]
 
 
 def test_spatialdata_viewer_binding_builds_layer_metadata_adata_from_selected_table(sdata_blobs: SpatialData) -> None:

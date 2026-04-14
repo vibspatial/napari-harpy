@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 from spatialdata import get_element_annotators, join_spatialelement_table
 from spatialdata.models import TableModel
 
@@ -60,7 +61,13 @@ class SpatialDataAdapter:
     def get_table(self, sdata: SpatialData, table_name: str) -> AnnData:
         """Return a validated annotating table."""
         table = sdata[table_name]
+        self.normalize_table_metadata(table)
         return TableModel.validate(table)
+
+    def normalize_table_metadata(self, table: AnnData) -> AnnData:
+        """Normalize known SpatialData table attrs into validator-friendly types."""
+        _normalize_table_model_attrs(table)
+        return table
 
     def get_table_metadata(self, sdata: SpatialData, table_name: str) -> SpatialDataTableMetadata:
         """Resolve table linkage metadata from `TableModel` attributes."""
@@ -351,14 +358,76 @@ def _get_table_model_attrs(table: AnnData, table_name: str) -> dict[str, Any]:
     return attrs
 
 
-def _normalize_regions(region: str | list[str] | None) -> tuple[str, ...]:
+def _normalize_table_model_attrs(table: AnnData) -> None:
+    attrs = table.uns.get(TableModel.ATTRS_KEY)
+    if not isinstance(attrs, dict):
+        return
+
+    if TableModel.REGION_KEY in attrs:
+        attrs[TableModel.REGION_KEY] = _normalize_region_attr_value(attrs[TableModel.REGION_KEY])
+
+    for key in (TableModel.REGION_KEY_KEY, TableModel.INSTANCE_KEY):
+        if key in attrs:
+            attrs[key] = _normalize_scalar_string_attr_value(attrs[key])
+
+
+def _normalize_regions(region: Any) -> tuple[str, ...]:
     if region is None:
         return ()
 
     if isinstance(region, str):
         return (region,)
 
-    return tuple(str(label_name) for label_name in region)
+    return tuple(_flatten_string_values(region))
+
+
+def _normalize_region_attr_value(region: Any) -> str | list[str] | None:
+    if region is None or isinstance(region, str):
+        return region
+
+    return _flatten_string_values(region)
+
+
+def _normalize_scalar_string_attr_value(value: Any) -> Any:
+    if value is None or isinstance(value, str):
+        return value
+
+    flattened = _flatten_string_values(value)
+    if len(flattened) == 1:
+        return flattened[0]
+
+    return value
+
+
+def _flatten_string_values(value: Any) -> list[str]:
+    if value is None:
+        return []
+
+    if isinstance(value, str):
+        return [value]
+
+    if isinstance(value, bytes):
+        return [value.decode()]
+
+    if isinstance(value, np.ndarray):
+        if value.ndim == 0:
+            return _flatten_string_values(value.item())
+
+        flattened: list[str] = []
+        for item in value.reshape(-1).tolist():
+            flattened.extend(_flatten_string_values(item))
+        return flattened
+
+    if isinstance(value, np.generic):
+        return [str(value.item())]
+
+    if isinstance(value, Sequence):
+        flattened: list[str] = []
+        for item in value:
+            flattened.extend(_flatten_string_values(item))
+        return flattened
+
+    return [str(value)]
 
 
 def _layer_indices_align_with_region_view(layer: Any | None, region_view: AnnData, instance_key: str) -> bool | None:
