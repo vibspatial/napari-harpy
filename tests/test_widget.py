@@ -468,7 +468,7 @@ def test_widget_apply_shortcut_applies_user_class_to_picked_instance(qtbot, sdat
     layer.selected_label = 5
     widget.class_spinbox.setValue(4)
 
-    assert widget.apply_class_button.toolTip().endswith("Shortcut: A.")
+    assert "Shortcut: A." in widget.apply_class_button.toolTip()
     assert widget._annotation_shortcuts[0].key().toString() == "A"
 
     widget._annotation_shortcuts[0].activated.emit()
@@ -531,7 +531,7 @@ def test_widget_clear_shortcut_clears_user_class_for_picked_instance(qtbot, sdat
     widget.class_spinbox.setValue(2)
     widget.apply_class_button.click()
 
-    assert widget.clear_class_button.toolTip().endswith("Shortcut: R.")
+    assert "Shortcut: R." in widget.clear_class_button.toolTip()
     assert widget._annotation_shortcuts[1].key().toString() == "R"
 
     widget._annotation_shortcuts[1].activated.emit()
@@ -632,8 +632,8 @@ def test_widget_enables_sync_for_backed_spatialdata(qtbot, backed_sdata_blobs: S
 
     assert widget.sync_button.isEnabled()
     assert widget.reload_button.isEnabled()
-    assert widget.sync_button.toolTip() == f"Write `table` table state to `{expected_table_path}`."
-    assert widget.reload_button.toolTip() == f"Reload `table` table state from `{expected_table_path}`."
+    assert f"Write `table` table state to `{expected_table_path}`." in widget.sync_button.toolTip()
+    assert f"Reload `table` table state from `{expected_table_path}`." in widget.reload_button.toolTip()
 
 
 def test_widget_marks_persistence_dirty_on_annotation_change_and_clears_it_on_sync(
