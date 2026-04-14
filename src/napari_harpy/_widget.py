@@ -989,11 +989,19 @@ class HarpyWidget(QWidget):
         return _DirtyReloadDecision.CANCEL
 
     def _set_persistence_feedback(self, message: str, *, error: bool = False) -> None:
-        self.persistence_feedback.setText(message)
-        self.persistence_feedback.setStyleSheet(
-            "color: #b91c1c; font-weight: 600;" if error else "color: #166534; font-weight: 600;"
+        if not message:
+            self.persistence_feedback.setText("")
+            self.persistence_feedback.setVisible(False)
+            return
+
+        kind = "error" if error else "success"
+        title = "Persistence Error" if error else "Persistence Updated"
+        self._set_status_card(
+            self.persistence_feedback,
+            title=title,
+            lines=[message],
+            kind=kind,
         )
-        self.persistence_feedback.setVisible(bool(message))
 
     def _on_selected_instance_changed(self, instance_id: int | None) -> None:
         del instance_id
