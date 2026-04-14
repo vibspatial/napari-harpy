@@ -557,6 +557,15 @@ class HarpyWidget(QWidget):
                 ],
                 kind="warning",
             )
+        elif self.selected_table_name is None:
+            self._set_selection_status(
+                title="Selection Warning",
+                lines=[
+                    f"Bound to {self.selected_segmentation_name}.",
+                    "This segmentation is loaded, but no annotation table is linked to it.",
+                ],
+                kind="warning",
+            )
         elif self._table_binding_error is not None:
             self._set_selection_status(
                 title="Selection Warning",

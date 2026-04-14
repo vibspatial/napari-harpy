@@ -276,6 +276,33 @@ def test_widget_updates_table_dropdown_when_segmentation_changes(qtbot, sdata_bl
     assert widget.selected_feature_key is None
 
 
+def test_widget_warns_when_loaded_segmentation_has_no_annotation_table(qtbot, sdata_blobs: SpatialData) -> None:
+    primary_layer = make_blobs_labels_layer(sdata_blobs)
+    base_data = np.asarray(sdata_blobs.labels["blobs_labels"])
+    multiscale_layer = Labels(
+        [base_data, base_data[::2, ::2]],
+        name="blobs_multiscale_labels",
+        metadata={
+            "sdata": sdata_blobs,
+            "name": "blobs_multiscale_labels",
+            "indices": [int(value) for value in np.unique(base_data).tolist() if int(value) > 0],
+        },
+    )
+    viewer = DummyViewer(layers=[primary_layer, multiscale_layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.segmentation_combo.setCurrentIndex(1)
+
+    assert widget.selected_segmentation_name == "blobs_multiscale_labels"
+    assert widget.selected_table_name is None
+    assert viewer.layers.selection.active is multiscale_layer
+    assert "This segmentation is loaded, but no annotation table is linked to it." in widget.selection_status.text()
+    assert not widget.class_spinbox.isEnabled()
+    assert not widget.apply_class_button.isEnabled()
+
+
 def test_widget_updates_selected_feature_key_when_feature_matrix_changes(qtbot, sdata_blobs: SpatialData) -> None:
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
