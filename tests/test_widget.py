@@ -614,9 +614,7 @@ def test_widget_syncs_user_class_to_backed_zarr(qtbot, backed_sdata_blobs: Spati
     assert list(reread["table"].uns[USER_CLASS_COLORS_KEY]) == default_class_colors([0, 3])
 
 
-def test_widget_marks_persistence_dirty_after_classifier_writes_results(
-    qtbot, backed_sdata_blobs: SpatialData
-) -> None:
+def test_widget_marks_persistence_dirty_after_classifier_writes_results(qtbot, backed_sdata_blobs: SpatialData) -> None:
     table = backed_sdata_blobs["table"]
     instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
     table.obsm["features_1"] = np.column_stack(
@@ -639,8 +637,7 @@ def test_widget_marks_persistence_dirty_after_classifier_writes_results(
 
     widget.retrain_button.click()
     qtbot.waitUntil(
-        lambda: widget._persistence_controller.is_dirty
-        and table.obs[PRED_CLASS_COLUMN].astype("string").ne("0").any(),
+        lambda: widget._persistence_controller.is_dirty and table.obs[PRED_CLASS_COLUMN].astype("string").ne("0").any(),
         timeout=5000,
     )
 
@@ -683,9 +680,7 @@ def test_widget_cancels_dirty_reload_when_user_chooses_cancel(
     assert reread["table"].obs.loc[disk_mask, USER_CLASS_COLUMN].tolist() == [0]
 
 
-def test_widget_dirty_reload_can_write_then_reload(
-    qtbot, monkeypatch, backed_sdata_blobs: SpatialData
-) -> None:
+def test_widget_dirty_reload_can_write_then_reload(qtbot, monkeypatch, backed_sdata_blobs: SpatialData) -> None:
     layer = make_blobs_labels_layer(backed_sdata_blobs)
     viewer = DummyViewer(layers=[layer])
     widget = HarpyWidget(viewer)
@@ -719,9 +714,7 @@ def test_widget_dirty_reload_can_write_then_reload(
     )
 
 
-def test_widget_dirty_reload_can_discard_local_edits(
-    qtbot, monkeypatch, backed_sdata_blobs: SpatialData
-) -> None:
+def test_widget_dirty_reload_can_discard_local_edits(qtbot, monkeypatch, backed_sdata_blobs: SpatialData) -> None:
     layer = make_blobs_labels_layer(backed_sdata_blobs)
     viewer = DummyViewer(layers=[layer])
     widget = HarpyWidget(viewer)
@@ -792,6 +785,36 @@ def test_widget_reloads_table_state_from_backed_zarr(qtbot, backed_sdata_blobs: 
     assert feature_matrix_items == ["disk_features", "features_1", "features_2"]
     assert widget.selected_feature_key == "features_1"
     assert "Current class: 7." in widget.selection_status.text()
+
+
+def test_widget_reload_falls_back_when_selected_feature_key_disappears(qtbot, backed_sdata_blobs: SpatialData) -> None:
+    layer = make_blobs_labels_layer(backed_sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    expected_table_path = Path(backed_sdata_blobs.path) / "tables" / "table"
+    table = backed_sdata_blobs["table"]
+
+    widget.feature_matrix_combo.setCurrentIndex(1)
+
+    assert widget.selected_feature_key == "features_2"
+
+    obs = table.obs.copy()
+    obsm = {"features_1": table.obsm["features_1"]}
+    uns = dict(table.uns)
+    _write_disk_table_state(backed_sdata_blobs, obs=obs, obsm=obsm, uns=uns)
+
+    widget.reload_button.click()
+
+    feature_matrix_items = [
+        widget.feature_matrix_combo.itemText(index) for index in range(widget.feature_matrix_combo.count())
+    ]
+
+    assert widget.persistence_feedback.text() == f"Reloaded `table` table state from `{expected_table_path}`."
+    assert feature_matrix_items == ["features_1"]
+    assert widget.selected_feature_key == "features_1"
+    assert "features_2" not in table.obsm
 
 
 def test_widget_reload_freezes_classifier_worker_and_ignores_late_results(
