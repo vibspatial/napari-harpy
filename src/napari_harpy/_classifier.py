@@ -570,6 +570,8 @@ class ClassifierController:
 
         self._active_worker = None
         self._active_worker_job_id = None
+        if self._on_state_changed is not None:
+            self._on_state_changed()
 
     def _cancel_pending_and_active_jobs(self) -> None:
         self._debounce_timer.stop()
