@@ -21,7 +21,12 @@ from napari_harpy._class_palette import (
     stored_palette_to_lookup,
 )
 from napari_harpy._classifier import PRED_CLASS_COLORS_KEY, PRED_CLASS_COLUMN, PRED_CONFIDENCE_COLUMN
-from napari_harpy._spatialdata import SpatialDataAdapter, SpatialDataTableMetadata, SpatialDataViewerBinding
+from napari_harpy._spatialdata import (
+    SpatialDataTableMetadata,
+    SpatialDataViewerBinding,
+    get_table,
+    get_table_metadata,
+)
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -43,8 +48,7 @@ PRED_CONFIDENCE_COLORMAP = "viridis"
 class ViewerStylingController:
     """Manage labels-layer styling from user labels and classifier outputs."""
 
-    def __init__(self, spatialdata_adapter: SpatialDataAdapter, viewer_binding: SpatialDataViewerBinding) -> None:
-        self._spatialdata_adapter = spatialdata_adapter
+    def __init__(self, viewer_binding: SpatialDataViewerBinding) -> None:
         self._viewer_binding = viewer_binding
         self._labels_layer: Any | None = None
         self._selected_spatialdata: SpatialData | None = None
@@ -71,7 +75,7 @@ class ViewerStylingController:
 
         next_table_metadata = None
         if sdata is not None and table_name is not None:
-            next_table_metadata = self._spatialdata_adapter.get_table_metadata(sdata, table_name)
+            next_table_metadata = get_table_metadata(sdata, table_name)
 
         self._labels_layer = next_layer
         self._selected_spatialdata = sdata
@@ -148,7 +152,7 @@ class ViewerStylingController:
         if self._selected_spatialdata is None or self._selected_table_name is None:
             return None
 
-        return self._spatialdata_adapter.get_table(self._selected_spatialdata, self._selected_table_name)
+        return get_table(self._selected_spatialdata, self._selected_table_name)
 
     def _get_region_rows_by_instance(self) -> pd.DataFrame:
         table = self._get_bound_table()

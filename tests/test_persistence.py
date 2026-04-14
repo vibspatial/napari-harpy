@@ -16,11 +16,11 @@ from napari_harpy._classifier import (
     PRED_CONFIDENCE_COLUMN,
 )
 from napari_harpy._persistence import PersistenceController
-from napari_harpy._spatialdata import SpatialDataAdapter
+from napari_harpy._spatialdata import get_table
 
 
 def test_persistence_controller_requires_backed_spatialdata(sdata_blobs: SpatialData) -> None:
-    controller = PersistenceController(SpatialDataAdapter())
+    controller = PersistenceController()
     controller.bind(sdata_blobs, "table")
 
     with pytest.raises(ValueError, match="not backed by zarr"):
@@ -31,7 +31,7 @@ def test_persistence_controller_tracks_dirty_state_per_selected_table(
     sdata_blobs: SpatialData,
     backed_sdata_blobs: SpatialData,
 ) -> None:
-    controller = PersistenceController(SpatialDataAdapter())
+    controller = PersistenceController()
     controller.bind(sdata_blobs, "table")
 
     assert controller.is_dirty is False
@@ -50,7 +50,7 @@ def test_persistence_controller_tracks_dirty_state_per_selected_table(
 
 
 def test_persistence_controller_syncs_table_obs_and_colors_to_backed_store(backed_sdata_blobs: SpatialData) -> None:
-    controller = PersistenceController(SpatialDataAdapter())
+    controller = PersistenceController()
     controller.bind(backed_sdata_blobs, "table")
     index = backed_sdata_blobs["table"].obs.index
 
@@ -127,7 +127,7 @@ def _write_disk_snapshot_state(
 def test_persistence_controller_reads_selected_table_snapshot_from_backed_store(
     backed_sdata_blobs: SpatialData,
 ) -> None:
-    controller = PersistenceController(SpatialDataAdapter())
+    controller = PersistenceController()
     controller.bind(backed_sdata_blobs, "table")
     disk_obs, disk_obsm, disk_uns = _write_disk_snapshot_payload(backed_sdata_blobs)
 
@@ -147,7 +147,7 @@ def test_persistence_controller_reads_selected_table_snapshot_from_backed_store(
 def test_persistence_controller_replaces_selected_table_with_reloaded_snapshot(
     backed_sdata_blobs: SpatialData,
 ) -> None:
-    controller = PersistenceController(SpatialDataAdapter())
+    controller = PersistenceController()
     controller.bind(backed_sdata_blobs, "table")
     _write_disk_snapshot_payload(backed_sdata_blobs)
     original_table = backed_sdata_blobs["table"]
@@ -165,7 +165,7 @@ def test_persistence_controller_replaces_selected_table_with_reloaded_snapshot(
 
 
 def test_persistence_controller_clears_dirty_state_after_sync(backed_sdata_blobs: SpatialData) -> None:
-    controller = PersistenceController(SpatialDataAdapter())
+    controller = PersistenceController()
     controller.bind(backed_sdata_blobs, "table")
     controller.mark_dirty()
 
@@ -177,7 +177,7 @@ def test_persistence_controller_clears_dirty_state_after_sync(backed_sdata_blobs
 
 
 def test_persistence_controller_clears_dirty_state_after_reload(backed_sdata_blobs: SpatialData) -> None:
-    controller = PersistenceController(SpatialDataAdapter())
+    controller = PersistenceController()
     controller.bind(backed_sdata_blobs, "table")
     _write_disk_snapshot_payload(backed_sdata_blobs)
     controller.mark_dirty()
@@ -199,7 +199,7 @@ def test_persistence_controller_reloads_obsm_key_written_directly_to_disk_group(
     full `obsm` mapping. Reload must continue to discover those incrementally
     written keys and surface them on the in-memory table.
     """
-    controller = PersistenceController(SpatialDataAdapter())
+    controller = PersistenceController()
     controller.bind(backed_sdata_blobs, "table")
     table = backed_sdata_blobs["table"]
     features_3 = np.arange(table.n_obs * 3, dtype=np.float32).reshape(table.n_obs, 3)
@@ -220,7 +220,7 @@ def test_persistence_controller_reloads_obsm_key_written_directly_to_disk_group(
 def test_persistence_controller_normalizes_numpy_array_region_attrs_when_reloading(
     backed_sdata_blobs: SpatialData,
 ) -> None:
-    controller = PersistenceController(SpatialDataAdapter())
+    controller = PersistenceController()
     controller.bind(backed_sdata_blobs, "table", "blobs_labels")
     table = backed_sdata_blobs["table"]
 
@@ -237,13 +237,13 @@ def test_persistence_controller_normalizes_numpy_array_region_attrs_when_reloadi
 
     assert table_path == "tables/table"
     assert backed_sdata_blobs["table"].uns[TableModel.ATTRS_KEY][TableModel.REGION_KEY] == ["blobs_labels"]
-    assert SpatialDataAdapter().get_table(backed_sdata_blobs, "table") is backed_sdata_blobs["table"]
+    assert get_table(backed_sdata_blobs, "table") is backed_sdata_blobs["table"]
 
 
 def test_persistence_controller_rejects_reload_when_row_count_changed(
     backed_sdata_blobs: SpatialData,
 ) -> None:
-    controller = PersistenceController(SpatialDataAdapter())
+    controller = PersistenceController()
     controller.bind(backed_sdata_blobs, "table", "blobs_labels")
     table = backed_sdata_blobs["table"]
 
@@ -262,7 +262,7 @@ def test_persistence_controller_rejects_reload_when_row_count_changed(
 def test_persistence_controller_allows_reload_when_obs_names_change_but_rowwise_identity_matches(
     backed_sdata_blobs: SpatialData,
 ) -> None:
-    controller = PersistenceController(SpatialDataAdapter())
+    controller = PersistenceController()
     controller.bind(backed_sdata_blobs, "table", "blobs_labels")
     table = backed_sdata_blobs["table"]
 
@@ -282,7 +282,7 @@ def test_persistence_controller_allows_reload_when_obs_names_change_but_rowwise_
 def test_persistence_controller_rejects_reload_when_region_key_values_changed_rowwise(
     backed_sdata_blobs: SpatialData,
 ) -> None:
-    controller = PersistenceController(SpatialDataAdapter())
+    controller = PersistenceController()
     controller.bind(backed_sdata_blobs, "table", "blobs_labels")
     table = backed_sdata_blobs["table"]
 
@@ -302,7 +302,7 @@ def test_persistence_controller_rejects_reload_when_region_key_values_changed_ro
 def test_persistence_controller_rejects_reload_when_row_order_changed(
     backed_sdata_blobs: SpatialData,
 ) -> None:
-    controller = PersistenceController(SpatialDataAdapter())
+    controller = PersistenceController()
     controller.bind(backed_sdata_blobs, "table", "blobs_labels")
     table = backed_sdata_blobs["table"]
     reversed_positions = np.arange(table.n_obs - 1, -1, -1)
@@ -321,7 +321,7 @@ def test_persistence_controller_rejects_reload_when_row_order_changed(
 def test_persistence_controller_rejects_reload_when_instance_key_values_changed_rowwise(
     backed_sdata_blobs: SpatialData,
 ) -> None:
-    controller = PersistenceController(SpatialDataAdapter())
+    controller = PersistenceController()
     controller.bind(backed_sdata_blobs, "table", "blobs_labels")
     table = backed_sdata_blobs["table"]
 
@@ -342,7 +342,7 @@ def test_persistence_controller_rejects_reload_when_instance_key_values_changed_
 def test_persistence_controller_rejects_reload_when_spatialdata_attrs_missing(
     backed_sdata_blobs: SpatialData,
 ) -> None:
-    controller = PersistenceController(SpatialDataAdapter())
+    controller = PersistenceController()
     controller.bind(backed_sdata_blobs, "table", "blobs_labels")
     table = backed_sdata_blobs["table"]
 
@@ -358,7 +358,7 @@ def test_persistence_controller_rejects_reload_when_spatialdata_attrs_missing(
 def test_persistence_controller_rejects_reload_when_selected_segmentation_is_no_longer_annotated(
     backed_sdata_blobs: SpatialData,
 ) -> None:
-    controller = PersistenceController(SpatialDataAdapter())
+    controller = PersistenceController()
     controller.bind(backed_sdata_blobs, "table", "blobs_labels")
     table = backed_sdata_blobs["table"]
 

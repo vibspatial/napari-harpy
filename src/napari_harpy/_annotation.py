@@ -13,7 +13,12 @@ from napari_harpy._class_palette import (
     normalize_class_values,
     set_class_annotation_state,
 )
-from napari_harpy._spatialdata import SpatialDataAdapter, SpatialDataTableMetadata, SpatialDataViewerBinding
+from napari_harpy._spatialdata import (
+    SpatialDataTableMetadata,
+    SpatialDataViewerBinding,
+    get_table,
+    get_table_metadata,
+)
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -77,12 +82,10 @@ class AnnotationController:
 
     def __init__(
         self,
-        spatialdata_adapter: SpatialDataAdapter,
         viewer_binding: SpatialDataViewerBinding,
         on_selected_instance_changed: Callable[[int | None], None] | None = None,
         on_annotation_changed: Callable[[], None] | None = None,
     ) -> None:
-        self._spatialdata_adapter = spatialdata_adapter
         self._viewer_binding = viewer_binding
         self._on_selected_instance_changed = on_selected_instance_changed
         self._on_annotation_changed = on_annotation_changed
@@ -147,7 +150,7 @@ class AnnotationController:
 
         next_table_metadata = None
         if sdata is not None and table_name is not None:
-            next_table_metadata = self._spatialdata_adapter.get_table_metadata(sdata, table_name)
+            next_table_metadata = get_table_metadata(sdata, table_name)
 
         layer_changed = next_layer is not self._labels_layer
         self._selected_spatialdata = sdata
@@ -319,7 +322,7 @@ class AnnotationController:
         if self._selected_spatialdata is None or self._selected_table_name is None:
             return None
 
-        return self._spatialdata_adapter.get_table(self._selected_spatialdata, self._selected_table_name)
+        return get_table(self._selected_spatialdata, self._selected_table_name)
 
     def _require_bound_table(self) -> AnnData:
         table = self._get_bound_table()

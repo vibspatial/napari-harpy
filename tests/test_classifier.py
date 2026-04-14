@@ -17,7 +17,6 @@ from napari_harpy._classifier import (
     ClassifierController,
 )
 from napari_harpy._class_palette import default_class_colors
-from napari_harpy._spatialdata import SpatialDataAdapter
 
 
 class _DeferredWorker(QObject):
@@ -63,7 +62,6 @@ def test_classifier_controller_trains_on_labeled_rows_and_predicts_active_object
     table_state_changes: list[str] = []
 
     controller = ClassifierController(
-        SpatialDataAdapter(),
         debounce_interval_ms=0,
         on_table_state_changed=lambda: table_state_changes.append("changed"),
     )
@@ -100,7 +98,6 @@ def test_classifier_controller_resets_predictions_when_only_one_class_is_labeled
     table_state_changes: list[str] = []
 
     controller = ClassifierController(
-        SpatialDataAdapter(),
         debounce_interval_ms=0,
         on_table_state_changed=lambda: table_state_changes.append("changed"),
     )
@@ -131,7 +128,6 @@ def test_classifier_controller_validates_feature_matrix_shape(qtbot, monkeypatch
     monkeypatch.setattr(classifier_module, "_normalize_feature_matrix", raise_shape_error)
 
     controller = ClassifierController(
-        SpatialDataAdapter(),
         debounce_interval_ms=0,
     )
     controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
@@ -175,7 +171,6 @@ def test_classifier_controller_drops_stale_results(qtbot, monkeypatch, sdata_blo
     monkeypatch.setattr(classifier_module, "_fit_classifier_job", fake_fit)
 
     controller = ClassifierController(
-        SpatialDataAdapter(),
         debounce_interval_ms=0,
     )
     controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
@@ -217,7 +212,6 @@ def test_classifier_controller_bind_is_passive_until_marked_dirty(
     monkeypatch.setattr(classifier_module, "_fit_classifier_job", fake_fit)
 
     controller = ClassifierController(
-        SpatialDataAdapter(),
         debounce_interval_ms=0,
         on_table_state_changed=lambda: table_state_changes.append("changed"),
     )
@@ -254,7 +248,6 @@ def test_classifier_controller_notifies_table_state_change_when_training_errors(
     monkeypatch.setattr(classifier_module, "_fit_classifier_job", raise_fit_error)
 
     controller = ClassifierController(
-        SpatialDataAdapter(),
         debounce_interval_ms=0,
         on_table_state_changed=lambda: table_state_changes.append("changed"),
     )
@@ -283,7 +276,6 @@ def test_classifier_controller_freeze_for_reload_cancels_pending_debounce(
     monkeypatch.setattr(ClassifierController, "_create_training_worker", fake_create_training_worker)
 
     controller = ClassifierController(
-        SpatialDataAdapter(),
         debounce_interval_ms=50,
     )
     controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
@@ -326,7 +318,6 @@ def test_classifier_controller_reset_after_reload_ignores_late_worker_results(
     monkeypatch.setattr(ClassifierController, "_create_training_worker", fake_create_training_worker)
 
     controller = ClassifierController(
-        SpatialDataAdapter(),
         debounce_interval_ms=0,
     )
     controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")

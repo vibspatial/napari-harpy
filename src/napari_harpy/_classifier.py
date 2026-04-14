@@ -13,7 +13,7 @@ from sklearn.ensemble import RandomForestClassifier
 
 from napari_harpy._annotation import UNLABELED_CLASS, USER_CLASS_COLUMN
 from napari_harpy._class_palette import set_class_annotation_state
-from napari_harpy._spatialdata import SpatialDataAdapter, SpatialDataTableMetadata
+from napari_harpy._spatialdata import SpatialDataTableMetadata, get_table, get_table_metadata
 
 try:
     from scipy.sparse import issparse
@@ -129,13 +129,11 @@ class ClassifierController:
 
     def __init__(
         self,
-        spatialdata_adapter: SpatialDataAdapter | None = None,
         *,
         debounce_interval_ms: int = DEFAULT_RETRAIN_DEBOUNCE_MS,
         on_state_changed: Callable[[], None] | None = None,
         on_table_state_changed: Callable[[], None] | None = None,
     ) -> None:
-        self._spatialdata_adapter = spatialdata_adapter or SpatialDataAdapter()
         self._debounce_interval_ms = max(0, int(debounce_interval_ms))
         self._on_state_changed = on_state_changed
         self._on_table_state_changed = on_table_state_changed
@@ -195,7 +193,7 @@ class ClassifierController:
         """Bind the controller to the currently selected SpatialData inputs."""
         next_table_metadata = None
         if sdata is not None and table_name is not None:
-            next_table_metadata = self._spatialdata_adapter.get_table_metadata(sdata, table_name)
+            next_table_metadata = get_table_metadata(sdata, table_name)
 
         context_changed = (
             sdata is not self._selected_spatialdata
@@ -598,7 +596,7 @@ class ClassifierController:
         if self._selected_spatialdata is None or self._selected_table_name is None:
             return None
 
-        return self._spatialdata_adapter.get_table(self._selected_spatialdata, self._selected_table_name)
+        return get_table(self._selected_spatialdata, self._selected_table_name)
 
     def _ensure_prediction_columns(self, table: AnnData) -> None:
         pred_class_values = _get_pred_class_values(table.obs, len(table.obs))

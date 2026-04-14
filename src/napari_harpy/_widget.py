@@ -23,10 +23,13 @@ from napari_harpy._annotation import UNLABELED_CLASS, AnnotationController
 from napari_harpy._classifier import ClassifierController
 from napari_harpy._persistence import PersistenceController
 from napari_harpy._spatialdata import (
-    SpatialDataAdapter,
     SpatialDataLabelsOption,
     SpatialDataTableMetadata,
     SpatialDataViewerBinding,
+    get_annotating_table_names,
+    get_table_metadata,
+    get_table_obsm_keys,
+    validate_table_binding,
 )
 from napari_harpy._viewer_styling import (
     COLOR_BY_OPTIONS,
@@ -122,24 +125,20 @@ class HarpyWidget(QWidget):
         self.setPalette(palette)
         self.setStyleSheet(_WIDGET_SURFACE_STYLESHEET)
         self._viewer = napari_viewer
-        self._spatialdata_adapter = SpatialDataAdapter()
-        self._viewer_binding = SpatialDataViewerBinding(napari_viewer, self._spatialdata_adapter)
+        self._viewer_binding = SpatialDataViewerBinding(napari_viewer)
         self._annotation_controller = AnnotationController(
-            self._spatialdata_adapter,
             self._viewer_binding,
             on_selected_instance_changed=self._on_selected_instance_changed,
             on_annotation_changed=self._on_annotation_changed,
         )
         self._classifier_controller = ClassifierController(
-            self._spatialdata_adapter,
             on_state_changed=self._on_classifier_state_changed,
             on_table_state_changed=self._on_classifier_table_state_changed,
         )
         self._viewer_styling_controller = ViewerStylingController(
-            self._spatialdata_adapter,
             self._viewer_binding,
         )
-        self._persistence_controller = PersistenceController(self._spatialdata_adapter)
+        self._persistence_controller = PersistenceController()
         self._label_options: list[SpatialDataLabelsOption] = []
         self._selected_label_option: SpatialDataLabelsOption | None = None
         self._table_names: list[str] = []
@@ -391,7 +390,7 @@ class HarpyWidget(QWidget):
         if self.selected_spatialdata is None or self.selected_table_name is None:
             return None
 
-        return self._spatialdata_adapter.get_table_metadata(self.selected_spatialdata, self.selected_table_name)
+        return get_table_metadata(self.selected_spatialdata, self.selected_table_name)
 
     def refresh_segmentation_masks(self) -> None:
         """Refresh the segmentation mask choices from viewer-linked SpatialData layers."""
@@ -472,9 +471,7 @@ class HarpyWidget(QWidget):
         if self.selected_spatialdata is None or self.selected_segmentation_name is None:
             self._table_names = []
         else:
-            self._table_names = self._spatialdata_adapter.get_annotating_table_names(
-                self.selected_spatialdata, self.selected_segmentation_name
-            )
+            self._table_names = get_annotating_table_names(self.selected_spatialdata, self.selected_segmentation_name)
 
         with QSignalBlocker(self.table_combo):
             self.table_combo.clear()
@@ -504,9 +501,7 @@ class HarpyWidget(QWidget):
         if self.selected_spatialdata is None or self.selected_table_name is None:
             self._feature_matrix_keys = []
         else:
-            self._feature_matrix_keys = self._spatialdata_adapter.get_table_obsm_keys(
-                self.selected_spatialdata, self.selected_table_name
-            )
+            self._feature_matrix_keys = get_table_obsm_keys(self.selected_spatialdata, self.selected_table_name)
 
         with QSignalBlocker(self.feature_matrix_combo):
             self.feature_matrix_combo.clear()
@@ -574,11 +569,7 @@ class HarpyWidget(QWidget):
             return None
 
         try:
-            self._spatialdata_adapter.validate_table_binding(
-                self.selected_spatialdata,
-                self.selected_segmentation_name,
-                self.selected_table_name,
-            )
+            validate_table_binding(self.selected_spatialdata, self.selected_segmentation_name, self.selected_table_name)
         except ValueError as error:
             return str(error)
 
