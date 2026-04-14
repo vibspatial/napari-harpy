@@ -3,16 +3,20 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from napari.layers import Labels
+import numpy as np
 import pytest
 from spatialdata import SpatialData
+from spatialdata.models import TableModel
 
 import napari_harpy._spatialdata as spatialdata_module
 from napari_harpy._spatialdata import (
-    SpatialDataAdapter,
     SpatialDataViewerBinding,
     get_annotating_table_names,
+    get_table,
     get_table_metadata,
     get_table_obsm_keys,
+    normalize_table_metadata,
+    validate_table_binding,
 )
 
 
@@ -51,10 +55,8 @@ def test_get_table_obsm_keys_returns_sorted_feature_matrix_keys(sdata_blobs: Spa
     assert obsm_keys == ["features_1", "features_2"]
 
 
-def test_spatialdata_adapter_resolves_table_metadata(sdata_blobs: SpatialData) -> None:
-    adapter = SpatialDataAdapter()
-
-    metadata = adapter.get_table_metadata(sdata_blobs, "table")
+def test_get_table_metadata_resolves_table_metadata(sdata_blobs: SpatialData) -> None:
+    metadata = get_table_metadata(sdata_blobs, "table")
 
     assert metadata.table_name == "table"
     assert metadata.region_key == "region"
@@ -71,14 +73,27 @@ def test_get_table_metadata_returns_table_linkage(sdata_blobs: SpatialData) -> N
     assert metadata.instance_key == "instance_id"
 
 
-def test_spatialdata_adapter_rejects_duplicate_instance_ids_within_selected_region(sdata_blobs: SpatialData) -> None:
-    adapter = SpatialDataAdapter()
+def test_validate_table_binding_rejects_duplicate_instance_ids_within_selected_region(sdata_blobs: SpatialData) -> None:
     table = sdata_blobs["table"]
     first_index, second_index = table.obs.index[:2]
     table.obs.loc[second_index, "instance_id"] = table.obs.loc[first_index, "instance_id"]
 
     with pytest.raises(ValueError, match="contains duplicate values within that region"):
-        adapter.validate_table_binding(sdata_blobs, "blobs_labels", "table")
+        validate_table_binding(sdata_blobs, "blobs_labels", "table")
+
+
+def test_normalize_table_metadata_normalizes_numpy_array_region_attrs_in_place(sdata_blobs: SpatialData) -> None:
+    table = sdata_blobs["table"]
+    table.uns[TableModel.ATTRS_KEY] = {
+        **table.uns[TableModel.ATTRS_KEY],
+        TableModel.REGION_KEY: np.array(["blobs_labels"]),
+    }
+
+    normalize_table_metadata(table)
+    validated = get_table(sdata_blobs, "table")
+
+    assert validated is table
+    assert table.uns[TableModel.ATTRS_KEY][TableModel.REGION_KEY] == ["blobs_labels"]
 
 
 def test_spatialdata_viewer_binding_builds_layer_metadata_adata_from_selected_table(sdata_blobs: SpatialData) -> None:

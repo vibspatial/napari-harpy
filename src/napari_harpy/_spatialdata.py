@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 from spatialdata import get_element_annotators, join_spatialelement_table
 from spatialdata.models import TableModel
 
@@ -44,80 +45,81 @@ class SpatialDataTableMetadata:
         return label_name in self.regions
 
 
-# TODO: this class should be replaced with a collection of helper functions.
-class SpatialDataAdapter:
-    """Pure helper for SpatialData tables and linkage metadata.
+def get_annotating_table_names(sdata: SpatialData, label_name: str) -> list[str]:
+    """Return the table names that annotate a labels element in a SpatialData object."""
+    return sorted(get_element_annotators(sdata, label_name))
 
-    This adapter is intentionally viewer-agnostic. It centralizes the
-    ``spatialdata`` table semantics Harpy needs while keeping napari viewer
-    interactions in a separate helper.
-    """
 
-    def get_annotating_table_names(self, sdata: SpatialData, label_name: str) -> list[str]:
-        """Return the tables that annotate a labels element."""
-        return sorted(get_element_annotators(sdata, label_name))
+def get_table(sdata: SpatialData, table_name: str) -> AnnData:
+    """Return a validated annotating table."""
+    table = sdata[table_name]
+    normalize_table_metadata(table)
+    return TableModel.validate(table)
 
-    def get_table(self, sdata: SpatialData, table_name: str) -> AnnData:
-        """Return a validated annotating table."""
-        table = sdata[table_name]
-        return TableModel.validate(table)
 
-    def get_table_metadata(self, sdata: SpatialData, table_name: str) -> SpatialDataTableMetadata:
-        """Resolve table linkage metadata from `TableModel` attributes."""
-        table = self.get_table(sdata, table_name)
-        attrs = _get_table_model_attrs(table, table_name)
+def normalize_table_metadata(table: AnnData) -> AnnData:
+    """Normalize known SpatialData table attrs into validator-friendly types."""
+    _normalize_table_model_attrs(table)
+    return table
 
-        return SpatialDataTableMetadata(
-            table_name=table_name,
-            region_key=str(attrs[TableModel.REGION_KEY_KEY]),
-            instance_key=str(attrs[TableModel.INSTANCE_KEY]),
-            regions=_normalize_regions(attrs.get(TableModel.REGION_KEY)),
-        )
 
-    def validate_table_binding(self, sdata: SpatialData, label_name: str, table_name: str) -> SpatialDataTableMetadata:
-        """Validate that a table can be safely bound to a selected labels element."""
-        table = self.get_table(sdata, table_name)
-        table_metadata = self.get_table_metadata(sdata, table_name)
+def get_table_metadata(sdata: SpatialData, table_name: str) -> SpatialDataTableMetadata:
+    """Return linkage metadata for an annotating table."""
+    table = get_table(sdata, table_name)
+    attrs = _get_table_model_attrs(table, table_name)
 
-        if not table_metadata.annotates(label_name):
-            raise ValueError(f"Table `{table_name}` does not annotate segmentation `{label_name}`.")
+    return SpatialDataTableMetadata(
+        table_name=table_name,
+        region_key=str(attrs[TableModel.REGION_KEY_KEY]),
+        instance_key=str(attrs[TableModel.INSTANCE_KEY]),
+        regions=_normalize_regions(attrs.get(TableModel.REGION_KEY)),
+    )
 
-        if table_metadata.region_key not in table.obs.columns:
-            raise ValueError(f"Table `{table_name}` is missing required obs column `{table_metadata.region_key}`.")
 
-        if table_metadata.instance_key not in table.obs.columns:
-            raise ValueError(f"Table `{table_name}` is missing required obs column `{table_metadata.instance_key}`.")
+def validate_table_binding(sdata: SpatialData, label_name: str, table_name: str) -> SpatialDataTableMetadata:
+    """Validate that a table can be safely bound to a selected labels element."""
+    table = get_table(sdata, table_name)
+    table_metadata = get_table_metadata(sdata, table_name)
 
-        region_rows = table.obs.loc[table.obs[table_metadata.region_key] == label_name]
-        if region_rows.empty:
-            return table_metadata
+    if not table_metadata.annotates(label_name):
+        raise ValueError(f"Table `{table_name}` does not annotate segmentation `{label_name}`.")
 
-        region_instances = region_rows[table_metadata.instance_key]
-        duplicate_instances = region_instances[region_instances.duplicated(keep=False)]
-        if not duplicate_instances.empty:
-            duplicate_labels = duplicate_instances.astype("string").drop_duplicates().tolist()
-            preview = ", ".join(duplicate_labels[:5])
-            if len(duplicate_labels) > 5:
-                preview += ", ..."
-            raise ValueError(
-                f"Table `{table_name}` cannot be bound to segmentation `{label_name}` because `{table_metadata.instance_key}` "
-                f"contains duplicate values within that region: {preview}."
-            )
+    if table_metadata.region_key not in table.obs.columns:
+        raise ValueError(f"Table `{table_name}` is missing required obs column `{table_metadata.region_key}`.")
 
+    if table_metadata.instance_key not in table.obs.columns:
+        raise ValueError(f"Table `{table_name}` is missing required obs column `{table_metadata.instance_key}`.")
+
+    region_rows = table.obs.loc[table.obs[table_metadata.region_key] == label_name]
+    if region_rows.empty:
         return table_metadata
 
-    def get_table_obsm_keys(self, sdata: SpatialData, table_name: str) -> list[str]:
-        """Return available feature matrix keys from `adata.obsm`."""
-        table = self.get_table(sdata, table_name)
-        return sorted(table.obsm.keys())
+    region_instances = region_rows[table_metadata.instance_key]
+    duplicate_instances = region_instances[region_instances.duplicated(keep=False)]
+    if not duplicate_instances.empty:
+        duplicate_labels = duplicate_instances.astype("string").drop_duplicates().tolist()
+        preview = ", ".join(duplicate_labels[:5])
+        if len(duplicate_labels) > 5:
+            preview += ", ..."
+        raise ValueError(
+            f"Table `{table_name}` cannot be bound to segmentation `{label_name}` because `{table_metadata.instance_key}` "
+            f"contains duplicate values within that region: {preview}."
+        )
+
+    return table_metadata
+
+
+def get_table_obsm_keys(sdata: SpatialData, table_name: str) -> list[str]:
+    """Return the available feature matrix keys from `adata.obsm` for a table in a SpatialData object."""
+    table = get_table(sdata, table_name)
+    return sorted(table.obsm.keys())
 
 
 class SpatialDataViewerBinding:
     """Viewer-bound helper for resolving napari layers linked to SpatialData."""
 
-    def __init__(self, viewer: Any | None = None, spatialdata_adapter: SpatialDataAdapter | None = None) -> None:
+    def __init__(self, viewer: Any | None = None) -> None:
         self._viewer = viewer
-        self._spatialdata_adapter = spatialdata_adapter or SpatialDataAdapter()
 
     def get_label_options(self) -> list[SpatialDataLabelsOption]:
         """Collect selectable labels elements from the current viewer."""
@@ -212,8 +214,8 @@ class SpatialDataViewerBinding:
         keeps this helper as an explicit cache-building utility rather than a
         path that is relied on during normal interaction.
         """
-        table = self._spatialdata_adapter.get_table(sdata, table_name)
-        table_metadata = self._spatialdata_adapter.get_table_metadata(sdata, table_name)
+        table = get_table(sdata, table_name)
+        table_metadata = get_table_metadata(sdata, table_name)
         region_mask = (table.obs[table_metadata.region_key] == label_name).to_numpy(dtype=bool, copy=False)
         if not region_mask.any():
             return None
@@ -260,12 +262,12 @@ class SpatialDataViewerBinding:
             metadata = {}
             layer.metadata = metadata
 
-        table_metadata = self._spatialdata_adapter.get_table_metadata(sdata, table_name)
+        table_metadata = get_table_metadata(sdata, table_name)
         layer.metadata["adata"] = self.build_layer_metadata_adata(sdata, label_name, table_name)
         layer.metadata["region_key"] = table_metadata.region_key
         layer.metadata["instance_key"] = table_metadata.instance_key
 
-        table_names = self._spatialdata_adapter.get_annotating_table_names(sdata, label_name)
+        table_names = get_annotating_table_names(sdata, label_name)
         layer.metadata["table_names"] = table_names if table_names else None
         return True
 
@@ -282,22 +284,6 @@ def get_spatialdata_label_options(viewer: Any | None) -> list[SpatialDataLabelsO
     object so the widget can safely support viewers containing multiple datasets.
     """
     return SpatialDataViewerBinding(viewer).get_label_options()
-
-
-def get_annotating_table_names(sdata: SpatialData, label_name: str) -> list[str]:
-    """Return the table names that annotate a labels element in a SpatialData object."""
-    return SpatialDataAdapter().get_annotating_table_names(sdata, label_name)
-
-
-def get_table_metadata(sdata: SpatialData, table_name: str) -> SpatialDataTableMetadata:
-    """Return linkage metadata for an annotating table."""
-    return SpatialDataAdapter().get_table_metadata(sdata, table_name)
-
-
-def get_table_obsm_keys(sdata: SpatialData, table_name: str) -> list[str]:
-    """Return the available feature matrix keys from `adata.obsm` for a table in a SpatialData object."""
-    return SpatialDataAdapter().get_table_obsm_keys(sdata, table_name)
-
 
 def _get_spatialdata_label_options_from_viewer(viewer: Any | None) -> list[SpatialDataLabelsOption]:
     if viewer is None:
@@ -351,14 +337,76 @@ def _get_table_model_attrs(table: AnnData, table_name: str) -> dict[str, Any]:
     return attrs
 
 
-def _normalize_regions(region: str | list[str] | None) -> tuple[str, ...]:
+def _normalize_table_model_attrs(table: AnnData) -> None:
+    attrs = table.uns.get(TableModel.ATTRS_KEY)
+    if not isinstance(attrs, dict):
+        return
+
+    if TableModel.REGION_KEY in attrs:
+        attrs[TableModel.REGION_KEY] = _normalize_region_attr_value(attrs[TableModel.REGION_KEY])
+
+    for key in (TableModel.REGION_KEY_KEY, TableModel.INSTANCE_KEY):
+        if key in attrs:
+            attrs[key] = _normalize_scalar_string_attr_value(attrs[key])
+
+
+def _normalize_regions(region: Any) -> tuple[str, ...]:
     if region is None:
         return ()
 
     if isinstance(region, str):
         return (region,)
 
-    return tuple(str(label_name) for label_name in region)
+    return tuple(_flatten_string_values(region))
+
+
+def _normalize_region_attr_value(region: Any) -> str | list[str] | None:
+    if region is None or isinstance(region, str):
+        return region
+
+    return _flatten_string_values(region)
+
+
+def _normalize_scalar_string_attr_value(value: Any) -> Any:
+    if value is None or isinstance(value, str):
+        return value
+
+    flattened = _flatten_string_values(value)
+    if len(flattened) == 1:
+        return flattened[0]
+
+    return value
+
+
+def _flatten_string_values(value: Any) -> list[str]:
+    if value is None:
+        return []
+
+    if isinstance(value, str):
+        return [value]
+
+    if isinstance(value, bytes):
+        return [value.decode()]
+
+    if isinstance(value, np.ndarray):
+        if value.ndim == 0:
+            return _flatten_string_values(value.item())
+
+        flattened: list[str] = []
+        for item in value.reshape(-1).tolist():
+            flattened.extend(_flatten_string_values(item))
+        return flattened
+
+    if isinstance(value, np.generic):
+        return [str(value.item())]
+
+    if isinstance(value, Sequence):
+        flattened: list[str] = []
+        for item in value:
+            flattened.extend(_flatten_string_values(item))
+        return flattened
+
+    return [str(value)]
 
 
 def _layer_indices_align_with_region_view(layer: Any | None, region_view: AnnData, instance_key: str) -> bool | None:
