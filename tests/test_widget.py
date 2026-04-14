@@ -202,8 +202,8 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_bl
     assert widget.selected_instance_id is None
     assert widget.refresh_button.text() == "Rescan Viewer"
     assert widget.retrain_button.text() == "Retrain"
-    assert widget.sync_button.text() == "Write Table to zarr"
-    assert widget.reload_button.text() == "Reload Table from zarr"
+    assert widget.sync_button.text() == "Write"
+    assert widget.reload_button.text() == "Reload"
     assert not widget.sync_button.isEnabled()
     assert not widget.reload_button.isEnabled()
     assert widget.retrain_button.isEnabled()
@@ -226,8 +226,8 @@ def test_widget_surfaces_invalid_table_binding_for_duplicate_instance_ids(qtbot,
     qtbot.addWidget(widget)
 
     assert widget.selected_table_name == "table"
-    assert not widget.validation_status.isHidden()
-    assert "contains duplicate values within that region" in widget.validation_status.text()
+    assert widget.validation_status.isHidden()
+    assert widget.validation_status.text() == ""
     assert "contains duplicate values within that region" in widget.selection_status.text()
     assert not widget.color_by_combo.isEnabled()
     assert not widget.class_spinbox.isEnabled()
@@ -274,6 +274,33 @@ def test_widget_updates_table_dropdown_when_segmentation_changes(qtbot, sdata_bl
     assert widget.feature_matrix_combo.count() == 0
     assert not widget.feature_matrix_combo.isEnabled()
     assert widget.selected_feature_key is None
+
+
+def test_widget_warns_when_loaded_segmentation_has_no_annotation_table(qtbot, sdata_blobs: SpatialData) -> None:
+    primary_layer = make_blobs_labels_layer(sdata_blobs)
+    base_data = np.asarray(sdata_blobs.labels["blobs_labels"])
+    multiscale_layer = Labels(
+        [base_data, base_data[::2, ::2]],
+        name="blobs_multiscale_labels",
+        metadata={
+            "sdata": sdata_blobs,
+            "name": "blobs_multiscale_labels",
+            "indices": [int(value) for value in np.unique(base_data).tolist() if int(value) > 0],
+        },
+    )
+    viewer = DummyViewer(layers=[primary_layer, multiscale_layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.segmentation_combo.setCurrentIndex(1)
+
+    assert widget.selected_segmentation_name == "blobs_multiscale_labels"
+    assert widget.selected_table_name is None
+    assert viewer.layers.selection.active is multiscale_layer
+    assert "This segmentation is loaded, but no annotation table is linked to it." in widget.selection_status.text()
+    assert not widget.class_spinbox.isEnabled()
+    assert not widget.apply_class_button.isEnabled()
 
 
 def test_widget_updates_selected_feature_key_when_feature_matrix_changes(qtbot, sdata_blobs: SpatialData) -> None:
@@ -431,6 +458,28 @@ def test_widget_applies_user_class_to_picked_instance(qtbot, sdata_blobs: Spatia
     assert "Assigned class 3" in widget.annotation_feedback.text()
 
 
+def test_widget_apply_shortcut_applies_user_class_to_picked_instance(qtbot, sdata_blobs: SpatialData) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    layer.selected_label = 5
+    widget.class_spinbox.setValue(4)
+
+    assert "Shortcut: A." in widget.apply_class_button.toolTip()
+    assert widget._annotation_shortcuts[0].key().toString() == "A"
+
+    widget._annotation_shortcuts[0].activated.emit()
+
+    table = sdata_blobs["table"]
+    mask = (table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5)
+
+    assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [4]
+    assert "Assigned class 4" in widget.annotation_feedback.text()
+
+
 def test_widget_uses_table_instance_key_name_in_status_and_annotation_feedback(qtbot, sdata_blobs: SpatialData) -> None:
     rename_table_instance_key(sdata_blobs, instance_key="cell_id")
 
@@ -468,6 +517,29 @@ def test_widget_can_clear_user_class_for_picked_instance(qtbot, sdata_blobs: Spa
     assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [0]
     assert table.uns[USER_CLASS_COLORS_KEY] == default_class_colors([0])
     assert "Current class: unlabeled." in widget.selection_status.text()
+    assert "Cleared the user class" in widget.annotation_feedback.text()
+
+
+def test_widget_clear_shortcut_clears_user_class_for_picked_instance(qtbot, sdata_blobs: SpatialData) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    layer.selected_label = 5
+    widget.class_spinbox.setValue(2)
+    widget.apply_class_button.click()
+
+    assert "Shortcut: R." in widget.clear_class_button.toolTip()
+    assert widget._annotation_shortcuts[1].key().toString() == "R"
+
+    widget._annotation_shortcuts[1].activated.emit()
+
+    table = sdata_blobs["table"]
+    mask = (table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5)
+
+    assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [0]
     assert "Cleared the user class" in widget.annotation_feedback.text()
 
 
@@ -560,8 +632,8 @@ def test_widget_enables_sync_for_backed_spatialdata(qtbot, backed_sdata_blobs: S
 
     assert widget.sync_button.isEnabled()
     assert widget.reload_button.isEnabled()
-    assert widget.sync_button.toolTip() == f"Write `table` table state to `{expected_table_path}`."
-    assert widget.reload_button.toolTip() == f"Reload `table` table state from `{expected_table_path}`."
+    assert f"Write `table` table state to `{expected_table_path}`." in widget.sync_button.toolTip()
+    assert f"Reload `table` table state from `{expected_table_path}`." in widget.reload_button.toolTip()
 
 
 def test_widget_marks_persistence_dirty_on_annotation_change_and_clears_it_on_sync(
@@ -607,7 +679,9 @@ def test_widget_syncs_user_class_to_backed_zarr(qtbot, backed_sdata_blobs: Spati
 
     assert widget.sync_button.isEnabled()
     assert widget.reload_button.isEnabled()
-    assert widget.persistence_feedback.text() == f"Wrote `table` table state to `{expected_table_path}`."
+    assert "Persistence Updated" in widget.persistence_feedback.text()
+    assert f"Wrote `table` table state to `{expected_table_path}`." in widget.persistence_feedback.text()
+    assert "#166534" in widget.persistence_feedback.styleSheet()
     assert isinstance(reread["table"].obs[USER_CLASS_COLUMN].dtype, pd.CategoricalDtype)
     assert list(reread["table"].obs[USER_CLASS_COLUMN].cat.categories) == [0, 3]
     assert reread["table"].obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
@@ -708,10 +782,12 @@ def test_widget_dirty_reload_can_write_then_reload(qtbot, monkeypatch, backed_sd
     assert widget._persistence_controller.is_dirty is False
     assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
     assert reread["table"].obs.loc[disk_mask, USER_CLASS_COLUMN].tolist() == [3]
+    assert "Persistence Updated" in widget.persistence_feedback.text()
     assert (
-        widget.persistence_feedback.text()
-        == f"Wrote local changes and reloaded `table` table state from `{expected_table_path}`."
+        f"Wrote local changes and reloaded `table` table state from `{expected_table_path}`."
+        in widget.persistence_feedback.text()
     )
+    assert "#166534" in widget.persistence_feedback.styleSheet()
 
 
 def test_widget_dirty_reload_can_discard_local_edits(qtbot, monkeypatch, backed_sdata_blobs: SpatialData) -> None:
@@ -745,7 +821,9 @@ def test_widget_dirty_reload_can_discard_local_edits(qtbot, monkeypatch, backed_
     assert widget._persistence_controller.is_dirty is False
     assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [0]
     assert reread["table"].obs.loc[disk_mask, USER_CLASS_COLUMN].tolist() == [0]
-    assert widget.persistence_feedback.text() == f"Reloaded `table` table state from `{expected_table_path}`."
+    assert "Persistence Updated" in widget.persistence_feedback.text()
+    assert f"Reloaded `table` table state from `{expected_table_path}`." in widget.persistence_feedback.text()
+    assert "#166534" in widget.persistence_feedback.styleSheet()
 
 
 def test_widget_reloads_table_state_from_backed_zarr(qtbot, backed_sdata_blobs: SpatialData) -> None:
@@ -774,7 +852,9 @@ def test_widget_reloads_table_state_from_backed_zarr(qtbot, backed_sdata_blobs: 
         table.obs["instance_id"] == int(table.obs["instance_id"].iloc[-1])
     )
 
-    assert widget.persistence_feedback.text() == f"Reloaded `table` table state from `{expected_table_path}`."
+    assert "Persistence Updated" in widget.persistence_feedback.text()
+    assert f"Reloaded `table` table state from `{expected_table_path}`." in widget.persistence_feedback.text()
+    assert "#166534" in widget.persistence_feedback.styleSheet()
     assert isinstance(table.obs[USER_CLASS_COLUMN].dtype, pd.CategoricalDtype)
     assert list(table.obs[USER_CLASS_COLUMN].cat.categories) == [0, 7]
     assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [7]
@@ -811,7 +891,9 @@ def test_widget_reload_falls_back_when_selected_feature_key_disappears(qtbot, ba
         widget.feature_matrix_combo.itemText(index) for index in range(widget.feature_matrix_combo.count())
     ]
 
-    assert widget.persistence_feedback.text() == f"Reloaded `table` table state from `{expected_table_path}`."
+    assert "Persistence Updated" in widget.persistence_feedback.text()
+    assert f"Reloaded `table` table state from `{expected_table_path}`." in widget.persistence_feedback.text()
+    assert "#166534" in widget.persistence_feedback.styleSheet()
     assert feature_matrix_items == ["features_1"]
     assert widget.selected_feature_key == "features_1"
     assert "features_2" not in table.obsm
@@ -893,7 +975,9 @@ def test_widget_reload_freezes_classifier_worker_and_ignores_late_results(
     assert workers[0].quit_called is True
     assert widget._classifier_controller.is_training is False
     assert widget._classifier_controller.is_dirty is False
-    assert widget.persistence_feedback.text() == f"Reloaded `table` table state from `{expected_table_path}`."
+    assert "Persistence Updated" in widget.persistence_feedback.text()
+    assert f"Reloaded `table` table state from `{expected_table_path}`." in widget.persistence_feedback.text()
+    assert "#166534" in widget.persistence_feedback.styleSheet()
     assert table.obs[PRED_CLASS_COLUMN].eq(7).all()
     assert table.obs[PRED_CONFIDENCE_COLUMN].eq(0.77).all()
     assert "Loaded predictions for" in widget.classifier_feedback.text()

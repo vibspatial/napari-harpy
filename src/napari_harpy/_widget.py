@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from qtpy.QtCore import QSignalBlocker, Qt
-from qtpy.QtGui import QPixmap
+from qtpy.QtGui import QColor, QKeySequence, QPalette, QPixmap, QShortcut
 from qtpy.QtWidgets import (
     QComboBox,
     QDialog,
@@ -47,6 +47,56 @@ class _DirtyReloadDecision(Enum):
     CANCEL = "cancel"
 
 
+_APPLY_CLASS_SHORTCUT = "A"
+_REMOVE_CLASS_SHORTCUT = "R"
+_WIDGET_SURFACE_COLOR = "#fcf6f3"
+_WIDGET_SURFACE_STYLESHEET = f"background-color: {_WIDGET_SURFACE_COLOR};"
+_TOOLTIP_TEXT_COLOR = "#111827"
+_FORM_LABEL_STYLESHEET = "color: #374151; font-weight: 600; padding-top: 6px;"
+_INPUT_CONTROL_STYLESHEET = (
+    "QComboBox, QSpinBox {"
+    "background-color: #fffdfb; "
+    "border: 1px solid #ddcfc7; "
+    "border-radius: 8px; "
+    "color: #111827; "
+    "padding: 4px 10px; "
+    "min-height: 30px;}"
+    "QComboBox:disabled, QSpinBox:disabled {"
+    "background-color: #f7efea; "
+    "border-color: #e9ddd7; "
+    "color: #9ca3af;}"
+    "QComboBox:focus, QSpinBox:focus {"
+    "border-color: #8fb6c9; "
+    "background-color: #ffffff;}"
+    "QComboBox { padding-right: 24px; }"
+    "QComboBox::drop-down {"
+    "subcontrol-origin: padding; "
+    "subcontrol-position: top right; "
+    "width: 24px; "
+    "border: 0px; "
+    "background: transparent;}"
+)
+_ACTION_BUTTON_STYLESHEET = (
+    "QPushButton {"
+    "background-color: #f7ede8; "
+    "border: 1px solid #ddcfc7; "
+    "border-radius: 8px; "
+    "color: #111827; "
+    "font-weight: 600; "
+    "padding: 4px 10px; "
+    "min-height: 30px;}"
+    "QPushButton:hover { background-color: #f3e5de; border-color: #c9b6ac; }"
+    "QPushButton:pressed { background-color: #ebd7cf; border-color: #b59a8e; }"
+    "QPushButton:disabled { background-color: #faf4f1; border-color: #ede3dd; color: #a8a29e; }"
+)
+_CLASS_EDITOR_STYLESHEET = (
+    "QWidget#class_editor {"
+    "background-color: #f8eeea; "
+    "border: 1px solid #eadfd8; "
+    "border-radius: 10px;}"
+)
+
+
 class HarpyWidget(QWidget):
     """Phase 2 widget for selecting inputs and picking segmentation objects.
 
@@ -64,6 +114,13 @@ class HarpyWidget(QWidget):
 
     def __init__(self, napari_viewer: napari.Viewer | None = None) -> None:
         super().__init__()
+        self.setObjectName("harpy_widget")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAutoFillBackground(True)
+        palette = self.palette()
+        palette.setColor(QPalette.ColorRole.Window, QColor(_WIDGET_SURFACE_COLOR))
+        self.setPalette(palette)
+        self.setStyleSheet(_WIDGET_SURFACE_STYLESHEET)
         self._viewer = napari_viewer
         self._spatialdata_adapter = SpatialDataAdapter()
         self._viewer_binding = SpatialDataViewerBinding(napari_viewer, self._spatialdata_adapter)
@@ -93,21 +150,29 @@ class HarpyWidget(QWidget):
         self._logo_path = Path(__file__).resolve().parents[2] / "docs" / "_static" / "logo.png"
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
 
         title = self._create_header_logo()
 
         selector_layout = QFormLayout()
+        selector_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        selector_layout.setHorizontalSpacing(12)
+        selector_layout.setVerticalSpacing(10)
         self.segmentation_combo = QComboBox()
         self.segmentation_combo.setObjectName("segmentation_mask_combo")
         self.segmentation_combo.currentIndexChanged.connect(self._on_segmentation_changed)
+        self.segmentation_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
 
         self.table_combo = QComboBox()
         self.table_combo.setObjectName("annotation_table_combo")
         self.table_combo.currentIndexChanged.connect(self._on_table_changed)
+        self.table_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
 
         self.feature_matrix_combo = QComboBox()
         self.feature_matrix_combo.setObjectName("feature_matrix_combo")
         self.feature_matrix_combo.currentIndexChanged.connect(self._on_feature_matrix_changed)
+        self.feature_matrix_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
 
         self.color_by_combo = QComboBox()
         self.color_by_combo.setObjectName("color_by_combo")
@@ -115,30 +180,70 @@ class HarpyWidget(QWidget):
             self.color_by_combo.addItem(color_by, color_by)
         self.color_by_combo.setCurrentIndex(self.color_by_combo.findData(COLOR_BY_USER_CLASS))
         self.color_by_combo.currentIndexChanged.connect(self._on_color_by_changed)
+        self.color_by_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
 
         self.class_spinbox = QSpinBox()
         self.class_spinbox.setObjectName("user_class_spinbox")
         self.class_spinbox.setRange(1, 999)
         self.class_spinbox.setValue(1)
+        self.class_spinbox.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
+        self.class_editor = QWidget()
+        self.class_editor.setObjectName("class_editor")
+        self.class_editor.setStyleSheet(_CLASS_EDITOR_STYLESHEET)
+        class_editor_layout = QVBoxLayout(self.class_editor)
+        class_editor_layout.setContentsMargins(8, 8, 8, 8)
+        class_editor_layout.setSpacing(8)
+        self.class_action_row = QWidget()
+        self.class_action_row.setObjectName("class_action_row")
+        class_action_layout = QHBoxLayout(self.class_action_row)
+        class_action_layout.setContentsMargins(0, 0, 0, 0)
+        class_action_layout.setSpacing(8)
+        self.retrain_action_row = QWidget()
+        self.retrain_action_row.setObjectName("retrain_action_row")
+        retrain_action_layout = QHBoxLayout(self.retrain_action_row)
+        retrain_action_layout.setContentsMargins(0, 0, 0, 0)
+        retrain_action_layout.setSpacing(8)
+        self.persistence_action_row = QWidget()
+        self.persistence_action_row.setObjectName("persistence_action_row")
+        persistence_action_layout = QHBoxLayout(self.persistence_action_row)
+        persistence_action_layout.setContentsMargins(0, 0, 0, 0)
+        persistence_action_layout.setSpacing(8)
+        self.refresh_action_row = QWidget()
+        self.refresh_action_row.setObjectName("refresh_action_row")
+        refresh_action_layout = QHBoxLayout(self.refresh_action_row)
+        refresh_action_layout.setContentsMargins(0, 0, 0, 0)
+        refresh_action_layout.setSpacing(8)
 
         self.refresh_button = QPushButton("Rescan Viewer")
         self.refresh_button.clicked.connect(self.refresh_segmentation_masks)
         self.refresh_button.setEnabled(napari_viewer is not None)
+        self.refresh_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.refresh_button.setMinimumHeight(28)
+        self.refresh_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
 
         self.retrain_button = QPushButton("Retrain")
         self.retrain_button.setObjectName("retrain_button")
         self.retrain_button.clicked.connect(self._retrain_classifier)
         self.retrain_button.setEnabled(False)
+        self.retrain_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.retrain_button.setMinimumHeight(28)
+        self.retrain_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
 
-        self.sync_button = QPushButton("Write Table to zarr")
+        self.sync_button = QPushButton("Write")
         self.sync_button.setObjectName("sync_to_zarr_button")
         self.sync_button.clicked.connect(self._write_to_zarr)
         self.sync_button.setEnabled(False)
+        self.sync_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.sync_button.setMinimumHeight(28)
+        self.sync_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
 
-        self.reload_button = QPushButton("Reload Table from zarr")
+        self.reload_button = QPushButton("Reload")
         self.reload_button.setObjectName("reload_from_zarr_button")
         self.reload_button.clicked.connect(self._reload_from_zarr)
         self.reload_button.setEnabled(False)
+        self.reload_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.reload_button.setMinimumHeight(28)
+        self.reload_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
 
         self.validation_status = QLabel()
         self.validation_status.setObjectName("validation_status")
@@ -150,15 +255,32 @@ class HarpyWidget(QWidget):
         self.selection_status.setObjectName("selection_status")
         self.selection_status.setWordWrap(True)
 
-        self.apply_class_button = QPushButton("Apply Class")
+        self.apply_class_button = QPushButton("Add (A)")
         self.apply_class_button.setObjectName("apply_class_button")
         self.apply_class_button.clicked.connect(self._apply_current_class)
         self.apply_class_button.setEnabled(False)
+        self.apply_class_button.setAccessibleName("Add")
+        self.apply_class_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.apply_class_button.setMinimumHeight(28)
+        self.apply_class_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
 
-        self.clear_class_button = QPushButton("Clear Class")
+        self.clear_class_button = QPushButton("Remove (R)")
         self.clear_class_button.setObjectName("clear_class_button")
         self.clear_class_button.clicked.connect(self._clear_current_class)
         self.clear_class_button.setEnabled(False)
+        self.clear_class_button.setAccessibleName("Remove")
+        self.clear_class_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_class_button.setMinimumHeight(28)
+        self.clear_class_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
+        class_editor_layout.addWidget(self.class_spinbox)
+        class_action_layout.addWidget(self.apply_class_button, 1)
+        class_action_layout.addWidget(self.clear_class_button, 1)
+        class_editor_layout.addWidget(self.class_action_row)
+        retrain_action_layout.addWidget(self.retrain_button, 1)
+        persistence_action_layout.addWidget(self.sync_button, 1)
+        persistence_action_layout.addWidget(self.reload_button, 1)
+        refresh_action_layout.addWidget(self.refresh_button, 1)
+        self._annotation_shortcuts = self._create_annotation_shortcuts()
 
         self.annotation_feedback = QLabel()
         self.annotation_feedback.setObjectName("annotation_feedback")
@@ -175,20 +297,17 @@ class HarpyWidget(QWidget):
         self.persistence_feedback.setWordWrap(True)
         self.persistence_feedback.hide()
 
-        selector_layout.addRow("Segmentation mask", self.segmentation_combo)
-        selector_layout.addRow("Table", self.table_combo)
-        selector_layout.addRow("Feature matrix", self.feature_matrix_combo)
-        selector_layout.addRow("Color by", self.color_by_combo)
-        selector_layout.addRow("User class", self.class_spinbox)
+        selector_layout.addRow(self._create_form_label("Segmentation mask"), self.segmentation_combo)
+        selector_layout.addRow(self._create_form_label("Table"), self.table_combo)
+        selector_layout.addRow(self._create_form_label("Feature matrix"), self.feature_matrix_combo)
+        selector_layout.addRow(self._create_form_label("Color by"), self.color_by_combo)
+        selector_layout.addRow(self._create_form_label("User class"), self.class_editor)
 
         layout.addWidget(title)
         layout.addLayout(selector_layout)
-        layout.addWidget(self.refresh_button)
-        layout.addWidget(self.retrain_button)
-        layout.addWidget(self.sync_button)
-        layout.addWidget(self.reload_button)
-        layout.addWidget(self.apply_class_button)
-        layout.addWidget(self.clear_class_button)
+        layout.addWidget(self.retrain_action_row)
+        layout.addWidget(self.persistence_action_row)
+        layout.addWidget(self.refresh_action_row)
         layout.addWidget(self.selection_status)
         layout.addWidget(self.annotation_feedback)
         layout.addWidget(self.classifier_feedback)
@@ -198,6 +317,17 @@ class HarpyWidget(QWidget):
 
         self._connect_viewer_events()
         self.refresh_segmentation_masks()
+
+    def _create_annotation_shortcuts(self) -> list[QShortcut]:
+        apply_shortcut = QShortcut(QKeySequence(_APPLY_CLASS_SHORTCUT), self)
+        apply_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+        apply_shortcut.activated.connect(self._trigger_apply_class_shortcut)
+
+        remove_shortcut = QShortcut(QKeySequence(_REMOVE_CLASS_SHORTCUT), self)
+        remove_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+        remove_shortcut.activated.connect(self._trigger_clear_class_shortcut)
+
+        return [apply_shortcut, remove_shortcut]
 
     def _create_header_logo(self) -> QLabel:
         logo_label = QLabel()
@@ -211,6 +341,19 @@ class HarpyWidget(QWidget):
         logo_label.setText("napari-harpy")
         logo_label.setStyleSheet("font-size: 18px; font-weight: 600;")
         return logo_label
+
+    def _create_form_label(self, text: str) -> QLabel:
+        label = QLabel(text)
+        label.setStyleSheet(_FORM_LABEL_STYLESHEET)
+        label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        return label
+
+    def _set_tooltip(self, widget: QWidget, message: str) -> None:
+        widget.setToolTip(
+            "<qt>"
+            f"<span style='color: {_TOOLTIP_TEXT_COLOR};'>{escape(message)}</span>"
+            "</qt>"
+        )
 
     @property
     def selected_segmentation_name(self) -> str | None:
@@ -514,9 +657,7 @@ class HarpyWidget(QWidget):
     def _update_validation_status(self) -> None:
         message = None
 
-        if self._table_binding_error is not None:
-            message = self._table_binding_error
-        elif self.selected_table_name is not None and self.feature_matrix_combo.count() == 0:
+        if self.selected_table_name is not None and self.feature_matrix_combo.count() == 0:
             message = (
                 "Warning: the selected table does not contain any feature matrices in `.obsm`. "
                 "Add one before continuing."
@@ -540,6 +681,15 @@ class HarpyWidget(QWidget):
                 title="Selection",
                 lines=[
                     "The chosen segmentation is known in SpatialData but is not currently loaded as a napari Labels layer."
+                ],
+                kind="warning",
+            )
+        elif self.selected_table_name is None:
+            self._set_selection_status(
+                title="Selection Warning",
+                lines=[
+                    f"Bound to {self.selected_segmentation_name}.",
+                    "This segmentation is loaded, but no annotation table is linked to it.",
                 ],
                 kind="warning",
             )
@@ -589,12 +739,54 @@ class HarpyWidget(QWidget):
     def _update_annotation_controls(self) -> None:
         has_table = self._effective_table_name() is not None
         current_user_class = self._annotation_controller.current_user_class
+        can_apply = self._annotation_controller.can_annotate
+        can_clear = can_apply and current_user_class not in (None, UNLABELED_CLASS)
 
         self.class_spinbox.setEnabled(has_table)
-        self.apply_class_button.setEnabled(self._annotation_controller.can_annotate)
-        self.clear_class_button.setEnabled(
-            self._annotation_controller.can_annotate and current_user_class not in (None, UNLABELED_CLASS)
+        self.apply_class_button.setEnabled(can_apply)
+        self.clear_class_button.setEnabled(can_clear)
+
+        self._set_tooltip(
+            self.apply_class_button,
+            self._annotation_action_tooltip(
+                enabled=can_apply,
+                ready_message="Assign the selected user class to the picked object.",
+                unavailable_message="Pick an annotated object in the viewer before applying a class.",
+                shortcut_hint=_APPLY_CLASS_SHORTCUT,
+            )
         )
+        self._set_tooltip(
+            self.clear_class_button,
+            self._annotation_action_tooltip(
+                enabled=can_clear,
+                ready_message="Clear the current user class for the picked object.",
+                unavailable_message="Pick a labeled object before clearing its user class.",
+                shortcut_hint=_REMOVE_CLASS_SHORTCUT,
+            )
+        )
+
+    def _annotation_action_tooltip(
+        self,
+        *,
+        enabled: bool,
+        ready_message: str,
+        unavailable_message: str,
+        shortcut_hint: str,
+    ) -> str:
+        message = ready_message if enabled else unavailable_message
+        return f"{message} Shortcut: {shortcut_hint}."
+
+    def _trigger_apply_class_shortcut(self) -> None:
+        if not self.apply_class_button.isEnabled():
+            return
+
+        self._apply_current_class()
+
+    def _trigger_clear_class_shortcut(self) -> None:
+        if not self.clear_class_button.isEnabled():
+            return
+
+        self._clear_current_class()
 
     def _apply_current_class(self) -> None:
         class_id = self.class_spinbox.value()
@@ -731,8 +923,8 @@ class HarpyWidget(QWidget):
                 sync_tooltip += " Unsynced local table changes are present."
                 reload_tooltip += " Unsynced local table changes are present."
 
-        self.sync_button.setToolTip(sync_tooltip)
-        self.reload_button.setToolTip(reload_tooltip)
+        self._set_tooltip(self.sync_button, sync_tooltip)
+        self._set_tooltip(self.reload_button, reload_tooltip)
 
     def _update_color_by_controls(self) -> None:
         has_table = self._effective_table_name() is not None
@@ -753,7 +945,7 @@ class HarpyWidget(QWidget):
         else:
             tooltip = "Choose how to color the labels layer."
 
-        self.color_by_combo.setToolTip(tooltip)
+        self._set_tooltip(self.color_by_combo, tooltip)
 
     def _update_classifier_controls(self) -> None:
         can_retrain = self._classifier_controller.can_retrain
@@ -772,7 +964,7 @@ class HarpyWidget(QWidget):
         else:
             tooltip = "Retrain the classifier using the current annotations and feature matrix."
 
-        self.retrain_button.setToolTip(tooltip)
+        self._set_tooltip(self.retrain_button, tooltip)
 
     def _write_to_zarr(self) -> None:
         # TODO: consider disabling write while classifier retraining is pending
@@ -933,11 +1125,19 @@ class HarpyWidget(QWidget):
         return _DirtyReloadDecision.CANCEL
 
     def _set_persistence_feedback(self, message: str, *, error: bool = False) -> None:
-        self.persistence_feedback.setText(message)
-        self.persistence_feedback.setStyleSheet(
-            "color: #b91c1c; font-weight: 600;" if error else "color: #166534; font-weight: 600;"
+        if not message:
+            self.persistence_feedback.setText("")
+            self.persistence_feedback.setVisible(False)
+            return
+
+        kind = "error" if error else "success"
+        title = "Persistence Error" if error else "Persistence Updated"
+        self._set_status_card(
+            self.persistence_feedback,
+            title=title,
+            lines=[message],
+            kind=kind,
         )
-        self.persistence_feedback.setVisible(bool(message))
 
     def _on_selected_instance_changed(self, instance_id: int | None) -> None:
         del instance_id
