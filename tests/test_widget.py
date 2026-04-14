@@ -202,8 +202,8 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_bl
     assert widget.selected_instance_id is None
     assert widget.refresh_button.text() == "Rescan Viewer"
     assert widget.retrain_button.text() == "Retrain"
-    assert widget.sync_button.text() == "Write Table to zarr"
-    assert widget.reload_button.text() == "Reload Table from zarr"
+    assert widget.sync_button.text() == "Write"
+    assert widget.reload_button.text() == "Reload"
     assert not widget.sync_button.isEnabled()
     assert not widget.reload_button.isEnabled()
     assert widget.retrain_button.isEnabled()

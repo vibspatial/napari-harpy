@@ -49,6 +49,18 @@ class _DirtyReloadDecision(Enum):
 
 _APPLY_CLASS_SHORTCUT = "A"
 _REMOVE_CLASS_SHORTCUT = "R"
+_ACTION_BUTTON_STYLESHEET = (
+    "QPushButton {"
+    "background-color: #e5e7eb; "
+    "border: 1px solid #9ca3af; "
+    "border-radius: 6px; "
+    "color: #111827; "
+    "font-weight: 600; "
+    "padding: 4px 10px;}"
+    "QPushButton:hover { background-color: #d1d5db; border-color: #6b7280; }"
+    "QPushButton:pressed { background-color: #cbd5e1; border-color: #4b5563; }"
+    "QPushButton:disabled { background-color: #f9fafb; border-color: #e5e7eb; color: #9ca3af; }"
+)
 
 
 class HarpyWidget(QWidget):
@@ -129,25 +141,52 @@ class HarpyWidget(QWidget):
         class_action_layout = QHBoxLayout(self.class_action_row)
         class_action_layout.setContentsMargins(0, 0, 0, 0)
         class_action_layout.setSpacing(8)
+        self.retrain_action_row = QWidget()
+        self.retrain_action_row.setObjectName("retrain_action_row")
+        retrain_action_layout = QHBoxLayout(self.retrain_action_row)
+        retrain_action_layout.setContentsMargins(0, 0, 0, 0)
+        retrain_action_layout.setSpacing(8)
+        self.persistence_action_row = QWidget()
+        self.persistence_action_row.setObjectName("persistence_action_row")
+        persistence_action_layout = QHBoxLayout(self.persistence_action_row)
+        persistence_action_layout.setContentsMargins(0, 0, 0, 0)
+        persistence_action_layout.setSpacing(8)
+        self.refresh_action_row = QWidget()
+        self.refresh_action_row.setObjectName("refresh_action_row")
+        refresh_action_layout = QHBoxLayout(self.refresh_action_row)
+        refresh_action_layout.setContentsMargins(0, 0, 0, 0)
+        refresh_action_layout.setSpacing(8)
 
         self.refresh_button = QPushButton("Rescan Viewer")
         self.refresh_button.clicked.connect(self.refresh_segmentation_masks)
         self.refresh_button.setEnabled(napari_viewer is not None)
+        self.refresh_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.refresh_button.setMinimumHeight(28)
+        self.refresh_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
 
         self.retrain_button = QPushButton("Retrain")
         self.retrain_button.setObjectName("retrain_button")
         self.retrain_button.clicked.connect(self._retrain_classifier)
         self.retrain_button.setEnabled(False)
+        self.retrain_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.retrain_button.setMinimumHeight(28)
+        self.retrain_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
 
-        self.sync_button = QPushButton("Write Table to zarr")
+        self.sync_button = QPushButton("Write")
         self.sync_button.setObjectName("sync_to_zarr_button")
         self.sync_button.clicked.connect(self._write_to_zarr)
         self.sync_button.setEnabled(False)
+        self.sync_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.sync_button.setMinimumHeight(28)
+        self.sync_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
 
-        self.reload_button = QPushButton("Reload Table from zarr")
+        self.reload_button = QPushButton("Reload")
         self.reload_button.setObjectName("reload_from_zarr_button")
         self.reload_button.clicked.connect(self._reload_from_zarr)
         self.reload_button.setEnabled(False)
+        self.reload_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.reload_button.setMinimumHeight(28)
+        self.reload_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
 
         self.validation_status = QLabel()
         self.validation_status.setObjectName("validation_status")
@@ -166,18 +205,7 @@ class HarpyWidget(QWidget):
         self.apply_class_button.setAccessibleName("Add")
         self.apply_class_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.apply_class_button.setMinimumHeight(28)
-        self.apply_class_button.setStyleSheet(
-            "QPushButton {"
-            "background-color: #e5e7eb; "
-            "border: 1px solid #9ca3af; "
-            "border-radius: 6px; "
-            "color: #111827; "
-            "font-weight: 600; "
-            "padding: 4px 10px;}"
-            "QPushButton:hover { background-color: #d1d5db; border-color: #6b7280; }"
-            "QPushButton:pressed { background-color: #cbd5e1; border-color: #4b5563; }"
-            "QPushButton:disabled { background-color: #f9fafb; border-color: #e5e7eb; color: #9ca3af; }"
-        )
+        self.apply_class_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
 
         self.clear_class_button = QPushButton("Remove (R)")
         self.clear_class_button.setObjectName("clear_class_button")
@@ -186,20 +214,13 @@ class HarpyWidget(QWidget):
         self.clear_class_button.setAccessibleName("Remove")
         self.clear_class_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.clear_class_button.setMinimumHeight(28)
-        self.clear_class_button.setStyleSheet(
-            "QPushButton {"
-            "background-color: #e5e7eb; "
-            "border: 1px solid #9ca3af; "
-            "border-radius: 6px; "
-            "color: #111827; "
-            "font-weight: 600; "
-            "padding: 4px 10px;}"
-            "QPushButton:hover { background-color: #d1d5db; border-color: #6b7280; }"
-            "QPushButton:pressed { background-color: #cbd5e1; border-color: #4b5563; }"
-            "QPushButton:disabled { background-color: #f9fafb; border-color: #e5e7eb; color: #9ca3af; }"
-        )
+        self.clear_class_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
         class_action_layout.addWidget(self.apply_class_button, 1)
         class_action_layout.addWidget(self.clear_class_button, 1)
+        retrain_action_layout.addWidget(self.retrain_button, 1)
+        persistence_action_layout.addWidget(self.sync_button, 1)
+        persistence_action_layout.addWidget(self.reload_button, 1)
+        refresh_action_layout.addWidget(self.refresh_button, 1)
         self._annotation_shortcuts = self._create_annotation_shortcuts()
 
         self.annotation_feedback = QLabel()
@@ -222,14 +243,13 @@ class HarpyWidget(QWidget):
         selector_layout.addRow("Feature matrix", self.feature_matrix_combo)
         selector_layout.addRow("Color by", self.color_by_combo)
         selector_layout.addRow("User class", self.class_spinbox)
-        selector_layout.addRow("", self.class_action_row)
 
         layout.addWidget(title)
         layout.addLayout(selector_layout)
-        layout.addWidget(self.refresh_button)
-        layout.addWidget(self.retrain_button)
-        layout.addWidget(self.sync_button)
-        layout.addWidget(self.reload_button)
+        layout.addWidget(self.class_action_row)
+        layout.addWidget(self.retrain_action_row)
+        layout.addWidget(self.persistence_action_row)
+        layout.addWidget(self.refresh_action_row)
         layout.addWidget(self.selection_status)
         layout.addWidget(self.annotation_feedback)
         layout.addWidget(self.classifier_feedback)
