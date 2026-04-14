@@ -48,7 +48,7 @@ class _DirtyReloadDecision(Enum):
 
 
 _APPLY_CLASS_SHORTCUT = "A"
-_CLEAR_CLASS_SHORTCUT = "C"
+_REMOVE_CLASS_SHORTCUT = "R"
 
 
 class HarpyWidget(QWidget):
@@ -124,6 +124,11 @@ class HarpyWidget(QWidget):
         self.class_spinbox.setObjectName("user_class_spinbox")
         self.class_spinbox.setRange(1, 999)
         self.class_spinbox.setValue(1)
+        self.class_action_row = QWidget()
+        self.class_action_row.setObjectName("class_action_row")
+        class_action_layout = QHBoxLayout(self.class_action_row)
+        class_action_layout.setContentsMargins(0, 0, 0, 0)
+        class_action_layout.setSpacing(8)
 
         self.refresh_button = QPushButton("Rescan Viewer")
         self.refresh_button.clicked.connect(self.refresh_segmentation_masks)
@@ -154,15 +159,47 @@ class HarpyWidget(QWidget):
         self.selection_status.setObjectName("selection_status")
         self.selection_status.setWordWrap(True)
 
-        self.apply_class_button = QPushButton("Apply Class")
+        self.apply_class_button = QPushButton("Add (A)")
         self.apply_class_button.setObjectName("apply_class_button")
         self.apply_class_button.clicked.connect(self._apply_current_class)
         self.apply_class_button.setEnabled(False)
+        self.apply_class_button.setAccessibleName("Add")
+        self.apply_class_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.apply_class_button.setMinimumHeight(28)
+        self.apply_class_button.setStyleSheet(
+            "QPushButton {"
+            "background-color: #e5e7eb; "
+            "border: 1px solid #9ca3af; "
+            "border-radius: 6px; "
+            "color: #111827; "
+            "font-weight: 600; "
+            "padding: 4px 10px;}"
+            "QPushButton:hover { background-color: #d1d5db; border-color: #6b7280; }"
+            "QPushButton:pressed { background-color: #cbd5e1; border-color: #4b5563; }"
+            "QPushButton:disabled { background-color: #f9fafb; border-color: #e5e7eb; color: #9ca3af; }"
+        )
 
-        self.clear_class_button = QPushButton("Clear Class")
+        self.clear_class_button = QPushButton("Remove (R)")
         self.clear_class_button.setObjectName("clear_class_button")
         self.clear_class_button.clicked.connect(self._clear_current_class)
         self.clear_class_button.setEnabled(False)
+        self.clear_class_button.setAccessibleName("Remove")
+        self.clear_class_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_class_button.setMinimumHeight(28)
+        self.clear_class_button.setStyleSheet(
+            "QPushButton {"
+            "background-color: #e5e7eb; "
+            "border: 1px solid #9ca3af; "
+            "border-radius: 6px; "
+            "color: #111827; "
+            "font-weight: 600; "
+            "padding: 4px 10px;}"
+            "QPushButton:hover { background-color: #d1d5db; border-color: #6b7280; }"
+            "QPushButton:pressed { background-color: #cbd5e1; border-color: #4b5563; }"
+            "QPushButton:disabled { background-color: #f9fafb; border-color: #e5e7eb; color: #9ca3af; }"
+        )
+        class_action_layout.addWidget(self.apply_class_button, 1)
+        class_action_layout.addWidget(self.clear_class_button, 1)
         self._annotation_shortcuts = self._create_annotation_shortcuts()
 
         self.annotation_feedback = QLabel()
@@ -185,6 +222,7 @@ class HarpyWidget(QWidget):
         selector_layout.addRow("Feature matrix", self.feature_matrix_combo)
         selector_layout.addRow("Color by", self.color_by_combo)
         selector_layout.addRow("User class", self.class_spinbox)
+        selector_layout.addRow("", self.class_action_row)
 
         layout.addWidget(title)
         layout.addLayout(selector_layout)
@@ -192,8 +230,6 @@ class HarpyWidget(QWidget):
         layout.addWidget(self.retrain_button)
         layout.addWidget(self.sync_button)
         layout.addWidget(self.reload_button)
-        layout.addWidget(self.apply_class_button)
-        layout.addWidget(self.clear_class_button)
         layout.addWidget(self.selection_status)
         layout.addWidget(self.annotation_feedback)
         layout.addWidget(self.classifier_feedback)
@@ -209,11 +245,11 @@ class HarpyWidget(QWidget):
         apply_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
         apply_shortcut.activated.connect(self._trigger_apply_class_shortcut)
 
-        clear_shortcut = QShortcut(QKeySequence(_CLEAR_CLASS_SHORTCUT), self)
-        clear_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
-        clear_shortcut.activated.connect(self._trigger_clear_class_shortcut)
+        remove_shortcut = QShortcut(QKeySequence(_REMOVE_CLASS_SHORTCUT), self)
+        remove_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+        remove_shortcut.activated.connect(self._trigger_clear_class_shortcut)
 
-        return [apply_shortcut, clear_shortcut]
+        return [apply_shortcut, remove_shortcut]
 
     def _create_header_logo(self) -> QLabel:
         logo_label = QLabel()
@@ -632,7 +668,7 @@ class HarpyWidget(QWidget):
                 enabled=can_clear,
                 ready_message="Clear the current user class for the picked object.",
                 unavailable_message="Pick a labeled object before clearing its user class.",
-                shortcut_hint=_CLEAR_CLASS_SHORTCUT,
+                shortcut_hint=_REMOVE_CLASS_SHORTCUT,
             )
         )
 

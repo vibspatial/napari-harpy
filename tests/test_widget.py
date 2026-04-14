@@ -531,8 +531,8 @@ def test_widget_clear_shortcut_clears_user_class_for_picked_instance(qtbot, sdat
     widget.class_spinbox.setValue(2)
     widget.apply_class_button.click()
 
-    assert widget.clear_class_button.toolTip().endswith("Shortcut: C.")
-    assert widget._annotation_shortcuts[1].key().toString() == "C"
+    assert widget.clear_class_button.toolTip().endswith("Shortcut: R.")
+    assert widget._annotation_shortcuts[1].key().toString() == "R"
 
     widget._annotation_shortcuts[1].activated.emit()
 
