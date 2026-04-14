@@ -990,6 +990,62 @@ def test_widget_reload_freezes_classifier_worker_and_ignores_late_results(
     assert "Loaded predictions for" in widget.classifier_feedback.text()
 
 
+def test_widget_retrain_button_recovers_after_worker_finishes(qtbot, monkeypatch, sdata_blobs: SpatialData) -> None:
+    table = sdata_blobs["table"]
+    instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
+    table.obsm["features_1"] = np.column_stack(
+        [
+            (instance_ids > 13).astype(np.float64),
+            instance_ids.astype(np.float64) / instance_ids.max(),
+        ]
+    )
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(
+        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
+        categories=[0, 1, 2],
+    )
+
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    workers: list[_DeferredWorker] = []
+
+    def fake_create_training_worker(job):
+        result = classifier_module.ClassifierJobResult(
+            job_id=job.job_id,
+            feature_key=job.feature_key,
+            label_name=job.label_name,
+            table_name=job.table_name,
+            active_positions=job.active_positions,
+            pred_classes=np.full(job.active_positions.shape, 1, dtype=np.int64),
+            pred_confidences=np.full(job.active_positions.shape, 0.91, dtype=np.float64),
+            trained_at="2026-04-13T09:00:00+00:00",
+            model_params=dict(classifier_module.RANDOM_FOREST_PARAMS),
+            eligibility=job.eligibility,
+        )
+        worker = _DeferredWorker(result)
+        workers.append(worker)
+        return worker
+
+    monkeypatch.setattr(widget._classifier_controller, "_create_training_worker", fake_create_training_worker)
+
+    widget.retrain_button.click()
+
+    assert len(workers) == 1
+    assert widget._classifier_controller.is_training is True
+    assert widget.retrain_button.isEnabled() is False
+    assert "currently running" in widget.retrain_button.toolTip()
+
+    workers[0].emit_returned()
+
+    qtbot.waitUntil(lambda: widget._classifier_controller.is_training is False, timeout=1000)
+    qtbot.waitUntil(lambda: widget.retrain_button.isEnabled(), timeout=1000)
+
+    assert "currently running" not in widget.retrain_button.toolTip()
+    assert "Retrain the classifier using the current annotations and feature matrix." in widget.retrain_button.toolTip()
+    assert "model is up to date" in widget.classifier_feedback.text()
+
+
 def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs: SpatialData) -> None:
     table = sdata_blobs["table"]
     instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
