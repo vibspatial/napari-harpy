@@ -93,15 +93,13 @@ _ACTION_BUTTON_STYLESHEET = (
     "QPushButton:disabled { background-color: #faf4f1; border-color: #ede3dd; color: #a8a29e; }"
 )
 _CLASS_EDITOR_STYLESHEET = (
-    "QWidget#class_editor {"
-    "background-color: #f8eeea; "
-    "border: 1px solid #eadfd8; "
-    "border-radius: 10px;}"
+    "QWidget#class_editor {background-color: #f8eeea; border: 1px solid #eadfd8; border-radius: 10px;}"
 )
 
 
-class HarpyWidget(QWidget):
-    """Phase 2 widget for selecting inputs and picking segmentation objects.
+class ObjectClassificationWidget(QWidget):
+    """
+    Widget for object classification.
 
     The widget does not retrieve a `SpatialData` object directly from the napari
     viewer itself. Instead, it inspects the current viewer layers and looks for
@@ -117,7 +115,7 @@ class HarpyWidget(QWidget):
 
     def __init__(self, napari_viewer: napari.Viewer | None = None) -> None:
         super().__init__()
-        self.setObjectName("harpy_widget")
+        self.setObjectName("object_classification_widget")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setAutoFillBackground(True)
         palette = self.palette()
@@ -146,7 +144,7 @@ class HarpyWidget(QWidget):
         self._table_binding_error: str | None = None
         self._feature_matrix_keys: list[str] = []
         self._selected_feature_key: str | None = None
-        self._logo_path = Path(__file__).resolve().parents[2] / "docs" / "_static" / "logo.png"
+        self._logo_path = Path(__file__).resolve().parents[3] / "docs" / "_static" / "logo.png"
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -348,11 +346,7 @@ class HarpyWidget(QWidget):
         return label
 
     def _set_tooltip(self, widget: QWidget, message: str) -> None:
-        widget.setToolTip(
-            "<qt>"
-            f"<span style='color: {_TOOLTIP_TEXT_COLOR};'>{escape(message)}</span>"
-            "</qt>"
-        )
+        widget.setToolTip(f"<qt><span style='color: {_TOOLTIP_TEXT_COLOR};'>{escape(message)}</span></qt>")
 
     @property
     def selected_segmentation_name(self) -> str | None:
@@ -744,7 +738,7 @@ class HarpyWidget(QWidget):
                 ready_message="Assign the selected user class to the picked object.",
                 unavailable_message="Pick an annotated object in the viewer before applying a class.",
                 shortcut_hint=_APPLY_CLASS_SHORTCUT,
-            )
+            ),
         )
         self._set_tooltip(
             self.clear_class_button,
@@ -753,7 +747,7 @@ class HarpyWidget(QWidget):
                 ready_message="Clear the current user class for the picked object.",
                 unavailable_message="Pick a labeled object before clearing its user class.",
                 shortcut_hint=_REMOVE_CLASS_SHORTCUT,
-            )
+            ),
         )
 
     def _annotation_action_tooltip(

@@ -7,4 +7,4 @@ uv pip install -e '.[dev]'
 uv pip install jupyter
 
 echo "Launch napari with: source .venv/bin/activate && napari"
-echo "Open the widget from: Plugins -> napari-harpy -> Object Classifier"
+echo "Open the widget from: Plugins -> napari-harpy -> Object Classification"
