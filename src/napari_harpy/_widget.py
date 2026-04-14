@@ -132,7 +132,7 @@ class HarpyWidget(QWidget):
 
         self.sync_button = QPushButton("Write Table to zarr")
         self.sync_button.setObjectName("sync_to_zarr_button")
-        self.sync_button.clicked.connect(self._sync_to_zarr)
+        self.sync_button.clicked.connect(self._write_to_zarr)
         self.sync_button.setEnabled(False)
 
         self.reload_button = QPushButton("Reload Table from zarr")
@@ -774,8 +774,9 @@ class HarpyWidget(QWidget):
 
         self.retrain_button.setToolTip(tooltip)
 
-    def _sync_to_zarr(self) -> None:
-        # TODO: rename _sync_to_zarr to _write_to_zarr
+    def _write_to_zarr(self) -> None:
+        # TODO: consider disabling write while classifier retraining is pending
+        # so "Write Table to zarr" always snapshots a settled table state.
         self._write_selected_table_to_zarr()
 
     def _write_selected_table_to_zarr(
@@ -785,7 +786,7 @@ class HarpyWidget(QWidget):
         feedback_message: str | None = None,
     ) -> bool:
         try:
-            self._persistence_controller.sync_table_state()
+            self._persistence_controller.write_table_state()
         except ValueError as error:
             self._set_persistence_feedback(str(error), error=True)
             return False
@@ -823,6 +824,7 @@ class HarpyWidget(QWidget):
         raise RuntimeError(f"Unhandled dirty reload decision: {decision!r}")
 
     def _reload_selected_table_from_zarr(self, *, feedback_message: str | None = None) -> bool:
+        self._classifier_controller.freeze_for_reload()
         try:
             # For now the persistence layer reports expected reload failures as
             # `ValueError` (selection/precondition issues, reload validation
@@ -836,6 +838,7 @@ class HarpyWidget(QWidget):
 
         self._refresh_feature_matrix_keys()
         self._bind_current_selection()
+        self._classifier_controller.reset_after_reload()
         source = self._selected_table_store_destination()
         message = feedback_message or f"Reloaded `{self.selected_table_name}` table state from `{source}`."
         self._set_persistence_feedback(message, error=False)

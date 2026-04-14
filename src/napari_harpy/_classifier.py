@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
@@ -100,6 +100,9 @@ def _run_classifier_job(job: ClassifierJob) -> ClassifierJobResult:
     return _fit_classifier_job(job)
 
 
+# Keep the synchronous fit/predict logic separate from the `@thread_worker`
+# wrapper above: `_run_classifier_job(...)` returns a worker object, while this
+# function directly computes and returns the eventual `ClassifierJobResult`.
 def _fit_classifier_job(job: ClassifierJob) -> ClassifierJobResult:
     classifier = RandomForestClassifier(**RANDOM_FOREST_PARAMS)
     classifier.fit(job.train_features, job.train_labels)
@@ -141,6 +144,7 @@ class ClassifierController:
         self._selected_label_name: str | None = None
         self._selected_table_name: str | None = None
         self._selected_feature_key: str | None = None
+        # TODO: clean up. There is overlap between the above class attributes and spatialdatatablemetadata.
         self._selected_table_metadata: SpatialDataTableMetadata | None = None
 
         self._latest_requested_job_id = 0
@@ -255,6 +259,24 @@ class ClassifierController:
             self._set_status("Classifier: model is stale. Retraining is scheduled.", kind="info")
 
         return True
+
+    def freeze_for_reload(self) -> None:
+        """Cancel pending async work so reload cannot apply stale classifier results."""
+        self._invalidate_async_jobs()
+        self._update_idle_status()
+
+    def reset_after_reload(self) -> None:
+        """Recompute classifier state from the reloaded table without retraining."""
+        self._invalidate_async_jobs()
+        table = self._get_bound_table()
+        if table is None:
+            self._is_dirty = False
+            self._set_status("Classifier: choose an annotation table and feature matrix.", kind="warning")
+            return
+
+        self._ensure_prediction_columns(table)
+        self._is_dirty = False
+        self._update_status_from_reloaded_table(table)
 
     def _launch_scheduled_retrain(self) -> None:
         self._launch_retrain_job(self._latest_requested_job_id)
@@ -553,6 +575,10 @@ class ClassifierController:
         self._debounce_timer.stop()
         self._cancel_active_worker()
 
+    def _invalidate_async_jobs(self) -> None:
+        self._latest_requested_job_id += 1
+        self._cancel_pending_and_active_jobs()
+
     def _cancel_active_worker(self) -> None:
         if self._active_worker is None:
             return
@@ -646,6 +672,71 @@ class ClassifierController:
             return
 
         self._set_status("Classifier: model is up to date.", kind="success")
+
+    def _update_status_from_reloaded_table(self, table: AnnData) -> None:
+        if self._selected_feature_key is None:
+            self._set_status("Classifier: choose a feature matrix to enable training.", kind="warning")
+            return
+
+        config = table.uns.get(CLASSIFIER_CONFIG_KEY)
+        if not isinstance(config, Mapping):
+            self._update_idle_status()
+            return
+
+        mismatches: list[str] = []
+        config_feature_key = config.get("feature_key")
+        if isinstance(config_feature_key, str) and config_feature_key != self._selected_feature_key:
+            mismatches.append(
+                f"loaded predictions use feature matrix `{config_feature_key}` but `{self._selected_feature_key}` is selected"
+            )
+
+        config_table_name = config.get("table_name")
+        if (
+            isinstance(config_table_name, str)
+            and self._selected_table_name is not None
+            and config_table_name != self._selected_table_name
+        ):
+            mismatches.append(
+                f"loaded predictions target table `{config_table_name}` but `{self._selected_table_name}` is selected"
+            )
+
+        config_label_name = config.get("label_name")
+        if (
+            isinstance(config_label_name, str)
+            and self._selected_label_name is not None
+            and config_label_name != self._selected_label_name
+        ):
+            mismatches.append(
+                f"loaded predictions target segmentation `{config_label_name}` but `{self._selected_label_name}` is selected"
+            )
+
+        if mismatches:
+            self._is_dirty = True
+            self._set_status(f"Classifier: model is stale because {'; '.join(mismatches)}.", kind="warning")
+            return
+
+        trained = config.get("trained")
+        if trained is True:
+            active_count = config.get("n_active_objects")
+            if isinstance(active_count, int):
+                self._set_status(
+                    f"Classifier: model is up to date. Loaded predictions for {active_count} objects from disk.",
+                    kind="success",
+                )
+            else:
+                self._set_status("Classifier: model is up to date. Loaded predictions from disk.", kind="success")
+            return
+
+        eligible = config.get("eligible")
+        reason = config.get("reason")
+        if eligible is False and isinstance(reason, str) and reason:
+            self._set_status(f"Classifier: {reason}", kind="warning")
+            return
+        if trained is False and isinstance(reason, str) and reason:
+            self._set_status(f"Classifier: {reason}", kind="warning")
+            return
+
+        self._update_idle_status()
 
 
 def _normalize_feature_matrix(feature_matrix: Any, n_obs: int) -> Any:

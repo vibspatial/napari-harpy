@@ -25,10 +25,10 @@ styling around that authoritative state.
 
 ## Status Snapshot
 
-- Completed: `P6-01`, `P6-02`, `P6-03`, `P6-05`, `P6-07`
+- Completed: `P6-01`, `P6-02`, `P6-03`, `P6-05`, `P6-06`, `P6-07`, `P6-08`
 - Removed from scope: former `P6-04` cache-regeneration work
-- Partially completed: `P6-08`
-- Remaining core work: `P6-06`, then finish `P6-08`
+- Remaining core work: none
+- Follow-up work remains under `Nice-To-Have Follow-Ups`
 
 ## Suggested Delivery Order
 
@@ -76,7 +76,7 @@ memory -> disk sync path.
 ### Acceptance criteria
 
 - Harpy has a dedicated API for reload
-- reload logic is not mixed into `sync_table_state()`
+- reload logic is not mixed into `write_table_state()`
 - the selected table zarr path is resolved through the same authoritative table path logic as sync
 
 ### Depends on
@@ -235,7 +235,17 @@ Prevent confusing loss of unsynced edits when the user requests reload.
 
 ### Status
 
-Open.
+Completed.
+
+Implemented:
+
+- classifier-side `freeze_for_reload()` and `reset_after_reload()` APIs
+- cancellation of pending retrain debounce timers before reload
+- cancellation of active classifier workers where possible
+- stale-result protection through async job invalidation and guarded worker callbacks
+- classifier-status recomputation from the reloaded table state
+- no automatic retrain as part of reload
+- controller and widget tests covering stale-worker protection
 
 ### Goal
 
@@ -331,7 +341,7 @@ Expose `Reload Table from zarr` in the widget and refresh all table-derived UI s
 
 ### Status
 
-Partially complete.
+Completed.
 
 Already implemented:
 
@@ -340,10 +350,9 @@ Already implemented:
 - widget test coverage for `Reload Table from zarr`
 - widget test coverage that new on-disk `obsm` keys become visible after reload
 - dirty-state / confirmation coverage from `P6-05`
-
-Still missing:
-
-- stale-classifier-result coverage from `P6-06`
+- controller-level stale-classifier-result coverage from `P6-06`
+- widget-level stale-classifier-result coverage from `P6-06`
+- widget test coverage that reload falls back when the selected feature key disappears
 
 ### Goal
 

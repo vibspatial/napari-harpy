@@ -44,6 +44,7 @@ class SpatialDataTableMetadata:
         return label_name in self.regions
 
 
+# TODO: this class should be replaced with a collection of helper functions.
 class SpatialDataAdapter:
     """Pure helper for SpatialData tables and linkage metadata.
 
@@ -79,19 +80,13 @@ class SpatialDataAdapter:
         table_metadata = self.get_table_metadata(sdata, table_name)
 
         if not table_metadata.annotates(label_name):
-            raise ValueError(
-                f"Table `{table_name}` does not annotate segmentation `{label_name}`."
-            )
+            raise ValueError(f"Table `{table_name}` does not annotate segmentation `{label_name}`.")
 
         if table_metadata.region_key not in table.obs.columns:
-            raise ValueError(
-                f"Table `{table_name}` is missing required obs column `{table_metadata.region_key}`."
-            )
+            raise ValueError(f"Table `{table_name}` is missing required obs column `{table_metadata.region_key}`.")
 
         if table_metadata.instance_key not in table.obs.columns:
-            raise ValueError(
-                f"Table `{table_name}` is missing required obs column `{table_metadata.instance_key}`."
-            )
+            raise ValueError(f"Table `{table_name}` is missing required obs column `{table_metadata.instance_key}`.")
 
         region_rows = table.obs.loc[table.obs[table_metadata.region_key] == label_name]
         if region_rows.empty:
@@ -115,6 +110,7 @@ class SpatialDataAdapter:
         """Return available feature matrix keys from `adata.obsm`."""
         table = self.get_table(sdata, table_name)
         return sorted(table.obsm.keys())
+
 
 class SpatialDataViewerBinding:
     """Viewer-bound helper for resolving napari layers linked to SpatialData."""

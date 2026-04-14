@@ -11,11 +11,13 @@ import zarr
 from matplotlib.colors import to_rgba
 from napari.layers import Labels
 from napari.utils.colormaps import DirectLabelColormap
+from qtpy.QtCore import QObject, Signal
 from spatialdata import SpatialData, read_zarr
 from spatialdata.models import TableModel
 
 import napari_harpy._annotation as annotation_module
 import napari_harpy._class_palette as class_palette_module
+import napari_harpy._classifier as classifier_module
 import napari_harpy._widget as widget_module
 from napari_harpy._annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
 from napari_harpy._class_palette import default_class_colors
@@ -59,6 +61,28 @@ class DummyLayers(list):
 class DummyViewer:
     def __init__(self, layers: list[Labels] | None = None) -> None:
         self.layers = DummyLayers(layers)
+
+
+class _DeferredWorker(QObject):
+    returned = Signal(object)
+    errored = Signal(object)
+    finished = Signal()
+
+    def __init__(self, result: classifier_module.ClassifierJobResult) -> None:
+        super().__init__()
+        self._result = result
+        self.started = False
+        self.quit_called = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def quit(self) -> None:
+        self.quit_called = True
+
+    def emit_returned(self) -> None:
+        self.returned.emit(self._result)
+        self.finished.emit()
 
 
 def make_blobs_labels_layer(sdata: SpatialData, label_name: str = "blobs_labels") -> Labels:
@@ -590,9 +614,7 @@ def test_widget_syncs_user_class_to_backed_zarr(qtbot, backed_sdata_blobs: Spati
     assert list(reread["table"].uns[USER_CLASS_COLORS_KEY]) == default_class_colors([0, 3])
 
 
-def test_widget_marks_persistence_dirty_after_classifier_writes_results(
-    qtbot, backed_sdata_blobs: SpatialData
-) -> None:
+def test_widget_marks_persistence_dirty_after_classifier_writes_results(qtbot, backed_sdata_blobs: SpatialData) -> None:
     table = backed_sdata_blobs["table"]
     instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
     table.obsm["features_1"] = np.column_stack(
@@ -615,8 +637,7 @@ def test_widget_marks_persistence_dirty_after_classifier_writes_results(
 
     widget.retrain_button.click()
     qtbot.waitUntil(
-        lambda: widget._persistence_controller.is_dirty
-        and table.obs[PRED_CLASS_COLUMN].astype("string").ne("0").any(),
+        lambda: widget._persistence_controller.is_dirty and table.obs[PRED_CLASS_COLUMN].astype("string").ne("0").any(),
         timeout=5000,
     )
 
@@ -659,9 +680,7 @@ def test_widget_cancels_dirty_reload_when_user_chooses_cancel(
     assert reread["table"].obs.loc[disk_mask, USER_CLASS_COLUMN].tolist() == [0]
 
 
-def test_widget_dirty_reload_can_write_then_reload(
-    qtbot, monkeypatch, backed_sdata_blobs: SpatialData
-) -> None:
+def test_widget_dirty_reload_can_write_then_reload(qtbot, monkeypatch, backed_sdata_blobs: SpatialData) -> None:
     layer = make_blobs_labels_layer(backed_sdata_blobs)
     viewer = DummyViewer(layers=[layer])
     widget = HarpyWidget(viewer)
@@ -695,9 +714,7 @@ def test_widget_dirty_reload_can_write_then_reload(
     )
 
 
-def test_widget_dirty_reload_can_discard_local_edits(
-    qtbot, monkeypatch, backed_sdata_blobs: SpatialData
-) -> None:
+def test_widget_dirty_reload_can_discard_local_edits(qtbot, monkeypatch, backed_sdata_blobs: SpatialData) -> None:
     layer = make_blobs_labels_layer(backed_sdata_blobs)
     viewer = DummyViewer(layers=[layer])
     widget = HarpyWidget(viewer)
@@ -768,6 +785,125 @@ def test_widget_reloads_table_state_from_backed_zarr(qtbot, backed_sdata_blobs: 
     assert feature_matrix_items == ["disk_features", "features_1", "features_2"]
     assert widget.selected_feature_key == "features_1"
     assert "Current class: 7." in widget.selection_status.text()
+
+
+def test_widget_reload_falls_back_when_selected_feature_key_disappears(qtbot, backed_sdata_blobs: SpatialData) -> None:
+    layer = make_blobs_labels_layer(backed_sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    expected_table_path = Path(backed_sdata_blobs.path) / "tables" / "table"
+    table = backed_sdata_blobs["table"]
+
+    widget.feature_matrix_combo.setCurrentIndex(1)
+
+    assert widget.selected_feature_key == "features_2"
+
+    obs = table.obs.copy()
+    obsm = {"features_1": table.obsm["features_1"]}
+    uns = dict(table.uns)
+    _write_disk_table_state(backed_sdata_blobs, obs=obs, obsm=obsm, uns=uns)
+
+    widget.reload_button.click()
+
+    feature_matrix_items = [
+        widget.feature_matrix_combo.itemText(index) for index in range(widget.feature_matrix_combo.count())
+    ]
+
+    assert widget.persistence_feedback.text() == f"Reloaded `table` table state from `{expected_table_path}`."
+    assert feature_matrix_items == ["features_1"]
+    assert widget.selected_feature_key == "features_1"
+    assert "features_2" not in table.obsm
+
+
+def test_widget_reload_freezes_classifier_worker_and_ignores_late_results(
+    qtbot, monkeypatch, backed_sdata_blobs: SpatialData
+) -> None:
+    table = backed_sdata_blobs["table"]
+    instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
+    table.obsm["features_1"] = np.column_stack(
+        [
+            (instance_ids > 13).astype(np.float64),
+            instance_ids.astype(np.float64) / instance_ids.max(),
+        ]
+    )
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(
+        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
+        categories=[0, 1, 2],
+    )
+
+    layer = make_blobs_labels_layer(backed_sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    workers: list[_DeferredWorker] = []
+
+    def fake_create_training_worker(job):
+        result = classifier_module.ClassifierJobResult(
+            job_id=job.job_id,
+            feature_key=job.feature_key,
+            label_name=job.label_name,
+            table_name=job.table_name,
+            active_positions=job.active_positions,
+            pred_classes=np.full(job.active_positions.shape, 1, dtype=np.int64),
+            pred_confidences=np.full(job.active_positions.shape, 0.91, dtype=np.float64),
+            trained_at="2026-04-13T09:00:00+00:00",
+            model_params=dict(classifier_module.RANDOM_FOREST_PARAMS),
+            eligibility=job.eligibility,
+        )
+        worker = _DeferredWorker(result)
+        workers.append(worker)
+        return worker
+
+    monkeypatch.setattr(widget._classifier_controller, "_create_training_worker", fake_create_training_worker)
+
+    widget.retrain_button.click()
+
+    assert len(workers) == 1
+    assert workers[0].started is True
+    assert widget._classifier_controller.is_training is True
+
+    expected_table_path = Path(backed_sdata_blobs.path) / "tables" / "table"
+    obs = table.obs.copy()
+    obs[PRED_CLASS_COLUMN] = pd.Categorical(np.full(table.n_obs, 7, dtype=np.int64), categories=[0, 7])
+    obs[PRED_CONFIDENCE_COLUMN] = pd.Series(np.full(table.n_obs, 0.77), index=obs.index, dtype="float64")
+    obsm = dict(table.obsm)
+    uns = dict(table.uns)
+    uns[CLASSIFIER_CONFIG_KEY] = {
+        "model_type": "RandomForestClassifier",
+        "feature_key": "features_1",
+        "table_name": "table",
+        "label_name": "blobs_labels",
+        "roi_mode": "none",
+        "trained": True,
+        "eligible": True,
+        "reason": "Ready to train.",
+        "training_timestamp": "2026-04-13T09:00:00+00:00",
+        "n_labeled_objects": 4,
+        "n_active_objects": int(table.n_obs),
+        "n_features": 2,
+        "class_labels_seen": [1, 2],
+        "rf_params": dict(classifier_module.RANDOM_FOREST_PARAMS),
+    }
+    _write_disk_table_state(backed_sdata_blobs, obs=obs, obsm=obsm, uns=uns)
+
+    widget.reload_button.click()
+
+    assert workers[0].quit_called is True
+    assert widget._classifier_controller.is_training is False
+    assert widget._classifier_controller.is_dirty is False
+    assert widget.persistence_feedback.text() == f"Reloaded `table` table state from `{expected_table_path}`."
+    assert table.obs[PRED_CLASS_COLUMN].eq(7).all()
+    assert table.obs[PRED_CONFIDENCE_COLUMN].eq(0.77).all()
+    assert "Loaded predictions for" in widget.classifier_feedback.text()
+    assert len(workers) == 1
+
+    workers[0].emit_returned()
+
+    assert table.obs[PRED_CLASS_COLUMN].eq(7).all()
+    assert table.obs[PRED_CONFIDENCE_COLUMN].eq(0.77).all()
+    assert "Loaded predictions for" in widget.classifier_feedback.text()
 
 
 def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs: SpatialData) -> None:

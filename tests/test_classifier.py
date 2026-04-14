@@ -4,6 +4,7 @@ import time
 
 import numpy as np
 import pandas as pd
+from qtpy.QtCore import QObject, Signal
 from spatialdata import SpatialData
 
 import napari_harpy._classifier as classifier_module
@@ -17,6 +18,28 @@ from napari_harpy._classifier import (
 )
 from napari_harpy._class_palette import default_class_colors
 from napari_harpy._spatialdata import SpatialDataAdapter
+
+
+class _DeferredWorker(QObject):
+    returned = Signal(object)
+    errored = Signal(object)
+    finished = Signal()
+
+    def __init__(self, result: classifier_module.ClassifierJobResult) -> None:
+        super().__init__()
+        self._result = result
+        self.started = False
+        self.quit_called = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def quit(self) -> None:
+        self.quit_called = True
+
+    def emit_returned(self) -> None:
+        self.returned.emit(self._result)
+        self.finished.emit()
 
 
 def _set_deterministic_features(sdata: SpatialData) -> None:
@@ -243,3 +266,113 @@ def test_classifier_controller_notifies_table_state_change_when_training_errors(
     assert table_state_changes == ["changed"]
     assert sdata_blobs["table"].uns[CLASSIFIER_CONFIG_KEY]["trained"] is False
     assert "boom" in sdata_blobs["table"].uns[CLASSIFIER_CONFIG_KEY]["reason"]
+
+
+def test_classifier_controller_freeze_for_reload_cancels_pending_debounce(
+    qtbot, monkeypatch, sdata_blobs: SpatialData
+) -> None:
+    _set_deterministic_features(sdata_blobs)
+    _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
+    created_job_ids: list[int] = []
+
+    def fake_create_training_worker(self, job):
+        del self
+        created_job_ids.append(job.job_id)
+        raise AssertionError("reload freeze should cancel the debounce before a worker is created")
+
+    monkeypatch.setattr(ClassifierController, "_create_training_worker", fake_create_training_worker)
+
+    controller = ClassifierController(
+        SpatialDataAdapter(),
+        debounce_interval_ms=50,
+    )
+    controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
+
+    controller.schedule_retrain()
+    controller.freeze_for_reload()
+    qtbot.wait(150)
+
+    assert created_job_ids == []
+    assert controller.is_training is False
+    assert controller.is_dirty is True
+    assert controller.status_message == "Classifier: model is stale. Click Retrain to refresh predictions."
+
+
+def test_classifier_controller_reset_after_reload_ignores_late_worker_results(
+    monkeypatch, sdata_blobs: SpatialData
+) -> None:
+    _set_deterministic_features(sdata_blobs)
+    _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
+    workers: dict[int, _DeferredWorker] = {}
+
+    def fake_create_training_worker(self, job):
+        del self
+        result = classifier_module.ClassifierJobResult(
+            job_id=job.job_id,
+            feature_key=job.feature_key,
+            label_name=job.label_name,
+            table_name=job.table_name,
+            active_positions=job.active_positions,
+            pred_classes=np.full(job.active_positions.shape, 1, dtype=np.int64),
+            pred_confidences=np.full(job.active_positions.shape, 0.91, dtype=np.float64),
+            trained_at="2026-04-13T09:00:00+00:00",
+            model_params=dict(classifier_module.RANDOM_FOREST_PARAMS),
+            eligibility=job.eligibility,
+        )
+        worker = _DeferredWorker(result)
+        workers[job.job_id] = worker
+        return worker
+
+    monkeypatch.setattr(ClassifierController, "_create_training_worker", fake_create_training_worker)
+
+    controller = ClassifierController(
+        SpatialDataAdapter(),
+        debounce_interval_ms=0,
+    )
+    controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
+    controller.retrain_now()
+
+    worker = workers[1]
+    assert worker.started is True
+    assert controller.is_training is True
+
+    controller.freeze_for_reload()
+
+    table = sdata_blobs["table"]
+    disk_predictions = np.full(table.n_obs, 2, dtype=np.int64)
+    disk_confidences = np.full(table.n_obs, 0.77, dtype=np.float64)
+    table.obs[PRED_CLASS_COLUMN] = pd.Categorical(disk_predictions, categories=[0, 2])
+    table.obs[PRED_CONFIDENCE_COLUMN] = pd.Series(
+        disk_confidences,
+        index=table.obs.index,
+        dtype="float64",
+    )
+    table.uns[CLASSIFIER_CONFIG_KEY] = {
+        "model_type": "RandomForestClassifier",
+        "feature_key": "features_1",
+        "table_name": "table",
+        "label_name": "blobs_labels",
+        "roi_mode": "none",
+        "trained": True,
+        "eligible": True,
+        "reason": "Ready to train.",
+        "training_timestamp": "2026-04-13T09:00:00+00:00",
+        "n_labeled_objects": 4,
+        "n_active_objects": int(table.n_obs),
+        "n_features": 2,
+        "class_labels_seen": [1, 2],
+        "rf_params": dict(classifier_module.RANDOM_FOREST_PARAMS),
+    }
+
+    controller.reset_after_reload()
+
+    assert worker.quit_called is True
+    assert controller.is_training is False
+    assert controller.is_dirty is False
+    assert controller.status_message == f"Classifier: model is up to date. Loaded predictions for {table.n_obs} objects from disk."
+
+    worker.emit_returned()
+
+    assert table.obs[PRED_CLASS_COLUMN].eq(2).all()
+    assert table.obs[PRED_CONFIDENCE_COLUMN].eq(0.77).all()
+    assert controller.status_message == f"Classifier: model is up to date. Loaded predictions for {table.n_obs} objects from disk."

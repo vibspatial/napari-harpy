@@ -277,7 +277,7 @@ class PersistenceController:
         self.clear_dirty()
         return table_path
 
-    def sync_table_state(self) -> str:
+    def write_table_state(self) -> str:
         """Write the current table annotation state back to the backed zarr store."""
         sdata = self._require_selected_spatialdata()
         table_name = self._require_selected_table_name()

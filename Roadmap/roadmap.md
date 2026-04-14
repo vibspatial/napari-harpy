@@ -370,27 +370,28 @@ on-disk store changed outside the current in-memory workflow.
 
 `Reload from zarr` should be strictly disk -> memory. Keep it separate from `Write to zarr`.
 
-For MVP, prefer reloading the current table and refreshing the relevant layer metadata over trying to
-rebuild the entire viewer from scratch. This phase is mainly about safely picking up external changes
+For MVP, reload only the currently selected table state from disk by reading `obs`, `obsm`, and `uns`
+directly from the backed zarr store. Keep `sdata.tables[table_name]` authoritative, refresh Harpy-owned
+widget and styling state after reload, and defer any full-`SpatialData` rebuild or napari-spatialdata
+cache regeneration to later follow-up work. This phase is mainly about safely picking up external changes
 such as newly written `.obs` columns or new `.obsm[...]` entries.
 
 ### Tasks
 
-- [ ] Add a `Reload from zarr` action in the widget.
-- [ ] Read the backed `SpatialData` store again from `sdata.path`.
-- [ ] Decide reload scope for MVP:
-  - [ ] prefer reloading the currently selected table first
-  - [ ] document whether full-`SpatialData` reload is deferred
-- [ ] Refresh the in-memory `SpatialData` table reference after reload.
-- [ ] Refresh viewer-linked cached metadata that depends on table contents, including joined `adata` state.
-- [ ] Trigger the necessary widget and layer refresh so new `.obs` columns or `.obsm[...]` keys become visible.
-- [ ] Surface clear UI messaging if reload would discard unsynced in-memory edits.
+- [x] Add a `Reload from zarr` action in the widget.
+- [x] Read the selected table snapshot directly from the backed zarr store instead of rereading the full `SpatialData`.
+- [x] Keep reload scope to the currently selected table for MVP and defer full-`SpatialData` reload.
+- [x] Refresh the in-memory selected table state after reload.
+- [x] Trigger the necessary widget and layer refresh so new `.obs` columns or `.obsm[...]` keys become visible.
+- [x] Surface clear UI messaging if reload would discard unsynced in-memory edits.
+- [x] Freeze async classifier work around reload so stale worker results cannot overwrite reloaded state.
 
 ### Exit criteria
 
-- [ ] User can click `Reload from zarr` and pick up on-disk table changes in the widget.
-- [ ] Reload updates relevant table-derived UI state such as feature keys.
-- [ ] Reload behavior is clearly separated from viewer rescan and from sync.
+- [x] User can click `Reload from zarr` and pick up on-disk table changes in the widget.
+- [x] Reload updates relevant table-derived UI state such as feature keys.
+- [x] Reload behavior is clearly separated from viewer rescan and from sync.
+- [x] Stale classifier jobs cannot overwrite freshly reloaded table state.
 
 ### Phase 7: ROI selection and subsetting
 
