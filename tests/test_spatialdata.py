@@ -132,6 +132,31 @@ def test_get_spatialdata_image_options_return_compatible_images_for_selected_lab
     assert all(option.sdata is sdata_blobs for option in options)
 
 
+def test_get_spatialdata_image_options_do_not_require_loaded_image_layers(sdata_blobs: SpatialData) -> None:
+    label_layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = SimpleNamespace(layers=[label_layer])
+
+    options = get_spatialdata_image_options(
+        viewer,
+        sdata=sdata_blobs,
+        label_name="blobs_labels",
+    )
+
+    assert [option.image_name for option in options] == [
+        "blobs_image",
+        "blobs_multiscale_image",
+    ]
+    assert [option.display_name for option in options] == [
+        "blobs_image",
+        "blobs_multiscale_image",
+    ]
+    assert [option.coordinate_systems for option in options] == [
+        ("global",),
+        ("global",),
+    ]
+    assert all(option.sdata is sdata_blobs for option in options)
+
+
 def test_get_spatialdata_image_options_include_dataset_names_when_multiple_datasets_are_present() -> None:
     first_sdata = blobs()
     second_sdata = blobs()
