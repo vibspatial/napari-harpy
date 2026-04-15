@@ -9,8 +9,8 @@ Add a second napari widget to `napari-harpy`:
 
 The new widget should let the user:
 
-1. select a labels layer loaded through `napari-spatialdata`
-2. optionally select an image layer from the same `SpatialData`
+1. select a labels element discovered from viewer-linked `SpatialData` metadata
+2. optionally select an image element from the same `SpatialData` and a compatible coordinate system
 3. choose which feature families to calculate
 4. choose an output `.obsm` key
 5. write the calculated features into the selected `AnnData` table
@@ -52,6 +52,24 @@ From the installed `napari-spatialdata` source:
   - `metadata["_current_cs"]`
 
 This is enough to build the new widget from viewer state without asking the user to browse the `SpatialData` object manually.
+
+The important implication is that viewer layers should act as entry points into
+viewer-linked `SpatialData` objects, not as the complete list of selectable
+elements. Once we know which `SpatialData` object and coordinate system the
+user is bound to, we can discover sibling labels and image elements directly
+from `sdata`.
+
+Recommended discovery model:
+
+- both widgets scan labels from the current viewer-linked `SpatialData` objects
+- selecting a labels element binds us to:
+  - a specific `SpatialData` object
+  - the coordinate system represented by the selected labels layer when it is loaded
+- the feature-extraction image dropdown should then list image elements from:
+  - the same `SpatialData` object
+  - coordinate systems compatible with the selected labels layer
+- if the selected labels or image element is not currently loaded in the viewer,
+  the widget should still allow selection but surface a warning to the user
 
 ### 2. The current object-classification path already matches the intended integration target
 
@@ -173,14 +191,24 @@ The controller owns validation, background jobs, feature calculation, and the me
 
 ### 2. Resolve from viewer metadata, but compute from `sdata`
 
-The widget should use viewer layers only to resolve:
+The widgets should use viewer layers only to resolve:
 
+- which `SpatialData` objects are currently linked into the viewer
 - the selected `SpatialData`
 - the selected labels element name
-- the selected image element name
-- the active coordinate system
+- the active coordinate system bound to the selected labels layer when it is loaded
+- whether the selected labels/image element is currently loaded in the viewer
 
-The actual computation should then read from the underlying `sdata` elements, not from `napari` layer buffers. That keeps the implementation aligned with Harpy and avoids display-level downsampling concerns.
+The actual computation should then read from the underlying `sdata` elements,
+not from `napari` layer buffers. That keeps the implementation aligned with
+Harpy and avoids display-level downsampling concerns.
+
+For selection flow, this means:
+
+- labels should be discovered dataset-centrically from viewer-linked `SpatialData` objects
+- images should also be discovered dataset-centrically from `sdata.images`
+- image choices should be filtered after labels selection to the same `SpatialData` and compatible coordinate systems
+- loaded viewer layers are still useful for UX warnings and activation, but they should not define the complete set of selectable sibling elements
 
 ### 3. Write an array-like feature matrix into `.obsm`
 
@@ -260,7 +288,7 @@ This gives us a practical path for multi-region tables without requiring that al
 
 ### 6. Default table keys for a new table
 
-If no table exists yet for the selected labels layer, use defaults aligned with `napari-spatialdata` conventions:
+If no table exists yet for the selected labels element, use defaults aligned with `napari-spatialdata` conventions:
 
 - `region_key = "region"`
 - `instance_key = "instance_id"`
@@ -274,10 +302,25 @@ For the new table rows:
 
 ## Proposed User Flow
 
+### Selection flow
+
+1. both widgets scan the current viewer for layers carrying `metadata["sdata"]`
+2. from those viewer-linked `SpatialData` objects, expose labels elements as selectable segmentations
+3. when the user selects a segmentation:
+   - bind to the selected `SpatialData`
+   - resolve the coordinate system from the loaded labels layer when available
+4. in the feature-extraction widget, populate the image dropdown from `sdata.images`
+   filtered to image elements that are selectable for that labels choice:
+   - same `SpatialData`
+   - shared coordinate system
+5. if the chosen labels or image element is not currently loaded in the viewer,
+   keep it selectable but show a warning similar to the current labels-layer
+   feedback path
+
 ### Inputs
 
 - `Segmentation`
-- `Image` (optional)
+- `Image` (optional, filtered to the same `SpatialData` and compatible coordinate systems)
 - `Table`
 - `New table name` when creating a table
 - `Output feature key`
@@ -322,6 +365,7 @@ Use the new labels consistently in:
 ### Feedback
 
 - validation banner
+- warning when the selected labels/image element is not currently loaded in the viewer
 - calculation status
 - success message including:
   - table name
@@ -333,16 +377,20 @@ Use the new labels consistently in:
 
 Before calculation, require:
 
-- a selected labels layer
+- a selected labels element
 - at least one selected feature
 - a non-empty output `.obsm` key
 
 If any intensity feature is selected, also require:
 
-- a selected image layer
-- same `SpatialData` object as the labels layer
-- same spatial shape
-- compatible transform / coordinate system
+- a selected image element
+- same `SpatialData` object as the labels element
+- compatible coordinate system / transform
+- same spatial shape after resolving the selected `sdata` elements
+
+Loaded napari layers are not required for computation. If the selected labels or
+image element is not currently loaded in the viewer, surface a warning rather
+than treating that as a hard validation error.
 
 If an existing table is selected:
 
@@ -363,7 +411,9 @@ If the output `.obsm` key already exists:
 
 ### Phase 1: Extend SpatialData discovery helpers
 
-Add image discovery helpers alongside the existing labels helpers in `src/napari_harpy/_spatialdata.py`.
+Align labels and image discovery helpers in `src/napari_harpy/_spatialdata.py`
+around viewer-linked `SpatialData` datasets rather than only currently loaded
+layers.
 
 Suggested additions:
 
@@ -374,9 +424,13 @@ Suggested additions:
 
 Rules:
 
-- only expose image layers whose metadata links back to a viewer-loaded `SpatialData`
+- labels discovery should continue to start from viewer-linked `SpatialData` objects
+- image discovery should expose `sdata.images[...]` entries from those same viewer-linked `SpatialData` objects
+- once a labels element is selected, image options should be filtered to:
+  - the same `SpatialData`
+  - coordinate systems compatible with the selected labels element
 - show dataset names when multiple `SpatialData` objects are present
-- keep the image selection scoped to the same `SpatialData` as the selected labels layer
+- preserve enough state to tell whether the selected labels/image element is currently loaded in the viewer, so the widgets can warn accordingly
 
 ### Phase 2: Build the feature-extraction controller
 
