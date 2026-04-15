@@ -430,7 +430,7 @@ Rules:
   - the same `SpatialData`
   - coordinate systems compatible with the selected labels element
 - show dataset names when multiple `SpatialData` objects are present
-- preserve enough state to tell whether the selected labels/image element is currently loaded in the viewer, so the widgets can warn accordingly
+- for the feature extraction widget it is not necessary that the spatial elements (labels/images) are loaded in the viewer, so we should not raise a warning if they are not loaded.
 
 ### Phase 2: Build the feature-extraction controller
 
