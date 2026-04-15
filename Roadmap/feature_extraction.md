@@ -67,7 +67,7 @@ The classifier only requires that the selected `.obsm` entry:
 - has `n_obs` rows
 - can be converted to a numeric array
 
-That means the feature widget does not need any classifier-specific serialization format. A standard `.obsm` matrix aligned to `adata.obs.index` is enough.
+That means the feature widget does not need any classifier-specific serialization format. A standard `.obsm` matrix with `n_obs` rows is enough, and feature names/provenance can live in companion metadata in `.uns`.
 
 ### 3. The Harpy high-level wrappers are close, but not quite the right abstraction for this widget
 
@@ -135,16 +135,29 @@ If the user has no selected table, or wants a new one, we can create it ourselve
 
 This is especially useful because `add_table_layer(...)` also handles backed `SpatialData`.
 
-### 7. `.obsm` can safely hold a `DataFrame` in this environment
+### 7. Prefer an array-first feature-matrix schema
 
-In this environment, a `DataFrame` stored in `.obsm[key]` round-trips through `anndata.write_zarr(...)` and `anndata.read_zarr(...)`.
+For long-term flexibility, the feature extractor should treat `.obsm[key]` as an array-like matrix store, not as a pandas-backed table abstraction.
 
-That is useful because it lets us preserve:
+Recommended schema:
 
-- feature column names
-- row alignment via `adata.obs.index`
+- `adata.obsm[feature_key]`: `np.ndarray | scipy.sparse.spmatrix | dask.array.Array`
+- `adata.uns["harpy_feature_matrices"][feature_key]`:
+  - `columns`
+  - `backend`
+  - `dtype`
+  - `source_label`
+  - `source_image`
+  - `coordinate_system`
+  - `schema_version`
 
-without inventing extra side metadata just to remember the feature names.
+Why this is preferable:
+
+- it avoids depending on DataFrame-specific semantics such as `.columns`, `.index`, and pandas casting behavior
+- it keeps the stored feature representation aligned with the conceptual model of `.obsm` as an `n_obs x n_features` matrix
+- it leaves a clean path for sparse and dask-backed matrices later
+
+For the roadmap below, assume that feature names and provenance are read from `uns["harpy_feature_matrices"]`, not from a `DataFrame` stored in `.obsm`.
 
 ## Recommended MVP Decisions
 
@@ -169,25 +182,46 @@ The widget should use viewer layers only to resolve:
 
 The actual computation should then read from the underlying `sdata` elements, not from `napari` layer buffers. That keeps the implementation aligned with Harpy and avoids display-level downsampling concerns.
 
-### 3. Write a named matrix into `.obsm`
+### 3. Write an array-like feature matrix into `.obsm`
 
-Recommended storage format for MVP:
+Recommended storage format:
 
-- `adata.obsm[feature_key] = pd.DataFrame(...)`
+- `adata.obsm[feature_key] = feature_matrix`
 
-with:
+where `feature_matrix` is one of:
 
-- index aligned to `adata.obs.index`
-- columns named like:
-  - `mean__channel_name`
-  - `var__channel_name`
-  - `min__channel_name`
-  - `max__channel_name`
-  - `area`
-  - `eccentricity`
-  - `major_axis_length`
+- `np.ndarray`
+- `scipy.sparse.spmatrix`
+- `dask.array.Array`
 
-This works well with the current classifier because it converts the selected `.obsm` entry with `np.asarray(...)`.
+And store feature metadata separately in:
+
+- `adata.uns["harpy_feature_matrices"][feature_key]`
+
+with at least:
+
+- `columns`
+- `schema_version`
+
+and preferably also:
+
+- `backend`
+- `dtype`
+- `source_label`
+- `source_image`
+- `coordinate_system`
+
+Expected feature names remain stable, for example:
+
+- `mean__channel_name`
+- `var__channel_name`
+- `min__channel_name`
+- `max__channel_name`
+- `area`
+- `eccentricity`
+- `major_axis_length`
+
+Those names should be stored in the metadata schema, not inferred from DataFrame columns.
 
 ### 4. Merge by `(region_key, instance_key)`, not by row order
 
@@ -219,7 +253,7 @@ Recommended MVP behavior when writing into an existing table:
 - for rows belonging to the selected labels region:
   - overwrite with the newly computed feature values
 - for rows outside the selected region:
-  - preserve existing values if `.obsm[feature_key]` already exists and has the same columns
+  - preserve existing values if `.obsm[feature_key]` already exists and the stored feature metadata reports the same columns
   - otherwise fill with `NaN`
 
 This gives us a practical path for multi-region tables without requiring that all regions be recomputed together every time.
@@ -322,8 +356,8 @@ If a new table is being created:
 
 If the output `.obsm` key already exists:
 
-- if the columns match, allow in-place replacement of the selected region rows
-- if the columns differ, require explicit overwrite confirmation or a new key
+- if the stored feature metadata columns match, allow in-place replacement of the selected region rows
+- if the stored feature metadata columns differ, require explicit overwrite confirmation or a new key
 
 ## Proposed Implementation Plan
 
@@ -394,7 +428,9 @@ Use Harpy low-level primitives directly.
 1. outer-join the intensity and morphology feature frames on `instance_key`
 2. add the selected `region_key`
 3. align onto the target table rows
-4. write the aligned matrix into `.obsm[feature_key]`
+4. convert the aligned features to the chosen array-like backend
+5. write the matrix into `.obsm[feature_key]`
+6. write companion metadata into `uns["harpy_feature_matrices"][feature_key]`
 
 ### Phase 4: Create the widget
 
@@ -490,12 +526,12 @@ Minimum test coverage:
 - requires image selection only when intensity features are chosen
 - computes morphology-only features into `.obsm[key]`
 - computes intensity + morphology features into `.obsm[key]`
-- writes feature columns with stable names
+- writes feature metadata with stable column names into `uns["harpy_feature_matrices"]`
 - creates a new linked table when none is selected
 - merges correctly into an existing table by `region_key` and `instance_key`
 - preserves non-selected rows when updating one region of a multi-region table
 - refreshes layer metadata so the updated table is visible through napari-spatialdata
-- persists and reloads the new `.obsm` key through backed zarr
+- persists and reloads the new `.obsm` key and companion `uns["harpy_feature_matrices"]` metadata through backed zarr
 
 ## Recommended Initial Scope
 
@@ -525,7 +561,7 @@ The cleanest implementation path is:
 1. add a dedicated `FeatureExtractionWidget`
 2. extend the existing viewer-binding helpers with image discovery
 3. use Harpy low-level calculators, not Harpy's higher-level table writers
-4. merge feature results into `.obsm[key]` on the authoritative in-memory table
+4. merge feature results into `.obsm[key]` on the authoritative in-memory table and record companion metadata in `uns`
 5. create a new linked table with `add_table_layer(...)` when no table exists
 6. reuse the current object-classification widget as the consumer of the new feature matrix
 
