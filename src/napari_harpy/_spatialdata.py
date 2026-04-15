@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+from napari.layers import Image, Labels
 from spatialdata import get_element_annotators, join_spatialelement_table
 from spatialdata.models import TableModel
 from spatialdata.transformations import get_transformation
@@ -633,11 +634,12 @@ def _get_unique_spatialdata_objects(layers: Any) -> list[SpatialData]:
 
 def _is_pickable_labels_layer(layer: Any) -> bool:
     events = getattr(layer, "events", None)
-    return hasattr(layer, "selected_label") and getattr(events, "selected_label", None) is not None
+    return isinstance(layer, Labels) and getattr(events, "selected_label", None) is not None
 
 
 def _is_spatialdata_image_layer(layer: Any) -> bool:
-    return not _is_pickable_labels_layer(layer)
+    # napari `Labels` layers are scalar-field siblings of `Image`, not subclasses.
+    return isinstance(layer, Image)
 
 
 def _get_label_names(sdata: SpatialData) -> list[str]:

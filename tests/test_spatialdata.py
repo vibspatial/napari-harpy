@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from napari.layers import Image, Labels
 import numpy as np
 import pytest
+from napari.layers import Image, Labels
 from spatialdata import SpatialData
 from spatialdata.datasets import blobs
 from spatialdata.models import TableModel
@@ -283,3 +283,27 @@ def test_spatialdata_viewer_binding_get_image_layer_returns_loaded_image_layer(s
 
     assert loaded_layer is image_layer
     assert viewer_binding.get_image_layer(sdata_blobs, "blobs_multiscale_image") is None
+
+
+def test_spatialdata_viewer_binding_get_image_layer_rejects_non_image_layers(sdata_blobs: SpatialData) -> None:
+    fake_layer = SimpleNamespace(
+        metadata={"sdata": sdata_blobs, "name": "blobs_image"},
+    )
+    viewer_binding = SpatialDataViewerBinding(SimpleNamespace(layers=[fake_layer]))
+
+    loaded_layer = viewer_binding.get_image_layer(sdata_blobs, "blobs_image")
+
+    assert loaded_layer is None
+
+
+def test_spatialdata_viewer_binding_get_labels_layer_rejects_non_labels_layers(sdata_blobs: SpatialData) -> None:
+    fake_layer = SimpleNamespace(
+        metadata={"sdata": sdata_blobs, "name": "blobs_labels"},
+        selected_label=1,
+        events=SimpleNamespace(selected_label=object()),
+    )
+    viewer_binding = SpatialDataViewerBinding(SimpleNamespace(layers=[fake_layer]))
+
+    loaded_layer = viewer_binding.get_labels_layer(sdata_blobs, "blobs_labels")
+
+    assert loaded_layer is None
