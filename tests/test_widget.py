@@ -18,7 +18,7 @@ from spatialdata.models import TableModel
 import napari_harpy._annotation as annotation_module
 import napari_harpy._class_palette as class_palette_module
 import napari_harpy._classifier as classifier_module
-import napari_harpy._widget as widget_module
+import napari_harpy.widgets._object_classification_widget as widget_module
 from napari_harpy._annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
 from napari_harpy._class_palette import default_class_colors
 from napari_harpy._classifier import (
@@ -28,7 +28,7 @@ from napari_harpy._classifier import (
     PRED_CONFIDENCE_COLUMN,
 )
 from napari_harpy._spatialdata import get_spatialdata_label_options
-from napari_harpy._widget import HarpyWidget
+from napari_harpy.widgets._object_classification_widget import ObjectClassificationWidget as HarpyWidget
 
 
 class DummyEventEmitter:

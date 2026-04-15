@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+from napari.layers import Image, Labels
 from spatialdata import get_element_annotators, join_spatialelement_table
 from spatialdata.models import TableModel
+from spatialdata.transformations import get_transformation
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -29,6 +31,26 @@ class SpatialDataLabelsOption:
     def identity(self) -> tuple[int, str]:
         """Return a stable identity for preserving widget selection across refreshes."""
         return (id(self.sdata), self.label_name)
+
+
+@dataclass(frozen=True)
+class SpatialDataImageOption:
+    """A selectable image element discovered from a viewer-linked SpatialData object."""
+
+    image_name: str
+    # User-facing text for the dropdown. This may include the dataset name to
+    # disambiguate equal image names coming from different SpatialData objects.
+    display_name: str
+    sdata: SpatialData
+    # Selectable coordinate systems for this image in the current discovery
+    # context. When filtered by labels, these are the shared coordinate systems
+    # between the selected labels and image elements.
+    coordinate_systems: tuple[str, ...]
+
+    @property
+    def identity(self) -> tuple[int, str]:
+        """Return a stable identity for preserving widget selection across refreshes."""
+        return (id(self.sdata), self.image_name)
 
 
 @dataclass(frozen=True)
@@ -125,6 +147,23 @@ class SpatialDataViewerBinding:
         """Collect selectable labels elements from the current viewer."""
         return _get_spatialdata_label_options_from_viewer(self._viewer)
 
+    def get_image_options(
+        self,
+        sdata: SpatialData,
+        label_name: str,
+    ) -> list[SpatialDataImageOption]:
+        """Collect selectable image elements from viewer-linked SpatialData objects.
+
+        The caller is expected to provide the selected labels context. Returned
+        image options are restricted to that dataset and to coordinate systems
+        shared with the selected labels element.
+        """
+        return _get_spatialdata_image_options_from_viewer(
+            self._viewer,
+            sdata=sdata,
+            label_name=label_name,
+        )
+
     def get_labels_layer(self, sdata: SpatialData, label_name: str) -> Any | None:
         """Return the loaded napari labels layer for a selected SpatialData labels element.
 
@@ -141,25 +180,28 @@ class SpatialDataViewerBinding:
         This means a labels element can exist in ``sdata`` but still return ``None``
         here if that segmentation is not currently loaded as a napari layer.
         """
-        layers = getattr(self._viewer, "layers", None)
-        if layers is None:
-            return None
+        return _get_loaded_spatialdata_layer(
+            self._viewer,
+            sdata=sdata,
+            element_name=label_name,
+            layer_filter=_is_pickable_labels_layer,
+        )
 
-        for layer in layers:
-            metadata = getattr(layer, "metadata", None)
-            if not isinstance(metadata, dict):
-                continue
+    def get_image_layer(self, sdata: SpatialData, image_name: str) -> Any | None:
+        """Return the loaded napari image layer for a selected SpatialData image element.
 
-            if metadata.get("sdata") is not sdata:
-                continue
-
-            if metadata.get("name") != label_name:
-                continue
-
-            if _is_pickable_labels_layer(layer):
-                return layer
-
-        return None
+        This scans the current napari viewer for a loaded layer whose metadata
+        links it back to the given ``SpatialData`` object and image name.
+        Unlike :meth:`get_labels_layer`, this helper is optional for widget
+        logic: image discovery comes from ``sdata.images`` even when the image
+        is not currently loaded in the viewer.
+        """
+        return _get_loaded_spatialdata_layer(
+            self._viewer,
+            sdata=sdata,
+            element_name=image_name,
+            layer_filter=_is_spatialdata_image_layer,
+        )
 
     def set_active_layer(self, layer: Any | None) -> bool:
         """Make the given napari layer the active viewer layer when supported."""
@@ -285,15 +327,32 @@ def get_spatialdata_label_options(viewer: Any | None) -> list[SpatialDataLabelsO
     """
     return SpatialDataViewerBinding(viewer).get_label_options()
 
+
+def get_spatialdata_image_options(
+    viewer: Any | None,
+    *,
+    sdata: SpatialData,
+    label_name: str,
+) -> list[SpatialDataImageOption]:
+    """Collect selectable image elements from viewer-linked SpatialData objects.
+
+    The current napari viewer is used only to discover which ``SpatialData``
+    datasets are linked into the session. The returned image options come from
+    each dataset's canonical ``sdata.images`` entries, not just from image
+    layers that happen to be loaded.
+
+    The caller is expected to provide the selected labels context. Only images
+    from that dataset are returned, and each image option is restricted to
+    coordinate systems shared with the selected labels element.
+    """
+    return SpatialDataViewerBinding(viewer).get_image_options(
+        sdata=sdata,
+        label_name=label_name,
+    )
+
+
 def _get_spatialdata_label_options_from_viewer(viewer: Any | None) -> list[SpatialDataLabelsOption]:
-    if viewer is None:
-        return []
-
-    layers = getattr(viewer, "layers", None)
-    if layers is None:
-        return []
-
-    sdatas = _get_unique_spatialdata_objects(layers)
+    sdatas = _get_viewer_linked_spatialdata_objects(viewer)
     if not sdatas:
         return []
 
@@ -319,6 +378,71 @@ def _get_spatialdata_label_options_from_viewer(viewer: Any | None) -> list[Spati
                     sdata=sdata,
                 )
             )
+
+    return options
+
+
+def _get_spatialdata_image_options_from_viewer(
+    viewer: Any | None,
+    *,
+    sdata: SpatialData,
+    label_name: str,
+) -> list[SpatialDataImageOption]:
+    """Return selectable images for a selected labels element in a viewer-linked dataset.
+
+    Even though ``sdata`` and ``label_name`` are already provided, this helper
+    still inspects the current viewer because image discovery is scoped to the
+    viewer-linked ``SpatialData`` objects, not to arbitrary in-memory datasets.
+
+    The viewer lookup serves two purposes:
+
+    - verify that the selected ``sdata`` is still linked into the current
+      viewer; if it is no longer present, no image options should be exposed
+    - determine whether multiple ``SpatialData`` objects are currently linked
+      so the returned ``display_name`` values can include the dataset name for
+      disambiguation
+
+    The actual selectable images still come from ``sdata.images`` and are then
+    filtered to coordinate systems shared with ``sdata.labels[label_name]``.
+    """
+    sdatas = _get_viewer_linked_spatialdata_objects(viewer)
+    if not sdatas:
+        return []
+
+    selected_sdata_index = next((index for index, candidate in enumerate(sdatas, start=1) if candidate is sdata), None)
+    if selected_sdata_index is None:
+        return []
+
+    multiple_sdatas = len(sdatas) > 1
+    if label_name not in _get_label_names(sdata):
+        raise ValueError(f"Labels element `{label_name}` is not available in the selected SpatialData object.")
+
+    dataset_name = _get_dataset_name(sdata, selected_sdata_index)
+    label_coordinate_systems = set(_get_element_coordinate_systems(sdata.labels[label_name]))
+
+    options: list[SpatialDataImageOption] = []
+
+    for image_name in _get_image_names(sdata):
+        coordinate_systems = tuple(
+            coordinate_system
+            for coordinate_system in _get_element_coordinate_systems(sdata.images[image_name])
+            if coordinate_system in label_coordinate_systems
+        )
+        if not coordinate_systems:
+            continue
+
+        display_name = image_name
+        if multiple_sdatas:
+            display_name = f"{image_name} ({dataset_name})"
+
+        options.append(
+            SpatialDataImageOption(
+                image_name=image_name,
+                display_name=display_name,
+                sdata=sdata,
+                coordinate_systems=coordinate_systems,
+            )
+        )
 
     return options
 
@@ -474,6 +598,17 @@ def _normalize_layer_indices(indices: Any) -> list[Any] | None:
     return [index for index in indices if index != 0]
 
 
+def _get_viewer_linked_spatialdata_objects(viewer: Any | None) -> list[SpatialData]:
+    if viewer is None:
+        return []
+
+    layers = getattr(viewer, "layers", None)
+    if layers is None:
+        return []
+
+    return _get_unique_spatialdata_objects(layers)
+
+
 def _get_unique_spatialdata_objects(layers: Any) -> list[SpatialData]:
     unique_sdatas: list[SpatialData] = []
     seen_ids: set[int] = set()
@@ -499,12 +634,54 @@ def _get_unique_spatialdata_objects(layers: Any) -> list[SpatialData]:
 
 def _is_pickable_labels_layer(layer: Any) -> bool:
     events = getattr(layer, "events", None)
-    return hasattr(layer, "selected_label") and getattr(events, "selected_label", None) is not None
+    return isinstance(layer, Labels) and getattr(events, "selected_label", None) is not None
+
+
+def _is_spatialdata_image_layer(layer: Any) -> bool:
+    # napari `Labels` layers are scalar-field siblings of `Image`, not subclasses.
+    return isinstance(layer, Image)
 
 
 def _get_label_names(sdata: SpatialData) -> list[str]:
     labels = getattr(sdata, "labels", {})
     return sorted(labels.keys())
+
+
+def _get_image_names(sdata: SpatialData) -> list[str]:
+    images = getattr(sdata, "images", {})
+    return sorted(images.keys())
+
+
+def _get_element_coordinate_systems(element: Any) -> tuple[str, ...]:
+    return tuple(sorted(get_transformation(element, get_all=True).keys()))
+
+
+def _get_loaded_spatialdata_layer(
+    viewer: Any | None,
+    *,
+    sdata: SpatialData,
+    element_name: str,
+    layer_filter: Callable[[Any], bool],
+) -> Any | None:
+    layers = getattr(viewer, "layers", None)
+    if layers is None:
+        return None
+
+    for layer in layers:
+        metadata = getattr(layer, "metadata", None)
+        if not isinstance(metadata, dict):
+            continue
+
+        if metadata.get("sdata") is not sdata:
+            continue
+
+        if metadata.get("name") != element_name:
+            continue
+
+        if layer_filter(layer):
+            return layer
+
+    return None
 
 
 def _get_dataset_name(sdata: SpatialData, index: int) -> str:

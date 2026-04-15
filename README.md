@@ -31,13 +31,13 @@ napari
 
 Open the widget from the napari plugin menu:
 
-`Plugins -> napari-harpy -> Object Classifier`
+`Plugins -> napari-harpy -> Object Classification`
 
 ## Debug script
 
 A small local debug script is available at [`scripts/debug_widget.py`](scripts/debug_widget.py).
 
-It loads a `SpatialData` zarr, opens `napari-spatialdata`, and docks the `Object Classifier` widget automatically.
+It loads a `SpatialData` zarr, opens `napari-spatialdata`, and docks the `Object Classification` widget automatically.
 This is useful for quickly reproducing widget behavior during development.
 
 Run it with:
