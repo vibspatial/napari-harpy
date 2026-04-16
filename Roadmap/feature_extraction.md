@@ -417,20 +417,20 @@ layers.
 
 Suggested additions:
 
-- `SpatialDataImageOption`
-- `SpatialDataViewerBinding.get_image_options()`
-- `SpatialDataViewerBinding.get_image_layer(...)`
-- `get_spatialdata_image_options(...)`
+- [x] `SpatialDataImageOption`
+- [x] `SpatialDataViewerBinding.get_image_options()`
+- [x] `SpatialDataViewerBinding.get_image_layer(...)`
+- [x] `get_spatialdata_image_options(...)`
 
 Rules:
 
-- labels discovery should continue to start from viewer-linked `SpatialData` objects
-- image discovery should expose `sdata.images[...]` entries from those same viewer-linked `SpatialData` objects
-- once a labels element is selected, image options should be filtered to:
-  - the same `SpatialData`
-  - coordinate systems compatible with the selected labels element
-- show dataset names when multiple `SpatialData` objects are present
-- for the feature extraction widget it is not necessary that the spatial elements (labels/images) are loaded in the viewer, so we should not raise a warning if they are not loaded.
+- [x] labels discovery should continue to start from viewer-linked `SpatialData` objects
+- [x] image discovery should expose `sdata.images[...]` entries from those same viewer-linked `SpatialData` objects
+- [x] once a labels element is selected, image options should be filtered to:
+  - [x] the same `SpatialData`
+  - [x] coordinate systems compatible with the selected labels element
+- [x] show dataset names when multiple `SpatialData` objects are present
+- [x] for the feature extraction widget it is not necessary that the spatial elements (labels/images) are loaded in the viewer, so we should not raise a warning if they are not loaded.
 
 ### Phase 2: Build the feature-extraction controller
 
@@ -438,24 +438,24 @@ Create `src/napari_harpy/_feature_extraction.py`.
 
 Responsibilities:
 
-- bind the selected labels, image, table, and output key
-- validate the current selection
-- prepare calculation jobs on the main thread
-- run feature calculation in a worker
-- merge results into the selected table
-- expose status strings for the widget
+- [ ] bind the selected labels, image, table, and output key
+- [ ] validate the current selection
+- [ ] prepare calculation jobs on the main thread
+- [ ] run feature calculation in a worker
+- [ ] merge results into the selected table
+- [ ] expose status strings for the widget
 
 Recommended structure:
 
-- `FeatureExtractionJob`
-- `FeatureExtractionResult`
-- `FeatureExtractionController`
+- [ ] `FeatureExtractionJob`
+- [ ] `FeatureExtractionResult`
+- [ ] `FeatureExtractionController`
 
 This should mirror the current classifier design:
 
-- explicit bind step
-- worker-based long-running work
-- stale-job protection if the selection changes mid-run
+- [ ] explicit bind step
+- [ ] worker-based long-running work
+- [ ] stale-job protection if the selection changes mid-run
 
 ### Phase 3: Implement feature computation
 
@@ -463,28 +463,28 @@ Use Harpy low-level primitives directly.
 
 #### Intensity path
 
-1. resolve canonical `sdata.images[image_name]` and `sdata.labels[label_name]`
-2. rechunk when needed (`sdata.images[image_name]` and `sdata.labels[label_name]` should have same chunk size).
-3. normalize 2D data to singleton-z arrays when needed
-4. build `RasterAggregator(...)`
-5. compute the selected stats for nonzero labels only
-6. rename columns to stable feature names
+- [ ] resolve canonical `sdata.images[image_name]` and `sdata.labels[label_name]`
+- [ ] rechunk when needed (`sdata.images[image_name]` and `sdata.labels[label_name]` should have same chunk size).
+- [ ] normalize 2D data to singleton-z arrays when needed
+- [ ] build `RasterAggregator(...)`
+- [ ] compute the selected stats for nonzero labels only
+- [ ] rename columns to stable feature names
 
 #### Morphology path
 
-1. materialize the labels mask into memory
-2. call `_calculate_regionprop_features(...)`
-3. keep only the user-selected morphology properties
-4. rename columns to stable output names
+- [ ] materialize the labels mask into memory
+- [ ] call `_calculate_regionprop_features(...)`
+- [ ] keep only the user-selected morphology properties
+- [ ] rename columns to stable output names
 
 #### Assembly
 
-1. outer-join the intensity and morphology feature frames on `instance_key`
-2. add the selected `region_key`
-3. align onto the target table rows
-4. convert the aligned features to the chosen array-like backend
-5. write the matrix into `.obsm[feature_key]`
-6. write companion metadata into `uns["harpy_feature_matrices"][feature_key]`
+- [ ] outer-join the intensity and morphology feature frames on `instance_key`
+- [ ] add the selected `region_key`
+- [ ] align onto the target table rows
+- [ ] convert the aligned features to the chosen array-like backend
+- [ ] write the matrix into `.obsm[feature_key]`
+- [ ] write companion metadata into `uns["harpy_feature_matrices"][feature_key]`
 
 ### Phase 4: Create the widget
 
@@ -492,28 +492,28 @@ Create `src/napari_harpy/widgets/_feature_extraction_widget.py`.
 
 The widget should look and behave like the current object classification widget:
 
-- same overall styling
-- same selector layout
-- same status-card pattern
-- same explicit button-driven flow
+- [ ] same overall styling
+- [ ] same selector layout
+- [ ] same status-card pattern
+- [ ] same explicit button-driven flow
 
 Suggested controls:
 
-- labels combo
-- image combo
-- table combo
-- optional new-table name line edit
-- output-key line edit
-- grouped feature checkboxes
-- calculate button
-- status labels
+- [ ] labels combo
+- [ ] image combo
+- [ ] table combo
+- [ ] optional new-table name line edit
+- [ ] output-key line edit
+- [ ] grouped feature checkboxes
+- [ ] calculate button
+- [ ] status labels
 
 ### Phase 5: Add the napari manifest entry
 
 Update `src/napari_harpy/napari.yaml` to contribute:
 
-- `Feature Extraction`
-- `Object Classification`
+- [ ] `Feature Extraction`
+- [ ] `Object Classification`
 
 This keeps the plugin structure aligned with the Phase 2 plan.
 
@@ -521,21 +521,21 @@ This keeps the plugin structure aligned with the Phase 2 plan.
 
 Minimum viable integration:
 
-1. update the authoritative table in `sdata.tables[table_name]`
-2. refresh the loaded labels layer metadata with:
-   - `refresh_layer_table_metadata(...)`
-3. tell the user that the feature key is now available for object classification
+- [ ] update the authoritative table in `sdata.tables[table_name]`
+- [ ] refresh the loaded labels layer metadata with:
+  - [ ] `refresh_layer_table_metadata(...)`
+- [ ] tell the user that the feature key is now available for object classification
 
 Important nuance:
 
-- the current object classification widget only refreshes its feature-key dropdown when it rebinds or rescans
-- so MVP integration can rely on:
-  - reopening the classification widget
-  - or clicking `Scan Viewer`
+- [ ] the current object classification widget only refreshes its feature-key dropdown when it rebinds or rescans
+- [ ] so MVP integration can rely on:
+  - [ ] reopening the classification widget
+  - [ ] or clicking `Scan Viewer`
 
 Nice-to-have follow-up:
 
-- add a small plugin-local signal bus so both widgets can refresh automatically when a table changes
+- [ ] add a small plugin-local signal bus so both widgets can refresh automatically when a table changes
 
 ### Follow-up ticket: stop classifier retraining from the widget
 
@@ -543,32 +543,32 @@ The current `ObjectClassificationWidget` supports retraining, but not user-initi
 
 Add a follow-up ticket to:
 
-- expose a `Stop training` action while classifier retraining is running
-- cancel or ignore the active retraining job safely when the user stops it
-- keep the last successfully trained classifier active if cancellation happens mid-run
-- restore the widget controls and status message to a clear cancelled state
-- allow retraining to be started again immediately after cancellation
+- [ ] expose a `Stop training` action while classifier retraining is running
+- [ ] cancel or ignore the active retraining job safely when the user stops it
+- [ ] keep the last successfully trained classifier active if cancellation happens mid-run
+- [ ] restore the widget controls and status message to a clear cancelled state
+- [ ] allow retraining to be started again immediately after cancellation
 
 ### Phase 7: Persistence semantics
 
 Feature extraction should follow the same authority model as the rest of the repo:
 
-- authoritative in-memory table: `sdata.tables[table_name]`
-- optional later write to backed zarr
+- [ ] authoritative in-memory table: `sdata.tables[table_name]`
+- [ ] optional later write to backed zarr
 
 MVP recommendation:
 
-- feature extraction updates the in-memory table only
-- the widget clearly reports that the new feature matrix is not yet written to disk
+- [ ] feature extraction updates the in-memory table only
+- [ ] the widget clearly reports that the new feature matrix is not yet written to disk
 
 Open integration detail:
 
-- if the object classification widget is open at the same time, its dirty-state indicator will not automatically know that features changed
+- [ ] if the object classification widget is open at the same time, its dirty-state indicator will not automatically know that features changed
 
 Good follow-up options:
 
-- give the feature widget its own `Write` button backed by `PersistenceController`
-- or add a shared table-state signal so both widgets can mark the same table dirty
+- [ ] give the feature widget its own `Write` button backed by `PersistenceController`
+- [ ] or add a shared table-state signal so both widgets can mark the same table dirty
 
 ## Testing Plan
 
