@@ -438,12 +438,14 @@ Create `src/napari_harpy/_feature_extraction.py`.
 
 Responsibilities:
 
-- [ ] bind the selected labels, image, table, and output key
-- [ ] validate the current selection
+- [ ] bind the selected labels, optional image, target table, requested feature set, and output key
+- [ ] validate the current bound selection against the authoritative `SpatialData` state
 - [ ] prepare calculation jobs on the main thread
 - [ ] run feature calculation in a worker
-- [ ] merge results into the selected table
-- [ ] expose status strings for the widget
+- [ ] merge results back into the authoritative in-memory table on the main thread
+- [ ] on backed datasets, persist the new feature matrix and companion metadata to disk after a successful merge
+- [ ] notify the widget when table state changed so dependent UI can refresh and persistence state can stay coherent
+- [ ] expose status strings and simple run-state flags for the widget
 
 Recommended structure:
 
@@ -453,9 +455,15 @@ Recommended structure:
 
 This should mirror the current classifier design:
 
-- [ ] explicit bind step
+- [ ] explicit, passive bind step that does not compute until the user clicks `Calculate`
 - [ ] worker-based long-running work
 - [ ] stale-job protection if the selection changes mid-run
+- [ ] authoritative writes back into `sdata[table_name]`, not napari layer metadata
+
+Important differences from the classifier:
+
+- [ ] feature extraction is a one-shot calculate flow, so we do not need classifier-style dirty/debounce semantics
+- [ ] the controller should support both updating an existing table and the later "create new linked table" path
 
 ### Phase 3: Implement feature computation
 
@@ -522,20 +530,21 @@ This keeps the plugin structure aligned with the Phase 2 plan.
 Minimum viable integration:
 
 - [ ] update the authoritative table in `sdata.tables[table_name]`
-- [ ] refresh the loaded labels layer metadata with:
+- [ ] emit a small shared table-changed signal so the object-classification widget can refresh from the same in-memory table state
+- [ ] optionally refresh loaded labels layer metadata as a best-effort compatibility step:
   - [ ] `refresh_layer_table_metadata(...)`
+- [ ] on backed datasets, persist the new feature matrix and metadata to disk after calculation
 - [ ] tell the user that the feature key is now available for object classification
 
 Important nuance:
 
-- [ ] the current object classification widget only refreshes its feature-key dropdown when it rebinds or rescans
-- [ ] so MVP integration can rely on:
-  - [ ] reopening the classification widget
-  - [ ] or clicking `Scan Viewer`
+- [ ] the authoritative source of truth is `sdata[table_name]`; napari layer metadata is only a cache
+- [ ] the object classification widget should refresh feature-key choices from shared in-memory table state, not rely on a disk reload as the primary sync path
+- [ ] reload from disk remains a fallback when the widget needs to resync from persisted state
 
 Nice-to-have follow-up:
 
-- [ ] add a small plugin-local signal bus so both widgets can refresh automatically when a table changes
+- [ ] make the shared table-changed signal general enough that both widgets can respond to future table updates, not only feature extraction
 
 ### Follow-up ticket: stop classifier retraining from the widget
 
@@ -554,21 +563,24 @@ Add a follow-up ticket to:
 Feature extraction should follow the same authority model as the rest of the repo:
 
 - [ ] authoritative in-memory table: `sdata.tables[table_name]`
-- [ ] optional later write to backed zarr
+- [ ] on backed datasets, write through to zarr after a successful feature-extraction run
+- [ ] on unbacked datasets, keep the result in memory only
 
 MVP recommendation:
 
-- [ ] feature extraction updates the in-memory table only
-- [ ] the widget clearly reports that the new feature matrix is not yet written to disk
+- [ ] feature extraction always updates the in-memory table first
+- [ ] if the selected dataset is backed, the controller then persists the new `.obsm[key]` entry and `uns["harpy_feature_matrices"][key]`
+- [ ] if the selected dataset is not backed, the widget clearly reports that the new feature matrix exists only in memory
 
 Open integration detail:
 
-- [ ] if the object classification widget is open at the same time, its dirty-state indicator will not automatically know that features changed
+- [ ] the object classification widget needs a lightweight refresh hook so a newly written feature key becomes selectable without forcing a full reload
 
 Good follow-up options:
 
-- [ ] give the feature widget its own `Write` button backed by `PersistenceController`
-- [ ] or add a shared table-state signal so both widgets can mark the same table dirty
+- [ ] keep reload available as a fallback for recovering persisted state
+- [ ] reuse or extend `PersistenceController` with a feature-aware write path that can persist `obsm[key]` and companion `uns` metadata
+- [ ] use a shared table-state signal so both widgets can react to table updates in the same session
 
 ## Testing Plan
 
@@ -584,6 +596,9 @@ Minimum test coverage:
 - creates a new linked table when none is selected
 - merges correctly into an existing table by `region_key` and `instance_key`
 - preserves non-selected rows when updating one region of a multi-region table
+- on backed datasets, persists the new `.obsm` key and companion metadata immediately after calculation
+- on unbacked datasets, keeps the new feature matrix in memory without attempting persistence
+- refreshes the object-classification widget from shared in-memory table state after feature extraction
 - refreshes layer metadata so the updated table is visible through napari-spatialdata
 - persists and reloads the new `.obsm` key and companion `uns["harpy_feature_matrices"]` metadata through backed zarr
 
