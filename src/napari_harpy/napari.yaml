@@ -5,9 +5,9 @@ categories:
   - Annotation
 contributions:
   commands:
-    - id: napari-harpy.object_classifier
-      title: Open object classifier widget
-      python_name: napari_harpy._widget:HarpyWidget
+    - id: napari-harpy.object_classification
+      title: Open object classification widget
+      python_name: napari_harpy.widgets._object_classification_widget:ObjectClassificationWidget
   widgets:
-    - command: napari-harpy.object_classifier
-      display_name: Object Classifier
+    - command: napari-harpy.object_classification
+      display_name: Object Classification
