@@ -10,12 +10,13 @@ from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,
-    QGridLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -154,8 +155,29 @@ class FeatureExtractionWidget(QWidget):
         self._logo_path = Path(__file__).resolve().parents[3] / "docs" / "_static" / "logo.png"
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setObjectName("feature_extraction_scroll_area")
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.setStyleSheet("QScrollArea { border: 0px; background: transparent; }")
+
+        self.scroll_content = QWidget()
+        self.scroll_content.setObjectName("feature_extraction_scroll_content")
+        self.scroll_content.setAutoFillBackground(True)
+        scroll_palette = self.scroll_content.palette()
+        scroll_palette.setColor(QPalette.ColorRole.Window, QColor(_WIDGET_SURFACE_COLOR))
+        self.scroll_content.setPalette(scroll_palette)
+        self.scroll_content.setStyleSheet(_WIDGET_SURFACE_STYLESHEET)
+
+        content_layout = QVBoxLayout(self.scroll_content)
+        content_layout.setContentsMargins(12, 12, 12, 12)
+        content_layout.setSpacing(10)
+        self.scroll_area.setWidget(self.scroll_content)
+        layout.addWidget(self.scroll_area)
 
         title = self._create_header_logo()
 
@@ -269,16 +291,16 @@ class FeatureExtractionWidget(QWidget):
         refresh_action_layout.addWidget(self.refresh_button, 1)
         calculate_action_layout.addWidget(self.calculate_button, 1)
 
-        layout.addWidget(title)
-        layout.addLayout(selector_layout)
-        layout.addWidget(self.intensity_features_group)
-        layout.addWidget(self.morphology_features_group)
-        layout.addWidget(self.calculate_action_row)
-        layout.addWidget(self.refresh_action_row)
-        layout.addWidget(self.selection_status)
-        layout.addWidget(self.controller_feedback)
-        layout.addWidget(self.validation_status)
-        layout.addStretch(1)
+        content_layout.addWidget(title)
+        content_layout.addLayout(selector_layout)
+        content_layout.addWidget(self.intensity_features_group)
+        content_layout.addWidget(self.morphology_features_group)
+        content_layout.addWidget(self.calculate_action_row)
+        content_layout.addWidget(self.refresh_action_row)
+        content_layout.addWidget(self.selection_status)
+        content_layout.addWidget(self.controller_feedback)
+        content_layout.addWidget(self.validation_status)
+        content_layout.addStretch(1)
 
         self._connect_viewer_events()
         self._update_intensity_features_hint()
@@ -382,18 +404,18 @@ class FeatureExtractionWidget(QWidget):
         layout.setContentsMargins(12, 18, 12, 8)
         layout.setSpacing(8)
 
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(6)
-        for index, feature_name in enumerate(feature_names):
+        feature_layout = QVBoxLayout()
+        feature_layout.setContentsMargins(0, 0, 0, 0)
+        feature_layout.setSpacing(6)
+        for feature_name in feature_names:
             checkbox = QCheckBox(feature_name)
             checkbox.setObjectName(f"feature_checkbox_{feature_name}")
             checkbox.setStyleSheet(_FEATURE_CHECKBOX_STYLESHEET)
             checkbox.toggled.connect(self._on_feature_selection_changed)
             self._feature_checkboxes[feature_name] = checkbox
-            grid.addWidget(checkbox, index // 2, index % 2)
+            feature_layout.addWidget(checkbox)
 
-        layout.addLayout(grid)
+        layout.addLayout(feature_layout)
         return group
 
     def _set_tooltip(self, widget: QWidget, message: str) -> None:

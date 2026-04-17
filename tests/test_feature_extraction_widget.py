@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from napari.layers import Labels
-from qtpy.QtWidgets import QCheckBox
+from qtpy.QtWidgets import QCheckBox, QScrollArea
 from spatialdata import SpatialData
 
 from napari_harpy.widgets._feature_extraction_widget import FeatureExtractionWidget
@@ -130,6 +130,9 @@ def test_feature_extraction_widget_exposes_grouped_feature_checkboxes(qtbot) -> 
 
     qtbot.addWidget(widget)
 
+    scroll_area = widget.findChild(QScrollArea, "feature_extraction_scroll_area")
+    assert scroll_area is not None
+    assert scroll_area.widgetResizable()
     assert widget.intensity_features_group.title() == "Intensity Features"
     assert widget.morphology_features_group.title() == "Morphology Features"
     assert widget.findChild(QCheckBox, "feature_checkbox_mean") is not None
