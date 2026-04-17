@@ -172,42 +172,7 @@ class FeatureExtractionController:
         if context_changed:
             self._cancel_pending_and_active_jobs()
 
-        if sdata is None or label_name is None:
-            self._set_status(FEATURE_EXTRACTION_IDLE_STATUS, kind="warning")
-            return context_changed
-
-        table = self._get_bound_table()
-        if table is None:
-            self._set_status(
-                "Feature extraction: choose an annotation table linked to the selected segmentation.",
-                kind="warning",
-            )
-            return context_changed
-
-        if normalized_coordinate_system is None:
-            self._set_status("Feature extraction: choose a coordinate system.", kind="warning")
-            return context_changed
-
-        if not normalized_feature_names:
-            self._set_status("Feature extraction: choose at least one feature to calculate.", kind="warning")
-            return context_changed
-
-        if normalized_feature_key is None or not normalized_feature_key:
-            self._set_status("Feature extraction: choose an output feature key.", kind="warning")
-            return context_changed
-
-        if _requires_image(normalized_feature_names) and image_name is None:
-            self._set_status(
-                "Feature extraction: choose an image before calculating intensity features.",
-                kind="warning",
-            )
-            return context_changed
-
-        if self.is_running:
-            self._set_status("Feature extraction: calculation is running.", kind="info")
-            return context_changed
-
-        self._set_status("Feature extraction: ready to calculate.", kind="success")
+        self._update_idle_status()
         return context_changed
 
     def calculate(self) -> bool:
@@ -288,6 +253,42 @@ class FeatureExtractionController:
     def _notify_table_state_changed(self) -> None:
         if self._on_table_state_changed is not None:
             self._on_table_state_changed()
+
+    def _update_idle_status(self) -> None:
+        if self._selected_spatialdata is None or self._selected_label_name is None:
+            self._set_status(FEATURE_EXTRACTION_IDLE_STATUS, kind="warning")
+            return
+
+        if self._get_bound_table() is None:
+            self._set_status(
+                "Feature extraction: choose an annotation table linked to the selected segmentation.",
+                kind="warning",
+            )
+            return
+
+        if self._selected_coordinate_system is None:
+            self._set_status("Feature extraction: choose a coordinate system.", kind="warning")
+            return
+
+        if not self._selected_feature_names:
+            self._set_status("Feature extraction: choose at least one feature to calculate.", kind="warning")
+            return
+
+        if self._selected_feature_key is None or not self._selected_feature_key.strip():
+            self._set_status("Feature extraction: choose an output feature key.", kind="warning")
+            return
+
+        if _requires_image(self._selected_feature_names) and self._selected_image_name is None:
+            self._set_status(
+                "Feature extraction: choose an image before calculating intensity features.",
+                kind="warning",
+            )
+            return
+
+        if self.is_running:
+            return
+
+        self._set_status("Feature extraction: ready to calculate.", kind="success")
 
     def _cancel_pending_and_active_jobs(self) -> None:
         self._cancel_active_worker()
