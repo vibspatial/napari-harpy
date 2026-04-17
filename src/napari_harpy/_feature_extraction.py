@@ -122,9 +122,8 @@ class FeatureExtractionController:
     def can_calculate(self) -> bool:
         """Return whether the current selection has the minimum data to run."""
         return (
-            self._selected_spatialdata is not None
+            self._get_bound_table() is not None
             and self._selected_label_name is not None
-            and self._selected_table_name is not None
             and self._selected_coordinate_system is not None
             and bool(self._selected_feature_names)
             and self._selected_feature_key is not None
@@ -177,7 +176,8 @@ class FeatureExtractionController:
             self._set_status(FEATURE_EXTRACTION_IDLE_STATUS, kind="warning")
             return context_changed
 
-        if table_name is None:
+        table = self._get_bound_table()
+        if table is None:
             self._set_status(
                 "Feature extraction: choose an annotation table linked to the selected segmentation.",
                 kind="warning",
