@@ -483,28 +483,27 @@ Use `hp.tb.add_feature_matrix(...)` as the authoritative compute-and-write path.
 
 #### Call contract
 
-- [ ] resolve canonical labels, image, and table names from the bound selection
-- [ ] pass `feature_key`, `features`, `to_coordinate_system`, and the current labels/image/table selection into `hp.tb.add_feature_matrix(...)`
-- [ ] use Harpy's default `feature_matrices` metadata namespace
-- [ ] pass `overwrite_feature_key` when replacing an existing `.obsm` key in an existing table
-- [ ] keep `channels`, `chunks`, and `run_on_gpu` as optional later extensions unless the widget exposes them in MVP
+- [x] resolve canonical labels, image, and table names from the bound selection
+- [x] pass `feature_key`, `features`, `to_coordinate_system`, and the current labels/image/table selection into `hp.tb.add_feature_matrix(...)`
+- [x] use Harpy's default `feature_matrices` metadata namespace
+- [x] pass `overwrite_feature_key` when replacing an existing `.obsm` key in an existing table
 
 #### What Harpy already owns
 
-- [ ] intensity feature extraction via `RasterAggregator(...)`
-- [ ] morphology feature extraction via `_calculate_regionprop_features(...)`
-- [ ] validation that intensity features require an image input
-- [ ] alignment by `(region_key, instance_key)`
-- [ ] writing the matrix into `.obsm[feature_key]`
-- [ ] writing companion metadata into `uns[feature_matrices_key][feature_key]`
-- [ ] backed write-through persistence with targeted `anndata.io.write_elem(...)`
+- [x] intensity feature extraction via `RasterAggregator(...)`
+- [x] morphology feature extraction via `_calculate_regionprop_features(...)`
+- [x] validation that intensity features require an image input
+- [x] alignment by `(region_key, instance_key)`
+- [x] writing the matrix into `.obsm[feature_key]`
+- [x] writing companion metadata into `uns["feature_matrices"][feature_key]`
+- [x] backed write-through persistence with targeted `anndata.io.write_elem(...)`
 
 #### napari-harpy responsibilities around the call
 
-- [ ] surface clear validation and overwrite UX before dispatching the Harpy call
-- [ ] serialize runs so we do not have concurrent `add_feature_matrix(...)` mutations against the same `sdata`
-- [ ] translate Harpy exceptions into widget status strings
-- [ ] notify table-state change and refresh widget choices after a successful call
+- [x] surface clear validation before dispatching the Harpy call
+- [x] serialize runs so we do not have concurrent `add_feature_matrix(...)` mutations against the same `sdata`
+- [x] translate Harpy exceptions into widget status strings
+- [x] notify table-state change after a successful call
 
 ### Phase 4: Create the widget
 
@@ -523,20 +522,23 @@ Suggested controls:
 - [ ] image combo
 - [ ] table combo
 - [ ] output-key line edit
+- [ ] overwrite-existing-feature-key UX
 - [ ] grouped feature checkboxes
 - [ ] calculate button
 - [ ] status labels
 
-### Phase 5: Add the napari manifest entry
+Widget responsibilities that remain after Phase 3:
 
-Update `src/napari_harpy/napari.yaml` to contribute:
+- [ ] surface clear overwrite UX before dispatching the Harpy call
+- [ ] refresh widget choices after a successful feature-extraction run
+- [ ] keep `channels`, `chunks`, and `run_on_gpu` hidden in MVP unless we explicitly decide to expose advanced controls
+
+Also update `src/napari_harpy/napari.yaml` in the same phase so the new widget is exposed:
 
 - [ ] `Feature Extraction`
 - [ ] `Object Classification`
 
-This keeps the plugin structure aligned with the Phase 2 plan.
-
-### Phase 6: Integrate with the object-classification workflow
+### Phase 5: Integrate with the object-classification workflow
 
 Minimum viable integration:
 
@@ -569,7 +571,7 @@ Add a follow-up ticket to:
 - [ ] restore the widget controls and status message to a clear cancelled state
 - [ ] allow retraining to be started again immediately after cancellation
 
-### Phase 7: Persistence semantics
+### Phase 6: Persistence semantics
 
 Feature extraction should follow the same authority model as the rest of the repo:
 
@@ -593,7 +595,7 @@ Good follow-up options:
 - [ ] avoid introducing a second napari-harpy-specific feature-persistence path unless we later need centralization beyond Harpy's write-through behavior
 - [ ] use a shared table-state signal so both widgets can react to table updates in the same session
 
-### Phase 8: Support the "No Table Linked" branch
+### Phase 7: Support the "No Table Linked" branch
 
 Once the existing-table MVP is settled, add a second branch for segmentations
 that do not yet annotate any table.
