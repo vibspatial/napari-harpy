@@ -54,10 +54,6 @@ class FeatureExtractionResult:
 
 @thread_worker(start_thread=False, ignore_errors=True)
 def _run_feature_extraction_job(job: FeatureExtractionJob) -> FeatureExtractionResult:
-    return _execute_feature_extraction_job(job)
-
-
-def _execute_feature_extraction_job(job: FeatureExtractionJob) -> FeatureExtractionResult:
     import harpy as hp
 
     hp.tb.add_feature_matrix(
@@ -240,11 +236,12 @@ class FeatureExtractionController:
         return True
 
     def _prepare_feature_extraction_job(self, job_id: int) -> FeatureExtractionJob | None:
-        if self._selected_spatialdata is None or self._selected_label_name is None:
+        table = self._get_bound_table()
+        if self._selected_spatialdata is None:
             self._set_status(FEATURE_EXTRACTION_IDLE_STATUS, kind="warning")
             return None
 
-        if self._selected_table_name is None:
+        if table is None or self._selected_label_name is None or self._selected_table_name is None:
             self._set_status(
                 "Feature extraction: choose an annotation table linked to the selected segmentation.",
                 kind="warning",
@@ -268,12 +265,6 @@ class FeatureExtractionController:
                 "Feature extraction: choose an image before calculating intensity features.",
                 kind="warning",
             )
-            return None
-
-        try:
-            _ = self._get_bound_table()
-        except Exception as error:  # pragma: no cover - defensive guard
-            self._set_status(f"Feature extraction: {error}", kind="error")
             return None
 
         return FeatureExtractionJob(
