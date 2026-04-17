@@ -14,7 +14,6 @@ from napari_harpy._spatialdata import (
     SpatialDataLabelsOption,
     SpatialDataViewerBinding,
     get_annotating_table_names,
-    get_label_coordinate_systems,
     validate_table_binding,
 )
 
@@ -394,8 +393,8 @@ class FeatureExtractionWidget(QWidget):
         if self.selected_spatialdata is None or self.selected_segmentation_name is None:
             self._coordinate_systems = []
         elif self.selected_image_name is None:
-            self._coordinate_systems = list(
-                get_label_coordinate_systems(self.selected_spatialdata, self.selected_segmentation_name)
+            self._coordinate_systems = (
+                [] if self._selected_label_option is None else list(self._selected_label_option.coordinate_systems)
             )
         else:
             selected_image_option = self._selected_image_option()

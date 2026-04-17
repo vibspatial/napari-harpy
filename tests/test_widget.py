@@ -162,6 +162,10 @@ def test_spatialdata_label_options_are_deduplicated_per_dataset(sdata_blobs: Spa
         "blobs_labels",
         "blobs_multiscale_labels",
     ]
+    assert [option.coordinate_systems for option in options] == [
+        ("global",),
+        ("global",),
+    ]
 
 
 def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_blobs: SpatialData) -> None:

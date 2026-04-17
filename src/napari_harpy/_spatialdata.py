@@ -26,6 +26,9 @@ class SpatialDataLabelsOption:
     # disambiguate equal label names coming from different SpatialData objects.
     display_name: str
     sdata: SpatialData
+    # Selectable coordinate systems for this labels element in the current
+    # discovery context.
+    coordinate_systems: tuple[str, ...]
 
     @property
     def identity(self) -> tuple[int, str]:
@@ -351,17 +354,6 @@ def get_spatialdata_image_options(
     )
 
 
-def get_label_coordinate_systems(
-    sdata: SpatialData,
-    label_name: str,
-) -> tuple[str, ...]:
-    """Return the coordinate systems exposed by a labels element in a SpatialData object."""
-    if label_name not in _get_label_names(sdata):
-        raise ValueError(f"Labels element `{label_name}` is not available in the selected SpatialData object.")
-
-    return _get_element_coordinate_systems(sdata.labels[label_name])
-
-
 def _get_spatialdata_label_options_from_viewer(viewer: Any | None) -> list[SpatialDataLabelsOption]:
     sdatas = _get_viewer_linked_spatialdata_objects(viewer)
     if not sdatas:
@@ -387,6 +379,7 @@ def _get_spatialdata_label_options_from_viewer(viewer: Any | None) -> list[Spati
                     label_name=label_name,
                     display_name=display_name,
                     sdata=sdata,
+                    coordinate_systems=_get_element_coordinate_systems(sdata.labels[label_name]),
                 )
             )
 
