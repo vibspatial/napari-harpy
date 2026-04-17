@@ -104,6 +104,26 @@ def test_feature_extraction_controller_requires_image_for_intensity_features(sda
     assert controller.status_kind == "warning"
     assert controller.status_message == "Feature extraction: choose an image before calculating intensity features."
 
+
+def test_feature_extraction_controller_requires_coordinate_system(sdata_blobs: SpatialData) -> None:
+    controller = FeatureExtractionController()
+
+    controller.bind(
+        sdata_blobs,
+        "blobs_labels",
+        None,
+        "table",
+        None,
+        ["area"],
+        "feature_matrix_1",
+    )
+
+    assert controller.can_calculate is False
+    assert controller.status_kind == "warning"
+    assert controller.status_message == "Feature extraction: choose a coordinate system."
+    assert controller._prepare_feature_extraction_job(8) is None
+
+
 def test_feature_extraction_controller_bind_returns_false_for_unchanged_context(sdata_blobs: SpatialData) -> None:
     controller = FeatureExtractionController()
 
@@ -155,26 +175,6 @@ def test_feature_extraction_controller_prepares_immutable_job_payload(sdata_blob
     assert job.feature_names == ("mean", "area")
     assert job.feature_key == "feature_matrix_1"
     assert job.overwrite_feature_key is True
-
-
-def test_feature_extraction_controller_defaults_job_coordinate_system_to_global(
-    sdata_blobs: SpatialData,
-) -> None:
-    controller = FeatureExtractionController()
-    controller.bind(
-        sdata_blobs,
-        "blobs_labels",
-        "blobs_image",
-        "table",
-        None,
-        ["mean", "area"],
-        "feature_matrix_1",
-    )
-
-    job = controller._prepare_feature_extraction_job(8)
-
-    assert isinstance(job, FeatureExtractionJob)
-    assert job.coordinate_system == "global"
 
 
 def test_feature_extraction_controller_notifies_table_state_change_on_success(sdata_blobs: SpatialData) -> None:

@@ -129,6 +129,7 @@ class FeatureExtractionController:
             self._selected_spatialdata is not None
             and self._selected_label_name is not None
             and self._selected_table_name is not None
+            and self._selected_coordinate_system is not None
             and bool(self._selected_feature_names)
             and self._selected_feature_key is not None
             and bool(self._selected_feature_key.strip())
@@ -149,6 +150,7 @@ class FeatureExtractionController:
         overwrite_feature_key: bool = False,
     ) -> bool:
         """Bind the controller to the currently selected SpatialData inputs."""
+        normalized_coordinate_system = None if coordinate_system is None else coordinate_system.strip() or None
         normalized_feature_names = _normalize_feature_names(feature_names)
         normalized_feature_key = None if feature_key is None else feature_key.strip()
 
@@ -157,7 +159,7 @@ class FeatureExtractionController:
             or label_name != self._selected_label_name
             or image_name != self._selected_image_name
             or table_name != self._selected_table_name
-            or coordinate_system != self._selected_coordinate_system
+            or normalized_coordinate_system != self._selected_coordinate_system
             or normalized_feature_names != self._selected_feature_names
             or normalized_feature_key != self._selected_feature_key
             or bool(overwrite_feature_key) is not self._overwrite_feature_key
@@ -167,7 +169,7 @@ class FeatureExtractionController:
         self._selected_label_name = label_name
         self._selected_image_name = image_name
         self._selected_table_name = table_name
-        self._selected_coordinate_system = coordinate_system
+        self._selected_coordinate_system = normalized_coordinate_system
         self._selected_feature_names = normalized_feature_names
         self._selected_feature_key = normalized_feature_key
         self._overwrite_feature_key = bool(overwrite_feature_key)
@@ -184,6 +186,10 @@ class FeatureExtractionController:
                 "Feature extraction: choose an annotation table linked to the selected segmentation.",
                 kind="warning",
             )
+            return context_changed
+
+        if normalized_coordinate_system is None:
+            self._set_status("Feature extraction: choose a coordinate system.", kind="warning")
             return context_changed
 
         if not normalized_feature_names:
@@ -245,6 +251,10 @@ class FeatureExtractionController:
             )
             return None
 
+        if self._selected_coordinate_system is None:
+            self._set_status("Feature extraction: choose a coordinate system.", kind="warning")
+            return None
+
         if not self._selected_feature_names:
             self._set_status("Feature extraction: choose at least one feature to calculate.", kind="warning")
             return None
@@ -272,7 +282,7 @@ class FeatureExtractionController:
             label_name=self._selected_label_name,
             image_name=self._selected_image_name,
             table_name=self._selected_table_name,
-            coordinate_system=self._selected_coordinate_system or "global",
+            coordinate_system=self._selected_coordinate_system,
             feature_names=self._selected_feature_names,
             feature_key=self._selected_feature_key,
             overwrite_feature_key=self._overwrite_feature_key,
