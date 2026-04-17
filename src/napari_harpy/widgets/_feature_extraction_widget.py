@@ -224,14 +224,18 @@ class FeatureExtractionWidget(QWidget):
         self.coordinate_system_combo.setObjectName("feature_extraction_coordinate_system_combo")
         self.coordinate_system_combo.currentIndexChanged.connect(self._on_coordinate_system_changed)
         self.coordinate_system_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
+        self._set_tooltip(
+            self.coordinate_system_combo,
+            "Choose a coordinate system in which the segmentation mask and image are registered. In the selected coordinate system they should have the same shape, and only an identity transform, a translation, or a sequence of translations may be defined relative to it.",
+        )
 
         self.output_key_line_edit = QLineEdit()
         self.output_key_line_edit.setObjectName("feature_extraction_output_key_line_edit")
-        self.output_key_line_edit.setPlaceholderText("e.g. object_features")
+        self.output_key_line_edit.setPlaceholderText("e.g. features")
         self.output_key_line_edit.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
         self._set_tooltip(
             self.output_key_line_edit,
-            "Features will be stored in the selected table as `table.obsm[output_key]`.",
+            "Features will be stored in the selected table as `table.obsm[output_key]`, with companion metadata in `table.uns['feature_matrices'][output_key]`.",
         )
 
         self.intensity_features_group = self._create_feature_group(
@@ -616,10 +620,12 @@ class FeatureExtractionWidget(QWidget):
                 "Intensity features are selected, so choose an image before calculating."
             )
             self.intensity_features_hint.setStyleSheet(_FEATURE_HINT_WARNING_STYLESHEET)
+            self.intensity_features_hint.setVisible(True)
             return
 
-        self.intensity_features_hint.setText("Selecting any intensity feature requires an image.")
+        self.intensity_features_hint.setText("")
         self.intensity_features_hint.setStyleSheet(_FEATURE_HINT_INFO_STYLESHEET)
+        self.intensity_features_hint.setVisible(False)
 
     def _validate_selected_table_binding(self) -> str | None:
         if (

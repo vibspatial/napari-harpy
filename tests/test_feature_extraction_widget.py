@@ -140,7 +140,7 @@ def test_feature_extraction_widget_exposes_grouped_feature_checkboxes(qtbot) -> 
     assert widget.findChild(QCheckBox, "feature_checkbox_area") is not None
     assert widget.findChild(QCheckBox, "feature_checkbox_perimeter") is not None
     assert widget.findChild(QCheckBox, "feature_extraction_overwrite_feature_key_checkbox") is None
-    assert "requires an image" in widget.intensity_features_hint.text()
+    assert widget.intensity_features_hint.isHidden()
 
 
 def test_feature_extraction_widget_reads_back_feature_selection_and_output_key(qtbot) -> None:
@@ -156,4 +156,20 @@ def test_feature_extraction_widget_reads_back_feature_selection_and_output_key(q
     assert widget.selected_feature_names == ("mean", "var", "area")
     assert widget.selected_feature_key == "object_features"
     assert widget.overwrite_feature_key is False
-    assert "selected" in widget.intensity_features_hint.text()
+    assert not widget.intensity_features_hint.isHidden()
+    assert "choose an image" in widget.intensity_features_hint.text()
+
+
+def test_feature_extraction_widget_hides_intensity_warning_when_image_is_selected(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer([make_blobs_labels_layer(sdata_blobs)])
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+    widget.image_combo.setCurrentIndex(1)
+    widget.findChild(QCheckBox, "feature_checkbox_mean").setChecked(True)
+
+    assert widget.selected_image_name == "blobs_image"
+    assert widget.intensity_features_hint.isHidden()
