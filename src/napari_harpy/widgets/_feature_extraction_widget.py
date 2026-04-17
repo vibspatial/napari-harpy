@@ -129,6 +129,7 @@ _MORPHOLOGY_FEATURES = (
     "convex_hull_resid",
     "centroid_dif",
 )
+_WIDGET_MIN_WIDTH = 370
 
 
 class FeatureExtractionWidget(QWidget):
@@ -153,6 +154,7 @@ class FeatureExtractionWidget(QWidget):
         palette.setColor(QPalette.ColorRole.Window, QColor(_WIDGET_SURFACE_COLOR))
         self.setPalette(palette)
         self.setStyleSheet(_WIDGET_SURFACE_STYLESHEET)
+        self.setMinimumWidth(_WIDGET_MIN_WIDTH)
 
         self._viewer = napari_viewer
         self._viewer_binding = SpatialDataViewerBinding(napari_viewer)

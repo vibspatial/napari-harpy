@@ -12,6 +12,7 @@ from matplotlib.colors import to_rgba
 from napari.layers import Labels
 from napari.utils.colormaps import DirectLabelColormap
 from qtpy.QtCore import QObject, Signal
+from qtpy.QtWidgets import QScrollArea
 from spatialdata import SpatialData, read_zarr
 from spatialdata.models import TableModel
 
@@ -131,6 +132,9 @@ def test_widget_can_be_instantiated(qtbot) -> None:
 
     qtbot.addWidget(widget)
 
+    scroll_area = widget.findChild(QScrollArea, "object_classification_scroll_area")
+    assert scroll_area is not None
+    assert scroll_area.widgetResizable()
     assert widget is not None
     assert widget.selected_segmentation_name is None
     assert widget.selected_table_name is None

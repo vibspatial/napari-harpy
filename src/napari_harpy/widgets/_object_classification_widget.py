@@ -11,9 +11,11 @@ from qtpy.QtWidgets import (
     QComboBox,
     QDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -54,6 +56,7 @@ _APPLY_CLASS_SHORTCUT = "A"
 _REMOVE_CLASS_SHORTCUT = "R"
 _WIDGET_SURFACE_COLOR = "#fcf6f3"
 _WIDGET_SURFACE_STYLESHEET = f"background-color: {_WIDGET_SURFACE_COLOR};"
+_WIDGET_MIN_WIDTH = 370
 _TOOLTIP_TEXT_COLOR = "#111827"
 _FORM_LABEL_STYLESHEET = "color: #374151; font-weight: 600; padding-top: 6px;"
 _INPUT_CONTROL_STYLESHEET = (
@@ -122,6 +125,7 @@ class ObjectClassificationWidget(QWidget):
         palette.setColor(QPalette.ColorRole.Window, QColor(_WIDGET_SURFACE_COLOR))
         self.setPalette(palette)
         self.setStyleSheet(_WIDGET_SURFACE_STYLESHEET)
+        self.setMinimumWidth(_WIDGET_MIN_WIDTH)
         self._viewer = napari_viewer
         self._viewer_binding = SpatialDataViewerBinding(napari_viewer)
         self._annotation_controller = AnnotationController(
@@ -147,8 +151,29 @@ class ObjectClassificationWidget(QWidget):
         self._logo_path = Path(__file__).resolve().parents[3] / "docs" / "_static" / "logo.png"
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setObjectName("object_classification_scroll_area")
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.setStyleSheet("QScrollArea { border: 0px; background: transparent; }")
+
+        self.scroll_content = QWidget()
+        self.scroll_content.setObjectName("object_classification_scroll_content")
+        self.scroll_content.setAutoFillBackground(True)
+        scroll_palette = self.scroll_content.palette()
+        scroll_palette.setColor(QPalette.ColorRole.Window, QColor(_WIDGET_SURFACE_COLOR))
+        self.scroll_content.setPalette(scroll_palette)
+        self.scroll_content.setStyleSheet(_WIDGET_SURFACE_STYLESHEET)
+
+        content_layout = QVBoxLayout(self.scroll_content)
+        content_layout.setContentsMargins(12, 12, 12, 12)
+        content_layout.setSpacing(10)
+        self.scroll_area.setWidget(self.scroll_content)
+        layout.addWidget(self.scroll_area)
 
         title = self._create_header_logo()
 
@@ -300,17 +325,17 @@ class ObjectClassificationWidget(QWidget):
         selector_layout.addRow(self._create_form_label("Color by"), self.color_by_combo)
         selector_layout.addRow(self._create_form_label("User class"), self.class_editor)
 
-        layout.addWidget(title)
-        layout.addLayout(selector_layout)
-        layout.addWidget(self.retrain_action_row)
-        layout.addWidget(self.persistence_action_row)
-        layout.addWidget(self.refresh_action_row)
-        layout.addWidget(self.selection_status)
-        layout.addWidget(self.annotation_feedback)
-        layout.addWidget(self.classifier_feedback)
-        layout.addWidget(self.persistence_feedback)
-        layout.addWidget(self.validation_status)
-        layout.addStretch(1)
+        content_layout.addWidget(title)
+        content_layout.addLayout(selector_layout)
+        content_layout.addWidget(self.retrain_action_row)
+        content_layout.addWidget(self.persistence_action_row)
+        content_layout.addWidget(self.refresh_action_row)
+        content_layout.addWidget(self.selection_status)
+        content_layout.addWidget(self.annotation_feedback)
+        content_layout.addWidget(self.classifier_feedback)
+        content_layout.addWidget(self.persistence_feedback)
+        content_layout.addWidget(self.validation_status)
+        content_layout.addStretch(1)
 
         self._connect_viewer_events()
         self.refresh_segmentation_masks()
