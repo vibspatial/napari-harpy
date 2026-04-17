@@ -14,7 +14,6 @@ The new widget should let the user:
 3. choose which feature families to calculate
 4. choose an output `.obsm` key
 5. write the calculated features into the selected `AnnData` table
-6. create a new linked `AnnData` table when no suitable table is selected
 
 The end state we want is simple:
 
@@ -87,10 +86,11 @@ The classifier only requires that the selected `.obsm` entry:
 
 That means the feature widget does not need any classifier-specific serialization format. A standard `.obsm` matrix with `n_obs` rows is enough, and feature names/provenance can live in companion metadata in `.uns`.
 
-### 3. The Harpy high-level wrappers are close, but not quite the right abstraction for this widget
+### 3. Harpy now exposes the right high-level abstraction for this widget
 
 Available Harpy APIs:
 
+- `harpy.tb.add_feature_matrix(...)`
 - `harpy.utils.RasterAggregator(...)`
 - `harpy.table._regionprops._calculate_regionprop_features(...)`
 - `harpy.table._allocation_intensity.allocate_intensity(...)`
@@ -99,17 +99,21 @@ Available Harpy APIs:
 
 Important behavior:
 
-- `RasterAggregator` is the right low-level primitive for intensity statistics.
-- `_calculate_regionprop_features` is the right low-level primitive for morphology features.
-- `allocate_intensity(...)` writes to `.X` and `.obs`, not `.obsm`.
-- `add_regionprops(...)` writes to `.obs`, not `.obsm`.
+- `harpy.tb.add_feature_matrix(...)` computes requested intensity and/or morphology features and writes the numeric result into `adata.obsm[feature_key]`.
+- `harpy.tb.add_feature_matrix(...)` stores companion metadata in `adata.uns[feature_matrices_key][feature_key]`.
+- `harpy.tb.add_feature_matrix(...)` aligns rows by `(region_key, instance_key)`, not by table row order.
+- `harpy.tb.add_feature_matrix(...)` updates existing tables in place and requires `overwrite_feature_key=True` before replacing an existing `.obsm[feature_key]`.
+- on backed `SpatialData`, `harpy.tb.add_feature_matrix(...)` persists the changed `.obsm` key and companion metadata with targeted `anndata.io.write_elem(...)` calls and reconsolidates zarr metadata.
+- `RasterAggregator` remains the underlying intensity primitive.
+- `_calculate_regionprop_features(...)` remains the underlying morphology primitive.
 
 Conclusion:
 
-- for this widget, we should use the low-level Harpy calculators
-- we should own the final merge into `.obsm`
+- napari-harpy should call `hp.tb.add_feature_matrix(...)`, not reimplement feature extraction, row alignment, or backed persistence locally.
+- the napari side should own viewer-driven selection, validation, worker orchestration, stale-job/UI-state handling, and cross-widget refresh behavior.
+- napari-harpy should follow Harpy's default metadata namespace: `uns["feature_matrices"]`.
 
-### 4. Harpy has strict array-shape expectations we should design around
+### 4. Harpy still has strict array-shape expectations internally, but the widget no longer needs to manage them directly
 
 `RasterAggregator` expects:
 
@@ -118,12 +122,18 @@ Conclusion:
 - matching spatial shape
 - matching spatial chunking
 
-So for 2D data we will need to promote:
+So for 2D data Harpy needs to promote:
 
 - labels: `(y, x)` -> `(1, y, x)`
 - image: `(c, y, x)` -> `(c, 1, y, x)`
 
-This is the same pattern Harpy already uses internally in `allocate_intensity(...)`.
+This is the same pattern Harpy already uses internally.
+
+The important implication for napari-harpy is:
+
+- the widget/controller should pass canonical `sdata` element names and the chosen coordinate system into `hp.tb.add_feature_matrix(...)`
+- napari-harpy does not need its own array-shape normalization path for MVP
+- `chunks` remains only an optional performance knob; Harpy already warns that rechunking on disk ahead of time is usually preferable
 
 ### 5. Morphology features are not fully out-of-core
 
@@ -135,23 +145,22 @@ That means:
 - very large labels layers may need memory warnings
 - some properties such as `perimeter` are not supported for 3D labels
 
-So the widget should separate:
+So the widget should still separate:
 
 - intensity features
 - morphology features
 
-and validate the chosen set against the selected labels dimensionality.
+and validate the chosen set against the selected labels dimensionality, even though Harpy owns the actual computation.
 
-### 6. Creating a new linked table is feasible with the current libraries
+### 6. Creating a new linked table is feasible, but we should defer it from MVP
 
-If the user has no selected table, or wants a new one, we can create it ourselves:
+If we later want table creation in the feature widget, Harpy can create it for us through `hp.tb.add_feature_matrix(...)`:
 
-1. build an `AnnData`
-2. add `region_key` and `instance_key` to `adata.obs`
-3. parse it with `TableModel.parse(...)`
-4. attach it with `harpy.table._table.add_table_layer(...)`
+1. pass `table_layer=None`
+2. provide `output_layer`
+3. let Harpy create the annotated table and attach it to `sdata`
 
-This is especially useful because `add_table_layer(...)` also handles backed `SpatialData`.
+That path is useful, but it adds widget state and overwrite branches that are not needed for the first end-to-end feature-to-classifier workflow. For MVP, we should assume the selected labels layer is already linked to a table.
 
 ### 7. Prefer an array-first feature-matrix schema
 
@@ -160,14 +169,15 @@ For long-term flexibility, the feature extractor should treat `.obsm[key]` as an
 Recommended schema:
 
 - `adata.obsm[feature_key]`: `np.ndarray | scipy.sparse.spmatrix | dask.array.Array`
-- `adata.uns["harpy_feature_matrices"][feature_key]`:
-  - `columns`
+- `adata.uns["feature_matrices"][feature_key]`:
+  - `feature_columns`
   - `backend`
   - `dtype`
   - `source_label`
   - `source_image`
   - `coordinate_system`
   - `schema_version`
+  - `features`
 
 Why this is preferable:
 
@@ -175,7 +185,7 @@ Why this is preferable:
 - it keeps the stored feature representation aligned with the conceptual model of `.obsm` as an `n_obs x n_features` matrix
 - it leaves a clean path for sparse and dask-backed matrices later
 
-For the roadmap below, assume that feature names and provenance are read from `uns["harpy_feature_matrices"]`, not from a `DataFrame` stored in `.obsm`.
+For the roadmap below, assume that feature names and provenance are read from `uns["feature_matrices"]`, not from a `DataFrame` stored in `.obsm`. In Harpy's current implementation that means reading `feature_columns`, not `columns`.
 
 ## Recommended MVP Decisions
 
@@ -187,7 +197,7 @@ Add:
 - `src/napari_harpy/_feature_extraction.py`
 
 The widget owns UI state.
-The controller owns validation, background jobs, feature calculation, and the merge into the selected table.
+The controller owns validation, background jobs, the Harpy call boundary, and widget-facing status/refresh behavior.
 
 ### 2. Resolve from viewer metadata, but compute from `sdata`
 
@@ -224,11 +234,11 @@ where `feature_matrix` is one of:
 
 And store feature metadata separately in:
 
-- `adata.uns["harpy_feature_matrices"][feature_key]`
+- `adata.uns["feature_matrices"][feature_key]`
 
 with at least:
 
-- `columns`
+- `feature_columns`
 - `schema_version`
 
 and preferably also:
@@ -251,6 +261,11 @@ Expected feature names remain stable, for example:
 
 Those names should be stored in the metadata schema, not inferred from DataFrame columns.
 
+Implementation note:
+
+- napari-harpy should reach this storage format by calling `hp.tb.add_feature_matrix(...)`
+- metadata should be read from Harpy's default `feature_matrices` namespace
+
 ### 4. Merge by `(region_key, instance_key)`, not by row order
 
 This is the most important data-model rule for the feature widget.
@@ -269,6 +284,8 @@ Instead:
 3. align the result onto the full selected table
 4. write the full aligned matrix into `.obsm[feature_key]`
 
+Harpy's current `add_feature_matrix(...)` implementation already does this alignment for us. It is still worth calling out explicitly because the widget/controller should assume that rule when validating table selections and explaining results.
+
 This keeps the widget safe when:
 
 - the table contains multiple annotated regions
@@ -281,24 +298,24 @@ Recommended MVP behavior when writing into an existing table:
 - for rows belonging to the selected labels region:
   - overwrite with the newly computed feature values
 - for rows outside the selected region:
-  - preserve existing values if `.obsm[feature_key]` already exists and the stored feature metadata reports the same columns
+  - preserve existing values if `.obsm[feature_key]` already exists, `overwrite_feature_key=True`, and the stored feature metadata reports the same columns
   - otherwise fill with `NaN`
 
-This gives us a practical path for multi-region tables without requiring that all regions be recomputed together every time.
+This gives us a practical path for multi-region tables without requiring that all regions be recomputed together every time. Harpy's current `add_feature_matrix(...)` implementation already follows this rule.
 
-### 6. Default table keys for a new table
+### 6. Future new-table path
 
-If no table exists yet for the selected labels element, use defaults aligned with `napari-spatialdata` conventions:
+If we later expose table creation in the widget, use defaults aligned with `napari-spatialdata` conventions:
 
 - `region_key = "region"`
 - `instance_key = "instance_id"`
 
-For the new table rows:
+When calling Harpy in new-table mode, it should then:
 
 - include one row per nonzero label id
 - set `obs[region_key] = selected_label_name`
 - set `obs[instance_key] = instance_id`
-- use a stable obs index such as `f"{selected_label_name}:{instance_id}"`
+- own obs-index creation internally
 
 ## Proposed User Flow
 
@@ -321,8 +338,7 @@ For the new table rows:
 
 - `Segmentation`
 - `Image` (optional, filtered to the same `SpatialData` and compatible coordinate systems)
-- `Table`
-- `New table name` when creating a table
+- `Table` (required, limited to tables that annotate the selected segmentation)
 - `Output feature key`
 
 ### Feature groups
@@ -343,7 +359,6 @@ For the new table rows:
     - `minor_axis_length`
     - `perimeter`
     - `equivalent_diameter`
-    - `centroid` # -> calculate this via harpy rasteraggregator.
 
 ### Action
 
@@ -366,6 +381,7 @@ Use the new labels consistently in:
 
 - validation banner
 - warning when the selected labels/image element is not currently loaded in the viewer
+- warning when the selected segmentation has no linked annotation table
 - calculation status
 - success message including:
   - table name
@@ -378,6 +394,7 @@ Use the new labels consistently in:
 Before calculation, require:
 
 - a selected labels element
+- a selected existing annotation table linked to that labels element
 - at least one selected feature
 - a non-empty output `.obsm` key
 
@@ -397,15 +414,10 @@ If an existing table is selected:
 - validate table binding with the current helper:
   - `validate_table_binding(...)`
 
-If a new table is being created:
-
-- require a non-empty new table name
-- reject table-name collisions unless the user explicitly chose overwrite behavior
-
 If the output `.obsm` key already exists:
 
-- if the stored feature metadata columns match, allow in-place replacement of the selected region rows
-- if the stored feature metadata columns differ, require explicit overwrite confirmation or a new key
+- require explicit overwrite confirmation before replacing it
+- once `overwrite_feature_key=True`, let Harpy decide whether non-selected rows can be preserved or need to be filled with `NaN` based on schema compatibility
 
 ## Proposed Implementation Plan
 
@@ -438,61 +450,61 @@ Create `src/napari_harpy/_feature_extraction.py`.
 
 Responsibilities:
 
-- [ ] bind the selected labels, optional image, target table, requested feature set, and output key
-- [ ] validate the current bound selection against the authoritative `SpatialData` state
-- [ ] prepare calculation jobs on the main thread
-- [ ] run feature calculation in a worker
-- [ ] merge results back into the authoritative in-memory table on the main thread
-- [ ] on backed datasets, persist the new feature matrix and companion metadata to disk after a successful merge
-- [ ] notify the widget when table state changed so dependent UI can refresh and persistence state can stay coherent
-- [ ] expose status strings and simple run-state flags for the widget
+- [x] bind the selected labels, optional image, target table, requested feature set, and output key
+- [x] validate the current bound selection against the authoritative `SpatialData` state
+- [x] prepare `hp.tb.add_feature_matrix(...)` call arguments on the main thread
+- [x] run the Harpy feature-extraction call in a worker
+- [x] accept the successful result on the main thread and treat the updated `sdata.tables[...]` entry as authoritative
+- [x] notify the widget when table state changed so dependent UI can refresh and persistence state can stay coherent
+- [x] expose status strings and simple run-state flags for the widget
 
 Recommended structure:
 
-- [ ] `FeatureExtractionJob`
-- [ ] `FeatureExtractionResult`
-- [ ] `FeatureExtractionController`
+- [x] `FeatureExtractionJob`
+- [x] `FeatureExtractionResult`
+- [x] `FeatureExtractionController`
 
 This should mirror the current classifier design:
 
-- [ ] explicit, passive bind step that does not compute until the user clicks `Calculate`
-- [ ] worker-based long-running work
-- [ ] stale-job protection if the selection changes mid-run
-- [ ] authoritative writes back into `sdata[table_name]`, not napari layer metadata
+- [x] explicit, passive bind step that does not compute until the user clicks `Calculate`
+- [x] worker-based long-running work
+- [x] stale-job protection if the selection changes mid-run
+- [x] authoritative writes back into `sdata[table_name]`, not napari layer metadata
 
 Important differences from the classifier:
 
-- [ ] feature extraction is a one-shot calculate flow, so we do not need classifier-style dirty/debounce semantics
-- [ ] the controller should support both updating an existing table and the later "create new linked table" path
+- [x] feature extraction is a one-shot calculate flow, so we do not need classifier-style dirty/debounce semantics
+- [x] for MVP, the controller only needs to support updating an existing linked table
+- [x] because Harpy writes directly into `sdata`, we should avoid overlapping feature-extraction runs against the same dataset and treat stale-job protection primarily as a UI/state-adoption guard
 
-### Phase 3: Implement feature computation
+### Phase 3: Integrate Harpy feature calculation
 
-Use Harpy low-level primitives directly.
+Use `hp.tb.add_feature_matrix(...)` as the authoritative compute-and-write path.
 
-#### Intensity path
+#### Call contract
 
-- [ ] resolve canonical `sdata.images[image_name]` and `sdata.labels[label_name]`
-- [ ] rechunk when needed (`sdata.images[image_name]` and `sdata.labels[label_name]` should have same chunk size).
-- [ ] normalize 2D data to singleton-z arrays when needed
-- [ ] build `RasterAggregator(...)`
-- [ ] compute the selected stats for nonzero labels only
-- [ ] rename columns to stable feature names
+- [ ] resolve canonical labels, image, and table names from the bound selection
+- [ ] pass `feature_key`, `features`, `to_coordinate_system`, and the current labels/image/table selection into `hp.tb.add_feature_matrix(...)`
+- [ ] use Harpy's default `feature_matrices` metadata namespace
+- [ ] pass `overwrite_feature_key` when replacing an existing `.obsm` key in an existing table
+- [ ] keep `channels`, `chunks`, and `run_on_gpu` as optional later extensions unless the widget exposes them in MVP
 
-#### Morphology path
+#### What Harpy already owns
 
-- [ ] materialize the labels mask into memory
-- [ ] call `_calculate_regionprop_features(...)`
-- [ ] keep only the user-selected morphology properties
-- [ ] rename columns to stable output names
+- [ ] intensity feature extraction via `RasterAggregator(...)`
+- [ ] morphology feature extraction via `_calculate_regionprop_features(...)`
+- [ ] validation that intensity features require an image input
+- [ ] alignment by `(region_key, instance_key)`
+- [ ] writing the matrix into `.obsm[feature_key]`
+- [ ] writing companion metadata into `uns[feature_matrices_key][feature_key]`
+- [ ] backed write-through persistence with targeted `anndata.io.write_elem(...)`
 
-#### Assembly
+#### napari-harpy responsibilities around the call
 
-- [ ] outer-join the intensity and morphology feature frames on `instance_key`
-- [ ] add the selected `region_key`
-- [ ] align onto the target table rows
-- [ ] convert the aligned features to the chosen array-like backend
-- [ ] write the matrix into `.obsm[feature_key]`
-- [ ] write companion metadata into `uns["harpy_feature_matrices"][feature_key]`
+- [ ] surface clear validation and overwrite UX before dispatching the Harpy call
+- [ ] serialize runs so we do not have concurrent `add_feature_matrix(...)` mutations against the same `sdata`
+- [ ] translate Harpy exceptions into widget status strings
+- [ ] notify table-state change and refresh widget choices after a successful call
 
 ### Phase 4: Create the widget
 
@@ -510,7 +522,6 @@ Suggested controls:
 - [ ] labels combo
 - [ ] image combo
 - [ ] table combo
-- [ ] optional new-table name line edit
 - [ ] output-key line edit
 - [ ] grouped feature checkboxes
 - [ ] calculate button
@@ -529,11 +540,11 @@ This keeps the plugin structure aligned with the Phase 2 plan.
 
 Minimum viable integration:
 
-- [ ] update the authoritative table in `sdata.tables[table_name]`
+- [ ] treat the table updated by `hp.tb.add_feature_matrix(...)` in `sdata.tables[table_name]` as authoritative
 - [ ] emit a small shared table-changed signal so the object-classification widget can refresh from the same in-memory table state
 - [ ] optionally refresh loaded labels layer metadata as a best-effort compatibility step:
   - [ ] `refresh_layer_table_metadata(...)`
-- [ ] on backed datasets, persist the new feature matrix and metadata to disk after calculation
+- [ ] rely on Harpy's write-through behavior on backed datasets rather than duplicating feature persistence in napari-harpy
 - [ ] tell the user that the feature key is now available for object classification
 
 Important nuance:
@@ -568,8 +579,8 @@ Feature extraction should follow the same authority model as the rest of the rep
 
 MVP recommendation:
 
-- [ ] feature extraction always updates the in-memory table first
-- [ ] if the selected dataset is backed, the controller then persists the new `.obsm[key]` entry and `uns["harpy_feature_matrices"][key]`
+- [ ] feature extraction always updates the in-memory table via `hp.tb.add_feature_matrix(...)`
+- [ ] if the selected dataset is backed, Harpy then persists the new `.obsm[key]` entry and `uns["feature_matrices"][key]`
 - [ ] if the selected dataset is not backed, the widget clearly reports that the new feature matrix exists only in memory
 
 Open integration detail:
@@ -579,8 +590,37 @@ Open integration detail:
 Good follow-up options:
 
 - [ ] keep reload available as a fallback for recovering persisted state
-- [ ] reuse or extend `PersistenceController` with a feature-aware write path that can persist `obsm[key]` and companion `uns` metadata
+- [ ] avoid introducing a second napari-harpy-specific feature-persistence path unless we later need centralization beyond Harpy's write-through behavior
 - [ ] use a shared table-state signal so both widgets can react to table updates in the same session
+
+### Phase 8: Support the "No Table Linked" branch
+
+Once the existing-table MVP is settled, add a second branch for segmentations
+that do not yet annotate any table.
+
+Goals:
+
+- [ ] detect when the selected segmentation has no linked annotation table
+- [ ] surface a dedicated "no table linked" UX state instead of only a generic validation block
+- [ ] let the user choose a new table name when they want to continue from that state
+- [ ] call `hp.tb.add_feature_matrix(...)` in new-table mode by passing `table_layer=None`
+- [ ] pass the user-provided table name as `output_layer`
+- [ ] keep `overwrite_output_layer=False` by default and require explicit confirmation before replacing an existing table layer
+- [ ] after successful creation, refresh table choices so the new table becomes the selected authoritative table immediately
+- [ ] emit the shared table-changed signal so the object-classification widget can discover the new table and feature key in the same session
+
+Validation rules for this branch:
+
+- [ ] require a non-empty new table name
+- [ ] reject collisions with existing table-layer names unless overwrite was explicitly enabled
+- [ ] continue to require an image only when intensity features are selected
+- [ ] continue to apply the same labels/image coordinate-system validation as the existing-table path
+
+Why this is a good follow-up phase:
+
+- [ ] it is the most natural expansion of the MVP without changing the core compute path
+- [ ] Harpy already owns the underlying table-creation machinery, so napari-harpy mainly needs extra UI, validation, and refresh handling
+- [ ] it keeps the initial implementation focused on the feature-to-classifier workflow while still giving us a clear next step for datasets that start from labels alone
 
 ## Testing Plan
 
@@ -590,17 +630,18 @@ Minimum test coverage:
 
 - discovers image and labels options from viewer metadata
 - requires image selection only when intensity features are chosen
+- requires that the selected labels layer is already linked to a table
 - computes morphology-only features into `.obsm[key]`
 - computes intensity + morphology features into `.obsm[key]`
-- writes feature metadata with stable column names into `uns["harpy_feature_matrices"]`
-- creates a new linked table when none is selected
-- merges correctly into an existing table by `region_key` and `instance_key`
-- preserves non-selected rows when updating one region of a multi-region table
-- on backed datasets, persists the new `.obsm` key and companion metadata immediately after calculation
+- writes feature metadata with stable column names into `uns["feature_matrices"]`
+- updates an existing table by `region_key` and `instance_key`
+- preserves non-selected rows when updating one region of a multi-region table with `overwrite_feature_key=True`
+- raises cleanly when `feature_key` already exists and overwrite was not explicitly allowed
+- on backed datasets, Harpy persists the new `.obsm` key and companion metadata immediately after calculation
 - on unbacked datasets, keeps the new feature matrix in memory without attempting persistence
 - refreshes the object-classification widget from shared in-memory table state after feature extraction
 - refreshes layer metadata so the updated table is visible through napari-spatialdata
-- persists and reloads the new `.obsm` key and companion `uns["harpy_feature_matrices"]` metadata through backed zarr
+- persists and reloads the new `.obsm` key and companion `uns["feature_matrices"]` metadata through backed zarr
 
 ## Recommended Initial Scope
 
@@ -608,11 +649,11 @@ To keep the first implementation tractable, I would intentionally limit MVP to:
 
 - one selected labels layer
 - one optional selected image layer
-- one selected or newly created table
+- one selected existing table
 - one user-provided output `.obsm` key
 - a small curated feature set
 - CPU execution by default
-- manual refresh in the object-classification widget after calculation
+- a lightweight same-session refresh path in the object-classification widget after calculation
 
 I would explicitly defer:
 
@@ -622,6 +663,7 @@ I would explicitly defer:
 - automatic cross-widget refresh
 - deep feature extraction
 - batch computation across multiple labels layers
+- create-a-new-table flow from the feature widget, to be handled in Phase 8
 
 ## Summary Recommendation
 
@@ -629,9 +671,9 @@ The cleanest implementation path is:
 
 1. add a dedicated `FeatureExtractionWidget`
 2. extend the existing viewer-binding helpers with image discovery
-3. use Harpy low-level calculators, not Harpy's higher-level table writers
-4. merge feature results into `.obsm[key]` on the authoritative in-memory table and record companion metadata in `uns`
-5. create a new linked table with `add_table_layer(...)` when no table exists
+3. call `hp.tb.add_feature_matrix(...)` from the controller rather than reimplementing feature extraction in napari-harpy
+4. treat the updated `sdata.tables[table_name]` entry as authoritative and read companion metadata from `uns["feature_matrices"]`
+5. require that the selected labels layer is already linked to an annotation table for MVP
 6. reuse the current object-classification widget as the consumer of the new feature matrix
 
-That gives us a solid MVP without fighting either `napari-spatialdata` or Harpy's current table abstractions.
+That gives us a solid MVP without duplicating logic that Harpy now already owns.
