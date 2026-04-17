@@ -139,6 +139,7 @@ def test_feature_extraction_widget_exposes_grouped_feature_checkboxes(qtbot) -> 
     assert widget.findChild(QCheckBox, "feature_checkbox_var") is not None
     assert widget.findChild(QCheckBox, "feature_checkbox_area") is not None
     assert widget.findChild(QCheckBox, "feature_checkbox_perimeter") is not None
+    assert widget.findChild(QCheckBox, "feature_extraction_overwrite_feature_key_checkbox") is None
     assert "requires an image" in widget.intensity_features_hint.text()
 
 
@@ -151,9 +152,8 @@ def test_feature_extraction_widget_reads_back_feature_selection_and_output_key(q
     widget.findChild(QCheckBox, "feature_checkbox_var").setChecked(True)
     widget.findChild(QCheckBox, "feature_checkbox_area").setChecked(True)
     widget.output_key_line_edit.setText("object_features")
-    widget.overwrite_feature_key_checkbox.setChecked(True)
 
     assert widget.selected_feature_names == ("mean", "var", "area")
     assert widget.selected_feature_key == "object_features"
-    assert widget.overwrite_feature_key is True
+    assert widget.overwrite_feature_key is False
     assert "selected" in widget.intensity_features_hint.text()

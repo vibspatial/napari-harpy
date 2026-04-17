@@ -87,10 +87,29 @@ _FEATURE_GROUP_STYLESHEET = (
     "QGroupBox::title {"
     "subcontrol-origin: margin; "
     "left: 12px; "
-    "padding: 0 4px;}"
+    f"padding: 0 6px; color: #374151; background-color: {_WIDGET_SURFACE_COLOR};"
+    "}"
 )
 _FEATURE_CHECKBOX_STYLESHEET = (
-    "QCheckBox {color: #111827; font-weight: 500; spacing: 8px;}QCheckBox:disabled { color: #9ca3af; }"
+    "QCheckBox {"
+    "color: #111827; "
+    "font-weight: 500; "
+    "spacing: 8px; "
+    "background: transparent;}"
+    "QCheckBox:disabled { color: #9ca3af; }"
+    "QCheckBox::indicator {"
+    "width: 16px; "
+    "height: 16px; "
+    "border-radius: 4px; "
+    "border: 1px solid #d8c8bf; "
+    "background-color: #fffdfb;}"
+    "QCheckBox::indicator:hover { border-color: #c7b2a7; }"
+    "QCheckBox::indicator:checked {"
+    "border-color: #7aa7bd; "
+    "background-color: #8fb6c9;}"
+    "QCheckBox::indicator:disabled {"
+    "border-color: #e9ddd7; "
+    "background-color: #f7efea;}"
 )
 _FEATURE_HINT_INFO_STYLESHEET = "color: #6b7280; font-size: 12px; font-weight: 500;"
 _FEATURE_HINT_WARNING_STYLESHEET = "color: #b45309; font-size: 12px; font-weight: 600;"
@@ -215,10 +234,6 @@ class FeatureExtractionWidget(QWidget):
             "Features will be stored in the selected table as `table.obsm[output_key]`.",
         )
 
-        self.overwrite_feature_key_checkbox = QCheckBox("Replace an existing feature matrix with the same key")
-        self.overwrite_feature_key_checkbox.setObjectName("feature_extraction_overwrite_feature_key_checkbox")
-        self.overwrite_feature_key_checkbox.setStyleSheet(_FEATURE_CHECKBOX_STYLESHEET)
-
         self.intensity_features_group = self._create_feature_group(
             "Intensity Features",
             _INTENSITY_FEATURES,
@@ -286,7 +301,6 @@ class FeatureExtractionWidget(QWidget):
         selector_layout.addRow(self._create_form_label("Table"), self.table_combo)
         selector_layout.addRow(self._create_form_label("Coordinate system"), self.coordinate_system_combo)
         selector_layout.addRow(self._create_form_label("Output key"), self.output_key_line_edit)
-        selector_layout.addRow(self._create_form_label("Overwrite"), self.overwrite_feature_key_checkbox)
 
         refresh_action_layout.addWidget(self.refresh_button, 1)
         calculate_action_layout.addWidget(self.calculate_button, 1)
@@ -346,7 +360,7 @@ class FeatureExtractionWidget(QWidget):
     @property
     def overwrite_feature_key(self) -> bool:
         """Return whether an existing feature key should be replaced."""
-        return self.overwrite_feature_key_checkbox.isChecked()
+        return False
 
     def refresh_segmentation_masks(self) -> None:
         """Refresh the segmentation choices from viewer-linked SpatialData layers."""
