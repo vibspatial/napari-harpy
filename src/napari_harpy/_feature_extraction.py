@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from napari_harpy._spatialdata import get_table
@@ -10,8 +11,20 @@ if TYPE_CHECKING:
     from anndata import AnnData
     from spatialdata import SpatialData
 
+
+def _resolve_thread_worker() -> Any:
+    try:
+        from napari.qt.threading import thread_worker
+    except Exception:  # pragma: no cover - fallback for sandboxed test imports  # noqa: BLE001
+        from superqt.utils import thread_worker
+
+    return thread_worker
+
+
 FEATURE_EXTRACTION_IDLE_STATUS = "Feature extraction: choose a segmentation, table, and output key."
 _INTENSITY_FEATURES = frozenset({"sum", "mean", "var", "min", "max", "kurtosis", "skew"})
+
+thread_worker = _resolve_thread_worker()
 
 
 @dataclass(frozen=True)
@@ -19,10 +32,11 @@ class FeatureExtractionJob:
     """Immutable payload copied on the main thread and consumed by a worker."""
 
     job_id: int
+    sdata: SpatialData
     label_name: str
     image_name: str | None
     table_name: str
-    coordinate_system: str | None
+    coordinate_system: str
     feature_names: tuple[str, ...]
     feature_key: str
     overwrite_feature_key: bool
@@ -36,6 +50,33 @@ class FeatureExtractionResult:
     label_name: str
     table_name: str
     feature_key: str
+
+
+@thread_worker(start_thread=False, ignore_errors=True)
+def _run_feature_extraction_job(job: FeatureExtractionJob) -> FeatureExtractionResult:
+    return _execute_feature_extraction_job(job)
+
+
+def _execute_feature_extraction_job(job: FeatureExtractionJob) -> FeatureExtractionResult:
+    import harpy as hp
+
+    hp.tb.add_feature_matrix(
+        sdata=job.sdata,
+        labels_layer=job.label_name,
+        img_layer=job.image_name,
+        table_layer=job.table_name,
+        feature_key=job.feature_key,
+        features=list(job.feature_names),
+        overwrite_feature_key=job.overwrite_feature_key,
+        to_coordinate_system=job.coordinate_system,
+    )
+
+    return FeatureExtractionResult(
+        job_id=job.job_id,
+        label_name=job.label_name,
+        table_name=job.table_name,
+        feature_key=job.feature_key,
+    )
 
 
 class FeatureExtractionController:
@@ -167,6 +208,76 @@ class FeatureExtractionController:
         self._set_status("Feature extraction: ready to calculate.", kind="success")
         return context_changed
 
+    def calculate(self) -> bool:
+        """Launch feature extraction for the current bound inputs."""
+        if self.is_running:
+            self._set_status("Feature extraction: calculation is already running.", kind="info")
+            return False
+
+        next_job_id = self._latest_requested_job_id + 1
+        job = self._prepare_feature_extraction_job(next_job_id)
+        if job is None:
+            return False
+
+        self._latest_requested_job_id = job.job_id
+        worker = self._create_feature_extraction_worker(job)
+        self._active_worker = worker
+        self._active_worker_job_id = job.job_id
+        worker.returned.connect(partial(self._on_worker_returned, job.job_id))
+        worker.errored.connect(partial(self._on_worker_errored, job.job_id))
+        worker.finished.connect(partial(self._on_worker_finished, job.job_id))
+        self._set_status(
+            f"Feature extraction: calculating `{job.feature_key}` for segmentation `{job.label_name}`.",
+            kind="info",
+        )
+        worker.start()
+        return True
+
+    def _prepare_feature_extraction_job(self, job_id: int) -> FeatureExtractionJob | None:
+        if self._selected_spatialdata is None or self._selected_label_name is None:
+            self._set_status(FEATURE_EXTRACTION_IDLE_STATUS, kind="warning")
+            return None
+
+        if self._selected_table_name is None:
+            self._set_status(
+                "Feature extraction: choose an annotation table linked to the selected segmentation.",
+                kind="warning",
+            )
+            return None
+
+        if not self._selected_feature_names:
+            self._set_status("Feature extraction: choose at least one feature to calculate.", kind="warning")
+            return None
+
+        if self._selected_feature_key is None or not self._selected_feature_key.strip():
+            self._set_status("Feature extraction: choose an output feature key.", kind="warning")
+            return None
+
+        if _requires_image(self._selected_feature_names) and self._selected_image_name is None:
+            self._set_status(
+                "Feature extraction: choose an image before calculating intensity features.",
+                kind="warning",
+            )
+            return None
+
+        try:
+            _ = self._get_bound_table()
+        except Exception as error:  # pragma: no cover - defensive guard
+            self._set_status(f"Feature extraction: {error}", kind="error")
+            return None
+
+        return FeatureExtractionJob(
+            job_id=job_id,
+            sdata=self._selected_spatialdata,
+            label_name=self._selected_label_name,
+            image_name=self._selected_image_name,
+            table_name=self._selected_table_name,
+            coordinate_system=self._selected_coordinate_system or "global",
+            feature_names=self._selected_feature_names,
+            feature_key=self._selected_feature_key,
+            overwrite_feature_key=self._overwrite_feature_key,
+        )
+
     def _set_status(self, message: str, *, kind: str) -> None:
         self._status_message = message
         self._status_kind = kind
@@ -189,6 +300,34 @@ class FeatureExtractionController:
             quit_worker()
         self._active_worker = None
         self._active_worker_job_id = None
+
+    def _create_feature_extraction_worker(self, job: FeatureExtractionJob) -> Any:
+        return _run_feature_extraction_job(job)
+
+    def _on_worker_returned(self, job_id: int, result: FeatureExtractionResult) -> None:
+        if job_id != self._latest_requested_job_id or job_id != self._active_worker_job_id:
+            return
+
+        self._notify_table_state_changed()
+        self._set_status(
+            f"Feature extraction: wrote `{result.feature_key}` into table `{result.table_name}`.",
+            kind="success",
+        )
+
+    def _on_worker_errored(self, job_id: int, error: Exception) -> None:
+        if job_id != self._latest_requested_job_id or job_id != self._active_worker_job_id:
+            return
+
+        self._set_status(f"Feature extraction: calculation failed: {error}", kind="error")
+
+    def _on_worker_finished(self, job_id: int) -> None:
+        if job_id != self._active_worker_job_id:
+            return
+
+        self._active_worker = None
+        self._active_worker_job_id = None
+        if self._on_state_changed is not None:
+            self._on_state_changed()
 
     def _get_bound_table(self) -> AnnData | None:
         if self._selected_spatialdata is None or self._selected_table_name is None:
