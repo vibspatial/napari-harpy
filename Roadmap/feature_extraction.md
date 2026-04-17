@@ -507,7 +507,7 @@ Use `hp.tb.add_feature_matrix(...)` as the authoritative compute-and-write path.
 
 ### Phase 4: Create the widget
 
-Create `src/napari_harpy/widgets/_feature_extraction_widget.py`.
+Create `src/napari_harpy/widgets/_feature_extraction_widget.py`. 
 
 The widget should look and behave like the current object classification widget:
 
