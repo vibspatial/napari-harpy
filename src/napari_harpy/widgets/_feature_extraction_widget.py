@@ -98,7 +98,7 @@ class FeatureExtractionWidget(QWidget):
         self._label_options: list[SpatialDataLabelsOption] = []
         self._selected_label_option: SpatialDataLabelsOption | None = None
         self._image_options: list[SpatialDataImageOption] = []
-        self._selected_image_name: str | None = None
+        self._selected_image_option: SpatialDataImageOption | None = None
         self._table_names: list[str] = []
         self._selected_table_name: str | None = None
         self._coordinate_systems: list[str] = []
@@ -213,7 +213,7 @@ class FeatureExtractionWidget(QWidget):
     @property
     def selected_image_name(self) -> str | None:
         """Return the currently selected image element name, if any."""
-        return self._selected_image_name
+        return None if self._selected_image_option is None else self._selected_image_option.image_name
 
     @property
     def selected_table_name(self) -> str | None:
@@ -317,7 +317,7 @@ class FeatureExtractionWidget(QWidget):
         return None
 
     def _refresh_image_options(self) -> None:
-        previous_image_name = self.selected_image_name
+        previous_identity = None if self._selected_image_option is None else self._selected_image_option.identity
 
         if self.selected_spatialdata is None or self.selected_segmentation_name is None:
             self._image_options = []
@@ -331,26 +331,40 @@ class FeatureExtractionWidget(QWidget):
             self.image_combo.clear()
             self.image_combo.addItem(_NO_IMAGE_TEXT, None)
             for option in self._image_options:
-                self.image_combo.addItem(option.display_name, option.image_name)
+                self.image_combo.addItem(option.display_name)
 
             self.image_combo.setEnabled(self.selected_spatialdata is not None and self.selected_segmentation_name is not None)
 
+            next_index = self._find_image_option_index(previous_identity)
             if self.image_combo.count() == 1:
                 self.image_combo.setCurrentIndex(0)
+            elif next_index is None:
+                self.image_combo.setCurrentIndex(0)
             else:
-                next_index = 0 if previous_image_name is None else self.image_combo.findData(previous_image_name)
-                self.image_combo.setCurrentIndex(0 if next_index < 0 else next_index)
+                self.image_combo.setCurrentIndex(next_index + 1)
 
-        self._set_selected_image_name(self.image_combo.currentIndex())
+        self._set_selected_image_option(self.image_combo.currentIndex())
 
     def _on_image_changed(self, index: int) -> None:
-        self._set_selected_image_name(index)
+        self._set_selected_image_option(index)
         self._refresh_coordinate_systems()
         self._update_selection_status()
 
-    def _set_selected_image_name(self, index: int) -> None:
-        image_name = self.image_combo.itemData(index)
-        self._selected_image_name = image_name if isinstance(image_name, str) else None
+    def _set_selected_image_option(self, index: int) -> None:
+        if index <= 0 or index > len(self._image_options):
+            self._selected_image_option = None
+        else:
+            self._selected_image_option = self._image_options[index - 1]
+
+    def _find_image_option_index(self, identity: tuple[int, str] | None) -> int | None:
+        if identity is None:
+            return None
+
+        for index, option in enumerate(self._image_options):
+            if option.identity == identity:
+                return index
+
+        return None
 
     def _refresh_table_names(self) -> None:
         previous_table_name = self.selected_table_name
@@ -397,8 +411,9 @@ class FeatureExtractionWidget(QWidget):
                 [] if self._selected_label_option is None else list(self._selected_label_option.coordinate_systems)
             )
         else:
-            selected_image_option = self._selected_image_option()
-            self._coordinate_systems = [] if selected_image_option is None else list(selected_image_option.coordinate_systems)
+            self._coordinate_systems = (
+                [] if self._selected_image_option is None else list(self._selected_image_option.coordinate_systems)
+            )
 
         with QSignalBlocker(self.coordinate_system_combo):
             self.coordinate_system_combo.clear()
@@ -427,16 +442,6 @@ class FeatureExtractionWidget(QWidget):
     def _set_selected_coordinate_system(self, index: int) -> None:
         coordinate_system = self.coordinate_system_combo.itemData(index)
         self._selected_coordinate_system = coordinate_system if isinstance(coordinate_system, str) else None
-
-    def _selected_image_option(self) -> SpatialDataImageOption | None:
-        if self.selected_image_name is None:
-            return None
-
-        for option in self._image_options:
-            if option.image_name == self.selected_image_name:
-                return option
-
-        return None
 
     def _effective_table_name(self) -> str | None:
         if self._table_binding_error is not None:
