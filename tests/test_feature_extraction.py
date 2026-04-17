@@ -15,7 +15,6 @@ def test_feature_extraction_controller_starts_idle() -> None:
     assert controller.status_kind == "warning"
     assert controller.is_running is False
     assert controller.can_calculate is False
-    assert controller.table_binding_error is None
 
 
 def test_feature_extraction_controller_bind_is_passive_and_ready_for_existing_table(
@@ -38,7 +37,6 @@ def test_feature_extraction_controller_bind_is_passive_and_ready_for_existing_ta
     assert controller.status_kind == "success"
     assert controller.is_running is False
     assert controller.can_calculate is True
-    assert controller.table_binding_error is None
 
 
 def test_feature_extraction_controller_blocks_when_no_table_is_selected(sdata_blobs: SpatialData) -> None:
@@ -75,28 +73,6 @@ def test_feature_extraction_controller_requires_image_for_intensity_features(sda
     assert controller.can_calculate is False
     assert controller.status_kind == "warning"
     assert controller.status_message == "Feature extraction: choose an image before calculating intensity features."
-
-
-def test_feature_extraction_controller_reports_invalid_table_binding(sdata_blobs: SpatialData) -> None:
-    controller = FeatureExtractionController()
-
-    controller.bind(
-        sdata_blobs,
-        "blobs_multiscale_labels",
-        None,
-        "table",
-        "global",
-        ["area"],
-        "feature_matrix_1",
-    )
-
-    assert controller.can_calculate is False
-    assert controller.status_kind == "warning"
-    assert controller.table_binding_error == "Table `table` does not annotate segmentation `blobs_multiscale_labels`."
-    assert controller.status_message == (
-        "Feature extraction: Table `table` does not annotate segmentation `blobs_multiscale_labels`."
-    )
-
 
 def test_feature_extraction_controller_bind_returns_false_for_unchanged_context(sdata_blobs: SpatialData) -> None:
     controller = FeatureExtractionController()

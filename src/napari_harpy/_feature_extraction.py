@@ -4,7 +4,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from napari_harpy._spatialdata import SpatialDataTableMetadata, get_table, validate_table_binding
+from napari_harpy._spatialdata import get_table
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -54,9 +54,6 @@ class FeatureExtractionController:
         self._selected_label_name: str | None = None
         self._selected_image_name: str | None = None
         self._selected_table_name: str | None = None
-        self._effective_table_name: str | None = None
-        self._selected_table_metadata: SpatialDataTableMetadata | None = None
-        self._table_binding_error: str | None = None
         self._selected_coordinate_system: str | None = None
         self._selected_feature_names: tuple[str, ...] = ()
         self._selected_feature_key: str | None = None
@@ -90,18 +87,13 @@ class FeatureExtractionController:
         return (
             self._selected_spatialdata is not None
             and self._selected_label_name is not None
-            and self._effective_table_name is not None
+            and self._selected_table_name is not None
             and bool(self._selected_feature_names)
             and self._selected_feature_key is not None
             and bool(self._selected_feature_key.strip())
             and (not _requires_image(self._selected_feature_names) or self._selected_image_name is not None)
             and not self.is_running
         )
-
-    @property
-    def table_binding_error(self) -> str | None:
-        """Return the latest table-binding validation error, if any."""
-        return self._table_binding_error
 
     def bind(
         self,
@@ -139,10 +131,6 @@ class FeatureExtractionController:
         self._selected_feature_key = normalized_feature_key
         self._overwrite_feature_key = bool(overwrite_feature_key)
 
-        self._effective_table_name = None
-        self._selected_table_metadata = None
-        self._table_binding_error = None
-
         if context_changed:
             self._cancel_pending_and_active_jobs()
 
@@ -156,16 +144,6 @@ class FeatureExtractionController:
                 kind="warning",
             )
             return context_changed
-
-        try:
-            table_metadata = validate_table_binding(sdata, label_name, table_name)
-        except ValueError as error:
-            self._table_binding_error = str(error)
-            self._set_status(f"Feature extraction: {error}", kind="warning")
-            return context_changed
-
-        self._effective_table_name = table_name
-        self._selected_table_metadata = table_metadata
 
         if not normalized_feature_names:
             self._set_status("Feature extraction: choose at least one feature to calculate.", kind="warning")
@@ -213,10 +191,10 @@ class FeatureExtractionController:
         self._active_worker_job_id = None
 
     def _get_bound_table(self) -> AnnData | None:
-        if self._selected_spatialdata is None or self._effective_table_name is None:
+        if self._selected_spatialdata is None or self._selected_table_name is None:
             return None
 
-        return get_table(self._selected_spatialdata, self._effective_table_name)
+        return get_table(self._selected_spatialdata, self._selected_table_name)
 
 
 def _normalize_feature_names(feature_names: Sequence[str] | str | None) -> tuple[str, ...]:
