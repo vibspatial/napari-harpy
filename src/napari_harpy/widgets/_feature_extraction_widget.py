@@ -6,7 +6,19 @@ from typing import TYPE_CHECKING
 
 from qtpy.QtCore import QSignalBlocker, Qt
 from qtpy.QtGui import QColor, QPalette, QPixmap
-from qtpy.QtWidgets import QComboBox, QFormLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from qtpy.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QFormLayout,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from napari_harpy._feature_extraction import FeatureExtractionController
 from napari_harpy._spatialdata import (
@@ -27,18 +39,18 @@ _WIDGET_SURFACE_STYLESHEET = f"background-color: {_WIDGET_SURFACE_COLOR};"
 _TOOLTIP_TEXT_COLOR = "#111827"
 _FORM_LABEL_STYLESHEET = "color: #374151; font-weight: 600; padding-top: 6px;"
 _INPUT_CONTROL_STYLESHEET = (
-    "QComboBox {"
+    "QComboBox, QLineEdit {"
     "background-color: #fffdfb; "
     "border: 1px solid #ddcfc7; "
     "border-radius: 8px; "
     "color: #111827; "
     "padding: 4px 10px; "
     "min-height: 30px;}"
-    "QComboBox:disabled {"
+    "QComboBox:disabled, QLineEdit:disabled {"
     "background-color: #f7efea; "
     "border-color: #e9ddd7; "
     "color: #9ca3af;}"
-    "QComboBox:focus {"
+    "QComboBox:focus, QLineEdit:focus {"
     "border-color: #8fb6c9; "
     "background-color: #ffffff;}"
     "QComboBox { padding-right: 24px; }"
@@ -62,7 +74,41 @@ _ACTION_BUTTON_STYLESHEET = (
     "QPushButton:pressed { background-color: #ebd7cf; border-color: #b59a8e; }"
     "QPushButton:disabled { background-color: #faf4f1; border-color: #ede3dd; color: #a8a29e; }"
 )
+_FEATURE_GROUP_STYLESHEET = (
+    "QGroupBox {"
+    "background-color: #f8eeea; "
+    "border: 1px solid #eadfd8; "
+    "border-radius: 10px; "
+    "color: #374151; "
+    "font-weight: 600; "
+    "margin-top: 10px; "
+    "padding: 12px 12px 10px 12px;}"
+    "QGroupBox::title {"
+    "subcontrol-origin: margin; "
+    "left: 12px; "
+    "padding: 0 4px;}"
+)
+_FEATURE_CHECKBOX_STYLESHEET = (
+    "QCheckBox {color: #111827; font-weight: 500; spacing: 8px;}QCheckBox:disabled { color: #9ca3af; }"
+)
+_FEATURE_HINT_INFO_STYLESHEET = "color: #6b7280; font-size: 12px; font-weight: 500;"
+_FEATURE_HINT_WARNING_STYLESHEET = "color: #b45309; font-size: 12px; font-weight: 600;"
 _NO_IMAGE_TEXT = "No image"
+_INTENSITY_FEATURES = ("sum", "mean", "var", "min", "max", "kurtosis", "skew")
+_MORPHOLOGY_FEATURES = (
+    "area",
+    "eccentricity",
+    "major_axis_length",
+    "minor_axis_length",
+    "perimeter",
+    "convex_area",
+    "equivalent_diameter",
+    "major_minor_axis_ratio",
+    "perim_square_over_area",
+    "major_axis_equiv_diam_ratio",
+    "convex_hull_resid",
+    "centroid_dif",
+)
 
 
 class FeatureExtractionWidget(QWidget):
@@ -104,6 +150,7 @@ class FeatureExtractionWidget(QWidget):
         self._coordinate_systems: list[str] = []
         self._selected_coordinate_system: str | None = None
         self._table_binding_error: str | None = None
+        self._feature_checkboxes: dict[str, QCheckBox] = {}
         self._logo_path = Path(__file__).resolve().parents[3] / "docs" / "_static" / "logo.png"
 
         layout = QVBoxLayout(self)
@@ -137,6 +184,35 @@ class FeatureExtractionWidget(QWidget):
         self.coordinate_system_combo.currentIndexChanged.connect(self._on_coordinate_system_changed)
         self.coordinate_system_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
 
+        self.output_key_line_edit = QLineEdit()
+        self.output_key_line_edit.setObjectName("feature_extraction_output_key_line_edit")
+        self.output_key_line_edit.setPlaceholderText("e.g. object_features")
+        self.output_key_line_edit.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
+        self._set_tooltip(
+            self.output_key_line_edit,
+            "Features will be stored in the selected table as `table.obsm[output_key]`.",
+        )
+
+        self.overwrite_feature_key_checkbox = QCheckBox("Replace an existing feature matrix with the same key")
+        self.overwrite_feature_key_checkbox.setObjectName("feature_extraction_overwrite_feature_key_checkbox")
+        self.overwrite_feature_key_checkbox.setStyleSheet(_FEATURE_CHECKBOX_STYLESHEET)
+
+        self.intensity_features_group = self._create_feature_group(
+            "Intensity Features",
+            _INTENSITY_FEATURES,
+            object_name="feature_extraction_intensity_features_group",
+        )
+        self.intensity_features_hint = QLabel()
+        self.intensity_features_hint.setObjectName("feature_extraction_intensity_features_hint")
+        self.intensity_features_hint.setWordWrap(True)
+        self.intensity_features_group.layout().addWidget(self.intensity_features_hint)
+
+        self.morphology_features_group = self._create_feature_group(
+            "Morphology Features",
+            _MORPHOLOGY_FEATURES,
+            object_name="feature_extraction_morphology_features_group",
+        )
+
         self.refresh_action_row = QWidget()
         self.refresh_action_row.setObjectName("feature_extraction_refresh_action_row")
         refresh_action_layout = QHBoxLayout(self.refresh_action_row)
@@ -162,7 +238,10 @@ class FeatureExtractionWidget(QWidget):
         self.calculate_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.calculate_button.setMinimumHeight(28)
         self.calculate_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
-        self._set_tooltip(self.calculate_button, "Feature selection and output-key controls will enable calculation.")
+        self._set_tooltip(
+            self.calculate_button,
+            "Calculation will be enabled once the feature-extraction controller is wired to these inputs.",
+        )
 
         self.validation_status = QLabel()
         self.validation_status.setObjectName("feature_extraction_validation_status")
@@ -184,12 +263,16 @@ class FeatureExtractionWidget(QWidget):
         selector_layout.addRow(self._create_form_label("Image"), self.image_combo)
         selector_layout.addRow(self._create_form_label("Table"), self.table_combo)
         selector_layout.addRow(self._create_form_label("Coordinate system"), self.coordinate_system_combo)
+        selector_layout.addRow(self._create_form_label("Output key"), self.output_key_line_edit)
+        selector_layout.addRow(self._create_form_label("Overwrite"), self.overwrite_feature_key_checkbox)
 
         refresh_action_layout.addWidget(self.refresh_button, 1)
         calculate_action_layout.addWidget(self.calculate_button, 1)
 
         layout.addWidget(title)
         layout.addLayout(selector_layout)
+        layout.addWidget(self.intensity_features_group)
+        layout.addWidget(self.morphology_features_group)
         layout.addWidget(self.calculate_action_row)
         layout.addWidget(self.refresh_action_row)
         layout.addWidget(self.selection_status)
@@ -198,6 +281,7 @@ class FeatureExtractionWidget(QWidget):
         layout.addStretch(1)
 
         self._connect_viewer_events()
+        self._update_intensity_features_hint()
         self.refresh_segmentation_masks()
 
     @property
@@ -224,6 +308,23 @@ class FeatureExtractionWidget(QWidget):
     def selected_coordinate_system(self) -> str | None:
         """Return the currently selected coordinate system."""
         return self._selected_coordinate_system
+
+    @property
+    def selected_feature_names(self) -> tuple[str, ...]:
+        """Return selected feature names in stable UI order."""
+        ordered_features = (*_INTENSITY_FEATURES, *_MORPHOLOGY_FEATURES)
+        return tuple(feature for feature in ordered_features if self._feature_checkboxes[feature].isChecked())
+
+    @property
+    def selected_feature_key(self) -> str | None:
+        """Return the trimmed feature-matrix output key, if any."""
+        value = self.output_key_line_edit.text().strip()
+        return value or None
+
+    @property
+    def overwrite_feature_key(self) -> bool:
+        """Return whether an existing feature key should be replaced."""
+        return self.overwrite_feature_key_checkbox.isChecked()
 
     def refresh_segmentation_masks(self) -> None:
         """Refresh the segmentation choices from viewer-linked SpatialData layers."""
@@ -272,6 +373,28 @@ class FeatureExtractionWidget(QWidget):
         label.setStyleSheet(_FORM_LABEL_STYLESHEET)
         label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         return label
+
+    def _create_feature_group(self, title: str, feature_names: tuple[str, ...], *, object_name: str) -> QGroupBox:
+        group = QGroupBox(title)
+        group.setObjectName(object_name)
+        group.setStyleSheet(_FEATURE_GROUP_STYLESHEET)
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(12, 18, 12, 8)
+        layout.setSpacing(8)
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(6)
+        for index, feature_name in enumerate(feature_names):
+            checkbox = QCheckBox(feature_name)
+            checkbox.setObjectName(f"feature_checkbox_{feature_name}")
+            checkbox.setStyleSheet(_FEATURE_CHECKBOX_STYLESHEET)
+            checkbox.toggled.connect(self._on_feature_selection_changed)
+            self._feature_checkboxes[feature_name] = checkbox
+            grid.addWidget(checkbox, index // 2, index % 2)
+
+        layout.addLayout(grid)
+        return group
 
     def _set_tooltip(self, widget: QWidget, message: str) -> None:
         widget.setToolTip(f"<qt><span style='color: {_TOOLTIP_TEXT_COLOR};'>{escape(message)}</span></qt>")
@@ -333,7 +456,9 @@ class FeatureExtractionWidget(QWidget):
             for option in self._image_options:
                 self.image_combo.addItem(option.display_name)
 
-            self.image_combo.setEnabled(self.selected_spatialdata is not None and self.selected_segmentation_name is not None)
+            self.image_combo.setEnabled(
+                self.selected_spatialdata is not None and self.selected_segmentation_name is not None
+            )
 
             next_index = self._find_image_option_index(previous_identity)
             if self.image_combo.count() == 1:
@@ -348,6 +473,7 @@ class FeatureExtractionWidget(QWidget):
     def _on_image_changed(self, index: int) -> None:
         self._set_selected_image_option(index)
         self._refresh_coordinate_systems()
+        self._update_intensity_features_hint()
         self._update_selection_status()
 
     def _set_selected_image_option(self, index: int) -> None:
@@ -443,6 +569,22 @@ class FeatureExtractionWidget(QWidget):
         coordinate_system = self.coordinate_system_combo.itemData(index)
         self._selected_coordinate_system = coordinate_system if isinstance(coordinate_system, str) else None
 
+    def _on_feature_selection_changed(self, checked: bool) -> None:
+        del checked
+        self._update_intensity_features_hint()
+
+    def _update_intensity_features_hint(self) -> None:
+        intensity_selected = any(self._feature_checkboxes[name].isChecked() for name in _INTENSITY_FEATURES)
+        if intensity_selected and self.selected_image_name is None:
+            self.intensity_features_hint.setText(
+                "Intensity features are selected, so choose an image before calculating."
+            )
+            self.intensity_features_hint.setStyleSheet(_FEATURE_HINT_WARNING_STYLESHEET)
+            return
+
+        self.intensity_features_hint.setText("Selecting any intensity feature requires an image.")
+        self.intensity_features_hint.setStyleSheet(_FEATURE_HINT_INFO_STYLESHEET)
+
     def _validate_selected_table_binding(self) -> str | None:
         if (
             self.selected_spatialdata is None
@@ -511,9 +653,7 @@ class FeatureExtractionWidget(QWidget):
             return
 
         image_line = (
-            "Image: none selected yet"
-            if self.selected_image_name is None
-            else f"Image: {self.selected_image_name}"
+            "Image: none selected yet" if self.selected_image_name is None else f"Image: {self.selected_image_name}"
         )
         self._set_selection_status(
             "Selection Ready",

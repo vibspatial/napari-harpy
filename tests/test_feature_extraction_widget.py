@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from napari.layers import Labels
+from qtpy.QtWidgets import QCheckBox
 from spatialdata import SpatialData
 
 from napari_harpy.widgets._feature_extraction_widget import FeatureExtractionWidget
@@ -55,6 +56,9 @@ def test_feature_extraction_widget_can_be_instantiated(qtbot) -> None:
     assert widget.selected_image_name is None
     assert widget.selected_table_name is None
     assert widget.selected_coordinate_system is None
+    assert widget.selected_feature_names == ()
+    assert widget.selected_feature_key is None
+    assert widget.overwrite_feature_key is False
     assert widget.segmentation_combo.count() == 0
     assert widget.image_combo.count() == 1
     assert widget.image_combo.itemText(0) == "No image"
@@ -119,3 +123,34 @@ def test_feature_extraction_widget_blocks_when_selected_segmentation_has_no_link
     assert "No Table Linked" in widget.selection_status.text()
     assert "creating a new linked table" in widget.selection_status.text()
     assert widget.validation_status.isHidden()
+
+
+def test_feature_extraction_widget_exposes_grouped_feature_checkboxes(qtbot) -> None:
+    widget = FeatureExtractionWidget()
+
+    qtbot.addWidget(widget)
+
+    assert widget.intensity_features_group.title() == "Intensity Features"
+    assert widget.morphology_features_group.title() == "Morphology Features"
+    assert widget.findChild(QCheckBox, "feature_checkbox_mean") is not None
+    assert widget.findChild(QCheckBox, "feature_checkbox_var") is not None
+    assert widget.findChild(QCheckBox, "feature_checkbox_area") is not None
+    assert widget.findChild(QCheckBox, "feature_checkbox_perimeter") is not None
+    assert "requires an image" in widget.intensity_features_hint.text()
+
+
+def test_feature_extraction_widget_reads_back_feature_selection_and_output_key(qtbot) -> None:
+    widget = FeatureExtractionWidget()
+
+    qtbot.addWidget(widget)
+
+    widget.findChild(QCheckBox, "feature_checkbox_mean").setChecked(True)
+    widget.findChild(QCheckBox, "feature_checkbox_var").setChecked(True)
+    widget.findChild(QCheckBox, "feature_checkbox_area").setChecked(True)
+    widget.output_key_line_edit.setText("object_features")
+    widget.overwrite_feature_key_checkbox.setChecked(True)
+
+    assert widget.selected_feature_names == ("mean", "var", "area")
+    assert widget.selected_feature_key == "object_features"
+    assert widget.overwrite_feature_key is True
+    assert "selected" in widget.intensity_features_hint.text()
