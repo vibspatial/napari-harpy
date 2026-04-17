@@ -521,6 +521,7 @@ Suggested controls:
 - [ ] labels combo
 - [ ] image combo
 - [ ] table combo
+- [ ] coordinate-system combo
 - [ ] output-key line edit
 - [ ] overwrite-existing-feature-key UX
 - [ ] grouped feature checkboxes
