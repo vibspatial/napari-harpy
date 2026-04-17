@@ -480,27 +480,26 @@ class FeatureExtractionWidget(QWidget):
             )
             return
 
-        effective_table_name = None if self._table_binding_error is not None else self.selected_table_name
+        if self.selected_table_name is None:
+            self._set_selection_status(
+                "No Table Linked",
+                [
+                    f"Segmentation `{self.selected_segmentation_name}` is not linked to an annotation table.",
+                    "Support for creating a new linked table from this widget is coming soon.",
+                ],
+                kind="warning",
+            )
+            return
 
-        if effective_table_name is None:
-            if self.selected_table_name is None:
-                self._set_selection_status(
-                    "No Table Linked",
-                    [
-                        f"Segmentation `{self.selected_segmentation_name}` is not linked to an annotation table.",
-                        "Support for creating a new linked table from this widget is coming soon.",
-                    ],
-                    kind="warning",
-                )
-            else:
-                self._set_selection_status(
-                    "Table Binding Issue",
-                    [
-                        f"Table `{self.selected_table_name}` cannot currently be used for segmentation `{self.selected_segmentation_name}`.",
-                        "Choose a different table or segmentation.",
-                    ],
-                    kind="warning",
-                )
+        if self._table_binding_error is not None:
+            self._set_selection_status(
+                "Table Binding Issue",
+                [
+                    f"Table `{self.selected_table_name}` cannot currently be used for segmentation `{self.selected_segmentation_name}`.",
+                    "Choose a different table or segmentation.",
+                ],
+                kind="warning",
+            )
             return
 
         if self.selected_coordinate_system is None:
@@ -520,7 +519,7 @@ class FeatureExtractionWidget(QWidget):
             "Selection Ready",
             [
                 f"Segmentation: {self.selected_segmentation_name}",
-                f"Table: {effective_table_name}",
+                f"Table: {self.selected_table_name}",
                 image_line,
                 f"Coordinate system: {self.selected_coordinate_system}",
             ],
