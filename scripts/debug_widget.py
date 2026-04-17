@@ -15,7 +15,9 @@ def main() -> None:
     sdata = read_zarr(SDATA_PATH)
     interactive = Interactive(sdata, headless=True)
     viewer = interactive._viewer
+    viewer.window.add_plugin_dock_widget(plugin_name="napari-harpy", widget_name="Feature Extraction", tabify=True)
     viewer.window.add_plugin_dock_widget(plugin_name="napari-harpy", widget_name="Object Classification", tabify=True)
+
     napari.run()
 
 
