@@ -450,32 +450,32 @@ Create `src/napari_harpy/_feature_extraction.py`.
 
 Responsibilities:
 
-- [ ] bind the selected labels, optional image, target table, requested feature set, and output key
-- [ ] validate the current bound selection against the authoritative `SpatialData` state
-- [ ] prepare `hp.tb.add_feature_matrix(...)` call arguments on the main thread
-- [ ] run the Harpy feature-extraction call in a worker
-- [ ] accept the successful result on the main thread and treat the updated `sdata.tables[...]` entry as authoritative
-- [ ] notify the widget when table state changed so dependent UI can refresh and persistence state can stay coherent
-- [ ] expose status strings and simple run-state flags for the widget
+- [x] bind the selected labels, optional image, target table, requested feature set, and output key
+- [x] validate the current bound selection against the authoritative `SpatialData` state
+- [x] prepare `hp.tb.add_feature_matrix(...)` call arguments on the main thread
+- [x] run the Harpy feature-extraction call in a worker
+- [x] accept the successful result on the main thread and treat the updated `sdata.tables[...]` entry as authoritative
+- [x] notify the widget when table state changed so dependent UI can refresh and persistence state can stay coherent
+- [x] expose status strings and simple run-state flags for the widget
 
 Recommended structure:
 
-- [ ] `FeatureExtractionJob`
-- [ ] `FeatureExtractionResult`
-- [ ] `FeatureExtractionController`
+- [x] `FeatureExtractionJob`
+- [x] `FeatureExtractionResult`
+- [x] `FeatureExtractionController`
 
 This should mirror the current classifier design:
 
-- [ ] explicit, passive bind step that does not compute until the user clicks `Calculate`
-- [ ] worker-based long-running work
-- [ ] stale-job protection if the selection changes mid-run
-- [ ] authoritative writes back into `sdata[table_name]`, not napari layer metadata
+- [x] explicit, passive bind step that does not compute until the user clicks `Calculate`
+- [x] worker-based long-running work
+- [x] stale-job protection if the selection changes mid-run
+- [x] authoritative writes back into `sdata[table_name]`, not napari layer metadata
 
 Important differences from the classifier:
 
-- [ ] feature extraction is a one-shot calculate flow, so we do not need classifier-style dirty/debounce semantics
-- [ ] for MVP, the controller only needs to support updating an existing linked table
-- [ ] because Harpy writes directly into `sdata`, we should avoid overlapping feature-extraction runs against the same dataset and treat stale-job protection primarily as a UI/state-adoption guard
+- [x] feature extraction is a one-shot calculate flow, so we do not need classifier-style dirty/debounce semantics
+- [x] for MVP, the controller only needs to support updating an existing linked table
+- [x] because Harpy writes directly into `sdata`, we should avoid overlapping feature-extraction runs against the same dataset and treat stale-job protection primarily as a UI/state-adoption guard
 
 ### Phase 3: Integrate Harpy feature calculation
 
