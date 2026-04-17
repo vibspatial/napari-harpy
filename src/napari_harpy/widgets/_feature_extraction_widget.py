@@ -443,12 +443,6 @@ class FeatureExtractionWidget(QWidget):
         coordinate_system = self.coordinate_system_combo.itemData(index)
         self._selected_coordinate_system = coordinate_system if isinstance(coordinate_system, str) else None
 
-    def _effective_table_name(self) -> str | None:
-        if self._table_binding_error is not None:
-            return None
-
-        return self.selected_table_name
-
     def _validate_selected_table_binding(self) -> str | None:
         if (
             self.selected_spatialdata is None
@@ -486,7 +480,9 @@ class FeatureExtractionWidget(QWidget):
             )
             return
 
-        if self._effective_table_name() is None:
+        effective_table_name = None if self._table_binding_error is not None else self.selected_table_name
+
+        if effective_table_name is None:
             if self.selected_table_name is None:
                 self._set_selection_status(
                     "No Table Linked",
@@ -524,7 +520,7 @@ class FeatureExtractionWidget(QWidget):
             "Selection Ready",
             [
                 f"Segmentation: {self.selected_segmentation_name}",
-                f"Table: {self._effective_table_name()}",
+                f"Table: {effective_table_name}",
                 image_line,
                 f"Coordinate system: {self.selected_coordinate_system}",
             ],
