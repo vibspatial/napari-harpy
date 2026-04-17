@@ -633,7 +633,7 @@ class ObjectClassificationWidget(QWidget):
 
     def _update_selection_status(self) -> None:
         self._update_validation_status()
-        self._update_annotation_status()
+        self._update_primary_status_card()
         self._update_annotation_controls()
         self._update_color_by_controls()
         self._update_classifier_controls()
@@ -651,7 +651,7 @@ class ObjectClassificationWidget(QWidget):
         self.validation_status.setText("" if message is None else message)
         self.validation_status.setVisible(message is not None)
 
-    def _update_annotation_status(self) -> None:
+    def _update_primary_status_card(self) -> None:
         labels_layer = self._annotation_controller.labels_layer
         missing_table_row_message = self._annotation_controller.missing_table_row_message
 
@@ -1127,7 +1127,7 @@ class ObjectClassificationWidget(QWidget):
     def _on_selected_instance_changed(self, instance_id: int | None) -> None:
         del instance_id
         self._set_annotation_feedback("")
-        self._update_annotation_status()
+        self._update_primary_status_card()
         self._update_annotation_controls()
 
     def _on_annotation_changed(self) -> None:

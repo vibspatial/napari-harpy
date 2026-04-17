@@ -470,14 +470,14 @@ class FeatureExtractionWidget(QWidget):
 
     def _update_selection_status(self) -> None:
         self._update_validation_status()
-        self._update_selection_summary()
+        self._update_primary_status_card()
 
     def _update_validation_status(self) -> None:
         message = self._table_binding_error
         self.validation_status.setText("" if message is None else message)
         self.validation_status.setVisible(message is not None)
 
-    def _update_selection_summary(self) -> None:
+    def _update_primary_status_card(self) -> None:
         if self.selected_spatialdata is None or self.selected_segmentation_name is None:
             self._set_selection_status(
                 "Selection Needed",
