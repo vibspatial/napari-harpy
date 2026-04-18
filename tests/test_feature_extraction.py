@@ -212,7 +212,10 @@ def test_feature_extraction_controller_notifies_table_state_change_on_success(sd
 
     assert table_state_changes == ["changed"]
     assert controller.status_kind == "success"
-    assert controller.status_message == "Feature extraction: wrote `feature_matrix_1` into table `table`."
+    assert (
+        controller.status_message
+        == "Feature extraction: wrote `feature_matrix_1` into table `table` as `.obsm['feature_matrix_1']`."
+    )
     assert controller.is_running is False
 
 

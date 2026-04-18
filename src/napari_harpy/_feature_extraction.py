@@ -312,7 +312,7 @@ class FeatureExtractionController:
 
         self._notify_table_state_changed()
         self._set_status(
-            f"Feature extraction: wrote `{result.feature_key}` into table `{result.table_name}`.",
+            f"Feature extraction: wrote `{result.feature_key}` into table `{result.table_name}` as `.obsm[{result.feature_key!r}]`.",
             kind="success",
         )
 
