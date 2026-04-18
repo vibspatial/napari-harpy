@@ -278,6 +278,7 @@ class FeatureExtractionWidget(QWidget):
 
         self.calculate_button = QPushButton("Calculate")
         self.calculate_button.setObjectName("feature_extraction_calculate_button")
+        self.calculate_button.clicked.connect(self._calculate_feature_matrix)
         self.calculate_button.setEnabled(False)
         self.calculate_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.calculate_button.setMinimumHeight(28)
@@ -616,6 +617,9 @@ class FeatureExtractionWidget(QWidget):
     def _on_feature_key_changed(self, _text: str) -> None:
         self._bind_current_selection()
 
+    def _calculate_feature_matrix(self) -> None:
+        self._feature_extraction_controller.calculate()
+
     def _update_intensity_features_hint(self) -> None:
         intensity_selected = any(self._feature_checkboxes[name].isChecked() for name in _INTENSITY_FEATURES)
         if intensity_selected and self.selected_image_name is None:
@@ -730,7 +734,7 @@ class FeatureExtractionWidget(QWidget):
     def _set_selection_status(self, title: str, lines: list[str], *, kind: str) -> None:
         self._set_status_card(self.selection_status, title=title, lines=lines, kind=kind)
 
-    def _set_controller_feedback(self, message: str, *, kind: str = "info") -> None:
+    def _set_feature_extraction_feedback(self, message: str, *, kind: str = "info") -> None:
         if not message:
             self.controller_feedback.setText("")
             self.controller_feedback.setVisible(False)
@@ -791,7 +795,7 @@ class FeatureExtractionWidget(QWidget):
         self._set_tooltip(self.calculate_button, tooltip)
 
     def _on_controller_state_changed(self) -> None:
-        self._set_controller_feedback(
+        self._set_feature_extraction_feedback(
             self._feature_extraction_controller.status_message,
             kind=self._feature_extraction_controller.status_kind,
         )

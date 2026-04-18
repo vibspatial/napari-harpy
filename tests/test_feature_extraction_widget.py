@@ -241,3 +241,57 @@ def test_feature_extraction_widget_keeps_calculate_disabled_for_intensity_featur
 
     assert widget.calculate_button.isEnabled() is False
     assert "choose an image" in widget.calculate_button.toolTip()
+
+
+def test_feature_extraction_widget_calculate_button_click_launches_controller(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer([make_blobs_labels_layer(sdata_blobs)])
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+    widget.findChild(QCheckBox, "feature_checkbox_area").setChecked(True)
+    widget.output_key_line_edit.setText("features")
+
+    calls: list[str] = []
+
+    def fake_calculate() -> bool:
+        calls.append("calculate")
+        return True
+
+    widget._feature_extraction_controller.calculate = fake_calculate  # type: ignore[method-assign]
+
+    widget.calculate_button.click()
+
+    assert calls == ["calculate"]
+
+
+def test_feature_extraction_widget_refreshes_table_state_after_controller_success(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer([make_blobs_labels_layer(sdata_blobs)])
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    calls: list[str] = []
+
+    original_refresh_table_names = widget._refresh_table_names
+    original_bind_current_selection = widget._bind_current_selection
+
+    def recording_refresh_table_names() -> None:
+        calls.append("refresh_table_names")
+        original_refresh_table_names()
+
+    def recording_bind_current_selection() -> None:
+        calls.append("bind_current_selection")
+        original_bind_current_selection()
+
+    widget._refresh_table_names = recording_refresh_table_names  # type: ignore[method-assign]
+    widget._bind_current_selection = recording_bind_current_selection  # type: ignore[method-assign]
+
+    widget._on_controller_table_state_changed()
+
+    assert calls == ["refresh_table_names", "bind_current_selection"]
