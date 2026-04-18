@@ -435,17 +435,12 @@ class ObjectClassificationWidget(QWidget):
         if self.segmentation_combo.currentIndex() >= 0:
             self._set_selected_label_option(self.segmentation_combo.currentIndex())
         else:
-            # No valid segmentation remains after the refresh, so clear every
-            # controller and dependent UI element back to the unbound state.
+            # No valid segmentation remains after the refresh, so clear the
+            # selection state and let the normal bind helper propagate the
+            # fully unbound context across controllers and dependent UI.
             self._selected_label_option = None
-            self._table_binding_error = None
             self._refresh_table_names()
-            self._annotation_controller.bind(None, None, None)
-            self._classifier_controller.bind(None, None, None, None)
-            self._viewer_styling_controller.bind(None, None, None)
-            self._persistence_controller.bind(None, None, None)
-            self._refresh_layer_styling()
-            self._update_selection_status()
+            self._bind_current_selection()
 
     def _connect_viewer_events(self) -> None:
         layers = getattr(self._viewer, "layers", None)
@@ -542,13 +537,14 @@ class ObjectClassificationWidget(QWidget):
 
     def _on_feature_matrix_changed(self, index: int) -> None:
         self._set_selected_feature_key(index)
+        effective_table_name = None if self._table_binding_error is not None else self.selected_table_name
         classifier_context_changed = self._classifier_controller.bind(
             self.selected_spatialdata,
             self.selected_segmentation_name,
-            self._effective_table_name(),
+            effective_table_name,
             self.selected_feature_key,
         )
-        if classifier_context_changed and self._effective_table_name() is not None:
+        if classifier_context_changed and effective_table_name is not None:
             self._classifier_controller.mark_dirty(reason="the feature matrix changed")
         self._refresh_layer_styling()
         self._update_selection_status()
@@ -572,12 +568,6 @@ class ObjectClassificationWidget(QWidget):
             self._selected_feature_key = None
         else:
             self._selected_feature_key = self._feature_matrix_keys[index]
-
-    def _effective_table_name(self) -> str | None:
-        if self._table_binding_error is not None:
-            return None
-
-        return self.selected_table_name
 
     def _validate_selected_table_binding(self) -> str | None:
         if (
@@ -625,7 +615,7 @@ class ObjectClassificationWidget(QWidget):
         - re-applies layer styling and refreshes the user-facing status cards
         """
         self._table_binding_error = self._validate_selected_table_binding()
-        effective_table_name = self._effective_table_name()
+        effective_table_name = None if self._table_binding_error is not None else self.selected_table_name
 
         self._annotation_controller.bind(
             self.selected_spatialdata,
@@ -747,7 +737,7 @@ class ObjectClassificationWidget(QWidget):
             )
 
     def _update_annotation_controls(self) -> None:
-        has_table = self._effective_table_name() is not None
+        has_table = self.selected_table_name is not None and self._table_binding_error is None
         current_user_class = self._annotation_controller.current_user_class
         can_apply = self._annotation_controller.can_annotate
         can_clear = can_apply and current_user_class not in (None, UNLABELED_CLASS)
@@ -937,7 +927,7 @@ class ObjectClassificationWidget(QWidget):
         self._set_tooltip(self.reload_button, reload_tooltip)
 
     def _update_color_by_controls(self) -> None:
-        has_table = self._effective_table_name() is not None
+        has_table = self.selected_table_name is not None and self._table_binding_error is None
         self.color_by_combo.setEnabled(has_table)
 
         if not has_table:

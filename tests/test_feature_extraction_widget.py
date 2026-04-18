@@ -173,3 +173,71 @@ def test_feature_extraction_widget_hides_intensity_warning_when_image_is_selecte
 
     assert widget.selected_image_name == "blobs_image"
     assert widget.intensity_features_hint.isHidden()
+
+
+def test_feature_extraction_widget_rebinds_controller_when_inputs_change(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer([make_blobs_labels_layer(sdata_blobs)])
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    bind_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def fake_bind(*args, **kwargs):
+        bind_calls.append((args, kwargs))
+        return True
+
+    widget._feature_extraction_controller.bind = fake_bind  # type: ignore[method-assign]
+
+    widget.findChild(QCheckBox, "feature_checkbox_area").setChecked(True)
+    widget.output_key_line_edit.setText("features")
+
+    assert bind_calls
+    args, kwargs = bind_calls[-1]
+    assert args == (
+        sdata_blobs,
+        "blobs_labels",
+        None,
+        "table",
+        "global",
+        ("area",),
+        "features",
+    )
+    assert kwargs == {"overwrite_feature_key": False}
+
+
+def test_feature_extraction_widget_enables_calculate_button_for_runnable_selection(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer([make_blobs_labels_layer(sdata_blobs)])
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    assert widget.calculate_button.isEnabled() is False
+
+    widget.findChild(QCheckBox, "feature_checkbox_area").setChecked(True)
+    widget.output_key_line_edit.setText("features")
+
+    assert widget.calculate_button.isEnabled() is True
+    assert "Calculate the selected features" in widget.calculate_button.toolTip()
+
+
+def test_feature_extraction_widget_keeps_calculate_disabled_for_intensity_features_without_image(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer([make_blobs_labels_layer(sdata_blobs)])
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    widget.findChild(QCheckBox, "feature_checkbox_mean").setChecked(True)
+    widget.output_key_line_edit.setText("features")
+
+    assert widget.calculate_button.isEnabled() is False
+    assert "choose an image" in widget.calculate_button.toolTip()

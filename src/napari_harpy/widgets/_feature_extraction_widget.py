@@ -234,6 +234,7 @@ class FeatureExtractionWidget(QWidget):
         self.output_key_line_edit = QLineEdit()
         self.output_key_line_edit.setObjectName("feature_extraction_output_key_line_edit")
         self.output_key_line_edit.setPlaceholderText("e.g. features")
+        self.output_key_line_edit.textChanged.connect(self._on_feature_key_changed)
         self.output_key_line_edit.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
         self._set_tooltip(
             self.output_key_line_edit,
@@ -391,11 +392,10 @@ class FeatureExtractionWidget(QWidget):
             self._set_selected_label_option(self.segmentation_combo.currentIndex())
         else:
             self._selected_label_option = None
-            self._table_binding_error = None
             self._refresh_image_options()
             self._refresh_table_names()
             self._refresh_coordinate_systems()
-            self._update_selection_status()
+            self._bind_current_selection()
 
     def _create_header_logo(self) -> QLabel:
         logo_label = QLabel()
@@ -468,8 +468,7 @@ class FeatureExtractionWidget(QWidget):
         self._refresh_image_options()
         self._refresh_table_names()
         self._refresh_coordinate_systems()
-        self._table_binding_error = self._validate_selected_table_binding()
-        self._update_selection_status()
+        self._bind_current_selection()
 
     def _find_label_option_index(self, identity: tuple[int, str] | None) -> int | None:
         if identity is None:
@@ -516,7 +515,7 @@ class FeatureExtractionWidget(QWidget):
         self._set_selected_image_option(index)
         self._refresh_coordinate_systems()
         self._update_intensity_features_hint()
-        self._update_selection_status()
+        self._bind_current_selection()
 
     def _set_selected_image_option(self, index: int) -> None:
         if index <= 0 or index > len(self._image_options):
@@ -560,8 +559,7 @@ class FeatureExtractionWidget(QWidget):
 
     def _on_table_changed(self, index: int) -> None:
         self._set_selected_table_name(index)
-        self._table_binding_error = self._validate_selected_table_binding()
-        self._update_selection_status()
+        self._bind_current_selection()
 
     def _set_selected_table_name(self, index: int) -> None:
         if index < 0 or index >= len(self._table_names):
@@ -605,15 +603,18 @@ class FeatureExtractionWidget(QWidget):
 
     def _on_coordinate_system_changed(self, index: int) -> None:
         self._set_selected_coordinate_system(index)
-        self._update_selection_status()
+        self._bind_current_selection()
 
     def _set_selected_coordinate_system(self, index: int) -> None:
         coordinate_system = self.coordinate_system_combo.itemData(index)
         self._selected_coordinate_system = coordinate_system if isinstance(coordinate_system, str) else None
 
-    def _on_feature_selection_changed(self, checked: bool) -> None:
-        del checked
+    def _on_feature_selection_changed(self, _checked: bool) -> None:
         self._update_intensity_features_hint()
+        self._bind_current_selection()
+
+    def _on_feature_key_changed(self, _text: str) -> None:
+        self._bind_current_selection()
 
     def _update_intensity_features_hint(self) -> None:
         intensity_selected = any(self._feature_checkboxes[name].isChecked() for name in _INTENSITY_FEATURES)
@@ -648,9 +649,25 @@ class FeatureExtractionWidget(QWidget):
 
         return None
 
+    def _bind_current_selection(self) -> None:
+        self._table_binding_error = self._validate_selected_table_binding()
+        effective_table_name = None if self._table_binding_error is not None else self.selected_table_name
+        self._feature_extraction_controller.bind(
+            self.selected_spatialdata,
+            self.selected_segmentation_name,
+            self.selected_image_name,
+            effective_table_name,
+            self.selected_coordinate_system,
+            self.selected_feature_names,
+            self.selected_feature_key,
+            overwrite_feature_key=False,
+        )
+        self._update_selection_status()
+
     def _update_selection_status(self) -> None:
         self._update_validation_status()
         self._update_primary_status_card()
+        self._update_calculate_controls()
 
     def _update_validation_status(self) -> None:
         message = self._table_binding_error
@@ -759,12 +776,27 @@ class FeatureExtractionWidget(QWidget):
         )
         label.setVisible(bool(lines))
 
+    def _update_calculate_controls(self) -> None:
+        can_calculate = self._feature_extraction_controller.can_calculate
+        is_running = self._feature_extraction_controller.is_running
+        self.calculate_button.setEnabled(can_calculate)
+
+        if is_running:
+            tooltip = "A feature-extraction job is currently running."
+        elif can_calculate:
+            tooltip = "Calculate the selected features and store them in the selected table."
+        else:
+            tooltip = self._feature_extraction_controller.status_message
+
+        self._set_tooltip(self.calculate_button, tooltip)
+
     def _on_controller_state_changed(self) -> None:
         self._set_controller_feedback(
             self._feature_extraction_controller.status_message,
             kind=self._feature_extraction_controller.status_kind,
         )
+        self._update_calculate_controls()
 
     def _on_controller_table_state_changed(self) -> None:
         self._refresh_table_names()
-        self._update_selection_status()
+        self._bind_current_selection()
