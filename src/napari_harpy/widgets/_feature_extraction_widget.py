@@ -237,7 +237,7 @@ class FeatureExtractionWidget(QWidget):
         self.output_key_line_edit.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
         self._set_tooltip(
             self.output_key_line_edit,
-            "Features will be stored in the selected table as `table.obsm[output_key]`, with companion metadata in `table.uns['feature_matrices'][output_key]`.",
+            'This key names the feature matrix created by the Feature Extraction widget. It will appear in the Object Classification widget under "Feature matrix". The matrix is stored in the selected table as `.obsm[output_key]`, with companion metadata in `.uns["feature_matrices"][output_key]`.',
         )
 
         self.intensity_features_group = self._create_feature_group(
@@ -306,7 +306,7 @@ class FeatureExtractionWidget(QWidget):
         selector_layout.addRow(self._create_form_label("Image"), self.image_combo)
         selector_layout.addRow(self._create_form_label("Table"), self.table_combo)
         selector_layout.addRow(self._create_form_label("Coordinate system"), self.coordinate_system_combo)
-        selector_layout.addRow(self._create_form_label("Output key"), self.output_key_line_edit)
+        selector_layout.addRow(self._create_form_label("Feature matrix key"), self.output_key_line_edit)
 
         refresh_action_layout.addWidget(self.refresh_button, 1)
         calculate_action_layout.addWidget(self.calculate_button, 1)
