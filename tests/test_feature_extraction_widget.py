@@ -58,7 +58,7 @@ def test_feature_extraction_widget_can_be_instantiated(qtbot) -> None:
     assert widget.selected_table_name is None
     assert widget.selected_coordinate_system is None
     assert widget.selected_feature_names == ()
-    assert widget.selected_feature_key is None
+    assert widget.selected_feature_key == "features"
     assert widget.overwrite_feature_key is False
     assert widget.segmentation_combo.count() == 0
     assert widget.image_combo.count() == 1

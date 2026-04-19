@@ -132,6 +132,7 @@ _MORPHOLOGY_FEATURES = (
     "centroid_dif",
 )
 _WIDGET_MIN_WIDTH = 370
+_DEFAULT_FEATURE_MATRIX_KEY = "features"
 
 
 class FeatureExtractionWidget(QWidget):
@@ -235,6 +236,7 @@ class FeatureExtractionWidget(QWidget):
 
         self.output_key_line_edit = QLineEdit()
         self.output_key_line_edit.setObjectName("feature_extraction_output_key_line_edit")
+        self.output_key_line_edit.setText(_DEFAULT_FEATURE_MATRIX_KEY)
         self.output_key_line_edit.setPlaceholderText("e.g. features")
         self.output_key_line_edit.textChanged.connect(self._on_feature_key_changed)
         self.output_key_line_edit.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
