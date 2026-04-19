@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from napari.layers import Labels
 import numpy as np
+from napari.layers import Labels
 from qtpy.QtWidgets import QCheckBox, QScrollArea
 from spatialdata import SpatialData
 
@@ -242,6 +242,26 @@ def test_feature_extraction_widget_keeps_calculate_disabled_for_intensity_featur
 
     assert widget.calculate_button.isEnabled() is False
     assert "choose an image" in widget.calculate_button.toolTip()
+
+
+def test_feature_extraction_widget_blocks_when_no_coordinate_system_is_selected(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer([make_blobs_labels_layer(sdata_blobs)])
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    widget.findChild(QCheckBox, "feature_checkbox_area").setChecked(True)
+    widget.output_key_line_edit.setText("features")
+    widget._set_selected_coordinate_system(-1)
+    widget._bind_current_selection()
+
+    assert widget.selected_coordinate_system is None
+    assert "Choose Coordinate System" in widget.selection_status.text()
+    assert "choose a coordinate system" in widget.calculate_button.toolTip().lower()
+    assert widget.calculate_button.isEnabled() is False
 
 
 def test_feature_extraction_widget_calculate_button_click_launches_controller(
