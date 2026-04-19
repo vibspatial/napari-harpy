@@ -219,6 +219,43 @@ def test_feature_extraction_controller_notifies_table_state_change_on_success(sd
     assert controller.is_running is False
 
 
+def test_feature_extraction_controller_calculate_accepts_one_shot_overwrite_override(
+    sdata_blobs: SpatialData,
+) -> None:
+    captured_overwrite_flags: list[bool] = []
+    deferred_worker = _DeferredWorker(
+        FeatureExtractionResult(
+            job_id=1,
+            label_name="blobs_labels",
+            table_name="table",
+            feature_key="feature_matrix_1",
+        )
+    )
+
+    controller = FeatureExtractionController()
+    controller.bind(
+        sdata_blobs,
+        "blobs_labels",
+        "blobs_image",
+        "table",
+        "global",
+        ["mean", "area"],
+        "feature_matrix_1",
+        overwrite_feature_key=False,
+    )
+
+    def capture_worker(job: FeatureExtractionJob) -> _DeferredWorker:
+        captured_overwrite_flags.append(job.overwrite_feature_key)
+        return deferred_worker
+
+    controller._create_feature_extraction_worker = capture_worker  # type: ignore[method-assign]
+
+    launched = controller.calculate(overwrite_feature_key=True)
+
+    assert launched is True
+    assert captured_overwrite_flags == [True]
+
+
 def test_feature_extraction_controller_propagates_worker_errors(sdata_blobs: SpatialData) -> None:
     table_state_changes: list[str] = []
     deferred_worker = _DeferredWorker()

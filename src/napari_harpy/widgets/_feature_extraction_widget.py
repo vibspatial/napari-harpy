@@ -9,6 +9,7 @@ from qtpy.QtGui import QColor, QPalette, QPixmap
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
     QFormLayout,
     QFrame,
     QGroupBox,
@@ -27,6 +28,7 @@ from napari_harpy._spatialdata import (
     SpatialDataLabelsOption,
     SpatialDataViewerBinding,
     get_annotating_table_names,
+    get_table,
     validate_table_binding,
 )
 
@@ -618,7 +620,107 @@ class FeatureExtractionWidget(QWidget):
         self._bind_current_selection()
 
     def _calculate_feature_matrix(self) -> None:
-        self._feature_extraction_controller.calculate()
+        feature_key = self.selected_feature_key
+        # `overwrite_feature_key` is effectively tri-state in this method:
+        # `False` means run normally without overwrite, `True` means the user
+        # confirmed replacing an existing key, and `None` means the overwrite
+        # prompt was canceled so calculation should abort.
+        overwrite_feature_key = False
+        can_check_existing_feature_key = (
+            feature_key is not None
+            and self.selected_spatialdata is not None
+            and self.selected_table_name is not None
+            and self._table_binding_error is None
+        )
+        # Only inspect `.obsm` when the current table binding is valid enough
+        # to read the selected table safely. The controller still decides
+        # whether calculation can actually run.
+        if can_check_existing_feature_key:
+            table = get_table(self.selected_spatialdata, self.selected_table_name)
+            if feature_key in table.obsm:
+                overwrite_feature_key = self._prompt_overwrite_feature_key_confirmation(
+                    feature_key,
+                    self.selected_table_name,
+                )
+                if overwrite_feature_key is None:
+                    return
+
+        self._feature_extraction_controller.calculate(overwrite_feature_key=overwrite_feature_key)
+
+    def _prompt_overwrite_feature_key_confirmation(
+        self,
+        feature_key: str,
+        table_name: str | None,
+    ) -> bool | None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Feature Matrix Already Exists")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(560)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
+
+        warning_message = (
+            f"Table `{escape(table_name)}` already contains `.obsm[{feature_key!r}]`."
+            if table_name is not None
+            else f"The selected table already contains `.obsm[{feature_key!r}]`."
+        )
+        warning_card = QLabel(
+            "<div>"
+            "<span style='font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;'>"
+            "Existing Feature Matrix</span><br>"
+            f"<span>{warning_message}</span><br>"
+            "<span>Do you want to replace it?</span>"
+            "</div>"
+        )
+        warning_card.setWordWrap(True)
+        warning_card.setStyleSheet(
+            "font-weight: 500; "
+            "color: #b45309; "
+            "background-color: #fff7ed; "
+            "border: 1px solid #fdba74; "
+            "border-radius: 10px; "
+            "padding: 12px 14px;"
+        )
+        layout.addWidget(warning_card)
+
+        button_row = QHBoxLayout()
+        button_row.setSpacing(10)
+        button_row.addStretch(1)
+
+        overwrite_button = QPushButton("Replace feature matrix")
+        cancel_button = QPushButton("Cancel")
+
+        overwrite_button.setStyleSheet(
+            "QPushButton {"
+            "background-color: #166534; "
+            "color: white; "
+            "border: 1px solid #166534; "
+            "border-radius: 6px; "
+            "padding: 7px 14px; "
+            "font-weight: 600;}"
+            "QPushButton:hover { background-color: #15803d; border-color: #15803d; }"
+        )
+        cancel_button.setStyleSheet(
+            "QPushButton {"
+            "background-color: #f9fafb; "
+            "color: #111827; "
+            "border: 1px solid #d1d5db; "
+            "border-radius: 6px; "
+            "padding: 7px 14px;}"
+            "QPushButton:hover { background-color: #f3f4f6; }"
+        )
+
+        button_row.addWidget(overwrite_button)
+        button_row.addWidget(cancel_button)
+        layout.addLayout(button_row)
+
+        overwrite_button.clicked.connect(dialog.accept)
+        cancel_button.clicked.connect(dialog.reject)
+        cancel_button.setDefault(True)
+
+        return True if dialog.exec() == QDialog.DialogCode.Accepted else None
 
     def _update_intensity_features_hint(self) -> None:
         intensity_selected = any(self._feature_checkboxes[name].isChecked() for name in _INTENSITY_FEATURES)

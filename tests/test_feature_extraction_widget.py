@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from napari.layers import Labels
+import numpy as np
 from qtpy.QtWidgets import QCheckBox, QScrollArea
 from spatialdata import SpatialData
 
@@ -254,17 +255,103 @@ def test_feature_extraction_widget_calculate_button_click_launches_controller(
     widget.findChild(QCheckBox, "feature_checkbox_area").setChecked(True)
     widget.output_key_line_edit.setText("features")
 
-    calls: list[str] = []
+    calls: list[bool | None] = []
 
-    def fake_calculate() -> bool:
-        calls.append("calculate")
+    def fake_calculate(*, overwrite_feature_key: bool | None = None) -> bool:
+        calls.append(overwrite_feature_key)
         return True
 
     widget._feature_extraction_controller.calculate = fake_calculate  # type: ignore[method-assign]
 
     widget.calculate_button.click()
 
-    assert calls == ["calculate"]
+    assert calls == [False]
+
+
+def test_feature_extraction_widget_calculate_without_existing_key_uses_non_overwrite_run(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer([make_blobs_labels_layer(sdata_blobs)])
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+    widget.findChild(QCheckBox, "feature_checkbox_area").setChecked(True)
+    widget.output_key_line_edit.setText("new_features")
+
+    overwrite_calls: list[bool | None] = []
+
+    def fake_calculate(*, overwrite_feature_key: bool | None = None) -> bool:
+        overwrite_calls.append(overwrite_feature_key)
+        return True
+
+    widget._feature_extraction_controller.calculate = fake_calculate  # type: ignore[method-assign]
+
+    widget.calculate_button.click()
+
+    assert overwrite_calls == [False]
+
+
+def test_feature_extraction_widget_prompts_before_overwriting_existing_feature_key(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer([make_blobs_labels_layer(sdata_blobs)])
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+    widget.findChild(QCheckBox, "feature_checkbox_area").setChecked(True)
+    widget.output_key_line_edit.setText("existing_features")
+    sdata_blobs.tables["table"].obsm["existing_features"] = np.zeros((sdata_blobs.tables["table"].n_obs, 1))
+
+    prompt_calls: list[tuple[str, str | None]] = []
+    overwrite_calls: list[bool | None] = []
+
+    def fake_prompt(feature_key: str, table_name: str | None) -> bool | None:
+        prompt_calls.append((feature_key, table_name))
+        return True
+
+    def fake_calculate(*, overwrite_feature_key: bool | None = None) -> bool:
+        overwrite_calls.append(overwrite_feature_key)
+        return True
+
+    widget._prompt_overwrite_feature_key_confirmation = fake_prompt  # type: ignore[method-assign]
+    widget._feature_extraction_controller.calculate = fake_calculate  # type: ignore[method-assign]
+
+    widget.calculate_button.click()
+
+    assert prompt_calls == [("existing_features", "table")]
+    assert overwrite_calls == [True]
+
+
+def test_feature_extraction_widget_cancelled_overwrite_does_not_launch_calculation(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer([make_blobs_labels_layer(sdata_blobs)])
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+    widget.findChild(QCheckBox, "feature_checkbox_area").setChecked(True)
+    widget.output_key_line_edit.setText("existing_features")
+    sdata_blobs.tables["table"].obsm["existing_features"] = np.zeros((sdata_blobs.tables["table"].n_obs, 1))
+
+    calculate_calls: list[bool | None] = []
+
+    def fake_calculate(*, overwrite_feature_key: bool | None = None) -> bool:
+        calculate_calls.append(overwrite_feature_key)
+        return True
+
+    def fake_prompt(feature_key: str, table_name: str | None) -> bool | None:
+        del feature_key, table_name
+        return None
+
+    widget._prompt_overwrite_feature_key_confirmation = fake_prompt  # type: ignore[method-assign]
+    widget._feature_extraction_controller.calculate = fake_calculate  # type: ignore[method-assign]
+
+    widget.calculate_button.click()
+
+    assert calculate_calls == []
 
 
 def test_feature_extraction_widget_refreshes_table_state_after_controller_success(
