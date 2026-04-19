@@ -175,14 +175,14 @@ class FeatureExtractionController:
         self._update_idle_status()
         return context_changed
 
-    def calculate(self) -> bool:
+    def calculate(self, *, overwrite_feature_key: bool | None = None) -> bool:
         """Launch feature extraction for the current bound inputs."""
         if self.is_running:
             self._set_status("Feature extraction: calculation is already running.", kind="info")
             return False
 
         next_job_id = self._latest_requested_job_id + 1
-        job = self._prepare_feature_extraction_job(next_job_id)
+        job = self._prepare_feature_extraction_job(next_job_id, overwrite_feature_key=overwrite_feature_key)
         if job is None:
             return False
 
@@ -200,7 +200,12 @@ class FeatureExtractionController:
         worker.start()
         return True
 
-    def _prepare_feature_extraction_job(self, job_id: int) -> FeatureExtractionJob | None:
+    def _prepare_feature_extraction_job(
+        self,
+        job_id: int,
+        *,
+        overwrite_feature_key: bool | None = None,
+    ) -> FeatureExtractionJob | None:
         table = self._get_bound_table()
         if self._selected_spatialdata is None:
             self._set_status(FEATURE_EXTRACTION_IDLE_STATUS, kind="warning")
@@ -241,7 +246,9 @@ class FeatureExtractionController:
             coordinate_system=self._selected_coordinate_system,
             feature_names=self._selected_feature_names,
             feature_key=self._selected_feature_key,
-            overwrite_feature_key=self._overwrite_feature_key,
+            overwrite_feature_key=(
+                self._overwrite_feature_key if overwrite_feature_key is None else bool(overwrite_feature_key)
+            ),
         )
 
     def _set_status(self, message: str, *, kind: str) -> None:
@@ -312,7 +319,7 @@ class FeatureExtractionController:
 
         self._notify_table_state_changed()
         self._set_status(
-            f"Feature extraction: wrote `{result.feature_key}` into table `{result.table_name}`.",
+            f"Feature extraction: wrote `{result.feature_key}` into table `{result.table_name}` as `.obsm[{result.feature_key!r}]`.",
             kind="success",
         )
 

@@ -11,9 +11,11 @@ from qtpy.QtWidgets import (
     QComboBox,
     QDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -54,6 +56,7 @@ _APPLY_CLASS_SHORTCUT = "A"
 _REMOVE_CLASS_SHORTCUT = "R"
 _WIDGET_SURFACE_COLOR = "#fcf6f3"
 _WIDGET_SURFACE_STYLESHEET = f"background-color: {_WIDGET_SURFACE_COLOR};"
+_WIDGET_MIN_WIDTH = 370
 _TOOLTIP_TEXT_COLOR = "#111827"
 _FORM_LABEL_STYLESHEET = "color: #374151; font-weight: 600; padding-top: 6px;"
 _INPUT_CONTROL_STYLESHEET = (
@@ -122,6 +125,7 @@ class ObjectClassificationWidget(QWidget):
         palette.setColor(QPalette.ColorRole.Window, QColor(_WIDGET_SURFACE_COLOR))
         self.setPalette(palette)
         self.setStyleSheet(_WIDGET_SURFACE_STYLESHEET)
+        self.setMinimumWidth(_WIDGET_MIN_WIDTH)
         self._viewer = napari_viewer
         self._viewer_binding = SpatialDataViewerBinding(napari_viewer)
         self._annotation_controller = AnnotationController(
@@ -147,8 +151,29 @@ class ObjectClassificationWidget(QWidget):
         self._logo_path = Path(__file__).resolve().parents[3] / "docs" / "_static" / "logo.png"
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setObjectName("object_classification_scroll_area")
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.setStyleSheet("QScrollArea { border: 0px; background: transparent; }")
+
+        self.scroll_content = QWidget()
+        self.scroll_content.setObjectName("object_classification_scroll_content")
+        self.scroll_content.setAutoFillBackground(True)
+        scroll_palette = self.scroll_content.palette()
+        scroll_palette.setColor(QPalette.ColorRole.Window, QColor(_WIDGET_SURFACE_COLOR))
+        self.scroll_content.setPalette(scroll_palette)
+        self.scroll_content.setStyleSheet(_WIDGET_SURFACE_STYLESHEET)
+
+        content_layout = QVBoxLayout(self.scroll_content)
+        content_layout.setContentsMargins(12, 12, 12, 12)
+        content_layout.setSpacing(10)
+        self.scroll_area.setWidget(self.scroll_content)
+        layout.addWidget(self.scroll_area)
 
         title = self._create_header_logo()
 
@@ -300,17 +325,17 @@ class ObjectClassificationWidget(QWidget):
         selector_layout.addRow(self._create_form_label("Color by"), self.color_by_combo)
         selector_layout.addRow(self._create_form_label("User class"), self.class_editor)
 
-        layout.addWidget(title)
-        layout.addLayout(selector_layout)
-        layout.addWidget(self.retrain_action_row)
-        layout.addWidget(self.persistence_action_row)
-        layout.addWidget(self.refresh_action_row)
-        layout.addWidget(self.selection_status)
-        layout.addWidget(self.annotation_feedback)
-        layout.addWidget(self.classifier_feedback)
-        layout.addWidget(self.persistence_feedback)
-        layout.addWidget(self.validation_status)
-        layout.addStretch(1)
+        content_layout.addWidget(title)
+        content_layout.addLayout(selector_layout)
+        content_layout.addWidget(self.retrain_action_row)
+        content_layout.addWidget(self.persistence_action_row)
+        content_layout.addWidget(self.refresh_action_row)
+        content_layout.addWidget(self.selection_status)
+        content_layout.addWidget(self.annotation_feedback)
+        content_layout.addWidget(self.classifier_feedback)
+        content_layout.addWidget(self.persistence_feedback)
+        content_layout.addWidget(self.validation_status)
+        content_layout.addStretch(1)
 
         self._connect_viewer_events()
         self.refresh_segmentation_masks()
@@ -410,17 +435,12 @@ class ObjectClassificationWidget(QWidget):
         if self.segmentation_combo.currentIndex() >= 0:
             self._set_selected_label_option(self.segmentation_combo.currentIndex())
         else:
-            # No valid segmentation remains after the refresh, so clear every
-            # controller and dependent UI element back to the unbound state.
+            # No valid segmentation remains after the refresh, so clear the
+            # selection state and let the normal bind helper propagate the
+            # fully unbound context across controllers and dependent UI.
             self._selected_label_option = None
-            self._table_binding_error = None
             self._refresh_table_names()
-            self._annotation_controller.bind(None, None, None)
-            self._classifier_controller.bind(None, None, None, None)
-            self._viewer_styling_controller.bind(None, None, None)
-            self._persistence_controller.bind(None, None, None)
-            self._refresh_layer_styling()
-            self._update_selection_status()
+            self._bind_current_selection()
 
     def _connect_viewer_events(self) -> None:
         layers = getattr(self._viewer, "layers", None)
@@ -517,13 +537,14 @@ class ObjectClassificationWidget(QWidget):
 
     def _on_feature_matrix_changed(self, index: int) -> None:
         self._set_selected_feature_key(index)
+        effective_table_name = None if self._table_binding_error is not None else self.selected_table_name
         classifier_context_changed = self._classifier_controller.bind(
             self.selected_spatialdata,
             self.selected_segmentation_name,
-            self._effective_table_name(),
+            effective_table_name,
             self.selected_feature_key,
         )
-        if classifier_context_changed and self._effective_table_name() is not None:
+        if classifier_context_changed and effective_table_name is not None:
             self._classifier_controller.mark_dirty(reason="the feature matrix changed")
         self._refresh_layer_styling()
         self._update_selection_status()
@@ -547,12 +568,6 @@ class ObjectClassificationWidget(QWidget):
             self._selected_feature_key = None
         else:
             self._selected_feature_key = self._feature_matrix_keys[index]
-
-    def _effective_table_name(self) -> str | None:
-        if self._table_binding_error is not None:
-            return None
-
-        return self.selected_table_name
 
     def _validate_selected_table_binding(self) -> str | None:
         if (
@@ -600,7 +615,7 @@ class ObjectClassificationWidget(QWidget):
         - re-applies layer styling and refreshes the user-facing status cards
         """
         self._table_binding_error = self._validate_selected_table_binding()
-        effective_table_name = self._effective_table_name()
+        effective_table_name = None if self._table_binding_error is not None else self.selected_table_name
 
         self._annotation_controller.bind(
             self.selected_spatialdata,
@@ -633,7 +648,7 @@ class ObjectClassificationWidget(QWidget):
 
     def _update_selection_status(self) -> None:
         self._update_validation_status()
-        self._update_annotation_status()
+        self._update_primary_status_card()
         self._update_annotation_controls()
         self._update_color_by_controls()
         self._update_classifier_controls()
@@ -651,7 +666,7 @@ class ObjectClassificationWidget(QWidget):
         self.validation_status.setText("" if message is None else message)
         self.validation_status.setVisible(message is not None)
 
-    def _update_annotation_status(self) -> None:
+    def _update_primary_status_card(self) -> None:
         labels_layer = self._annotation_controller.labels_layer
         missing_table_row_message = self._annotation_controller.missing_table_row_message
 
@@ -722,7 +737,7 @@ class ObjectClassificationWidget(QWidget):
             )
 
     def _update_annotation_controls(self) -> None:
-        has_table = self._effective_table_name() is not None
+        has_table = self.selected_table_name is not None and self._table_binding_error is None
         current_user_class = self._annotation_controller.current_user_class
         can_apply = self._annotation_controller.can_annotate
         can_clear = can_apply and current_user_class not in (None, UNLABELED_CLASS)
@@ -912,7 +927,7 @@ class ObjectClassificationWidget(QWidget):
         self._set_tooltip(self.reload_button, reload_tooltip)
 
     def _update_color_by_controls(self) -> None:
-        has_table = self._effective_table_name() is not None
+        has_table = self.selected_table_name is not None and self._table_binding_error is None
         self.color_by_combo.setEnabled(has_table)
 
         if not has_table:
@@ -1127,7 +1142,7 @@ class ObjectClassificationWidget(QWidget):
     def _on_selected_instance_changed(self, instance_id: int | None) -> None:
         del instance_id
         self._set_annotation_feedback("")
-        self._update_annotation_status()
+        self._update_primary_status_card()
         self._update_annotation_controls()
 
     def _on_annotation_changed(self) -> None:

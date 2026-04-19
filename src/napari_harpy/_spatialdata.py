@@ -26,6 +26,9 @@ class SpatialDataLabelsOption:
     # disambiguate equal label names coming from different SpatialData objects.
     display_name: str
     sdata: SpatialData
+    # Selectable coordinate systems for this labels element in the current
+    # discovery context.
+    coordinate_systems: tuple[str, ...]
 
     @property
     def identity(self) -> tuple[int, str]:
@@ -376,6 +379,7 @@ def _get_spatialdata_label_options_from_viewer(viewer: Any | None) -> list[Spati
                     label_name=label_name,
                     display_name=display_name,
                     sdata=sdata,
+                    coordinate_systems=_get_element_coordinate_systems(sdata.labels[label_name]),
                 )
             )
 

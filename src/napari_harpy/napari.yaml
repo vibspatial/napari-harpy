@@ -5,9 +5,14 @@ categories:
   - Annotation
 contributions:
   commands:
+    - id: napari-harpy.feature_extraction
+      title: Open feature extraction widget
+      python_name: napari_harpy.widgets._feature_extraction_widget:FeatureExtractionWidget
     - id: napari-harpy.object_classification
       title: Open object classification widget
       python_name: napari_harpy.widgets._object_classification_widget:ObjectClassificationWidget
   widgets:
+    - command: napari-harpy.feature_extraction
+      display_name: Feature Extraction
     - command: napari-harpy.object_classification
       display_name: Object Classification

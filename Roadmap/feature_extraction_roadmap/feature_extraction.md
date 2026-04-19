@@ -511,32 +511,33 @@ Create `src/napari_harpy/widgets/_feature_extraction_widget.py`.
 
 The widget should look and behave like the current object classification widget:
 
-- [ ] same overall styling
-- [ ] same selector layout
-- [ ] same status-card pattern
-- [ ] same explicit button-driven flow
+- [x] same overall styling
+- [x] same selector layout
+- [x] same status-card pattern
+- [x] same explicit button-driven flow
 
 Suggested controls:
 
-- [ ] labels combo
-- [ ] image combo
-- [ ] table combo
-- [ ] output-key line edit
-- [ ] overwrite-existing-feature-key UX
-- [ ] grouped feature checkboxes
-- [ ] calculate button
-- [ ] status labels
+- [x] labels combo
+- [x] image combo
+- [x] table combo
+- [x] coordinate-system combo
+- [x] output-key line edit
+- [x] overwrite-existing-feature-key UX
+- [x] grouped feature checkboxes
+- [x] calculate button
+- [x] status labels
 
 Widget responsibilities that remain after Phase 3:
 
-- [ ] surface clear overwrite UX before dispatching the Harpy call
-- [ ] refresh widget choices after a successful feature-extraction run
-- [ ] keep `channels`, `chunks`, and `run_on_gpu` hidden in MVP unless we explicitly decide to expose advanced controls
+- [x] surface clear overwrite UX before dispatching the Harpy call
+- [x] refresh widget choices after a successful feature-extraction run
+- [x] keep `channels`, `chunks`, and `run_on_gpu` hidden in MVP unless we explicitly decide to expose advanced controls
 
 Also update `src/napari_harpy/napari.yaml` in the same phase so the new widget is exposed:
 
-- [ ] `Feature Extraction`
-- [ ] `Object Classification`
+- [x] `Feature Extraction`
+- [x] `Object Classification`
 
 ### Phase 5: Integrate with the object-classification workflow
 
