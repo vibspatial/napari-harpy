@@ -47,6 +47,11 @@ class DummyViewer:
         return layer
 
 
+class UnsupportedViewer:
+    def __init__(self) -> None:
+        self.layers = object()
+
+
 def make_labels_layer(*, sdata, label_name: str = "blobs_labels", metadata: dict[str, object] | None = None) -> Labels:
     return Labels(
         sdata.labels[label_name],
@@ -138,6 +143,17 @@ def test_viewer_adapter_activate_layer_selects_only_matching_layer() -> None:
 
     assert activated is True
     assert viewer.layers.selection.active is image_layer
+
+
+def test_viewer_adapter_ensure_labels_loaded_rejects_unsupported_viewer(sdata_blobs) -> None:
+    adapter = ViewerAdapter(UnsupportedViewer())
+
+    try:
+        adapter.ensure_labels_loaded(sdata_blobs, "blobs_labels", "global")
+    except ValueError as error:
+        assert "does not support adding layers" in str(error)
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("Expected ensure_labels_loaded to reject an unsupported viewer.")
 
 
 def test_viewer_adapter_finds_registered_labels_layer(sdata_blobs) -> None:
@@ -257,3 +273,71 @@ def test_viewer_adapter_ensure_labels_loaded_rejects_unknown_coordinate_system(s
         assert "Coordinate system `not_a_coordinate_system`" in str(error)
     else:  # pragma: no cover - defensive assertion
         raise AssertionError("Expected ensure_labels_loaded to reject an unknown coordinate system.")
+
+
+def test_viewer_adapter_ensure_image_loaded_adds_stack_layer_and_registers_binding(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    layer = adapter.ensure_image_loaded(sdata_blobs, "blobs_image", "global", mode="stack")
+
+    assert layer in viewer.layers
+    assert layer.name == "blobs_image"
+    assert layer.affine is not None
+    assert layer.rgb is False
+    binding = adapter.layer_bindings.get_binding(layer)
+    assert binding is not None
+    assert binding.element_name == "blobs_image"
+    assert binding.element_type == "image"
+    assert binding.coordinate_system == "global"
+    assert binding.image_display_mode == "stack"
+    assert layer.metadata["image_display_mode"] == "stack"
+
+
+def test_viewer_adapter_ensure_image_loaded_reuses_matching_existing_stack_layer(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    first = adapter.ensure_image_loaded(sdata_blobs, "blobs_image", "global", mode="stack")
+    second = adapter.ensure_image_loaded(sdata_blobs, "blobs_image", "global", mode="stack")
+
+    assert first is second
+    assert len(viewer.layers) == 1
+
+
+def test_viewer_adapter_ensure_image_loaded_supports_multiscale_images(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    layer = adapter.ensure_image_loaded(sdata_blobs, "blobs_multiscale_image", "global", mode="stack")
+
+    assert layer.multiscale is True
+    assert len(layer.data) == 3
+    assert layer in viewer.layers
+    binding = adapter.layer_bindings.get_binding(layer)
+    assert binding is not None
+    assert binding.image_display_mode == "stack"
+
+
+def test_viewer_adapter_ensure_image_loaded_rejects_unknown_coordinate_system(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    try:
+        adapter.ensure_image_loaded(sdata_blobs, "blobs_image", "not_a_coordinate_system", mode="stack")
+    except ValueError as error:
+        assert "Coordinate system `not_a_coordinate_system`" in str(error)
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("Expected ensure_image_loaded to reject an unknown coordinate system.")
+
+
+def test_viewer_adapter_ensure_image_loaded_rejects_overlay_until_slice_four(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    try:
+        adapter.ensure_image_loaded(sdata_blobs, "blobs_image", "global", mode="overlay")
+    except NotImplementedError as error:
+        assert "not implemented yet" in str(error)
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("Expected ensure_image_loaded to reject overlay mode for now.")

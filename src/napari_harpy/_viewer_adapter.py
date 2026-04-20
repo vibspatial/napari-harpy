@@ -226,8 +226,11 @@ class ViewerAdapter:
                 f"Coordinate system `{coordinate_system}` is not available for labels element `{label_name}`."
             )
 
+        labels_data = (
+            _flatten_multiscale_element(label_element) if isinstance(label_element, DataTree) else label_element
+        )
         layer = Labels(
-            _get_labels_layer_data(label_element),
+            labels_data,
             name=label_name,
             affine=_get_affine_transform(label_element, coordinate_system),
         )
@@ -238,6 +241,56 @@ class ViewerAdapter:
             element_name=label_name,
             element_type="labels",
             coordinate_system=coordinate_system,
+        )
+        return layer
+
+    def ensure_image_loaded(
+        self,
+        sdata: SpatialData,
+        image_name: str,
+        coordinate_system: str,
+        *,
+        mode: ImageDisplayMode = "stack",
+    ) -> Image:
+        """Load an image element into napari if it is not already present."""
+        if mode != "stack":
+            raise NotImplementedError(f"Image display mode `{mode}` is not implemented yet.")
+
+        existing_layer = self._get_loaded_image_layer_for_coordinate_system(
+            sdata,
+            image_name,
+            coordinate_system,
+            image_display_mode=mode,
+        )
+        if existing_layer is not None:
+            return existing_layer
+
+        images = getattr(sdata, "images", {})
+        if image_name not in images:
+            raise ValueError(f"Image element `{image_name}` is not available in the selected SpatialData object.")
+
+        image_element = images[image_name]
+        available_coordinate_systems = set(get_transformation(image_element, get_all=True).keys())
+        if coordinate_system not in available_coordinate_systems:
+            raise ValueError(
+                f"Coordinate system `{coordinate_system}` is not available for image element `{image_name}`."
+            )
+
+        image_data, rgb = _get_stack_image_layer_data(image_element)
+        layer = Image(
+            image_data,
+            name=image_name,
+            affine=_get_affine_transform(image_element, coordinate_system),
+            rgb=rgb,
+        )
+        _add_layer_to_viewer(self._viewer, layer)
+        self.register_layer(
+            layer,
+            sdata=sdata,
+            element_name=image_name,
+            element_type="image",
+            coordinate_system=coordinate_system,
+            image_display_mode=mode,
         )
         return layer
 
@@ -257,7 +310,12 @@ class ViewerAdapter:
     def _iter_candidate_layers(self) -> Iterable[Layer]:
         layers = getattr(self._viewer, "layers", None)
         if layers is not None:
-            return tuple(layers)
+            try:
+                return tuple(layers)
+            except TypeError:
+                # Some dummy/unsupported viewers expose `layers` but not as an iterable.
+                # Fall back to the registry-backed layers instead.
+                pass
         return tuple(binding.layer for binding in self._layer_bindings.iter_bindings())
 
     def _get_loaded_labels_layer_for_coordinate_system(
@@ -274,6 +332,29 @@ class ViewerAdapter:
             if not _matches_binding(binding, sdata=sdata, element_name=label_name, element_type="labels"):
                 continue
             if binding.coordinate_system != coordinate_system:
+                continue
+            return layer
+
+        return None
+
+    def _get_loaded_image_layer_for_coordinate_system(
+        self,
+        sdata: SpatialData,
+        image_name: str,
+        coordinate_system: str,
+        *,
+        image_display_mode: ImageDisplayMode,
+    ) -> Image | None:
+        for layer in self._iter_candidate_layers():
+            if not _is_spatialdata_image_layer(layer):
+                continue
+
+            binding = self._layer_bindings.get_binding(layer)
+            if not _matches_binding(binding, sdata=sdata, element_name=image_name, element_type="image"):
+                continue
+            if binding.coordinate_system != coordinate_system:
+                continue
+            if binding.image_display_mode != image_display_mode:
                 continue
             return layer
 
@@ -310,7 +391,7 @@ def _set_optional_metadata_value(metadata: dict[str, Any], key: str, value: Any)
 
 def _add_layer_to_viewer(viewer: Any | None, layer: Layer) -> None:
     if viewer is None:
-        raise ValueError("A napari viewer is required to load labels into the viewer.")
+        raise ValueError("A napari viewer is required to load layers into the viewer.")
 
     add_layer = getattr(viewer, "add_layer", None)
     if callable(add_layer):
@@ -333,16 +414,54 @@ def _add_layer_to_viewer(viewer: Any | None, layer: Layer) -> None:
     raise ValueError("The provided viewer does not support adding layers.")
 
 
-def _get_labels_layer_data(element: DataArray | DataTree) -> DataArray | list[DataArray]:
-    if isinstance(element, DataTree):
-        multiscale_data: list[DataArray] = []
-        for key in element:
-            values = element[key].values()
-            assert len(values) == 1
-            multiscale_data.append(next(iter(values)))
-        return multiscale_data
+def _get_stack_image_layer_data(element: DataArray | DataTree) -> tuple[DataArray | list[DataArray], bool]:
+    """Prepare image data for one napari stack-mode image layer.
 
-    return element
+    The helper keeps ordinary multiplex images in their existing raster layout,
+    but detects true RGB(A) images by channel names and converts those to
+    channel-last layout so napari can render them with ``rgb=True``.
+
+    For multiscale rasters, the returned image data is flattened to the list
+    of per-scale arrays expected by napari layers.
+    """
+    axes = get_axes_names(element)
+
+    if "c" in axes:
+        assert axes.index("c") == 0
+
+        if isinstance(element, DataArray):
+            channel_coords = element.coords.indexes["c"]
+        else:
+            channel_coords = element["scale0"].coords.indexes["c"]
+    else:
+        channel_coords = []
+
+    if len(channel_coords) != 0 and set(channel_coords) - {"r", "g", "b"} <= {"a"}:
+        rgb = True
+        if isinstance(element, DataArray):
+            image_data: DataArray | DataTree = element.transpose("y", "x", "c").reindex(
+                c=["r", "g", "b", "a"][: len(channel_coords)]
+            )
+        else:
+            image_data = element.msi.transpose("y", "x", "c")
+            image_data = image_data.msi.reindex_data_arrays({"c": ["r", "g", "b", "a"][: len(channel_coords)]})
+    else:
+        rgb = False
+        image_data = element
+
+    if isinstance(image_data, DataTree):
+        return _flatten_multiscale_element(image_data), rgb
+
+    return image_data, rgb
+
+
+def _flatten_multiscale_element(element: DataTree) -> list[DataArray]:
+    multiscale_data: list[DataArray] = []
+    for key in element:
+        values = element[key].values()
+        assert len(values) == 1
+        multiscale_data.append(next(iter(values)))
+    return multiscale_data
 
 
 def _get_affine_transform(element: DataArray | DataTree, coordinate_system: str) -> np.ndarray | None:
