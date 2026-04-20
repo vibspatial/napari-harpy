@@ -54,6 +54,8 @@ class HarpyAppState(QObject):
     def set_sdata(self, sdata: SpatialData | None) -> None:
         """Set the loaded SpatialData object and notify listeners."""
         self.sdata = sdata
+        # Notify connected widgets/controllers that the loaded SpatialData changed
+        # (controllers/widgets that listen via e.g. self._app_state.sdata_changed.connect(self._on_sdata_changed))
         self.sdata_changed.emit(sdata)
 
     def clear_sdata(self) -> None:
