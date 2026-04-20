@@ -142,7 +142,7 @@ activation, and minimal layer-binding state.
 - add shared viewer services to `HarpyAppState`
 - keep metadata lightweight
 - support both labels loading and image loading
-- support raw image mode and overlay image mode
+- support stack image mode and overlay image mode
 
 ### Required work
 
@@ -165,7 +165,7 @@ activation, and minimal layer-binding state.
   - `ensure_image_loaded(...)`
   - `activate_layer(layer)`
 - support image loading modes:
-  - raw image mode:
+  - stack image mode:
     - one napari `Image` layer
   - overlay mode:
     - one napari `Image` layer per selected channel
@@ -186,7 +186,7 @@ activation, and minimal layer-binding state.
 
 - [ ] Harpy can load a labels element from `sdata` into napari without relying on
   `napari-spatialdata`
-- [ ] Harpy can load an image from `sdata` into napari in raw mode
+- [ ] Harpy can load an image from `sdata` into napari in stack mode
 - [ ] Harpy can load selected image channels in overlay mode
 - [ ] the adapter can answer whether a requested labels layer is already loaded
 - [ ] metadata stays lightweight and no authoritative analysis state is stored on
@@ -234,7 +234,7 @@ viewer adapter.
   - show image choices
   - show channel names
   - show display mode:
-    - raw
+    - stack
     - overlay
   - show per-channel color controls for overlay mode
   - add `Show image`
@@ -257,7 +257,7 @@ viewer adapter.
 - [ ] the widget lists coordinate systems from the loaded `sdata`
 - [ ] labels and images are filtered by the selected coordinate system
 - [ ] the widget can load a selected labels element into napari
-- [ ] the widget can load a selected image in raw mode
+- [ ] the widget can load a selected image in stack mode
 - [ ] the widget can load selected channels in overlay mode
 
 ### Depends on
