@@ -41,6 +41,11 @@ class DummyViewer:
     def __init__(self, layers: list[object] | None = None) -> None:
         self.layers = DummyLayers(layers)
 
+    def add_layer(self, layer: object) -> object:
+        self.layers.append(layer)
+        self.layers.events.inserted.emit(layer)
+        return layer
+
 
 def make_labels_layer(*, sdata, label_name: str = "blobs_labels", metadata: dict[str, object] | None = None) -> Labels:
     return Labels(
@@ -201,3 +206,54 @@ def test_viewer_adapter_ignores_unregistered_image_layer_even_with_legacy_metada
 
     assert loaded_layers == []
     assert adapter.layer_bindings.get_binding(image_layer) is None
+
+
+def test_viewer_adapter_ensure_labels_loaded_adds_layer_and_registers_binding(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    layer = adapter.ensure_labels_loaded(sdata_blobs, "blobs_labels", "global")
+
+    assert layer in viewer.layers
+    assert layer.name == "blobs_labels"
+    assert layer.affine is not None
+    binding = adapter.layer_bindings.get_binding(layer)
+    assert binding is not None
+    assert binding.element_name == "blobs_labels"
+    assert binding.element_type == "labels"
+    assert binding.coordinate_system == "global"
+    assert "sdata" not in layer.metadata
+
+
+def test_viewer_adapter_ensure_labels_loaded_reuses_matching_existing_layer(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    first = adapter.ensure_labels_loaded(sdata_blobs, "blobs_labels", "global")
+    second = adapter.ensure_labels_loaded(sdata_blobs, "blobs_labels", "global")
+
+    assert first is second
+    assert len(viewer.layers) == 1
+
+
+def test_viewer_adapter_ensure_labels_loaded_supports_multiscale_labels(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    layer = adapter.ensure_labels_loaded(sdata_blobs, "blobs_multiscale_labels", "global")
+
+    assert layer.multiscale is True
+    assert len(layer.data) == 3
+    assert layer in viewer.layers
+
+
+def test_viewer_adapter_ensure_labels_loaded_rejects_unknown_coordinate_system(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    try:
+        adapter.ensure_labels_loaded(sdata_blobs, "blobs_labels", "not_a_coordinate_system")
+    except ValueError as error:
+        assert "Coordinate system `not_a_coordinate_system`" in str(error)
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("Expected ensure_labels_loaded to reject an unknown coordinate system.")

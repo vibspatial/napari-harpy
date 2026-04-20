@@ -171,6 +171,11 @@ activation, and minimal layer-binding state.
     - one napari `Image` layer per selected channel
     - additive blending
     - user-selected colormaps / colors
+- add a small number of targeted real-viewer integration tests once the adapter
+  loading paths are stable, especially for:
+  - `Interactive(...)` plus dock-widget behavior
+  - real layer insertion / activation behavior
+  - overlay image loading paths
 - attach only lightweight metadata when useful:
   - `element_name`
   - `element_type`
@@ -181,6 +186,8 @@ activation, and minimal layer-binding state.
 - `src/napari_harpy/_viewer_adapter.py`
 - possibly `src/napari_harpy/_app_state.py`
 - possibly shared utility modules
+- `tests/test_viewer_adapter.py`
+- possibly a small real-viewer integration test module
 
 ### Acceptance criteria
 
@@ -191,6 +198,8 @@ activation, and minimal layer-binding state.
 - [ ] the adapter can answer whether a requested labels layer is already loaded
 - [ ] metadata stays lightweight and no authoritative analysis state is stored on
   layers
+- [ ] Harpy has a small number of real-viewer integration tests covering the
+  most important viewer-specific adapter flows
 
 ### Depends on
 

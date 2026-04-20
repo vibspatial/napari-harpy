@@ -4,7 +4,11 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+import numpy as np
 from napari.layers import Image, Labels, Layer
+from spatialdata.models import get_axes_names
+from spatialdata.transformations import get_transformation
+from xarray import DataArray, DataTree
 
 if TYPE_CHECKING:
     from spatialdata import SpatialData
@@ -205,6 +209,38 @@ class ViewerAdapter:
 
         return None
 
+    def ensure_labels_loaded(self, sdata: SpatialData, label_name: str, coordinate_system: str) -> Labels:
+        """Load a labels element into napari if it is not already present."""
+        existing_layer = self._get_loaded_labels_layer_for_coordinate_system(sdata, label_name, coordinate_system)
+        if existing_layer is not None:
+            return existing_layer
+
+        labels = getattr(sdata, "labels", {})
+        if label_name not in labels:
+            raise ValueError(f"Labels element `{label_name}` is not available in the selected SpatialData object.")
+
+        label_element = labels[label_name]
+        available_coordinate_systems = set(get_transformation(label_element, get_all=True).keys())
+        if coordinate_system not in available_coordinate_systems:
+            raise ValueError(
+                f"Coordinate system `{coordinate_system}` is not available for labels element `{label_name}`."
+            )
+
+        layer = Labels(
+            _get_labels_layer_data(label_element),
+            name=label_name,
+            affine=_get_affine_transform(label_element, coordinate_system),
+        )
+        _add_layer_to_viewer(self._viewer, layer)
+        self.register_layer(
+            layer,
+            sdata=sdata,
+            element_name=label_name,
+            element_type="labels",
+            coordinate_system=coordinate_system,
+        )
+        return layer
+
     def get_loaded_image_layers(self, sdata: SpatialData, image_name: str) -> list[Image]:
         """Return loaded image layers for a SpatialData image element."""
         matches: list[Image] = []
@@ -223,6 +259,25 @@ class ViewerAdapter:
         if layers is not None:
             return tuple(layers)
         return tuple(binding.layer for binding in self._layer_bindings.iter_bindings())
+
+    def _get_loaded_labels_layer_for_coordinate_system(
+        self,
+        sdata: SpatialData,
+        label_name: str,
+        coordinate_system: str,
+    ) -> Labels | None:
+        for layer in self._iter_candidate_layers():
+            if not _is_pickable_labels_layer(layer):
+                continue
+
+            binding = self._layer_bindings.get_binding(layer)
+            if not _matches_binding(binding, sdata=sdata, element_name=label_name, element_type="labels"):
+                continue
+            if binding.coordinate_system != coordinate_system:
+                continue
+            return layer
+
+        return None
 
 
 def _apply_minimal_layer_metadata(layer: Layer, binding: LayerBinding) -> None:
@@ -251,6 +306,57 @@ def _set_optional_metadata_value(metadata: dict[str, Any], key: str, value: Any)
         metadata.pop(key, None)
         return
     metadata[key] = value
+
+
+def _add_layer_to_viewer(viewer: Any | None, layer: Layer) -> None:
+    if viewer is None:
+        raise ValueError("A napari viewer is required to load labels into the viewer.")
+
+    add_layer = getattr(viewer, "add_layer", None)
+    if callable(add_layer):
+        add_layer(layer)
+        return
+
+    layers = getattr(viewer, "layers", None)
+    if layers is None:
+        raise ValueError("The provided viewer does not expose napari-compatible layer APIs.")
+
+    append = getattr(layers, "append", None)
+    if callable(append):
+        append(layer)
+        events = getattr(layers, "events", None)
+        inserted = getattr(events, "inserted", None)
+        if inserted is not None and hasattr(inserted, "emit"):
+            inserted.emit(layer)
+        return
+
+    raise ValueError("The provided viewer does not support adding layers.")
+
+
+def _get_labels_layer_data(element: DataArray | DataTree) -> DataArray | list[DataArray]:
+    if isinstance(element, DataTree):
+        multiscale_data: list[DataArray] = []
+        for key in element:
+            values = element[key].values()
+            assert len(values) == 1
+            multiscale_data.append(next(iter(values)))
+        return multiscale_data
+
+    return element
+
+
+def _get_affine_transform(element: DataArray | DataTree, coordinate_system: str) -> np.ndarray | None:
+    transformations = get_transformation(element, get_all=True)
+    transform = transformations.get(coordinate_system)
+    if transform is None:
+        return None
+
+    axes_element = get_axes_names(element)
+    if "z" in axes_element:
+        axes = ("z", "y", "x")
+    else:
+        axes = ("y", "x")
+    return transform.to_affine_matrix(input_axes=axes, output_axes=axes)
 
 
 def _matches_binding(
