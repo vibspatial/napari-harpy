@@ -38,11 +38,12 @@ def _main() -> None:
         coordinate_system=COORDINATE_SYSTEM,
     )
 
-    image_layer = viewer_adapter.ensure_image_loaded(
+    overlay_layers = viewer_adapter.ensure_image_loaded(
         sdata,
         image_name=IMAGE_NAME,
         coordinate_system=COORDINATE_SYSTEM,
-        mode="stack",
+        channels=[0, 2],
+        mode="overlay",
     )
 
     # multiscale_image_layer = viewer_adapter.ensure_image_loaded(
@@ -52,10 +53,10 @@ def _main() -> None:
     #    mode="stack",
     # )
 
-    viewer_adapter.activate_layer(image_layer)
+    viewer_adapter.activate_layer(overlay_layers[0])
 
     print(f"Loaded labels layer: {labels_layer.name}")
-    print(f"Loaded image layer: {image_layer.name}, rgb={image_layer.rgb}, multiscale={image_layer.multiscale}")
+    print(f"Loaded overlay layers: {[layer.name for layer in overlay_layers]}")
 
     napari.run()
 

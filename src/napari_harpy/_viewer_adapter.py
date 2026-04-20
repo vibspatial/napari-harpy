@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
+from loguru import logger
 from napari.layers import Image, Labels, Layer
 from spatialdata.models import get_axes_names
 from spatialdata.transformations import get_transformation
@@ -13,8 +14,16 @@ from xarray import DataArray, DataTree
 if TYPE_CHECKING:
     from spatialdata import SpatialData
 
-
 ImageDisplayMode = Literal["stack", "overlay"]
+DEFAULT_OVERLAY_COLORS = (
+    "#00FFFF",  # cyan
+    "#FF00FF",  # magenta
+    "#FFA500",  # orange
+    "#ADFF2F",  # green-yellow
+    "#FF5050",  # light red
+    "#7B68EE",  # medium slate blue
+    "#FF1493",  # deep pink
+)
 
 
 @dataclass(frozen=True)
@@ -142,6 +151,7 @@ class ViewerAdapter:
     def __init__(self, viewer: Any | None = None, layer_bindings: LayerBindingRegistry | None = None) -> None:
         self._viewer = viewer
         self._layer_bindings = layer_bindings or LayerBindingRegistry()
+        self._connect_layer_events()
 
     @property
     def layer_bindings(self) -> LayerBindingRegistry:
@@ -175,6 +185,27 @@ class ViewerAdapter:
     def unregister_layer(self, layer: Layer) -> LayerBinding | None:
         """Remove a layer from the shared binding registry."""
         return self._layer_bindings.unregister_layer(layer)
+
+    def _connect_layer_events(self) -> None:
+        """Keep the registry synchronized with the viewer's layer list when possible."""
+        layers = getattr(self._viewer, "layers", None)
+        events = getattr(layers, "events", None)
+        removed = getattr(events, "removed", None)
+        connect = getattr(removed, "connect", None)
+        if callable(connect):
+            connect(self._on_viewer_layer_removed)
+
+    def _on_viewer_layer_removed(self, event: Any) -> None:
+        """Unregister Harpy-managed layers when they disappear from the viewer."""
+        layer = getattr(event, "value", None)
+        if not isinstance(layer, Layer):
+            logger.warning("Ignoring viewer layer removal event without a napari Layer payload.")
+            return
+        removed_binding = self.unregister_layer(layer)
+        if removed_binding is None:
+            logger.warning(
+                "Removed napari layer `%s` had no matching Harpy layer binding.", getattr(layer, "name", layer)
+            )
 
     def activate_layer(self, layer: Layer | None) -> bool:
         """Make a layer active in the viewer when supported."""
@@ -251,20 +282,10 @@ class ViewerAdapter:
         coordinate_system: str,
         *,
         mode: ImageDisplayMode = "stack",
-    ) -> Image:
+        channels: Sequence[int | str] | None = None,
+        channel_colors: Sequence[str] | None = None,
+    ) -> Image | list[Image]:
         """Load an image element into napari if it is not already present."""
-        if mode != "stack":
-            raise NotImplementedError(f"Image display mode `{mode}` is not implemented yet.")
-
-        existing_layer = self._get_loaded_image_layer_for_coordinate_system(
-            sdata,
-            image_name,
-            coordinate_system,
-            image_display_mode=mode,
-        )
-        if existing_layer is not None:
-            return existing_layer
-
         images = getattr(sdata, "images", {})
         if image_name not in images:
             raise ValueError(f"Image element `{image_name}` is not available in the selected SpatialData object.")
@@ -276,23 +297,114 @@ class ViewerAdapter:
                 f"Coordinate system `{coordinate_system}` is not available for image element `{image_name}`."
             )
 
-        image_data, rgb = _get_stack_image_layer_data(image_element)
-        layer = Image(
-            image_data,
-            name=image_name,
-            affine=_get_affine_transform(image_element, coordinate_system),
-            rgb=rgb,
+        if mode == "stack":
+            existing_overlay_layers = self._get_loaded_image_layer_for_coordinate_system(
+                sdata,
+                image_name,
+                coordinate_system,
+                image_display_mode="overlay",
+            )
+            for layer in existing_overlay_layers:
+                self._remove_layer_from_viewer_and_registry(layer)
+
+            layers = self._get_loaded_image_layer_for_coordinate_system(
+                sdata,
+                image_name,
+                coordinate_system,
+                image_display_mode=mode,
+            )
+            existing_layer = layers[0] if layers else None
+            if existing_layer is not None:
+                return existing_layer
+
+            image_data, rgb = _get_stack_image_layer_data(image_element)
+            layer = Image(
+                image_data,
+                name=image_name,
+                affine=_get_affine_transform(image_element, coordinate_system),
+                rgb=rgb,
+            )
+            _add_layer_to_viewer(self._viewer, layer)
+            self.register_layer(
+                layer,
+                sdata=sdata,
+                element_name=image_name,
+                element_type="image",
+                coordinate_system=coordinate_system,
+                image_display_mode=mode,
+            )
+            return layer
+
+        if mode != "overlay":
+            raise NotImplementedError(f"Image display mode `{mode}` is not implemented yet.")
+
+        resolved_channels = _resolve_overlay_channels(image_element, channels)
+        resolved_colors = _resolve_overlay_colors(len(resolved_channels), channel_colors)
+        affine = _get_affine_transform(image_element, coordinate_system)
+
+        loaded_overlay_layers: list[Image] = []
+        desired_channel_indices = {channel_index for channel_index, _ in resolved_channels}
+
+        layers = self._get_loaded_image_layer_for_coordinate_system(
+            sdata,
+            image_name,
+            coordinate_system,
+            image_display_mode="stack",
         )
-        _add_layer_to_viewer(self._viewer, layer)
-        self.register_layer(
-            layer,
-            sdata=sdata,
-            element_name=image_name,
-            element_type="image",
-            coordinate_system=coordinate_system,
-            image_display_mode=mode,
+        existing_stack_layer = layers[0] if layers else None
+        if existing_stack_layer is not None:
+            self._remove_layer_from_viewer_and_registry(existing_stack_layer)
+
+        existing_overlay_layers = self._get_loaded_image_layer_for_coordinate_system(
+            sdata,
+            image_name,
+            coordinate_system,
+            image_display_mode="overlay",
         )
-        return layer
+        for layer in existing_overlay_layers:
+            binding = self._layer_bindings.get_binding(layer)
+            assert binding is not None
+            if binding.channel_index in desired_channel_indices:
+                continue
+            self._remove_layer_from_viewer_and_registry(layer)
+
+        for (channel_index, channel_name), color in zip(resolved_channels, resolved_colors, strict=False):
+            layers = self._get_loaded_image_layer_for_coordinate_system(
+                sdata,
+                image_name,
+                coordinate_system,
+                image_display_mode=mode,
+                channel_index=channel_index,
+            )
+            existing_layer = layers[0] if layers else None
+            if existing_layer is None:
+                layer = Image(
+                    _get_overlay_channel_layer_data(image_element, channel_index),
+                    name=f"{image_name}[{channel_name}]",
+                    affine=affine,
+                    blending="additive",
+                    colormap=color,
+                )
+                _add_layer_to_viewer(self._viewer, layer)
+                self.register_layer(
+                    layer,
+                    sdata=sdata,
+                    element_name=image_name,
+                    element_type="image",
+                    coordinate_system=coordinate_system,
+                    image_display_mode=mode,
+                    channel_index=channel_index,
+                    channel_name=channel_name,
+                )
+            else:
+                layer = existing_layer
+                layer.name = f"{image_name}[{channel_name}]"
+                layer.blending = "additive"
+                layer.colormap = color
+
+            loaded_overlay_layers.append(layer)
+
+        return loaded_overlay_layers
 
     def get_loaded_image_layers(self, sdata: SpatialData, image_name: str) -> list[Image]:
         """Return loaded image layers for a SpatialData image element."""
@@ -312,6 +424,16 @@ class ViewerAdapter:
         if layers is not None:
             return tuple(layers)
         return ()
+
+    def _remove_layer_from_viewer_and_registry(self, layer: Layer) -> None:
+        """Remove a layer from the viewer and keep the registry synchronized."""
+        _remove_layer_from_viewer(self._viewer, layer)
+        # On the normal path, viewer removal emits `layers.events.removed` and
+        # `_on_viewer_layer_removed(...)` has already unregistered the binding.
+        # Keep this fallback for viewer-like objects that remove layers without
+        # exposing or emitting the napari removal event.
+        if self._layer_bindings.get_binding(layer) is not None:
+            self.unregister_layer(layer)
 
     def _get_loaded_labels_layer_for_coordinate_system(
         self,
@@ -339,7 +461,9 @@ class ViewerAdapter:
         coordinate_system: str,
         *,
         image_display_mode: ImageDisplayMode,
-    ) -> Image | None:
+        channel_index: int | None = None,
+    ) -> list[Image]:
+        matches: list[Image] = []
         for layer in self._iter_candidate_layers():
             if not _is_spatialdata_image_layer(layer):
                 continue
@@ -351,9 +475,11 @@ class ViewerAdapter:
                 continue
             if binding.image_display_mode != image_display_mode:
                 continue
-            return layer
+            if channel_index is not None and binding.channel_index != channel_index:
+                continue
+            matches.append(layer)
 
-        return None
+        return matches
 
 
 def _apply_minimal_layer_metadata(layer: Layer, binding: LayerBinding) -> None:
@@ -409,6 +535,22 @@ def _add_layer_to_viewer(viewer: Any | None, layer: Layer) -> None:
     raise ValueError("The provided viewer does not support adding layers.")
 
 
+def _remove_layer_from_viewer(viewer: Any | None, layer: Layer) -> None:
+    if viewer is None:
+        raise ValueError("A napari viewer is required to remove layers from the viewer.")
+
+    layers = getattr(viewer, "layers", None)
+    if layers is None:
+        raise ValueError("The provided viewer does not expose napari-compatible layer APIs.")
+
+    remove = getattr(layers, "remove", None)
+    if callable(remove):
+        remove(layer)
+        return
+
+    raise ValueError("The provided viewer does not support removing layers.")
+
+
 def _get_stack_image_layer_data(element: DataArray | DataTree) -> tuple[DataArray | list[DataArray], bool]:
     """Prepare image data for one napari stack-mode image layer.
 
@@ -448,6 +590,73 @@ def _get_stack_image_layer_data(element: DataArray | DataTree) -> tuple[DataArra
         return _flatten_multiscale_element(image_data), rgb
 
     return image_data, rgb
+
+
+def _get_overlay_channel_layer_data(element: DataArray | DataTree, channel_index: int) -> DataArray | list[DataArray]:
+    if isinstance(element, DataTree):
+        channel_arrays: list[DataArray] = []
+        for key in element:
+            scale_array = next(iter(element[key].values()))
+            channel_array = scale_array.isel(c=channel_index)
+            channel_arrays.append(channel_array)
+        return channel_arrays
+
+    return element.isel(c=channel_index)
+
+
+def _resolve_overlay_channels(
+    element: DataArray | DataTree,
+    channels: Sequence[int | str] | None,
+) -> list[tuple[int, str]]:
+    axes = get_axes_names(element)
+    if "c" not in axes:
+        channel_names: list[Any] = []
+    elif isinstance(element, DataArray):
+        channel_names = list(element.coords.indexes["c"])
+    else:
+        scale0 = next(iter(element["scale0"].values()))
+        channel_names = list(scale0.coords.indexes["c"])
+
+    if not channel_names:
+        raise ValueError("Overlay mode requires an image element with a channel axis.")
+    if not channels:
+        raise ValueError("Overlay mode requires at least one selected channel.")
+
+    resolved: list[tuple[int, str]] = []
+    seen_indices: set[int] = set()
+    for channel in channels:
+        if isinstance(channel, int):
+            channel_index = channel
+            if channel_index < 0 or channel_index >= len(channel_names):
+                raise ValueError(f"Channel index `{channel_index}` is out of range for the selected image element.")
+            channel_name = str(channel_names[channel_index])
+        else:
+            if channel not in channel_names:
+                raise ValueError(
+                    f"Channel `{channel}` is not available in the selected image element. "
+                    "If needed, update the channel names in the SpatialData object with "
+                    "`sdata.set_channel_names(...)`."
+                )
+            channel_index = channel_names.index(channel)
+            channel_name = str(channel)
+
+        if channel_index in seen_indices:
+            raise ValueError("Overlay mode does not accept duplicate channel selections.")
+
+        resolved.append((channel_index, channel_name))
+        seen_indices.add(channel_index)
+
+    return resolved
+
+
+def _resolve_overlay_colors(channel_count: int, channel_colors: Sequence[str] | None) -> list[str]:
+    if channel_colors is None:
+        return [DEFAULT_OVERLAY_COLORS[index % len(DEFAULT_OVERLAY_COLORS)] for index in range(channel_count)]
+
+    if len(channel_colors) != channel_count:
+        raise ValueError("The number of overlay channel colors must match the number of selected channels.")
+
+    return list(channel_colors)
 
 
 def _flatten_multiscale_element(element: DataTree) -> list[DataArray]:

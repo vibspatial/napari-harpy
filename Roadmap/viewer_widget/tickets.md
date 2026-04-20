@@ -204,7 +204,7 @@ activation, and minimal layer-binding state.
 - [x] the adapter can answer whether a requested labels layer is already loaded
 - [x] metadata stays lightweight and no authoritative analysis state is stored on
   layers
-- [ ] the registry stays synchronized when a user removes a Harpy-managed layer
+- [x] the registry stays synchronized when a user removes a Harpy-managed layer
   from napari
 - [ ] Harpy has a small number of real-viewer integration tests covering the
   most important viewer-specific adapter flows

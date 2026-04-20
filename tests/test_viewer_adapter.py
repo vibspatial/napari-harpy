@@ -36,6 +36,10 @@ class DummyLayers(list):
     def _select_only(self, layer: object) -> None:
         self.selection.active = layer
 
+    def remove(self, layer: object) -> None:
+        super().remove(layer)
+        self.events.removed.emit(layer)
+
 
 class DummyViewer:
     def __init__(self, layers: list[object] | None = None) -> None:
@@ -252,6 +256,18 @@ def test_viewer_adapter_ensure_labels_loaded_reuses_matching_existing_layer(sdat
     assert len(viewer.layers) == 1
 
 
+def test_viewer_adapter_unregisters_binding_when_user_removes_labels_layer(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    layer = adapter.ensure_labels_loaded(sdata_blobs, "blobs_labels", "global")
+
+    viewer.layers.remove(layer)
+
+    assert layer not in viewer.layers
+    assert adapter.layer_bindings.get_binding(layer) is None
+
+
 def test_viewer_adapter_ensure_labels_loaded_supports_multiscale_labels(sdata_blobs) -> None:
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
@@ -331,13 +347,197 @@ def test_viewer_adapter_ensure_image_loaded_rejects_unknown_coordinate_system(sd
         raise AssertionError("Expected ensure_image_loaded to reject an unknown coordinate system.")
 
 
-def test_viewer_adapter_ensure_image_loaded_rejects_overlay_until_slice_four(sdata_blobs) -> None:
+def test_viewer_adapter_ensure_image_loaded_overlay_adds_one_layer_per_selected_channel(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    layers = adapter.ensure_image_loaded(
+        sdata_blobs,
+        "blobs_image",
+        "global",
+        mode="overlay",
+        channels=[0, 2],
+        channel_colors=["blue", "magenta"],
+    )
+
+    assert isinstance(layers, list)
+    assert len(layers) == 2
+    assert [layer.name for layer in layers] == ["blobs_image[0]", "blobs_image[2]"]
+    assert [layer.blending for layer in layers] == ["additive", "additive"]
+    assert [binding.channel_index for binding in (adapter.layer_bindings.get_binding(layer) for layer in layers)] == [0, 2]
+    assert [binding.channel_name for binding in (adapter.layer_bindings.get_binding(layer) for layer in layers)] == [
+        "0",
+        "2",
+    ]
+
+
+def test_viewer_adapter_ensure_image_loaded_overlay_reuses_existing_channel_layers(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    first = adapter.ensure_image_loaded(
+        sdata_blobs,
+        "blobs_image",
+        "global",
+        mode="overlay",
+        channels=[0, 1],
+        channel_colors=["blue", "red"],
+    )
+    second = adapter.ensure_image_loaded(
+        sdata_blobs,
+        "blobs_image",
+        "global",
+        mode="overlay",
+        channels=[0, 1],
+        channel_colors=["cyan", "yellow"],
+    )
+
+    assert first == second
+    assert len(viewer.layers) == 2
+    assert [str(layer.colormap).lower() for layer in second] != []
+
+
+def test_viewer_adapter_unregisters_binding_when_user_removes_overlay_layer(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    layers = adapter.ensure_image_loaded(
+        sdata_blobs,
+        "blobs_image",
+        "global",
+        mode="overlay",
+        channels=[0, 1],
+        channel_colors=["blue", "red"],
+    )
+
+    viewer.layers.remove(layers[0])
+
+    assert layers[0] not in viewer.layers
+    assert adapter.layer_bindings.get_binding(layers[0]) is None
+    assert adapter.layer_bindings.get_binding(layers[1]) is not None
+
+
+def test_viewer_adapter_ensure_image_loaded_overlay_removes_existing_stack_layer(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    stack_layer = adapter.ensure_image_loaded(sdata_blobs, "blobs_image", "global", mode="stack")
+    overlay_layers = adapter.ensure_image_loaded(
+        sdata_blobs,
+        "blobs_image",
+        "global",
+        mode="overlay",
+        channels=[0, 1],
+        channel_colors=["blue", "red"],
+    )
+
+    assert stack_layer not in viewer.layers
+    assert adapter.layer_bindings.get_binding(stack_layer) is None
+    assert len(overlay_layers) == 2
+    assert all(layer in viewer.layers for layer in overlay_layers)
+
+
+def test_viewer_adapter_ensure_image_loaded_overlay_removes_stale_channel_layers(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    adapter.ensure_image_loaded(
+        sdata_blobs,
+        "blobs_image",
+        "global",
+        mode="overlay",
+        channels=[0, 1],
+        channel_colors=["blue", "red"],
+    )
+    layers = adapter.ensure_image_loaded(
+        sdata_blobs,
+        "blobs_image",
+        "global",
+        mode="overlay",
+        channels=[1],
+        channel_colors=["green"],
+    )
+
+    assert len(layers) == 1
+    assert len(viewer.layers) == 1
+    binding = adapter.layer_bindings.get_binding(layers[0])
+    assert binding is not None
+    assert binding.channel_index == 1
+
+
+def test_viewer_adapter_ensure_image_loaded_stack_removes_existing_overlay_layers(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    overlay_layers = adapter.ensure_image_loaded(
+        sdata_blobs,
+        "blobs_image",
+        "global",
+        mode="overlay",
+        channels=[0, 1],
+        channel_colors=["blue", "red"],
+    )
+    stack_layer = adapter.ensure_image_loaded(sdata_blobs, "blobs_image", "global", mode="stack")
+
+    assert all(layer not in viewer.layers for layer in overlay_layers)
+    assert all(adapter.layer_bindings.get_binding(layer) is None for layer in overlay_layers)
+    assert stack_layer in viewer.layers
+
+
+def test_viewer_adapter_ensure_image_loaded_overlay_accepts_channel_names(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    sdata_blobs.images["blobs_image"] = sdata_blobs.images["blobs_image"].assign_coords(c=["DAPI", "CD3", "CD8"])
+    layers = adapter.ensure_image_loaded(
+        sdata_blobs,
+        "blobs_image",
+        "global",
+        mode="overlay",
+        channels=["CD3", "CD8"],
+        channel_colors=["green", "magenta"],
+    )
+
+    assert [layer.name for layer in layers] == ["blobs_image[CD3]", "blobs_image[CD8]"]
+    assert [adapter.layer_bindings.get_binding(layer).channel_name for layer in layers] == ["CD3", "CD8"]
+
+
+def test_viewer_adapter_ensure_image_loaded_overlay_supports_multiscale_images(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    layers = adapter.ensure_image_loaded(
+        sdata_blobs,
+        "blobs_multiscale_image",
+        "global",
+        mode="overlay",
+        channels=[0, 2],
+    )
+
+    assert len(layers) == 2
+    assert all(layer.multiscale is True for layer in layers)
+    assert all(len(layer.data) == 3 for layer in layers)
+
+
+def test_viewer_adapter_ensure_image_loaded_overlay_requires_selected_channels(sdata_blobs) -> None:
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
 
     try:
-        adapter.ensure_image_loaded(sdata_blobs, "blobs_image", "global", mode="overlay")
-    except NotImplementedError as error:
-        assert "not implemented yet" in str(error)
+        adapter.ensure_image_loaded(sdata_blobs, "blobs_image", "global", mode="overlay", channels=None)
+    except ValueError as error:
+        assert "requires at least one selected channel" in str(error)
     else:  # pragma: no cover - defensive assertion
-        raise AssertionError("Expected ensure_image_loaded to reject overlay mode for now.")
+        raise AssertionError("Expected ensure_image_loaded to require selected channels for overlay mode.")
+
+
+def test_viewer_adapter_ensure_image_loaded_overlay_rejects_duplicate_channels(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    try:
+        adapter.ensure_image_loaded(sdata_blobs, "blobs_image", "global", mode="overlay", channels=[0, 0])
+    except ValueError as error:
+        assert "does not accept duplicate channel selections" in str(error)
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("Expected ensure_image_loaded to reject duplicate overlay channels.")
