@@ -22,6 +22,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from napari_harpy._app_state import HarpyAppState, get_or_create_app_state
 from napari_harpy._feature_extraction import FeatureExtractionController
 from napari_harpy._spatialdata import (
     SpatialDataImageOption,
@@ -160,6 +161,7 @@ class FeatureExtractionWidget(QWidget):
         self.setMinimumWidth(_WIDGET_MIN_WIDTH)
 
         self._viewer = napari_viewer
+        self._app_state = get_or_create_app_state(napari_viewer)
         self._viewer_binding = SpatialDataViewerBinding(napari_viewer)
         self._feature_extraction_controller = FeatureExtractionController(
             on_state_changed=self._on_controller_state_changed,
@@ -331,6 +333,11 @@ class FeatureExtractionWidget(QWidget):
         self._connect_viewer_events()
         self._update_intensity_features_hint()
         self.refresh_segmentation_masks()
+
+    @property
+    def app_state(self) -> HarpyAppState:
+        """Return the shared Harpy app state for this widget."""
+        return self._app_state
 
     @property
     def selected_segmentation_name(self) -> str | None:

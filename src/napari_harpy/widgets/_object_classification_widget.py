@@ -22,6 +22,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_harpy._annotation import UNLABELED_CLASS, AnnotationController
+from napari_harpy._app_state import HarpyAppState, get_or_create_app_state
 from napari_harpy._classifier import ClassifierController
 from napari_harpy._persistence import PersistenceController
 from napari_harpy._spatialdata import (
@@ -127,6 +128,7 @@ class ObjectClassificationWidget(QWidget):
         self.setStyleSheet(_WIDGET_SURFACE_STYLESHEET)
         self.setMinimumWidth(_WIDGET_MIN_WIDTH)
         self._viewer = napari_viewer
+        self._app_state = get_or_create_app_state(napari_viewer)
         self._viewer_binding = SpatialDataViewerBinding(napari_viewer)
         self._annotation_controller = AnnotationController(
             self._viewer_binding,
@@ -339,6 +341,11 @@ class ObjectClassificationWidget(QWidget):
 
         self._connect_viewer_events()
         self.refresh_segmentation_masks()
+
+    @property
+    def app_state(self) -> HarpyAppState:
+        """Return the shared Harpy app state for this widget."""
+        return self._app_state
 
     def _create_annotation_shortcuts(self) -> list[QShortcut]:
         apply_shortcut = QShortcut(QKeySequence(_APPLY_CLASS_SHORTCUT), self)
