@@ -310,13 +310,8 @@ class ViewerAdapter:
     def _iter_candidate_layers(self) -> Iterable[Layer]:
         layers = getattr(self._viewer, "layers", None)
         if layers is not None:
-            try:
-                return tuple(layers)
-            except TypeError:
-                # Some dummy/unsupported viewers expose `layers` but not as an iterable.
-                # Fall back to the registry-backed layers instead.
-                pass
-        return tuple(binding.layer for binding in self._layer_bindings.iter_bindings())
+            return tuple(layers)
+        return ()
 
     def _get_loaded_labels_layer_for_coordinate_system(
         self,

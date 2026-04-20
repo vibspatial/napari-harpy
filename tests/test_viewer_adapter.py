@@ -49,7 +49,7 @@ class DummyViewer:
 
 class UnsupportedViewer:
     def __init__(self) -> None:
-        self.layers = object()
+        self.layers = None
 
 
 def make_labels_layer(*, sdata, label_name: str = "blobs_labels", metadata: dict[str, object] | None = None) -> Labels:
@@ -151,7 +151,7 @@ def test_viewer_adapter_ensure_labels_loaded_rejects_unsupported_viewer(sdata_bl
     try:
         adapter.ensure_labels_loaded(sdata_blobs, "blobs_labels", "global")
     except ValueError as error:
-        assert "does not support adding layers" in str(error)
+        assert "does not expose napari-compatible layer APIs" in str(error)
     else:  # pragma: no cover - defensive assertion
         raise AssertionError("Expected ensure_labels_loaded to reject an unsupported viewer.")
 

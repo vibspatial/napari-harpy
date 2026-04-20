@@ -164,6 +164,12 @@ activation, and minimal layer-binding state.
   - `ensure_labels_loaded(sdata, label_name, coordinate_system)`
   - `ensure_image_loaded(...)`
   - `activate_layer(layer)`
+- treat `viewer.layers` as the source of truth for what is currently loaded in
+  napari
+- keep `LayerBindingRegistry` synchronized with viewer removal events:
+  - listen to `viewer.layers.events.removed`
+  - call `unregister_layer(...)` when a Harpy-managed layer is removed from
+    napari
 - support image loading modes:
   - stack image mode:
     - one napari `Image` layer
@@ -198,6 +204,8 @@ activation, and minimal layer-binding state.
 - [x] the adapter can answer whether a requested labels layer is already loaded
 - [x] metadata stays lightweight and no authoritative analysis state is stored on
   layers
+- [ ] the registry stays synchronized when a user removes a Harpy-managed layer
+  from napari
 - [ ] Harpy has a small number of real-viewer integration tests covering the
   most important viewer-specific adapter flows
 
