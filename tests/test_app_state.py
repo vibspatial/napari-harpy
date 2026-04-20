@@ -116,6 +116,7 @@ def test_interactive_headless_sets_sdata_without_running_event_loop(monkeypatch,
     assert interactive.app_state.sdata is sdata_blobs
     assert run_calls == []
     assert viewer.window.calls == [
+        ("napari-harpy", "Viewer", True),
         ("napari-harpy", "Feature Extraction", True),
         ("napari-harpy", "Object Classification", True),
     ]
@@ -132,6 +133,7 @@ def test_interactive_auto_runs_and_reuses_existing_plugin_widgets(monkeypatch, s
 
     assert run_calls == ["run", "run"]
     assert viewer.window.calls == [
+        ("napari-harpy", "Viewer", True),
         ("napari-harpy", "Feature Extraction", True),
         ("napari-harpy", "Object Classification", True),
     ]

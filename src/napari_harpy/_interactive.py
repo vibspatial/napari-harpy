@@ -14,7 +14,7 @@ class Interactive:
     """Thin programmatic launcher for napari-harpy."""
 
     _PLUGIN_NAME = "napari-harpy"
-    _DEFAULT_WIDGETS = ("Feature Extraction", "Object Classification")
+    _DEFAULT_WIDGETS = ("Viewer", "Feature Extraction", "Object Classification")
 
     def __init__(self, sdata: SpatialData, viewer: napari.Viewer | None = None, headless: bool = False) -> None:
         self._viewer = viewer or napari.current_viewer() or napari.Viewer()
