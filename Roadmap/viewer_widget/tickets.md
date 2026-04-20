@@ -200,13 +200,13 @@ activation, and minimal layer-binding state.
 - [x] Harpy can load a labels element from `sdata` into napari without relying on
   `napari-spatialdata`
 - [x] Harpy can load an image from `sdata` into napari in stack mode
-- [ ] Harpy can load selected image channels in overlay mode
+- [x] Harpy can load selected image channels in overlay mode
 - [x] the adapter can answer whether a requested labels layer is already loaded
 - [x] metadata stays lightweight and no authoritative analysis state is stored on
   layers
 - [x] the registry stays synchronized when a user removes a Harpy-managed layer
   from napari
-- [ ] Harpy has a small number of real-viewer integration tests covering the
+- [x] Harpy has a small number of real-viewer integration tests covering the
   most important viewer-specific adapter flows
 
 ### Depends on
