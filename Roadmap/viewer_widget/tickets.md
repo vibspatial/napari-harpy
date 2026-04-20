@@ -106,22 +106,23 @@ loading logic into shared state.
 
 ### Acceptance criteria
 
-- Harpy has one shared app-state object per napari viewer
-- multiple widgets can access the same loaded `SpatialData`
-- widgets can react when the loaded `SpatialData` changes
-- no feature-extraction or object-classification selection state is stored in
+- [x] Harpy has one shared app-state object per napari viewer
+- [x] multiple widgets can access the same loaded `SpatialData`
+- [x] `HarpyAppState` exposes an `sdata_changed` signal when the loaded
+  `SpatialData` changes
+- [x] no feature-extraction or object-classification selection state is stored in
   `HarpyAppState`
-- `HarpyAppState` does not own coordinate-system discovery, image/labels
+- [x] `HarpyAppState` does not own coordinate-system discovery, image/labels
   option listing, or napari dock-widget creation
-- Harpy exposes a programmatic entrypoint such as:
+- [x] Harpy exposes a programmatic entrypoint such as:
   - `from napari_harpy import Interactive`
   - `ui = Interactive(sdata)`
-- `Interactive` initializes shared app state with the provided `sdata`
-- `Interactive` is a thin facade and does not duplicate widget discovery logic
-- `Interactive(sdata, headless=False)` auto-starts napari
-- `Interactive(sdata, headless=True)` leaves the viewer initialized without
+- [x] `Interactive` initializes shared app state with the provided `sdata`
+- [x] `Interactive` is a thin facade and does not duplicate widget discovery logic
+- [x] `Interactive(sdata, headless=False)` auto-starts napari
+- [x] `Interactive(sdata, headless=True)` leaves the viewer initialized without
   entering the event loop
-- repeated launcher calls do not create duplicate Harpy dock widgets
+- [x] repeated launcher calls do not create duplicate Harpy dock widgets
 
 ### Depends on
 
@@ -183,12 +184,12 @@ activation, and minimal layer-binding state.
 
 ### Acceptance criteria
 
-- Harpy can load a labels element from `sdata` into napari without relying on
+- [ ] Harpy can load a labels element from `sdata` into napari without relying on
   `napari-spatialdata`
-- Harpy can load an image from `sdata` into napari in raw mode
-- Harpy can load selected image channels in overlay mode
-- the adapter can answer whether a requested labels layer is already loaded
-- metadata stays lightweight and no authoritative analysis state is stored on
+- [ ] Harpy can load an image from `sdata` into napari in raw mode
+- [ ] Harpy can load selected image channels in overlay mode
+- [ ] the adapter can answer whether a requested labels layer is already loaded
+- [ ] metadata stays lightweight and no authoritative analysis state is stored on
   layers
 
 ### Depends on
@@ -218,6 +219,9 @@ viewer adapter.
   - `src/napari_harpy/napari.yaml`
 - add `Open SpatialData`
 - load the selected store into `HarpyAppState.sdata`
+- subscribe to `HarpyAppState.sdata_changed` so the viewer widget refreshes its
+  available coordinate systems, labels, images, channels, and linked tables
+  when the loaded `sdata` changes
 - expose all coordinate systems from the loaded `sdata`
 - make coordinate system selection required before element selection
 - after coordinate-system selection:
@@ -246,13 +250,15 @@ viewer adapter.
 
 ### Acceptance criteria
 
-- the new `Viewer` dock widget is available in napari
-- the widget can open a `SpatialData` store
-- the widget lists coordinate systems from the loaded `sdata`
-- labels and images are filtered by the selected coordinate system
-- the widget can load a selected labels element into napari
-- the widget can load a selected image in raw mode
-- the widget can load selected channels in overlay mode
+- [ ] the new `Viewer` dock widget is available in napari
+- [ ] the widget can open a `SpatialData` store
+- [ ] changing the loaded `sdata` updates the viewer widget through
+  `sdata_changed`
+- [ ] the widget lists coordinate systems from the loaded `sdata`
+- [ ] labels and images are filtered by the selected coordinate system
+- [ ] the widget can load a selected labels element into napari
+- [ ] the widget can load a selected image in raw mode
+- [ ] the widget can load selected channels in overlay mode
 
 ### Depends on
 
@@ -278,6 +284,8 @@ selection explicit and local to the feature-extraction widget.
 ### Required work
 
 - update the feature-extraction widget to use shared app state
+- subscribe to `HarpyAppState.sdata_changed` so the widget refreshes its
+  available options when the loaded `sdata` changes
 - when no `sdata` is loaded:
   - show a clear empty-state message
   - disable calculation
@@ -309,12 +317,13 @@ selection explicit and local to the feature-extraction widget.
 
 ### Acceptance criteria
 
-- feature extraction options come from the shared loaded `sdata`
-- coordinate-system selection happens inside the feature-extraction widget
-- labels and images are filtered to the selected coordinate system
-- tables are filtered to those correctly linked to the selected labels element
-- extraction channels are explicitly selected in the feature-extraction widget
-- extraction does not depend on viewer display channel choices
+- [ ] feature extraction options come from the shared loaded `sdata`
+- [ ] changing the loaded `sdata` refreshes the widget through `sdata_changed`
+- [ ] coordinate-system selection happens inside the feature-extraction widget
+- [ ] labels and images are filtered to the selected coordinate system
+- [ ] tables are filtered to those correctly linked to the selected labels element
+- [ ] extraction channels are explicitly selected in the feature-extraction widget
+- [ ] extraction does not depend on viewer display channel choices
 
 ### Depends on
 
@@ -341,6 +350,9 @@ loaded and activated in napari.
 ### Required work
 
 - update the object-classification widget to use shared app state
+- subscribe to `HarpyAppState.sdata_changed` so the widget refreshes its
+  available segmentations, linked tables, and feature matrices when the loaded
+  `sdata` changes
 - when no `sdata` is loaded:
   - show a clear empty-state message
   - disable annotation/classifier actions
@@ -367,13 +379,14 @@ loaded and activated in napari.
 
 ### Acceptance criteria
 
-- object-classification segmentation choices come from the shared loaded `sdata`
-- choosing a segmentation auto-loads it into napari if needed
-- the loaded labels layer is activated and ready for annotation
-- linked tables are filtered to those correctly linked to the chosen
+- [ ] object-classification segmentation choices come from the shared loaded `sdata`
+- [ ] changing the loaded `sdata` refreshes the widget through `sdata_changed`
+- [ ] choosing a segmentation auto-loads it into napari if needed
+- [ ] the loaded labels layer is activated and ready for annotation
+- [ ] linked tables are filtered to those correctly linked to the chosen
   segmentation
-- feature matrices come from the selected linked table
-- annotation remains disabled until a compatible labels layer is actually bound
+- [ ] feature matrices come from the selected linked table
+- [ ] annotation remains disabled until a compatible labels layer is actually bound
 
 ### Depends on
 
