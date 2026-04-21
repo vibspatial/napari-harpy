@@ -17,6 +17,7 @@ from qtpy.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -183,6 +184,7 @@ class FeatureExtractionWidget(QWidget):
         self.channel_selection_container = QWidget()
         self.channel_selection_container.setObjectName("feature_extraction_channel_selection_container")
         self.channel_selection_container.setStyleSheet(_CHANNEL_SELECTION_PANEL_STYLESHEET)
+        self.channel_selection_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         channel_selection_layout = QVBoxLayout(self.channel_selection_container)
         channel_selection_layout.setContentsMargins(0, 0, 0, 0)
         channel_selection_layout.setSpacing(0)
@@ -194,10 +196,13 @@ class FeatureExtractionWidget(QWidget):
         self.channel_selection_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.channel_selection_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self.channel_selection_scroll_area.setStyleSheet("QScrollArea { border: 0px; background: transparent; }")
+        self.channel_selection_scroll_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.channel_selection_scroll_area.setMinimumWidth(self.image_combo.sizeHint().width())
 
         self.channel_selection_list_widget = QWidget()
         self.channel_selection_list_widget.setObjectName("feature_extraction_channel_selection_list")
         self.channel_selection_list_widget.setStyleSheet(_CHANNEL_SELECTION_PANEL_STYLESHEET)
+        self.channel_selection_list_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.channel_selection_list_layout = QVBoxLayout(self.channel_selection_list_widget)
         self.channel_selection_list_layout.setContentsMargins(0, 0, 0, 0)
         self.channel_selection_list_layout.setSpacing(6)
