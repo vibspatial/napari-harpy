@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from functools import partial
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from qtpy.QtCore import QSignalBlocker, Qt
-from qtpy.QtGui import QColor, QPalette
+from qtpy.QtGui import QColor, QPalette, QPixmap
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -275,6 +276,7 @@ class ViewerWidget(QWidget):
         self._app_state = get_or_create_app_state(napari_viewer)
         self._labels_cards: list[_LabelsCardWidget] = []
         self._image_cards: list[_ImageCardWidget] = []
+        self._logo_path = Path(__file__).resolve().parents[3] / "docs" / "_static" / "logo.png"
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -301,6 +303,9 @@ class ViewerWidget(QWidget):
         title = QLabel("Viewer")
         title.setObjectName("viewer_widget_title")
         title.setStyleSheet("color: #111827; font-size: 18px; font-weight: 700;")
+        title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
+        header_logo = self._create_header_logo()
 
         self.empty_state_label = QLabel(
             "No SpatialData loaded. Use `Interactive(sdata)` for now; an in-widget open action will follow later."
@@ -360,6 +365,7 @@ class ViewerWidget(QWidget):
         self.labels_section_layout.setContentsMargins(0, 0, 0, 0)
         self.labels_section_layout.setSpacing(8)
 
+        self.content_layout.addWidget(header_logo)
         self.content_layout.addWidget(title)
         self.content_layout.addWidget(self.empty_state_label)
         self.content_layout.addWidget(self.summary_label)
@@ -516,6 +522,20 @@ class ViewerWidget(QWidget):
             "color: #b91c1c; font-weight: 600;" if is_error else "color: #166534; font-weight: 600;"
         )
         self.action_feedback_label.show()
+
+    def _create_header_logo(self) -> QLabel:
+        logo_label = QLabel()
+        logo_label.setObjectName("viewer_widget_header_logo")
+        logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        logo_pixmap = QPixmap(str(self._logo_path))
+        if not logo_pixmap.isNull():
+            logo_label.setPixmap(logo_pixmap.scaledToWidth(120, Qt.TransformationMode.SmoothTransformation))
+            return logo_label
+
+        logo_label.setText("napari-harpy")
+        logo_label.setStyleSheet("color: #111827; font-size: 18px; font-weight: 600;")
+        return logo_label
 
 
 def _clear_layout(layout: QLayout) -> None:
