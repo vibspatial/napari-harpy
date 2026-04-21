@@ -54,6 +54,36 @@ def test_viewer_widget_can_be_instantiated(qtbot) -> None:
     assert widget.labels_cards == []
 
 
+def test_elided_label_only_shows_tooltip_when_text_is_truncated(qtbot, monkeypatch) -> None:
+    label = viewer_widget_module._ElidedLabel("blobs_multiscale_image")
+
+    qtbot.addWidget(label)
+
+    class _FakeRect:
+        def __init__(self, width: int) -> None:
+            self._width = width
+
+        def width(self) -> int:
+            return self._width
+
+    class _FakeFontMetrics:
+        def elidedText(self, text: str, mode: object, width: int) -> str:
+            del mode
+            return text if width >= len(text) else "blobs_multiscale…"
+
+    monkeypatch.setattr(label, "fontMetrics", lambda: _FakeFontMetrics())
+    monkeypatch.setattr(label, "contentsRect", lambda: _FakeRect(400))
+    label._update_elided_text()
+
+    assert label.toolTip() == ""
+
+    monkeypatch.setattr(label, "contentsRect", lambda: _FakeRect(10))
+    label._update_elided_text()
+
+    assert "blobs_multiscale_image" in label.toolTip()
+    assert "..." in label.text() or "\u2026" in label.text()
+
+
 def test_viewer_widget_refreshes_cards_when_shared_sdata_changes(qtbot, sdata_blobs) -> None:
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)

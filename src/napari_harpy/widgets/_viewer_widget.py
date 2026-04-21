@@ -76,12 +76,7 @@ _ACTION_BUTTON_STYLESHEET = (
     "QPushButton:pressed { background-color: #ebd7cf; border-color: #b59a8e; }"
     "QPushButton:disabled { background-color: #faf4f1; border-color: #ede3dd; color: #a8a29e; }"
 )
-_CARD_STYLESHEET = (
-    "QFrame {"
-    "background-color: #f8eeea; "
-    "border: 1px solid #eadfd8; "
-    "border-radius: 10px;}"
-)
+_CARD_STYLESHEET = "QFrame {background-color: #f8eeea; border: 1px solid #eadfd8; border-radius: 10px;}"
 _CARD_TITLE_STYLESHEET = (
     "QLabel {"
     "background-color: #f3d7ce; "
@@ -125,12 +120,11 @@ _CHANNEL_PANEL_STYLESHEET = "QWidget { background: transparent; }"
 
 
 class _ElidedLabel(QLabel):
-    """Single-line label that elides long text and exposes the full value via tooltip."""
+    """Single-line label that shows a tooltip only when the text is elided."""
 
     def __init__(self, text: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._full_text = text
-        self.setToolTip(_format_tooltip(text))
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.setMinimumWidth(0)
         self.setMinimumHeight(36)
@@ -139,7 +133,6 @@ class _ElidedLabel(QLabel):
 
     def set_full_text(self, text: str) -> None:
         self._full_text = text
-        self.setToolTip(_format_tooltip(text))
         self._update_elided_text()
 
     def resizeEvent(self, event: object) -> None:
@@ -150,6 +143,7 @@ class _ElidedLabel(QLabel):
         available_width = max(0, self.contentsRect().width())
         elided_text = self.fontMetrics().elidedText(self._full_text, Qt.TextElideMode.ElideRight, available_width)
         super().setText(elided_text)
+        self.setToolTip(_format_tooltip(self._full_text) if elided_text != self._full_text else "")
 
 
 class _LabelsCardWidget(QFrame):
