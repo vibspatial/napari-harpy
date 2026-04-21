@@ -2,12 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from functools import partial
-from html import escape
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from qtpy.QtCore import QSignalBlocker, Qt
-from qtpy.QtGui import QColor, QPalette, QPixmap
+from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -29,58 +28,34 @@ from xarray import DataArray
 from napari_harpy._app_state import HarpyAppState, get_or_create_app_state
 from napari_harpy._spatialdata import get_annotating_table_names
 from napari_harpy._viewer_adapter import DEFAULT_OVERLAY_COLORS
+from napari_harpy.widgets._shared_styles import (
+    ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,
+)
+from napari_harpy.widgets._shared_styles import (
+    CHECKBOX_STYLESHEET as _CHECKBOX_STYLESHEET,
+)
+from napari_harpy.widgets._shared_styles import (
+    WIDGET_MIN_WIDTH as _WIDGET_MIN_WIDTH,
+)
+from napari_harpy.widgets._shared_styles import (
+    apply_scroll_content_surface,
+    apply_widget_surface,
+    build_input_control_stylesheet,
+    create_form_label,
+    format_tooltip,
+)
 
 if TYPE_CHECKING:
     import napari
     from spatialdata import SpatialData
 
 
-_WIDGET_SURFACE_COLOR = "#fcf6f3"
-_WIDGET_SURFACE_STYLESHEET = f"background-color: {_WIDGET_SURFACE_COLOR};"
-_WIDGET_MIN_WIDTH = 370
-_TOOLTIP_TEXT_COLOR = "#111827"
-_FORM_LABEL_STYLESHEET = "color: #374151; font-weight: 600; padding-top: 6px;"
-_INPUT_CONTROL_STYLESHEET = (
-    "QComboBox {"
-    "background-color: #fffdfb; "
-    "border: 1px solid #ddcfc7; "
-    "border-radius: 8px; "
-    "color: #111827; "
-    "padding: 4px 10px; "
-    "min-height: 30px;}"
-    "QComboBox:disabled {"
-    "background-color: #f7efea; "
-    "border-color: #e9ddd7; "
-    "color: #9ca3af;}"
-    "QComboBox:focus {"
-    "border-color: #8fb6c9; "
-    "background-color: #ffffff;}"
-    "QComboBox { padding-right: 24px; }"
-    "QComboBox::drop-down {"
-    "subcontrol-origin: padding; "
-    "subcontrol-position: top right; "
-    "width: 24px; "
-    "border: 0px; "
-    "background: transparent;}"
-)
-_ACTION_BUTTON_STYLESHEET = (
-    "QPushButton {"
-    "background-color: #f7ede8; "
-    "border: 1px solid #ddcfc7; "
-    "border-radius: 8px; "
-    "color: #111827; "
-    "font-weight: 600; "
-    "padding: 4px 10px; "
-    "min-height: 30px;}"
-    "QPushButton:hover { background-color: #f3e5de; border-color: #c9b6ac; }"
-    "QPushButton:pressed { background-color: #ebd7cf; border-color: #b59a8e; }"
-    "QPushButton:disabled { background-color: #faf4f1; border-color: #ede3dd; color: #a8a29e; }"
-)
+_INPUT_CONTROL_STYLESHEET = build_input_control_stylesheet("QComboBox")
 _CARD_STYLESHEET = "QFrame {background-color: #f8eeea; border: 1px solid #eadfd8; border-radius: 10px;}"
 _CARD_TITLE_STYLESHEET = (
     "QLabel {"
-    "background-color: #f3d7ce; "
-    "border: 1px solid #d7b4a7; "
+    "background-color: #EFDCCF; "
+    "border: 1px solid #D3B19E; "
     "border-radius: 8px; "
     "color: #374151; "
     "font-weight: 700; "
@@ -92,27 +67,6 @@ _SECTION_GROUP_STYLESHEET = (
     "background-color: #f7ece7; "
     "border: 1px solid #e3d2c8; "
     "border-radius: 12px;}"
-)
-_CHECKBOX_STYLESHEET = (
-    "QCheckBox {"
-    "color: #111827; "
-    "font-weight: 500; "
-    "spacing: 8px; "
-    "background: transparent;}"
-    "QCheckBox:disabled { color: #9ca3af; }"
-    "QCheckBox::indicator {"
-    "width: 16px; "
-    "height: 16px; "
-    "border-radius: 4px; "
-    "border: 1px solid #d8c8bf; "
-    "background-color: #fffdfb;}"
-    "QCheckBox::indicator:hover { border-color: #c7b2a7; }"
-    "QCheckBox::indicator:checked {"
-    "border-color: #7aa7bd; "
-    "background-color: #8fb6c9;}"
-    "QCheckBox::indicator:disabled {"
-    "border-color: #e9ddd7; "
-    "background-color: #f7efea;}"
 )
 _SUMMARY_LABEL_STYLESHEET = "color: #374151; font-weight: 500;"
 _EMPTY_STATE_STYLESHEET = "color: #6b7280; font-weight: 500;"
@@ -143,7 +97,7 @@ class _ElidedLabel(QLabel):
         available_width = max(0, self.contentsRect().width())
         elided_text = self.fontMetrics().elidedText(self._full_text, Qt.TextElideMode.ElideRight, available_width)
         super().setText(elided_text)
-        self.setToolTip(_format_tooltip(self._full_text) if elided_text != self._full_text else "")
+        self.setToolTip(format_tooltip(self._full_text) if elided_text != self._full_text else "")
 
 
 class _LabelsCardWidget(QFrame):
@@ -326,12 +280,7 @@ class ViewerWidget(QWidget):
     def __init__(self, napari_viewer: napari.Viewer | None = None) -> None:
         super().__init__()
         self.setObjectName("viewer_widget")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setAutoFillBackground(True)
-        palette = self.palette()
-        palette.setColor(QPalette.ColorRole.Window, QColor(_WIDGET_SURFACE_COLOR))
-        self.setPalette(palette)
-        self.setStyleSheet(_WIDGET_SURFACE_STYLESHEET)
+        apply_widget_surface(self)
         self.setMinimumWidth(_WIDGET_MIN_WIDTH)
         self._viewer = napari_viewer
         self._app_state = get_or_create_app_state(napari_viewer)
@@ -352,11 +301,7 @@ class ViewerWidget(QWidget):
 
         self.scroll_content = QWidget()
         self.scroll_content.setObjectName("viewer_widget_scroll_content")
-        self.scroll_content.setAutoFillBackground(True)
-        scroll_palette = self.scroll_content.palette()
-        scroll_palette.setColor(QPalette.ColorRole.Window, QColor(_WIDGET_SURFACE_COLOR))
-        self.scroll_content.setPalette(scroll_palette)
-        self.scroll_content.setStyleSheet(_WIDGET_SURFACE_STYLESHEET)
+        apply_scroll_content_surface(self.scroll_content)
         self.content_layout = QVBoxLayout(self.scroll_content)
         self.content_layout.setContentsMargins(12, 12, 12, 12)
         self.content_layout.setSpacing(10)
@@ -625,14 +570,7 @@ def _clear_layout(layout: QLayout) -> None:
 
 
 def _create_form_label(text: str) -> QLabel:
-    label = QLabel(text)
-    label.setStyleSheet(_FORM_LABEL_STYLESHEET)
-    label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-    return label
-
-
-def _format_tooltip(message: str) -> str:
-    return f"<qt><span style='color: {_TOOLTIP_TEXT_COLOR};'>{escape(message)}</span></qt>"
+    return create_form_label(text)
 
 
 def _get_coordinate_systems_from_sdata(sdata: SpatialData) -> list[str]:

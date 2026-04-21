@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from qtpy.QtCore import QSignalBlocker, Qt
-from qtpy.QtGui import QColor, QPalette, QPixmap
+from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -32,52 +32,32 @@ from napari_harpy._spatialdata import (
     get_table,
     validate_table_binding,
 )
+from napari_harpy.widgets._shared_styles import (
+    ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,
+)
+from napari_harpy.widgets._shared_styles import (
+    CHECKBOX_STYLESHEET as _FEATURE_CHECKBOX_STYLESHEET,
+)
+from napari_harpy.widgets._shared_styles import (
+    WIDGET_MIN_WIDTH as _WIDGET_MIN_WIDTH,
+)
+from napari_harpy.widgets._shared_styles import (
+    WIDGET_SURFACE_COLOR as _WIDGET_SURFACE_COLOR,
+)
+from napari_harpy.widgets._shared_styles import (
+    apply_scroll_content_surface,
+    apply_widget_surface,
+    build_input_control_stylesheet,
+    create_form_label,
+    format_tooltip,
+)
 
 if TYPE_CHECKING:
     import napari
     from spatialdata import SpatialData
 
 
-_WIDGET_SURFACE_COLOR = "#fcf6f3"
-_WIDGET_SURFACE_STYLESHEET = f"background-color: {_WIDGET_SURFACE_COLOR};"
-_TOOLTIP_TEXT_COLOR = "#111827"
-_FORM_LABEL_STYLESHEET = "color: #374151; font-weight: 600; padding-top: 6px;"
-_INPUT_CONTROL_STYLESHEET = (
-    "QComboBox, QLineEdit {"
-    "background-color: #fffdfb; "
-    "border: 1px solid #ddcfc7; "
-    "border-radius: 8px; "
-    "color: #111827; "
-    "padding: 4px 10px; "
-    "min-height: 30px;}"
-    "QComboBox:disabled, QLineEdit:disabled {"
-    "background-color: #f7efea; "
-    "border-color: #e9ddd7; "
-    "color: #9ca3af;}"
-    "QComboBox:focus, QLineEdit:focus {"
-    "border-color: #8fb6c9; "
-    "background-color: #ffffff;}"
-    "QComboBox { padding-right: 24px; }"
-    "QComboBox::drop-down {"
-    "subcontrol-origin: padding; "
-    "subcontrol-position: top right; "
-    "width: 24px; "
-    "border: 0px; "
-    "background: transparent;}"
-)
-_ACTION_BUTTON_STYLESHEET = (
-    "QPushButton {"
-    "background-color: #f7ede8; "
-    "border: 1px solid #ddcfc7; "
-    "border-radius: 8px; "
-    "color: #111827; "
-    "font-weight: 600; "
-    "padding: 4px 10px; "
-    "min-height: 30px;}"
-    "QPushButton:hover { background-color: #f3e5de; border-color: #c9b6ac; }"
-    "QPushButton:pressed { background-color: #ebd7cf; border-color: #b59a8e; }"
-    "QPushButton:disabled { background-color: #faf4f1; border-color: #ede3dd; color: #a8a29e; }"
-)
+_INPUT_CONTROL_STYLESHEET = build_input_control_stylesheet("QComboBox, QLineEdit")
 _FEATURE_GROUP_STYLESHEET = (
     "QGroupBox {"
     "background-color: #f8eeea; "
@@ -92,27 +72,6 @@ _FEATURE_GROUP_STYLESHEET = (
     "left: 12px; "
     f"padding: 0 6px; color: #374151; background-color: {_WIDGET_SURFACE_COLOR};"
     "}"
-)
-_FEATURE_CHECKBOX_STYLESHEET = (
-    "QCheckBox {"
-    "color: #111827; "
-    "font-weight: 500; "
-    "spacing: 8px; "
-    "background: transparent;}"
-    "QCheckBox:disabled { color: #9ca3af; }"
-    "QCheckBox::indicator {"
-    "width: 16px; "
-    "height: 16px; "
-    "border-radius: 4px; "
-    "border: 1px solid #d8c8bf; "
-    "background-color: #fffdfb;}"
-    "QCheckBox::indicator:hover { border-color: #c7b2a7; }"
-    "QCheckBox::indicator:checked {"
-    "border-color: #7aa7bd; "
-    "background-color: #8fb6c9;}"
-    "QCheckBox::indicator:disabled {"
-    "border-color: #e9ddd7; "
-    "background-color: #f7efea;}"
 )
 _FEATURE_HINT_INFO_STYLESHEET = "color: #6b7280; font-size: 12px; font-weight: 500;"
 _FEATURE_HINT_WARNING_STYLESHEET = "color: #b45309; font-size: 12px; font-weight: 600;"
@@ -132,7 +91,6 @@ _MORPHOLOGY_FEATURES = (
     "convex_hull_resid",
     "centroid_dif",
 )
-_WIDGET_MIN_WIDTH = 370
 _DEFAULT_FEATURE_MATRIX_KEY = "features"
 
 
@@ -152,16 +110,13 @@ class FeatureExtractionWidget(QWidget):
     def __init__(self, napari_viewer: napari.Viewer | None = None) -> None:
         super().__init__()
         self.setObjectName("feature_extraction_widget")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setAutoFillBackground(True)
-        palette = self.palette()
-        palette.setColor(QPalette.ColorRole.Window, QColor(_WIDGET_SURFACE_COLOR))
-        self.setPalette(palette)
-        self.setStyleSheet(_WIDGET_SURFACE_STYLESHEET)
+        apply_widget_surface(self)
         self.setMinimumWidth(_WIDGET_MIN_WIDTH)
 
         self._viewer = napari_viewer
         self._app_state = get_or_create_app_state(napari_viewer)
+        # TODO: remove viewer-scanning binding once VW-04 fully derives options
+        # from shared app state (`self._app_state.sdata` / `sdata_changed`).
         self._viewer_binding = SpatialDataViewerBinding(napari_viewer)
         self._feature_extraction_controller = FeatureExtractionController(
             on_state_changed=self._on_controller_state_changed,
@@ -193,11 +148,7 @@ class FeatureExtractionWidget(QWidget):
 
         self.scroll_content = QWidget()
         self.scroll_content.setObjectName("feature_extraction_scroll_content")
-        self.scroll_content.setAutoFillBackground(True)
-        scroll_palette = self.scroll_content.palette()
-        scroll_palette.setColor(QPalette.ColorRole.Window, QColor(_WIDGET_SURFACE_COLOR))
-        self.scroll_content.setPalette(scroll_palette)
-        self.scroll_content.setStyleSheet(_WIDGET_SURFACE_STYLESHEET)
+        apply_scroll_content_surface(self.scroll_content)
 
         content_layout = QVBoxLayout(self.scroll_content)
         content_layout.setContentsMargins(12, 12, 12, 12)
@@ -423,10 +374,7 @@ class FeatureExtractionWidget(QWidget):
         return logo_label
 
     def _create_form_label(self, text: str) -> QLabel:
-        label = QLabel(text)
-        label.setStyleSheet(_FORM_LABEL_STYLESHEET)
-        label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        return label
+        return create_form_label(text)
 
     def _create_feature_group(self, title: str, feature_names: tuple[str, ...], *, object_name: str) -> QGroupBox:
         group = QGroupBox(title)
@@ -451,7 +399,7 @@ class FeatureExtractionWidget(QWidget):
         return group
 
     def _set_tooltip(self, widget: QWidget, message: str) -> None:
-        widget.setToolTip(f"<qt><span style='color: {_TOOLTIP_TEXT_COLOR};'>{escape(message)}</span></qt>")
+        widget.setToolTip(format_tooltip(message))
 
     def _connect_viewer_events(self) -> None:
         layers = getattr(self._viewer, "layers", None)
