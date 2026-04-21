@@ -654,6 +654,11 @@ class ViewerWidget(QWidget):
             return
 
         mode = request.mode
+        if mode == "overlay" and not request.channels:
+            self._app_state.viewer_adapter.remove_image_layers(sdata, image_name, coordinate_system)
+            self._set_action_feedback("Overlay mode requires at least one selected channel.", is_error=True)
+            return
+
         try:
             layer_or_layers = self._app_state.viewer_adapter.ensure_image_loaded(
                 sdata,

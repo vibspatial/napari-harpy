@@ -275,6 +275,15 @@ class ViewerAdapter:
         )
         return layer
 
+    def remove_labels_layer(self, sdata: SpatialData, label_name: str, coordinate_system: str) -> Labels | None:
+        """Remove the loaded labels layer for one labels element in one coordinate system."""
+        layer = self._get_loaded_labels_layer_for_coordinate_system(sdata, label_name, coordinate_system)
+        if layer is None:
+            return None
+
+        self._remove_layer_from_viewer_and_registry(layer)
+        return layer
+
     def ensure_image_loaded(
         self,
         sdata: SpatialData,
@@ -418,6 +427,22 @@ class ViewerAdapter:
                 matches.append(layer)
 
         return matches
+
+    def remove_image_layers(self, sdata: SpatialData, image_name: str, coordinate_system: str) -> list[Image]:
+        """Remove loaded stack and overlay layers for one image in one coordinate system."""
+        removed_layers: list[Image] = []
+        for image_display_mode in ("stack", "overlay"):
+            layers = self._get_loaded_image_layer_for_coordinate_system(
+                sdata,
+                image_name,
+                coordinate_system,
+                image_display_mode=image_display_mode,
+            )
+            for layer in layers:
+                self._remove_layer_from_viewer_and_registry(layer)
+                removed_layers.append(layer)
+
+        return removed_layers
 
     def _iter_candidate_layers(self) -> Iterable[Layer]:
         layers = getattr(self._viewer, "layers", None)

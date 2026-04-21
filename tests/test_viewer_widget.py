@@ -420,6 +420,30 @@ def test_viewer_widget_add_update_image_overlay_loads_reuses_and_replaces_layers
     assert viewer.layers[0].name == "blobs_image[2]"
 
 
+def test_viewer_widget_empty_overlay_selection_removes_existing_image_layers(qtbot, sdata_blobs) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata_blobs)
+
+    image_card = widget.image_cards[0]
+
+    image_card.add_update_button.click()
+
+    assert len(viewer.layers) == 1
+    assert viewer.layers[0].name == "blobs_image"
+
+    image_card.overlay_toggle.setChecked(True)
+    image_card.add_update_button.click()
+
+    assert list(viewer.layers) == []
+    assert "Overlay mode requires at least one selected channel." in widget.action_feedback_label.text()
+    assert not widget.action_feedback_label.isHidden()
+
+
 def test_viewer_widget_add_update_image_uses_selected_coordinate_system(qtbot, monkeypatch) -> None:
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)

@@ -190,6 +190,26 @@ def test_viewer_adapter_ignores_unregistered_labels_layer_even_with_legacy_metad
     assert adapter.layer_bindings.get_binding(labels_layer) is None
 
 
+def test_viewer_adapter_remove_labels_layer_removes_matching_binding(sdata_blobs) -> None:
+    labels_layer = make_labels_layer(sdata=sdata_blobs)
+    viewer = DummyViewer([labels_layer])
+    adapter = ViewerAdapter(viewer)
+
+    adapter.register_layer(
+        labels_layer,
+        sdata=sdata_blobs,
+        element_name="blobs_labels",
+        element_type="labels",
+        coordinate_system="global",
+    )
+
+    removed_layer = adapter.remove_labels_layer(sdata_blobs, "blobs_labels", "global")
+
+    assert removed_layer is labels_layer
+    assert list(viewer.layers) == []
+    assert adapter.layer_bindings.get_binding(labels_layer) is None
+
+
 def test_viewer_adapter_returns_registered_image_layers_in_viewer_order(sdata_blobs) -> None:
     first_layer = make_image_layer(name="channel_0")
     second_layer = make_image_layer(name="channel_1")
@@ -212,6 +232,39 @@ def test_viewer_adapter_returns_registered_image_layers_in_viewer_order(sdata_bl
     )
 
     assert adapter.get_loaded_image_layers(sdata_blobs, "blobs_image") == [second_layer, first_layer]
+
+
+def test_viewer_adapter_remove_image_layers_removes_stack_and_overlay_bindings(sdata_blobs) -> None:
+    stack_layer = make_image_layer(name="blobs_image")
+    overlay_layer = make_image_layer(name="blobs_image[0]")
+    viewer = DummyViewer([stack_layer, overlay_layer])
+    adapter = ViewerAdapter(viewer)
+
+    adapter.register_layer(
+        stack_layer,
+        sdata=sdata_blobs,
+        element_name="blobs_image",
+        element_type="image",
+        coordinate_system="global",
+        image_display_mode="stack",
+    )
+    adapter.register_layer(
+        overlay_layer,
+        sdata=sdata_blobs,
+        element_name="blobs_image",
+        element_type="image",
+        coordinate_system="global",
+        image_display_mode="overlay",
+        channel_index=0,
+        channel_name="0",
+    )
+
+    removed_layers = adapter.remove_image_layers(sdata_blobs, "blobs_image", "global")
+
+    assert removed_layers == [stack_layer, overlay_layer]
+    assert list(viewer.layers) == []
+    assert adapter.layer_bindings.get_binding(stack_layer) is None
+    assert adapter.layer_bindings.get_binding(overlay_layer) is None
 
 
 def test_viewer_adapter_ignores_unregistered_image_layer_even_with_legacy_metadata(sdata_blobs) -> None:
