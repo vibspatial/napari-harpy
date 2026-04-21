@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from functools import partial
+from html import escape
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -37,6 +38,7 @@ if TYPE_CHECKING:
 _WIDGET_SURFACE_COLOR = "#fcf6f3"
 _WIDGET_SURFACE_STYLESHEET = f"background-color: {_WIDGET_SURFACE_COLOR};"
 _WIDGET_MIN_WIDTH = 370
+_TOOLTIP_TEXT_COLOR = "#111827"
 _FORM_LABEL_STYLESHEET = "color: #374151; font-weight: 600; padding-top: 6px;"
 _INPUT_CONTROL_STYLESHEET = (
     "QComboBox {"
@@ -128,7 +130,7 @@ class _ElidedLabel(QLabel):
     def __init__(self, text: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._full_text = text
-        self.setToolTip(text)
+        self.setToolTip(_format_tooltip(text))
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.setMinimumWidth(0)
         self.setMinimumHeight(36)
@@ -137,7 +139,7 @@ class _ElidedLabel(QLabel):
 
     def set_full_text(self, text: str) -> None:
         self._full_text = text
-        self.setToolTip(text)
+        self.setToolTip(_format_tooltip(text))
         self._update_elided_text()
 
     def resizeEvent(self, event: object) -> None:
@@ -633,6 +635,10 @@ def _create_form_label(text: str) -> QLabel:
     label.setStyleSheet(_FORM_LABEL_STYLESHEET)
     label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
     return label
+
+
+def _format_tooltip(message: str) -> str:
+    return f"<qt><span style='color: {_TOOLTIP_TEXT_COLOR};'>{escape(message)}</span></qt>"
 
 
 def _get_coordinate_systems_from_sdata(sdata: SpatialData) -> list[str]:
