@@ -7,6 +7,7 @@ from napari.layers import Labels
 from qtpy.QtWidgets import QCheckBox, QScrollArea
 from spatialdata import SpatialData
 
+from napari_harpy._app_state import get_or_create_app_state
 from napari_harpy.widgets._feature_extraction_widget import FeatureExtractionWidget
 
 
@@ -38,6 +39,12 @@ class DummyViewer:
         self.layers = DummyLayers(layers)
 
 
+def make_viewer_with_shared_sdata(sdata: SpatialData) -> DummyViewer:
+    viewer = DummyViewer()
+    get_or_create_app_state(viewer).set_sdata(sdata)
+    return viewer
+
+
 def make_blobs_labels_layer(sdata: SpatialData, label_name: str = "blobs_labels") -> Labels:
     return Labels(
         sdata.labels[label_name],
@@ -66,13 +73,52 @@ def test_feature_extraction_widget_can_be_instantiated(qtbot) -> None:
     assert widget.table_combo.count() == 0
     assert widget.coordinate_system_combo.count() == 0
     assert widget.calculate_button.isEnabled() is False
+    assert "No SpatialData Loaded" in widget.selection_status.text()
+    assert widget.refresh_button.isEnabled() is False
+
+
+def test_feature_extraction_widget_seeds_from_shared_sdata_on_construction(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    assert widget.refresh_button.isEnabled() is True
+    assert widget.segmentation_combo.count() == 2
+    assert widget.selected_segmentation_name == "blobs_labels"
+    assert widget.selected_spatialdata is sdata_blobs
+
+
+def test_feature_extraction_widget_refreshes_when_shared_sdata_changes(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    assert widget.segmentation_combo.count() == 0
+    assert "No SpatialData Loaded" in widget.selection_status.text()
+
+    app_state.set_sdata(sdata_blobs)
+
+    assert widget.refresh_button.isEnabled() is True
+    assert widget.segmentation_combo.count() == 2
+    assert widget.selected_segmentation_name == "blobs_labels"
+    assert widget.selected_spatialdata is sdata_blobs
 
 
 def test_feature_extraction_widget_populates_selector_flow_from_spatialdata(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
-    viewer = DummyViewer([make_blobs_labels_layer(sdata_blobs)])
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
     widget = FeatureExtractionWidget(viewer)
 
     qtbot.addWidget(widget)
@@ -108,7 +154,7 @@ def test_feature_extraction_widget_blocks_when_selected_segmentation_has_no_link
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
-    viewer = DummyViewer([make_blobs_labels_layer(sdata_blobs)])
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
     widget = FeatureExtractionWidget(viewer)
 
     qtbot.addWidget(widget)
@@ -165,7 +211,7 @@ def test_feature_extraction_widget_hides_intensity_warning_when_image_is_selecte
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
-    viewer = DummyViewer([make_blobs_labels_layer(sdata_blobs)])
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
     widget = FeatureExtractionWidget(viewer)
 
     qtbot.addWidget(widget)
@@ -180,7 +226,7 @@ def test_feature_extraction_widget_rebinds_controller_when_inputs_change(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
-    viewer = DummyViewer([make_blobs_labels_layer(sdata_blobs)])
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
     widget = FeatureExtractionWidget(viewer)
 
     qtbot.addWidget(widget)
@@ -214,7 +260,7 @@ def test_feature_extraction_widget_enables_calculate_button_for_runnable_selecti
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
-    viewer = DummyViewer([make_blobs_labels_layer(sdata_blobs)])
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
     widget = FeatureExtractionWidget(viewer)
 
     qtbot.addWidget(widget)
@@ -232,7 +278,7 @@ def test_feature_extraction_widget_keeps_calculate_disabled_for_intensity_featur
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
-    viewer = DummyViewer([make_blobs_labels_layer(sdata_blobs)])
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
     widget = FeatureExtractionWidget(viewer)
 
     qtbot.addWidget(widget)
@@ -248,7 +294,7 @@ def test_feature_extraction_widget_blocks_when_no_coordinate_system_is_selected(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
-    viewer = DummyViewer([make_blobs_labels_layer(sdata_blobs)])
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
     widget = FeatureExtractionWidget(viewer)
 
     qtbot.addWidget(widget)
@@ -268,7 +314,7 @@ def test_feature_extraction_widget_calculate_button_click_launches_controller(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
-    viewer = DummyViewer([make_blobs_labels_layer(sdata_blobs)])
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
     widget = FeatureExtractionWidget(viewer)
 
     qtbot.addWidget(widget)
@@ -292,7 +338,7 @@ def test_feature_extraction_widget_calculate_without_existing_key_uses_non_overw
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
-    viewer = DummyViewer([make_blobs_labels_layer(sdata_blobs)])
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
     widget = FeatureExtractionWidget(viewer)
 
     qtbot.addWidget(widget)
@@ -316,7 +362,7 @@ def test_feature_extraction_widget_prompts_before_overwriting_existing_feature_k
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
-    viewer = DummyViewer([make_blobs_labels_layer(sdata_blobs)])
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
     widget = FeatureExtractionWidget(viewer)
 
     qtbot.addWidget(widget)
@@ -348,7 +394,7 @@ def test_feature_extraction_widget_cancelled_overwrite_does_not_launch_calculati
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
-    viewer = DummyViewer([make_blobs_labels_layer(sdata_blobs)])
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
     widget = FeatureExtractionWidget(viewer)
 
     qtbot.addWidget(widget)
@@ -378,7 +424,7 @@ def test_feature_extraction_widget_refreshes_table_state_after_controller_succes
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
-    viewer = DummyViewer([make_blobs_labels_layer(sdata_blobs)])
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
     widget = FeatureExtractionWidget(viewer)
 
     qtbot.addWidget(widget)
@@ -402,3 +448,37 @@ def test_feature_extraction_widget_refreshes_table_state_after_controller_succes
     widget._on_controller_table_state_changed()
 
     assert calls == ["refresh_table_names", "bind_current_selection"]
+
+
+def test_feature_extraction_widget_clears_when_shared_sdata_is_cleared(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+    app_state = get_or_create_app_state(viewer)
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    assert widget.segmentation_combo.count() == 2
+    assert widget.refresh_button.isEnabled() is True
+
+    app_state.clear_sdata()
+
+    assert widget.selected_segmentation_name is None
+    assert widget.selected_spatialdata is None
+    assert widget.selected_image_name is None
+    assert widget.selected_table_name is None
+    assert widget.selected_coordinate_system is None
+    assert widget.segmentation_combo.count() == 0
+    assert widget.segmentation_combo.isEnabled() is False
+    assert widget.image_combo.count() == 1
+    assert widget.image_combo.itemText(0) == "No image"
+    assert widget.image_combo.isEnabled() is False
+    assert widget.table_combo.count() == 0
+    assert widget.table_combo.isEnabled() is False
+    assert widget.coordinate_system_combo.count() == 0
+    assert widget.coordinate_system_combo.isEnabled() is False
+    assert widget.calculate_button.isEnabled() is False
+    assert "No SpatialData Loaded" in widget.selection_status.text()
+    assert widget.refresh_button.isEnabled() is False

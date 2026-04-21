@@ -354,6 +354,56 @@ def get_spatialdata_image_options(
     )
 
 
+def get_spatialdata_label_options_from_sdata(sdata: SpatialData) -> list[SpatialDataLabelsOption]:
+    """Return selectable labels elements directly from a loaded SpatialData object."""
+    return [
+        SpatialDataLabelsOption(
+            label_name=label_name,
+            display_name=label_name,
+            sdata=sdata,
+            coordinate_systems=_get_element_coordinate_systems(sdata.labels[label_name]),
+        )
+        for label_name in _get_label_names(sdata)
+    ]
+
+
+def get_spatialdata_image_options_from_sdata(
+    *,
+    sdata: SpatialData,
+    label_name: str,
+) -> list[SpatialDataImageOption]:
+    """Return selectable image elements directly from a loaded SpatialData object.
+
+    Returned images are restricted to coordinate systems shared with the
+    selected labels element.
+    """
+    if label_name not in _get_label_names(sdata):
+        raise ValueError(f"Labels element `{label_name}` is not available in the selected SpatialData object.")
+
+    label_coordinate_systems = set(_get_element_coordinate_systems(sdata.labels[label_name]))
+    options: list[SpatialDataImageOption] = []
+
+    for image_name in _get_image_names(sdata):
+        coordinate_systems = tuple(
+            coordinate_system
+            for coordinate_system in _get_element_coordinate_systems(sdata.images[image_name])
+            if coordinate_system in label_coordinate_systems
+        )
+        if not coordinate_systems:
+            continue
+
+        options.append(
+            SpatialDataImageOption(
+                image_name=image_name,
+                display_name=image_name,
+                sdata=sdata,
+                coordinate_systems=coordinate_systems,
+            )
+        )
+
+    return options
+
+
 def _get_spatialdata_label_options_from_viewer(viewer: Any | None) -> list[SpatialDataLabelsOption]:
     sdatas = _get_viewer_linked_spatialdata_objects(viewer)
     if not sdatas:

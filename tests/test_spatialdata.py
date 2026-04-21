@@ -14,6 +14,8 @@ from napari_harpy._spatialdata import (
     SpatialDataViewerBinding,
     get_annotating_table_names,
     get_spatialdata_image_options,
+    get_spatialdata_image_options_from_sdata,
+    get_spatialdata_label_options_from_sdata,
     get_table,
     get_table_metadata,
     get_table_obsm_keys,
@@ -202,6 +204,47 @@ def test_get_spatialdata_image_options_filter_to_selected_dataset_and_shared_coo
     assert [option.image_name for option in options] == ["blobs_image"]
     assert options[0].sdata is sdata_blobs
     assert options[0].coordinate_systems == ("aligned", "global")
+
+
+def test_get_spatialdata_label_options_from_sdata_returns_all_labels(sdata_blobs: SpatialData) -> None:
+    options = get_spatialdata_label_options_from_sdata(sdata_blobs)
+
+    assert [option.label_name for option in options] == [
+        "blobs_labels",
+        "blobs_multiscale_labels",
+    ]
+    assert [option.display_name for option in options] == [
+        "blobs_labels",
+        "blobs_multiscale_labels",
+    ]
+    assert [option.coordinate_systems for option in options] == [
+        ("global",),
+        ("global",),
+    ]
+    assert all(option.sdata is sdata_blobs for option in options)
+
+
+def test_get_spatialdata_image_options_from_sdata_returns_compatible_images_for_selected_label(
+    sdata_blobs: SpatialData,
+) -> None:
+    options = get_spatialdata_image_options_from_sdata(
+        sdata=sdata_blobs,
+        label_name="blobs_labels",
+    )
+
+    assert [option.image_name for option in options] == [
+        "blobs_image",
+        "blobs_multiscale_image",
+    ]
+    assert [option.display_name for option in options] == [
+        "blobs_image",
+        "blobs_multiscale_image",
+    ]
+    assert [option.coordinate_systems for option in options] == [
+        ("global",),
+        ("global",),
+    ]
+    assert all(option.sdata is sdata_blobs for option in options)
 
 
 def test_spatialdata_viewer_binding_builds_layer_metadata_adata_from_selected_table(sdata_blobs: SpatialData) -> None:

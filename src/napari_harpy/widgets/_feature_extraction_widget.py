@@ -27,8 +27,9 @@ from napari_harpy._feature_extraction import FeatureExtractionController
 from napari_harpy._spatialdata import (
     SpatialDataImageOption,
     SpatialDataLabelsOption,
-    SpatialDataViewerBinding,
     get_annotating_table_names,
+    get_spatialdata_image_options_from_sdata,
+    get_spatialdata_label_options_from_sdata,
     get_table,
     validate_table_binding,
 )
@@ -98,10 +99,10 @@ class FeatureExtractionWidget(QWidget):
     """
     Widget for feature extraction.
 
-    The widget discovers selectable labels and images from viewer-linked
-    `SpatialData` objects and keeps the selection flow dataset-centric:
+    The widget discovers selectable labels and images from the shared loaded
+    `SpatialData` object and keeps the selection flow dataset-centric:
 
-    - labels come from viewer-linked `sdata.labels`
+    - labels come from the loaded `sdata.labels`
     - images come from the selected dataset's `sdata.images`
     - tables are restricted to annotators of the selected labels element
     - coordinate systems come from the selected labels/image context
@@ -115,9 +116,6 @@ class FeatureExtractionWidget(QWidget):
 
         self._viewer = napari_viewer
         self._app_state = get_or_create_app_state(napari_viewer)
-        # TODO: remove viewer-scanning binding once VW-04 fully derives options
-        # from shared app state (`self._app_state.sdata` / `sdata_changed`).
-        self._viewer_binding = SpatialDataViewerBinding(napari_viewer)
         self._feature_extraction_controller = FeatureExtractionController(
             on_state_changed=self._on_controller_state_changed,
             on_table_state_changed=self._on_controller_table_state_changed,
@@ -227,8 +225,8 @@ class FeatureExtractionWidget(QWidget):
         calculate_action_layout.setSpacing(8)
 
         self.refresh_button = QPushButton("Rescan Viewer")
-        self.refresh_button.clicked.connect(self.refresh_segmentation_masks)
-        self.refresh_button.setEnabled(napari_viewer is not None)
+        self.refresh_button.clicked.connect(self._refresh_from_current_app_state)
+        self.refresh_button.setEnabled(False)
         self.refresh_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_button.setMinimumHeight(28)
         self.refresh_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
@@ -282,8 +280,9 @@ class FeatureExtractionWidget(QWidget):
         content_layout.addStretch(1)
 
         self._connect_viewer_events()
+        self._app_state.sdata_changed.connect(self._on_sdata_changed)
         self._update_intensity_features_hint()
-        self.refresh_segmentation_masks()
+        self.refresh_from_sdata(self._app_state.sdata)
 
     @property
     def app_state(self) -> HarpyAppState:
@@ -297,8 +296,8 @@ class FeatureExtractionWidget(QWidget):
 
     @property
     def selected_spatialdata(self) -> SpatialData | None:
-        """Return the SpatialData object that owns the current labels selection."""
-        return None if self._selected_label_option is None else self._selected_label_option.sdata
+        """Return the loaded SpatialData object backing the current widget state."""
+        return self._app_state.sdata
 
     @property
     def selected_image_name(self) -> str | None:
@@ -333,9 +332,14 @@ class FeatureExtractionWidget(QWidget):
         return False
 
     def refresh_segmentation_masks(self) -> None:
-        """Refresh the segmentation choices from viewer-linked SpatialData layers."""
+        """Refresh the segmentation choices from the loaded SpatialData object."""
+        if self._app_state.sdata is None:
+            self._clear_selection_inputs()
+            self._bind_current_selection()
+            return
+
         previous_identity = None if self._selected_label_option is None else self._selected_label_option.identity
-        self._label_options = self._viewer_binding.get_label_options()
+        self._label_options = get_spatialdata_label_options_from_sdata(self._app_state.sdata)
 
         with QSignalBlocker(self.segmentation_combo):
             self.segmentation_combo.clear()
@@ -359,6 +363,57 @@ class FeatureExtractionWidget(QWidget):
             self._refresh_table_names()
             self._refresh_coordinate_systems()
             self._bind_current_selection()
+
+    def refresh_from_sdata(self, sdata: SpatialData | None) -> None:
+        """Refresh the widget from the shared Harpy SpatialData state."""
+        self._update_refresh_button_state(sdata)
+        if sdata is None:
+            self._clear_selection_inputs()
+            self._bind_current_selection()
+            return
+
+        self.refresh_segmentation_masks()
+
+    def _on_sdata_changed(self, sdata: SpatialData | None) -> None:
+        self.refresh_from_sdata(sdata)
+
+    def _refresh_from_current_app_state(self) -> None:
+        self.refresh_from_sdata(self._app_state.sdata)
+
+    def _update_refresh_button_state(self, sdata: SpatialData | None) -> None:
+        self.refresh_button.setEnabled(self._viewer is not None and sdata is not None)
+
+    def _clear_selection_inputs(self) -> None:
+        self._label_options = []
+        self._selected_label_option = None
+        self._image_options = []
+        self._selected_image_option = None
+        self._table_names = []
+        self._selected_table_name = None
+        self._coordinate_systems = []
+        self._selected_coordinate_system = None
+        self._table_binding_error = None
+
+        with QSignalBlocker(self.segmentation_combo):
+            self.segmentation_combo.clear()
+            self.segmentation_combo.setEnabled(False)
+            self.segmentation_combo.setCurrentIndex(-1)
+
+        with QSignalBlocker(self.image_combo):
+            self.image_combo.clear()
+            self.image_combo.addItem(_NO_IMAGE_TEXT, None)
+            self.image_combo.setEnabled(False)
+            self.image_combo.setCurrentIndex(0)
+
+        with QSignalBlocker(self.table_combo):
+            self.table_combo.clear()
+            self.table_combo.setEnabled(False)
+            self.table_combo.setCurrentIndex(-1)
+
+        with QSignalBlocker(self.coordinate_system_combo):
+            self.coordinate_system_combo.clear()
+            self.coordinate_system_combo.setEnabled(False)
+            self.coordinate_system_combo.setCurrentIndex(-1)
 
     def _create_header_logo(self) -> QLabel:
         logo_label = QLabel()
@@ -414,7 +469,7 @@ class FeatureExtractionWidget(QWidget):
 
     def _on_viewer_layers_changed(self, event: object | None = None) -> None:
         del event
-        self.refresh_segmentation_masks()
+        self.refresh_from_sdata(self._app_state.sdata)
 
     def _on_segmentation_changed(self, index: int) -> None:
         self._set_selected_label_option(index)
@@ -446,9 +501,9 @@ class FeatureExtractionWidget(QWidget):
         if self.selected_spatialdata is None or self.selected_segmentation_name is None:
             self._image_options = []
         else:
-            self._image_options = self._viewer_binding.get_image_options(
-                self.selected_spatialdata,
-                self.selected_segmentation_name,
+            self._image_options = get_spatialdata_image_options_from_sdata(
+                sdata=self.selected_spatialdata,
+                label_name=self.selected_segmentation_name,
             )
 
         with QSignalBlocker(self.image_combo):
@@ -738,10 +793,20 @@ class FeatureExtractionWidget(QWidget):
         self.validation_status.setVisible(message is not None)
 
     def _update_primary_status_card(self) -> None:
+        if self._app_state.sdata is None:
+            self._set_selection_status(
+                "No SpatialData Loaded",
+                [
+                    "Load a SpatialData object through the Harpy Viewer widget, reader, or `Interactive(sdata)`.",
+                ],
+                kind="warning",
+            )
+            return
+
         if self.selected_spatialdata is None or self.selected_segmentation_name is None:
             self._set_selection_status(
                 "Selection Needed",
-                ["Choose a segmentation linked from the current viewer."],
+                ["Choose a segmentation from the loaded SpatialData."],
                 kind="warning",
             )
             return
