@@ -267,7 +267,7 @@ viewer adapter.
 ### Acceptance criteria
 
 - [x] the new `Viewer` dock widget is available in napari
-- [ ] the widget can open a `SpatialData` store
+- [x] the widget can open a `SpatialData` store
 - [x] changing the loaded `sdata` updates the viewer widget through
   `sdata_changed`
 - [x] the widget lists coordinate systems from the loaded `sdata`

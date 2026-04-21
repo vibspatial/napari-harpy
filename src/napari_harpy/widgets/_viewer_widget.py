@@ -109,6 +109,16 @@ class _ElidedLabel(QLabel):
         self.setToolTip(format_tooltip(self._full_text) if elided_text != self._full_text else "")
 
 
+def _format_feedback_identifier(name: str, *, max_length: int = 56) -> tuple[str, bool]:
+    """Return a visible feedback name and whether it was shortened."""
+    if len(name) <= max_length:
+        return name, False
+
+    head_length = 32
+    tail_length = max_length - head_length - 1
+    return f"{name[:head_length]}…{name[-tail_length:]}", True
+
+
 class _LabelsCardWidget(QFrame):
     """Card UI for one labels element in the selected coordinate system."""
 
@@ -588,9 +598,15 @@ class ViewerWidget(QWidget):
             return
 
         self._app_state.viewer_adapter.activate_layer(layer)
+        display_name, was_shortened = _format_feedback_identifier(label_name)
         self._set_action_feedback(
-            f"Loaded segmentation `{label_name}` in coordinate system `{coordinate_system}`.",
+            f"Loaded segmentation `{display_name}` in coordinate system `{coordinate_system}`.",
             is_error=False,
+            tooltip_message=(
+                f"Loaded segmentation `{label_name}` in coordinate system `{coordinate_system}`."
+                if was_shortened
+                else None
+            ),
         )
 
     def _add_or_update_image_layer(self, request: ImageLoadRequest) -> None:
@@ -625,9 +641,15 @@ class ViewerWidget(QWidget):
                 return
 
             self._app_state.viewer_adapter.activate_layer(layer_or_layers)
+            display_name, was_shortened = _format_feedback_identifier(image_name)
             self._set_action_feedback(
-                f"Loaded image `{image_name}` in stack mode for coordinate system `{coordinate_system}`.",
+                f"Loaded image `{display_name}` in stack mode for coordinate system `{coordinate_system}`.",
                 is_error=False,
+                tooltip_message=(
+                    f"Loaded image `{image_name}` in stack mode for coordinate system `{coordinate_system}`."
+                    if was_shortened
+                    else None
+                ),
             )
             return
 
@@ -642,10 +664,17 @@ class ViewerWidget(QWidget):
             return
 
         self._app_state.viewer_adapter.activate_layer(layer_or_layers[0])
+        display_name, was_shortened = _format_feedback_identifier(image_name)
         self._set_action_feedback(
-            f"Loaded image `{image_name}` in overlay mode for channels {request.channels} "
+            f"Loaded image `{display_name}` in overlay mode for channels {request.channels} "
             f"in coordinate system `{coordinate_system}`.",
             is_error=False,
+            tooltip_message=(
+                f"Loaded image `{image_name}` in overlay mode for channels {request.channels} "
+                f"in coordinate system `{coordinate_system}`."
+                if was_shortened
+                else None
+            ),
         )
 
     def _update_section_empty_states(self, image_names: list[str], label_names: list[str]) -> None:
@@ -660,15 +689,17 @@ class ViewerWidget(QWidget):
         self._image_cards = []
         self._labels_cards = []
 
-    def _set_action_feedback(self, message: str, *, is_error: bool) -> None:
+    def _set_action_feedback(self, message: str, *, is_error: bool, tooltip_message: str | None = None) -> None:
         self.action_feedback_label.setText(message)
         self.action_feedback_label.setStyleSheet(
             "color: #b91c1c; font-weight: 600;" if is_error else "color: #166534; font-weight: 600;"
         )
+        self.action_feedback_label.setToolTip(format_tooltip(tooltip_message) if tooltip_message else "")
         self.action_feedback_label.show()
 
     def _clear_action_feedback(self) -> None:
         self.action_feedback_label.clear()
+        self.action_feedback_label.setToolTip("")
         self.action_feedback_label.hide()
 
     def _create_header_logo(self) -> QLabel:
