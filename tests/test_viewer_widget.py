@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from html import unescape
 from types import SimpleNamespace
 
 from qtpy.QtCore import Qt
@@ -83,7 +84,8 @@ def test_elided_label_only_shows_tooltip_when_text_is_truncated(qtbot, monkeypat
     monkeypatch.setattr(label, "contentsRect", lambda: _FakeRect(10))
     label._update_elided_text()
 
-    assert "blobs_multiscale_image" in label.toolTip()
+    tooltip = unescape(label.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    assert "blobs_multiscale_image" in tooltip
     assert "..." in label.text() or "\u2026" in label.text()
 
 

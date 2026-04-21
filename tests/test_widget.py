@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from html import unescape
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -642,11 +643,13 @@ def test_widget_enables_sync_for_backed_spatialdata(qtbot, backed_sdata_blobs: S
     widget = HarpyWidget(viewer)
     qtbot.addWidget(widget)
     expected_table_path = Path(backed_sdata_blobs.path) / "tables" / "table"
+    sync_tooltip = unescape(widget.sync_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    reload_tooltip = unescape(widget.reload_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
 
     assert widget.sync_button.isEnabled()
     assert widget.reload_button.isEnabled()
-    assert f"Write `table` table state to `{expected_table_path}`." in widget.sync_button.toolTip()
-    assert f"Reload `table` table state from `{expected_table_path}`." in widget.reload_button.toolTip()
+    assert f"Write `table` table state to `{expected_table_path}`." in sync_tooltip
+    assert f"Reload `table` table state from `{expected_table_path}`." in reload_tooltip
 
 
 def test_widget_marks_persistence_dirty_on_annotation_change_and_clears_it_on_sync(
