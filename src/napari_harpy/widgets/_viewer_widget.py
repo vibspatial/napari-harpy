@@ -72,6 +72,7 @@ _SECTION_GROUP_STYLESHEET = (
 _SUMMARY_LABEL_STYLESHEET = "color: #374151; font-weight: 500;"
 _EMPTY_STATE_STYLESHEET = "color: #6b7280; font-weight: 500;"
 _CHANNEL_PANEL_STYLESHEET = "QWidget { background: transparent; }"
+_MAX_VISIBLE_OVERLAY_CHANNELS = 5
 
 
 @dataclass(frozen=True)
@@ -225,8 +226,26 @@ class _ImageCardWidget(QFrame):
         channel_layout.setContentsMargins(0, 0, 0, 0)
         channel_layout.setSpacing(6)
 
+        self.channel_scroll_area = QScrollArea()
+        self.channel_scroll_area.setObjectName(f"viewer_widget_channel_scroll_area_{image_name}")
+        self.channel_scroll_area.setWidgetResizable(True)
+        self.channel_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.channel_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.channel_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.channel_scroll_area.setStyleSheet("QScrollArea { border: 0px; background: transparent; }")
+
+        self.channel_list_widget = QWidget()
+        self.channel_list_widget.setObjectName(f"viewer_widget_channel_list_{image_name}")
+        self.channel_list_widget.setStyleSheet(_CHANNEL_PANEL_STYLESHEET)
+        self.channel_list_layout = QVBoxLayout(self.channel_list_widget)
+        self.channel_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.channel_list_layout.setSpacing(6)
+        self.channel_scroll_area.setWidget(self.channel_list_widget)
+        channel_layout.addWidget(self.channel_scroll_area)
+
         self.channel_checkboxes: list[QCheckBox] = []
         self.channel_color_combos: list[QComboBox] = []
+        channel_rows: list[QWidget] = []
 
         if channel_names:
             for index, channel_name in enumerate(channel_names):
@@ -249,15 +268,19 @@ class _ImageCardWidget(QFrame):
                 row_layout.addWidget(checkbox, 1)
                 row_layout.addWidget(color_combo)
 
-                channel_layout.addWidget(row)
+                self.channel_list_layout.addWidget(row)
                 self.channel_checkboxes.append(checkbox)
                 self.channel_color_combos.append(color_combo)
+                channel_rows.append(row)
         else:
             no_channels_label = QLabel("No channel axis available for this image.")
             no_channels_label.setObjectName(f"viewer_widget_no_channels_label_{image_name}")
             no_channels_label.setWordWrap(True)
             no_channels_label.setStyleSheet(_EMPTY_STATE_STYLESHEET)
-            channel_layout.addWidget(no_channels_label)
+            self.channel_list_layout.addWidget(no_channels_label)
+            channel_rows.append(no_channels_label)
+
+        self._set_channel_scroll_height(channel_rows)
 
         self.add_update_button = QPushButton("Add / Update in viewer")
         self.add_update_button.setObjectName(f"viewer_widget_add_update_image_button_{image_name}")
@@ -323,6 +346,18 @@ class _ImageCardWidget(QFrame):
                 channel_colors=self.get_selected_overlay_colors(),
             )
         )
+
+    def _set_channel_scroll_height(self, channel_rows: list[QWidget]) -> None:
+        visible_rows = channel_rows[:_MAX_VISIBLE_OVERLAY_CHANNELS]
+        if not visible_rows:
+            return
+
+        visible_height = sum(row.sizeHint().height() for row in visible_rows)
+        visible_height += self.channel_list_layout.spacing() * max(0, len(visible_rows) - 1)
+        margins = self.channel_list_layout.contentsMargins()
+        visible_height += margins.top() + margins.bottom()
+        visible_height += self.channel_scroll_area.frameWidth() * 2
+        self.channel_scroll_area.setMaximumHeight(visible_height)
 
 
 class ViewerWidget(QWidget):

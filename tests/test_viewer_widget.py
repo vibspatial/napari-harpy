@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from types import SimpleNamespace
 
+from qtpy.QtCore import Qt
+
 import napari_harpy.widgets._viewer_widget as viewer_widget_module
 from napari_harpy.widgets._viewer_widget import ViewerWidget
 
@@ -143,6 +145,30 @@ def test_viewer_widget_image_mode_toggles_are_mutually_exclusive(qtbot, sdata_bl
     assert not image_card.overlay_toggle.isChecked()
     assert image_card.channel_panel.isHidden()
     assert image_card.add_update_button.isEnabled()
+
+
+def test_viewer_widget_overlay_channel_panel_scrolls_when_many_channels(qtbot, monkeypatch) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    fake_sdata = object()
+    many_channels = [f"c{i}" for i in range(12)]
+
+    qtbot.addWidget(widget)
+
+    monkeypatch.setattr(viewer_widget_module, "_get_coordinate_systems_from_sdata", lambda sdata: ["global"])
+    monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: ["image"])
+    monkeypatch.setattr(viewer_widget_module, "_get_image_channel_names", lambda sdata, image_name: many_channels)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(fake_sdata)
+
+    image_card = widget.image_cards[0]
+
+    assert len(image_card.channel_checkboxes) == len(many_channels)
+    assert image_card.channel_scroll_area.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded
+    assert image_card.channel_scroll_area.maximumHeight() > 0
+    assert image_card.channel_scroll_area.maximumHeight() < image_card.channel_list_widget.sizeHint().height()
 
 
 def test_viewer_widget_filters_cards_by_selected_coordinate_system(qtbot, monkeypatch) -> None:
