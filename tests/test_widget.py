@@ -29,7 +29,7 @@ from napari_harpy._classifier import (
     PRED_CLASS_COLUMN,
     PRED_CONFIDENCE_COLUMN,
 )
-from napari_harpy._spatialdata import get_spatialdata_label_options
+from napari_harpy._spatialdata import SpatialDataViewerBinding
 from napari_harpy.widgets._object_classification_widget import ObjectClassificationWidget as HarpyWidget
 
 
@@ -166,7 +166,7 @@ def test_spatialdata_label_options_are_deduplicated_per_dataset(sdata_blobs: Spa
     )
     viewer = DummyViewer(layers=[first_layer, second_layer])
 
-    options = get_spatialdata_label_options(viewer)
+    options = SpatialDataViewerBinding(viewer).get_label_options()
 
     assert [option.label_name for option in options] == [
         "blobs_labels",

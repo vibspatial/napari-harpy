@@ -6,7 +6,6 @@ import numpy as np
 import pytest
 from napari.layers import Image, Labels
 from spatialdata import SpatialData
-from spatialdata.datasets import blobs
 from spatialdata.models import TableModel
 
 import napari_harpy._spatialdata as spatialdata_module
@@ -14,9 +13,7 @@ from napari_harpy._spatialdata import (
     SpatialDataViewerBinding,
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
-    get_spatialdata_image_options,
     get_spatialdata_image_options_for_coordinate_system_from_sdata,
-    get_spatialdata_image_options_from_sdata,
     get_spatialdata_label_options_for_coordinate_system_from_sdata,
     get_spatialdata_label_options_from_sdata,
     get_table,
@@ -110,105 +107,6 @@ def test_normalize_table_metadata_normalizes_numpy_array_region_attrs_in_place(s
     assert validated is table
     assert table.uns[TableModel.ATTRS_KEY][TableModel.REGION_KEY] == ["blobs_labels"]
 
-
-def test_get_spatialdata_image_options_return_compatible_images_for_selected_label(sdata_blobs: SpatialData) -> None:
-    label_layer = make_blobs_labels_layer(sdata_blobs)
-    image_layer = make_blobs_image_layer(sdata_blobs)
-    viewer = SimpleNamespace(layers=[label_layer, image_layer])
-
-    options = get_spatialdata_image_options(
-        viewer,
-        sdata=sdata_blobs,
-        label_name="blobs_labels",
-    )
-
-    assert [option.image_name for option in options] == [
-        "blobs_image",
-        "blobs_multiscale_image",
-    ]
-    assert [option.display_name for option in options] == [
-        "blobs_image",
-        "blobs_multiscale_image",
-    ]
-    assert [option.coordinate_systems for option in options] == [
-        ("global",),
-        ("global",),
-    ]
-    assert all(option.sdata is sdata_blobs for option in options)
-
-
-def test_get_spatialdata_image_options_do_not_require_loaded_image_layers(sdata_blobs: SpatialData) -> None:
-    label_layer = make_blobs_labels_layer(sdata_blobs)
-    viewer = SimpleNamespace(layers=[label_layer])
-
-    options = get_spatialdata_image_options(
-        viewer,
-        sdata=sdata_blobs,
-        label_name="blobs_labels",
-    )
-
-    assert [option.image_name for option in options] == [
-        "blobs_image",
-        "blobs_multiscale_image",
-    ]
-    assert [option.display_name for option in options] == [
-        "blobs_image",
-        "blobs_multiscale_image",
-    ]
-    assert [option.coordinate_systems for option in options] == [
-        ("global",),
-        ("global",),
-    ]
-    assert all(option.sdata is sdata_blobs for option in options)
-
-
-def test_get_spatialdata_image_options_include_dataset_names_when_multiple_datasets_are_present() -> None:
-    first_sdata = blobs()
-    second_sdata = blobs()
-    viewer = SimpleNamespace(layers=[make_blobs_labels_layer(first_sdata), make_blobs_labels_layer(second_sdata)])
-
-    options = get_spatialdata_image_options(
-        viewer,
-        sdata=first_sdata,
-        label_name="blobs_labels",
-    )
-
-    assert [option.display_name for option in options] == [
-        "blobs_image (SpatialData 1)",
-        "blobs_multiscale_image (SpatialData 1)",
-    ]
-
-
-def test_get_spatialdata_image_options_filter_to_selected_dataset_and_shared_coordinate_systems(
-    monkeypatch,
-    sdata_blobs: SpatialData,
-) -> None:
-    other_sdata = blobs()
-    viewer = SimpleNamespace(layers=[make_blobs_labels_layer(sdata_blobs), make_blobs_labels_layer(other_sdata)])
-
-    transformation_by_id = {
-        id(sdata_blobs.labels["blobs_labels"]): {"global": object(), "aligned": object()},
-        id(sdata_blobs.images["blobs_image"]): {"aligned": object(), "global": object()},
-        id(sdata_blobs.images["blobs_multiscale_image"]): {"other": object()},
-    }
-
-    def _fake_get_transformation(element, get_all: bool = False):
-        del get_all
-        return transformation_by_id[id(element)]
-
-    monkeypatch.setattr(spatialdata_module, "get_transformation", _fake_get_transformation)
-
-    options = get_spatialdata_image_options(
-        viewer,
-        sdata=sdata_blobs,
-        label_name="blobs_labels",
-    )
-
-    assert [option.image_name for option in options] == ["blobs_image"]
-    assert options[0].sdata is sdata_blobs
-    assert options[0].coordinate_systems == ("aligned", "global")
-
-
 def test_get_spatialdata_label_options_from_sdata_returns_all_labels(sdata_blobs: SpatialData) -> None:
     options = get_spatialdata_label_options_from_sdata(sdata_blobs)
 
@@ -297,30 +195,6 @@ def test_get_spatialdata_image_options_for_coordinate_system_from_sdata_filters_
 
     assert [option.image_name for option in options] == ["blobs_image"]
     assert options[0].coordinate_systems == ("aligned", "global")
-
-
-def test_get_spatialdata_image_options_from_sdata_returns_compatible_images_for_selected_label(
-    sdata_blobs: SpatialData,
-) -> None:
-    options = get_spatialdata_image_options_from_sdata(
-        sdata=sdata_blobs,
-        label_name="blobs_labels",
-    )
-
-    assert [option.image_name for option in options] == [
-        "blobs_image",
-        "blobs_multiscale_image",
-    ]
-    assert [option.display_name for option in options] == [
-        "blobs_image",
-        "blobs_multiscale_image",
-    ]
-    assert [option.coordinate_systems for option in options] == [
-        ("global",),
-        ("global",),
-    ]
-    assert all(option.sdata is sdata_blobs for option in options)
-
 
 def test_spatialdata_viewer_binding_builds_layer_metadata_adata_from_selected_table(sdata_blobs: SpatialData) -> None:
     viewer_binding = SpatialDataViewerBinding()
