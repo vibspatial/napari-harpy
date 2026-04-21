@@ -9,6 +9,7 @@ from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
@@ -20,6 +21,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from spatialdata import read_zarr
 from spatialdata.models import get_axes_names
 from spatialdata.transformations import get_transformation
 from xarray import DataArray
@@ -352,6 +354,13 @@ class ViewerWidget(QWidget):
 
         header_logo = self._create_header_logo()
 
+        self.open_sdata_button = QPushButton("Load SpatialData")
+        self.open_sdata_button.setObjectName("viewer_widget_open_sdata_button")
+        self.open_sdata_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.open_sdata_button.setMinimumHeight(28)
+        self.open_sdata_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
+        self.open_sdata_button.clicked.connect(self._open_spatialdata)
+
         self.empty_state_label = QLabel(
             "No SpatialData loaded. Use `Interactive(sdata)` for now; an in-widget open action will follow later."
         )
@@ -430,6 +439,7 @@ class ViewerWidget(QWidget):
 
         self.content_layout.addWidget(header_logo)
         self.content_layout.addWidget(title)
+        self.content_layout.addWidget(self.open_sdata_button)
         self.content_layout.addWidget(self.empty_state_label)
         self.content_layout.addWidget(self.summary_label)
         self.content_layout.addLayout(selector_layout)
@@ -466,6 +476,25 @@ class ViewerWidget(QWidget):
     def _on_coordinate_system_changed(self) -> None:
         """Refresh the filtered image and labels cards when the coordinate system changes."""
         self._refresh_coordinate_system_content()
+
+    def _open_spatialdata(self, _checked: bool = False) -> None:
+        selected_path = QFileDialog.getExistingDirectory(
+            self,
+            "Load SpatialData",
+            "",
+            QFileDialog.Option.ShowDirsOnly | QFileDialog.Option.DontResolveSymlinks,
+        )
+        if not selected_path:
+            return
+
+        try:
+            sdata = read_zarr(selected_path)
+        except (OSError, ValueError) as error:
+            self._set_action_feedback(f"Could not load SpatialData store: {error}", is_error=True)
+            return
+
+        self._app_state.set_sdata(sdata)
+        self._clear_action_feedback()
 
     def refresh_from_sdata(self, sdata: SpatialData | None) -> None:
         """Refresh the viewer widget from the currently loaded `SpatialData`."""
@@ -637,6 +666,10 @@ class ViewerWidget(QWidget):
             "color: #b91c1c; font-weight: 600;" if is_error else "color: #166534; font-weight: 600;"
         )
         self.action_feedback_label.show()
+
+    def _clear_action_feedback(self) -> None:
+        self.action_feedback_label.clear()
+        self.action_feedback_label.hide()
 
     def _create_header_logo(self) -> QLabel:
         logo_label = QLabel()

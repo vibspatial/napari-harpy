@@ -183,6 +183,70 @@ def test_viewer_widget_filters_cards_by_selected_coordinate_system(qtbot, monkey
     assert [card.label_name for card in widget.labels_cards] == ["labels_local"]
 
 
+def test_viewer_widget_open_spatialdata_loads_selected_store(qtbot, monkeypatch, sdata_blobs) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    recorded_paths: list[str] = []
+    recorded_sdata: list[object] = []
+    original_set_sdata = widget.app_state.set_sdata
+
+    qtbot.addWidget(widget)
+
+    monkeypatch.setattr(
+        viewer_widget_module.QFileDialog,
+        "getExistingDirectory",
+        lambda *args, **kwargs: "/tmp/example.zarr",
+    )
+    monkeypatch.setattr(
+        viewer_widget_module,
+        "read_zarr",
+        lambda path: recorded_paths.append(path) or sdata_blobs,
+    )
+
+    def wrapped_set_sdata(sdata: object) -> None:
+        recorded_sdata.append(sdata)
+        original_set_sdata(sdata)
+
+    monkeypatch.setattr(widget.app_state, "set_sdata", wrapped_set_sdata)
+    widget._set_action_feedback("Old error", is_error=True)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.open_sdata_button.click()
+
+    assert recorded_paths == ["/tmp/example.zarr"]
+    assert recorded_sdata == [sdata_blobs]
+    assert widget.app_state.sdata is sdata_blobs
+    assert widget.coordinate_system_combo.count() == 1
+    assert widget.coordinate_system_combo.itemText(0) == "global"
+    assert widget.action_feedback_label.text() == ""
+    assert widget.action_feedback_label.isHidden()
+
+
+def test_viewer_widget_open_spatialdata_shows_error_when_loading_fails(qtbot, monkeypatch) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    monkeypatch.setattr(
+        viewer_widget_module.QFileDialog,
+        "getExistingDirectory",
+        lambda *args, **kwargs: "/tmp/example.zarr",
+    )
+
+    def raise_read_error(path: str) -> object:
+        raise ValueError(f"bad store at {path}")
+
+    monkeypatch.setattr(viewer_widget_module, "read_zarr", raise_read_error)
+
+    widget.open_sdata_button.click()
+
+    assert widget.app_state.sdata is None
+    assert "Could not load SpatialData store" in widget.action_feedback_label.text()
+    assert "bad store at /tmp/example.zarr" in widget.action_feedback_label.text()
+    assert not widget.action_feedback_label.isHidden()
+
+
 def test_viewer_widget_add_update_labels_loads_and_activates_layer(qtbot, sdata_blobs) -> None:
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)
