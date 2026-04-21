@@ -4,6 +4,7 @@ from collections.abc import Callable
 from types import SimpleNamespace
 
 from qtpy.QtCore import Qt
+from qtpy.QtWidgets import QComboBox
 
 import napari_harpy.widgets._viewer_widget as viewer_widget_module
 from napari_harpy.widgets._viewer_widget import ViewerWidget
@@ -110,6 +111,9 @@ def test_viewer_widget_refreshes_cards_when_shared_sdata_changes(qtbot, sdata_bl
     assert not widget.image_cards[0].overlay_toggle.isChecked()
     assert widget.labels_cards[0].linked_table_combo.count() == 1
     assert widget.labels_cards[0].linked_table_combo.itemText(0) == "table"
+    assert widget.labels_cards[0].linked_table_combo.sizeAdjustPolicy() == (
+        QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+    )
     assert widget.labels_cards[1].linked_table_combo.count() == 1
     assert widget.labels_cards[1].linked_table_combo.itemText(0) == "No linked tables"
     assert not widget.labels_cards[1].linked_table_combo.isEnabled()

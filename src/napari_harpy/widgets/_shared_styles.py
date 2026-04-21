@@ -2,9 +2,17 @@ from __future__ import annotations
 
 from html import escape
 
-from qtpy.QtCore import Qt
+from qtpy.QtCore import QSize, Qt
 from qtpy.QtGui import QColor, QPalette
-from qtpy.QtWidgets import QLabel, QWidget
+from qtpy.QtWidgets import (
+    QComboBox,
+    QLabel,
+    QSizePolicy,
+    QStyle,
+    QStyleOptionComboBox,
+    QStylePainter,
+    QWidget,
+)
 
 WIDGET_SURFACE_COLOR = "#fcf6f3"
 WIDGET_SURFACE_STYLESHEET = f"background-color: {WIDGET_SURFACE_COLOR};"
@@ -77,6 +85,70 @@ def build_input_control_stylesheet(control_selector: str) -> str:
     )
 
 
+class CompactComboBox(QComboBox):
+    """Combo box with a capped width hint for long item names."""
+
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        minimum_contents_length: int = 18,
+    ) -> None:
+        super().__init__(parent)
+        self.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.setMinimumContentsLength(minimum_contents_length)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.currentIndexChanged.connect(self._update_current_text_tooltip)
+        self._update_current_text_tooltip()
+
+    def sizeHint(self) -> QSize:
+        return self._capped_size_hint(super().sizeHint())
+
+    def minimumSizeHint(self) -> QSize:
+        return self._capped_size_hint(super().minimumSizeHint())
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_current_text_tooltip()
+
+    def paintEvent(self, event) -> None:
+        del event
+        painter = QStylePainter(self)
+        option = QStyleOptionComboBox()
+        self.initStyleOption(option)
+        option.currentText = self._elided_current_text(option)
+        painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, option)
+        painter.drawControl(QStyle.ControlElement.CE_ComboBoxLabel, option)
+
+    def _capped_size_hint(self, hint: QSize) -> QSize:
+        cap_width = self.fontMetrics().horizontalAdvance("M" * max(1, self.minimumContentsLength())) + 48
+        return QSize(min(hint.width(), cap_width), hint.height())
+
+    def _elided_current_text(self, option: QStyleOptionComboBox | None = None) -> str:
+        if option is None:
+            option = QStyleOptionComboBox()
+            self.initStyleOption(option)
+
+        text_rect = self.style().subControlRect(
+            QStyle.ComplexControl.CC_ComboBox,
+            option,
+            QStyle.SubControl.SC_ComboBoxEditField,
+            self,
+        )
+        available_width = max(0, text_rect.width())
+        return self.fontMetrics().elidedText(option.currentText, Qt.TextElideMode.ElideRight, available_width)
+
+    def _update_current_text_tooltip(self, _index: int | None = None) -> None:
+        current_text = self.currentText()
+        if not current_text:
+            self.setToolTip("")
+            return
+
+        elided_text = self._elided_current_text()
+        self.setToolTip(format_tooltip(current_text) if elided_text != current_text else "")
+
+
 def apply_widget_surface(widget: QWidget) -> None:
     widget.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
     widget.setAutoFillBackground(True)
@@ -103,3 +175,13 @@ def create_form_label(text: str) -> QLabel:
 
 def format_tooltip(message: str) -> str:
     return f"<qt><span style='color: {TOOLTIP_TEXT_COLOR};'>{escape(message)}</span></qt>"
+
+
+def format_feedback_identifier(name: str, *, max_length: int = 56) -> tuple[str, bool]:
+    """Return a visible identifier and whether it was shortened."""
+    if len(name) <= max_length:
+        return name, False
+
+    head_length = 32
+    tail_length = max_length - head_length - 1
+    return f"{name[:head_length]}…{name[-tail_length:]}", True

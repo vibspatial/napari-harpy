@@ -4,10 +4,11 @@ from types import SimpleNamespace
 
 import numpy as np
 from napari.layers import Labels
-from qtpy.QtWidgets import QCheckBox, QScrollArea
+from qtpy.QtWidgets import QCheckBox, QComboBox, QScrollArea
 from spatialdata import SpatialData
 
 from napari_harpy._app_state import get_or_create_app_state
+from napari_harpy._spatialdata import SpatialDataImageOption, SpatialDataLabelsOption
 from napari_harpy.widgets._feature_extraction_widget import FeatureExtractionWidget
 
 
@@ -75,6 +76,12 @@ def test_feature_extraction_widget_can_be_instantiated(qtbot) -> None:
     assert widget.calculate_button.isEnabled() is False
     assert "No SpatialData Loaded" in widget.selection_status.text()
     assert widget.refresh_button.isEnabled() is False
+    assert widget.segmentation_combo.sizeAdjustPolicy() == QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+    assert widget.image_combo.sizeAdjustPolicy() == QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+    assert widget.table_combo.sizeAdjustPolicy() == QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+    assert widget.coordinate_system_combo.sizeAdjustPolicy() == (
+        QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+    )
 
 
 def test_feature_extraction_widget_seeds_from_shared_sdata_on_construction(
@@ -147,7 +154,55 @@ def test_feature_extraction_widget_populates_selector_flow_from_spatialdata(
     assert "Segmentation: blobs_labels" in widget.selection_status.text()
     assert "Table: table" in widget.selection_status.text()
     assert "Coordinate system: global" in widget.selection_status.text()
+    assert widget.selection_status.toolTip() == ""
     assert widget.validation_status.isHidden()
+
+
+def test_feature_extraction_widget_shortens_long_identifiers_in_selection_status(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    long_segmentation_name = "blobs_labels_long_name_blobs_labels_long_name_blobs_labels_long_name"
+    long_image_name = "blobs_image_long_name_blobs_image_long_name_blobs_image_long_name"
+    long_table_name = "table_long_name_table_long_name_table_long_name_table_long_name"
+    long_coordinate_system = "global_coordinate_system_coordinate_system_coordinate_system"
+
+    widget._selected_label_option = SpatialDataLabelsOption(
+        label_name=long_segmentation_name,
+        display_name=long_segmentation_name,
+        sdata=sdata_blobs,
+        coordinate_systems=(long_coordinate_system,),
+    )
+    widget._selected_image_option = SpatialDataImageOption(
+        image_name=long_image_name,
+        display_name=long_image_name,
+        sdata=sdata_blobs,
+        coordinate_systems=(long_coordinate_system,),
+    )
+    widget._selected_table_name = long_table_name
+    widget._selected_coordinate_system = long_coordinate_system
+    widget._table_binding_error = None
+
+    widget._update_primary_status_card()
+
+    status_text = widget.selection_status.text()
+    status_tooltip = widget.selection_status.toolTip()
+
+    assert "Selection Ready" in status_text
+    assert "…" in status_text
+    assert long_segmentation_name not in status_text
+    assert long_image_name not in status_text
+    assert long_table_name not in status_text
+    assert long_coordinate_system not in status_text
+    assert long_segmentation_name in status_tooltip
+    assert long_image_name in status_tooltip
+    assert long_table_name in status_tooltip
+    assert long_coordinate_system in status_tooltip
 
 
 def test_feature_extraction_widget_blocks_when_selected_segmentation_has_no_linked_table(

@@ -12,7 +12,7 @@ from matplotlib.colors import to_rgba
 from napari.layers import Labels
 from napari.utils.colormaps import DirectLabelColormap
 from qtpy.QtCore import QObject, Signal
-from qtpy.QtWidgets import QScrollArea
+from qtpy.QtWidgets import QComboBox, QScrollArea
 from spatialdata import SpatialData, read_zarr
 from spatialdata.models import TableModel
 
@@ -140,6 +140,11 @@ def test_widget_can_be_instantiated(qtbot) -> None:
     assert widget.selected_table_name is None
     assert widget.selected_feature_key is None
     assert widget.selected_color_by == "user_class"
+    assert widget.segmentation_combo.sizeAdjustPolicy() == QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+    assert widget.table_combo.sizeAdjustPolicy() == QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+    assert widget.feature_matrix_combo.sizeAdjustPolicy() == (
+        QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+    )
 
 
 def test_spatialdata_label_options_are_deduplicated_per_dataset(sdata_blobs: SpatialData) -> None:

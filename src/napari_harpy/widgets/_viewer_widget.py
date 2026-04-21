@@ -39,10 +39,12 @@ from napari_harpy.widgets._shared_styles import (
     WIDGET_MIN_WIDTH as _WIDGET_MIN_WIDTH,
 )
 from napari_harpy.widgets._shared_styles import (
+    CompactComboBox,
     apply_scroll_content_surface,
     apply_widget_surface,
     build_input_control_stylesheet,
     create_form_label,
+    format_feedback_identifier,
     format_tooltip,
 )
 
@@ -110,16 +112,6 @@ class _ElidedLabel(QLabel):
         self.setToolTip(format_tooltip(self._full_text) if elided_text != self._full_text else "")
 
 
-def _format_feedback_identifier(name: str, *, max_length: int = 56) -> tuple[str, bool]:
-    """Return a visible feedback name and whether it was shortened."""
-    if len(name) <= max_length:
-        return name, False
-
-    head_length = 32
-    tail_length = max_length - head_length - 1
-    return f"{name[:head_length]}…{name[-tail_length:]}", True
-
-
 class _LabelsCardWidget(QFrame):
     """Card UI for one labels element in the selected coordinate system."""
 
@@ -150,7 +142,7 @@ class _LabelsCardWidget(QFrame):
         form_layout.setVerticalSpacing(6)
 
         linked_table_label = _create_form_label("Linked table")
-        self.linked_table_combo = QComboBox()
+        self.linked_table_combo = CompactComboBox()
         self.linked_table_combo.setObjectName(f"viewer_widget_linked_table_combo_{label_name}")
         self.linked_table_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
         if table_names:
@@ -633,7 +625,7 @@ class ViewerWidget(QWidget):
             return
 
         self._app_state.viewer_adapter.activate_layer(layer)
-        display_name, was_shortened = _format_feedback_identifier(label_name)
+        display_name, was_shortened = format_feedback_identifier(label_name)
         self._set_action_feedback(
             f"Loaded segmentation `{display_name}` in coordinate system `{coordinate_system}`.",
             is_error=False,
@@ -681,7 +673,7 @@ class ViewerWidget(QWidget):
                 return
 
             self._app_state.viewer_adapter.activate_layer(layer_or_layers)
-            display_name, was_shortened = _format_feedback_identifier(image_name)
+            display_name, was_shortened = format_feedback_identifier(image_name)
             self._set_action_feedback(
                 f"Loaded image `{display_name}` in stack mode for coordinate system `{coordinate_system}`.",
                 is_error=False,
@@ -704,7 +696,7 @@ class ViewerWidget(QWidget):
             return
 
         self._app_state.viewer_adapter.activate_layer(layer_or_layers[0])
-        display_name, was_shortened = _format_feedback_identifier(image_name)
+        display_name, was_shortened = format_feedback_identifier(image_name)
         self._set_action_feedback(
             f"Loaded image `{display_name}` in overlay mode for channels {request.channels} "
             f"in coordinate system `{coordinate_system}`.",

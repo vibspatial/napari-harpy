@@ -48,6 +48,7 @@ from napari_harpy.widgets._shared_styles import (
     WIDGET_MIN_WIDTH as _WIDGET_MIN_WIDTH,
 )
 from napari_harpy.widgets._shared_styles import (
+    CompactComboBox,
     apply_scroll_content_surface,
     apply_widget_surface,
     build_input_control_stylesheet,
@@ -149,17 +150,17 @@ class ObjectClassificationWidget(QWidget):
         selector_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         selector_layout.setHorizontalSpacing(12)
         selector_layout.setVerticalSpacing(10)
-        self.segmentation_combo = QComboBox()
+        self.segmentation_combo = CompactComboBox()
         self.segmentation_combo.setObjectName("segmentation_mask_combo")
         self.segmentation_combo.currentIndexChanged.connect(self._on_segmentation_changed)
         self.segmentation_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
 
-        self.table_combo = QComboBox()
+        self.table_combo = CompactComboBox()
         self.table_combo.setObjectName("annotation_table_combo")
         self.table_combo.currentIndexChanged.connect(self._on_table_changed)
         self.table_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
 
-        self.feature_matrix_combo = QComboBox()
+        self.feature_matrix_combo = CompactComboBox()
         self.feature_matrix_combo.setObjectName("feature_matrix_combo")
         self.feature_matrix_combo.currentIndexChanged.connect(self._on_feature_matrix_changed)
         self.feature_matrix_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)

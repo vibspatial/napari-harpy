@@ -8,7 +8,6 @@ from qtpy.QtCore import QSignalBlocker, Qt
 from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDialog,
     QFormLayout,
     QFrame,
@@ -46,10 +45,12 @@ from napari_harpy.widgets._shared_styles import (
     WIDGET_SURFACE_COLOR as _WIDGET_SURFACE_COLOR,
 )
 from napari_harpy.widgets._shared_styles import (
+    CompactComboBox,
     apply_scroll_content_surface,
     apply_widget_surface,
     build_input_control_stylesheet,
     create_form_label,
+    format_feedback_identifier,
     format_tooltip,
 )
 
@@ -161,22 +162,22 @@ class FeatureExtractionWidget(QWidget):
         selector_layout.setHorizontalSpacing(12)
         selector_layout.setVerticalSpacing(10)
 
-        self.segmentation_combo = QComboBox()
+        self.segmentation_combo = CompactComboBox()
         self.segmentation_combo.setObjectName("feature_extraction_segmentation_combo")
         self.segmentation_combo.currentIndexChanged.connect(self._on_segmentation_changed)
         self.segmentation_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
 
-        self.image_combo = QComboBox()
+        self.image_combo = CompactComboBox()
         self.image_combo.setObjectName("feature_extraction_image_combo")
         self.image_combo.currentIndexChanged.connect(self._on_image_changed)
         self.image_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
 
-        self.table_combo = QComboBox()
+        self.table_combo = CompactComboBox()
         self.table_combo.setObjectName("feature_extraction_table_combo")
         self.table_combo.currentIndexChanged.connect(self._on_table_changed)
         self.table_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
 
-        self.coordinate_system_combo = QComboBox()
+        self.coordinate_system_combo = CompactComboBox()
         self.coordinate_system_combo.setObjectName("feature_extraction_coordinate_system_combo")
         self.coordinate_system_combo.currentIndexChanged.connect(self._on_coordinate_system_changed)
         self.coordinate_system_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
@@ -812,23 +813,44 @@ class FeatureExtractionWidget(QWidget):
             return
 
         if self.selected_table_name is None:
+            segmentation_name, segmentation_shortened = format_feedback_identifier(self.selected_segmentation_name)
+            lines = [
+                f"Segmentation `{segmentation_name}` is not linked to an annotation table.",
+                "Support for creating a new linked table from this widget is coming soon.",
+            ]
             self._set_selection_status(
                 "No Table Linked",
-                [
-                    f"Segmentation `{self.selected_segmentation_name}` is not linked to an annotation table.",
-                    "Support for creating a new linked table from this widget is coming soon.",
-                ],
+                lines,
+                tooltip_message="\n".join(
+                    [
+                        f"Segmentation `{self.selected_segmentation_name}` is not linked to an annotation table.",
+                        "Support for creating a new linked table from this widget is coming soon.",
+                    ]
+                )
+                if segmentation_shortened
+                else None,
                 kind="warning",
             )
             return
 
         if self._table_binding_error is not None:
+            table_name, table_shortened = format_feedback_identifier(self.selected_table_name)
+            segmentation_name, segmentation_shortened = format_feedback_identifier(self.selected_segmentation_name)
+            lines = [
+                f"Table `{table_name}` cannot currently be used for segmentation `{segmentation_name}`.",
+                "Choose a different table or segmentation.",
+            ]
             self._set_selection_status(
                 "Table Binding Issue",
-                [
-                    f"Table `{self.selected_table_name}` cannot currently be used for segmentation `{self.selected_segmentation_name}`.",
-                    "Choose a different table or segmentation.",
-                ],
+                lines,
+                tooltip_message="\n".join(
+                    [
+                        f"Table `{self.selected_table_name}` cannot currently be used for segmentation `{self.selected_segmentation_name}`.",
+                        "Choose a different table or segmentation.",
+                    ]
+                )
+                if table_shortened or segmentation_shortened
+                else None,
                 kind="warning",
             )
             return
@@ -841,22 +863,53 @@ class FeatureExtractionWidget(QWidget):
             )
             return
 
-        image_line = (
-            "Image: none selected yet" if self.selected_image_name is None else f"Image: {self.selected_image_name}"
-        )
+        segmentation_name, segmentation_shortened = format_feedback_identifier(self.selected_segmentation_name)
+        table_name, table_shortened = format_feedback_identifier(self.selected_table_name)
+        coordinate_system_name, coordinate_system_shortened = format_feedback_identifier(self.selected_coordinate_system)
+
+        shortened = [segmentation_shortened, table_shortened, coordinate_system_shortened]
+        tooltip_lines = [
+            f"Segmentation: {self.selected_segmentation_name}",
+            f"Table: {self.selected_table_name}",
+        ]
+
+        if self.selected_image_name is None:
+            image_line = "Image: none selected yet"
+            tooltip_lines.append(image_line)
+        else:
+            image_name, image_shortened = format_feedback_identifier(self.selected_image_name)
+            image_line = f"Image: {image_name}"
+            tooltip_lines.append(f"Image: {self.selected_image_name}")
+            shortened.append(image_shortened)
+
+        tooltip_lines.append(f"Coordinate system: {self.selected_coordinate_system}")
         self._set_selection_status(
             "Selection Ready",
             [
-                f"Segmentation: {self.selected_segmentation_name}",
-                f"Table: {self.selected_table_name}",
+                f"Segmentation: {segmentation_name}",
+                f"Table: {table_name}",
                 image_line,
-                f"Coordinate system: {self.selected_coordinate_system}",
+                f"Coordinate system: {coordinate_system_name}",
             ],
+            tooltip_message="\n".join(tooltip_lines) if any(shortened) else None,
             kind="success",
         )
 
-    def _set_selection_status(self, title: str, lines: list[str], *, kind: str) -> None:
-        self._set_status_card(self.selection_status, title=title, lines=lines, kind=kind)
+    def _set_selection_status(
+        self,
+        title: str,
+        lines: list[str],
+        *,
+        kind: str,
+        tooltip_message: str | None = None,
+    ) -> None:
+        self._set_status_card(
+            self.selection_status,
+            title=title,
+            lines=lines,
+            kind=kind,
+            tooltip_message=tooltip_message,
+        )
 
     def _set_feature_extraction_feedback(self, message: str, *, kind: str = "info") -> None:
         if not message:
@@ -878,7 +931,15 @@ class FeatureExtractionWidget(QWidget):
             kind=kind,
         )
 
-    def _set_status_card(self, label: QLabel, *, title: str, lines: list[str], kind: str) -> None:
+    def _set_status_card(
+        self,
+        label: QLabel,
+        *,
+        title: str,
+        lines: list[str],
+        kind: str,
+        tooltip_message: str | None = None,
+    ) -> None:
         palette_by_kind = {
             "info": {"text": "#1d4ed8", "border": "#93c5fd", "background": "#eff6ff"},
             "warning": {"text": "#b45309", "border": "#fdba74", "background": "#fff7ed"},
@@ -902,6 +963,7 @@ class FeatureExtractionWidget(QWidget):
             "border-radius: 8px; "
             "padding: 10px 12px;"
         )
+        label.setToolTip(format_tooltip(tooltip_message) if tooltip_message else "")
         label.setVisible(bool(lines))
 
     def _update_calculate_controls(self) -> None:
