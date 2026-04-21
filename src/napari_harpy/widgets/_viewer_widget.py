@@ -17,6 +17,7 @@ from qtpy.QtWidgets import (
     QLayout,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -79,8 +80,22 @@ _CARD_STYLESHEET = (
     "border: 1px solid #eadfd8; "
     "border-radius: 10px;}"
 )
-_CARD_TITLE_STYLESHEET = "color: #374151; font-weight: 600;"
+_CARD_TITLE_STYLESHEET = (
+    "QLabel {"
+    "background-color: #f3d7ce; "
+    "border: 1px solid #d7b4a7; "
+    "border-radius: 8px; "
+    "color: #374151; "
+    "font-weight: 700; "
+    "padding: 6px 10px;}"
+)
 _SECTION_TITLE_STYLESHEET = "color: #374151; font-size: 14px; font-weight: 700;"
+_SECTION_GROUP_STYLESHEET = (
+    "QFrame#viewer_widget_images_group, QFrame#viewer_widget_labels_group {"
+    "background-color: #f7ece7; "
+    "border: 1px solid #e3d2c8; "
+    "border-radius: 12px;}"
+)
 _CHECKBOX_STYLESHEET = (
     "QCheckBox {"
     "color: #111827; "
@@ -107,6 +122,34 @@ _EMPTY_STATE_STYLESHEET = "color: #6b7280; font-weight: 500;"
 _CHANNEL_PANEL_STYLESHEET = "QWidget { background: transparent; }"
 
 
+class _ElidedLabel(QLabel):
+    """Single-line label that elides long text and exposes the full value via tooltip."""
+
+    def __init__(self, text: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._full_text = text
+        self.setToolTip(text)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setMinimumWidth(0)
+        self.setMinimumHeight(36)
+        self.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._update_elided_text()
+
+    def set_full_text(self, text: str) -> None:
+        self._full_text = text
+        self.setToolTip(text)
+        self._update_elided_text()
+
+    def resizeEvent(self, event: object) -> None:
+        super().resizeEvent(event)
+        self._update_elided_text()
+
+    def _update_elided_text(self) -> None:
+        available_width = max(0, self.contentsRect().width())
+        elided_text = self.fontMetrics().elidedText(self._full_text, Qt.TextElideMode.ElideRight, available_width)
+        super().setText(elided_text)
+
+
 class _LabelsCardWidget(QFrame):
     """Card UI for one labels element in the selected coordinate system."""
 
@@ -126,7 +169,7 @@ class _LabelsCardWidget(QFrame):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
-        self.title_label = QLabel(label_name)
+        self.title_label = _ElidedLabel(label_name)
         self.title_label.setObjectName(f"viewer_widget_labels_card_title_{label_name}")
         self.title_label.setStyleSheet(_CARD_TITLE_STYLESHEET)
 
@@ -178,29 +221,26 @@ class _ImageCardWidget(QFrame):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
-        header_layout = QHBoxLayout()
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(8)
-
-        self.title_label = QLabel(image_name)
+        self.title_label = _ElidedLabel(image_name)
         self.title_label.setObjectName(f"viewer_widget_image_card_title_{image_name}")
         self.title_label.setStyleSheet(_CARD_TITLE_STYLESHEET)
 
-        self.show_stack_button = QPushButton("Show stack")
-        self.show_stack_button.setObjectName(f"viewer_widget_show_stack_button_{image_name}")
-        self.show_stack_button.setEnabled(False)
-        self.show_stack_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.show_stack_button.setMinimumHeight(28)
-        self.show_stack_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
-        self.show_stack_button.setToolTip("Stack image loading is implemented in the next slice.")
+        mode_layout = QHBoxLayout()
+        mode_layout.setContentsMargins(0, 0, 0, 0)
+        mode_layout.setSpacing(16)
 
-        self.overlay_toggle = QCheckBox("Overlay")
+        self.stack_toggle = QCheckBox("stack")
+        self.stack_toggle.setObjectName(f"viewer_widget_stack_toggle_{image_name}")
+        self.stack_toggle.setStyleSheet(_CHECKBOX_STYLESHEET)
+        self.stack_toggle.setChecked(True)
+
+        self.overlay_toggle = QCheckBox("overlay")
         self.overlay_toggle.setObjectName(f"viewer_widget_overlay_toggle_{image_name}")
         self.overlay_toggle.setStyleSheet(_CHECKBOX_STYLESHEET)
 
-        header_layout.addWidget(self.title_label, 1)
-        header_layout.addWidget(self.show_stack_button)
-        header_layout.addWidget(self.overlay_toggle)
+        mode_layout.addWidget(self.stack_toggle)
+        mode_layout.addWidget(self.overlay_toggle)
+        mode_layout.addStretch(1)
 
         self.channel_panel = QWidget()
         self.channel_panel.setObjectName(f"viewer_widget_channel_panel_{image_name}")
@@ -252,11 +292,36 @@ class _ImageCardWidget(QFrame):
         self.add_update_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
         self.add_update_button.setToolTip("Image loading actions are implemented in the next slices.")
 
-        self.overlay_toggle.toggled.connect(self.channel_panel.setVisible)
+        self.stack_toggle.toggled.connect(self._on_stack_toggled)
+        self.overlay_toggle.toggled.connect(self._on_overlay_toggled)
 
-        layout.addLayout(header_layout)
+        layout.addWidget(self.title_label)
+        layout.addLayout(mode_layout)
         layout.addWidget(self.channel_panel)
         layout.addWidget(self.add_update_button)
+
+    def _on_stack_toggled(self, checked: bool) -> None:
+        if checked:
+            with QSignalBlocker(self.overlay_toggle):
+                self.overlay_toggle.setChecked(False)
+            self.channel_panel.setVisible(False)
+            return
+
+        if not self.overlay_toggle.isChecked():
+            with QSignalBlocker(self.stack_toggle):
+                self.stack_toggle.setChecked(True)
+
+    def _on_overlay_toggled(self, checked: bool) -> None:
+        if checked:
+            with QSignalBlocker(self.stack_toggle):
+                self.stack_toggle.setChecked(False)
+            self.channel_panel.setVisible(True)
+            return
+
+        self.channel_panel.setVisible(False)
+        if not self.stack_toggle.isChecked():
+            with QSignalBlocker(self.stack_toggle):
+                self.stack_toggle.setChecked(True)
 
 
 class ViewerWidget(QWidget):
@@ -349,6 +414,15 @@ class ViewerWidget(QWidget):
         self.images_section_layout = QVBoxLayout(self.images_section)
         self.images_section_layout.setContentsMargins(0, 0, 0, 0)
         self.images_section_layout.setSpacing(8)
+        self.images_group = QFrame()
+        self.images_group.setObjectName("viewer_widget_images_group")
+        self.images_group.setStyleSheet(_SECTION_GROUP_STYLESHEET)
+        self.images_group_layout = QVBoxLayout(self.images_group)
+        self.images_group_layout.setContentsMargins(12, 12, 12, 12)
+        self.images_group_layout.setSpacing(10)
+        self.images_group_layout.addWidget(self.images_section_title)
+        self.images_group_layout.addWidget(self.images_empty_label)
+        self.images_group_layout.addWidget(self.images_section)
 
         self.labels_section_title = QLabel("Segmentations")
         self.labels_section_title.setObjectName("viewer_widget_labels_section_title")
@@ -364,6 +438,15 @@ class ViewerWidget(QWidget):
         self.labels_section_layout = QVBoxLayout(self.labels_section)
         self.labels_section_layout.setContentsMargins(0, 0, 0, 0)
         self.labels_section_layout.setSpacing(8)
+        self.labels_group = QFrame()
+        self.labels_group.setObjectName("viewer_widget_labels_group")
+        self.labels_group.setStyleSheet(_SECTION_GROUP_STYLESHEET)
+        self.labels_group_layout = QVBoxLayout(self.labels_group)
+        self.labels_group_layout.setContentsMargins(12, 12, 12, 12)
+        self.labels_group_layout.setSpacing(10)
+        self.labels_group_layout.addWidget(self.labels_section_title)
+        self.labels_group_layout.addWidget(self.labels_empty_label)
+        self.labels_group_layout.addWidget(self.labels_section)
 
         self.content_layout.addWidget(header_logo)
         self.content_layout.addWidget(title)
@@ -371,12 +454,8 @@ class ViewerWidget(QWidget):
         self.content_layout.addWidget(self.summary_label)
         self.content_layout.addLayout(selector_layout)
         self.content_layout.addWidget(self.action_feedback_label)
-        self.content_layout.addWidget(self.images_section_title)
-        self.content_layout.addWidget(self.images_empty_label)
-        self.content_layout.addWidget(self.images_section)
-        self.content_layout.addWidget(self.labels_section_title)
-        self.content_layout.addWidget(self.labels_empty_label)
-        self.content_layout.addWidget(self.labels_section)
+        self.content_layout.addWidget(self.images_group)
+        self.content_layout.addWidget(self.labels_group)
         self.content_layout.addStretch(1)
 
         self.scroll_area.setWidget(self.scroll_content)

@@ -72,14 +72,44 @@ def test_viewer_widget_refreshes_cards_when_shared_sdata_changes(qtbot, sdata_bl
     assert [card.image_name for card in widget.image_cards] == ["blobs_image", "blobs_multiscale_image"]
     assert [card.label_name for card in widget.labels_cards] == ["blobs_labels", "blobs_multiscale_labels"]
     assert widget.image_cards[0].channel_names == ["0", "1", "2"]
-    assert widget.image_cards[0].show_stack_button.text() == "Show stack"
-    assert not widget.image_cards[0].show_stack_button.isEnabled()
+    assert widget.image_cards[0].stack_toggle.text() == "stack"
+    assert widget.image_cards[0].stack_toggle.isChecked()
+    assert widget.image_cards[0].overlay_toggle.text() == "overlay"
+    assert not widget.image_cards[0].overlay_toggle.isChecked()
     assert widget.labels_cards[0].linked_table_combo.count() == 1
     assert widget.labels_cards[0].linked_table_combo.itemText(0) == "table"
     assert widget.labels_cards[1].linked_table_combo.count() == 1
     assert widget.labels_cards[1].linked_table_combo.itemText(0) == "No linked tables"
     assert not widget.labels_cards[1].linked_table_combo.isEnabled()
     assert "In coordinate system `global`" in widget.summary_label.text()
+
+
+def test_viewer_widget_image_mode_toggles_are_mutually_exclusive(qtbot, sdata_blobs) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata_blobs)
+
+    image_card = widget.image_cards[0]
+
+    assert image_card.stack_toggle.isChecked()
+    assert not image_card.overlay_toggle.isChecked()
+    assert image_card.channel_panel.isHidden()
+
+    image_card.overlay_toggle.setChecked(True)
+
+    assert not image_card.stack_toggle.isChecked()
+    assert image_card.overlay_toggle.isChecked()
+    assert not image_card.channel_panel.isHidden()
+
+    image_card.stack_toggle.setChecked(True)
+
+    assert image_card.stack_toggle.isChecked()
+    assert not image_card.overlay_toggle.isChecked()
+    assert image_card.channel_panel.isHidden()
 
 
 def test_viewer_widget_filters_cards_by_selected_coordinate_system(qtbot, monkeypatch) -> None:
