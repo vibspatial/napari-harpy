@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from html import unescape
 from types import SimpleNamespace
 
 import numpy as np
@@ -191,7 +192,7 @@ def test_feature_extraction_widget_shortens_long_identifiers_in_selection_status
     widget._update_primary_status_card()
 
     status_text = widget.selection_status.text()
-    status_tooltip = widget.selection_status.toolTip()
+    status_tooltip = unescape(widget.selection_status.toolTip()).replace("&#8203;", "").replace("\u200b", "")
 
     assert "Selection Ready" in status_text
     assert "…" in status_text

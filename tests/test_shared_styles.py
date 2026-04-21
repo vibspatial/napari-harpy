@@ -1,6 +1,6 @@
 from qtpy.QtWidgets import QSizePolicy
 
-from napari_harpy.widgets._shared_styles import CompactComboBox, build_input_control_stylesheet
+from napari_harpy.widgets._shared_styles import CompactComboBox, build_input_control_stylesheet, format_tooltip
 
 
 def test_build_input_control_stylesheet_suffixes_each_selector_individually() -> None:
@@ -38,3 +38,12 @@ def test_compact_combo_box_elides_long_current_text_and_sets_tooltip(qtbot) -> N
 
     assert combo.toolTip() != ""
     assert combo._elided_current_text() != combo.currentText()
+
+
+def test_format_tooltip_preserves_line_breaks_and_adds_soft_wrap_points() -> None:
+    tooltip = format_tooltip("Image: very_long_identifier_name\nCoordinate system: global/test")
+
+    assert "<br>" in tooltip
+    assert "max-width: 360px" in tooltip
+    assert "_&#8203;" in tooltip
+    assert "/&#8203;" in tooltip

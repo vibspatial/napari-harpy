@@ -174,7 +174,20 @@ def create_form_label(text: str) -> QLabel:
 
 
 def format_tooltip(message: str) -> str:
-    return f"<qt><span style='color: {TOOLTIP_TEXT_COLOR};'>{escape(message)}</span></qt>"
+    escaped_message = (
+        escape(message)
+        .replace("_", "_&#8203;")
+        .replace("/", "/&#8203;")
+        .replace("-", "-&#8203;")
+        .replace("\n", "<br>")
+    )
+    return (
+        "<qt>"
+        f"<div style='color: {TOOLTIP_TEXT_COLOR}; max-width: 360px;'>"
+        f"{escaped_message}"
+        "</div>"
+        "</qt>"
+    )
 
 
 def format_feedback_identifier(name: str, *, max_length: int = 56) -> tuple[str, bool]:

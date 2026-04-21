@@ -410,9 +410,57 @@ loaded and activated in napari.
 - VW-02
 - VW-03
 
+## VW-06: Add Table-Driven Labels Coloring In The Viewer Widget
+
+### Goal
+
+Allow the Harpy `Viewer` widget to color loaded labels layers directly from a
+selected linked table column, so table annotations can be inspected visually
+without switching to a separate workflow first.
+
+### Scope
+
+- extend the `Viewer` widget with table-driven labels coloring controls
+- use linked-table information already exposed for labels elements
+- apply coloring to the loaded napari labels layer for the selected
+  segmentation
+- keep the viewer adapter / shared `sdata` architecture intact
+
+### Required work
+
+- add a labels-coloring control path in `ViewerWidget`
+- expose available linked tables for the selected segmentation mask
+- expose selectable table columns suitable for coloring
+- load or reuse the labels layer through `ViewerAdapter`
+- apply table-driven coloring/styling to the active labels layer
+- define how the widget behaves when:
+  - no linked table exists
+  - no compatible column exists
+  - the labels layer is not yet loaded
+
+### Suggested files
+
+- `src/napari_harpy/widgets/_viewer_widget.py`
+- `src/napari_harpy/_viewer_styling.py`
+- `src/napari_harpy/_spatialdata.py`
+- `tests/test_viewer_widget.py`
+- possibly new viewer-styling tests
+
+### Acceptance criteria
+
+- [ ] the `Viewer` widget can expose linked-table-driven coloring controls for a labels element
+- [ ] a loaded labels layer can be colored from a selected linked-table column
+- [ ] the coloring flow works with the shared loaded `sdata`
+- [ ] the viewer widget handles missing linked tables / incompatible columns gracefully
+
+### Depends on
+
+- VW-01
+- VW-02
+- VW-03
+
 ## Nice-To-Have Follow-Ups
 
-- add table-driven labels coloring directly in the viewer widget
 - add image visibility toggles and layer grouping behavior
 - add contrast presets for image channels
 - support more than one loaded `SpatialData` object
