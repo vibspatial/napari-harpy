@@ -29,7 +29,8 @@ def _main() -> None:
     _rename_image_channels_to_rgb(sdata, IMAGE_NAME)
 
     # headless=True so we can load layers before entering napari.run()
-    interactive = Interactive(sdata, headless=True)
+    Interactive(sdata, headless=True)
+    """
     viewer_adapter = interactive.app_state.viewer_adapter
 
     labels_layer = viewer_adapter.ensure_labels_loaded(
@@ -53,11 +54,12 @@ def _main() -> None:
     #    mode="stack",
     # )
 
+
     viewer_adapter.activate_layer(overlay_layers[0])
 
     print(f"Loaded labels layer: {labels_layer.name}")
     print(f"Loaded overlay layers: {[layer.name for layer in overlay_layers]}")
-
+    """
     napari.run()
 
 
