@@ -28,6 +28,7 @@ from napari_harpy._spatialdata import (
     SpatialDataLabelsOption,
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
+    get_image_channel_names_from_sdata,
     get_spatialdata_image_options_for_coordinate_system_from_sdata,
     get_spatialdata_label_options_for_coordinate_system_from_sdata,
     get_table,
@@ -78,6 +79,7 @@ _FEATURE_GROUP_STYLESHEET = (
 )
 _FEATURE_HINT_INFO_STYLESHEET = "color: #6b7280; font-size: 12px; font-weight: 500;"
 _FEATURE_HINT_WARNING_STYLESHEET = "color: #b45309; font-size: 12px; font-weight: 600;"
+_CHANNEL_SELECTION_PANEL_STYLESHEET = "QWidget { background: transparent; }"
 _NO_IMAGE_TEXT = "No image"
 _INTENSITY_FEATURES = ("sum", "mean", "var", "min", "max", "kurtosis", "skew")
 _MORPHOLOGY_FEATURES = (
@@ -95,6 +97,7 @@ _MORPHOLOGY_FEATURES = (
     "centroid_dif",
 )
 _DEFAULT_FEATURE_MATRIX_KEY = "features"
+_MAX_VISIBLE_EXTRACTION_CHANNELS = 5
 
 
 class FeatureExtractionWidget(QWidget):
@@ -127,6 +130,9 @@ class FeatureExtractionWidget(QWidget):
         self._selected_label_option: SpatialDataLabelsOption | None = None
         self._image_options: list[SpatialDataImageOption] = []
         self._selected_image_option: SpatialDataImageOption | None = None
+        self._image_channel_names: list[str] = []
+        self._image_channel_checkboxes: list[QCheckBox] = []
+        self._selected_channel_names_by_image_identity: dict[tuple[int, str], tuple[str, ...]] = {}
         self._table_names: list[str] = []
         self._selected_table_name: str | None = None
         self._coordinate_systems: list[str] = []
@@ -172,6 +178,34 @@ class FeatureExtractionWidget(QWidget):
         self.image_combo.setObjectName("feature_extraction_image_combo")
         self.image_combo.currentIndexChanged.connect(self._on_image_changed)
         self.image_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
+
+        self.channel_selection_label = self._create_form_label("Channels")
+        self.channel_selection_container = QWidget()
+        self.channel_selection_container.setObjectName("feature_extraction_channel_selection_container")
+        self.channel_selection_container.setStyleSheet(_CHANNEL_SELECTION_PANEL_STYLESHEET)
+        channel_selection_layout = QVBoxLayout(self.channel_selection_container)
+        channel_selection_layout.setContentsMargins(0, 0, 0, 0)
+        channel_selection_layout.setSpacing(0)
+
+        self.channel_selection_scroll_area = QScrollArea()
+        self.channel_selection_scroll_area.setObjectName("feature_extraction_channel_selection_scroll_area")
+        self.channel_selection_scroll_area.setWidgetResizable(True)
+        self.channel_selection_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.channel_selection_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.channel_selection_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.channel_selection_scroll_area.setStyleSheet("QScrollArea { border: 0px; background: transparent; }")
+
+        self.channel_selection_list_widget = QWidget()
+        self.channel_selection_list_widget.setObjectName("feature_extraction_channel_selection_list")
+        self.channel_selection_list_widget.setStyleSheet(_CHANNEL_SELECTION_PANEL_STYLESHEET)
+        self.channel_selection_list_layout = QVBoxLayout(self.channel_selection_list_widget)
+        self.channel_selection_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.channel_selection_list_layout.setSpacing(6)
+        self.channel_selection_scroll_area.setWidget(self.channel_selection_list_widget)
+        channel_selection_layout.addWidget(self.channel_selection_scroll_area)
+
+        self.channel_selection_label.hide()
+        self.channel_selection_container.hide()
 
         self.table_combo = CompactComboBox()
         self.table_combo.setObjectName("feature_extraction_table_combo")
@@ -264,6 +298,7 @@ class FeatureExtractionWidget(QWidget):
         selector_layout.addRow(self._create_form_label("Coordinate system"), self.coordinate_system_combo)
         selector_layout.addRow(self._create_form_label("Segmentation mask"), self.segmentation_combo)
         selector_layout.addRow(self._create_form_label("Image"), self.image_combo)
+        selector_layout.addRow(self.channel_selection_label, self.channel_selection_container)
         selector_layout.addRow(self._create_form_label("Table"), self.table_combo)
         selector_layout.addRow(self._create_form_label("Feature matrix key"), self.output_key_line_edit)
 
@@ -304,6 +339,22 @@ class FeatureExtractionWidget(QWidget):
     def selected_image_name(self) -> str | None:
         """Return the currently selected image element name, if any."""
         return None if self._selected_image_option is None else self._selected_image_option.image_name
+
+    @property
+    def selected_extraction_channel_names(self) -> tuple[str, ...] | None:
+        """Return the locally selected extraction-channel names for the current image."""
+        if self.selected_image_name is None or not self._image_channel_names:
+            return None
+
+        return tuple(checkbox.text() for checkbox in self._image_channel_checkboxes if checkbox.isChecked())
+
+    @property
+    def selected_extraction_channel_indices(self) -> tuple[int, ...] | None:
+        """Return the locally selected extraction-channel indices for the current image."""
+        if self.selected_image_name is None or not self._image_channel_names:
+            return None
+
+        return tuple(index for index, checkbox in enumerate(self._image_channel_checkboxes) if checkbox.isChecked())
 
     @property
     def selected_table_name(self) -> str | None:
@@ -370,6 +421,7 @@ class FeatureExtractionWidget(QWidget):
         self._selected_label_option = None
         self._image_options = []
         self._selected_image_option = None
+        self._clear_image_channel_options()
         self._table_names = []
         self._selected_table_name = None
         self._coordinate_systems = []
@@ -514,9 +566,11 @@ class FeatureExtractionWidget(QWidget):
                 self.image_combo.setCurrentIndex(next_index + 1)
 
         self._set_selected_image_option(self.image_combo.currentIndex())
+        self._refresh_image_channel_options()
 
     def _on_image_changed(self, index: int) -> None:
         self._set_selected_image_option(index)
+        self._refresh_image_channel_options()
         self._update_intensity_features_hint()
         self._bind_current_selection()
 
@@ -535,6 +589,79 @@ class FeatureExtractionWidget(QWidget):
                 return index
 
         return None
+
+    def _clear_image_channel_options(self) -> None:
+        self._image_channel_names = []
+        self._image_channel_checkboxes = []
+
+        while self.channel_selection_list_layout.count():
+            item = self.channel_selection_list_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        self.channel_selection_label.hide()
+        self.channel_selection_container.hide()
+        self.channel_selection_scroll_area.setMaximumHeight(0)
+
+    def _refresh_image_channel_options(self) -> None:
+        self._clear_image_channel_options()
+
+        if self.selected_spatialdata is None or self._selected_image_option is None:
+            return
+
+        channel_names = get_image_channel_names_from_sdata(self.selected_spatialdata, self.selected_image_name)
+        if not channel_names:
+            return
+
+        self._image_channel_names = channel_names
+        current_image_identity = self._selected_image_option.identity
+        selected_channel_names = self._selected_channel_names_by_image_identity.get(current_image_identity)
+        if selected_channel_names is None:
+            selected_channel_name_set = set(channel_names)
+        else:
+            selected_channel_name_set = set(selected_channel_names)
+
+        channel_rows: list[QWidget] = []
+        for channel_name in channel_names:
+            checkbox = QCheckBox(channel_name)
+            checkbox.setObjectName(f"feature_extraction_channel_checkbox_{channel_name}")
+            checkbox.setStyleSheet(_FEATURE_CHECKBOX_STYLESHEET)
+            checkbox.setChecked(channel_name in selected_channel_name_set)
+            checkbox.toggled.connect(self._on_channel_selection_changed)
+            self.channel_selection_list_layout.addWidget(checkbox)
+            self._image_channel_checkboxes.append(checkbox)
+            channel_rows.append(checkbox)
+
+        self._set_channel_selection_scroll_height(channel_rows)
+        self.channel_selection_label.show()
+        self.channel_selection_container.show()
+        self._store_selected_channel_names_for_current_image()
+
+    def _on_channel_selection_changed(self, _checked: bool) -> None:
+        self._store_selected_channel_names_for_current_image()
+        self._bind_current_selection()
+
+    def _store_selected_channel_names_for_current_image(self) -> None:
+        if self._selected_image_option is None or not self._image_channel_names:
+            return
+
+        self._selected_channel_names_by_image_identity[self._selected_image_option.identity] = tuple(
+            checkbox.text() for checkbox in self._image_channel_checkboxes if checkbox.isChecked()
+        )
+
+    def _set_channel_selection_scroll_height(self, channel_rows: list[QWidget]) -> None:
+        visible_rows = channel_rows[:_MAX_VISIBLE_EXTRACTION_CHANNELS]
+        if not visible_rows:
+            self.channel_selection_scroll_area.setMaximumHeight(0)
+            return
+
+        visible_height = sum(row.sizeHint().height() for row in visible_rows)
+        visible_height += self.channel_selection_list_layout.spacing() * max(0, len(visible_rows) - 1)
+        margins = self.channel_selection_list_layout.contentsMargins()
+        visible_height += margins.top() + margins.bottom()
+        visible_height += self.channel_selection_scroll_area.frameWidth() * 2
+        self.channel_selection_scroll_area.setMaximumHeight(visible_height)
 
     def _refresh_table_names(self) -> None:
         previous_table_name = self.selected_table_name

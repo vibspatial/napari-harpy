@@ -9,8 +9,9 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from napari.layers import Image, Labels
 from spatialdata import get_element_annotators, join_spatialelement_table
-from spatialdata.models import TableModel
+from spatialdata.models import TableModel, get_axes_names
 from spatialdata.transformations import get_transformation
+from xarray import DataArray
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -323,6 +324,25 @@ def get_coordinate_system_names_from_sdata(sdata: SpatialData) -> list[str]:
         coordinate_systems.update(_get_element_coordinate_systems(sdata.images[image_name]))
 
     return sorted(coordinate_systems)
+
+
+def get_image_channel_names_from_sdata(sdata: SpatialData, image_name: str) -> list[str]:
+    """Return channel names for an image element, or an empty list without a channel axis."""
+    if image_name not in _get_image_names(sdata):
+        raise ValueError(f"Image element `{image_name}` is not available in the selected SpatialData object.")
+
+    image_element = sdata.images[image_name]
+    axes = get_axes_names(image_element)
+    if "c" not in axes:
+        return []
+
+    if isinstance(image_element, DataArray):
+        channel_values = list(image_element.coords.indexes["c"])
+    else:
+        scale0 = next(iter(image_element["scale0"].values()))
+        channel_values = list(scale0.coords.indexes["c"])
+
+    return [str(channel_value) for channel_value in channel_values]
 
 
 def get_spatialdata_label_options_for_coordinate_system_from_sdata(

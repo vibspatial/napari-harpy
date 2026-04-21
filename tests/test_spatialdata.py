@@ -13,6 +13,7 @@ from napari_harpy._spatialdata import (
     SpatialDataViewerBinding,
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
+    get_image_channel_names_from_sdata,
     get_spatialdata_image_options_for_coordinate_system_from_sdata,
     get_spatialdata_label_options_for_coordinate_system_from_sdata,
     get_spatialdata_label_options_from_sdata,
@@ -143,6 +144,10 @@ def test_get_coordinate_system_names_from_sdata_returns_sorted_union(
     monkeypatch.setattr(spatialdata_module, "get_transformation", _fake_get_transformation)
 
     assert get_coordinate_system_names_from_sdata(sdata_blobs) == ["aligned", "global", "local"]
+
+
+def test_get_image_channel_names_from_sdata_returns_channel_axis_names(sdata_blobs: SpatialData) -> None:
+    assert get_image_channel_names_from_sdata(sdata_blobs, "blobs_image") == ["0", "1", "2"]
 
 
 def test_get_spatialdata_label_options_for_coordinate_system_from_sdata_filters_labels(

@@ -22,12 +22,10 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 from spatialdata import read_zarr
-from spatialdata.models import get_axes_names
 from spatialdata.transformations import get_transformation
-from xarray import DataArray
 
 from napari_harpy._app_state import HarpyAppState, get_or_create_app_state
-from napari_harpy._spatialdata import get_annotating_table_names
+from napari_harpy._spatialdata import get_annotating_table_names, get_image_channel_names_from_sdata
 from napari_harpy._viewer_adapter import DEFAULT_OVERLAY_COLORS
 from napari_harpy.widgets._shared_styles import (
     ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,
@@ -591,7 +589,7 @@ class ViewerWidget(QWidget):
         for image_name in image_names:
             card = _ImageCardWidget(
                 image_name=image_name,
-                channel_names=_get_image_channel_names(sdata, image_name),
+                channel_names=get_image_channel_names_from_sdata(sdata, image_name),
             )
             card.add_update_requested.connect(self._add_or_update_image_layer)
             self.images_section_layout.addWidget(card)
@@ -792,18 +790,3 @@ def _get_images_in_coordinate_system(sdata: SpatialData, coordinate_system: str)
         if coordinate_system in get_transformation(element, get_all=True).keys()
     )
 
-
-def _get_image_channel_names(sdata: SpatialData, image_name: str) -> list[str]:
-    images = getattr(sdata, "images", {})
-    image_element = images[image_name]
-    axes = get_axes_names(image_element)
-    if "c" not in axes:
-        return []
-
-    if isinstance(image_element, DataArray):
-        channel_values = list(image_element.coords.indexes["c"])
-    else:
-        scale0 = next(iter(image_element["scale0"].values()))
-        channel_values = list(scale0.coords.indexes["c"])
-
-    return [str(channel_value) for channel_value in channel_values]

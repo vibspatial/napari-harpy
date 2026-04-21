@@ -164,7 +164,7 @@ def test_viewer_widget_overlay_channel_panel_scrolls_when_many_channels(qtbot, m
     monkeypatch.setattr(viewer_widget_module, "_get_coordinate_systems_from_sdata", lambda sdata: ["global"])
     monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
     monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: ["image"])
-    monkeypatch.setattr(viewer_widget_module, "_get_image_channel_names", lambda sdata, image_name: many_channels)
+    monkeypatch.setattr(viewer_widget_module, "get_image_channel_names_from_sdata", lambda sdata, image_name: many_channels)
 
     with qtbot.waitSignal(widget.app_state.sdata_changed):
         widget.app_state.set_sdata(fake_sdata)
@@ -195,7 +195,7 @@ def test_viewer_widget_filters_cards_by_selected_coordinate_system(qtbot, monkey
         "_get_images_in_coordinate_system",
         lambda sdata, coordinate_system: ["image_global"] if coordinate_system == "global" else ["image_local"],
     )
-    monkeypatch.setattr(viewer_widget_module, "_get_image_channel_names", lambda sdata, image_name: ["c0", "c1"])
+    monkeypatch.setattr(viewer_widget_module, "get_image_channel_names_from_sdata", lambda sdata, image_name: ["c0", "c1"])
     monkeypatch.setattr(
         viewer_widget_module,
         "get_annotating_table_names",
@@ -362,7 +362,11 @@ def test_viewer_widget_add_update_image_overlay_passes_selected_channels_and_col
     monkeypatch.setattr(viewer_widget_module, "_get_coordinate_systems_from_sdata", lambda sdata: ["global"])
     monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
     monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: ["image"])
-    monkeypatch.setattr(viewer_widget_module, "_get_image_channel_names", lambda sdata, image_name: ["c0", "c1", "c2"])
+    monkeypatch.setattr(
+        viewer_widget_module,
+        "get_image_channel_names_from_sdata",
+        lambda sdata, image_name: ["c0", "c1", "c2"],
+    )
     monkeypatch.setattr(
         widget.app_state.viewer_adapter,
         "ensure_image_loaded",
@@ -467,7 +471,7 @@ def test_viewer_widget_add_update_image_uses_selected_coordinate_system(qtbot, m
         "_get_images_in_coordinate_system",
         lambda sdata, coordinate_system: ["image_global"] if coordinate_system == "global" else ["image_local"],
     )
-    monkeypatch.setattr(viewer_widget_module, "_get_image_channel_names", lambda sdata, image_name: ["c0", "c1"])
+    monkeypatch.setattr(viewer_widget_module, "get_image_channel_names_from_sdata", lambda sdata, image_name: ["c0", "c1"])
     monkeypatch.setattr(
         widget.app_state.viewer_adapter,
         "ensure_image_loaded",

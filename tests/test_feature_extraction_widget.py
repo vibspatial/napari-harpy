@@ -12,6 +12,7 @@ import napari_harpy.widgets._feature_extraction_widget as feature_extraction_wid
 from napari_harpy._app_state import get_or_create_app_state
 from napari_harpy._spatialdata import SpatialDataImageOption, SpatialDataLabelsOption
 from napari_harpy.widgets._feature_extraction_widget import FeatureExtractionWidget
+from napari_harpy.widgets._viewer_widget import ViewerWidget
 
 
 class DummyEventEmitter:
@@ -230,6 +231,88 @@ def test_feature_extraction_widget_filters_labels_and_images_by_coordinate_syste
         "image_global",
     ]
     assert widget.table_combo.itemText(0) == "table"
+
+
+def test_feature_extraction_widget_hides_channel_selection_without_image(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    assert widget.selected_image_name is None
+    assert widget.selected_extraction_channel_names is None
+    assert widget.selected_extraction_channel_indices is None
+    assert widget.channel_selection_label.isHidden()
+    assert widget.channel_selection_container.isHidden()
+
+
+def test_feature_extraction_widget_shows_selected_image_channels_and_defaults_to_all_selected(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    widget.image_combo.setCurrentIndex(1)
+
+    assert widget.selected_image_name == "blobs_image"
+    assert [checkbox.text() for checkbox in widget._image_channel_checkboxes] == ["0", "1", "2"]
+    assert widget.selected_extraction_channel_names == ("0", "1", "2")
+    assert widget.selected_extraction_channel_indices == (0, 1, 2)
+    assert not widget.channel_selection_label.isHidden()
+    assert not widget.channel_selection_container.isHidden()
+
+
+def test_feature_extraction_widget_hides_channel_selection_when_selected_image_has_no_channel_axis(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    monkeypatch.setattr(feature_extraction_widget_module, "get_image_channel_names_from_sdata", lambda sdata, image_name: [])
+
+    widget.image_combo.setCurrentIndex(1)
+
+    assert widget.selected_image_name == "blobs_image"
+    assert widget.selected_extraction_channel_names is None
+    assert widget.selected_extraction_channel_indices is None
+    assert widget.channel_selection_label.isHidden()
+    assert widget.channel_selection_container.isHidden()
+
+
+def test_feature_extraction_widget_channel_selection_is_independent_from_viewer_overlay_state(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+    feature_widget = FeatureExtractionWidget(viewer)
+    viewer_widget = ViewerWidget(viewer)
+
+    qtbot.addWidget(feature_widget)
+    qtbot.addWidget(viewer_widget)
+
+    feature_widget.image_combo.setCurrentIndex(1)
+    feature_widget._image_channel_checkboxes[0].setChecked(False)
+
+    assert feature_widget.selected_extraction_channel_indices == (1, 2)
+
+    image_card = next(card for card in viewer_widget.image_cards if card.image_name == "blobs_image")
+    image_card.overlay_toggle.setChecked(True)
+    image_card.channel_checkboxes[0].setChecked(True)
+    image_card.channel_checkboxes[1].setChecked(False)
+    image_card.channel_checkboxes[2].setChecked(False)
+
+    assert image_card.get_selected_overlay_channels() == [0]
+    assert feature_widget.selected_extraction_channel_indices == (1, 2)
 
 
 def test_feature_extraction_widget_shortens_long_identifiers_in_selection_status(
