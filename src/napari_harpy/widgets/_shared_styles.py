@@ -92,7 +92,7 @@ class CompactComboBox(QComboBox):
         self,
         parent: QWidget | None = None,
         *,
-        minimum_contents_length: int = 18,
+        minimum_contents_length: int = 12,
     ) -> None:
         super().__init__(parent)
         self.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
