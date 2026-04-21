@@ -1,100 +1,380 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from functools import partial
 from typing import TYPE_CHECKING
 
 from qtpy.QtCore import QSignalBlocker, Qt
+from qtpy.QtGui import QColor, QPalette
 from qtpy.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFormLayout,
+    QFrame,
+    QHBoxLayout,
     QLabel,
+    QLayout,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
+from spatialdata.models import get_axes_names
 from spatialdata.transformations import get_transformation
+from xarray import DataArray
 
 from napari_harpy._app_state import HarpyAppState, get_or_create_app_state
+from napari_harpy._spatialdata import get_annotating_table_names
+from napari_harpy._viewer_adapter import DEFAULT_OVERLAY_COLORS
 
 if TYPE_CHECKING:
     import napari
     from spatialdata import SpatialData
 
 
+_WIDGET_SURFACE_COLOR = "#fcf6f3"
+_WIDGET_SURFACE_STYLESHEET = f"background-color: {_WIDGET_SURFACE_COLOR};"
+_WIDGET_MIN_WIDTH = 370
+_FORM_LABEL_STYLESHEET = "color: #374151; font-weight: 600; padding-top: 6px;"
+_INPUT_CONTROL_STYLESHEET = (
+    "QComboBox {"
+    "background-color: #fffdfb; "
+    "border: 1px solid #ddcfc7; "
+    "border-radius: 8px; "
+    "color: #111827; "
+    "padding: 4px 10px; "
+    "min-height: 30px;}"
+    "QComboBox:disabled {"
+    "background-color: #f7efea; "
+    "border-color: #e9ddd7; "
+    "color: #9ca3af;}"
+    "QComboBox:focus {"
+    "border-color: #8fb6c9; "
+    "background-color: #ffffff;}"
+    "QComboBox { padding-right: 24px; }"
+    "QComboBox::drop-down {"
+    "subcontrol-origin: padding; "
+    "subcontrol-position: top right; "
+    "width: 24px; "
+    "border: 0px; "
+    "background: transparent;}"
+)
+_ACTION_BUTTON_STYLESHEET = (
+    "QPushButton {"
+    "background-color: #f7ede8; "
+    "border: 1px solid #ddcfc7; "
+    "border-radius: 8px; "
+    "color: #111827; "
+    "font-weight: 600; "
+    "padding: 4px 10px; "
+    "min-height: 30px;}"
+    "QPushButton:hover { background-color: #f3e5de; border-color: #c9b6ac; }"
+    "QPushButton:pressed { background-color: #ebd7cf; border-color: #b59a8e; }"
+    "QPushButton:disabled { background-color: #faf4f1; border-color: #ede3dd; color: #a8a29e; }"
+)
+_CARD_STYLESHEET = (
+    "QFrame {"
+    "background-color: #f8eeea; "
+    "border: 1px solid #eadfd8; "
+    "border-radius: 10px;}"
+)
+_CARD_TITLE_STYLESHEET = "color: #374151; font-weight: 600;"
+_SECTION_TITLE_STYLESHEET = "color: #374151; font-size: 14px; font-weight: 700;"
+_CHECKBOX_STYLESHEET = (
+    "QCheckBox {"
+    "color: #111827; "
+    "font-weight: 500; "
+    "spacing: 8px; "
+    "background: transparent;}"
+    "QCheckBox:disabled { color: #9ca3af; }"
+    "QCheckBox::indicator {"
+    "width: 16px; "
+    "height: 16px; "
+    "border-radius: 4px; "
+    "border: 1px solid #d8c8bf; "
+    "background-color: #fffdfb;}"
+    "QCheckBox::indicator:hover { border-color: #c7b2a7; }"
+    "QCheckBox::indicator:checked {"
+    "border-color: #7aa7bd; "
+    "background-color: #8fb6c9;}"
+    "QCheckBox::indicator:disabled {"
+    "border-color: #e9ddd7; "
+    "background-color: #f7efea;}"
+)
+_SUMMARY_LABEL_STYLESHEET = "color: #374151; font-weight: 500;"
+_EMPTY_STATE_STYLESHEET = "color: #6b7280; font-weight: 500;"
+_CHANNEL_PANEL_STYLESHEET = "QWidget { background: transparent; }"
+
+
+class _LabelsCardWidget(QFrame):
+    """Card UI for one labels element in the selected coordinate system."""
+
+    def __init__(
+        self,
+        *,
+        label_name: str,
+        table_names: list[str],
+        on_add_update: Callable[[str], None],
+    ) -> None:
+        super().__init__()
+        self.label_name = label_name
+        self.setObjectName(f"viewer_widget_labels_card_{label_name}")
+        self.setStyleSheet(_CARD_STYLESHEET)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        self.title_label = QLabel(label_name)
+        self.title_label.setObjectName(f"viewer_widget_labels_card_title_{label_name}")
+        self.title_label.setStyleSheet(_CARD_TITLE_STYLESHEET)
+
+        form_layout = QFormLayout()
+        form_layout.setContentsMargins(0, 0, 0, 0)
+        form_layout.setHorizontalSpacing(8)
+        form_layout.setVerticalSpacing(6)
+
+        linked_table_label = _create_form_label("Linked table")
+        self.linked_table_combo = QComboBox()
+        self.linked_table_combo.setObjectName(f"viewer_widget_linked_table_combo_{label_name}")
+        self.linked_table_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
+        if table_names:
+            self.linked_table_combo.addItems(table_names)
+        else:
+            self.linked_table_combo.addItem("No linked tables")
+            self.linked_table_combo.setEnabled(False)
+
+        self.add_update_button = QPushButton("Add / Update in viewer")
+        self.add_update_button.setObjectName(f"viewer_widget_add_update_labels_button_{label_name}")
+        self.add_update_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.add_update_button.setMinimumHeight(28)
+        self.add_update_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
+        self.add_update_button.clicked.connect(partial(on_add_update, label_name))
+
+        form_layout.addRow(linked_table_label, self.linked_table_combo)
+
+        layout.addWidget(self.title_label)
+        layout.addLayout(form_layout)
+        layout.addWidget(self.add_update_button)
+
+
+class _ImageCardWidget(QFrame):
+    """Card UI for one image element in the selected coordinate system."""
+
+    def __init__(
+        self,
+        *,
+        image_name: str,
+        channel_names: list[str],
+    ) -> None:
+        super().__init__()
+        self.image_name = image_name
+        self.channel_names = channel_names
+        self.setObjectName(f"viewer_widget_image_card_{image_name}")
+        self.setStyleSheet(_CARD_STYLESHEET)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(8)
+
+        self.title_label = QLabel(image_name)
+        self.title_label.setObjectName(f"viewer_widget_image_card_title_{image_name}")
+        self.title_label.setStyleSheet(_CARD_TITLE_STYLESHEET)
+
+        self.show_stack_button = QPushButton("Show stack")
+        self.show_stack_button.setObjectName(f"viewer_widget_show_stack_button_{image_name}")
+        self.show_stack_button.setEnabled(False)
+        self.show_stack_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.show_stack_button.setMinimumHeight(28)
+        self.show_stack_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
+        self.show_stack_button.setToolTip("Stack image loading is implemented in the next slice.")
+
+        self.overlay_toggle = QCheckBox("Overlay")
+        self.overlay_toggle.setObjectName(f"viewer_widget_overlay_toggle_{image_name}")
+        self.overlay_toggle.setStyleSheet(_CHECKBOX_STYLESHEET)
+
+        header_layout.addWidget(self.title_label, 1)
+        header_layout.addWidget(self.show_stack_button)
+        header_layout.addWidget(self.overlay_toggle)
+
+        self.channel_panel = QWidget()
+        self.channel_panel.setObjectName(f"viewer_widget_channel_panel_{image_name}")
+        self.channel_panel.setStyleSheet(_CHANNEL_PANEL_STYLESHEET)
+        self.channel_panel.setVisible(False)
+        channel_layout = QVBoxLayout(self.channel_panel)
+        channel_layout.setContentsMargins(0, 0, 0, 0)
+        channel_layout.setSpacing(6)
+
+        self.channel_checkboxes: list[QCheckBox] = []
+        self.channel_color_combos: list[QComboBox] = []
+
+        if channel_names:
+            for index, channel_name in enumerate(channel_names):
+                row = QWidget()
+                row_layout = QHBoxLayout(row)
+                row_layout.setContentsMargins(0, 0, 0, 0)
+                row_layout.setSpacing(8)
+
+                checkbox = QCheckBox(channel_name)
+                checkbox.setObjectName(f"viewer_widget_channel_checkbox_{image_name}_{channel_name}")
+                checkbox.setStyleSheet(_CHECKBOX_STYLESHEET)
+
+                color_combo = QComboBox()
+                color_combo.setObjectName(f"viewer_widget_channel_color_combo_{image_name}_{channel_name}")
+                color_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
+                for color in DEFAULT_OVERLAY_COLORS:
+                    color_combo.addItem(color, color)
+                color_combo.setCurrentIndex(index % color_combo.count())
+
+                row_layout.addWidget(checkbox, 1)
+                row_layout.addWidget(color_combo)
+
+                channel_layout.addWidget(row)
+                self.channel_checkboxes.append(checkbox)
+                self.channel_color_combos.append(color_combo)
+        else:
+            no_channels_label = QLabel("No channel axis available for this image.")
+            no_channels_label.setObjectName(f"viewer_widget_no_channels_label_{image_name}")
+            no_channels_label.setWordWrap(True)
+            no_channels_label.setStyleSheet(_EMPTY_STATE_STYLESHEET)
+            channel_layout.addWidget(no_channels_label)
+
+        self.add_update_button = QPushButton("Add / Update in viewer")
+        self.add_update_button.setObjectName(f"viewer_widget_add_update_image_button_{image_name}")
+        self.add_update_button.setEnabled(False)
+        self.add_update_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.add_update_button.setMinimumHeight(28)
+        self.add_update_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
+        self.add_update_button.setToolTip("Image loading actions are implemented in the next slices.")
+
+        self.overlay_toggle.toggled.connect(self.channel_panel.setVisible)
+
+        layout.addLayout(header_layout)
+        layout.addWidget(self.channel_panel)
+        layout.addWidget(self.add_update_button)
+
+
 class ViewerWidget(QWidget):
-    """Minimal shared viewer widget shell backed by `HarpyAppState`."""
+    """Shared viewer widget backed by `HarpyAppState` and `ViewerAdapter`."""
 
     def __init__(self, napari_viewer: napari.Viewer | None = None) -> None:
         super().__init__()
         self.setObjectName("viewer_widget")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAutoFillBackground(True)
+        palette = self.palette()
+        palette.setColor(QPalette.ColorRole.Window, QColor(_WIDGET_SURFACE_COLOR))
+        self.setPalette(palette)
+        self.setStyleSheet(_WIDGET_SURFACE_STYLESHEET)
+        self.setMinimumWidth(_WIDGET_MIN_WIDTH)
         self._viewer = napari_viewer
         self._app_state = get_or_create_app_state(napari_viewer)
+        self._labels_cards: list[_LabelsCardWidget] = []
+        self._image_cards: list[_ImageCardWidget] = []
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setObjectName("viewer_widget_scroll_area")
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setStyleSheet("QScrollArea { border: 0px; background: transparent; }")
+
+        self.scroll_content = QWidget()
+        self.scroll_content.setObjectName("viewer_widget_scroll_content")
+        self.scroll_content.setAutoFillBackground(True)
+        scroll_palette = self.scroll_content.palette()
+        scroll_palette.setColor(QPalette.ColorRole.Window, QColor(_WIDGET_SURFACE_COLOR))
+        self.scroll_content.setPalette(scroll_palette)
+        self.scroll_content.setStyleSheet(_WIDGET_SURFACE_STYLESHEET)
+        self.content_layout = QVBoxLayout(self.scroll_content)
+        self.content_layout.setContentsMargins(12, 12, 12, 12)
+        self.content_layout.setSpacing(10)
 
         title = QLabel("Viewer")
         title.setObjectName("viewer_widget_title")
-        title.setStyleSheet("font-size: 18px; font-weight: 700;")
+        title.setStyleSheet("color: #111827; font-size: 18px; font-weight: 700;")
 
         self.empty_state_label = QLabel(
             "No SpatialData loaded. Use `Interactive(sdata)` for now; an in-widget open action will follow later."
         )
         self.empty_state_label.setObjectName("viewer_widget_empty_state")
         self.empty_state_label.setWordWrap(True)
+        self.empty_state_label.setStyleSheet(_EMPTY_STATE_STYLESHEET)
 
         self.summary_label = QLabel("No SpatialData loaded.")
         self.summary_label.setObjectName("viewer_widget_summary")
         self.summary_label.setWordWrap(True)
+        self.summary_label.setStyleSheet(_SUMMARY_LABEL_STYLESHEET)
 
-        form_layout = QFormLayout()
-        form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        form_layout.setHorizontalSpacing(12)
-        form_layout.setVerticalSpacing(10)
+        selector_layout = QFormLayout()
+        selector_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        selector_layout.setHorizontalSpacing(12)
+        selector_layout.setVerticalSpacing(10)
 
         self.coordinate_system_combo = QComboBox()
         self.coordinate_system_combo.setObjectName("viewer_widget_coordinate_system_combo")
+        self.coordinate_system_combo.currentIndexChanged.connect(self._on_coordinate_system_changed)
+        self.coordinate_system_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
+        selector_layout.addRow(_create_form_label("Coordinate system"), self.coordinate_system_combo)
 
-        self.labels_combo = QComboBox()
-        self.labels_combo.setObjectName("viewer_widget_labels_combo")
+        self.action_feedback_label = QLabel("")
+        self.action_feedback_label.setObjectName("viewer_widget_action_feedback")
+        self.action_feedback_label.setWordWrap(True)
+        self.action_feedback_label.hide()
 
-        self.linked_table_combo = QComboBox()
-        self.linked_table_combo.setObjectName("viewer_widget_linked_table_combo")
+        self.images_section_title = QLabel("Images")
+        self.images_section_title.setObjectName("viewer_widget_images_section_title")
+        self.images_section_title.setStyleSheet(_SECTION_TITLE_STYLESHEET)
 
-        self.image_combo = QComboBox()
-        self.image_combo.setObjectName("viewer_widget_image_combo")
+        self.images_empty_label = QLabel("No images available in the selected coordinate system.")
+        self.images_empty_label.setObjectName("viewer_widget_images_empty_state")
+        self.images_empty_label.setWordWrap(True)
+        self.images_empty_label.setStyleSheet(_EMPTY_STATE_STYLESHEET)
 
-        self.display_mode_combo = QComboBox()
-        self.display_mode_combo.setObjectName("viewer_widget_display_mode_combo")
-        self.display_mode_combo.addItem("stack", "stack")
-        self.display_mode_combo.addItem("overlay", "overlay")
+        self.images_section = QWidget()
+        self.images_section.setObjectName("viewer_widget_images_section")
+        self.images_section_layout = QVBoxLayout(self.images_section)
+        self.images_section_layout.setContentsMargins(0, 0, 0, 0)
+        self.images_section_layout.setSpacing(8)
 
-        self.show_segmentation_button = QPushButton("Show segmentation")
-        self.show_segmentation_button.setObjectName("viewer_widget_show_segmentation_button")
-        self.show_segmentation_button.setEnabled(False)
+        self.labels_section_title = QLabel("Segmentations")
+        self.labels_section_title.setObjectName("viewer_widget_labels_section_title")
+        self.labels_section_title.setStyleSheet(_SECTION_TITLE_STYLESHEET)
 
-        self.show_image_button = QPushButton("Show image")
-        self.show_image_button.setObjectName("viewer_widget_show_image_button")
-        self.show_image_button.setEnabled(False)
+        self.labels_empty_label = QLabel("No segmentation masks available in the selected coordinate system.")
+        self.labels_empty_label.setObjectName("viewer_widget_labels_empty_state")
+        self.labels_empty_label.setWordWrap(True)
+        self.labels_empty_label.setStyleSheet(_EMPTY_STATE_STYLESHEET)
 
-        self.show_selected_channels_button = QPushButton("Show selected channels")
-        self.show_selected_channels_button.setObjectName("viewer_widget_show_selected_channels_button")
-        self.show_selected_channels_button.setEnabled(False)
+        self.labels_section = QWidget()
+        self.labels_section.setObjectName("viewer_widget_labels_section")
+        self.labels_section_layout = QVBoxLayout(self.labels_section)
+        self.labels_section_layout.setContentsMargins(0, 0, 0, 0)
+        self.labels_section_layout.setSpacing(8)
 
-        form_layout.addRow("Coordinate system", self.coordinate_system_combo)
-        form_layout.addRow("Labels", self.labels_combo)
-        form_layout.addRow("Linked table", self.linked_table_combo)
-        form_layout.addRow("Image", self.image_combo)
-        form_layout.addRow("Display mode", self.display_mode_combo)
+        self.content_layout.addWidget(title)
+        self.content_layout.addWidget(self.empty_state_label)
+        self.content_layout.addWidget(self.summary_label)
+        self.content_layout.addLayout(selector_layout)
+        self.content_layout.addWidget(self.action_feedback_label)
+        self.content_layout.addWidget(self.images_section_title)
+        self.content_layout.addWidget(self.images_empty_label)
+        self.content_layout.addWidget(self.images_section)
+        self.content_layout.addWidget(self.labels_section_title)
+        self.content_layout.addWidget(self.labels_empty_label)
+        self.content_layout.addWidget(self.labels_section)
+        self.content_layout.addStretch(1)
 
-        layout.addWidget(title)
-        layout.addWidget(self.empty_state_label)
-        layout.addWidget(self.summary_label)
-        layout.addLayout(form_layout)
-        layout.addWidget(self.show_segmentation_button)
-        layout.addWidget(self.show_image_button)
-        layout.addWidget(self.show_selected_channels_button)
-        layout.addStretch(1)
+        self.scroll_area.setWidget(self.scroll_content)
+        root_layout.addWidget(self.scroll_area)
 
         self._app_state.sdata_changed.connect(self._on_sdata_changed)
         self.refresh_from_sdata(self._app_state.sdata)
@@ -104,61 +384,156 @@ class ViewerWidget(QWidget):
         """Return the shared Harpy app state for this widget."""
         return self._app_state
 
+    @property
+    def labels_cards(self) -> list[_LabelsCardWidget]:
+        """Return the currently visible labels cards."""
+        return list(self._labels_cards)
+
+    @property
+    def image_cards(self) -> list[_ImageCardWidget]:
+        """Return the currently visible image cards."""
+        return list(self._image_cards)
+
     def _on_sdata_changed(self, sdata: SpatialData | None) -> None:
         """Refresh the widget when the shared loaded `SpatialData` changes."""
         self.refresh_from_sdata(sdata)
 
+    def _on_coordinate_system_changed(self) -> None:
+        """Refresh the filtered image and labels cards when the coordinate system changes."""
+        self._refresh_coordinate_system_content()
+
     def refresh_from_sdata(self, sdata: SpatialData | None) -> None:
-        """Refresh the minimal widget shell from the currently loaded `SpatialData`."""
-        with (
-            QSignalBlocker(self.coordinate_system_combo),
-            QSignalBlocker(self.labels_combo),
-            QSignalBlocker(self.linked_table_combo),
-            QSignalBlocker(self.image_combo),
-            QSignalBlocker(self.display_mode_combo),
-        ):
+        """Refresh the viewer widget from the currently loaded `SpatialData`."""
+        with QSignalBlocker(self.coordinate_system_combo):
+            previous_coordinate_system = self.coordinate_system_combo.currentText()
             self.coordinate_system_combo.clear()
-            self.labels_combo.clear()
-            self.linked_table_combo.clear()
-            self.image_combo.clear()
 
             if sdata is None:
                 self.empty_state_label.show()
                 self.summary_label.setText("No SpatialData loaded.")
-                self._set_controls_enabled(False)
+                self.coordinate_system_combo.setEnabled(False)
+                self._clear_cards()
+                self._update_section_empty_states([], [])
                 return
 
             coordinate_systems = _get_coordinate_systems_from_sdata(sdata)
-            labels = sorted(getattr(sdata, "labels", {}).keys())
-            images = sorted(getattr(sdata, "images", {}).keys())
-
             self.coordinate_system_combo.addItems(coordinate_systems)
-            self.labels_combo.addItems(labels)
-            self.image_combo.addItems(images)
-            self.linked_table_combo.addItem("Available after label selection")
+
+            if previous_coordinate_system in coordinate_systems:
+                self.coordinate_system_combo.setCurrentIndex(coordinate_systems.index(previous_coordinate_system))
+            elif coordinate_systems:
+                self.coordinate_system_combo.setCurrentIndex(0)
 
             self.empty_state_label.hide()
-            self.summary_label.setText(
-                "Loaded SpatialData with "
-                f"{len(coordinate_systems)} coordinate system(s), "
-                f"{len(labels)} labels element(s), and "
-                f"{len(images)} image element(s)."
-            )
-            self._set_controls_enabled(True)
-            self.linked_table_combo.setEnabled(False)
-            self.show_segmentation_button.setEnabled(bool(labels))
-            self.show_image_button.setEnabled(bool(images))
-            self.show_selected_channels_button.setEnabled(bool(images))
+            self.coordinate_system_combo.setEnabled(bool(coordinate_systems))
 
-    def _set_controls_enabled(self, enabled: bool) -> None:
-        self.coordinate_system_combo.setEnabled(enabled)
-        self.labels_combo.setEnabled(enabled)
-        self.image_combo.setEnabled(enabled)
-        self.display_mode_combo.setEnabled(enabled)
-        self.linked_table_combo.setEnabled(enabled)
-        self.show_segmentation_button.setEnabled(enabled)
-        self.show_image_button.setEnabled(enabled)
-        self.show_selected_channels_button.setEnabled(enabled)
+        self._refresh_coordinate_system_content()
+
+    def _refresh_coordinate_system_content(self) -> None:
+        sdata = self._app_state.sdata
+        coordinate_system = self.coordinate_system_combo.currentText()
+
+        if sdata is None or not coordinate_system:
+            self._clear_cards()
+            self._update_section_empty_states([], [])
+            if sdata is None:
+                self.summary_label.setText("No SpatialData loaded.")
+            else:
+                self.summary_label.setText("No coordinate system selected.")
+            return
+
+        label_names = _get_labels_in_coordinate_system(sdata, coordinate_system)
+        image_names = _get_images_in_coordinate_system(sdata, coordinate_system)
+
+        self.summary_label.setText(
+            f"In coordinate system `{coordinate_system}`: "
+            f"{len(image_names)} image element(s) and {len(label_names)} segmentation mask(s)."
+        )
+        self._rebuild_image_cards(sdata, image_names)
+        self._rebuild_labels_cards(sdata, label_names)
+        self._update_section_empty_states(image_names, label_names)
+
+    def _rebuild_image_cards(self, sdata: SpatialData, image_names: list[str]) -> None:
+        _clear_layout(self.images_section_layout)
+        self._image_cards = []
+
+        for image_name in image_names:
+            card = _ImageCardWidget(
+                image_name=image_name,
+                channel_names=_get_image_channel_names(sdata, image_name),
+            )
+            self.images_section_layout.addWidget(card)
+            self._image_cards.append(card)
+
+    def _rebuild_labels_cards(self, sdata: SpatialData, label_names: list[str]) -> None:
+        _clear_layout(self.labels_section_layout)
+        self._labels_cards = []
+
+        for label_name in label_names:
+            card = _LabelsCardWidget(
+                label_name=label_name,
+                table_names=get_annotating_table_names(sdata, label_name),
+                on_add_update=self._add_or_update_labels_layer,
+            )
+            self.labels_section_layout.addWidget(card)
+            self._labels_cards.append(card)
+
+    def _add_or_update_labels_layer(self, label_name: str) -> None:
+        sdata = self._app_state.sdata
+        coordinate_system = self.coordinate_system_combo.currentText()
+
+        if sdata is None or not coordinate_system:
+            self._set_action_feedback("Load a SpatialData object and select a coordinate system first.", is_error=True)
+            return
+
+        try:
+            layer = self._app_state.viewer_adapter.ensure_labels_loaded(sdata, label_name, coordinate_system)
+        except ValueError as error:
+            self._set_action_feedback(str(error), is_error=True)
+            return
+
+        self._app_state.viewer_adapter.activate_layer(layer)
+        self._set_action_feedback(
+            f"Loaded segmentation `{label_name}` in coordinate system `{coordinate_system}`.",
+            is_error=False,
+        )
+
+    def _update_section_empty_states(self, image_names: list[str], label_names: list[str]) -> None:
+        self.images_empty_label.setVisible(not image_names)
+        self.labels_empty_label.setVisible(not label_names)
+        self.images_section.setVisible(bool(image_names))
+        self.labels_section.setVisible(bool(label_names))
+
+    def _clear_cards(self) -> None:
+        _clear_layout(self.images_section_layout)
+        _clear_layout(self.labels_section_layout)
+        self._image_cards = []
+        self._labels_cards = []
+
+    def _set_action_feedback(self, message: str, *, is_error: bool) -> None:
+        self.action_feedback_label.setText(message)
+        self.action_feedback_label.setStyleSheet(
+            "color: #b91c1c; font-weight: 600;" if is_error else "color: #166534; font-weight: 600;"
+        )
+        self.action_feedback_label.show()
+
+
+def _clear_layout(layout: QLayout) -> None:
+    while layout.count():
+        item = layout.takeAt(0)
+        widget = item.widget()
+        child_layout = item.layout()
+        if widget is not None:
+            widget.deleteLater()
+        elif child_layout is not None:
+            _clear_layout(child_layout)
+
+
+def _create_form_label(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setStyleSheet(_FORM_LABEL_STYLESHEET)
+    label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+    return label
 
 
 def _get_coordinate_systems_from_sdata(sdata: SpatialData) -> list[str]:
@@ -170,3 +545,37 @@ def _get_coordinate_systems_from_sdata(sdata: SpatialData) -> list[str]:
             coordinate_systems.update(get_transformation(element, get_all=True).keys())
 
     return sorted(coordinate_systems)
+
+
+def _get_labels_in_coordinate_system(sdata: SpatialData, coordinate_system: str) -> list[str]:
+    labels = getattr(sdata, "labels", {})
+    return sorted(
+        label_name
+        for label_name, element in labels.items()
+        if coordinate_system in get_transformation(element, get_all=True).keys()
+    )
+
+
+def _get_images_in_coordinate_system(sdata: SpatialData, coordinate_system: str) -> list[str]:
+    images = getattr(sdata, "images", {})
+    return sorted(
+        image_name
+        for image_name, element in images.items()
+        if coordinate_system in get_transformation(element, get_all=True).keys()
+    )
+
+
+def _get_image_channel_names(sdata: SpatialData, image_name: str) -> list[str]:
+    images = getattr(sdata, "images", {})
+    image_element = images[image_name]
+    axes = get_axes_names(image_element)
+    if "c" not in axes:
+        return []
+
+    if isinstance(image_element, DataArray):
+        channel_values = list(image_element.coords.indexes["c"])
+    else:
+        scale0 = next(iter(image_element["scale0"].values()))
+        channel_values = list(scale0.coords.indexes["c"])
+
+    return [str(channel_value) for channel_value in channel_values]

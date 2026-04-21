@@ -267,13 +267,13 @@ viewer adapter.
 
 ### Acceptance criteria
 
-- [ ] the new `Viewer` dock widget is available in napari
+- [x] the new `Viewer` dock widget is available in napari
 - [ ] the widget can open a `SpatialData` store
-- [ ] changing the loaded `sdata` updates the viewer widget through
+- [x] changing the loaded `sdata` updates the viewer widget through
   `sdata_changed`
-- [ ] the widget lists coordinate systems from the loaded `sdata`
-- [ ] labels and images are filtered by the selected coordinate system
-- [ ] the widget can load a selected labels element into napari
+- [x] the widget lists coordinate systems from the loaded `sdata`
+- [x] labels and images are filtered by the selected coordinate system
+- [x] the widget can load a selected labels element into napari
 - [ ] the widget can load a selected image in stack mode
 - [ ] the widget can load selected channels in overlay mode
 
