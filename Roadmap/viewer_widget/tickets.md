@@ -410,7 +410,63 @@ loaded and activated in napari.
 - VW-02
 - VW-03
 
-## VW-06: Add Table-Driven Labels Coloring In The Viewer Widget
+## VW-06: Reassess Shared SpatialData Selection Option Models
+
+### Goal
+
+Clean up the shared selection-model layer after both `VW-04` and `VW-05` are
+complete, so we can decide whether `SpatialDataLabelsOption` and
+`SpatialDataImageOption` should remain as shared cross-widget models or be
+renamed/refined.
+
+### Scope
+
+- revisit `SpatialDataLabelsOption`
+- revisit `SpatialDataImageOption`
+- keep this as a code-cleanup / architecture ticket rather than a user-facing
+  feature
+- avoid churn during `VW-04`; do this only once both widgets have migrated
+
+### Required work
+
+- review how these dataclasses are used after `VW-04` and `VW-05`
+- confirm whether they still provide the right shared abstraction for:
+  - widget-local selection state
+  - stable selection identity across refreshes
+  - `display_name` handling
+  - coordinate-system metadata
+- decide whether to:
+  - keep them as-is
+  - rename them
+  - split them into more explicit models
+  - reduce/reshape their fields
+- remove any now-obsolete viewer-scanning assumptions that are still embedded
+  in their naming or docstrings
+
+### Suggested files
+
+- `src/napari_harpy/_spatialdata.py`
+- `src/napari_harpy/widgets/_feature_extraction_widget.py`
+- `src/napari_harpy/widgets/_object_classification_widget.py`
+- possibly related tests in:
+  - `tests/test_feature_extraction_widget.py`
+  - `tests/test_widget.py`
+  - `tests/test_spatialdata.py`
+
+### Acceptance criteria
+
+- [ ] the codebase has a deliberate post-migration decision on whether
+  `SpatialDataLabelsOption` / `SpatialDataImageOption` remain the shared
+  selection models
+- [ ] any renaming or reshaping is reflected consistently across both widgets
+- [ ] their responsibilities and naming match the post-`VW-05` architecture
+
+### Depends on
+
+- VW-04
+- VW-05
+
+## VW-07: Add Table-Driven Labels Coloring In The Viewer Widget
 
 ### Goal
 
@@ -464,5 +520,3 @@ without switching to a separate workflow first.
 - add image visibility toggles and layer grouping behavior
 - add contrast presets for image channels
 - support more than one loaded `SpatialData` object
-- add a migration/cleanup ticket to remove now-obsolete viewer-scanning helpers
-  after the new path is stable

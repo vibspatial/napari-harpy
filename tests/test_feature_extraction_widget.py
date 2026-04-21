@@ -8,6 +8,7 @@ from napari.layers import Labels
 from qtpy.QtWidgets import QCheckBox, QComboBox, QScrollArea
 from spatialdata import SpatialData
 
+import napari_harpy.widgets._feature_extraction_widget as feature_extraction_widget_module
 from napari_harpy._app_state import get_or_create_app_state
 from napari_harpy._spatialdata import SpatialDataImageOption, SpatialDataLabelsOption
 from napari_harpy.widgets._feature_extraction_widget import FeatureExtractionWidget
@@ -157,6 +158,78 @@ def test_feature_extraction_widget_populates_selector_flow_from_spatialdata(
     assert "Coordinate system: global" in widget.selection_status.text()
     assert widget.selection_status.toolTip() == ""
     assert widget.validation_status.isHidden()
+
+
+def test_feature_extraction_widget_filters_labels_and_images_by_coordinate_system(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_coordinate_system_names_from_sdata",
+        lambda sdata: ["aligned", "global"],
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_spatialdata_label_options_for_coordinate_system_from_sdata",
+        lambda *, sdata, coordinate_system: [
+            SpatialDataLabelsOption(
+                label_name=f"labels_{coordinate_system}",
+                display_name=f"labels_{coordinate_system}",
+                sdata=sdata,
+                coordinate_systems=(coordinate_system,),
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_spatialdata_image_options_for_coordinate_system_from_sdata",
+        lambda *, sdata, coordinate_system: [
+            SpatialDataImageOption(
+                image_name=f"image_{coordinate_system}",
+                display_name=f"image_{coordinate_system}",
+                sdata=sdata,
+                coordinate_systems=(coordinate_system,),
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_annotating_table_names",
+        lambda sdata, label_name: ["table"],
+    )
+
+    widget = FeatureExtractionWidget(viewer)
+    qtbot.addWidget(widget)
+
+    assert widget.coordinate_system_combo.count() == 2
+    assert widget.coordinate_system_combo.itemText(0) == "aligned"
+    assert widget.selected_coordinate_system == "aligned"
+    assert widget.selected_segmentation_name == "labels_aligned"
+    assert [widget.segmentation_combo.itemText(index) for index in range(widget.segmentation_combo.count())] == [
+        "labels_aligned"
+    ]
+    assert [widget.image_combo.itemText(index) for index in range(widget.image_combo.count())] == [
+        "No image",
+        "image_aligned",
+    ]
+    assert widget.table_combo.itemText(0) == "table"
+
+    widget.coordinate_system_combo.setCurrentIndex(1)
+
+    assert widget.selected_coordinate_system == "global"
+    assert widget.selected_segmentation_name == "labels_global"
+    assert [widget.segmentation_combo.itemText(index) for index in range(widget.segmentation_combo.count())] == [
+        "labels_global"
+    ]
+    assert [widget.image_combo.itemText(index) for index in range(widget.image_combo.count())] == [
+        "No image",
+        "image_global",
+    ]
+    assert widget.table_combo.itemText(0) == "table"
 
 
 def test_feature_extraction_widget_shortens_long_identifiers_in_selection_status(

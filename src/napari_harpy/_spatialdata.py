@@ -367,6 +367,55 @@ def get_spatialdata_label_options_from_sdata(sdata: SpatialData) -> list[Spatial
     ]
 
 
+def get_coordinate_system_names_from_sdata(sdata: SpatialData) -> list[str]:
+    """Return all coordinate-system names exposed by labels and images in a loaded `SpatialData`."""
+    coordinate_systems: set[str] = set()
+
+    for label_name in _get_label_names(sdata):
+        coordinate_systems.update(_get_element_coordinate_systems(sdata.labels[label_name]))
+
+    for image_name in _get_image_names(sdata):
+        coordinate_systems.update(_get_element_coordinate_systems(sdata.images[image_name]))
+
+    return sorted(coordinate_systems)
+
+
+def get_spatialdata_label_options_for_coordinate_system_from_sdata(
+    *,
+    sdata: SpatialData,
+    coordinate_system: str,
+) -> list[SpatialDataLabelsOption]:
+    """Return labels options restricted to a selected coordinate system."""
+    return [
+        SpatialDataLabelsOption(
+            label_name=label_name,
+            display_name=label_name,
+            sdata=sdata,
+            coordinate_systems=_get_element_coordinate_systems(sdata.labels[label_name]),
+        )
+        for label_name in _get_label_names(sdata)
+        if coordinate_system in _get_element_coordinate_systems(sdata.labels[label_name])
+    ]
+
+
+def get_spatialdata_image_options_for_coordinate_system_from_sdata(
+    *,
+    sdata: SpatialData,
+    coordinate_system: str,
+) -> list[SpatialDataImageOption]:
+    """Return image options restricted to a selected coordinate system."""
+    return [
+        SpatialDataImageOption(
+            image_name=image_name,
+            display_name=image_name,
+            sdata=sdata,
+            coordinate_systems=_get_element_coordinate_systems(sdata.images[image_name]),
+        )
+        for image_name in _get_image_names(sdata)
+        if coordinate_system in _get_element_coordinate_systems(sdata.images[image_name])
+    ]
+
+
 def get_spatialdata_image_options_from_sdata(
     *,
     sdata: SpatialData,

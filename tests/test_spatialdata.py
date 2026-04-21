@@ -13,8 +13,11 @@ import napari_harpy._spatialdata as spatialdata_module
 from napari_harpy._spatialdata import (
     SpatialDataViewerBinding,
     get_annotating_table_names,
+    get_coordinate_system_names_from_sdata,
     get_spatialdata_image_options,
+    get_spatialdata_image_options_for_coordinate_system_from_sdata,
     get_spatialdata_image_options_from_sdata,
+    get_spatialdata_label_options_for_coordinate_system_from_sdata,
     get_spatialdata_label_options_from_sdata,
     get_table,
     get_table_metadata,
@@ -222,6 +225,78 @@ def test_get_spatialdata_label_options_from_sdata_returns_all_labels(sdata_blobs
         ("global",),
     ]
     assert all(option.sdata is sdata_blobs for option in options)
+
+
+def test_get_coordinate_system_names_from_sdata_returns_sorted_union(
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    transformation_by_id = {
+        id(sdata_blobs.labels["blobs_labels"]): {"global": object(), "aligned": object()},
+        id(sdata_blobs.labels["blobs_multiscale_labels"]): {"global": object()},
+        id(sdata_blobs.images["blobs_image"]): {"global": object()},
+        id(sdata_blobs.images["blobs_multiscale_image"]): {"local": object()},
+    }
+
+    def _fake_get_transformation(element, get_all: bool = False):
+        del get_all
+        return transformation_by_id[id(element)]
+
+    monkeypatch.setattr(spatialdata_module, "get_transformation", _fake_get_transformation)
+
+    assert get_coordinate_system_names_from_sdata(sdata_blobs) == ["aligned", "global", "local"]
+
+
+def test_get_spatialdata_label_options_for_coordinate_system_from_sdata_filters_labels(
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    transformation_by_id = {
+        id(sdata_blobs.labels["blobs_labels"]): {"global": object(), "aligned": object()},
+        id(sdata_blobs.labels["blobs_multiscale_labels"]): {"global": object()},
+        id(sdata_blobs.images["blobs_image"]): {"global": object()},
+        id(sdata_blobs.images["blobs_multiscale_image"]): {"global": object()},
+    }
+
+    def _fake_get_transformation(element, get_all: bool = False):
+        del get_all
+        return transformation_by_id[id(element)]
+
+    monkeypatch.setattr(spatialdata_module, "get_transformation", _fake_get_transformation)
+
+    options = get_spatialdata_label_options_for_coordinate_system_from_sdata(
+        sdata=sdata_blobs,
+        coordinate_system="aligned",
+    )
+
+    assert [option.label_name for option in options] == ["blobs_labels"]
+    assert options[0].coordinate_systems == ("aligned", "global")
+
+
+def test_get_spatialdata_image_options_for_coordinate_system_from_sdata_filters_images(
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    transformation_by_id = {
+        id(sdata_blobs.labels["blobs_labels"]): {"global": object()},
+        id(sdata_blobs.labels["blobs_multiscale_labels"]): {"global": object()},
+        id(sdata_blobs.images["blobs_image"]): {"global": object(), "aligned": object()},
+        id(sdata_blobs.images["blobs_multiscale_image"]): {"local": object()},
+    }
+
+    def _fake_get_transformation(element, get_all: bool = False):
+        del get_all
+        return transformation_by_id[id(element)]
+
+    monkeypatch.setattr(spatialdata_module, "get_transformation", _fake_get_transformation)
+
+    options = get_spatialdata_image_options_for_coordinate_system_from_sdata(
+        sdata=sdata_blobs,
+        coordinate_system="aligned",
+    )
+
+    assert [option.image_name for option in options] == ["blobs_image"]
+    assert options[0].coordinate_systems == ("aligned", "global")
 
 
 def test_get_spatialdata_image_options_from_sdata_returns_compatible_images_for_selected_label(
