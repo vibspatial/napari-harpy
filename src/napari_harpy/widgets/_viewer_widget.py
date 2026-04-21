@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -112,12 +110,13 @@ class _ElidedLabel(QLabel):
 class _LabelsCardWidget(QFrame):
     """Card UI for one labels element in the selected coordinate system."""
 
+    add_update_requested = Signal(str)
+
     def __init__(
         self,
         *,
         label_name: str,
         table_names: list[str],
-        on_add_update: Callable[[str], None],
     ) -> None:
         super().__init__()
         self.label_name = label_name
@@ -152,13 +151,16 @@ class _LabelsCardWidget(QFrame):
         self.add_update_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.add_update_button.setMinimumHeight(28)
         self.add_update_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
-        self.add_update_button.clicked.connect(partial(on_add_update, label_name))
+        self.add_update_button.clicked.connect(self._emit_add_update_request)
 
         form_layout.addRow(linked_table_label, self.linked_table_combo)
 
         layout.addWidget(self.title_label)
         layout.addLayout(form_layout)
         layout.addWidget(self.add_update_button)
+
+    def _emit_add_update_request(self, _checked: bool = False) -> None:
+        self.add_update_requested.emit(self.label_name)
 
 
 class _ImageCardWidget(QFrame):
@@ -537,8 +539,8 @@ class ViewerWidget(QWidget):
             card = _LabelsCardWidget(
                 label_name=label_name,
                 table_names=get_annotating_table_names(sdata, label_name),
-                on_add_update=self._add_or_update_labels_layer,
             )
+            card.add_update_requested.connect(self._add_or_update_labels_layer)
             self.labels_section_layout.addWidget(card)
             self._labels_cards.append(card)
 
