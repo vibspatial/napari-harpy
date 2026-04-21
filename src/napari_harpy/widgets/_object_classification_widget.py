@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from qtpy.QtCore import QSignalBlocker, Qt
-from qtpy.QtGui import QColor, QKeySequence, QPalette, QPixmap, QShortcut
+from qtpy.QtGui import QKeySequence, QPixmap, QShortcut
 from qtpy.QtWidgets import (
     QComboBox,
     QDialog,
@@ -22,6 +22,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_harpy._annotation import UNLABELED_CLASS, AnnotationController
+from napari_harpy._app_state import HarpyAppState, get_or_create_app_state
 from napari_harpy._classifier import ClassifierController
 from napari_harpy._persistence import PersistenceController
 from napari_harpy._spatialdata import (
@@ -40,6 +41,19 @@ from napari_harpy._viewer_styling import (
     COLOR_BY_USER_CLASS,
     ViewerStylingController,
 )
+from napari_harpy.widgets._shared_styles import (
+    ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,
+)
+from napari_harpy.widgets._shared_styles import (
+    WIDGET_MIN_WIDTH as _WIDGET_MIN_WIDTH,
+)
+from napari_harpy.widgets._shared_styles import (
+    apply_scroll_content_surface,
+    apply_widget_surface,
+    build_input_control_stylesheet,
+    create_form_label,
+    format_tooltip,
+)
 
 if TYPE_CHECKING:
     import napari
@@ -54,47 +68,7 @@ class _DirtyReloadDecision(Enum):
 
 _APPLY_CLASS_SHORTCUT = "A"
 _REMOVE_CLASS_SHORTCUT = "R"
-_WIDGET_SURFACE_COLOR = "#fcf6f3"
-_WIDGET_SURFACE_STYLESHEET = f"background-color: {_WIDGET_SURFACE_COLOR};"
-_WIDGET_MIN_WIDTH = 370
-_TOOLTIP_TEXT_COLOR = "#111827"
-_FORM_LABEL_STYLESHEET = "color: #374151; font-weight: 600; padding-top: 6px;"
-_INPUT_CONTROL_STYLESHEET = (
-    "QComboBox, QSpinBox {"
-    "background-color: #fffdfb; "
-    "border: 1px solid #ddcfc7; "
-    "border-radius: 8px; "
-    "color: #111827; "
-    "padding: 4px 10px; "
-    "min-height: 30px;}"
-    "QComboBox:disabled, QSpinBox:disabled {"
-    "background-color: #f7efea; "
-    "border-color: #e9ddd7; "
-    "color: #9ca3af;}"
-    "QComboBox:focus, QSpinBox:focus {"
-    "border-color: #8fb6c9; "
-    "background-color: #ffffff;}"
-    "QComboBox { padding-right: 24px; }"
-    "QComboBox::drop-down {"
-    "subcontrol-origin: padding; "
-    "subcontrol-position: top right; "
-    "width: 24px; "
-    "border: 0px; "
-    "background: transparent;}"
-)
-_ACTION_BUTTON_STYLESHEET = (
-    "QPushButton {"
-    "background-color: #f7ede8; "
-    "border: 1px solid #ddcfc7; "
-    "border-radius: 8px; "
-    "color: #111827; "
-    "font-weight: 600; "
-    "padding: 4px 10px; "
-    "min-height: 30px;}"
-    "QPushButton:hover { background-color: #f3e5de; border-color: #c9b6ac; }"
-    "QPushButton:pressed { background-color: #ebd7cf; border-color: #b59a8e; }"
-    "QPushButton:disabled { background-color: #faf4f1; border-color: #ede3dd; color: #a8a29e; }"
-)
+_INPUT_CONTROL_STYLESHEET = build_input_control_stylesheet("QComboBox, QSpinBox")
 _CLASS_EDITOR_STYLESHEET = (
     "QWidget#class_editor {background-color: #f8eeea; border: 1px solid #eadfd8; border-radius: 10px;}"
 )
@@ -119,14 +93,12 @@ class ObjectClassificationWidget(QWidget):
     def __init__(self, napari_viewer: napari.Viewer | None = None) -> None:
         super().__init__()
         self.setObjectName("object_classification_widget")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setAutoFillBackground(True)
-        palette = self.palette()
-        palette.setColor(QPalette.ColorRole.Window, QColor(_WIDGET_SURFACE_COLOR))
-        self.setPalette(palette)
-        self.setStyleSheet(_WIDGET_SURFACE_STYLESHEET)
+        apply_widget_surface(self)
         self.setMinimumWidth(_WIDGET_MIN_WIDTH)
         self._viewer = napari_viewer
+        self._app_state = get_or_create_app_state(napari_viewer)
+        # TODO: remove viewer-scanning binding once VW-05 fully derives options
+        # from shared app state (`self._app_state.sdata` / `sdata_changed`).
         self._viewer_binding = SpatialDataViewerBinding(napari_viewer)
         self._annotation_controller = AnnotationController(
             self._viewer_binding,
@@ -163,11 +135,7 @@ class ObjectClassificationWidget(QWidget):
 
         self.scroll_content = QWidget()
         self.scroll_content.setObjectName("object_classification_scroll_content")
-        self.scroll_content.setAutoFillBackground(True)
-        scroll_palette = self.scroll_content.palette()
-        scroll_palette.setColor(QPalette.ColorRole.Window, QColor(_WIDGET_SURFACE_COLOR))
-        self.scroll_content.setPalette(scroll_palette)
-        self.scroll_content.setStyleSheet(_WIDGET_SURFACE_STYLESHEET)
+        apply_scroll_content_surface(self.scroll_content)
 
         content_layout = QVBoxLayout(self.scroll_content)
         content_layout.setContentsMargins(12, 12, 12, 12)
@@ -340,6 +308,11 @@ class ObjectClassificationWidget(QWidget):
         self._connect_viewer_events()
         self.refresh_segmentation_masks()
 
+    @property
+    def app_state(self) -> HarpyAppState:
+        """Return the shared Harpy app state for this widget."""
+        return self._app_state
+
     def _create_annotation_shortcuts(self) -> list[QShortcut]:
         apply_shortcut = QShortcut(QKeySequence(_APPLY_CLASS_SHORTCUT), self)
         apply_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
@@ -365,13 +338,10 @@ class ObjectClassificationWidget(QWidget):
         return logo_label
 
     def _create_form_label(self, text: str) -> QLabel:
-        label = QLabel(text)
-        label.setStyleSheet(_FORM_LABEL_STYLESHEET)
-        label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        return label
+        return create_form_label(text)
 
     def _set_tooltip(self, widget: QWidget, message: str) -> None:
-        widget.setToolTip(f"<qt><span style='color: {_TOOLTIP_TEXT_COLOR};'>{escape(message)}</span></qt>")
+        widget.setToolTip(format_tooltip(message))
 
     @property
     def selected_segmentation_name(self) -> str | None:

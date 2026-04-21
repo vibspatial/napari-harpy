@@ -5,6 +5,12 @@ categories:
   - Annotation
 contributions:
   commands:
+    - id: napari-harpy.read_spatialdata_store
+      title: Read SpatialData zarr store into Harpy state
+      python_name: napari_harpy._reader:get_reader
+    - id: napari-harpy.viewer
+      title: Open viewer widget
+      python_name: napari_harpy.widgets._viewer_widget:ViewerWidget
     - id: napari-harpy.feature_extraction
       title: Open feature extraction widget
       python_name: napari_harpy.widgets._feature_extraction_widget:FeatureExtractionWidget
@@ -12,7 +18,14 @@ contributions:
       title: Open object classification widget
       python_name: napari_harpy.widgets._object_classification_widget:ObjectClassificationWidget
   widgets:
+    - command: napari-harpy.viewer
+      display_name: Viewer
     - command: napari-harpy.feature_extraction
       display_name: Feature Extraction
     - command: napari-harpy.object_classification
       display_name: Object Classification
+  readers:
+    - command: napari-harpy.read_spatialdata_store
+      filename_patterns:
+        - '*.zarr'
+      accepts_directories: true
