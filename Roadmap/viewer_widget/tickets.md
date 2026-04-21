@@ -246,16 +246,15 @@ viewer adapter.
   - show images available in that coordinate system
 - for labels:
   - show correctly linked tables
-  - add `Show segmentation`
+  - add `Add / Update in viewer`
 - for images:
-  - show image choices
+  - show one image card per image in the selected coordinate system
   - show channel names
-  - show display mode:
+  - show display mode controls:
     - stack
     - overlay
   - show per-channel color controls for overlay mode
-  - add `Show image`
-  - add `Show selected channels`
+  - add `Add / Update in viewer`
 - use the viewer adapter for all napari loading actions
 
 ### Suggested files
@@ -274,7 +273,7 @@ viewer adapter.
 - [x] the widget lists coordinate systems from the loaded `sdata`
 - [x] labels and images are filtered by the selected coordinate system
 - [x] the widget can load a selected labels element into napari
-- [ ] the widget can load a selected image in stack mode
+- [x] the widget can load a selected image in stack mode
 - [ ] the widget can load selected channels in overlay mode
 
 ### Depends on

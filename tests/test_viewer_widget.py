@@ -128,18 +128,21 @@ def test_viewer_widget_image_mode_toggles_are_mutually_exclusive(qtbot, sdata_bl
     assert image_card.stack_toggle.isChecked()
     assert not image_card.overlay_toggle.isChecked()
     assert image_card.channel_panel.isHidden()
+    assert image_card.add_update_button.isEnabled()
 
     image_card.overlay_toggle.setChecked(True)
 
     assert not image_card.stack_toggle.isChecked()
     assert image_card.overlay_toggle.isChecked()
     assert not image_card.channel_panel.isHidden()
+    assert not image_card.add_update_button.isEnabled()
 
     image_card.stack_toggle.setChecked(True)
 
     assert image_card.stack_toggle.isChecked()
     assert not image_card.overlay_toggle.isChecked()
     assert image_card.channel_panel.isHidden()
+    assert image_card.add_update_button.isEnabled()
 
 
 def test_viewer_widget_filters_cards_by_selected_coordinate_system(qtbot, monkeypatch) -> None:
@@ -204,6 +207,93 @@ def test_viewer_widget_add_update_labels_loads_and_activates_layer(qtbot, sdata_
     first_card.add_update_button.click()
 
     assert len(viewer.layers) == 1
+
+
+def test_viewer_widget_add_update_image_loads_stack_layer(qtbot, sdata_blobs) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata_blobs)
+
+    first_card = widget.image_cards[0]
+
+    first_card.add_update_button.click()
+
+    assert len(viewer.layers) == 1
+    layer = viewer.layers[0]
+    assert layer.name == "blobs_image"
+    binding = widget.app_state.viewer_adapter.layer_bindings.get_binding(layer)
+    assert binding is not None
+    assert binding.image_display_mode == "stack"
+    assert viewer.layers.selection.active is layer
+    assert "Loaded image `blobs_image` in stack mode" in widget.action_feedback_label.text()
+    assert not widget.action_feedback_label.isHidden()
+
+
+def test_viewer_widget_add_update_image_reuses_existing_stack_layer(qtbot, sdata_blobs) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata_blobs)
+
+    first_card = widget.image_cards[0]
+
+    first_card.add_update_button.click()
+    first_layer = viewer.layers[0]
+
+    first_card.add_update_button.click()
+
+    assert len(viewer.layers) == 1
+    assert viewer.layers[0] is first_layer
+
+
+def test_viewer_widget_add_update_image_uses_selected_coordinate_system(qtbot, monkeypatch) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    fake_sdata = object()
+    fake_layer = object()
+    recorded_calls: list[tuple[object, str, str, str]] = []
+    activated_layers: list[object] = []
+
+    qtbot.addWidget(widget)
+
+    monkeypatch.setattr(viewer_widget_module, "_get_coordinate_systems_from_sdata", lambda sdata: ["global", "local"])
+    monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(
+        viewer_widget_module,
+        "_get_images_in_coordinate_system",
+        lambda sdata, coordinate_system: ["image_global"] if coordinate_system == "global" else ["image_local"],
+    )
+    monkeypatch.setattr(viewer_widget_module, "_get_image_channel_names", lambda sdata, image_name: ["c0", "c1"])
+    monkeypatch.setattr(
+        widget.app_state.viewer_adapter,
+        "ensure_image_loaded",
+        lambda sdata, image_name, coordinate_system, *, mode, channels=None, channel_colors=None: (
+            recorded_calls.append((sdata, image_name, coordinate_system, mode)) or fake_layer
+        ),
+    )
+    monkeypatch.setattr(
+        widget.app_state.viewer_adapter,
+        "activate_layer",
+        lambda layer: activated_layers.append(layer) or True,
+    )
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(fake_sdata)
+
+    widget.coordinate_system_combo.setCurrentIndex(1)
+    image_card = widget.image_cards[0]
+
+    image_card.add_update_button.click()
+
+    assert recorded_calls == [(fake_sdata, "image_local", "local", "stack")]
+    assert activated_layers == [fake_layer]
 
 
 def test_viewer_widget_shares_app_state_for_same_viewer(qtbot) -> None:

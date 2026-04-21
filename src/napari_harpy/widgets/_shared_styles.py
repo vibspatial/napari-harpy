@@ -8,7 +8,7 @@ from qtpy.QtWidgets import QLabel, QWidget
 
 WIDGET_SURFACE_COLOR = "#fcf6f3"
 WIDGET_SURFACE_STYLESHEET = f"background-color: {WIDGET_SURFACE_COLOR};"
-WIDGET_MIN_WIDTH = 30
+WIDGET_MIN_WIDTH = 370
 TOOLTIP_TEXT_COLOR = "#111827"
 FORM_LABEL_STYLESHEET = "color: #374151; font-weight: 600; padding-top: 6px;"
 ACTION_BUTTON_STYLESHEET = (

@@ -160,6 +160,7 @@ class _ImageCardWidget(QFrame):
         *,
         image_name: str,
         channel_names: list[str],
+        on_add_update: Callable[[str], None],
     ) -> None:
         super().__init__()
         self.image_name = image_name
@@ -236,11 +237,11 @@ class _ImageCardWidget(QFrame):
 
         self.add_update_button = QPushButton("Add / Update in viewer")
         self.add_update_button.setObjectName(f"viewer_widget_add_update_image_button_{image_name}")
-        self.add_update_button.setEnabled(False)
         self.add_update_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.add_update_button.setMinimumHeight(28)
         self.add_update_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
-        self.add_update_button.setToolTip("Image loading actions are implemented in the next slices.")
+        self.add_update_button.clicked.connect(partial(on_add_update, image_name))
+        self._set_add_update_enabled(True)
 
         self.stack_toggle.toggled.connect(self._on_stack_toggled)
         self.overlay_toggle.toggled.connect(self._on_overlay_toggled)
@@ -255,6 +256,7 @@ class _ImageCardWidget(QFrame):
             with QSignalBlocker(self.overlay_toggle):
                 self.overlay_toggle.setChecked(False)
             self.channel_panel.setVisible(False)
+            self._set_add_update_enabled(True)
             return
 
         if not self.overlay_toggle.isChecked():
@@ -266,12 +268,19 @@ class _ImageCardWidget(QFrame):
             with QSignalBlocker(self.stack_toggle):
                 self.stack_toggle.setChecked(False)
             self.channel_panel.setVisible(True)
+            self._set_add_update_enabled(False)
             return
 
         self.channel_panel.setVisible(False)
         if not self.stack_toggle.isChecked():
             with QSignalBlocker(self.stack_toggle):
                 self.stack_toggle.setChecked(True)
+
+    def _set_add_update_enabled(self, enabled: bool) -> None:
+        self.add_update_button.setEnabled(enabled)
+        self.add_update_button.setToolTip(
+            "" if enabled else "Overlay image loading actions are implemented in the next slice."
+        )
 
 
 class ViewerWidget(QWidget):
@@ -487,6 +496,7 @@ class ViewerWidget(QWidget):
             card = _ImageCardWidget(
                 image_name=image_name,
                 channel_names=_get_image_channel_names(sdata, image_name),
+                on_add_update=self._add_or_update_image_layer,
             )
             self.images_section_layout.addWidget(card)
             self._image_cards.append(card)
@@ -521,6 +531,38 @@ class ViewerWidget(QWidget):
         self._app_state.viewer_adapter.activate_layer(layer)
         self._set_action_feedback(
             f"Loaded segmentation `{label_name}` in coordinate system `{coordinate_system}`.",
+            is_error=False,
+        )
+
+    def _add_or_update_image_layer(self, image_name: str) -> None:
+        sdata = self._app_state.sdata
+        coordinate_system = self.coordinate_system_combo.currentText()
+
+        if sdata is None or not coordinate_system:
+            self._set_action_feedback("Load a SpatialData object and select a coordinate system first.", is_error=True)
+            return
+
+        try:
+            layer = self._app_state.viewer_adapter.ensure_image_loaded(
+                sdata,
+                image_name,
+                coordinate_system,
+                mode="stack",
+            )
+        except ValueError as error:
+            self._set_action_feedback(str(error), is_error=True)
+            return
+
+        if isinstance(layer, list):
+            self._set_action_feedback(
+                f"Expected one stack image layer for `{image_name}`, but received multiple layers.",
+                is_error=True,
+            )
+            return
+
+        self._app_state.viewer_adapter.activate_layer(layer)
+        self._set_action_feedback(
+            f"Loaded image `{image_name}` in stack mode for coordinate system `{coordinate_system}`.",
             is_error=False,
         )
 
