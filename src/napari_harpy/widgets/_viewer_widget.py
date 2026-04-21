@@ -160,7 +160,7 @@ class _ImageCardWidget(QFrame):
         *,
         image_name: str,
         channel_names: list[str],
-        on_add_update: Callable[[str], None],
+        on_add_update: Callable[[_ImageCardWidget], None],
     ) -> None:
         super().__init__()
         self.image_name = image_name
@@ -240,8 +240,8 @@ class _ImageCardWidget(QFrame):
         self.add_update_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.add_update_button.setMinimumHeight(28)
         self.add_update_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
-        self.add_update_button.clicked.connect(partial(on_add_update, image_name))
-        self._set_add_update_enabled(True)
+        self.add_update_button.clicked.connect(partial(on_add_update, self))
+        self.add_update_button.setToolTip("")
 
         self.stack_toggle.toggled.connect(self._on_stack_toggled)
         self.overlay_toggle.toggled.connect(self._on_overlay_toggled)
@@ -256,7 +256,6 @@ class _ImageCardWidget(QFrame):
             with QSignalBlocker(self.overlay_toggle):
                 self.overlay_toggle.setChecked(False)
             self.channel_panel.setVisible(False)
-            self._set_add_update_enabled(True)
             return
 
         if not self.overlay_toggle.isChecked():
@@ -268,7 +267,6 @@ class _ImageCardWidget(QFrame):
             with QSignalBlocker(self.stack_toggle):
                 self.stack_toggle.setChecked(False)
             self.channel_panel.setVisible(True)
-            self._set_add_update_enabled(False)
             return
 
         self.channel_panel.setVisible(False)
@@ -276,11 +274,21 @@ class _ImageCardWidget(QFrame):
             with QSignalBlocker(self.stack_toggle):
                 self.stack_toggle.setChecked(True)
 
-    def _set_add_update_enabled(self, enabled: bool) -> None:
-        self.add_update_button.setEnabled(enabled)
-        self.add_update_button.setToolTip(
-            "" if enabled else "Overlay image loading actions are implemented in the next slice."
-        )
+    def display_mode(self) -> str:
+        return "overlay" if self.overlay_toggle.isChecked() else "stack"
+
+    def get_selected_overlay_channels(self) -> list[int]:
+        return [index for index, checkbox in enumerate(self.channel_checkboxes) if checkbox.isChecked()]
+
+    def get_selected_overlay_channel_names(self) -> list[str]:
+        return [checkbox.text() for checkbox in self.channel_checkboxes if checkbox.isChecked()]
+
+    def get_selected_overlay_colors(self) -> list[str]:
+        return [
+            str(color_combo.currentData() or color_combo.currentText())
+            for checkbox, color_combo in zip(self.channel_checkboxes, self.channel_color_combos, strict=False)
+            if checkbox.isChecked()
+        ]
 
 
 class ViewerWidget(QWidget):
@@ -534,35 +542,59 @@ class ViewerWidget(QWidget):
             is_error=False,
         )
 
-    def _add_or_update_image_layer(self, image_name: str) -> None:
+    def _add_or_update_image_layer(self, image_card: _ImageCardWidget) -> None:
         sdata = self._app_state.sdata
         coordinate_system = self.coordinate_system_combo.currentText()
+        image_name = image_card.image_name
 
         if sdata is None or not coordinate_system:
             self._set_action_feedback("Load a SpatialData object and select a coordinate system first.", is_error=True)
             return
 
+        mode = image_card.display_mode()
         try:
-            layer = self._app_state.viewer_adapter.ensure_image_loaded(
+            layer_or_layers = self._app_state.viewer_adapter.ensure_image_loaded(
                 sdata,
                 image_name,
                 coordinate_system,
-                mode="stack",
+                mode=mode,
+                channels=image_card.get_selected_overlay_channels() if mode == "overlay" else None,
+                channel_colors=image_card.get_selected_overlay_colors() if mode == "overlay" else None,
             )
         except ValueError as error:
             self._set_action_feedback(str(error), is_error=True)
             return
 
-        if isinstance(layer, list):
+        if mode == "stack":
+            if isinstance(layer_or_layers, list):
+                self._set_action_feedback(
+                    f"Expected one stack image layer for `{image_name}`, but received multiple layers.",
+                    is_error=True,
+                )
+                return
+
+            self._app_state.viewer_adapter.activate_layer(layer_or_layers)
             self._set_action_feedback(
-                f"Expected one stack image layer for `{image_name}`, but received multiple layers.",
-                is_error=True,
+                f"Loaded image `{image_name}` in stack mode for coordinate system `{coordinate_system}`.",
+                is_error=False,
             )
             return
 
-        self._app_state.viewer_adapter.activate_layer(layer)
+        if not isinstance(layer_or_layers, list):
+            self._set_action_feedback(
+                f"Expected overlay image layers for `{image_name}`, but received a single layer.",
+                is_error=True,
+            )
+            return
+        if not layer_or_layers:
+            self._set_action_feedback(f"No overlay layers were returned for image `{image_name}`.", is_error=True)
+            return
+
+        self._app_state.viewer_adapter.activate_layer(layer_or_layers[0])
+        channel_names = image_card.get_selected_overlay_channel_names()
         self._set_action_feedback(
-            f"Loaded image `{image_name}` in stack mode for coordinate system `{coordinate_system}`.",
+            f"Loaded image `{image_name}` in overlay mode for channels {channel_names} "
+            f"in coordinate system `{coordinate_system}`.",
             is_error=False,
         )
 

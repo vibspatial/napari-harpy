@@ -274,7 +274,7 @@ viewer adapter.
 - [x] labels and images are filtered by the selected coordinate system
 - [x] the widget can load a selected labels element into napari
 - [x] the widget can load a selected image in stack mode
-- [ ] the widget can load selected channels in overlay mode
+- [x] the widget can load selected channels in overlay mode
 
 ### Depends on
 

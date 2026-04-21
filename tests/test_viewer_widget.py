@@ -135,7 +135,7 @@ def test_viewer_widget_image_mode_toggles_are_mutually_exclusive(qtbot, sdata_bl
     assert not image_card.stack_toggle.isChecked()
     assert image_card.overlay_toggle.isChecked()
     assert not image_card.channel_panel.isHidden()
-    assert not image_card.add_update_button.isEnabled()
+    assert image_card.add_update_button.isEnabled()
 
     image_card.stack_toggle.setChecked(True)
 
@@ -251,6 +251,83 @@ def test_viewer_widget_add_update_image_reuses_existing_stack_layer(qtbot, sdata
 
     assert len(viewer.layers) == 1
     assert viewer.layers[0] is first_layer
+
+
+def test_viewer_widget_add_update_image_overlay_passes_selected_channels_and_colors(qtbot, monkeypatch) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    fake_sdata = object()
+    fake_layers = [object(), object()]
+    recorded_calls: list[tuple[object, str, str, str, list[int] | None, list[str] | None]] = []
+    activated_layers: list[object] = []
+
+    qtbot.addWidget(widget)
+
+    monkeypatch.setattr(viewer_widget_module, "_get_coordinate_systems_from_sdata", lambda sdata: ["global"])
+    monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: ["image"])
+    monkeypatch.setattr(viewer_widget_module, "_get_image_channel_names", lambda sdata, image_name: ["c0", "c1", "c2"])
+    monkeypatch.setattr(
+        widget.app_state.viewer_adapter,
+        "ensure_image_loaded",
+        lambda sdata, image_name, coordinate_system, *, mode, channels=None, channel_colors=None: (
+            recorded_calls.append((sdata, image_name, coordinate_system, mode, channels, channel_colors)) or fake_layers
+        ),
+    )
+    monkeypatch.setattr(
+        widget.app_state.viewer_adapter,
+        "activate_layer",
+        lambda layer: activated_layers.append(layer) or True,
+    )
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(fake_sdata)
+
+    image_card = widget.image_cards[0]
+    image_card.overlay_toggle.setChecked(True)
+    image_card.channel_checkboxes[0].setChecked(True)
+    image_card.channel_checkboxes[2].setChecked(True)
+    image_card.channel_color_combos[0].setCurrentText("#00FFFF")
+    image_card.channel_color_combos[2].setCurrentText("#FFA500")
+
+    image_card.add_update_button.click()
+
+    assert recorded_calls == [(fake_sdata, "image", "global", "overlay", [0, 2], ["#00FFFF", "#FFA500"])]
+    assert activated_layers == [fake_layers[0]]
+
+
+def test_viewer_widget_add_update_image_overlay_loads_reuses_and_replaces_layers(qtbot, sdata_blobs) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata_blobs)
+
+    image_card = widget.image_cards[0]
+
+    image_card.overlay_toggle.setChecked(True)
+    image_card.channel_checkboxes[0].setChecked(True)
+    image_card.channel_checkboxes[2].setChecked(True)
+    image_card.add_update_button.click()
+
+    assert len(viewer.layers) == 2
+    first_layers = list(viewer.layers)
+    assert [layer.name for layer in first_layers] == ["blobs_image[0]", "blobs_image[2]"]
+    assert viewer.layers.selection.active is first_layers[0]
+    assert "Loaded image `blobs_image` in overlay mode" in widget.action_feedback_label.text()
+
+    image_card.add_update_button.click()
+
+    assert len(viewer.layers) == 2
+    assert list(viewer.layers) == first_layers
+
+    image_card.channel_checkboxes[0].setChecked(False)
+    image_card.add_update_button.click()
+
+    assert len(viewer.layers) == 1
+    assert viewer.layers[0].name == "blobs_image[2]"
 
 
 def test_viewer_widget_add_update_image_uses_selected_coordinate_system(qtbot, monkeypatch) -> None:
