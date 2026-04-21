@@ -67,7 +67,7 @@ def build_input_control_stylesheet(control_selector: str) -> str:
         "border-radius: 8px; "
         "color: #111827; "
         "padding: 4px 10px; "
-        "min-height: 30px;}"
+        "min-height: 20px;}"
         f"{disabled_selector} {{"
         "background-color: #f7efea; "
         "border-color: #e9ddd7; "
@@ -175,19 +175,9 @@ def create_form_label(text: str) -> QLabel:
 
 def format_tooltip(message: str) -> str:
     escaped_message = (
-        escape(message)
-        .replace("_", "_&#8203;")
-        .replace("/", "/&#8203;")
-        .replace("-", "-&#8203;")
-        .replace("\n", "<br>")
+        escape(message).replace("_", "_&#8203;").replace("/", "/&#8203;").replace("-", "-&#8203;").replace("\n", "<br>")
     )
-    return (
-        "<qt>"
-        f"<div style='color: {TOOLTIP_TEXT_COLOR}; max-width: 360px;'>"
-        f"{escaped_message}"
-        "</div>"
-        "</qt>"
-    )
+    return f"<qt><div style='color: {TOOLTIP_TEXT_COLOR}; max-width: 360px;'>{escaped_message}</div></qt>"
 
 
 def format_feedback_identifier(name: str, *, max_length: int = 56) -> tuple[str, bool]:
