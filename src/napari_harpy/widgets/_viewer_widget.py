@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from qtpy.QtCore import QSignalBlocker, Qt
+from qtpy.QtCore import QSignalBlocker, Qt, Signal
 from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import (
     QCheckBox,
@@ -71,6 +72,14 @@ _SECTION_GROUP_STYLESHEET = (
 _SUMMARY_LABEL_STYLESHEET = "color: #374151; font-weight: 500;"
 _EMPTY_STATE_STYLESHEET = "color: #6b7280; font-weight: 500;"
 _CHANNEL_PANEL_STYLESHEET = "QWidget { background: transparent; }"
+
+
+@dataclass(frozen=True)
+class ImageLoadRequest:
+    image_name: str
+    mode: str
+    channels: list[int]
+    channel_colors: list[str]
 
 
 class _ElidedLabel(QLabel):
@@ -155,12 +164,13 @@ class _LabelsCardWidget(QFrame):
 class _ImageCardWidget(QFrame):
     """Card UI for one image element in the selected coordinate system."""
 
+    add_update_requested = Signal(object)
+
     def __init__(
         self,
         *,
         image_name: str,
         channel_names: list[str],
-        on_add_update: Callable[[_ImageCardWidget], None],
     ) -> None:
         super().__init__()
         self.image_name = image_name
@@ -240,7 +250,7 @@ class _ImageCardWidget(QFrame):
         self.add_update_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.add_update_button.setMinimumHeight(28)
         self.add_update_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
-        self.add_update_button.clicked.connect(partial(on_add_update, self))
+        self.add_update_button.clicked.connect(self._emit_add_update_request)
         self.add_update_button.setToolTip("")
 
         self.stack_toggle.toggled.connect(self._on_stack_toggled)
@@ -289,6 +299,16 @@ class _ImageCardWidget(QFrame):
             for checkbox, color_combo in zip(self.channel_checkboxes, self.channel_color_combos, strict=False)
             if checkbox.isChecked()
         ]
+
+    def _emit_add_update_request(self, _checked: bool = False) -> None:
+        self.add_update_requested.emit(
+            ImageLoadRequest(
+                image_name=self.image_name,
+                mode=self.display_mode(),
+                channels=self.get_selected_overlay_channels(),
+                channel_colors=self.get_selected_overlay_colors(),
+            )
+        )
 
 
 class ViewerWidget(QWidget):
@@ -504,8 +524,8 @@ class ViewerWidget(QWidget):
             card = _ImageCardWidget(
                 image_name=image_name,
                 channel_names=_get_image_channel_names(sdata, image_name),
-                on_add_update=self._add_or_update_image_layer,
             )
+            card.add_update_requested.connect(self._add_or_update_image_layer)
             self.images_section_layout.addWidget(card)
             self._image_cards.append(card)
 
@@ -542,24 +562,24 @@ class ViewerWidget(QWidget):
             is_error=False,
         )
 
-    def _add_or_update_image_layer(self, image_card: _ImageCardWidget) -> None:
+    def _add_or_update_image_layer(self, request: ImageLoadRequest) -> None:
         sdata = self._app_state.sdata
         coordinate_system = self.coordinate_system_combo.currentText()
-        image_name = image_card.image_name
+        image_name = request.image_name
 
         if sdata is None or not coordinate_system:
             self._set_action_feedback("Load a SpatialData object and select a coordinate system first.", is_error=True)
             return
 
-        mode = image_card.display_mode()
+        mode = request.mode
         try:
             layer_or_layers = self._app_state.viewer_adapter.ensure_image_loaded(
                 sdata,
                 image_name,
                 coordinate_system,
                 mode=mode,
-                channels=image_card.get_selected_overlay_channels() if mode == "overlay" else None,
-                channel_colors=image_card.get_selected_overlay_colors() if mode == "overlay" else None,
+                channels=request.channels if mode == "overlay" else None,
+                channel_colors=request.channel_colors if mode == "overlay" else None,
             )
         except ValueError as error:
             self._set_action_feedback(str(error), is_error=True)
@@ -591,9 +611,8 @@ class ViewerWidget(QWidget):
             return
 
         self._app_state.viewer_adapter.activate_layer(layer_or_layers[0])
-        channel_names = image_card.get_selected_overlay_channel_names()
         self._set_action_feedback(
-            f"Loaded image `{image_name}` in overlay mode for channels {channel_names} "
+            f"Loaded image `{image_name}` in overlay mode for channels {request.channels} "
             f"in coordinate system `{coordinate_system}`.",
             is_error=False,
         )
