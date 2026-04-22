@@ -121,7 +121,6 @@ class FeatureExtractionWidget(QWidget):
         apply_widget_surface(self)
         self.setMinimumWidth(_WIDGET_MIN_WIDTH)
 
-        self._viewer = napari_viewer
         self._app_state = get_or_create_app_state(napari_viewer)
         self._feature_extraction_controller = FeatureExtractionController(
             on_state_changed=self._on_controller_state_changed,
@@ -255,24 +254,11 @@ class FeatureExtractionWidget(QWidget):
             object_name="feature_extraction_morphology_features_group",
         )
 
-        self.refresh_action_row = QWidget()
-        self.refresh_action_row.setObjectName("feature_extraction_refresh_action_row")
-        refresh_action_layout = QHBoxLayout(self.refresh_action_row)
-        refresh_action_layout.setContentsMargins(0, 0, 0, 0)
-        refresh_action_layout.setSpacing(8)
-
         self.calculate_action_row = QWidget()
         self.calculate_action_row.setObjectName("feature_extraction_calculate_action_row")
         calculate_action_layout = QHBoxLayout(self.calculate_action_row)
         calculate_action_layout.setContentsMargins(0, 0, 0, 0)
         calculate_action_layout.setSpacing(8)
-
-        self.refresh_button = QPushButton("Rescan Viewer")
-        self.refresh_button.clicked.connect(self._refresh_from_current_app_state)
-        self.refresh_button.setEnabled(False)
-        self.refresh_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.refresh_button.setMinimumHeight(28)
-        self.refresh_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
 
         self.calculate_button = QPushButton("Calculate")
         self.calculate_button.setObjectName("feature_extraction_calculate_button")
@@ -283,7 +269,7 @@ class FeatureExtractionWidget(QWidget):
         self.calculate_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
         self._set_tooltip(
             self.calculate_button,
-            "Calculation will be enabled once the feature-extraction controller is wired to these inputs.",
+            "Calculation is enabled once the shared SpatialData selection and feature choices form a valid extraction request.",
         )
 
         self.selection_status = QLabel()
@@ -303,7 +289,6 @@ class FeatureExtractionWidget(QWidget):
         selector_layout.addRow(self._create_form_label("Table"), self.table_combo)
         selector_layout.addRow(self._create_form_label("Feature matrix key"), self.output_key_line_edit)
 
-        refresh_action_layout.addWidget(self.refresh_button, 1)
         calculate_action_layout.addWidget(self.calculate_button, 1)
 
         content_layout.addWidget(title)
@@ -311,7 +296,6 @@ class FeatureExtractionWidget(QWidget):
         content_layout.addWidget(self.intensity_features_group)
         content_layout.addWidget(self.morphology_features_group)
         content_layout.addWidget(self.calculate_action_row)
-        content_layout.addWidget(self.refresh_action_row)
         content_layout.addWidget(self.selection_status)
         content_layout.addWidget(self.controller_feedback)
         content_layout.addStretch(1)
@@ -399,7 +383,6 @@ class FeatureExtractionWidget(QWidget):
 
     def refresh_from_sdata(self, sdata: SpatialData | None) -> None:
         """Refresh the widget from the shared Harpy SpatialData state."""
-        self._update_refresh_button_state(sdata)
         if sdata is None:
             self._clear_selection_inputs()
             self._bind_current_selection()
@@ -409,12 +392,6 @@ class FeatureExtractionWidget(QWidget):
 
     def _on_sdata_changed(self, sdata: SpatialData | None) -> None:
         self.refresh_from_sdata(sdata)
-
-    def _refresh_from_current_app_state(self) -> None:
-        self.refresh_from_sdata(self._app_state.sdata)
-
-    def _update_refresh_button_state(self, sdata: SpatialData | None) -> None:
-        self.refresh_button.setEnabled(self._viewer is not None and sdata is not None)
 
     def _clear_selection_inputs(self) -> None:
         self._label_options = []
@@ -914,6 +891,7 @@ class FeatureExtractionWidget(QWidget):
                 "No SpatialData Loaded",
                 [
                     "Load a SpatialData object through the Harpy Viewer widget, reader, or `Interactive(sdata)`.",
+                    "This form updates automatically from the shared Harpy state.",
                 ],
                 kind="warning",
             )

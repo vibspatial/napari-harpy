@@ -78,7 +78,8 @@ def test_feature_extraction_widget_can_be_instantiated(qtbot) -> None:
     assert widget.coordinate_system_combo.count() == 0
     assert widget.calculate_button.isEnabled() is False
     assert "No SpatialData Loaded" in widget.selection_status.text()
-    assert widget.refresh_button.isEnabled() is False
+    assert "shared Harpy state" in unescape(widget.selection_status.text())
+    assert all(button.text() != "Rescan Viewer" for button in widget.findChildren(type(widget.calculate_button)))
     assert widget.segmentation_combo.sizeAdjustPolicy() == QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
     assert widget.image_combo.sizeAdjustPolicy() == QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
     assert widget.table_combo.sizeAdjustPolicy() == QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
@@ -97,7 +98,6 @@ def test_feature_extraction_widget_seeds_from_shared_sdata_on_construction(
 
     qtbot.addWidget(widget)
 
-    assert widget.refresh_button.isEnabled() is True
     assert widget.segmentation_combo.count() == 2
     assert widget.selected_segmentation_name == "blobs_labels"
     assert widget.selected_spatialdata is sdata_blobs
@@ -118,7 +118,6 @@ def test_feature_extraction_widget_refreshes_when_shared_sdata_changes(
 
     app_state.set_sdata(sdata_blobs)
 
-    assert widget.refresh_button.isEnabled() is True
     assert widget.segmentation_combo.count() == 2
     assert widget.selected_segmentation_name == "blobs_labels"
     assert widget.selected_spatialdata is sdata_blobs
@@ -784,7 +783,6 @@ def test_feature_extraction_widget_clears_when_shared_sdata_is_cleared(
     qtbot.addWidget(widget)
 
     assert widget.segmentation_combo.count() == 2
-    assert widget.refresh_button.isEnabled() is True
 
     app_state.clear_sdata()
 
@@ -804,4 +802,4 @@ def test_feature_extraction_widget_clears_when_shared_sdata_is_cleared(
     assert widget.coordinate_system_combo.isEnabled() is False
     assert widget.calculate_button.isEnabled() is False
     assert "No SpatialData Loaded" in widget.selection_status.text()
-    assert widget.refresh_button.isEnabled() is False
+    assert "shared Harpy state" in unescape(widget.selection_status.text())
