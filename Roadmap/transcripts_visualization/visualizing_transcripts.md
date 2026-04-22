@@ -156,6 +156,105 @@ This is the crucial difference between "queryable" and "snappy".
 
 Without these coarse sampled levels, zoomed-out views will still try to render far too many points.
 
+### D. Concrete tile and level construction
+
+For implementation, we should make `tile_id` explicit and define levels from a fixed finest tile size.
+
+Assume:
+
+- one chosen 2D render coordinate system
+- dataset bounds `[x_min, x_max) x [y_min, y_max)`
+- a finest tile size, for example `512`
+- levels `0..L`, where `L` is the finest exact level
+
+Define:
+
+```text
+tile_size(l) = leaf_tile_size * 2^(L - l)
+```
+
+So:
+
+- `level L` has the smallest tiles and stores exact points
+- moving toward `level 0` doubles tile width and height each step
+
+For a point `(x, y)` at level `l`:
+
+```text
+tx(l) = floor((x - x_min) / tile_size(l))
+ty(l) = floor((y - y_min) / tile_size(l))
+tile_id(l) = (l, tx(l), ty(l))
+```
+
+In storage, `tile_id` can be encoded as a string or integer, but logically it should be treated as the tuple `(level, tx, ty)`.
+
+At the finest level:
+
+- each point belongs to exactly one leaf tile
+- `level L` stores the exact data
+
+Parent membership is then automatic:
+
+```text
+tx_parent(l) = tx_leaf // 2^(L - l)
+ty_parent(l) = ty_leaf // 2^(L - l)
+```
+
+This means the pyramid can be built bottom-up.
+
+Recommended construction:
+
+- `level L`: exact leaf tiles, grouped by finest `tile_id`
+- `level < L`: sampled parent tiles, built from child tiles
+
+For each parent tile:
+
+1. gather points from its child tiles
+2. choose a bounded representative sample
+3. store only that sample at the parent level
+
+The first implementation should prefer a spatially stratified sample over naive random sampling, so zoomed-out views remain spatially even and do not clump.
+
+One important caveat is gene filtering:
+
+- if coarse levels are only a global spatial sample, rare genes may disappear at low zoom
+- the simplest first version is still to sample spatially first and benchmark gene-filter behavior before adding gene-aware summaries
+
+## Level selection at runtime
+
+The viewer should not choose the level from zoom alone.
+
+Zoom only tells us the viewport size in data coordinates, but transcript density can vary strongly across the tissue. The better rule is:
+
+1. compute the current viewport bounds
+2. find intersecting tiles for each candidate level
+3. estimate visible points from `manifest.parquet`
+4. choose the finest level whose estimated visible point count stays under a render budget
+
+Example:
+
+```text
+budget = 150_000 visible points
+```
+
+Then:
+
+```text
+for l from finest to coarsest:
+    visible_tiles = tiles_intersecting_viewport(l)
+    estimate = sum(tile_manifest[l, tile].n_points_stored for tile in visible_tiles)
+    if estimate <= budget:
+        choose level l
+        break
+```
+
+This gives the desired behavior:
+
+- zoomed in: exact leaf tiles fit under the budget, so use them
+- zoomed out: exact tiles exceed the budget, so switch to a coarser sampled level
+
+The runtime controller should also use a small amount of hysteresis so the chosen level does not flicker when the estimated visible count sits near the threshold.
+
 ## Recommended loading algorithm in napari
 
 Do not load transcripts through the standard `napari-spatialdata` point path.
