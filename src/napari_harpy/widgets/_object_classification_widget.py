@@ -165,6 +165,7 @@ class ObjectClassificationWidget(QWidget):
 
         self.segmentation_combo = CompactComboBox()
         self.segmentation_combo.setObjectName("segmentation_mask_combo")
+        self.segmentation_combo.setPlaceholderText("Choose segmentation mask")
         self.segmentation_combo.currentIndexChanged.connect(self._on_segmentation_changed)
         self.segmentation_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
 
@@ -321,7 +322,7 @@ class ObjectClassificationWidget(QWidget):
         content_layout.addStretch(1)
 
         self._app_state.sdata_changed.connect(self._on_sdata_changed)
-        self._connect_viewer_events()
+        self._app_state.viewer_adapter.labels_layers_changed.connect(self._on_labels_layers_changed)
         self.refresh_from_sdata(self._app_state.sdata)
 
     @property
@@ -440,9 +441,11 @@ class ObjectClassificationWidget(QWidget):
 
             # If the previously selected label is still available after a refresh,
             # keep it selected instead of resetting the user back to the first item.
+            # When nothing was selected yet, stay explicitly unbound so opening the
+            # widget does not auto-load or auto-bind the first segmentation.
             next_index = self._find_label_option_index(previous_identity)
             if has_options:
-                self.segmentation_combo.setCurrentIndex(0 if next_index is None else next_index)
+                self.segmentation_combo.setCurrentIndex(-1 if next_index is None else next_index)
             else:
                 self.segmentation_combo.setCurrentIndex(-1)
 
@@ -491,22 +494,71 @@ class ObjectClassificationWidget(QWidget):
         self._set_classifier_feedback("")
         self._set_persistence_feedback("")
 
-    def _connect_viewer_events(self) -> None:
-        layers = getattr(self._viewer, "layers", None)
-        events = getattr(layers, "events", None)
-        if events is None:
-            return
-
-        for event_name in ("inserted", "removed", "reordered"):
-            event_emitter = getattr(events, event_name, None)
-            if event_emitter is not None:
-                event_emitter.connect(self._on_viewer_layers_changed)
-
-    def _on_viewer_layers_changed(self, event: object | None = None) -> None:
-        del event
+    def _on_labels_layers_changed(self) -> None:
         if self._is_preparing_labels_layer:
             return
-        self.refresh_from_sdata(self._app_state.sdata)
+        # A labels-layer insert/remove only changes live viewer availability,
+        # not the shared SpatialData selection model. React narrow here:
+        # clear the current segmentation if *its* live layer disappeared, or
+        # rebind only if the selected segmentation was previously missing and
+        # has now become available.
+        self._labels_layer_preparation_message = None
+        self._labels_layer_preparation_error = None
+        if self._selected_segmentation_layer_was_removed():
+            self._clear_selected_segmentation()
+            self._bind_current_selection()
+            return
+        # If the form still points at a selected segmentation but the
+        # controllers are currently unbound (for example because no live labels
+        # layer was available a moment ago), then a newly inserted matching
+        # labels layer should rebind the controllers. This lets the widget
+        # recover when the selected segmentation becomes available again
+        # without forcing a full auto-load pass on every labels-layer change.
+        if self._selected_segmentation_layer_became_available():
+            self._bind_current_selection()
+
+    def _selected_segmentation_layer_was_removed(self) -> bool:
+        if (
+            self.selected_spatialdata is None
+            or self.selected_segmentation_name is None
+            or self.selected_coordinate_system is None
+        ):
+            return False
+
+        loaded_layer = self._app_state.viewer_adapter.get_loaded_labels_layer(
+            self.selected_spatialdata,
+            self.selected_segmentation_name,
+            self.selected_coordinate_system,
+        )
+        return loaded_layer is None
+
+    def _selected_segmentation_layer_became_available(self) -> bool:
+        if (
+            self.selected_spatialdata is None
+            or self.selected_segmentation_name is None
+            or self.selected_coordinate_system is None
+            # This helper is only for the "selected in the form, but not
+            # currently bound to a live labels layer" case. If annotation is
+            # already bound to some labels layer, then nothing has "become
+            # available" from the controller's perspective, so we can return early
+            # without rebinding.
+            or self._annotation_controller.labels_layer is not None
+        ):
+            return False
+
+        loaded_layer = self._app_state.viewer_adapter.get_loaded_labels_layer(
+            self.selected_spatialdata,
+            self.selected_segmentation_name,
+            self.selected_coordinate_system,
+        )
+        return loaded_layer is not None
+
+    def _clear_selected_segmentation(self) -> None:
+        with QSignalBlocker(self.segmentation_combo):
+            self.segmentation_combo.setCurrentIndex(-1)
+
+        self._set_selected_label_option(-1)
+        self._refresh_table_names()
 
     def _refresh_coordinate_systems(self) -> None:
         previous_coordinate_system = self.selected_coordinate_system

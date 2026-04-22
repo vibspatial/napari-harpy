@@ -118,6 +118,10 @@ class CompactComboBox(QComboBox):
         option = QStyleOptionComboBox()
         self.initStyleOption(option)
         option.currentText = self._elided_current_text(option)
+        if self.currentIndex() < 0 and self.placeholderText():
+            placeholder_color = option.palette.color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text)
+            option.palette.setColor(QPalette.ColorRole.ButtonText, placeholder_color)
+            option.palette.setColor(QPalette.ColorRole.Text, placeholder_color)
         painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, option)
         painter.drawControl(QStyle.ControlElement.CE_ComboBoxLabel, option)
 
@@ -130,6 +134,10 @@ class CompactComboBox(QComboBox):
             option = QStyleOptionComboBox()
             self.initStyleOption(option)
 
+        current_text = option.currentText
+        if not current_text and self.currentIndex() < 0:
+            current_text = self.placeholderText()
+
         text_rect = self.style().subControlRect(
             QStyle.ComplexControl.CC_ComboBox,
             option,
@@ -137,7 +145,7 @@ class CompactComboBox(QComboBox):
             self,
         )
         available_width = max(0, text_rect.width())
-        return self.fontMetrics().elidedText(option.currentText, Qt.TextElideMode.ElideRight, available_width)
+        return self.fontMetrics().elidedText(current_text, Qt.TextElideMode.ElideRight, available_width)
 
     def _update_current_text_tooltip(self, _index: int | None = None) -> None:
         current_text = self.currentText()

@@ -40,6 +40,19 @@ def test_compact_combo_box_elides_long_current_text_and_sets_tooltip(qtbot) -> N
     assert combo._elided_current_text() != combo.currentText()
 
 
+def test_compact_combo_box_uses_placeholder_text_when_current_index_is_unbound(qtbot) -> None:
+    combo = CompactComboBox(minimum_contents_length=6)
+    combo.setPlaceholderText("Choose segmentation mask")
+    combo.addItems(["first"])
+    combo.setCurrentIndex(-1)
+    combo.resize(180, 36)
+    qtbot.addWidget(combo)
+
+    assert combo.currentText() == ""
+    assert combo._elided_current_text().startswith("Choose segmentation")
+    assert combo.toolTip() == ""
+
+
 def test_format_tooltip_preserves_line_breaks_and_adds_soft_wrap_points() -> None:
     tooltip = format_tooltip("Image: very_long_identifier_name\nCoordinate system: global/test")
 
