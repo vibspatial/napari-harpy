@@ -149,6 +149,9 @@ class ViewerAdapter(QObject):
     mapping from napari layers to `SpatialData` element identity.
     """
 
+    # Emitted when the set/order of live pickable Labels layers changes.
+    # Used by consumers that depend on live labels-layer availability,
+    # currently ObjectClassificationWidget.
     labels_layers_changed = Signal()
     active_layer_changed = Signal(object)
 
