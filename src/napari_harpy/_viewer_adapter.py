@@ -281,7 +281,6 @@ class ViewerAdapter(QObject):
                 continue
 
             binding = self._layer_bindings.get_binding(layer)
-            # TODO: binding already contains a coordinate system -> it should use that.
             if _matches_binding(binding, sdata=sdata, element_name=label_name, element_type="labels"):
                 if coordinate_system is not None and binding.coordinate_system != coordinate_system:
                     continue
