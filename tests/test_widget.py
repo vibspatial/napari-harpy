@@ -30,7 +30,7 @@ from napari_harpy._classifier import (
     PRED_CLASS_COLUMN,
     PRED_CONFIDENCE_COLUMN,
 )
-from napari_harpy._spatialdata import SpatialDataViewerBinding
+from napari_harpy._spatialdata import SpatialDataLabelsOption, SpatialDataViewerBinding
 from napari_harpy.widgets._object_classification_widget import (
     ObjectClassificationWidget as HarpyWidget,
 )
@@ -163,9 +163,13 @@ def test_widget_can_be_instantiated(qtbot) -> None:
     assert widget.selected_segmentation_name is None
     assert widget.selected_table_name is None
     assert widget.selected_feature_key is None
+    assert widget.selected_coordinate_system is None
     assert widget.selected_color_by == "user_class"
     assert not widget.refresh_button.isEnabled()
     assert "No SpatialData Loaded" in widget.selection_status.text()
+    assert widget.coordinate_system_combo.sizeAdjustPolicy() == (
+        QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+    )
     assert widget.segmentation_combo.sizeAdjustPolicy() == QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
     assert widget.table_combo.sizeAdjustPolicy() == QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
     assert widget.feature_matrix_combo.sizeAdjustPolicy() == (
@@ -187,6 +191,9 @@ def test_widget_refreshes_when_shared_sdata_changes(qtbot, sdata_blobs: SpatialD
     app_state.set_sdata(sdata_blobs)
 
     assert widget.refresh_button.isEnabled()
+    assert widget.coordinate_system_combo.count() == 1
+    assert widget.coordinate_system_combo.itemText(0) == "global"
+    assert widget.selected_coordinate_system == "global"
     assert widget.segmentation_combo.count() == 2
     assert widget.selected_segmentation_name == "blobs_labels"
     assert widget.selected_spatialdata is sdata_blobs
@@ -205,10 +212,13 @@ def test_widget_clears_when_shared_sdata_is_cleared(qtbot, sdata_blobs: SpatialD
 
     app_state.clear_sdata()
 
+    assert widget.selected_coordinate_system is None
     assert widget.selected_segmentation_name is None
     assert widget.selected_spatialdata is None
     assert widget.selected_table_name is None
     assert widget.selected_feature_key is None
+    assert widget.coordinate_system_combo.count() == 0
+    assert not widget.coordinate_system_combo.isEnabled()
     assert widget.segmentation_combo.count() == 0
     assert not widget.segmentation_combo.isEnabled()
     assert widget.table_combo.count() == 0
@@ -256,6 +266,9 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_bl
     widget = HarpyWidget(viewer)
     qtbot.addWidget(widget)
 
+    assert widget.coordinate_system_combo.count() == 1
+    assert widget.coordinate_system_combo.itemText(0) == "global"
+    assert widget.selected_coordinate_system == "global"
     assert widget.segmentation_combo.count() == 2
     assert [widget.segmentation_combo.itemText(index) for index in range(widget.segmentation_combo.count())] == [
         "blobs_labels",
@@ -300,6 +313,83 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_bl
     assert "model is stale" in widget.classifier_feedback.text()
 
 
+def test_widget_populates_segmentation_choices_from_shared_sdata_without_loaded_layer(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    assert widget.coordinate_system_combo.count() == 1
+    assert widget.coordinate_system_combo.itemText(0) == "global"
+    assert widget.selected_coordinate_system == "global"
+    assert widget.segmentation_combo.count() == 2
+    assert [widget.segmentation_combo.itemText(index) for index in range(widget.segmentation_combo.count())] == [
+        "blobs_labels",
+        "blobs_multiscale_labels",
+    ]
+    assert widget.selected_segmentation_name == "blobs_labels"
+    assert widget.selected_spatialdata is sdata_blobs
+    assert widget.selected_table_name == "table"
+    assert widget.selected_feature_key == "features_1"
+    assert "not currently loaded as a napari Labels layer" in widget.selection_status.text()
+    assert not widget.apply_class_button.isEnabled()
+
+
+def test_widget_filters_segmentation_choices_by_selected_coordinate_system(qtbot, monkeypatch, sdata_blobs: SpatialData) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+
+    global_option = SpatialDataLabelsOption(
+        label_name="blobs_labels",
+        display_name="blobs_labels",
+        sdata=sdata_blobs,
+        coordinate_systems=("global",),
+    )
+    cells_option = SpatialDataLabelsOption(
+        label_name="blobs_multiscale_labels",
+        display_name="blobs_multiscale_labels",
+        sdata=sdata_blobs,
+        coordinate_systems=("cells",),
+    )
+
+    monkeypatch.setattr(
+        widget_module,
+        "get_coordinate_system_names_from_sdata",
+        lambda _sdata: ["cells", "global"],
+    )
+    monkeypatch.setattr(
+        widget_module,
+        "get_spatialdata_label_options_for_coordinate_system_from_sdata",
+        lambda *, sdata, coordinate_system: [global_option] if coordinate_system == "global" else [cells_option],
+    )
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+
+    assert widget.coordinate_system_combo.count() == 2
+    assert [widget.coordinate_system_combo.itemText(index) for index in range(widget.coordinate_system_combo.count())] == [
+        "cells",
+        "global",
+    ]
+    assert widget.selected_coordinate_system == "cells"
+    assert widget.segmentation_combo.count() == 1
+    assert widget.segmentation_combo.itemText(0) == "blobs_multiscale_labels"
+    assert widget.selected_segmentation_name == "blobs_multiscale_labels"
+    assert widget.selected_table_name is None
+    assert widget.selected_feature_key is None
+
+    widget.coordinate_system_combo.setCurrentIndex(1)
+
+    assert widget.selected_coordinate_system == "global"
+    assert widget.segmentation_combo.count() == 1
+    assert widget.segmentation_combo.itemText(0) == "blobs_labels"
+    assert widget.selected_segmentation_name == "blobs_labels"
+    assert widget.selected_table_name == "table"
+    assert widget.selected_feature_key == "features_1"
+
+
 def test_widget_surfaces_invalid_table_binding_for_duplicate_instance_ids(qtbot, sdata_blobs: SpatialData) -> None:
     table = sdata_blobs["table"]
     first_index, second_index = table.obs.index[:2]
@@ -330,6 +420,12 @@ def test_widget_refreshes_when_a_spatialdata_layer_is_added(qtbot, sdata_blobs: 
     assert widget.segmentation_combo.count() == 0
 
     app_state.set_sdata(sdata_blobs)
+    assert widget.coordinate_system_combo.count() == 1
+    assert widget.coordinate_system_combo.itemText(0) == "global"
+    assert widget.selected_coordinate_system == "global"
+    assert widget.segmentation_combo.count() == 2
+    assert "not currently loaded as a napari Labels layer" in widget.selection_status.text()
+
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer.layers.append(layer)
     viewer.layers.events.inserted.emit(layer)

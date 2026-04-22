@@ -370,9 +370,9 @@ class FeatureExtractionWidget(QWidget):
         """Return whether an existing feature key should be replaced."""
         return False
 
-    def refresh_segmentation_masks(self) -> None:
-        """Refresh selector choices from the loaded SpatialData object."""
-        if self._app_state.sdata is None:
+    def refresh_from_sdata(self, sdata: SpatialData | None) -> None:
+        """Refresh the widget from the shared Harpy SpatialData state."""
+        if sdata is None:
             self._clear_selection_inputs()
             self._bind_current_selection()
             return
@@ -383,15 +383,6 @@ class FeatureExtractionWidget(QWidget):
         self._refresh_table_names()
         self._update_intensity_features_hint()
         self._bind_current_selection()
-
-    def refresh_from_sdata(self, sdata: SpatialData | None) -> None:
-        """Refresh the widget from the shared Harpy SpatialData state."""
-        if sdata is None:
-            self._clear_selection_inputs()
-            self._bind_current_selection()
-            return
-
-        self.refresh_segmentation_masks()
 
     def _on_sdata_changed(self, sdata: SpatialData | None) -> None:
         self.refresh_from_sdata(sdata)

@@ -30,6 +30,8 @@ from napari_harpy._spatialdata import (
     SpatialDataTableMetadata,
     SpatialDataViewerBinding,
     get_annotating_table_names,
+    get_coordinate_system_names_from_sdata,
+    get_spatialdata_label_options_for_coordinate_system_from_sdata,
     get_table_metadata,
     get_table_obsm_keys,
     validate_table_binding,
@@ -86,8 +88,8 @@ class ObjectClassificationWidget(QWidget):
 
     In the current transition state, the widget exposes:
 
-    - segmentation masks from viewer-linked labels layers that belong to the
-      shared loaded `SpatialData`
+    - coordinate systems from the shared loaded `SpatialData`
+    - segmentation masks filtered by the selected coordinate system
     - annotating tables for the selected segmentation
     - feature matrix keys from `table.obsm`
     - the currently picked segmentation instance id from the active `Labels` layer
@@ -120,6 +122,8 @@ class ObjectClassificationWidget(QWidget):
             self._viewer_binding,
         )
         self._persistence_controller = PersistenceController()
+        self._coordinate_systems: list[str] = []
+        self._selected_coordinate_system: str | None = None
         self._label_options: list[SpatialDataLabelsOption] = []
         self._selected_label_option: SpatialDataLabelsOption | None = None
         self._table_names: list[str] = []
@@ -156,6 +160,11 @@ class ObjectClassificationWidget(QWidget):
         selector_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         selector_layout.setHorizontalSpacing(12)
         selector_layout.setVerticalSpacing(10)
+        self.coordinate_system_combo = CompactComboBox()
+        self.coordinate_system_combo.setObjectName("object_classification_coordinate_system_combo")
+        self.coordinate_system_combo.currentIndexChanged.connect(self._on_coordinate_system_changed)
+        self.coordinate_system_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
+
         self.segmentation_combo = CompactComboBox()
         self.segmentation_combo.setObjectName("segmentation_mask_combo")
         self.segmentation_combo.currentIndexChanged.connect(self._on_segmentation_changed)
@@ -294,6 +303,7 @@ class ObjectClassificationWidget(QWidget):
         self.persistence_feedback.setWordWrap(True)
         self.persistence_feedback.hide()
 
+        selector_layout.addRow(self._create_form_label("Coordinate system"), self.coordinate_system_combo)
         selector_layout.addRow(self._create_form_label("Segmentation mask"), self.segmentation_combo)
         selector_layout.addRow(self._create_form_label("Table"), self.table_combo)
         selector_layout.addRow(self._create_form_label("Feature matrix"), self.feature_matrix_combo)
@@ -358,8 +368,13 @@ class ObjectClassificationWidget(QWidget):
 
     @property
     def selected_spatialdata(self) -> SpatialData | None:
-        """Return the SpatialData object that owns the current labels selection."""
-        return None if self._selected_label_option is None else self._selected_label_option.sdata
+        """Return the loaded SpatialData object backing the current widget state."""
+        return self._app_state.sdata
+
+    @property
+    def selected_coordinate_system(self) -> str | None:
+        """Return the currently selected coordinate system."""
+        return self._selected_coordinate_system
 
     @property
     def selected_table_name(self) -> str | None:
@@ -397,15 +412,22 @@ class ObjectClassificationWidget(QWidget):
             self._bind_current_selection()
             return
 
+        self._refresh_coordinate_systems()
         self.refresh_segmentation_masks()
 
     def _on_sdata_changed(self, sdata: SpatialData | None) -> None:
         self.refresh_from_sdata(sdata)
 
     def refresh_segmentation_masks(self) -> None:
-        """Refresh segmentation choices from viewer-linked labels in the shared app state."""
+        """Refresh segmentation choices from the selected coordinate system."""
         previous_identity = None if self._selected_label_option is None else self._selected_label_option.identity
-        self._label_options = self._viewer_binding.get_label_options()
+        if self.selected_spatialdata is None or self.selected_coordinate_system is None:
+            self._label_options = []
+        else:
+            self._label_options = get_spatialdata_label_options_for_coordinate_system_from_sdata(
+                sdata=self.selected_spatialdata,
+                coordinate_system=self.selected_coordinate_system,
+            )
 
         with QSignalBlocker(self.segmentation_combo):
             self.segmentation_combo.clear()
@@ -440,6 +462,8 @@ class ObjectClassificationWidget(QWidget):
         self.refresh_button.setEnabled(self._viewer is not None and sdata is not None)
 
     def _clear_selection_inputs(self) -> None:
+        self._coordinate_systems = []
+        self._selected_coordinate_system = None
         self._label_options = []
         self._selected_label_option = None
         self._table_names = []
@@ -447,6 +471,11 @@ class ObjectClassificationWidget(QWidget):
         self._table_binding_error = None
         self._feature_matrix_keys = []
         self._selected_feature_key = None
+
+        with QSignalBlocker(self.coordinate_system_combo):
+            self.coordinate_system_combo.clear()
+            self.coordinate_system_combo.setEnabled(False)
+            self.coordinate_system_combo.setCurrentIndex(-1)
 
         with QSignalBlocker(self.segmentation_combo):
             self.segmentation_combo.clear()
@@ -481,6 +510,42 @@ class ObjectClassificationWidget(QWidget):
     def _on_viewer_layers_changed(self, event: object | None = None) -> None:
         del event
         self.refresh_from_sdata(self._app_state.sdata)
+
+    def _refresh_coordinate_systems(self) -> None:
+        previous_coordinate_system = self.selected_coordinate_system
+
+        if self.selected_spatialdata is None:
+            self._coordinate_systems = []
+        else:
+            self._coordinate_systems = get_coordinate_system_names_from_sdata(self.selected_spatialdata)
+
+        with QSignalBlocker(self.coordinate_system_combo):
+            self.coordinate_system_combo.clear()
+            for coordinate_system in self._coordinate_systems:
+                self.coordinate_system_combo.addItem(coordinate_system, coordinate_system)
+
+            has_coordinate_systems = bool(self._coordinate_systems)
+            self.coordinate_system_combo.setEnabled(has_coordinate_systems)
+
+            next_index = (
+                -1
+                if previous_coordinate_system is None
+                else self.coordinate_system_combo.findData(previous_coordinate_system)
+            )
+            if has_coordinate_systems:
+                self.coordinate_system_combo.setCurrentIndex(0 if next_index < 0 else next_index)
+            else:
+                self.coordinate_system_combo.setCurrentIndex(-1)
+
+        self._set_selected_coordinate_system(self.coordinate_system_combo.currentIndex())
+
+    def _on_coordinate_system_changed(self, index: int) -> None:
+        self._set_selected_coordinate_system(index)
+        self.refresh_segmentation_masks()
+
+    def _set_selected_coordinate_system(self, index: int) -> None:
+        coordinate_system = self.coordinate_system_combo.itemData(index)
+        self._selected_coordinate_system = coordinate_system if isinstance(coordinate_system, str) else None
 
     def _on_segmentation_changed(self, index: int) -> None:
         self._set_selected_label_option(index)
@@ -704,17 +769,24 @@ class ObjectClassificationWidget(QWidget):
                 ],
                 kind="warning",
             )
+        elif self.selected_coordinate_system is None:
+            self._set_selection_status(
+                title="Selection",
+                lines=["Choose a coordinate system to continue configuring object classification."],
+                kind="info",
+            )
         elif self.selected_segmentation_name is None:
             self._set_selection_status(
                 title="Selection",
-                lines=["Choose a segmentation mask to enable object picking."],
+                lines=["Choose a segmentation mask in the selected coordinate system to enable object picking."],
                 kind="info",
             )
         elif labels_layer is None:
             self._set_selection_status(
                 title="Selection",
                 lines=[
-                    "The chosen segmentation is known in SpatialData but is not currently loaded as a napari Labels layer."
+                    "The chosen segmentation is known in SpatialData for the selected coordinate system, "
+                    "but is not currently loaded as a napari Labels layer."
                 ],
                 kind="warning",
             )
