@@ -99,6 +99,7 @@ _MORPHOLOGY_FEATURES = (
 )
 _DEFAULT_FEATURE_MATRIX_KEY = "features"
 _MAX_VISIBLE_EXTRACTION_CHANNELS = 5
+ImageIdentity = tuple[int, str]
 
 
 class FeatureExtractionWidget(QWidget):
@@ -133,7 +134,7 @@ class FeatureExtractionWidget(QWidget):
         self._selected_image_option: SpatialDataImageOption | None = None
         self._image_channel_names: list[str] = []
         self._image_channel_checkboxes: list[QCheckBox] = []
-        self._selected_channel_names_by_image_identity: dict[tuple[int, str], tuple[str, ...]] = {}
+        self._selected_channel_names_by_image_identity: dict[ImageIdentity, tuple[str, ...]] = {}
         self._table_names: list[str] = []
         self._selected_table_name: str | None = None
         self._coordinate_systems: list[str] = []
