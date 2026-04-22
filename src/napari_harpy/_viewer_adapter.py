@@ -467,7 +467,7 @@ class ViewerAdapter(QObject):
         """Return loaded image layers for a SpatialData image element."""
         matches: list[Image] = []
         for layer in self._iter_candidate_layers():
-            if not _is_spatialdata_image_layer(layer):
+            if not _is_image_layer(layer):
                 continue
 
             binding = self._layer_bindings.get_binding(layer)
@@ -527,7 +527,7 @@ class ViewerAdapter(QObject):
     ) -> list[Image]:
         matches: list[Image] = []
         for layer in self._iter_candidate_layers():
-            if not _is_spatialdata_image_layer(layer):
+            if not _is_image_layer(layer):
                 continue
 
             binding = self._layer_bindings.get_binding(layer)
@@ -763,6 +763,6 @@ def _is_pickable_labels_layer(layer: Layer) -> bool:
     return isinstance(layer, Labels) and getattr(events, "selected_label", None) is not None
 
 
-def _is_spatialdata_image_layer(layer: Layer) -> bool:
+def _is_image_layer(layer: Layer) -> bool:
     # napari `Labels` layers are scalar-field siblings of `Image`, not subclasses.
     return isinstance(layer, Image)

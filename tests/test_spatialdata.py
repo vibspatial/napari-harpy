@@ -314,7 +314,7 @@ def test_get_loaded_spatialdata_layer_returns_loaded_image_layer(sdata_blobs: Sp
         SimpleNamespace(layers=[image_layer]),
         sdata=sdata_blobs,
         element_name="blobs_image",
-        layer_filter=spatialdata_module._is_spatialdata_image_layer,
+        layer_filter=lambda layer: isinstance(layer, Image),
     )
 
     assert loaded_layer is image_layer
@@ -323,7 +323,7 @@ def test_get_loaded_spatialdata_layer_returns_loaded_image_layer(sdata_blobs: Sp
             SimpleNamespace(layers=[image_layer]),
             sdata=sdata_blobs,
             element_name="blobs_multiscale_image",
-            layer_filter=spatialdata_module._is_spatialdata_image_layer,
+            layer_filter=lambda layer: isinstance(layer, Image),
         )
         is None
     )
@@ -337,7 +337,7 @@ def test_get_loaded_spatialdata_layer_rejects_non_image_layers(sdata_blobs: Spat
         SimpleNamespace(layers=[fake_layer]),
         sdata=sdata_blobs,
         element_name="blobs_image",
-        layer_filter=spatialdata_module._is_spatialdata_image_layer,
+        layer_filter=lambda layer: isinstance(layer, Image),
     )
 
     assert loaded_layer is None

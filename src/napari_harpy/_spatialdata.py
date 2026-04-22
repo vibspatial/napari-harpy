@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
-from napari.layers import Image, Labels
+from napari.layers import Labels
 from spatialdata import get_element_annotators, join_spatialelement_table
 from spatialdata.models import TableModel, get_axes_names
 from spatialdata.transformations import get_transformation
@@ -137,107 +137,6 @@ def get_table_obsm_keys(sdata: SpatialData, table_name: str) -> list[str]:
     """Return the available feature matrix keys from `adata.obsm` for a table in a SpatialData object."""
     table = get_table(sdata, table_name)
     return sorted(table.obsm.keys())
-
-
-def build_layer_metadata_adata(
-    viewer: Any | None,
-    sdata: SpatialData,
-    label_name: str,
-    table_name: str,
-) -> AnnData | None:
-    """Build the AnnData stored as napari layer metadata for a labels element.
-
-    Harpy keeps ``sdata[table_name]`` as the authoritative in-memory table.
-    The napari layer metadata ``adata`` is only a compatibility cache for
-    ``napari-spatialdata``. To avoid materializing a second full AnnData
-    object on every refresh, we first try to expose a lightweight view of
-    just the rows for ``label_name``.
-
-    That region-only view is safe when its ``instance_key`` values are
-    compatible with the loaded layer's cached ``metadata["indices"]``.
-    ``napari-spatialdata`` later merges those indices against
-    ``adata.obs[instance_key]``, so the cheap path only requires the region
-    view to have unique instance ids and for those ids to be present in the
-    layer indices. If that compatibility check fails, we fall back to
-    ``join_spatialelement_table(..., how="left", match_rows="left")`` so
-    the cache matches ``napari-spatialdata``'s original layer-specific
-    semantics.
-
-    Harpy no longer uses this helper in the normal widget lifecycle for the
-    same reason described in ``refresh_layer_table_metadata(...)``:
-    ``napari-spatialdata`` may later rebuild ``layer.metadata["adata"]``
-    from the authoritative ``sdata[table_name]`` table again. As a result,
-    Harpy now treats ``sdata[table_name]`` as the only source of truth and
-    keeps this helper as an explicit cache-building utility rather than a
-    path that is relied on during normal interaction.
-    """
-    table = get_table(sdata, table_name)
-    table_metadata = get_table_metadata(sdata, table_name)
-    region_mask = (table.obs[table_metadata.region_key] == label_name).to_numpy(dtype=bool, copy=False)
-    if not region_mask.any():
-        return None
-
-    region_view = table[region_mask, :]
-    layer = _get_loaded_spatialdata_layer(
-        viewer,
-        sdata=sdata,
-        element_name=label_name,
-        layer_filter=_is_pickable_labels_layer,
-    )
-    if _layer_indices_align_with_region_view(layer, region_view, table_metadata.instance_key) is not False:
-        return _normalize_layer_metadata_adata(region_view)
-
-    _, adata = join_spatialelement_table(
-        sdata=sdata,
-        spatial_element_names=label_name,
-        table_name=table_name,
-        how="left",
-        match_rows="left",
-    )
-    if adata is None or adata.shape[0] == 0:
-        return None
-
-    return _normalize_layer_metadata_adata(adata)
-
-
-def refresh_layer_table_metadata(viewer: Any | None, sdata: SpatialData, label_name: str, table_name: str) -> bool:
-    """Refresh table-derived metadata on the loaded napari layer for a labels element.
-
-    Harpy originally tried to keep ``layer.metadata["adata"]`` refreshed as a
-    compatibility cache for ``napari-spatialdata`` so that edits to
-    ``sdata[table_name]`` would also be reflected in the currently loaded
-    labels layer metadata.
-
-    In practice, ``napari-spatialdata`` may later rebuild and overwrite that
-    cache from the authoritative ``sdata[table_name]`` table again when its
-    own widgets update. Because of that, Harpy no longer calls this helper as
-    part of the normal widget lifecycle and instead treats
-    ``sdata[table_name]`` as the only source of truth. This method is kept as
-    an explicit best-effort utility for cases where refreshing the layer
-    metadata cache is still useful.
-    """
-    layer = _get_loaded_spatialdata_layer(
-        viewer,
-        sdata=sdata,
-        element_name=label_name,
-        layer_filter=_is_pickable_labels_layer,
-    )
-    if layer is None:
-        return False
-
-    metadata = getattr(layer, "metadata", None)
-    if not isinstance(metadata, dict):
-        metadata = {}
-        layer.metadata = metadata
-
-    table_metadata = get_table_metadata(sdata, table_name)
-    layer.metadata["adata"] = build_layer_metadata_adata(viewer, sdata, label_name, table_name)
-    layer.metadata["region_key"] = table_metadata.region_key
-    layer.metadata["instance_key"] = table_metadata.instance_key
-
-    table_names = get_annotating_table_names(sdata, label_name)
-    layer.metadata["table_names"] = table_names if table_names else None
-    return True
 
 
 def get_spatialdata_label_options_from_sdata(sdata: SpatialData) -> list[SpatialDataLabelsOption]:
@@ -496,11 +395,6 @@ def _is_pickable_labels_layer(layer: Any) -> bool:
     return isinstance(layer, Labels) and getattr(events, "selected_label", None) is not None
 
 
-def _is_spatialdata_image_layer(layer: Any) -> bool:
-    # napari `Labels` layers are scalar-field siblings of `Image`, not subclasses.
-    return isinstance(layer, Image)
-
-
 def _get_label_names(sdata: SpatialData) -> list[str]:
     labels = getattr(sdata, "labels", {})
     return sorted(labels.keys())
@@ -547,3 +441,104 @@ def _get_loaded_spatialdata_layer(
             return layer
 
     return None
+
+
+def build_layer_metadata_adata(
+    viewer: Any | None,
+    sdata: SpatialData,
+    label_name: str,
+    table_name: str,
+) -> AnnData | None:
+    """Build the AnnData stored as napari layer metadata for a labels element.
+
+    Harpy keeps ``sdata[table_name]`` as the authoritative in-memory table.
+    The napari layer metadata ``adata`` is only a compatibility cache for
+    ``napari-spatialdata``. To avoid materializing a second full AnnData
+    object on every refresh, we first try to expose a lightweight view of
+    just the rows for ``label_name``.
+
+    That region-only view is safe when its ``instance_key`` values are
+    compatible with the loaded layer's cached ``metadata["indices"]``.
+    ``napari-spatialdata`` later merges those indices against
+    ``adata.obs[instance_key]``, so the cheap path only requires the region
+    view to have unique instance ids and for those ids to be present in the
+    layer indices. If that compatibility check fails, we fall back to
+    ``join_spatialelement_table(..., how="left", match_rows="left")`` so
+    the cache matches ``napari-spatialdata``'s original layer-specific
+    semantics.
+
+    Harpy no longer uses this helper in the normal widget lifecycle for the
+    same reason described in ``refresh_layer_table_metadata(...)``:
+    ``napari-spatialdata`` may later rebuild ``layer.metadata["adata"]``
+    from the authoritative ``sdata[table_name]`` table again. As a result,
+    Harpy now treats ``sdata[table_name]`` as the only source of truth and
+    keeps this helper as an explicit cache-building utility rather than a
+    path that is relied on during normal interaction.
+    """
+    table = get_table(sdata, table_name)
+    table_metadata = get_table_metadata(sdata, table_name)
+    region_mask = (table.obs[table_metadata.region_key] == label_name).to_numpy(dtype=bool, copy=False)
+    if not region_mask.any():
+        return None
+
+    region_view = table[region_mask, :]
+    layer = _get_loaded_spatialdata_layer(
+        viewer,
+        sdata=sdata,
+        element_name=label_name,
+        layer_filter=_is_pickable_labels_layer,
+    )
+    if _layer_indices_align_with_region_view(layer, region_view, table_metadata.instance_key) is not False:
+        return _normalize_layer_metadata_adata(region_view)
+
+    _, adata = join_spatialelement_table(
+        sdata=sdata,
+        spatial_element_names=label_name,
+        table_name=table_name,
+        how="left",
+        match_rows="left",
+    )
+    if adata is None or adata.shape[0] == 0:
+        return None
+
+    return _normalize_layer_metadata_adata(adata)
+
+
+def refresh_layer_table_metadata(viewer: Any | None, sdata: SpatialData, label_name: str, table_name: str) -> bool:
+    """Refresh table-derived metadata on the loaded napari layer for a labels element.
+
+    Harpy originally tried to keep ``layer.metadata["adata"]`` refreshed as a
+    compatibility cache for ``napari-spatialdata`` so that edits to
+    ``sdata[table_name]`` would also be reflected in the currently loaded
+    labels layer metadata.
+
+    In practice, ``napari-spatialdata`` may later rebuild and overwrite that
+    cache from the authoritative ``sdata[table_name]`` table again when its
+    own widgets update. Because of that, Harpy no longer calls this helper as
+    part of the normal widget lifecycle and instead treats
+    ``sdata[table_name]`` as the only source of truth. This method is kept as
+    an explicit best-effort utility for cases where refreshing the layer
+    metadata cache is still useful.
+    """
+    layer = _get_loaded_spatialdata_layer(
+        viewer,
+        sdata=sdata,
+        element_name=label_name,
+        layer_filter=_is_pickable_labels_layer,
+    )
+    if layer is None:
+        return False
+
+    metadata = getattr(layer, "metadata", None)
+    if not isinstance(metadata, dict):
+        metadata = {}
+        layer.metadata = metadata
+
+    table_metadata = get_table_metadata(sdata, table_name)
+    layer.metadata["adata"] = build_layer_metadata_adata(viewer, sdata, label_name, table_name)
+    layer.metadata["region_key"] = table_metadata.region_key
+    layer.metadata["instance_key"] = table_metadata.instance_key
+
+    table_names = get_annotating_table_names(sdata, label_name)
+    layer.metadata["table_names"] = table_names if table_names else None
+    return True
