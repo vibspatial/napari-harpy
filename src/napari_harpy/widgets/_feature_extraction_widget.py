@@ -917,9 +917,9 @@ class FeatureExtractionWidget(QWidget):
         self._update_calculate_controls()
 
     def _update_validation_status(self) -> None:
-        messages = [message for message in (self._table_binding_error, self._image_channel_error) if message is not None]
-        self.validation_status.setText("\n".join(messages))
-        self.validation_status.setVisible(bool(messages))
+        message = self._table_binding_error
+        self.validation_status.setText("" if message is None else message)
+        self.validation_status.setVisible(message is not None)
 
     def _update_primary_status_card(self) -> None:
         if self._app_state.sdata is None:

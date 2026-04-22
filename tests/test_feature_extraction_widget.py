@@ -322,7 +322,7 @@ def test_feature_extraction_widget_surfaces_duplicate_channel_names_and_unbinds_
     assert widget.selected_image_name == "blobs_image"
     assert widget.channel_selection_label.isHidden()
     assert widget.channel_selection_container.isHidden()
-    assert "duplicate channel names" in widget.validation_status.text()
+    assert widget.validation_status.isHidden()
     assert "Image Channel Issue" in widget.selection_status.text()
     assert bind_calls
     args, kwargs = bind_calls[-1]
