@@ -441,7 +441,7 @@ class ObjectClassificationWidget(QWidget):
 
             # If the previously selected label is still available after a refresh,
             # keep it selected instead of resetting the user back to the first item.
-            next_index = self._find_option_index(previous_identity)
+            next_index = self._find_label_option_index(previous_identity)
             if has_options:
                 self.segmentation_combo.setCurrentIndex(0 if next_index is None else next_index)
             else:
@@ -554,7 +554,7 @@ class ObjectClassificationWidget(QWidget):
         else:
             self._selected_label_option = self._label_options[index]
 
-    def _find_option_index(self, identity: tuple[int, str] | None) -> int | None:
+    def _find_label_option_index(self, identity: tuple[int, str] | None) -> int | None:
         if identity is None:
             return None
 
