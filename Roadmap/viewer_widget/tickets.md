@@ -515,6 +515,90 @@ without switching to a separate workflow first.
 - VW-02
 - VW-03
 
+## VW-08: Clarify Shared App-State Lifecycle And Dataset-Switching Policy
+
+### Goal
+
+Keep the current `HarpyAppState` / `ViewerAdapter` architecture, but make the
+remaining lifecycle rules explicit so the shared-state design stays clean as
+the plugin grows.
+
+### Scope
+
+- treat this as an architecture / code-cleanup ticket, not a user-facing
+  feature
+- keep the current per-viewer shared-state model
+- clarify what happens when the loaded `SpatialData` object changes
+- reassess the boundary between:
+  - shared state
+  - viewer services
+  - widget-local state
+
+### Why this ticket exists
+
+The current design is already a strong improvement over viewer scanning:
+
+- one shared `HarpyAppState` per napari viewer
+- one shared loaded `sdata`
+- widgets synchronized through `sdata_changed`
+- `ViewerAdapter` as the central viewer-facing layer service
+- `LayerBindingRegistry` as the authoritative in-memory mapping for
+  Harpy-managed napari layers
+
+The main remaining architectural question is lifecycle policy, especially:
+
+- what should happen to existing Harpy-managed layers when `set_sdata(...)`
+  switches to a different dataset?
+- should that policy live explicitly in `HarpyAppState`?
+- should `HarpyAppState` continue to own both shared state and service wiring,
+  or should those responsibilities be separated more clearly?
+
+### Required work
+
+- document the intended lifecycle of `HarpyAppState`
+- make the dataset-switching policy explicit, including whether old
+  Harpy-managed layers and bindings are:
+  - kept
+  - cleared
+  - or handled conditionally
+- review whether `HarpyAppState` should continue to hold:
+  - `sdata`
+  - `layer_bindings`
+  - `viewer_adapter`
+  or whether some of that wiring should move elsewhere
+- confirm that widget-local selection state stays out of shared app state
+- review whether any remaining code still depends on implicit assumptions about
+  `id(sdata)` as the only runtime identity
+- update tests and module docstrings so the chosen lifecycle policy is obvious
+
+### Suggested files
+
+- `src/napari_harpy/_app_state.py`
+- `src/napari_harpy/_viewer_adapter.py`
+- `src/napari_harpy/_interactive.py`
+- `src/napari_harpy/widgets/_viewer_widget.py`
+- `tests/test_app_state.py`
+- `tests/test_viewer_adapter.py`
+- possibly small integration tests covering dataset switches
+
+### Acceptance criteria
+
+- [ ] the codebase has an explicit policy for what happens when shared `sdata`
+  is replaced or cleared
+- [ ] the responsibilities of `HarpyAppState` versus `ViewerAdapter` are
+  documented and intentional
+- [ ] widget-local selection state remains outside shared app state
+- [ ] the chosen lifecycle policy is covered by tests
+- [ ] module docstrings/comments reflect the final architecture clearly
+
+### Depends on
+
+- VW-01
+- VW-02
+- VW-03
+- VW-04
+- VW-05
+
 ## Nice-To-Have Follow-Ups
 
 - add image visibility toggles and layer grouping behavior
