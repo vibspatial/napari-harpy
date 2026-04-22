@@ -151,7 +151,12 @@ class SpatialDataViewerBinding:
         """Collect selectable labels elements from the current viewer."""
         return _get_spatialdata_label_options_from_viewer(self._viewer)
 
-    def get_labels_layer(self, sdata: SpatialData, label_name: str) -> Any | None:
+    def get_labels_layer(
+        self,
+        sdata: SpatialData,
+        label_name: str,
+        coordinate_system: str | None = None,
+    ) -> Any | None:
         """Return the loaded napari labels layer for a selected SpatialData labels element.
 
         This method does not retrieve the labels data directly from ``sdata.labels``.
@@ -162,6 +167,8 @@ class SpatialDataViewerBinding:
 
         - ``layer.metadata["sdata"] is sdata``
         - ``layer.metadata["name"] == label_name``
+        - when ``coordinate_system`` is provided, the layer metadata also matches
+          that coordinate system
         - the layer behaves like a pickable napari ``Labels`` layer
 
         This means a labels element can exist in ``sdata`` but still return ``None``
@@ -172,9 +179,15 @@ class SpatialDataViewerBinding:
             sdata=sdata,
             element_name=label_name,
             layer_filter=_is_pickable_labels_layer,
+            coordinate_system=coordinate_system,
         )
 
-    def get_image_layer(self, sdata: SpatialData, image_name: str) -> Any | None:
+    def get_image_layer(
+        self,
+        sdata: SpatialData,
+        image_name: str,
+        coordinate_system: str | None = None,
+    ) -> Any | None:
         """Return the loaded napari image layer for a selected SpatialData image element.
 
         This scans the current napari viewer for a loaded layer whose metadata
@@ -188,6 +201,7 @@ class SpatialDataViewerBinding:
             sdata=sdata,
             element_name=image_name,
             layer_filter=_is_spatialdata_image_layer,
+            coordinate_system=coordinate_system,
         )
 
     def set_active_layer(self, layer: Any | None) -> bool:
@@ -644,6 +658,7 @@ def _get_loaded_spatialdata_layer(
     sdata: SpatialData,
     element_name: str,
     layer_filter: Callable[[Any], bool],
+    coordinate_system: str | None = None,
 ) -> Any | None:
     layers = getattr(viewer, "layers", None)
     if layers is None:
@@ -659,6 +674,11 @@ def _get_loaded_spatialdata_layer(
 
         if metadata.get("name") != element_name:
             continue
+
+        if coordinate_system is not None:
+            layer_coordinate_system = metadata.get("coordinate_system", metadata.get("_current_cs"))
+            if layer_coordinate_system is not None and layer_coordinate_system != coordinate_system:
+                continue
 
         if layer_filter(layer):
             return layer

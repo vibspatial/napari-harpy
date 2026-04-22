@@ -15,10 +15,10 @@ from napari_harpy._class_palette import (
 )
 from napari_harpy._spatialdata import (
     SpatialDataTableMetadata,
-    SpatialDataViewerBinding,
     get_table,
     get_table_metadata,
 )
+from napari_harpy._viewer_adapter import ViewerAdapter
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -82,16 +82,17 @@ class AnnotationController:
 
     def __init__(
         self,
-        viewer_binding: SpatialDataViewerBinding,
+        viewer_adapter: ViewerAdapter,
         on_selected_instance_changed: Callable[[int | None], None] | None = None,
         on_annotation_changed: Callable[[], None] | None = None,
     ) -> None:
-        self._viewer_binding = viewer_binding
+        self._viewer_adapter = viewer_adapter
         self._on_selected_instance_changed = on_selected_instance_changed
         self._on_annotation_changed = on_annotation_changed
         self._labels_layer: Any | None = None
         self._selected_spatialdata: SpatialData | None = None
         self._selected_label_name: str | None = None
+        self._selected_coordinate_system: str | None = None
         self._selected_table_name: str | None = None
         self._selected_table_metadata: SpatialDataTableMetadata | None = None
         self._selected_instance_id: int | None = None
@@ -142,11 +143,17 @@ class AnnotationController:
         state = self._get_selection_table_state()
         return self._labels_layer is not None and state.has_annotation_binding and state.has_table_row
 
-    def bind(self, sdata: SpatialData | None, label_name: str | None, table_name: str | None = None) -> None:
+    def bind(
+        self,
+        sdata: SpatialData | None,
+        label_name: str | None,
+        table_name: str | None = None,
+        coordinate_system: str | None = None,
+    ) -> None:
         """Bind the controller to the selected labels layer and annotation table."""
         next_layer = None
         if sdata is not None and label_name is not None:
-            next_layer = self._viewer_binding.get_labels_layer(sdata, label_name)
+            next_layer = self._viewer_adapter.get_loaded_labels_layer(sdata, label_name, coordinate_system)
 
         next_table_metadata = None
         if sdata is not None and table_name is not None:
@@ -155,6 +162,7 @@ class AnnotationController:
         layer_changed = next_layer is not self._labels_layer
         self._selected_spatialdata = sdata
         self._selected_label_name = label_name
+        self._selected_coordinate_system = coordinate_system
         self._selected_table_name = table_name
         self._selected_table_metadata = next_table_metadata
 
@@ -181,10 +189,8 @@ class AnnotationController:
 
     def activate_layer(self) -> bool:
         """Activate the bound labels layer for annotation interactions."""
-        if self._labels_layer is None:
+        if not self._viewer_adapter.activate_layer(self._labels_layer):
             return False
-
-        self._viewer_binding.set_active_layer(self._labels_layer)
 
         # We always attach our own mouse picker in `bind()` because napari
         # does not support pick mode for multiscale labels layers. For

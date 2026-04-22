@@ -346,3 +346,17 @@ def test_spatialdata_viewer_binding_get_labels_layer_rejects_non_labels_layers(s
     loaded_layer = viewer_binding.get_labels_layer(sdata_blobs, "blobs_labels")
 
     assert loaded_layer is None
+
+
+def test_spatialdata_viewer_binding_get_labels_layer_filters_by_coordinate_system(
+    sdata_blobs: SpatialData,
+) -> None:
+    global_layer = make_blobs_labels_layer(sdata_blobs)
+    global_layer.metadata["_current_cs"] = "global"
+    local_layer = make_blobs_labels_layer(sdata_blobs)
+    local_layer.metadata["_current_cs"] = "local"
+    viewer_binding = SpatialDataViewerBinding(SimpleNamespace(layers=[local_layer, global_layer]))
+
+    loaded_layer = viewer_binding.get_labels_layer(sdata_blobs, "blobs_labels", coordinate_system="global")
+
+    assert loaded_layer is global_layer

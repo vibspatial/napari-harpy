@@ -295,7 +295,9 @@ def test_viewer_adapter_ensure_labels_loaded_adds_layer_and_registers_binding(sd
     assert binding.element_name == "blobs_labels"
     assert binding.element_type == "labels"
     assert binding.coordinate_system == "global"
-    assert "sdata" not in layer.metadata
+    assert layer.metadata["sdata"] is sdata_blobs
+    assert layer.metadata["name"] == "blobs_labels"
+    assert layer.metadata["_current_cs"] == "global"
 
 
 def test_viewer_adapter_ensure_labels_loaded_reuses_matching_existing_layer(sdata_blobs) -> None:

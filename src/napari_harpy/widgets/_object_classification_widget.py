@@ -28,7 +28,6 @@ from napari_harpy._persistence import PersistenceController
 from napari_harpy._spatialdata import (
     SpatialDataLabelsOption,
     SpatialDataTableMetadata,
-    SpatialDataViewerBinding,
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
     get_spatialdata_label_options_for_coordinate_system_from_sdata,
@@ -83,8 +82,8 @@ class ObjectClassificationWidget(QWidget):
 
     The widget is migrating toward the shared Harpy app-state architecture.
     It already receives the loaded `SpatialData` object through
-    `self._app_state.sdata` / `sdata_changed`, but for now it still resolves
-    the currently available live labels layers through `SpatialDataViewerBinding`.
+    `self._app_state.sdata` / `sdata_changed`, and now resolves live labels
+    layers through the shared `ViewerAdapter` plus layer bindings.
 
     In the current transition state, the widget exposes:
 
@@ -103,14 +102,10 @@ class ObjectClassificationWidget(QWidget):
         self._viewer = napari_viewer
         # The napari viewer identifies which shared Harpy session this widget
         # belongs to. We use it to attach to the per-viewer HarpyAppState even
-        # though live labels-layer resolution is still transitioning away from
-        # viewer scanning in VW-05.
+        # though some legacy refresh UX is still being cleaned up in VW-05.
         self._app_state = get_or_create_app_state(napari_viewer)
-        # TODO: remove viewer-scanning binding once VW-05 fully derives options
-        # from shared app state (`self._app_state.sdata` / `sdata_changed`).
-        self._viewer_binding = SpatialDataViewerBinding(napari_viewer)
         self._annotation_controller = AnnotationController(
-            self._viewer_binding,
+            self._app_state.viewer_adapter,
             on_selected_instance_changed=self._on_selected_instance_changed,
             on_annotation_changed=self._on_annotation_changed,
         )
@@ -119,13 +114,16 @@ class ObjectClassificationWidget(QWidget):
             on_table_state_changed=self._on_classifier_table_state_changed,
         )
         self._viewer_styling_controller = ViewerStylingController(
-            self._viewer_binding,
+            self._app_state.viewer_adapter,
         )
         self._persistence_controller = PersistenceController()
         self._coordinate_systems: list[str] = []
         self._selected_coordinate_system: str | None = None
         self._label_options: list[SpatialDataLabelsOption] = []
         self._selected_label_option: SpatialDataLabelsOption | None = None
+        self._is_preparing_labels_layer = False
+        self._labels_layer_preparation_message: str | None = None
+        self._labels_layer_preparation_error: str | None = None
         self._table_names: list[str] = []
         self._selected_table_name: str | None = None
         self._table_binding_error: str | None = None
@@ -415,6 +413,7 @@ class ObjectClassificationWidget(QWidget):
         self._refresh_coordinate_systems()
         self._refresh_label_options()
         self._refresh_table_names()
+        self._prepare_selected_labels_layer()
         self._bind_current_selection(classifier_dirty_reason="the segmentation selection changed")
 
     def _on_sdata_changed(self, sdata: SpatialData | None) -> None:
@@ -460,6 +459,8 @@ class ObjectClassificationWidget(QWidget):
         self._selected_coordinate_system = None
         self._label_options = []
         self._selected_label_option = None
+        self._labels_layer_preparation_message = None
+        self._labels_layer_preparation_error = None
         self._table_names = []
         self._selected_table_name = None
         self._table_binding_error = None
@@ -503,6 +504,8 @@ class ObjectClassificationWidget(QWidget):
 
     def _on_viewer_layers_changed(self, event: object | None = None) -> None:
         del event
+        if self._is_preparing_labels_layer:
+            return
         self.refresh_from_sdata(self._app_state.sdata)
 
     def _refresh_coordinate_systems(self) -> None:
@@ -537,6 +540,7 @@ class ObjectClassificationWidget(QWidget):
         self._set_selected_coordinate_system(index)
         self._refresh_label_options()
         self._refresh_table_names()
+        self._prepare_selected_labels_layer()
         self._bind_current_selection(classifier_dirty_reason="the segmentation selection changed")
 
     def _set_selected_coordinate_system(self, index: int) -> None:
@@ -546,6 +550,7 @@ class ObjectClassificationWidget(QWidget):
     def _on_segmentation_changed(self, index: int) -> None:
         self._set_selected_label_option(index)
         self._refresh_table_names()
+        self._prepare_selected_labels_layer()
         self._bind_current_selection(classifier_dirty_reason="the segmentation selection changed")
 
     def _set_selected_label_option(self, index: int) -> None:
@@ -563,6 +568,59 @@ class ObjectClassificationWidget(QWidget):
                 return index
 
         return None
+
+    def _prepare_selected_labels_layer(self) -> None:
+        self._labels_layer_preparation_message = None
+        self._labels_layer_preparation_error = None
+
+        if (
+            self.selected_spatialdata is None
+            or self.selected_segmentation_name is None
+            or self.selected_coordinate_system is None
+        ):
+            return
+
+        self._is_preparing_labels_layer = True
+        try:
+            existing_layer = self._app_state.viewer_adapter.get_loaded_labels_layer(
+                self.selected_spatialdata,
+                self.selected_segmentation_name,
+                self.selected_coordinate_system,
+            )
+            if existing_layer is not None:
+                if self._app_state.viewer_adapter.layer_bindings.get_binding(existing_layer) is None:
+                    self._app_state.viewer_adapter.register_layer(
+                        existing_layer,
+                        sdata=self.selected_spatialdata,
+                        element_name=self.selected_segmentation_name,
+                        element_type="labels",
+                        coordinate_system=self.selected_coordinate_system,
+                    )
+                activated = self._app_state.viewer_adapter.activate_layer(existing_layer)
+                if activated:
+                    self._labels_layer_preparation_message = (
+                        f"Activated segmentation `{self.selected_segmentation_name}` in coordinate system "
+                        f"`{self.selected_coordinate_system}`."
+                    )
+                return
+
+            try:
+                layer = self._app_state.viewer_adapter.ensure_labels_loaded(
+                    self.selected_spatialdata,
+                    self.selected_segmentation_name,
+                    self.selected_coordinate_system,
+                )
+            except ValueError as error:
+                self._labels_layer_preparation_error = str(error)
+                return
+
+            self._app_state.viewer_adapter.activate_layer(layer)
+            self._labels_layer_preparation_message = (
+                f"Loaded segmentation `{self.selected_segmentation_name}` in coordinate system "
+                f"`{self.selected_coordinate_system}`."
+            )
+        finally:
+            self._is_preparing_labels_layer = False
 
     def _refresh_table_names(self) -> None:
         previous_table_name = self.selected_table_name
@@ -706,6 +764,7 @@ class ObjectClassificationWidget(QWidget):
             self.selected_spatialdata,
             self.selected_segmentation_name,
             effective_table_name,
+            self.selected_coordinate_system,
         )
         classifier_context_changed = self._classifier_controller.bind(
             self.selected_spatialdata,
@@ -719,6 +778,7 @@ class ObjectClassificationWidget(QWidget):
             self.selected_spatialdata,
             self.selected_segmentation_name,
             effective_table_name,
+            self.selected_coordinate_system,
         )
         self._persistence_controller.bind(
             self.selected_spatialdata,
@@ -754,6 +814,9 @@ class ObjectClassificationWidget(QWidget):
     def _update_primary_status_card(self) -> None:
         labels_layer = self._annotation_controller.labels_layer
         missing_table_row_message = self._annotation_controller.missing_table_row_message
+        layer_preparation_lines = (
+            [] if self._labels_layer_preparation_message is None else [self._labels_layer_preparation_message]
+        )
 
         if self._app_state.sdata is None:
             self._set_selection_status(
@@ -776,6 +839,12 @@ class ObjectClassificationWidget(QWidget):
                 lines=["Choose a segmentation mask in the selected coordinate system to enable object picking."],
                 kind="info",
             )
+        elif self._labels_layer_preparation_error is not None:
+            self._set_selection_status(
+                title="Layer Load Issue",
+                lines=[self._labels_layer_preparation_error],
+                kind="warning",
+            )
         elif labels_layer is None:
             self._set_selection_status(
                 title="Selection",
@@ -789,6 +858,7 @@ class ObjectClassificationWidget(QWidget):
             self._set_selection_status(
                 title="Selection Warning",
                 lines=[
+                    *layer_preparation_lines,
                     f"Bound to {self.selected_segmentation_name}.",
                     "This segmentation is loaded, but no annotation table is linked to it.",
                 ],
@@ -798,6 +868,7 @@ class ObjectClassificationWidget(QWidget):
             self._set_selection_status(
                 title="Selection Warning",
                 lines=[
+                    *layer_preparation_lines,
                     f"Bound to {self.selected_segmentation_name}.",
                     self._table_binding_error,
                 ],
@@ -807,6 +878,7 @@ class ObjectClassificationWidget(QWidget):
             self._set_selection_status(
                 title="Selection",
                 lines=[
+                    *layer_preparation_lines,
                     f"Bound to {self.selected_segmentation_name}.",
                     "Click an object in the viewer.",
                 ],

@@ -305,8 +305,10 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_bl
     assert not widget.sync_button.isEnabled()
     assert not widget.reload_button.isEnabled()
     assert widget.retrain_button.isEnabled()
+    assert len(viewer.layers) == 1
     assert str(layer.mode) == "pick"
     assert viewer.layers.selection.active is layer
+    assert "Activated segmentation `blobs_labels` in coordinate system `global`." in widget.selection_status.text()
     assert "Click an object in the viewer." in widget.selection_status.text()
     assert widget.validation_status.isHidden()
     assert widget.validation_status.text() == ""
@@ -334,7 +336,13 @@ def test_widget_populates_segmentation_choices_from_shared_sdata_without_loaded_
     assert widget.selected_spatialdata is sdata_blobs
     assert widget.selected_table_name == "table"
     assert widget.selected_feature_key == "features_1"
-    assert "not currently loaded as a napari Labels layer" in widget.selection_status.text()
+    assert len(viewer.layers) == 1
+    assert viewer.layers[0].name == "blobs_labels"
+    assert viewer.layers.selection.active is viewer.layers[0]
+    assert widget._annotation_controller.labels_layer is viewer.layers[0]
+    assert widget._viewer_styling_controller.labels_layer is viewer.layers[0]
+    assert "Loaded segmentation `blobs_labels` in coordinate system `global`." in widget.selection_status.text()
+    assert "Click an object in the viewer." in widget.selection_status.text()
     assert not widget.apply_class_button.isEnabled()
 
 
@@ -411,7 +419,7 @@ def test_widget_surfaces_invalid_table_binding_for_duplicate_instance_ids(qtbot,
     assert not widget.reload_button.isEnabled()
 
 
-def test_widget_refreshes_when_a_spatialdata_layer_is_added(qtbot, sdata_blobs: SpatialData) -> None:
+def test_widget_auto_loads_selected_segmentation_when_shared_sdata_is_set(qtbot, sdata_blobs: SpatialData) -> None:
     viewer = DummyViewer()
     app_state = get_or_create_app_state(viewer)
     widget = HarpyWidget(viewer)
@@ -424,14 +432,9 @@ def test_widget_refreshes_when_a_spatialdata_layer_is_added(qtbot, sdata_blobs: 
     assert widget.coordinate_system_combo.itemText(0) == "global"
     assert widget.selected_coordinate_system == "global"
     assert widget.segmentation_combo.count() == 2
-    assert "not currently loaded as a napari Labels layer" in widget.selection_status.text()
-
-    layer = make_blobs_labels_layer(sdata_blobs)
-    viewer.layers.append(layer)
-    viewer.layers.events.inserted.emit(layer)
-
-    assert widget.segmentation_combo.count() == 2
-    assert widget.segmentation_combo.itemText(0) == "blobs_labels"
+    assert len(viewer.layers) == 1
+    assert viewer.layers[0].name == "blobs_labels"
+    assert viewer.layers.selection.active is viewer.layers[0]
     assert widget.table_combo.count() == 1
     assert widget.table_combo.itemText(0) == "table"
     assert widget.feature_matrix_combo.count() == 2
@@ -439,6 +442,8 @@ def test_widget_refreshes_when_a_spatialdata_layer_is_added(qtbot, sdata_blobs: 
     assert widget.selected_segmentation_name == "blobs_labels"
     assert widget.selected_table_name == "table"
     assert widget.selected_feature_key == "features_1"
+    assert "Loaded segmentation `blobs_labels` in coordinate system `global`." in widget.selection_status.text()
+    assert "Click an object in the viewer." in widget.selection_status.text()
 
 
 def test_widget_updates_table_dropdown_when_segmentation_changes(qtbot, sdata_blobs: SpatialData) -> None:
@@ -578,7 +583,7 @@ def test_widget_picks_multiscale_labels_layers_without_napari_pick_mode(qtbot, s
     assert "Assigned class 7" in widget.annotation_feedback.text()
 
 
-def test_widget_disables_pick_mode_when_selected_segmentation_layer_is_not_loaded(
+def test_widget_auto_loads_selected_segmentation_when_it_is_not_yet_loaded(
     qtbot, sdata_blobs: SpatialData
 ) -> None:
     layer = make_blobs_labels_layer(sdata_blobs)
@@ -592,7 +597,15 @@ def test_widget_disables_pick_mode_when_selected_segmentation_layer_is_not_loade
 
     assert widget.selected_segmentation_name == "blobs_multiscale_labels"
     assert widget.selected_instance_id is None
-    assert "not currently loaded as a napari Labels layer" in widget.selection_status.text()
+    assert len(viewer.layers) == 2
+    assert viewer.layers[-1].name == "blobs_multiscale_labels"
+    assert viewer.layers.selection.active is viewer.layers[-1]
+    assert widget._annotation_controller.labels_layer is viewer.layers[-1]
+    assert widget._viewer_styling_controller.labels_layer is viewer.layers[-1]
+    assert "Loaded segmentation `blobs_multiscale_labels` in coordinate system `global`." in (
+        widget.selection_status.text()
+    )
+    assert "This segmentation is loaded, but no annotation table is linked to it." in widget.selection_status.text()
 
 
 def test_widget_handles_tables_without_obsm_entries(qtbot, sdata_blobs: SpatialData) -> None:

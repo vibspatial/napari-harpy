@@ -171,7 +171,7 @@ class ViewerAdapter:
         channel_name: str | None = None,
     ) -> LayerBinding:
         """Register a layer in the shared binding registry."""
-        return self._layer_bindings.register_layer(
+        binding = self._layer_bindings.register_layer(
             layer,
             element_name=element_name,
             element_type=element_type,
@@ -181,6 +181,13 @@ class ViewerAdapter:
             channel_index=channel_index,
             channel_name=channel_name,
         )
+        _apply_legacy_spatialdata_metadata(
+            layer,
+            sdata=sdata,
+            element_name=element_name,
+            coordinate_system=coordinate_system,
+        )
+        return binding
 
     def unregister_layer(self, layer: Layer) -> LayerBinding | None:
         """Remove a layer from the shared binding registry."""
@@ -228,14 +235,31 @@ class ViewerAdapter:
 
         return False
 
-    def get_loaded_labels_layer(self, sdata: SpatialData, label_name: str) -> Labels | None:
+    def get_loaded_labels_layer(
+        self,
+        sdata: SpatialData,
+        label_name: str,
+        coordinate_system: str | None = None,
+    ) -> Labels | None:
         """Return the loaded labels layer for a SpatialData labels element."""
         for layer in self._iter_candidate_layers():
             if not _is_pickable_labels_layer(layer):
                 continue
 
             binding = self._layer_bindings.get_binding(layer)
+            # TODO: binding already contains a coordinate system -> it should use that.
             if _matches_binding(binding, sdata=sdata, element_name=label_name, element_type="labels"):
+                if coordinate_system is not None and binding.coordinate_system != coordinate_system:
+                    continue
+                return layer
+
+            # TODO: remove the _matches_legacy_spatialdata_layer_metadata
+            if coordinate_system is not None and _matches_legacy_spatialdata_layer_metadata(
+                layer,
+                sdata=sdata,
+                element_name=label_name,
+                coordinate_system=coordinate_system,
+            ):
                 return layer
 
         return None
@@ -466,18 +490,7 @@ class ViewerAdapter:
         label_name: str,
         coordinate_system: str,
     ) -> Labels | None:
-        for layer in self._iter_candidate_layers():
-            if not _is_pickable_labels_layer(layer):
-                continue
-
-            binding = self._layer_bindings.get_binding(layer)
-            if not _matches_binding(binding, sdata=sdata, element_name=label_name, element_type="labels"):
-                continue
-            if binding.coordinate_system != coordinate_system:
-                continue
-            return layer
-
-        return None
+        return self.get_loaded_labels_layer(sdata, label_name, coordinate_system)
 
     def _get_loaded_image_layer_for_coordinate_system(
         self,
@@ -526,6 +539,30 @@ def _apply_minimal_layer_metadata(layer: Layer, binding: LayerBinding) -> None:
     _set_optional_metadata_value(metadata, "image_display_mode", binding.image_display_mode)
     _set_optional_metadata_value(metadata, "channel_index", binding.channel_index)
     _set_optional_metadata_value(metadata, "channel_name", binding.channel_name)
+
+
+def _apply_legacy_spatialdata_metadata(
+    layer: Layer,
+    *,
+    sdata: SpatialData | None,
+    element_name: str,
+    coordinate_system: str | None,
+) -> None:
+    """Mirror legacy spatialdata layer metadata during the VW-05 transition.
+
+    ``SpatialDataViewerBinding`` still resolves live layers through the older
+    ``metadata['sdata']`` / ``metadata['name']`` contract in a few places.
+    Keep Harpy-managed layers discoverable there until slice 4 migrates those
+    call sites fully onto ``ViewerAdapter`` / layer bindings.
+    """
+    metadata = getattr(layer, "metadata", None)
+    if not isinstance(metadata, dict):
+        metadata = {}
+        layer.metadata = metadata
+
+    _set_optional_metadata_value(metadata, "sdata", sdata)
+    metadata["name"] = element_name
+    _set_optional_metadata_value(metadata, "_current_cs", coordinate_system)
 
 
 def _set_optional_metadata_value(metadata: dict[str, Any], key: str, value: Any) -> None:
@@ -719,6 +756,27 @@ def _matches_binding(
     return (
         binding.sdata_id == id(sdata) and binding.element_name == element_name and binding.element_type == element_type
     )
+
+
+def _matches_legacy_spatialdata_layer_metadata(
+    layer: Layer,
+    *,
+    sdata: SpatialData,
+    element_name: str,
+    coordinate_system: str | None,
+) -> bool:
+    metadata = getattr(layer, "metadata", None)
+    if not isinstance(metadata, dict):
+        return False
+    if metadata.get("sdata") is not sdata:
+        return False
+    if metadata.get("name") != element_name:
+        return False
+    if coordinate_system is None:
+        return True
+
+    layer_coordinate_system = metadata.get("coordinate_system", metadata.get("_current_cs"))
+    return layer_coordinate_system is None or layer_coordinate_system == coordinate_system
 
 
 def _is_pickable_labels_layer(layer: Layer) -> bool:
