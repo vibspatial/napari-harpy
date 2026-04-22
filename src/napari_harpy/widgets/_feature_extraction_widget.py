@@ -121,6 +121,9 @@ class FeatureExtractionWidget(QWidget):
         apply_widget_surface(self)
         self.setMinimumWidth(_WIDGET_MIN_WIDTH)
 
+        # The napari viewer identifies which shared Harpy session this widget
+        # belongs to. We use it to attach to the per-viewer HarpyAppState
+        # instead of scanning viewer layers directly.
         self._app_state = get_or_create_app_state(napari_viewer)
         self._feature_extraction_controller = FeatureExtractionController(
             on_state_changed=self._on_controller_state_changed,
