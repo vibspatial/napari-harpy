@@ -413,12 +413,14 @@ class ObjectClassificationWidget(QWidget):
             return
 
         self._refresh_coordinate_systems()
-        self.refresh_segmentation_masks()
+        self._refresh_label_options()
+        self._refresh_table_names()
+        self._bind_current_selection(classifier_dirty_reason="the segmentation selection changed")
 
     def _on_sdata_changed(self, sdata: SpatialData | None) -> None:
         self.refresh_from_sdata(sdata)
 
-    def refresh_segmentation_masks(self) -> None:
+    def _refresh_label_options(self) -> None:
         """Refresh segmentation choices from the selected coordinate system."""
         previous_identity = None if self._selected_label_option is None else self._selected_label_option.identity
         if self.selected_spatialdata is None or self.selected_coordinate_system is None:
@@ -445,15 +447,7 @@ class ObjectClassificationWidget(QWidget):
             else:
                 self.segmentation_combo.setCurrentIndex(-1)
 
-        if self.segmentation_combo.currentIndex() >= 0:
-            self._set_selected_label_option(self.segmentation_combo.currentIndex())
-        else:
-            # No valid segmentation remains after the refresh, so clear the
-            # selection state and let the normal bind helper propagate the
-            # fully unbound context across controllers and dependent UI.
-            self._selected_label_option = None
-            self._refresh_table_names()
-            self._bind_current_selection()
+        self._set_selected_label_option(self.segmentation_combo.currentIndex())
 
     def _refresh_from_current_app_state(self) -> None:
         self.refresh_from_sdata(self._app_state.sdata)
@@ -541,7 +535,9 @@ class ObjectClassificationWidget(QWidget):
 
     def _on_coordinate_system_changed(self, index: int) -> None:
         self._set_selected_coordinate_system(index)
-        self.refresh_segmentation_masks()
+        self._refresh_label_options()
+        self._refresh_table_names()
+        self._bind_current_selection(classifier_dirty_reason="the segmentation selection changed")
 
     def _set_selected_coordinate_system(self, index: int) -> None:
         coordinate_system = self.coordinate_system_combo.itemData(index)
@@ -549,15 +545,14 @@ class ObjectClassificationWidget(QWidget):
 
     def _on_segmentation_changed(self, index: int) -> None:
         self._set_selected_label_option(index)
+        self._refresh_table_names()
+        self._bind_current_selection(classifier_dirty_reason="the segmentation selection changed")
 
     def _set_selected_label_option(self, index: int) -> None:
         if index < 0 or index >= len(self._label_options):
             self._selected_label_option = None
         else:
             self._selected_label_option = self._label_options[index]
-
-        self._refresh_table_names()
-        self._bind_current_selection(classifier_dirty_reason="the segmentation selection changed")
 
     def _find_option_index(self, identity: tuple[int, str] | None) -> int | None:
         if identity is None:
