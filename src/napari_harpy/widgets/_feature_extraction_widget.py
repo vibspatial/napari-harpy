@@ -286,12 +286,6 @@ class FeatureExtractionWidget(QWidget):
             "Calculation will be enabled once the feature-extraction controller is wired to these inputs.",
         )
 
-        self.validation_status = QLabel()
-        self.validation_status.setObjectName("feature_extraction_validation_status")
-        self.validation_status.setWordWrap(True)
-        self.validation_status.setStyleSheet("color: #b45309; font-weight: 600;")
-        self.validation_status.hide()
-
         self.selection_status = QLabel()
         self.selection_status.setObjectName("feature_extraction_selection_status")
         self.selection_status.setWordWrap(True)
@@ -320,7 +314,6 @@ class FeatureExtractionWidget(QWidget):
         content_layout.addWidget(self.refresh_action_row)
         content_layout.addWidget(self.selection_status)
         content_layout.addWidget(self.controller_feedback)
-        content_layout.addWidget(self.validation_status)
         content_layout.addStretch(1)
 
         self._app_state.sdata_changed.connect(self._on_sdata_changed)
@@ -912,14 +905,8 @@ class FeatureExtractionWidget(QWidget):
         self._update_selection_status()
 
     def _update_selection_status(self) -> None:
-        self._update_validation_status()
         self._update_primary_status_card()
         self._update_calculate_controls()
-
-    def _update_validation_status(self) -> None:
-        message = self._table_binding_error
-        self.validation_status.setText("" if message is None else message)
-        self.validation_status.setVisible(message is not None)
 
     def _update_primary_status_card(self) -> None:
         if self._app_state.sdata is None:

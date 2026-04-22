@@ -158,7 +158,6 @@ def test_feature_extraction_widget_populates_selector_flow_from_spatialdata(
     assert "Table: table" in widget.selection_status.text()
     assert "Coordinate system: global" in widget.selection_status.text()
     assert widget.selection_status.toolTip() == ""
-    assert widget.validation_status.isHidden()
 
 
 def test_feature_extraction_widget_filters_labels_and_images_by_coordinate_system(
@@ -322,7 +321,6 @@ def test_feature_extraction_widget_surfaces_duplicate_channel_names_and_unbinds_
     assert widget.selected_image_name == "blobs_image"
     assert widget.channel_selection_label.isHidden()
     assert widget.channel_selection_container.isHidden()
-    assert widget.validation_status.isHidden()
     assert "Image Channel Issue" in widget.selection_status.text()
     assert bind_calls
     args, kwargs = bind_calls[-1]
@@ -430,7 +428,6 @@ def test_feature_extraction_widget_blocks_when_selected_segmentation_has_no_link
     assert widget.selected_coordinate_system == "global"
     assert "No Table Linked" in widget.selection_status.text()
     assert "creating a new linked table" in widget.selection_status.text()
-    assert widget.validation_status.isHidden()
 
 
 def test_feature_extraction_widget_exposes_grouped_feature_checkboxes(qtbot) -> None:
