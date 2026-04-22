@@ -333,13 +333,13 @@ selection explicit and local to the feature-extraction widget.
 
 ### Acceptance criteria
 
-- [ ] feature extraction options come from the shared loaded `sdata`
-- [ ] changing the loaded `sdata` refreshes the widget through `sdata_changed`
-- [ ] coordinate-system selection happens inside the feature-extraction widget
-- [ ] labels and images are filtered to the selected coordinate system
-- [ ] tables are filtered to those correctly linked to the selected labels element
-- [ ] extraction channels are explicitly selected in the feature-extraction widget
-- [ ] extraction does not depend on viewer display channel choices
+- [x] feature extraction options come from the shared loaded `sdata`
+- [x] changing the loaded `sdata` refreshes the widget through `sdata_changed`
+- [x] coordinate-system selection happens inside the feature-extraction widget
+- [x] labels and images are filtered to the selected coordinate system
+- [x] tables are filtered to those correctly linked to the selected labels element
+- [x] extraction channels are explicitly selected in the feature-extraction widget
+- [x] extraction does not depend on viewer display channel choices
 
 ### Depends on
 
