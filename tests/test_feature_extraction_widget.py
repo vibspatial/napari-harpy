@@ -289,6 +289,55 @@ def test_feature_extraction_widget_hides_channel_selection_when_selected_image_h
     assert widget.channel_selection_container.isHidden()
 
 
+def test_feature_extraction_widget_surfaces_duplicate_channel_names_and_unbinds_invalid_image(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    bind_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def fake_bind(*args, **kwargs):
+        bind_calls.append((args, kwargs))
+        return True
+
+    widget._feature_extraction_controller.bind = fake_bind  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_image_channel_names_from_sdata",
+        lambda sdata, image_name: (_ for _ in ()).throw(
+            ValueError(
+                "Image element `blobs_image` exposes duplicate channel names (`dup`), "
+                "which napari-harpy does not support."
+            )
+        ),
+    )
+
+    widget.image_combo.setCurrentIndex(1)
+
+    assert widget.selected_image_name == "blobs_image"
+    assert widget.channel_selection_label.isHidden()
+    assert widget.channel_selection_container.isHidden()
+    assert "duplicate channel names" in widget.validation_status.text()
+    assert "Image Channel Issue" in widget.selection_status.text()
+    assert bind_calls
+    args, kwargs = bind_calls[-1]
+    assert args == (
+        sdata_blobs,
+        "blobs_labels",
+        None,
+        "table",
+        "global",
+        (),
+        "features",
+    )
+    assert kwargs == {"channels": None, "overwrite_feature_key": False}
+
+
 def test_feature_extraction_widget_channel_selection_is_independent_from_viewer_overlay_state(
     qtbot,
     sdata_blobs: SpatialData,
@@ -465,7 +514,41 @@ def test_feature_extraction_widget_rebinds_controller_when_inputs_change(
         ("area",),
         "features",
     )
-    assert kwargs == {"overwrite_feature_key": False}
+    assert kwargs == {"channels": None, "overwrite_feature_key": False}
+
+
+def test_feature_extraction_widget_binds_selected_channels_into_controller(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    bind_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def fake_bind(*args, **kwargs):
+        bind_calls.append((args, kwargs))
+        return True
+
+    widget._feature_extraction_controller.bind = fake_bind  # type: ignore[method-assign]
+
+    widget.image_combo.setCurrentIndex(1)
+    widget._image_channel_checkboxes[1].setChecked(False)
+
+    assert bind_calls
+    args, kwargs = bind_calls[-1]
+    assert args == (
+        sdata_blobs,
+        "blobs_labels",
+        "blobs_image",
+        "table",
+        "global",
+        (),
+        "features",
+    )
+    assert kwargs == {"channels": ("0", "2"), "overwrite_feature_key": False}
 
 
 def test_feature_extraction_widget_enables_calculate_button_for_runnable_selection(

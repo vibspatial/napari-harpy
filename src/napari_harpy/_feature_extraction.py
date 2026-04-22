@@ -25,6 +25,7 @@ FEATURE_EXTRACTION_IDLE_STATUS = "Feature extraction: choose a segmentation, tab
 _INTENSITY_FEATURES = frozenset({"sum", "mean", "var", "min", "max", "kurtosis", "skew"})
 
 thread_worker = _resolve_thread_worker()
+FeatureExtractionChannel = int | str
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,7 @@ class FeatureExtractionJob:
     sdata: SpatialData
     label_name: str
     image_name: str | None
+    channels: tuple[FeatureExtractionChannel, ...] | None
     table_name: str
     coordinate_system: str
     feature_names: tuple[str, ...]
@@ -63,6 +65,7 @@ def _run_feature_extraction_job(job: FeatureExtractionJob) -> FeatureExtractionR
         table_layer=job.table_name,
         feature_key=job.feature_key,
         features=list(job.feature_names),
+        channels=None if job.channels is None else list(job.channels),
         overwrite_feature_key=job.overwrite_feature_key,
         to_coordinate_system=job.coordinate_system,
     )
@@ -90,6 +93,7 @@ class FeatureExtractionController:
         self._selected_spatialdata: SpatialData | None = None
         self._selected_label_name: str | None = None
         self._selected_image_name: str | None = None
+        self._selected_channels: tuple[FeatureExtractionChannel, ...] | None = None
         self._selected_table_name: str | None = None
         self._selected_coordinate_system: str | None = None
         self._selected_feature_names: tuple[str, ...] = ()
@@ -142,17 +146,20 @@ class FeatureExtractionController:
         feature_names: Sequence[str] | str | None,
         feature_key: str | None,
         *,
+        channels: Sequence[FeatureExtractionChannel] | FeatureExtractionChannel | None = None,
         overwrite_feature_key: bool = False,
     ) -> bool:
         """Bind the controller to the currently selected SpatialData inputs."""
         normalized_coordinate_system = None if coordinate_system is None else coordinate_system.strip() or None
         normalized_feature_names = _normalize_feature_names(feature_names)
         normalized_feature_key = None if feature_key is None else feature_key.strip()
+        normalized_channels = _normalize_channels(channels)
 
         context_changed = (
             sdata is not self._selected_spatialdata
             or label_name != self._selected_label_name
             or image_name != self._selected_image_name
+            or normalized_channels != self._selected_channels
             or table_name != self._selected_table_name
             or normalized_coordinate_system != self._selected_coordinate_system
             or normalized_feature_names != self._selected_feature_names
@@ -163,6 +170,7 @@ class FeatureExtractionController:
         self._selected_spatialdata = sdata
         self._selected_label_name = label_name
         self._selected_image_name = image_name
+        self._selected_channels = normalized_channels
         self._selected_table_name = table_name
         self._selected_coordinate_system = normalized_coordinate_system
         self._selected_feature_names = normalized_feature_names
@@ -242,6 +250,7 @@ class FeatureExtractionController:
             sdata=self._selected_spatialdata,
             label_name=self._selected_label_name,
             image_name=self._selected_image_name,
+            channels=self._selected_channels,
             table_name=self._selected_table_name,
             coordinate_system=self._selected_coordinate_system,
             feature_names=self._selected_feature_names,
@@ -361,6 +370,33 @@ def _normalize_feature_names(feature_names: Sequence[str] | str | None) -> tuple
             continue
         normalized.append(normalized_name)
         seen.add(normalized_name)
+    return tuple(normalized)
+
+
+def _normalize_channels(
+    channels: Sequence[FeatureExtractionChannel] | FeatureExtractionChannel | None,
+) -> tuple[FeatureExtractionChannel, ...] | None:
+    if channels is None:
+        return None
+    if isinstance(channels, (str, int)):
+        values = [channels]
+    else:
+        values = list(channels)
+
+    normalized: list[FeatureExtractionChannel] = []
+    seen: set[FeatureExtractionChannel] = set()
+    for channel in values:
+        if isinstance(channel, str):
+            normalized_channel: FeatureExtractionChannel = channel.strip()
+            if not normalized_channel:
+                continue
+        else:
+            normalized_channel = channel
+
+        if normalized_channel in seen:
+            raise ValueError(f"Duplicate channel selection is not allowed: `{normalized_channel}`.")
+        normalized.append(normalized_channel)
+        seen.add(normalized_channel)
     return tuple(normalized)
 
 

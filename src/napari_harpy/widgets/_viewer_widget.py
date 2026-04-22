@@ -71,6 +71,7 @@ _SECTION_GROUP_STYLESHEET = (
 )
 _SUMMARY_LABEL_STYLESHEET = "color: #374151; font-weight: 500;"
 _EMPTY_STATE_STYLESHEET = "color: #6b7280; font-weight: 500;"
+_CHANNEL_WARNING_STYLESHEET = "color: #b45309; font-weight: 600;"
 _CHANNEL_PANEL_STYLESHEET = "QWidget { background: transparent; }"
 _MAX_VISIBLE_OVERLAY_CHANNELS = 5
 
@@ -176,10 +177,12 @@ class _ImageCardWidget(QFrame):
         *,
         image_name: str,
         channel_names: list[str],
+        channel_error: str | None = None,
     ) -> None:
         super().__init__()
         self.image_name = image_name
         self.channel_names = channel_names
+        self.channel_error = channel_error
         self.setObjectName(f"viewer_widget_image_card_{image_name}")
         self.setStyleSheet(_CARD_STYLESHEET)
 
@@ -207,6 +210,12 @@ class _ImageCardWidget(QFrame):
         mode_layout.addWidget(self.stack_toggle)
         mode_layout.addWidget(self.overlay_toggle)
         mode_layout.addStretch(1)
+
+        self.channel_warning_label = QLabel()
+        self.channel_warning_label.setObjectName(f"viewer_widget_channel_warning_{image_name}")
+        self.channel_warning_label.setWordWrap(True)
+        self.channel_warning_label.setStyleSheet(_CHANNEL_WARNING_STYLESHEET)
+        self.channel_warning_label.hide()
 
         self.channel_panel = QWidget()
         self.channel_panel.setObjectName(f"viewer_widget_channel_panel_{image_name}")
@@ -237,7 +246,12 @@ class _ImageCardWidget(QFrame):
         self.channel_color_combos: list[QComboBox] = []
         channel_rows: list[QWidget] = []
 
-        if channel_names:
+        if channel_error is not None:
+            self.overlay_toggle.setEnabled(False)
+            self.overlay_toggle.setToolTip(format_tooltip(channel_error))
+            self.channel_warning_label.setText("Overlay is unavailable because this image has duplicate channel names.")
+            self.channel_warning_label.setToolTip(format_tooltip(channel_error))
+        elif channel_names:
             for index, channel_name in enumerate(channel_names):
                 row = QWidget()
                 row_layout = QHBoxLayout(row)
@@ -285,8 +299,10 @@ class _ImageCardWidget(QFrame):
 
         layout.addWidget(self.title_label)
         layout.addLayout(mode_layout)
+        layout.addWidget(self.channel_warning_label)
         layout.addWidget(self.channel_panel)
         layout.addWidget(self.add_update_button)
+        self.channel_warning_label.setVisible(channel_error is not None)
 
     def _on_stack_toggled(self, checked: bool) -> None:
         if checked:
@@ -587,9 +603,16 @@ class ViewerWidget(QWidget):
         self._image_cards = []
 
         for image_name in image_names:
+            channel_error = None
+            channel_names: list[str] = []
+            try:
+                channel_names = get_image_channel_names_from_sdata(sdata, image_name)
+            except ValueError as error:
+                channel_error = str(error)
             card = _ImageCardWidget(
                 image_name=image_name,
-                channel_names=get_image_channel_names_from_sdata(sdata, image_name),
+                channel_names=channel_names,
+                channel_error=channel_error,
             )
             card.add_update_requested.connect(self._add_or_update_image_layer)
             self.images_section_layout.addWidget(card)
@@ -789,4 +812,3 @@ def _get_images_in_coordinate_system(sdata: SpatialData, coordinate_system: str)
         for image_name, element in images.items()
         if coordinate_system in get_transformation(element, get_all=True).keys()
     )
-

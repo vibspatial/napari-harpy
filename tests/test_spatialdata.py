@@ -7,6 +7,7 @@ import pytest
 from napari.layers import Image, Labels
 from spatialdata import SpatialData
 from spatialdata.models import TableModel
+from xarray import DataArray
 
 import napari_harpy._spatialdata as spatialdata_module
 from napari_harpy._spatialdata import (
@@ -148,6 +149,22 @@ def test_get_coordinate_system_names_from_sdata_returns_sorted_union(
 
 def test_get_image_channel_names_from_sdata_returns_channel_axis_names(sdata_blobs: SpatialData) -> None:
     assert get_image_channel_names_from_sdata(sdata_blobs, "blobs_image") == ["0", "1", "2"]
+
+
+def test_get_image_channel_names_from_sdata_rejects_duplicate_channel_names(monkeypatch) -> None:
+    fake_sdata = SimpleNamespace(
+        images={
+            "image_with_duplicates": DataArray(
+                np.zeros((3, 2, 2)),
+                dims=("c", "y", "x"),
+                coords={"c": ["dup", "dup", "other"]},
+            )
+        }
+    )
+    monkeypatch.setattr(spatialdata_module, "_get_image_names", lambda sdata: ["image_with_duplicates"])
+
+    with pytest.raises(ValueError, match="duplicate channel names"):
+        get_image_channel_names_from_sdata(fake_sdata, "image_with_duplicates")
 
 
 def test_get_spatialdata_label_options_for_coordinate_system_from_sdata_filters_labels(

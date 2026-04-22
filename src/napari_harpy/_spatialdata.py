@@ -342,7 +342,24 @@ def get_image_channel_names_from_sdata(sdata: SpatialData, image_name: str) -> l
         scale0 = next(iter(image_element["scale0"].values()))
         channel_values = list(scale0.coords.indexes["c"])
 
-    return [str(channel_value) for channel_value in channel_values]
+    channel_names = [str(channel_value) for channel_value in channel_values]
+    duplicates: list[str] = []
+    seen: set[str] = set()
+    duplicate_seen: set[str] = set()
+    for channel_name in channel_names:
+        if channel_name in seen and channel_name not in duplicate_seen:
+            duplicates.append(channel_name)
+            duplicate_seen.add(channel_name)
+        seen.add(channel_name)
+
+    if duplicates:
+        duplicate_names = ", ".join(f"`{channel_name}`" for channel_name in duplicates)
+        raise ValueError(
+            f"Image element `{image_name}` exposes duplicate channel names ({duplicate_names}), "
+            "which napari-harpy does not support."
+        )
+
+    return channel_names
 
 
 def get_spatialdata_label_options_for_coordinate_system_from_sdata(

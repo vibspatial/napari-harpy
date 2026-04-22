@@ -177,6 +177,39 @@ def test_viewer_widget_overlay_channel_panel_scrolls_when_many_channels(qtbot, m
     assert image_card.channel_scroll_area.maximumHeight() < image_card.channel_list_widget.sizeHint().height()
 
 
+def test_viewer_widget_surfaces_duplicate_channel_names_and_disables_overlay(qtbot, monkeypatch) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    fake_sdata = object()
+
+    qtbot.addWidget(widget)
+
+    monkeypatch.setattr(viewer_widget_module, "_get_coordinate_systems_from_sdata", lambda sdata: ["global"])
+    monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: ["image"])
+    monkeypatch.setattr(
+        viewer_widget_module,
+        "get_image_channel_names_from_sdata",
+        lambda sdata, image_name: (_ for _ in ()).throw(
+            ValueError(
+                "Image element `image` exposes duplicate channel names (`dup`), "
+                "which napari-harpy does not support."
+            )
+        ),
+    )
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(fake_sdata)
+
+    image_card = widget.image_cards[0]
+
+    assert image_card.channel_names == []
+    assert image_card.channel_error is not None
+    assert not image_card.overlay_toggle.isEnabled()
+    assert not image_card.channel_warning_label.isHidden()
+    assert "duplicate channel names" in image_card.channel_warning_label.toolTip()
+
+
 def test_viewer_widget_filters_cards_by_selected_coordinate_system(qtbot, monkeypatch) -> None:
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)

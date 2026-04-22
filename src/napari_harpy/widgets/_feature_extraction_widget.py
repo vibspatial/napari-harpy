@@ -140,6 +140,7 @@ class FeatureExtractionWidget(QWidget):
         self._coordinate_systems: list[str] = []
         self._selected_coordinate_system: str | None = None
         self._table_binding_error: str | None = None
+        self._image_channel_error: str | None = None
         self._feature_checkboxes: dict[str, QCheckBox] = {}
         self._logo_path = Path(__file__).resolve().parents[3] / "docs" / "_static" / "logo.png"
 
@@ -433,6 +434,7 @@ class FeatureExtractionWidget(QWidget):
         self._coordinate_systems = []
         self._selected_coordinate_system = None
         self._table_binding_error = None
+        self._image_channel_error = None
 
         with QSignalBlocker(self.segmentation_combo):
             self.segmentation_combo.clear()
@@ -612,11 +614,16 @@ class FeatureExtractionWidget(QWidget):
 
     def _refresh_image_channel_options(self) -> None:
         self._clear_image_channel_options()
+        self._image_channel_error = None
 
         if self.selected_spatialdata is None or self._selected_image_option is None:
             return
 
-        channel_names = get_image_channel_names_from_sdata(self.selected_spatialdata, self.selected_image_name)
+        try:
+            channel_names = get_image_channel_names_from_sdata(self.selected_spatialdata, self.selected_image_name)
+        except ValueError as error:
+            self._image_channel_error = str(error)
+            return
         if not channel_names:
             return
 
@@ -889,14 +896,17 @@ class FeatureExtractionWidget(QWidget):
     def _bind_current_selection(self) -> None:
         self._table_binding_error = self._validate_selected_table_binding()
         effective_table_name = None if self._table_binding_error is not None else self.selected_table_name
+        effective_image_name = None if self._image_channel_error is not None else self.selected_image_name
+        effective_channels = None if self._image_channel_error is not None else self.selected_extraction_channel_names
         self._feature_extraction_controller.bind(
             self.selected_spatialdata,
             self.selected_segmentation_name,
-            self.selected_image_name,
+            effective_image_name,
             effective_table_name,
             self.selected_coordinate_system,
             self.selected_feature_names,
             self.selected_feature_key,
+            channels=effective_channels,
             overwrite_feature_key=False,
         )
         self._update_selection_status()
@@ -907,9 +917,9 @@ class FeatureExtractionWidget(QWidget):
         self._update_calculate_controls()
 
     def _update_validation_status(self) -> None:
-        message = self._table_binding_error
-        self.validation_status.setText("" if message is None else message)
-        self.validation_status.setVisible(message is not None)
+        messages = [message for message in (self._table_binding_error, self._image_channel_error) if message is not None]
+        self.validation_status.setText("\n".join(messages))
+        self.validation_status.setVisible(bool(messages))
 
     def _update_primary_status_card(self) -> None:
         if self._app_state.sdata is None:
@@ -977,6 +987,19 @@ class FeatureExtractionWidget(QWidget):
                 )
                 if table_shortened or segmentation_shortened
                 else None,
+                kind="warning",
+            )
+            return
+
+        if self._image_channel_error is not None and self.selected_image_name is not None:
+            image_name, _ = format_feedback_identifier(self.selected_image_name)
+            self._set_selection_status(
+                "Image Channel Issue",
+                [
+                    f"Image `{image_name}` has duplicate channel names, which Harpy does not support.",
+                    "Rename the channels in the SpatialData object or choose a different image.",
+                ],
+                tooltip_message=self._image_channel_error,
                 kind="warning",
             )
             return

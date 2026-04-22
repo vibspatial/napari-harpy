@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+
+import pytest
 from qtpy.QtCore import QObject, Signal
 from spatialdata import SpatialData
 
@@ -8,6 +12,7 @@ from napari_harpy._feature_extraction import (
     FeatureExtractionController,
     FeatureExtractionJob,
     FeatureExtractionResult,
+    _run_feature_extraction_job,
 )
 
 
@@ -170,11 +175,67 @@ def test_feature_extraction_controller_prepares_immutable_job_payload(sdata_blob
     assert job.sdata is sdata_blobs
     assert job.label_name == "blobs_labels"
     assert job.image_name == "blobs_image"
+    assert job.channels is None
     assert job.table_name == "table"
     assert job.coordinate_system == "global"
     assert job.feature_names == ("mean", "area")
     assert job.feature_key == "feature_matrix_1"
     assert job.overwrite_feature_key is True
+
+
+def test_feature_extraction_controller_bind_stores_selected_channels_in_job(sdata_blobs: SpatialData) -> None:
+    controller = FeatureExtractionController()
+    controller.bind(
+        sdata_blobs,
+        "blobs_labels",
+        "blobs_image",
+        "table",
+        "global",
+        ["mean", "area"],
+        "feature_matrix_1",
+        channels=("1", "2"),
+    )
+
+    job = controller._prepare_feature_extraction_job(8)
+
+    assert isinstance(job, FeatureExtractionJob)
+    assert job.channels == ("1", "2")
+
+
+def test_feature_extraction_controller_bind_rejects_duplicate_selected_channels(sdata_blobs: SpatialData) -> None:
+    controller = FeatureExtractionController()
+
+    with pytest.raises(ValueError, match="Duplicate channel selection is not allowed"):
+        controller.bind(
+            sdata_blobs,
+            "blobs_labels",
+            "blobs_image",
+            "table",
+            "global",
+            ["mean", "area"],
+            "feature_matrix_1",
+            channels=("1", "1"),
+        )
+
+
+def test_feature_extraction_controller_morphology_only_job_keeps_channels_none(sdata_blobs: SpatialData) -> None:
+    controller = FeatureExtractionController()
+    controller.bind(
+        sdata_blobs,
+        "blobs_labels",
+        None,
+        "table",
+        "global",
+        ["area"],
+        "feature_matrix_1",
+        channels=None,
+    )
+
+    job = controller._prepare_feature_extraction_job(9)
+
+    assert isinstance(job, FeatureExtractionJob)
+    assert job.image_name is None
+    assert job.channels is None
 
 
 def test_feature_extraction_controller_notifies_table_state_change_on_success(sdata_blobs: SpatialData) -> None:
@@ -254,6 +315,79 @@ def test_feature_extraction_controller_calculate_accepts_one_shot_overwrite_over
 
     assert launched is True
     assert captured_overwrite_flags == [True]
+
+
+def test_feature_extraction_controller_calculate_launches_job_with_selected_channels(
+    sdata_blobs: SpatialData,
+) -> None:
+    captured_channels: list[tuple[int | str, ...] | None] = []
+    deferred_worker = _DeferredWorker(
+        FeatureExtractionResult(
+            job_id=1,
+            label_name="blobs_labels",
+            table_name="table",
+            feature_key="feature_matrix_1",
+        )
+    )
+
+    controller = FeatureExtractionController()
+    controller.bind(
+        sdata_blobs,
+        "blobs_labels",
+        "blobs_image",
+        "table",
+        "global",
+        ["mean", "area"],
+        "feature_matrix_1",
+        channels=("0", "2"),
+    )
+
+    def capture_worker(job: FeatureExtractionJob) -> _DeferredWorker:
+        captured_channels.append(job.channels)
+        return deferred_worker
+
+    controller._create_feature_extraction_worker = capture_worker  # type: ignore[method-assign]
+
+    launched = controller.calculate()
+
+    assert launched is True
+    assert captured_channels == [("0", "2")]
+
+
+def test_run_feature_extraction_job_passes_channels_to_harpy(monkeypatch, sdata_blobs: SpatialData) -> None:
+    captured_kwargs: dict[str, object] = {}
+
+    def fake_add_feature_matrix(**kwargs):
+        captured_kwargs.update(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "harpy",
+        SimpleNamespace(tb=SimpleNamespace(add_feature_matrix=fake_add_feature_matrix)),
+    )
+
+    result = _run_feature_extraction_job.__wrapped__(
+        FeatureExtractionJob(
+            job_id=4,
+            sdata=sdata_blobs,
+            label_name="blobs_labels",
+            image_name="blobs_image",
+            channels=("0", "2"),
+            table_name="table",
+            coordinate_system="global",
+            feature_names=("mean", "area"),
+            feature_key="feature_matrix_1",
+            overwrite_feature_key=False,
+        )
+    )
+
+    assert captured_kwargs["channels"] == ["0", "2"]
+    assert result == FeatureExtractionResult(
+        job_id=4,
+        label_name="blobs_labels",
+        table_name="table",
+        feature_key="feature_matrix_1",
+    )
 
 
 def test_feature_extraction_controller_propagates_worker_errors(sdata_blobs: SpatialData) -> None:
