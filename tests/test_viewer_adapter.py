@@ -197,7 +197,7 @@ def test_viewer_adapter_ignores_unregistered_labels_layer_even_with_legacy_metad
     viewer = DummyViewer([labels_layer])
     adapter = ViewerAdapter(viewer)
 
-    loaded_layer = adapter.get_loaded_labels_layer(sdata_blobs, "blobs_labels")
+    loaded_layer = adapter.get_loaded_labels_layer(sdata_blobs, "blobs_labels", "global")
 
     assert loaded_layer is None
     assert adapter.layer_bindings.get_binding(labels_layer) is None
@@ -311,9 +311,11 @@ def test_viewer_adapter_ensure_labels_loaded_adds_layer_and_registers_binding(sd
     assert binding.element_name == "blobs_labels"
     assert binding.element_type == "labels"
     assert binding.coordinate_system == "global"
-    assert layer.metadata["sdata"] is sdata_blobs
-    assert layer.metadata["name"] == "blobs_labels"
-    assert layer.metadata["_current_cs"] == "global"
+    assert layer.metadata["element_name"] == "blobs_labels"
+    assert layer.metadata["element_type"] == "labels"
+    assert layer.metadata["coordinate_system"] == "global"
+    assert "sdata" not in layer.metadata
+    assert "_current_cs" not in layer.metadata
     assert labels_events == ["changed"]
 
 

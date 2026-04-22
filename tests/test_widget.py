@@ -16,6 +16,7 @@ from qtpy.QtCore import QObject, Signal
 from qtpy.QtWidgets import QComboBox, QScrollArea
 from spatialdata import SpatialData, read_zarr
 from spatialdata.models import TableModel
+from spatialdata.transformations import get_transformation
 
 import napari_harpy._annotation as annotation_module
 import napari_harpy._class_palette as class_palette_module
@@ -79,7 +80,34 @@ class DummyViewer:
                 sdata_values.append(sdata)
 
         if sdata_values and len({id(sdata) for sdata in sdata_values}) == 1:
-            get_or_create_app_state(self).set_sdata(sdata_values[0])
+            app_state = get_or_create_app_state(self)
+            app_state.set_sdata(sdata_values[0])
+            for layer in self.layers:
+                if not isinstance(layer, Labels):
+                    continue
+                metadata = getattr(layer, "metadata", None)
+                if not isinstance(metadata, dict):
+                    continue
+                sdata = metadata.get("sdata")
+                if sdata is not sdata_values[0]:
+                    continue
+                element_name = metadata.get("name", getattr(layer, "name", None))
+                if not isinstance(element_name, str):
+                    continue
+                coordinate_system = metadata.get("coordinate_system", metadata.get("_current_cs"))
+                if not isinstance(coordinate_system, str) and element_name in sdata.labels:
+                    available_coordinate_systems = tuple(get_transformation(sdata.labels[element_name], get_all=True).keys())
+                    if len(available_coordinate_systems) == 1:
+                        coordinate_system = available_coordinate_systems[0]
+                    elif "global" in available_coordinate_systems:
+                        coordinate_system = "global"
+                app_state.viewer_adapter.register_layer(
+                    layer,
+                    sdata=sdata,
+                    element_name=element_name,
+                    element_type="labels",
+                    coordinate_system=coordinate_system if isinstance(coordinate_system, str) else None,
+                )
 
 
 def make_viewer_with_shared_sdata(sdata: SpatialData, layers: list[Labels] | None = None) -> DummyViewer:
