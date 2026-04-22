@@ -193,7 +193,9 @@ def test_viewer_widget_surfaces_duplicate_channel_names_and_disables_overlay(qtb
         lambda sdata, image_name: (_ for _ in ()).throw(
             ValueError(
                 "Image element `image` exposes duplicate channel names (`dup`), "
-                "which napari-harpy does not support."
+                "which napari-harpy does not support. "
+                "Update the channel names in the SpatialData object with "
+                "`sdata.set_channel_names(...)`."
             )
         ),
     )
@@ -207,6 +209,7 @@ def test_viewer_widget_surfaces_duplicate_channel_names_and_disables_overlay(qtb
     assert image_card.channel_error is not None
     assert not image_card.overlay_toggle.isEnabled()
     assert not image_card.channel_warning_label.isHidden()
+    assert "sdata.set_channel_names(...)" in image_card.channel_warning_label.text()
     assert "duplicate channel names" in image_card.channel_warning_label.toolTip()
 
 

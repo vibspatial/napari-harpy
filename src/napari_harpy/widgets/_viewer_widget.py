@@ -249,7 +249,10 @@ class _ImageCardWidget(QFrame):
         if channel_error is not None:
             self.overlay_toggle.setEnabled(False)
             self.overlay_toggle.setToolTip(format_tooltip(channel_error))
-            self.channel_warning_label.setText("Overlay is unavailable because this image has duplicate channel names.")
+            self.channel_warning_label.setText(
+                "Overlay is unavailable because this image has duplicate channel names. "
+                "Use `sdata.set_channel_names(...)` to rename them."
+            )
             self.channel_warning_label.setToolTip(format_tooltip(channel_error))
         elif channel_names:
             for index, channel_name in enumerate(channel_names):

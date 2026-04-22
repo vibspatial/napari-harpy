@@ -984,7 +984,7 @@ class FeatureExtractionWidget(QWidget):
                 "Image Channel Issue",
                 [
                     f"Image `{image_name}` has duplicate channel names, which Harpy does not support.",
-                    "Rename the channels in the SpatialData object or choose a different image.",
+                    "Use `sdata.set_channel_names(...)` to rename the channels, or choose a different image.",
                 ],
                 tooltip_message=self._image_channel_error,
                 kind="warning",

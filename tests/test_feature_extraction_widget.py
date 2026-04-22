@@ -311,7 +311,9 @@ def test_feature_extraction_widget_surfaces_duplicate_channel_names_and_unbinds_
         lambda sdata, image_name: (_ for _ in ()).throw(
             ValueError(
                 "Image element `blobs_image` exposes duplicate channel names (`dup`), "
-                "which napari-harpy does not support."
+                "which napari-harpy does not support. "
+                "Update the channel names in the SpatialData object with "
+                "`sdata.set_channel_names(...)`."
             )
         ),
     )
@@ -322,6 +324,7 @@ def test_feature_extraction_widget_surfaces_duplicate_channel_names_and_unbinds_
     assert widget.channel_selection_label.isHidden()
     assert widget.channel_selection_container.isHidden()
     assert "Image Channel Issue" in widget.selection_status.text()
+    assert "sdata.set_channel_names(...)" in widget.selection_status.text()
     assert bind_calls
     args, kwargs = bind_calls[-1]
     assert args == (
