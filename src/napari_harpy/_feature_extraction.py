@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
+from harpy.utils._keys import _FEATURE_MATRICES_KEY
+
 from napari_harpy._spatialdata import get_table
 
 if TYPE_CHECKING:
@@ -66,6 +68,7 @@ def _run_feature_extraction_job(job: FeatureExtractionJob) -> FeatureExtractionR
         feature_key=job.feature_key,
         features=list(job.feature_names),
         channels=None if job.channels is None else list(job.channels),
+        feature_matrices_key=_FEATURE_MATRICES_KEY,
         overwrite_feature_key=job.overwrite_feature_key,
         to_coordinate_system=job.coordinate_system,
     )
@@ -328,7 +331,10 @@ class FeatureExtractionController:
 
         self._notify_table_state_changed()
         self._set_status(
-            f"Feature extraction: wrote `{result.feature_key}` into table `{result.table_name}` as `.obsm[{result.feature_key!r}]`.",
+            "Feature extraction: "
+            f"wrote `{result.feature_key}` into table `{result.table_name}` as "
+            f"`.obsm[{result.feature_key!r}]` with metadata in "
+            f"`.uns[{_FEATURE_MATRICES_KEY!r}][{result.feature_key!r}]`.",
             kind="success",
         )
 

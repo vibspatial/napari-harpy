@@ -275,7 +275,8 @@ def test_feature_extraction_controller_notifies_table_state_change_on_success(sd
     assert controller.status_kind == "success"
     assert (
         controller.status_message
-        == "Feature extraction: wrote `feature_matrix_1` into table `table` as `.obsm['feature_matrix_1']`."
+        == "Feature extraction: wrote `feature_matrix_1` into table `table` as `.obsm['feature_matrix_1']` "
+        "with metadata in `.uns['feature_matrices']['feature_matrix_1']`."
     )
     assert controller.is_running is False
 
@@ -382,6 +383,7 @@ def test_run_feature_extraction_job_passes_channels_to_harpy(monkeypatch, sdata_
     )
 
     assert captured_kwargs["channels"] == ["0", "2"]
+    assert captured_kwargs["feature_matrices_key"] == "feature_matrices"
     assert result == FeatureExtractionResult(
         job_id=4,
         label_name="blobs_labels",
