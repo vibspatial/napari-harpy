@@ -31,7 +31,7 @@ from napari_harpy._classifier import (
     PRED_CLASS_COLUMN,
     PRED_CONFIDENCE_COLUMN,
 )
-from napari_harpy._spatialdata import SpatialDataLabelsOption, SpatialDataViewerBinding
+from napari_harpy._spatialdata import SpatialDataLabelsOption
 from napari_harpy.widgets._object_classification_widget import (
     ObjectClassificationWidget as HarpyWidget,
 )
@@ -262,36 +262,6 @@ def test_widget_clears_when_shared_sdata_is_cleared(qtbot, sdata_blobs: SpatialD
     assert not widget.feature_matrix_combo.isEnabled()
     assert not widget.refresh_button.isEnabled()
     assert "No SpatialData Loaded" in widget.selection_status.text()
-
-
-def test_spatialdata_label_options_are_deduplicated_per_dataset(sdata_blobs: SpatialData) -> None:
-    """Avoid duplicate dropdown entries when multiple layers share one SpatialData object.
-
-    In a real napari-spatialdata session, the viewer can contain multiple layers that all
-    reference the same `SpatialData` dataset through `layer.metadata["sdata"]`. If we expanded
-    `sdata.labels` once per layer, the segmentation dropdown would repeat the same label names.
-
-    This test uses two layers pointing to the same `sdata` to verify that we deduplicate at the
-    dataset level and expose each labels element only once.
-    """
-    first_layer = make_blobs_labels_layer(sdata_blobs, "blobs_labels")
-    second_layer = Labels(
-        sdata_blobs.labels["blobs_labels"],
-        name="blobs_labels_duplicate",
-        metadata={"sdata": sdata_blobs, "name": "blobs_labels"},
-    )
-    viewer = DummyViewer(layers=[first_layer, second_layer])
-
-    options = SpatialDataViewerBinding(viewer).get_label_options()
-
-    assert [option.label_name for option in options] == [
-        "blobs_labels",
-        "blobs_multiscale_labels",
-    ]
-    assert [option.coordinate_systems for option in options] == [
-        ("global",),
-        ("global",),
-    ]
 
 
 def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_blobs: SpatialData) -> None:
