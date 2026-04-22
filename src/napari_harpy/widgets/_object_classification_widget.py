@@ -79,13 +79,15 @@ class ObjectClassificationWidget(QWidget):
     """
     Widget for object classification.
 
-    The widget does not retrieve a `SpatialData` object directly from the napari
-    viewer itself. Instead, it inspects the current viewer layers and looks for
-    `napari-spatialdata` metadata stored as `layer.metadata["sdata"]`.
+    The widget is migrating toward the shared Harpy app-state architecture.
+    It already receives the loaded `SpatialData` object through
+    `self._app_state.sdata` / `sdata_changed`, but for now it still resolves
+    the currently available live labels layers through `SpatialDataViewerBinding`.
 
-    From those viewer-linked `SpatialData` objects, the widget exposes:
+    In the current transition state, the widget exposes:
 
-    - segmentation masks from `sdata.labels`
+    - segmentation masks from viewer-linked labels layers that belong to the
+      shared loaded `SpatialData`
     - annotating tables for the selected segmentation
     - feature matrix keys from `table.obsm`
     - the currently picked segmentation instance id from the active `Labels` layer
@@ -97,6 +99,10 @@ class ObjectClassificationWidget(QWidget):
         apply_widget_surface(self)
         self.setMinimumWidth(_WIDGET_MIN_WIDTH)
         self._viewer = napari_viewer
+        # The napari viewer identifies which shared Harpy session this widget
+        # belongs to. We use it to attach to the per-viewer HarpyAppState even
+        # though live labels-layer resolution is still transitioning away from
+        # viewer scanning in VW-05.
         self._app_state = get_or_create_app_state(napari_viewer)
         # TODO: remove viewer-scanning binding once VW-05 fully derives options
         # from shared app state (`self._app_state.sdata` / `sdata_changed`).
@@ -206,8 +212,8 @@ class ObjectClassificationWidget(QWidget):
         refresh_action_layout.setSpacing(8)
 
         self.refresh_button = QPushButton("Rescan Viewer")
-        self.refresh_button.clicked.connect(self.refresh_segmentation_masks)
-        self.refresh_button.setEnabled(napari_viewer is not None)
+        self.refresh_button.clicked.connect(self._refresh_from_current_app_state)
+        self.refresh_button.setEnabled(False)
         self.refresh_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_button.setMinimumHeight(28)
         self.refresh_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
@@ -306,8 +312,9 @@ class ObjectClassificationWidget(QWidget):
         content_layout.addWidget(self.validation_status)
         content_layout.addStretch(1)
 
+        self._app_state.sdata_changed.connect(self._on_sdata_changed)
         self._connect_viewer_events()
-        self.refresh_segmentation_masks()
+        self.refresh_from_sdata(self._app_state.sdata)
 
     @property
     def app_state(self) -> HarpyAppState:
@@ -382,8 +389,21 @@ class ObjectClassificationWidget(QWidget):
 
         return get_table_metadata(self.selected_spatialdata, self.selected_table_name)
 
+    def refresh_from_sdata(self, sdata: SpatialData | None) -> None:
+        """Refresh the widget from the shared Harpy SpatialData state."""
+        self._update_refresh_button_state(sdata)
+        if sdata is None:
+            self._clear_selection_inputs()
+            self._bind_current_selection()
+            return
+
+        self.refresh_segmentation_masks()
+
+    def _on_sdata_changed(self, sdata: SpatialData | None) -> None:
+        self.refresh_from_sdata(sdata)
+
     def refresh_segmentation_masks(self) -> None:
-        """Refresh the segmentation mask choices from viewer-linked SpatialData layers."""
+        """Refresh segmentation choices from viewer-linked labels in the shared app state."""
         previous_identity = None if self._selected_label_option is None else self._selected_label_option.identity
         self._label_options = self._viewer_binding.get_label_options()
 
@@ -413,6 +433,40 @@ class ObjectClassificationWidget(QWidget):
             self._refresh_table_names()
             self._bind_current_selection()
 
+    def _refresh_from_current_app_state(self) -> None:
+        self.refresh_from_sdata(self._app_state.sdata)
+
+    def _update_refresh_button_state(self, sdata: SpatialData | None) -> None:
+        self.refresh_button.setEnabled(self._viewer is not None and sdata is not None)
+
+    def _clear_selection_inputs(self) -> None:
+        self._label_options = []
+        self._selected_label_option = None
+        self._table_names = []
+        self._selected_table_name = None
+        self._table_binding_error = None
+        self._feature_matrix_keys = []
+        self._selected_feature_key = None
+
+        with QSignalBlocker(self.segmentation_combo):
+            self.segmentation_combo.clear()
+            self.segmentation_combo.setEnabled(False)
+            self.segmentation_combo.setCurrentIndex(-1)
+
+        with QSignalBlocker(self.table_combo):
+            self.table_combo.clear()
+            self.table_combo.setEnabled(False)
+            self.table_combo.setCurrentIndex(-1)
+
+        with QSignalBlocker(self.feature_matrix_combo):
+            self.feature_matrix_combo.clear()
+            self.feature_matrix_combo.setEnabled(False)
+            self.feature_matrix_combo.setCurrentIndex(-1)
+
+        self._set_annotation_feedback("")
+        self._set_classifier_feedback("")
+        self._set_persistence_feedback("")
+
     def _connect_viewer_events(self) -> None:
         layers = getattr(self._viewer, "layers", None)
         events = getattr(layers, "events", None)
@@ -426,7 +480,7 @@ class ObjectClassificationWidget(QWidget):
 
     def _on_viewer_layers_changed(self, event: object | None = None) -> None:
         del event
-        self.refresh_segmentation_masks()
+        self.refresh_from_sdata(self._app_state.sdata)
 
     def _on_segmentation_changed(self, index: int) -> None:
         self._set_selected_label_option(index)
@@ -641,7 +695,16 @@ class ObjectClassificationWidget(QWidget):
         labels_layer = self._annotation_controller.labels_layer
         missing_table_row_message = self._annotation_controller.missing_table_row_message
 
-        if self.selected_segmentation_name is None:
+        if self._app_state.sdata is None:
+            self._set_selection_status(
+                title="No SpatialData Loaded",
+                lines=[
+                    "Load a SpatialData object through the Harpy Viewer widget, reader, or `Interactive(sdata)`.",
+                    "This form updates automatically from the shared Harpy state.",
+                ],
+                kind="warning",
+            )
+        elif self.selected_segmentation_name is None:
             self._set_selection_status(
                 title="Selection",
                 lines=["Choose a segmentation mask to enable object picking."],

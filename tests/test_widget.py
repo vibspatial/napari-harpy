@@ -22,6 +22,7 @@ import napari_harpy._class_palette as class_palette_module
 import napari_harpy._classifier as classifier_module
 import napari_harpy.widgets._object_classification_widget as widget_module
 from napari_harpy._annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
+from napari_harpy._app_state import get_or_create_app_state
 from napari_harpy._class_palette import default_class_colors
 from napari_harpy._classifier import (
     CLASSIFIER_CONFIG_KEY,
@@ -30,7 +31,9 @@ from napari_harpy._classifier import (
     PRED_CONFIDENCE_COLUMN,
 )
 from napari_harpy._spatialdata import SpatialDataViewerBinding
-from napari_harpy.widgets._object_classification_widget import ObjectClassificationWidget as HarpyWidget
+from napari_harpy.widgets._object_classification_widget import (
+    ObjectClassificationWidget as HarpyWidget,
+)
 
 
 class DummyEventEmitter:
@@ -61,8 +64,28 @@ class DummyLayers(list):
 
 
 class DummyViewer:
-    def __init__(self, layers: list[Labels] | None = None) -> None:
+    def __init__(self, layers: list[Labels] | None = None, *, seed_shared_sdata: bool = True) -> None:
         self.layers = DummyLayers(layers)
+        if not seed_shared_sdata:
+            return
+
+        sdata_values: list[SpatialData] = []
+        for layer in self.layers:
+            metadata = getattr(layer, "metadata", None)
+            if not isinstance(metadata, dict):
+                continue
+            sdata = metadata.get("sdata")
+            if isinstance(sdata, SpatialData):
+                sdata_values.append(sdata)
+
+        if sdata_values and len({id(sdata) for sdata in sdata_values}) == 1:
+            get_or_create_app_state(self).set_sdata(sdata_values[0])
+
+
+def make_viewer_with_shared_sdata(sdata: SpatialData, layers: list[Labels] | None = None) -> DummyViewer:
+    viewer = DummyViewer(layers=layers, seed_shared_sdata=False)
+    get_or_create_app_state(viewer).set_sdata(sdata)
+    return viewer
 
 
 class _DeferredWorker(QObject):
@@ -141,11 +164,59 @@ def test_widget_can_be_instantiated(qtbot) -> None:
     assert widget.selected_table_name is None
     assert widget.selected_feature_key is None
     assert widget.selected_color_by == "user_class"
+    assert not widget.refresh_button.isEnabled()
+    assert "No SpatialData Loaded" in widget.selection_status.text()
     assert widget.segmentation_combo.sizeAdjustPolicy() == QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
     assert widget.table_combo.sizeAdjustPolicy() == QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
     assert widget.feature_matrix_combo.sizeAdjustPolicy() == (
         QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
     )
+
+
+def test_widget_refreshes_when_shared_sdata_changes(qtbot, sdata_blobs: SpatialData) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer], seed_shared_sdata=False)
+    app_state = get_or_create_app_state(viewer)
+    widget = HarpyWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    assert widget.segmentation_combo.count() == 0
+    assert "No SpatialData Loaded" in widget.selection_status.text()
+
+    app_state.set_sdata(sdata_blobs)
+
+    assert widget.refresh_button.isEnabled()
+    assert widget.segmentation_combo.count() == 2
+    assert widget.selected_segmentation_name == "blobs_labels"
+    assert widget.selected_spatialdata is sdata_blobs
+
+
+def test_widget_clears_when_shared_sdata_is_cleared(qtbot, sdata_blobs: SpatialData) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = make_viewer_with_shared_sdata(sdata_blobs, layers=[layer])
+    app_state = get_or_create_app_state(viewer)
+    widget = HarpyWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    assert widget.segmentation_combo.count() == 2
+    assert widget.refresh_button.isEnabled()
+
+    app_state.clear_sdata()
+
+    assert widget.selected_segmentation_name is None
+    assert widget.selected_spatialdata is None
+    assert widget.selected_table_name is None
+    assert widget.selected_feature_key is None
+    assert widget.segmentation_combo.count() == 0
+    assert not widget.segmentation_combo.isEnabled()
+    assert widget.table_combo.count() == 0
+    assert not widget.table_combo.isEnabled()
+    assert widget.feature_matrix_combo.count() == 0
+    assert not widget.feature_matrix_combo.isEnabled()
+    assert not widget.refresh_button.isEnabled()
+    assert "No SpatialData Loaded" in widget.selection_status.text()
 
 
 def test_spatialdata_label_options_are_deduplicated_per_dataset(sdata_blobs: SpatialData) -> None:
@@ -252,11 +323,13 @@ def test_widget_surfaces_invalid_table_binding_for_duplicate_instance_ids(qtbot,
 
 def test_widget_refreshes_when_a_spatialdata_layer_is_added(qtbot, sdata_blobs: SpatialData) -> None:
     viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
     widget = HarpyWidget(viewer)
     qtbot.addWidget(widget)
 
     assert widget.segmentation_combo.count() == 0
 
+    app_state.set_sdata(sdata_blobs)
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer.layers.append(layer)
     viewer.layers.events.inserted.emit(layer)
