@@ -433,6 +433,34 @@ def test_feature_extraction_widget_blocks_when_selected_segmentation_has_no_link
     assert "creating a new linked table" in widget.selection_status.text()
 
 
+def test_feature_extraction_widget_uses_table_binding_error_as_status_tooltip(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    widget._selected_label_option = SpatialDataLabelsOption(
+        label_name="blobs_labels",
+        display_name="blobs_labels",
+        sdata=sdata_blobs,
+        coordinate_systems=("global",),
+    )
+    widget._selected_table_name = "table"
+    widget._selected_coordinate_system = "global"
+    widget._table_binding_error = (
+        "Table `table` annotates segmentation `other_labels`, not `blobs_labels`."
+    )
+
+    widget._update_primary_status_card()
+
+    tooltip = unescape(widget.selection_status.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    assert "Table Binding Issue" in widget.selection_status.text()
+    assert "annotates segmentation `other_labels`" in tooltip
+
+
 def test_feature_extraction_widget_exposes_grouped_feature_checkboxes(qtbot) -> None:
     widget = FeatureExtractionWidget()
 

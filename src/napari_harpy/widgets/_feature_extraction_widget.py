@@ -966,14 +966,7 @@ class FeatureExtractionWidget(QWidget):
             self._set_selection_status(
                 "Table Binding Issue",
                 lines,
-                tooltip_message="\n".join(
-                    [
-                        f"Table `{self.selected_table_name}` cannot currently be used for segmentation `{self.selected_segmentation_name}`.",
-                        "Choose a different table or segmentation.",
-                    ]
-                )
-                if table_shortened or segmentation_shortened
-                else None,
+                tooltip_message=self._table_binding_error,
                 kind="warning",
             )
             return
