@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 from loguru import logger
 from napari.layers import Image, Labels, Layer
+from qtpy.QtCore import QObject, Signal
 from spatialdata.models import get_axes_names
 from spatialdata.transformations import get_transformation
 from xarray import DataArray, DataTree
@@ -129,7 +130,7 @@ class LayerBindingRegistry:
         return matches
 
 
-class ViewerAdapter:
+class ViewerAdapter(QObject):
     """Harpy-owned service for viewer-facing layer lookup and activation.
 
     The adapter wraps a napari viewer and provides the Harpy-level operations
@@ -148,7 +149,14 @@ class ViewerAdapter:
     mapping from napari layers to `SpatialData` element identity.
     """
 
+    # Emitted when the set/order of live pickable Labels layers changes.
+    # Used by consumers that depend on live labels-layer availability,
+    # currently ObjectClassificationWidget.
+    labels_layers_changed = Signal()
+    active_layer_changed = Signal(object)
+
     def __init__(self, viewer: Any | None = None, layer_bindings: LayerBindingRegistry | None = None) -> None:
+        super().__init__()
         self._viewer = viewer
         self._layer_bindings = layer_bindings or LayerBindingRegistry()
         self._connect_layer_events()
@@ -171,7 +179,7 @@ class ViewerAdapter:
         channel_name: str | None = None,
     ) -> LayerBinding:
         """Register a layer in the shared binding registry."""
-        return self._layer_bindings.register_layer(
+        binding = self._layer_bindings.register_layer(
             layer,
             element_name=element_name,
             element_type=element_type,
@@ -181,6 +189,7 @@ class ViewerAdapter:
             channel_index=channel_index,
             channel_name=channel_name,
         )
+        return binding
 
     def unregister_layer(self, layer: Layer) -> LayerBinding | None:
         """Remove a layer from the shared binding registry."""
@@ -190,10 +199,26 @@ class ViewerAdapter:
         """Keep the registry synchronized with the viewer's layer list when possible."""
         layers = getattr(self._viewer, "layers", None)
         events = getattr(layers, "events", None)
-        removed = getattr(events, "removed", None)
-        connect = getattr(removed, "connect", None)
-        if callable(connect):
-            connect(self._on_viewer_layer_removed)
+        if events is None:
+            return
+
+        for event_name, handler in (
+            ("inserted", self._on_viewer_layer_inserted),
+            ("removed", self._on_viewer_layer_removed),
+            ("reordered", self._on_viewer_layers_reordered),
+        ):
+            event_emitter = getattr(events, event_name, None)
+            connect = getattr(event_emitter, "connect", None)
+            if callable(connect):
+                connect(handler)
+
+    def _on_viewer_layer_inserted(self, event: Any) -> None:
+        layer = getattr(event, "value", None)
+        if not isinstance(layer, Layer):
+            logger.warning("Ignoring viewer layer insertion event without a napari Layer payload.")
+            return
+        if _is_pickable_labels_layer(layer):
+            self.labels_layers_changed.emit()
 
     def _on_viewer_layer_removed(self, event: Any) -> None:
         """Unregister Harpy-managed layers when they disappear from the viewer."""
@@ -201,11 +226,19 @@ class ViewerAdapter:
         if not isinstance(layer, Layer):
             logger.warning("Ignoring viewer layer removal event without a napari Layer payload.")
             return
+        had_labels_semantics = _is_pickable_labels_layer(layer)
         removed_binding = self.unregister_layer(layer)
         if removed_binding is None:
             logger.warning(
                 "Removed napari layer `%s` had no matching Harpy layer binding.", getattr(layer, "name", layer)
             )
+        if had_labels_semantics:
+            self.labels_layers_changed.emit()
+
+    def _on_viewer_layers_reordered(self, event: Any) -> None:
+        del event
+        if any(_is_pickable_labels_layer(layer) for layer in self._iter_candidate_layers()):
+            self.labels_layers_changed.emit()
 
     def activate_layer(self, layer: Layer | None) -> bool:
         """Make a layer active in the viewer when supported."""
@@ -220,22 +253,37 @@ class ViewerAdapter:
         select_only = getattr(selection, "select_only", None)
         if callable(select_only):
             select_only(layer)
+            self.active_layer_changed.emit(layer)
             return True
 
         if hasattr(selection, "active"):
             selection.active = layer
+            self.active_layer_changed.emit(layer)
             return True
 
         return False
 
-    def get_loaded_labels_layer(self, sdata: SpatialData, label_name: str) -> Labels | None:
-        """Return the loaded labels layer for a SpatialData labels element."""
+    def get_loaded_labels_layer(
+        self,
+        sdata: SpatialData,
+        label_name: str,
+        coordinate_system: str | None = None,
+    ) -> Labels | None:
+        """Return the loaded labels layer for a SpatialData labels element.
+
+        This lookup is registry-backed only. A pre-existing viewer layer that
+        happens to carry legacy ``metadata['sdata']`` / ``metadata['name']``
+        fields is not considered loaded unless it has been explicitly
+        registered in ``LayerBindingRegistry``.
+        """
         for layer in self._iter_candidate_layers():
             if not _is_pickable_labels_layer(layer):
                 continue
 
             binding = self._layer_bindings.get_binding(layer)
             if _matches_binding(binding, sdata=sdata, element_name=label_name, element_type="labels"):
+                if coordinate_system is not None and binding.coordinate_system != coordinate_system:
+                    continue
                 return layer
 
         return None
@@ -419,7 +467,7 @@ class ViewerAdapter:
         """Return loaded image layers for a SpatialData image element."""
         matches: list[Image] = []
         for layer in self._iter_candidate_layers():
-            if not _is_spatialdata_image_layer(layer):
+            if not _is_image_layer(layer):
                 continue
 
             binding = self._layer_bindings.get_binding(layer)
@@ -466,18 +514,7 @@ class ViewerAdapter:
         label_name: str,
         coordinate_system: str,
     ) -> Labels | None:
-        for layer in self._iter_candidate_layers():
-            if not _is_pickable_labels_layer(layer):
-                continue
-
-            binding = self._layer_bindings.get_binding(layer)
-            if not _matches_binding(binding, sdata=sdata, element_name=label_name, element_type="labels"):
-                continue
-            if binding.coordinate_system != coordinate_system:
-                continue
-            return layer
-
-        return None
+        return self.get_loaded_labels_layer(sdata, label_name, coordinate_system)
 
     def _get_loaded_image_layer_for_coordinate_system(
         self,
@@ -490,7 +527,7 @@ class ViewerAdapter:
     ) -> list[Image]:
         matches: list[Image] = []
         for layer in self._iter_candidate_layers():
-            if not _is_spatialdata_image_layer(layer):
+            if not _is_image_layer(layer):
                 continue
 
             binding = self._layer_bindings.get_binding(layer)
@@ -726,6 +763,6 @@ def _is_pickable_labels_layer(layer: Layer) -> bool:
     return isinstance(layer, Labels) and getattr(events, "selected_label", None) is not None
 
 
-def _is_spatialdata_image_layer(layer: Layer) -> bool:
+def _is_image_layer(layer: Layer) -> bool:
     # napari `Labels` layers are scalar-field siblings of `Image`, not subclasses.
     return isinstance(layer, Image)

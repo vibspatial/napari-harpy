@@ -333,13 +333,13 @@ selection explicit and local to the feature-extraction widget.
 
 ### Acceptance criteria
 
-- [ ] feature extraction options come from the shared loaded `sdata`
-- [ ] changing the loaded `sdata` refreshes the widget through `sdata_changed`
-- [ ] coordinate-system selection happens inside the feature-extraction widget
-- [ ] labels and images are filtered to the selected coordinate system
-- [ ] tables are filtered to those correctly linked to the selected labels element
-- [ ] extraction channels are explicitly selected in the feature-extraction widget
-- [ ] extraction does not depend on viewer display channel choices
+- [x] feature extraction options come from the shared loaded `sdata`
+- [x] changing the loaded `sdata` refreshes the widget through `sdata_changed`
+- [x] coordinate-system selection happens inside the feature-extraction widget
+- [x] labels and images are filtered to the selected coordinate system
+- [x] tables are filtered to those correctly linked to the selected labels element
+- [x] extraction channels are explicitly selected in the feature-extraction widget
+- [x] extraction does not depend on viewer display channel choices
 
 ### Depends on
 
@@ -410,11 +410,197 @@ loaded and activated in napari.
 - VW-02
 - VW-03
 
+## VW-06: Reassess Shared SpatialData Selection Option Models
+
+### Goal
+
+Clean up the shared selection-model layer after both `VW-04` and `VW-05` are
+complete, so we can decide whether `SpatialDataLabelsOption` and
+`SpatialDataImageOption` should remain as shared cross-widget models or be
+renamed/refined.
+
+### Scope
+
+- revisit `SpatialDataLabelsOption`
+- revisit `SpatialDataImageOption`
+- keep this as a code-cleanup / architecture ticket rather than a user-facing
+  feature
+- avoid churn during `VW-04`; do this only once both widgets have migrated
+
+### Required work
+
+- review how these dataclasses are used after `VW-04` and `VW-05`
+- confirm whether they still provide the right shared abstraction for:
+  - widget-local selection state
+  - stable selection identity across refreshes
+  - `display_name` handling
+  - coordinate-system metadata
+- decide whether to:
+  - keep them as-is
+  - rename them
+  - split them into more explicit models
+  - reduce/reshape their fields
+- remove any now-obsolete viewer-scanning assumptions that are still embedded
+  in their naming or docstrings
+
+### Suggested files
+
+- `src/napari_harpy/_spatialdata.py`
+- `src/napari_harpy/widgets/_feature_extraction_widget.py`
+- `src/napari_harpy/widgets/_object_classification_widget.py`
+- possibly related tests in:
+  - `tests/test_feature_extraction_widget.py`
+  - `tests/test_widget.py`
+  - `tests/test_spatialdata.py`
+
+### Acceptance criteria
+
+- [ ] the codebase has a deliberate post-migration decision on whether
+  `SpatialDataLabelsOption` / `SpatialDataImageOption` remain the shared
+  selection models
+- [ ] any renaming or reshaping is reflected consistently across both widgets
+- [ ] their responsibilities and naming match the post-`VW-05` architecture
+
+### Depends on
+
+- VW-04
+- VW-05
+
+## VW-07: Add Table-Driven Labels Coloring In The Viewer Widget
+
+### Goal
+
+Allow the Harpy `Viewer` widget to color loaded labels layers directly from a
+selected linked table column, so table annotations can be inspected visually
+without switching to a separate workflow first.
+
+### Scope
+
+- extend the `Viewer` widget with table-driven labels coloring controls
+- use linked-table information already exposed for labels elements
+- apply coloring to the loaded napari labels layer for the selected
+  segmentation
+- keep the viewer adapter / shared `sdata` architecture intact
+
+### Required work
+
+- add a labels-coloring control path in `ViewerWidget`
+- expose available linked tables for the selected segmentation mask
+- expose selectable table columns suitable for coloring
+- load or reuse the labels layer through `ViewerAdapter`
+- apply table-driven coloring/styling to the active labels layer
+- define how the widget behaves when:
+  - no linked table exists
+  - no compatible column exists
+  - the labels layer is not yet loaded
+
+### Suggested files
+
+- `src/napari_harpy/widgets/_viewer_widget.py`
+- `src/napari_harpy/_viewer_styling.py`
+- `src/napari_harpy/_spatialdata.py`
+- `tests/test_viewer_widget.py`
+- possibly new viewer-styling tests
+
+### Acceptance criteria
+
+- [ ] the `Viewer` widget can expose linked-table-driven coloring controls for a labels element
+- [ ] a loaded labels layer can be colored from a selected linked-table column
+- [ ] the coloring flow works with the shared loaded `sdata`
+- [ ] the viewer widget handles missing linked tables / incompatible columns gracefully
+
+### Depends on
+
+- VW-01
+- VW-02
+- VW-03
+
+## VW-08: Clarify Shared App-State Lifecycle And Dataset-Switching Policy
+
+### Goal
+
+Keep the current `HarpyAppState` / `ViewerAdapter` architecture, but make the
+remaining lifecycle rules explicit so the shared-state design stays clean as
+the plugin grows.
+
+### Scope
+
+- treat this as an architecture / code-cleanup ticket, not a user-facing
+  feature
+- keep the current per-viewer shared-state model
+- clarify what happens when the loaded `SpatialData` object changes
+- reassess the boundary between:
+  - shared state
+  - viewer services
+  - widget-local state
+
+### Why this ticket exists
+
+The current design is already a strong improvement over viewer scanning:
+
+- one shared `HarpyAppState` per napari viewer
+- one shared loaded `sdata`
+- widgets synchronized through `sdata_changed`
+- `ViewerAdapter` as the central viewer-facing layer service
+- `LayerBindingRegistry` as the authoritative in-memory mapping for
+  Harpy-managed napari layers
+
+The main remaining architectural question is lifecycle policy, especially:
+
+- what should happen to existing Harpy-managed layers when `set_sdata(...)`
+  switches to a different dataset?
+- should that policy live explicitly in `HarpyAppState`?
+- should `HarpyAppState` continue to own both shared state and service wiring,
+  or should those responsibilities be separated more clearly?
+
+### Required work
+
+- document the intended lifecycle of `HarpyAppState`
+- make the dataset-switching policy explicit, including whether old
+  Harpy-managed layers and bindings are:
+  - kept
+  - cleared
+  - or handled conditionally
+- review whether `HarpyAppState` should continue to hold:
+  - `sdata`
+  - `layer_bindings`
+  - `viewer_adapter`
+  or whether some of that wiring should move elsewhere
+- confirm that widget-local selection state stays out of shared app state
+- review whether any remaining code still depends on implicit assumptions about
+  `id(sdata)` as the only runtime identity
+- update tests and module docstrings so the chosen lifecycle policy is obvious
+
+### Suggested files
+
+- `src/napari_harpy/_app_state.py`
+- `src/napari_harpy/_viewer_adapter.py`
+- `src/napari_harpy/_interactive.py`
+- `src/napari_harpy/widgets/_viewer_widget.py`
+- `tests/test_app_state.py`
+- `tests/test_viewer_adapter.py`
+- possibly small integration tests covering dataset switches
+
+### Acceptance criteria
+
+- [ ] the codebase has an explicit policy for what happens when shared `sdata`
+  is replaced or cleared
+- [ ] the responsibilities of `HarpyAppState` versus `ViewerAdapter` are
+  documented and intentional
+- [ ] widget-local selection state remains outside shared app state
+- [ ] the chosen lifecycle policy is covered by tests
+- [ ] module docstrings/comments reflect the final architecture clearly
+
+### Depends on
+
+- VW-01
+- VW-02
+- VW-03
+- VW-04
+- VW-05
+
 ## Nice-To-Have Follow-Ups
 
-- add table-driven labels coloring directly in the viewer widget
 - add image visibility toggles and layer grouping behavior
 - add contrast presets for image channels
 - support more than one loaded `SpatialData` object
-- add a migration/cleanup ticket to remove now-obsolete viewer-scanning helpers
-  after the new path is stable

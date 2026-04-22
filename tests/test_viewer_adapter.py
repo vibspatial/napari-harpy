@@ -149,6 +149,19 @@ def test_viewer_adapter_activate_layer_selects_only_matching_layer() -> None:
     assert viewer.layers.selection.active is image_layer
 
 
+def test_viewer_adapter_emits_active_layer_changed_on_activation() -> None:
+    image_layer = make_image_layer(name="image")
+    viewer = DummyViewer([image_layer])
+    adapter = ViewerAdapter(viewer)
+    active_layers: list[object] = []
+
+    adapter.active_layer_changed.connect(active_layers.append)
+
+    adapter.activate_layer(image_layer)
+
+    assert active_layers == [image_layer]
+
+
 def test_viewer_adapter_ensure_labels_loaded_rejects_unsupported_viewer(sdata_blobs) -> None:
     adapter = ViewerAdapter(UnsupportedViewer())
 
@@ -184,7 +197,7 @@ def test_viewer_adapter_ignores_unregistered_labels_layer_even_with_legacy_metad
     viewer = DummyViewer([labels_layer])
     adapter = ViewerAdapter(viewer)
 
-    loaded_layer = adapter.get_loaded_labels_layer(sdata_blobs, "blobs_labels")
+    loaded_layer = adapter.get_loaded_labels_layer(sdata_blobs, "blobs_labels", "global")
 
     assert loaded_layer is None
     assert adapter.layer_bindings.get_binding(labels_layer) is None
@@ -284,6 +297,9 @@ def test_viewer_adapter_ignores_unregistered_image_layer_even_with_legacy_metada
 def test_viewer_adapter_ensure_labels_loaded_adds_layer_and_registers_binding(sdata_blobs) -> None:
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
+    labels_events: list[str] = []
+
+    adapter.labels_layers_changed.connect(lambda: labels_events.append("changed"))
 
     layer = adapter.ensure_labels_loaded(sdata_blobs, "blobs_labels", "global")
 
@@ -295,7 +311,12 @@ def test_viewer_adapter_ensure_labels_loaded_adds_layer_and_registers_binding(sd
     assert binding.element_name == "blobs_labels"
     assert binding.element_type == "labels"
     assert binding.coordinate_system == "global"
+    assert layer.metadata["element_name"] == "blobs_labels"
+    assert layer.metadata["element_type"] == "labels"
+    assert layer.metadata["coordinate_system"] == "global"
     assert "sdata" not in layer.metadata
+    assert "_current_cs" not in layer.metadata
+    assert labels_events == ["changed"]
 
 
 def test_viewer_adapter_ensure_labels_loaded_reuses_matching_existing_layer(sdata_blobs) -> None:

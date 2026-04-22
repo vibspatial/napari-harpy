@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
-from napari.layers import Image, Labels
+from napari.layers import Labels
 from spatialdata import get_element_annotators, join_spatialelement_table
-from spatialdata.models import TableModel
+from spatialdata.models import TableModel, get_axes_names
 from spatialdata.transformations import get_transformation
+from xarray import DataArray
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -140,315 +139,104 @@ def get_table_obsm_keys(sdata: SpatialData, table_name: str) -> list[str]:
     return sorted(table.obsm.keys())
 
 
-class SpatialDataViewerBinding:
-    """Viewer-bound helper for resolving napari layers linked to SpatialData."""
-
-    def __init__(self, viewer: Any | None = None) -> None:
-        self._viewer = viewer
-
-    def get_label_options(self) -> list[SpatialDataLabelsOption]:
-        """Collect selectable labels elements from the current viewer."""
-        return _get_spatialdata_label_options_from_viewer(self._viewer)
-
-    def get_image_options(
-        self,
-        sdata: SpatialData,
-        label_name: str,
-    ) -> list[SpatialDataImageOption]:
-        """Collect selectable image elements from viewer-linked SpatialData objects.
-
-        The caller is expected to provide the selected labels context. Returned
-        image options are restricted to that dataset and to coordinate systems
-        shared with the selected labels element.
-        """
-        return _get_spatialdata_image_options_from_viewer(
-            self._viewer,
-            sdata=sdata,
+def get_spatialdata_label_options_from_sdata(sdata: SpatialData) -> list[SpatialDataLabelsOption]:
+    """Return selectable labels elements directly from a loaded SpatialData object."""
+    return [
+        SpatialDataLabelsOption(
             label_name=label_name,
-        )
-
-    def get_labels_layer(self, sdata: SpatialData, label_name: str) -> Any | None:
-        """Return the loaded napari labels layer for a selected SpatialData labels element.
-
-        This method does not retrieve the labels data directly from ``sdata.labels``.
-        Instead, it scans the current napari viewer for an already loaded layer whose
-        metadata links it back to the given ``SpatialData`` object and labels name.
-
-        A match requires all of the following:
-
-        - ``layer.metadata["sdata"] is sdata``
-        - ``layer.metadata["name"] == label_name``
-        - the layer behaves like a pickable napari ``Labels`` layer
-
-        This means a labels element can exist in ``sdata`` but still return ``None``
-        here if that segmentation is not currently loaded as a napari layer.
-        """
-        return _get_loaded_spatialdata_layer(
-            self._viewer,
+            display_name=label_name,
             sdata=sdata,
-            element_name=label_name,
-            layer_filter=_is_pickable_labels_layer,
+            coordinate_systems=_get_element_coordinate_systems(sdata.labels[label_name]),
         )
-
-    def get_image_layer(self, sdata: SpatialData, image_name: str) -> Any | None:
-        """Return the loaded napari image layer for a selected SpatialData image element.
-
-        This scans the current napari viewer for a loaded layer whose metadata
-        links it back to the given ``SpatialData`` object and image name.
-        Unlike :meth:`get_labels_layer`, this helper is optional for widget
-        logic: image discovery comes from ``sdata.images`` even when the image
-        is not currently loaded in the viewer.
-        """
-        return _get_loaded_spatialdata_layer(
-            self._viewer,
-            sdata=sdata,
-            element_name=image_name,
-            layer_filter=_is_spatialdata_image_layer,
-        )
-
-    def set_active_layer(self, layer: Any | None) -> bool:
-        """Make the given napari layer the active viewer layer when supported."""
-        if layer is None:
-            return False
-
-        layers = getattr(self._viewer, "layers", None)
-        selection = getattr(layers, "selection", None)
-        if selection is None:
-            return False
-
-        select_only = getattr(selection, "select_only", None)
-        if callable(select_only):
-            select_only(layer)
-            return True
-
-        if hasattr(selection, "active"):
-            selection.active = layer
-            return True
-
-        return False
-
-    def build_layer_metadata_adata(
-        self,
-        sdata: SpatialData,
-        label_name: str,
-        table_name: str,
-    ) -> AnnData | None:
-        """Build the AnnData stored as napari layer metadata for a labels element.
-
-        Harpy keeps ``sdata[table_name]`` as the authoritative in-memory table.
-        The napari layer metadata ``adata`` is only a compatibility cache for
-        ``napari-spatialdata``. To avoid materializing a second full AnnData
-        object on every refresh, we first try to expose a lightweight view of
-        just the rows for ``label_name``.
-
-        That region-only view is safe when its ``instance_key`` values are
-        compatible with the loaded layer's cached ``metadata["indices"]``.
-        ``napari-spatialdata`` later merges those indices against
-        ``adata.obs[instance_key]``, so the cheap path only requires the region
-        view to have unique instance ids and for those ids to be present in the
-        layer indices. If that compatibility check fails, we fall back to
-        ``join_spatialelement_table(..., how="left", match_rows="left")`` so
-        the cache matches ``napari-spatialdata``'s original layer-specific
-        semantics.
-
-        Harpy no longer uses this helper in the normal widget lifecycle for the
-        same reason described in :meth:`refresh_layer_table_metadata`:
-        ``napari-spatialdata`` may later rebuild ``layer.metadata["adata"]``
-        from the authoritative ``sdata[table_name]`` table again. As a result,
-        Harpy now treats ``sdata[table_name]`` as the only source of truth and
-        keeps this helper as an explicit cache-building utility rather than a
-        path that is relied on during normal interaction.
-        """
-        table = get_table(sdata, table_name)
-        table_metadata = get_table_metadata(sdata, table_name)
-        region_mask = (table.obs[table_metadata.region_key] == label_name).to_numpy(dtype=bool, copy=False)
-        if not region_mask.any():
-            return None
-
-        region_view = table[region_mask, :]
-        layer = self.get_labels_layer(sdata, label_name)
-        if _layer_indices_align_with_region_view(layer, region_view, table_metadata.instance_key) is not False:
-            return _normalize_layer_metadata_adata(region_view)
-
-        _, adata = join_spatialelement_table(
-            sdata=sdata,
-            spatial_element_names=label_name,
-            table_name=table_name,
-            how="left",
-            match_rows="left",
-        )
-        if adata is None or adata.shape[0] == 0:
-            return None
-
-        return _normalize_layer_metadata_adata(adata)
-
-    def refresh_layer_table_metadata(self, sdata: SpatialData, label_name: str, table_name: str) -> bool:
-        """Refresh table-derived metadata on the loaded napari layer for a labels element.
-
-        Harpy originally tried to keep ``layer.metadata["adata"]`` refreshed as a
-        compatibility cache for ``napari-spatialdata`` so that edits to
-        ``sdata[table_name]`` would also be reflected in the currently loaded
-        labels layer metadata.
-
-        In practice, ``napari-spatialdata`` may later rebuild and overwrite that
-        cache from the authoritative ``sdata[table_name]`` table again when its
-        own widgets update. Because of that, Harpy no longer calls this helper as
-        part of the normal widget lifecycle and instead treats
-        ``sdata[table_name]`` as the only source of truth. This method is kept as
-        an explicit best-effort utility for cases where refreshing the layer
-        metadata cache is still useful.
-        """
-        layer = self.get_labels_layer(sdata, label_name)
-        if layer is None:
-            return False
-
-        metadata = getattr(layer, "metadata", None)
-        if not isinstance(metadata, dict):
-            metadata = {}
-            layer.metadata = metadata
-
-        table_metadata = get_table_metadata(sdata, table_name)
-        layer.metadata["adata"] = self.build_layer_metadata_adata(sdata, label_name, table_name)
-        layer.metadata["region_key"] = table_metadata.region_key
-        layer.metadata["instance_key"] = table_metadata.instance_key
-
-        table_names = get_annotating_table_names(sdata, label_name)
-        layer.metadata["table_names"] = table_names if table_names else None
-        return True
+        for label_name in _get_label_names(sdata)
+    ]
 
 
-def get_spatialdata_label_options(viewer: Any | None) -> list[SpatialDataLabelsOption]:
-    """Collect selectable labels elements from viewer layers linked by `napari-spatialdata`.
+def get_coordinate_system_names_from_sdata(sdata: SpatialData) -> list[str]:
+    """Return all coordinate-system names exposed by labels and images in a loaded `SpatialData`."""
+    coordinate_systems: set[str] = set()
 
-    This helper scans the current napari viewer for layers whose metadata contains an
-    associated `SpatialData` object under `layer.metadata["sdata"]`, as provided by
-    `napari-spatialdata`. The discovered datasets are deduplicated, and all available
-    entries from `sdata.labels` are returned as `SpatialDataLabelsOption` objects.
-
-    The returned options carry both the label name and the originating `SpatialData`
-    object so the widget can safely support viewers containing multiple datasets.
-    """
-    return SpatialDataViewerBinding(viewer).get_label_options()
-
-
-def get_spatialdata_image_options(
-    viewer: Any | None,
-    *,
-    sdata: SpatialData,
-    label_name: str,
-) -> list[SpatialDataImageOption]:
-    """Collect selectable image elements from viewer-linked SpatialData objects.
-
-    The current napari viewer is used only to discover which ``SpatialData``
-    datasets are linked into the session. The returned image options come from
-    each dataset's canonical ``sdata.images`` entries, not just from image
-    layers that happen to be loaded.
-
-    The caller is expected to provide the selected labels context. Only images
-    from that dataset are returned, and each image option is restricted to
-    coordinate systems shared with the selected labels element.
-    """
-    return SpatialDataViewerBinding(viewer).get_image_options(
-        sdata=sdata,
-        label_name=label_name,
-    )
-
-
-def _get_spatialdata_label_options_from_viewer(viewer: Any | None) -> list[SpatialDataLabelsOption]:
-    sdatas = _get_viewer_linked_spatialdata_objects(viewer)
-    if not sdatas:
-        return []
-
-    label_name_counts = Counter(label_name for sdata in sdatas for label_name in _get_label_names(sdata))
-
-    options: list[SpatialDataLabelsOption] = []
-    multiple_sdatas = len(sdatas) > 1
-
-    for index, sdata in enumerate(sdatas, start=1):
-        dataset_name = _get_dataset_name(sdata, index)
-        for label_name in _get_label_names(sdata):
-            # Build the text shown in the combo box. We keep the raw
-            # `label_name` for program logic and only append the dataset name
-            # when the user may need help distinguishing otherwise identical labels.
-            display_name = label_name
-            if multiple_sdatas or label_name_counts[label_name] > 1:
-                display_name = f"{label_name} ({dataset_name})"
-
-            options.append(
-                SpatialDataLabelsOption(
-                    label_name=label_name,
-                    display_name=display_name,
-                    sdata=sdata,
-                    coordinate_systems=_get_element_coordinate_systems(sdata.labels[label_name]),
-                )
-            )
-
-    return options
-
-
-def _get_spatialdata_image_options_from_viewer(
-    viewer: Any | None,
-    *,
-    sdata: SpatialData,
-    label_name: str,
-) -> list[SpatialDataImageOption]:
-    """Return selectable images for a selected labels element in a viewer-linked dataset.
-
-    Even though ``sdata`` and ``label_name`` are already provided, this helper
-    still inspects the current viewer because image discovery is scoped to the
-    viewer-linked ``SpatialData`` objects, not to arbitrary in-memory datasets.
-
-    The viewer lookup serves two purposes:
-
-    - verify that the selected ``sdata`` is still linked into the current
-      viewer; if it is no longer present, no image options should be exposed
-    - determine whether multiple ``SpatialData`` objects are currently linked
-      so the returned ``display_name`` values can include the dataset name for
-      disambiguation
-
-    The actual selectable images still come from ``sdata.images`` and are then
-    filtered to coordinate systems shared with ``sdata.labels[label_name]``.
-    """
-    sdatas = _get_viewer_linked_spatialdata_objects(viewer)
-    if not sdatas:
-        return []
-
-    selected_sdata_index = next((index for index, candidate in enumerate(sdatas, start=1) if candidate is sdata), None)
-    if selected_sdata_index is None:
-        return []
-
-    multiple_sdatas = len(sdatas) > 1
-    if label_name not in _get_label_names(sdata):
-        raise ValueError(f"Labels element `{label_name}` is not available in the selected SpatialData object.")
-
-    dataset_name = _get_dataset_name(sdata, selected_sdata_index)
-    label_coordinate_systems = set(_get_element_coordinate_systems(sdata.labels[label_name]))
-
-    options: list[SpatialDataImageOption] = []
+    for label_name in _get_label_names(sdata):
+        coordinate_systems.update(_get_element_coordinate_systems(sdata.labels[label_name]))
 
     for image_name in _get_image_names(sdata):
-        coordinate_systems = tuple(
-            coordinate_system
-            for coordinate_system in _get_element_coordinate_systems(sdata.images[image_name])
-            if coordinate_system in label_coordinate_systems
+        coordinate_systems.update(_get_element_coordinate_systems(sdata.images[image_name]))
+
+    return sorted(coordinate_systems)
+
+
+def get_image_channel_names_from_sdata(sdata: SpatialData, image_name: str) -> list[str]:
+    """Return channel names for an image element, or an empty list without a channel axis."""
+    if image_name not in _get_image_names(sdata):
+        raise ValueError(f"Image element `{image_name}` is not available in the selected SpatialData object.")
+
+    image_element = sdata.images[image_name]
+    axes = get_axes_names(image_element)
+    if "c" not in axes:
+        return []
+
+    if isinstance(image_element, DataArray):
+        channel_values = list(image_element.coords.indexes["c"])
+    else:
+        scale0 = next(iter(image_element["scale0"].values()))
+        channel_values = list(scale0.coords.indexes["c"])
+
+    channel_names = [str(channel_value) for channel_value in channel_values]
+    duplicates: list[str] = []
+    seen: set[str] = set()
+    duplicate_seen: set[str] = set()
+    for channel_name in channel_names:
+        if channel_name in seen and channel_name not in duplicate_seen:
+            duplicates.append(channel_name)
+            duplicate_seen.add(channel_name)
+        seen.add(channel_name)
+
+    if duplicates:
+        duplicate_names = ", ".join(f"`{channel_name}`" for channel_name in duplicates)
+        raise ValueError(
+            f"Image element `{image_name}` exposes duplicate channel names ({duplicate_names}), "
+            "which napari-harpy does not support. "
+            "Update the channel names in the SpatialData object with "
+            "`sdata.set_channel_names(...)`."
         )
-        if not coordinate_systems:
-            continue
 
-        display_name = image_name
-        if multiple_sdatas:
-            display_name = f"{image_name} ({dataset_name})"
+    return channel_names
 
-        options.append(
-            SpatialDataImageOption(
-                image_name=image_name,
-                display_name=display_name,
-                sdata=sdata,
-                coordinate_systems=coordinate_systems,
-            )
+
+def get_spatialdata_label_options_for_coordinate_system_from_sdata(
+    *,
+    sdata: SpatialData,
+    coordinate_system: str,
+) -> list[SpatialDataLabelsOption]:
+    """Return labels options restricted to a selected coordinate system."""
+    return [
+        SpatialDataLabelsOption(
+            label_name=label_name,
+            display_name=label_name,
+            sdata=sdata,
+            coordinate_systems=_get_element_coordinate_systems(sdata.labels[label_name]),
         )
+        for label_name in _get_label_names(sdata)
+        if coordinate_system in _get_element_coordinate_systems(sdata.labels[label_name])
+    ]
 
-    return options
+
+def get_spatialdata_image_options_for_coordinate_system_from_sdata(
+    *,
+    sdata: SpatialData,
+    coordinate_system: str,
+) -> list[SpatialDataImageOption]:
+    """Return image options restricted to a selected coordinate system."""
+    return [
+        SpatialDataImageOption(
+            image_name=image_name,
+            display_name=image_name,
+            sdata=sdata,
+            coordinate_systems=_get_element_coordinate_systems(sdata.images[image_name]),
+        )
+        for image_name in _get_image_names(sdata)
+        if coordinate_system in _get_element_coordinate_systems(sdata.images[image_name])
+    ]
 
 
 def _get_table_model_attrs(table: AnnData, table_name: str) -> dict[str, Any]:
@@ -602,48 +390,9 @@ def _normalize_layer_indices(indices: Any) -> list[Any] | None:
     return [index for index in indices if index != 0]
 
 
-def _get_viewer_linked_spatialdata_objects(viewer: Any | None) -> list[SpatialData]:
-    if viewer is None:
-        return []
-
-    layers = getattr(viewer, "layers", None)
-    if layers is None:
-        return []
-
-    return _get_unique_spatialdata_objects(layers)
-
-
-def _get_unique_spatialdata_objects(layers: Any) -> list[SpatialData]:
-    unique_sdatas: list[SpatialData] = []
-    seen_ids: set[int] = set()
-
-    for layer in layers:
-        metadata = getattr(layer, "metadata", None)
-        if not isinstance(metadata, dict):
-            continue
-
-        sdata = metadata.get("sdata")
-        if sdata is None or not hasattr(sdata, "labels"):
-            continue
-
-        sdata_id = id(sdata)
-        if sdata_id in seen_ids:
-            continue
-
-        seen_ids.add(sdata_id)
-        unique_sdatas.append(sdata)
-
-    return unique_sdatas
-
-
 def _is_pickable_labels_layer(layer: Any) -> bool:
     events = getattr(layer, "events", None)
     return isinstance(layer, Labels) and getattr(events, "selected_label", None) is not None
-
-
-def _is_spatialdata_image_layer(layer: Any) -> bool:
-    # napari `Labels` layers are scalar-field siblings of `Image`, not subclasses.
-    return isinstance(layer, Image)
 
 
 def _get_label_names(sdata: SpatialData) -> list[str]:
@@ -666,6 +415,7 @@ def _get_loaded_spatialdata_layer(
     sdata: SpatialData,
     element_name: str,
     layer_filter: Callable[[Any], bool],
+    coordinate_system: str | None = None,
 ) -> Any | None:
     layers = getattr(viewer, "layers", None)
     if layers is None:
@@ -682,16 +432,113 @@ def _get_loaded_spatialdata_layer(
         if metadata.get("name") != element_name:
             continue
 
+        if coordinate_system is not None:
+            layer_coordinate_system = metadata.get("coordinate_system", metadata.get("_current_cs"))
+            if layer_coordinate_system is not None and layer_coordinate_system != coordinate_system:
+                continue
+
         if layer_filter(layer):
             return layer
 
     return None
 
 
-def _get_dataset_name(sdata: SpatialData, index: int) -> str:
-    for attr in ("path", "_path", "name"):
-        value = getattr(sdata, attr, None)
-        if value:
-            return Path(str(value)).name
+def build_layer_metadata_adata(
+    viewer: Any | None,
+    sdata: SpatialData,
+    label_name: str,
+    table_name: str,
+) -> AnnData | None:
+    """Build the AnnData stored as napari layer metadata for a labels element.
 
-    return f"SpatialData {index}"
+    Harpy keeps ``sdata[table_name]`` as the authoritative in-memory table.
+    The napari layer metadata ``adata`` is only a compatibility cache for
+    ``napari-spatialdata``. To avoid materializing a second full AnnData
+    object on every refresh, we first try to expose a lightweight view of
+    just the rows for ``label_name``.
+
+    That region-only view is safe when its ``instance_key`` values are
+    compatible with the loaded layer's cached ``metadata["indices"]``.
+    ``napari-spatialdata`` later merges those indices against
+    ``adata.obs[instance_key]``, so the cheap path only requires the region
+    view to have unique instance ids and for those ids to be present in the
+    layer indices. If that compatibility check fails, we fall back to
+    ``join_spatialelement_table(..., how="left", match_rows="left")`` so
+    the cache matches ``napari-spatialdata``'s original layer-specific
+    semantics.
+
+    Harpy no longer uses this helper in the normal widget lifecycle for the
+    same reason described in ``refresh_layer_table_metadata(...)``:
+    ``napari-spatialdata`` may later rebuild ``layer.metadata["adata"]``
+    from the authoritative ``sdata[table_name]`` table again. As a result,
+    Harpy now treats ``sdata[table_name]`` as the only source of truth and
+    keeps this helper as an explicit cache-building utility rather than a
+    path that is relied on during normal interaction.
+    """
+    table = get_table(sdata, table_name)
+    table_metadata = get_table_metadata(sdata, table_name)
+    region_mask = (table.obs[table_metadata.region_key] == label_name).to_numpy(dtype=bool, copy=False)
+    if not region_mask.any():
+        return None
+
+    region_view = table[region_mask, :]
+    layer = _get_loaded_spatialdata_layer(
+        viewer,
+        sdata=sdata,
+        element_name=label_name,
+        layer_filter=_is_pickable_labels_layer,
+    )
+    if _layer_indices_align_with_region_view(layer, region_view, table_metadata.instance_key) is not False:
+        return _normalize_layer_metadata_adata(region_view)
+
+    _, adata = join_spatialelement_table(
+        sdata=sdata,
+        spatial_element_names=label_name,
+        table_name=table_name,
+        how="left",
+        match_rows="left",
+    )
+    if adata is None or adata.shape[0] == 0:
+        return None
+
+    return _normalize_layer_metadata_adata(adata)
+
+
+def refresh_layer_table_metadata(viewer: Any | None, sdata: SpatialData, label_name: str, table_name: str) -> bool:
+    """Refresh table-derived metadata on the loaded napari layer for a labels element.
+
+    Harpy originally tried to keep ``layer.metadata["adata"]`` refreshed as a
+    compatibility cache for ``napari-spatialdata`` so that edits to
+    ``sdata[table_name]`` would also be reflected in the currently loaded
+    labels layer metadata.
+
+    In practice, ``napari-spatialdata`` may later rebuild and overwrite that
+    cache from the authoritative ``sdata[table_name]`` table again when its
+    own widgets update. Because of that, Harpy no longer calls this helper as
+    part of the normal widget lifecycle and instead treats
+    ``sdata[table_name]`` as the only source of truth. This method is kept as
+    an explicit best-effort utility for cases where refreshing the layer
+    metadata cache is still useful.
+    """
+    layer = _get_loaded_spatialdata_layer(
+        viewer,
+        sdata=sdata,
+        element_name=label_name,
+        layer_filter=_is_pickable_labels_layer,
+    )
+    if layer is None:
+        return False
+
+    metadata = getattr(layer, "metadata", None)
+    if not isinstance(metadata, dict):
+        metadata = {}
+        layer.metadata = metadata
+
+    table_metadata = get_table_metadata(sdata, table_name)
+    layer.metadata["adata"] = build_layer_metadata_adata(viewer, sdata, label_name, table_name)
+    layer.metadata["region_key"] = table_metadata.region_key
+    layer.metadata["instance_key"] = table_metadata.instance_key
+
+    table_names = get_annotating_table_names(sdata, label_name)
+    layer.metadata["table_names"] = table_names if table_names else None
+    return True

@@ -8,7 +8,6 @@ from qtpy.QtCore import QSignalBlocker, Qt
 from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDialog,
     QFormLayout,
     QFrame,
@@ -18,6 +17,7 @@ from qtpy.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -27,8 +27,11 @@ from napari_harpy._feature_extraction import FeatureExtractionController
 from napari_harpy._spatialdata import (
     SpatialDataImageOption,
     SpatialDataLabelsOption,
-    SpatialDataViewerBinding,
     get_annotating_table_names,
+    get_coordinate_system_names_from_sdata,
+    get_image_channel_names_from_sdata,
+    get_spatialdata_image_options_for_coordinate_system_from_sdata,
+    get_spatialdata_label_options_for_coordinate_system_from_sdata,
     get_table,
     validate_table_binding,
 )
@@ -45,10 +48,12 @@ from napari_harpy.widgets._shared_styles import (
     WIDGET_SURFACE_COLOR as _WIDGET_SURFACE_COLOR,
 )
 from napari_harpy.widgets._shared_styles import (
+    CompactComboBox,
     apply_scroll_content_surface,
     apply_widget_surface,
     build_input_control_stylesheet,
     create_form_label,
+    format_feedback_identifier,
     format_tooltip,
 )
 
@@ -75,6 +80,7 @@ _FEATURE_GROUP_STYLESHEET = (
 )
 _FEATURE_HINT_INFO_STYLESHEET = "color: #6b7280; font-size: 12px; font-weight: 500;"
 _FEATURE_HINT_WARNING_STYLESHEET = "color: #b45309; font-size: 12px; font-weight: 600;"
+_CHANNEL_SELECTION_PANEL_STYLESHEET = "QWidget { background: transparent; }"
 _NO_IMAGE_TEXT = "No image"
 _INTENSITY_FEATURES = ("sum", "mean", "var", "min", "max", "kurtosis", "skew")
 _MORPHOLOGY_FEATURES = (
@@ -92,19 +98,21 @@ _MORPHOLOGY_FEATURES = (
     "centroid_dif",
 )
 _DEFAULT_FEATURE_MATRIX_KEY = "features"
+_MAX_VISIBLE_EXTRACTION_CHANNELS = 5
+ImageIdentity = tuple[int, str]
 
 
 class FeatureExtractionWidget(QWidget):
     """
     Widget for feature extraction.
 
-    The widget discovers selectable labels and images from viewer-linked
-    `SpatialData` objects and keeps the selection flow dataset-centric:
+    The widget discovers selectable labels and images from the shared loaded
+    `SpatialData` object and keeps the selection flow coordinate-system-first:
 
-    - labels come from viewer-linked `sdata.labels`
-    - images come from the selected dataset's `sdata.images`
+    - coordinate systems come from the loaded `sdata`
+    - labels come from the selected coordinate system in `sdata.labels`
+    - images come from the selected coordinate system in `sdata.images`
     - tables are restricted to annotators of the selected labels element
-    - coordinate systems come from the selected labels/image context
     """
 
     def __init__(self, napari_viewer: napari.Viewer | None = None) -> None:
@@ -113,11 +121,10 @@ class FeatureExtractionWidget(QWidget):
         apply_widget_surface(self)
         self.setMinimumWidth(_WIDGET_MIN_WIDTH)
 
-        self._viewer = napari_viewer
+        # The napari viewer identifies which shared Harpy session this widget
+        # belongs to. We use it to attach to the per-viewer HarpyAppState
+        # instead of scanning viewer layers directly.
         self._app_state = get_or_create_app_state(napari_viewer)
-        # TODO: remove viewer-scanning binding once VW-04 fully derives options
-        # from shared app state (`self._app_state.sdata` / `sdata_changed`).
-        self._viewer_binding = SpatialDataViewerBinding(napari_viewer)
         self._feature_extraction_controller = FeatureExtractionController(
             on_state_changed=self._on_controller_state_changed,
             on_table_state_changed=self._on_controller_table_state_changed,
@@ -127,11 +134,15 @@ class FeatureExtractionWidget(QWidget):
         self._selected_label_option: SpatialDataLabelsOption | None = None
         self._image_options: list[SpatialDataImageOption] = []
         self._selected_image_option: SpatialDataImageOption | None = None
+        self._image_channel_names: list[str] = []
+        self._image_channel_checkboxes: list[QCheckBox] = []
+        self._selected_channel_names_by_image_identity: dict[ImageIdentity, tuple[str, ...]] = {}
         self._table_names: list[str] = []
         self._selected_table_name: str | None = None
         self._coordinate_systems: list[str] = []
         self._selected_coordinate_system: str | None = None
         self._table_binding_error: str | None = None
+        self._image_channel_error: str | None = None
         self._feature_checkboxes: dict[str, QCheckBox] = {}
         self._logo_path = Path(__file__).resolve().parents[3] / "docs" / "_static" / "logo.png"
 
@@ -163,22 +174,54 @@ class FeatureExtractionWidget(QWidget):
         selector_layout.setHorizontalSpacing(12)
         selector_layout.setVerticalSpacing(10)
 
-        self.segmentation_combo = QComboBox()
+        self.segmentation_combo = CompactComboBox()
         self.segmentation_combo.setObjectName("feature_extraction_segmentation_combo")
         self.segmentation_combo.currentIndexChanged.connect(self._on_segmentation_changed)
         self.segmentation_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
 
-        self.image_combo = QComboBox()
+        self.image_combo = CompactComboBox()
         self.image_combo.setObjectName("feature_extraction_image_combo")
         self.image_combo.currentIndexChanged.connect(self._on_image_changed)
         self.image_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
 
-        self.table_combo = QComboBox()
+        self.channel_selection_label = self._create_form_label("Channels")
+        self.channel_selection_container = QWidget()
+        self.channel_selection_container.setObjectName("feature_extraction_channel_selection_container")
+        self.channel_selection_container.setStyleSheet(_CHANNEL_SELECTION_PANEL_STYLESHEET)
+        self.channel_selection_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        channel_selection_layout = QVBoxLayout(self.channel_selection_container)
+        channel_selection_layout.setContentsMargins(0, 0, 0, 0)
+        channel_selection_layout.setSpacing(0)
+
+        self.channel_selection_scroll_area = QScrollArea()
+        self.channel_selection_scroll_area.setObjectName("feature_extraction_channel_selection_scroll_area")
+        self.channel_selection_scroll_area.setWidgetResizable(True)
+        self.channel_selection_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.channel_selection_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.channel_selection_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.channel_selection_scroll_area.setStyleSheet("QScrollArea { border: 0px; background: transparent; }")
+        self.channel_selection_scroll_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.channel_selection_scroll_area.setMinimumWidth(self.image_combo.sizeHint().width())
+
+        self.channel_selection_list_widget = QWidget()
+        self.channel_selection_list_widget.setObjectName("feature_extraction_channel_selection_list")
+        self.channel_selection_list_widget.setStyleSheet(_CHANNEL_SELECTION_PANEL_STYLESHEET)
+        self.channel_selection_list_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.channel_selection_list_layout = QVBoxLayout(self.channel_selection_list_widget)
+        self.channel_selection_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.channel_selection_list_layout.setSpacing(6)
+        self.channel_selection_scroll_area.setWidget(self.channel_selection_list_widget)
+        channel_selection_layout.addWidget(self.channel_selection_scroll_area)
+
+        self.channel_selection_label.hide()
+        self.channel_selection_container.hide()
+
+        self.table_combo = CompactComboBox()
         self.table_combo.setObjectName("feature_extraction_table_combo")
         self.table_combo.currentIndexChanged.connect(self._on_table_changed)
         self.table_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
 
-        self.coordinate_system_combo = QComboBox()
+        self.coordinate_system_combo = CompactComboBox()
         self.coordinate_system_combo.setObjectName("feature_extraction_coordinate_system_combo")
         self.coordinate_system_combo.currentIndexChanged.connect(self._on_coordinate_system_changed)
         self.coordinate_system_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
@@ -214,24 +257,11 @@ class FeatureExtractionWidget(QWidget):
             object_name="feature_extraction_morphology_features_group",
         )
 
-        self.refresh_action_row = QWidget()
-        self.refresh_action_row.setObjectName("feature_extraction_refresh_action_row")
-        refresh_action_layout = QHBoxLayout(self.refresh_action_row)
-        refresh_action_layout.setContentsMargins(0, 0, 0, 0)
-        refresh_action_layout.setSpacing(8)
-
         self.calculate_action_row = QWidget()
         self.calculate_action_row.setObjectName("feature_extraction_calculate_action_row")
         calculate_action_layout = QHBoxLayout(self.calculate_action_row)
         calculate_action_layout.setContentsMargins(0, 0, 0, 0)
         calculate_action_layout.setSpacing(8)
-
-        self.refresh_button = QPushButton("Rescan Viewer")
-        self.refresh_button.clicked.connect(self.refresh_segmentation_masks)
-        self.refresh_button.setEnabled(napari_viewer is not None)
-        self.refresh_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.refresh_button.setMinimumHeight(28)
-        self.refresh_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
 
         self.calculate_button = QPushButton("Calculate")
         self.calculate_button.setObjectName("feature_extraction_calculate_button")
@@ -242,14 +272,8 @@ class FeatureExtractionWidget(QWidget):
         self.calculate_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
         self._set_tooltip(
             self.calculate_button,
-            "Calculation will be enabled once the feature-extraction controller is wired to these inputs.",
+            "Calculation is enabled once the shared SpatialData selection and feature choices form a valid extraction request.",
         )
-
-        self.validation_status = QLabel()
-        self.validation_status.setObjectName("feature_extraction_validation_status")
-        self.validation_status.setWordWrap(True)
-        self.validation_status.setStyleSheet("color: #b45309; font-weight: 600;")
-        self.validation_status.hide()
 
         self.selection_status = QLabel()
         self.selection_status.setObjectName("feature_extraction_selection_status")
@@ -261,13 +285,13 @@ class FeatureExtractionWidget(QWidget):
         self.controller_feedback.setWordWrap(True)
         self.controller_feedback.hide()
 
+        selector_layout.addRow(self._create_form_label("Coordinate system"), self.coordinate_system_combo)
         selector_layout.addRow(self._create_form_label("Segmentation mask"), self.segmentation_combo)
         selector_layout.addRow(self._create_form_label("Image"), self.image_combo)
+        selector_layout.addRow(self.channel_selection_label, self.channel_selection_container)
         selector_layout.addRow(self._create_form_label("Table"), self.table_combo)
-        selector_layout.addRow(self._create_form_label("Coordinate system"), self.coordinate_system_combo)
         selector_layout.addRow(self._create_form_label("Feature matrix key"), self.output_key_line_edit)
 
-        refresh_action_layout.addWidget(self.refresh_button, 1)
         calculate_action_layout.addWidget(self.calculate_button, 1)
 
         content_layout.addWidget(title)
@@ -275,15 +299,13 @@ class FeatureExtractionWidget(QWidget):
         content_layout.addWidget(self.intensity_features_group)
         content_layout.addWidget(self.morphology_features_group)
         content_layout.addWidget(self.calculate_action_row)
-        content_layout.addWidget(self.refresh_action_row)
         content_layout.addWidget(self.selection_status)
         content_layout.addWidget(self.controller_feedback)
-        content_layout.addWidget(self.validation_status)
         content_layout.addStretch(1)
 
-        self._connect_viewer_events()
+        self._app_state.sdata_changed.connect(self._on_sdata_changed)
         self._update_intensity_features_hint()
-        self.refresh_segmentation_masks()
+        self.refresh_from_sdata(self._app_state.sdata)
 
     @property
     def app_state(self) -> HarpyAppState:
@@ -297,13 +319,29 @@ class FeatureExtractionWidget(QWidget):
 
     @property
     def selected_spatialdata(self) -> SpatialData | None:
-        """Return the SpatialData object that owns the current labels selection."""
-        return None if self._selected_label_option is None else self._selected_label_option.sdata
+        """Return the loaded SpatialData object backing the current widget state."""
+        return self._app_state.sdata
 
     @property
     def selected_image_name(self) -> str | None:
         """Return the currently selected image element name, if any."""
         return None if self._selected_image_option is None else self._selected_image_option.image_name
+
+    @property
+    def selected_extraction_channel_names(self) -> tuple[str, ...] | None:
+        """Return the locally selected extraction-channel names for the current image."""
+        if self.selected_image_name is None or not self._image_channel_names:
+            return None
+
+        return tuple(checkbox.text() for checkbox in self._image_channel_checkboxes if checkbox.isChecked())
+
+    @property
+    def selected_extraction_channel_indices(self) -> tuple[int, ...] | None:
+        """Return the locally selected extraction-channel indices for the current image."""
+        if self.selected_image_name is None or not self._image_channel_names:
+            return None
+
+        return tuple(index for index, checkbox in enumerate(self._image_channel_checkboxes) if checkbox.isChecked())
 
     @property
     def selected_table_name(self) -> str | None:
@@ -332,33 +370,56 @@ class FeatureExtractionWidget(QWidget):
         """Return whether an existing feature key should be replaced."""
         return False
 
-    def refresh_segmentation_masks(self) -> None:
-        """Refresh the segmentation choices from viewer-linked SpatialData layers."""
-        previous_identity = None if self._selected_label_option is None else self._selected_label_option.identity
-        self._label_options = self._viewer_binding.get_label_options()
+    def refresh_from_sdata(self, sdata: SpatialData | None) -> None:
+        """Refresh the widget from the shared Harpy SpatialData state."""
+        if sdata is None:
+            self._clear_selection_inputs()
+            self._bind_current_selection()
+            return
+
+        self._refresh_coordinate_systems()
+        self._refresh_label_options()
+        self._refresh_image_options()
+        self._refresh_table_names()
+        self._update_intensity_features_hint()
+        self._bind_current_selection()
+
+    def _on_sdata_changed(self, sdata: SpatialData | None) -> None:
+        self.refresh_from_sdata(sdata)
+
+    def _clear_selection_inputs(self) -> None:
+        self._label_options = []
+        self._selected_label_option = None
+        self._image_options = []
+        self._selected_image_option = None
+        self._clear_image_channel_options()
+        self._table_names = []
+        self._selected_table_name = None
+        self._coordinate_systems = []
+        self._selected_coordinate_system = None
+        self._table_binding_error = None
+        self._image_channel_error = None
 
         with QSignalBlocker(self.segmentation_combo):
             self.segmentation_combo.clear()
-            for option in self._label_options:
-                self.segmentation_combo.addItem(option.display_name)
+            self.segmentation_combo.setEnabled(False)
+            self.segmentation_combo.setCurrentIndex(-1)
 
-            has_options = bool(self._label_options)
-            self.segmentation_combo.setEnabled(has_options)
+        with QSignalBlocker(self.image_combo):
+            self.image_combo.clear()
+            self.image_combo.addItem(_NO_IMAGE_TEXT, None)
+            self.image_combo.setEnabled(False)
+            self.image_combo.setCurrentIndex(0)
 
-            next_index = self._find_label_option_index(previous_identity)
-            if has_options:
-                self.segmentation_combo.setCurrentIndex(0 if next_index is None else next_index)
-            else:
-                self.segmentation_combo.setCurrentIndex(-1)
+        with QSignalBlocker(self.table_combo):
+            self.table_combo.clear()
+            self.table_combo.setEnabled(False)
+            self.table_combo.setCurrentIndex(-1)
 
-        if self.segmentation_combo.currentIndex() >= 0:
-            self._set_selected_label_option(self.segmentation_combo.currentIndex())
-        else:
-            self._selected_label_option = None
-            self._refresh_image_options()
-            self._refresh_table_names()
-            self._refresh_coordinate_systems()
-            self._bind_current_selection()
+        with QSignalBlocker(self.coordinate_system_combo):
+            self.coordinate_system_combo.clear()
+            self.coordinate_system_combo.setEnabled(False)
+            self.coordinate_system_combo.setCurrentIndex(-1)
 
     def _create_header_logo(self) -> QLabel:
         logo_label = QLabel()
@@ -401,34 +462,16 @@ class FeatureExtractionWidget(QWidget):
     def _set_tooltip(self, widget: QWidget, message: str) -> None:
         widget.setToolTip(format_tooltip(message))
 
-    def _connect_viewer_events(self) -> None:
-        layers = getattr(self._viewer, "layers", None)
-        events = getattr(layers, "events", None)
-        if events is None:
-            return
-
-        for event_name in ("inserted", "removed", "reordered"):
-            event_emitter = getattr(events, event_name, None)
-            if event_emitter is not None:
-                event_emitter.connect(self._on_viewer_layers_changed)
-
-    def _on_viewer_layers_changed(self, event: object | None = None) -> None:
-        del event
-        self.refresh_segmentation_masks()
-
     def _on_segmentation_changed(self, index: int) -> None:
         self._set_selected_label_option(index)
+        self._refresh_table_names()
+        self._bind_current_selection()
 
     def _set_selected_label_option(self, index: int) -> None:
         if index < 0 or index >= len(self._label_options):
             self._selected_label_option = None
         else:
             self._selected_label_option = self._label_options[index]
-
-        self._refresh_image_options()
-        self._refresh_table_names()
-        self._refresh_coordinate_systems()
-        self._bind_current_selection()
 
     def _find_label_option_index(self, identity: tuple[int, str] | None) -> int | None:
         if identity is None:
@@ -440,15 +483,42 @@ class FeatureExtractionWidget(QWidget):
 
         return None
 
+    def _refresh_label_options(self) -> None:
+        previous_identity = None if self._selected_label_option is None else self._selected_label_option.identity
+
+        if self.selected_spatialdata is None or self.selected_coordinate_system is None:
+            self._label_options = []
+        else:
+            self._label_options = get_spatialdata_label_options_for_coordinate_system_from_sdata(
+                sdata=self.selected_spatialdata,
+                coordinate_system=self.selected_coordinate_system,
+            )
+
+        with QSignalBlocker(self.segmentation_combo):
+            self.segmentation_combo.clear()
+            for option in self._label_options:
+                self.segmentation_combo.addItem(option.display_name)
+
+            has_options = bool(self._label_options)
+            self.segmentation_combo.setEnabled(has_options)
+
+            next_index = self._find_label_option_index(previous_identity)
+            if has_options:
+                self.segmentation_combo.setCurrentIndex(0 if next_index is None else next_index)
+            else:
+                self.segmentation_combo.setCurrentIndex(-1)
+
+        self._set_selected_label_option(self.segmentation_combo.currentIndex())
+
     def _refresh_image_options(self) -> None:
         previous_identity = None if self._selected_image_option is None else self._selected_image_option.identity
 
-        if self.selected_spatialdata is None or self.selected_segmentation_name is None:
+        if self.selected_spatialdata is None or self.selected_coordinate_system is None:
             self._image_options = []
         else:
-            self._image_options = self._viewer_binding.get_image_options(
-                self.selected_spatialdata,
-                self.selected_segmentation_name,
+            self._image_options = get_spatialdata_image_options_for_coordinate_system_from_sdata(
+                sdata=self.selected_spatialdata,
+                coordinate_system=self.selected_coordinate_system,
             )
 
         with QSignalBlocker(self.image_combo):
@@ -457,9 +527,7 @@ class FeatureExtractionWidget(QWidget):
             for option in self._image_options:
                 self.image_combo.addItem(option.display_name)
 
-            self.image_combo.setEnabled(
-                self.selected_spatialdata is not None and self.selected_segmentation_name is not None
-            )
+            self.image_combo.setEnabled(self.selected_spatialdata is not None and self.selected_coordinate_system is not None)
 
             next_index = self._find_image_option_index(previous_identity)
             if self.image_combo.count() == 1:
@@ -470,10 +538,11 @@ class FeatureExtractionWidget(QWidget):
                 self.image_combo.setCurrentIndex(next_index + 1)
 
         self._set_selected_image_option(self.image_combo.currentIndex())
+        self._refresh_image_channel_options()
 
     def _on_image_changed(self, index: int) -> None:
         self._set_selected_image_option(index)
-        self._refresh_coordinate_systems()
+        self._refresh_image_channel_options()
         self._update_intensity_features_hint()
         self._bind_current_selection()
 
@@ -492,6 +561,84 @@ class FeatureExtractionWidget(QWidget):
                 return index
 
         return None
+
+    def _clear_image_channel_options(self) -> None:
+        self._image_channel_names = []
+        self._image_channel_checkboxes = []
+
+        while self.channel_selection_list_layout.count():
+            item = self.channel_selection_list_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        self.channel_selection_label.hide()
+        self.channel_selection_container.hide()
+        self.channel_selection_scroll_area.setMaximumHeight(0)
+
+    def _refresh_image_channel_options(self) -> None:
+        self._clear_image_channel_options()
+        self._image_channel_error = None
+
+        if self.selected_spatialdata is None or self._selected_image_option is None:
+            return
+
+        try:
+            channel_names = get_image_channel_names_from_sdata(self.selected_spatialdata, self.selected_image_name)
+        except ValueError as error:
+            self._image_channel_error = str(error)
+            return
+        if not channel_names:
+            return
+
+        self._image_channel_names = channel_names
+        current_image_identity = self._selected_image_option.identity
+        selected_channel_names = self._selected_channel_names_by_image_identity.get(current_image_identity)
+        if selected_channel_names is None:
+            selected_channel_name_set = set(channel_names)
+        else:
+            selected_channel_name_set = set(selected_channel_names)
+
+        channel_rows: list[QWidget] = []
+        for channel_name in channel_names:
+            checkbox = QCheckBox(channel_name)
+            checkbox.setObjectName(f"feature_extraction_channel_checkbox_{channel_name}")
+            checkbox.setStyleSheet(_FEATURE_CHECKBOX_STYLESHEET)
+            checkbox.setChecked(channel_name in selected_channel_name_set)
+            checkbox.toggled.connect(self._on_channel_selection_changed)
+            self.channel_selection_list_layout.addWidget(checkbox)
+            self._image_channel_checkboxes.append(checkbox)
+            channel_rows.append(checkbox)
+
+        self._set_channel_selection_scroll_height(channel_rows)
+        self.channel_selection_label.show()
+        self.channel_selection_container.show()
+        self._store_selected_channel_names_for_current_image()
+
+    def _on_channel_selection_changed(self, _checked: bool) -> None:
+        self._store_selected_channel_names_for_current_image()
+        self._bind_current_selection()
+
+    def _store_selected_channel_names_for_current_image(self) -> None:
+        if self._selected_image_option is None or not self._image_channel_names:
+            return
+
+        self._selected_channel_names_by_image_identity[self._selected_image_option.identity] = tuple(
+            checkbox.text() for checkbox in self._image_channel_checkboxes if checkbox.isChecked()
+        )
+
+    def _set_channel_selection_scroll_height(self, channel_rows: list[QWidget]) -> None:
+        visible_rows = channel_rows[:_MAX_VISIBLE_EXTRACTION_CHANNELS]
+        if not visible_rows:
+            self.channel_selection_scroll_area.setMaximumHeight(0)
+            return
+
+        visible_height = sum(row.sizeHint().height() for row in visible_rows)
+        visible_height += self.channel_selection_list_layout.spacing() * max(0, len(visible_rows) - 1)
+        margins = self.channel_selection_list_layout.contentsMargins()
+        visible_height += margins.top() + margins.bottom()
+        visible_height += self.channel_selection_scroll_area.frameWidth() * 2
+        self.channel_selection_scroll_area.setMaximumHeight(visible_height)
 
     def _refresh_table_names(self) -> None:
         previous_table_name = self.selected_table_name
@@ -530,16 +677,10 @@ class FeatureExtractionWidget(QWidget):
     def _refresh_coordinate_systems(self) -> None:
         previous_coordinate_system = self.selected_coordinate_system
 
-        if self.selected_spatialdata is None or self.selected_segmentation_name is None:
+        if self.selected_spatialdata is None:
             self._coordinate_systems = []
-        elif self.selected_image_name is None:
-            self._coordinate_systems = (
-                [] if self._selected_label_option is None else list(self._selected_label_option.coordinate_systems)
-            )
         else:
-            self._coordinate_systems = (
-                [] if self._selected_image_option is None else list(self._selected_image_option.coordinate_systems)
-            )
+            self._coordinate_systems = get_coordinate_system_names_from_sdata(self.selected_spatialdata)
 
         with QSignalBlocker(self.coordinate_system_combo):
             self.coordinate_system_combo.clear()
@@ -563,6 +704,10 @@ class FeatureExtractionWidget(QWidget):
 
     def _on_coordinate_system_changed(self, index: int) -> None:
         self._set_selected_coordinate_system(index)
+        self._refresh_label_options()
+        self._refresh_image_options()
+        self._refresh_table_names()
+        self._update_intensity_features_hint()
         self._bind_current_selection()
 
     def _set_selected_coordinate_system(self, index: int) -> None:
@@ -715,54 +860,32 @@ class FeatureExtractionWidget(QWidget):
     def _bind_current_selection(self) -> None:
         self._table_binding_error = self._validate_selected_table_binding()
         effective_table_name = None if self._table_binding_error is not None else self.selected_table_name
+        effective_image_name = None if self._image_channel_error is not None else self.selected_image_name
+        effective_channels = None if self._image_channel_error is not None else self.selected_extraction_channel_names
         self._feature_extraction_controller.bind(
             self.selected_spatialdata,
             self.selected_segmentation_name,
-            self.selected_image_name,
+            effective_image_name,
             effective_table_name,
             self.selected_coordinate_system,
             self.selected_feature_names,
             self.selected_feature_key,
+            channels=effective_channels,
             overwrite_feature_key=False,
         )
         self._update_selection_status()
 
     def _update_selection_status(self) -> None:
-        self._update_validation_status()
         self._update_primary_status_card()
         self._update_calculate_controls()
 
-    def _update_validation_status(self) -> None:
-        message = self._table_binding_error
-        self.validation_status.setText("" if message is None else message)
-        self.validation_status.setVisible(message is not None)
-
     def _update_primary_status_card(self) -> None:
-        if self.selected_spatialdata is None or self.selected_segmentation_name is None:
+        if self._app_state.sdata is None:
             self._set_selection_status(
-                "Selection Needed",
-                ["Choose a segmentation linked from the current viewer."],
-                kind="warning",
-            )
-            return
-
-        if self.selected_table_name is None:
-            self._set_selection_status(
-                "No Table Linked",
+                "No SpatialData Loaded",
                 [
-                    f"Segmentation `{self.selected_segmentation_name}` is not linked to an annotation table.",
-                    "Support for creating a new linked table from this widget is coming soon.",
-                ],
-                kind="warning",
-            )
-            return
-
-        if self._table_binding_error is not None:
-            self._set_selection_status(
-                "Table Binding Issue",
-                [
-                    f"Table `{self.selected_table_name}` cannot currently be used for segmentation `{self.selected_segmentation_name}`.",
-                    "Choose a different table or segmentation.",
+                    "Load a SpatialData object through the Harpy Viewer widget, reader, or `Interactive(sdata)`.",
+                    "This form updates automatically from the shared Harpy state.",
                 ],
                 kind="warning",
             )
@@ -776,22 +899,110 @@ class FeatureExtractionWidget(QWidget):
             )
             return
 
-        image_line = (
-            "Image: none selected yet" if self.selected_image_name is None else f"Image: {self.selected_image_name}"
-        )
+        if self.selected_spatialdata is None or self.selected_segmentation_name is None:
+            self._set_selection_status(
+                "Selection Needed",
+                ["Choose a segmentation available in the selected coordinate system."],
+                kind="warning",
+            )
+            return
+
+        if self.selected_table_name is None:
+            segmentation_name, segmentation_shortened = format_feedback_identifier(self.selected_segmentation_name)
+            lines = [
+                f"Segmentation `{segmentation_name}` is not linked to an annotation table.",
+                "Support for creating a new linked table from this widget is coming soon.",
+            ]
+            self._set_selection_status(
+                "No Table Linked",
+                lines,
+                tooltip_message="\n".join(
+                    [
+                        f"Segmentation `{self.selected_segmentation_name}` is not linked to an annotation table.",
+                        "Support for creating a new linked table from this widget is coming soon.",
+                    ]
+                )
+                if segmentation_shortened
+                else None,
+                kind="warning",
+            )
+            return
+
+        if self._table_binding_error is not None:
+            table_name, table_shortened = format_feedback_identifier(self.selected_table_name)
+            segmentation_name, segmentation_shortened = format_feedback_identifier(self.selected_segmentation_name)
+            lines = [
+                f"Table `{table_name}` cannot currently be used for segmentation `{segmentation_name}`.",
+                "Choose a different table or segmentation.",
+            ]
+            self._set_selection_status(
+                "Table Binding Issue",
+                lines,
+                tooltip_message=self._table_binding_error,
+                kind="warning",
+            )
+            return
+
+        if self._image_channel_error is not None and self.selected_image_name is not None:
+            image_name, _ = format_feedback_identifier(self.selected_image_name)
+            self._set_selection_status(
+                "Image Channel Issue",
+                [
+                    f"Image `{image_name}` has duplicate channel names, which Harpy does not support.",
+                    "Use `sdata.set_channel_names(...)` to rename the channels, or choose a different image.",
+                ],
+                tooltip_message=self._image_channel_error,
+                kind="warning",
+            )
+            return
+
+        segmentation_name, segmentation_shortened = format_feedback_identifier(self.selected_segmentation_name)
+        table_name, table_shortened = format_feedback_identifier(self.selected_table_name)
+        coordinate_system_name, coordinate_system_shortened = format_feedback_identifier(self.selected_coordinate_system)
+
+        shortened = [segmentation_shortened, table_shortened, coordinate_system_shortened]
+        tooltip_lines = [
+            f"Segmentation: {self.selected_segmentation_name}",
+            f"Table: {self.selected_table_name}",
+        ]
+
+        if self.selected_image_name is None:
+            image_line = "Image: none selected yet"
+            tooltip_lines.append(image_line)
+        else:
+            image_name, image_shortened = format_feedback_identifier(self.selected_image_name)
+            image_line = f"Image: {image_name}"
+            tooltip_lines.append(f"Image: {self.selected_image_name}")
+            shortened.append(image_shortened)
+
+        tooltip_lines.append(f"Coordinate system: {self.selected_coordinate_system}")
         self._set_selection_status(
             "Selection Ready",
             [
-                f"Segmentation: {self.selected_segmentation_name}",
-                f"Table: {self.selected_table_name}",
+                f"Segmentation: {segmentation_name}",
+                f"Table: {table_name}",
                 image_line,
-                f"Coordinate system: {self.selected_coordinate_system}",
+                f"Coordinate system: {coordinate_system_name}",
             ],
+            tooltip_message="\n".join(tooltip_lines) if any(shortened) else None,
             kind="success",
         )
 
-    def _set_selection_status(self, title: str, lines: list[str], *, kind: str) -> None:
-        self._set_status_card(self.selection_status, title=title, lines=lines, kind=kind)
+    def _set_selection_status(
+        self,
+        title: str,
+        lines: list[str],
+        *,
+        kind: str,
+        tooltip_message: str | None = None,
+    ) -> None:
+        self._set_status_card(
+            self.selection_status,
+            title=title,
+            lines=lines,
+            kind=kind,
+            tooltip_message=tooltip_message,
+        )
 
     def _set_feature_extraction_feedback(self, message: str, *, kind: str = "info") -> None:
         if not message:
@@ -813,7 +1024,15 @@ class FeatureExtractionWidget(QWidget):
             kind=kind,
         )
 
-    def _set_status_card(self, label: QLabel, *, title: str, lines: list[str], kind: str) -> None:
+    def _set_status_card(
+        self,
+        label: QLabel,
+        *,
+        title: str,
+        lines: list[str],
+        kind: str,
+        tooltip_message: str | None = None,
+    ) -> None:
         palette_by_kind = {
             "info": {"text": "#1d4ed8", "border": "#93c5fd", "background": "#eff6ff"},
             "warning": {"text": "#b45309", "border": "#fdba74", "background": "#fff7ed"},
@@ -837,6 +1056,7 @@ class FeatureExtractionWidget(QWidget):
             "border-radius: 8px; "
             "padding: 10px 12px;"
         )
+        label.setToolTip(format_tooltip(tooltip_message) if tooltip_message else "")
         label.setVisible(bool(lines))
 
     def _update_calculate_controls(self) -> None:

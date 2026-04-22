@@ -23,10 +23,10 @@ from napari_harpy._class_palette import (
 from napari_harpy._classifier import PRED_CLASS_COLORS_KEY, PRED_CLASS_COLUMN, PRED_CONFIDENCE_COLUMN
 from napari_harpy._spatialdata import (
     SpatialDataTableMetadata,
-    SpatialDataViewerBinding,
     get_table,
     get_table_metadata,
 )
+from napari_harpy._viewer_adapter import ViewerAdapter
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -48,11 +48,12 @@ PRED_CONFIDENCE_COLORMAP = "viridis"
 class ViewerStylingController:
     """Manage labels-layer styling from user labels and classifier outputs."""
 
-    def __init__(self, viewer_binding: SpatialDataViewerBinding) -> None:
-        self._viewer_binding = viewer_binding
+    def __init__(self, viewer_adapter: ViewerAdapter) -> None:
+        self._viewer_adapter = viewer_adapter
         self._labels_layer: Any | None = None
         self._selected_spatialdata: SpatialData | None = None
         self._selected_label_name: str | None = None
+        self._selected_coordinate_system: str | None = None
         self._selected_table_name: str | None = None
         self._selected_table_metadata: SpatialDataTableMetadata | None = None
         self._color_by = COLOR_BY_USER_CLASS
@@ -67,11 +68,17 @@ class ViewerStylingController:
         """Return the currently styled labels layer, if any."""
         return self._labels_layer
 
-    def bind(self, sdata: SpatialData | None, label_name: str | None, table_name: str | None) -> None:
+    def bind(
+        self,
+        sdata: SpatialData | None,
+        label_name: str | None,
+        table_name: str | None,
+        coordinate_system: str | None = None,
+    ) -> None:
         """Bind styling to the selected labels layer and annotation table."""
         next_layer = None
         if sdata is not None and label_name is not None:
-            next_layer = self._viewer_binding.get_labels_layer(sdata, label_name)
+            next_layer = self._viewer_adapter.get_loaded_labels_layer(sdata, label_name, coordinate_system)
 
         next_table_metadata = None
         if sdata is not None and table_name is not None:
@@ -80,6 +87,7 @@ class ViewerStylingController:
         self._labels_layer = next_layer
         self._selected_spatialdata = sdata
         self._selected_label_name = label_name
+        self._selected_coordinate_system = coordinate_system
         self._selected_table_name = table_name
         self._selected_table_metadata = next_table_metadata
 

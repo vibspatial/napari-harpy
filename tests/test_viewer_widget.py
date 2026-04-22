@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from html import unescape
 from types import SimpleNamespace
 
 from qtpy.QtCore import Qt
+from qtpy.QtWidgets import QComboBox
 
 import napari_harpy.widgets._viewer_widget as viewer_widget_module
 from napari_harpy.widgets._viewer_widget import ViewerWidget
@@ -82,7 +84,8 @@ def test_elided_label_only_shows_tooltip_when_text_is_truncated(qtbot, monkeypat
     monkeypatch.setattr(label, "contentsRect", lambda: _FakeRect(10))
     label._update_elided_text()
 
-    assert "blobs_multiscale_image" in label.toolTip()
+    tooltip = unescape(label.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    assert "blobs_multiscale_image" in tooltip
     assert "..." in label.text() or "\u2026" in label.text()
 
 
@@ -110,6 +113,9 @@ def test_viewer_widget_refreshes_cards_when_shared_sdata_changes(qtbot, sdata_bl
     assert not widget.image_cards[0].overlay_toggle.isChecked()
     assert widget.labels_cards[0].linked_table_combo.count() == 1
     assert widget.labels_cards[0].linked_table_combo.itemText(0) == "table"
+    assert widget.labels_cards[0].linked_table_combo.sizeAdjustPolicy() == (
+        QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+    )
     assert widget.labels_cards[1].linked_table_combo.count() == 1
     assert widget.labels_cards[1].linked_table_combo.itemText(0) == "No linked tables"
     assert not widget.labels_cards[1].linked_table_combo.isEnabled()
@@ -158,7 +164,7 @@ def test_viewer_widget_overlay_channel_panel_scrolls_when_many_channels(qtbot, m
     monkeypatch.setattr(viewer_widget_module, "_get_coordinate_systems_from_sdata", lambda sdata: ["global"])
     monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
     monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: ["image"])
-    monkeypatch.setattr(viewer_widget_module, "_get_image_channel_names", lambda sdata, image_name: many_channels)
+    monkeypatch.setattr(viewer_widget_module, "get_image_channel_names_from_sdata", lambda sdata, image_name: many_channels)
 
     with qtbot.waitSignal(widget.app_state.sdata_changed):
         widget.app_state.set_sdata(fake_sdata)
@@ -169,6 +175,42 @@ def test_viewer_widget_overlay_channel_panel_scrolls_when_many_channels(qtbot, m
     assert image_card.channel_scroll_area.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded
     assert image_card.channel_scroll_area.maximumHeight() > 0
     assert image_card.channel_scroll_area.maximumHeight() < image_card.channel_list_widget.sizeHint().height()
+
+
+def test_viewer_widget_surfaces_duplicate_channel_names_and_disables_overlay(qtbot, monkeypatch) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    fake_sdata = object()
+
+    qtbot.addWidget(widget)
+
+    monkeypatch.setattr(viewer_widget_module, "_get_coordinate_systems_from_sdata", lambda sdata: ["global"])
+    monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: ["image"])
+    monkeypatch.setattr(
+        viewer_widget_module,
+        "get_image_channel_names_from_sdata",
+        lambda sdata, image_name: (_ for _ in ()).throw(
+            ValueError(
+                "Image element `image` exposes duplicate channel names (`dup`), "
+                "which napari-harpy does not support. "
+                "Update the channel names in the SpatialData object with "
+                "`sdata.set_channel_names(...)`."
+            )
+        ),
+    )
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(fake_sdata)
+
+    image_card = widget.image_cards[0]
+
+    assert image_card.channel_names == []
+    assert image_card.channel_error is not None
+    assert not image_card.overlay_toggle.isEnabled()
+    assert not image_card.channel_warning_label.isHidden()
+    assert "sdata.set_channel_names(...)" in image_card.channel_warning_label.text()
+    assert "duplicate channel names" in image_card.channel_warning_label.toolTip()
 
 
 def test_viewer_widget_filters_cards_by_selected_coordinate_system(qtbot, monkeypatch) -> None:
@@ -189,7 +231,7 @@ def test_viewer_widget_filters_cards_by_selected_coordinate_system(qtbot, monkey
         "_get_images_in_coordinate_system",
         lambda sdata, coordinate_system: ["image_global"] if coordinate_system == "global" else ["image_local"],
     )
-    monkeypatch.setattr(viewer_widget_module, "_get_image_channel_names", lambda sdata, image_name: ["c0", "c1"])
+    monkeypatch.setattr(viewer_widget_module, "get_image_channel_names_from_sdata", lambda sdata, image_name: ["c0", "c1"])
     monkeypatch.setattr(
         viewer_widget_module,
         "get_annotating_table_names",
@@ -356,7 +398,11 @@ def test_viewer_widget_add_update_image_overlay_passes_selected_channels_and_col
     monkeypatch.setattr(viewer_widget_module, "_get_coordinate_systems_from_sdata", lambda sdata: ["global"])
     monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
     monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: ["image"])
-    monkeypatch.setattr(viewer_widget_module, "_get_image_channel_names", lambda sdata, image_name: ["c0", "c1", "c2"])
+    monkeypatch.setattr(
+        viewer_widget_module,
+        "get_image_channel_names_from_sdata",
+        lambda sdata, image_name: ["c0", "c1", "c2"],
+    )
     monkeypatch.setattr(
         widget.app_state.viewer_adapter,
         "ensure_image_loaded",
@@ -461,7 +507,7 @@ def test_viewer_widget_add_update_image_uses_selected_coordinate_system(qtbot, m
         "_get_images_in_coordinate_system",
         lambda sdata, coordinate_system: ["image_global"] if coordinate_system == "global" else ["image_local"],
     )
-    monkeypatch.setattr(viewer_widget_module, "_get_image_channel_names", lambda sdata, image_name: ["c0", "c1"])
+    monkeypatch.setattr(viewer_widget_module, "get_image_channel_names_from_sdata", lambda sdata, image_name: ["c0", "c1"])
     monkeypatch.setattr(
         widget.app_state.viewer_adapter,
         "ensure_image_loaded",

@@ -6,18 +6,23 @@ import numpy as np
 import pytest
 from napari.layers import Image, Labels
 from spatialdata import SpatialData
-from spatialdata.datasets import blobs
 from spatialdata.models import TableModel
+from xarray import DataArray
 
 import napari_harpy._spatialdata as spatialdata_module
 from napari_harpy._spatialdata import (
-    SpatialDataViewerBinding,
+    build_layer_metadata_adata,
     get_annotating_table_names,
-    get_spatialdata_image_options,
+    get_coordinate_system_names_from_sdata,
+    get_image_channel_names_from_sdata,
+    get_spatialdata_image_options_for_coordinate_system_from_sdata,
+    get_spatialdata_label_options_for_coordinate_system_from_sdata,
+    get_spatialdata_label_options_from_sdata,
     get_table,
     get_table_metadata,
     get_table_obsm_keys,
     normalize_table_metadata,
+    refresh_layer_table_metadata,
     validate_table_binding,
 )
 
@@ -105,25 +110,16 @@ def test_normalize_table_metadata_normalizes_numpy_array_region_attrs_in_place(s
     assert validated is table
     assert table.uns[TableModel.ATTRS_KEY][TableModel.REGION_KEY] == ["blobs_labels"]
 
+def test_get_spatialdata_label_options_from_sdata_returns_all_labels(sdata_blobs: SpatialData) -> None:
+    options = get_spatialdata_label_options_from_sdata(sdata_blobs)
 
-def test_get_spatialdata_image_options_return_compatible_images_for_selected_label(sdata_blobs: SpatialData) -> None:
-    label_layer = make_blobs_labels_layer(sdata_blobs)
-    image_layer = make_blobs_image_layer(sdata_blobs)
-    viewer = SimpleNamespace(layers=[label_layer, image_layer])
-
-    options = get_spatialdata_image_options(
-        viewer,
-        sdata=sdata_blobs,
-        label_name="blobs_labels",
-    )
-
-    assert [option.image_name for option in options] == [
-        "blobs_image",
-        "blobs_multiscale_image",
+    assert [option.label_name for option in options] == [
+        "blobs_labels",
+        "blobs_multiscale_labels",
     ]
     assert [option.display_name for option in options] == [
-        "blobs_image",
-        "blobs_multiscale_image",
+        "blobs_labels",
+        "blobs_multiscale_labels",
     ]
     assert [option.coordinate_systems for option in options] == [
         ("global",),
@@ -132,59 +128,15 @@ def test_get_spatialdata_image_options_return_compatible_images_for_selected_lab
     assert all(option.sdata is sdata_blobs for option in options)
 
 
-def test_get_spatialdata_image_options_do_not_require_loaded_image_layers(sdata_blobs: SpatialData) -> None:
-    label_layer = make_blobs_labels_layer(sdata_blobs)
-    viewer = SimpleNamespace(layers=[label_layer])
-
-    options = get_spatialdata_image_options(
-        viewer,
-        sdata=sdata_blobs,
-        label_name="blobs_labels",
-    )
-
-    assert [option.image_name for option in options] == [
-        "blobs_image",
-        "blobs_multiscale_image",
-    ]
-    assert [option.display_name for option in options] == [
-        "blobs_image",
-        "blobs_multiscale_image",
-    ]
-    assert [option.coordinate_systems for option in options] == [
-        ("global",),
-        ("global",),
-    ]
-    assert all(option.sdata is sdata_blobs for option in options)
-
-
-def test_get_spatialdata_image_options_include_dataset_names_when_multiple_datasets_are_present() -> None:
-    first_sdata = blobs()
-    second_sdata = blobs()
-    viewer = SimpleNamespace(layers=[make_blobs_labels_layer(first_sdata), make_blobs_labels_layer(second_sdata)])
-
-    options = get_spatialdata_image_options(
-        viewer,
-        sdata=first_sdata,
-        label_name="blobs_labels",
-    )
-
-    assert [option.display_name for option in options] == [
-        "blobs_image (SpatialData 1)",
-        "blobs_multiscale_image (SpatialData 1)",
-    ]
-
-
-def test_get_spatialdata_image_options_filter_to_selected_dataset_and_shared_coordinate_systems(
+def test_get_coordinate_system_names_from_sdata_returns_sorted_union(
     monkeypatch,
     sdata_blobs: SpatialData,
 ) -> None:
-    other_sdata = blobs()
-    viewer = SimpleNamespace(layers=[make_blobs_labels_layer(sdata_blobs), make_blobs_labels_layer(other_sdata)])
-
     transformation_by_id = {
         id(sdata_blobs.labels["blobs_labels"]): {"global": object(), "aligned": object()},
-        id(sdata_blobs.images["blobs_image"]): {"aligned": object(), "global": object()},
-        id(sdata_blobs.images["blobs_multiscale_image"]): {"other": object()},
+        id(sdata_blobs.labels["blobs_multiscale_labels"]): {"global": object()},
+        id(sdata_blobs.images["blobs_image"]): {"global": object()},
+        id(sdata_blobs.images["blobs_multiscale_image"]): {"local": object()},
     }
 
     def _fake_get_transformation(element, get_all: bool = False):
@@ -193,21 +145,82 @@ def test_get_spatialdata_image_options_filter_to_selected_dataset_and_shared_coo
 
     monkeypatch.setattr(spatialdata_module, "get_transformation", _fake_get_transformation)
 
-    options = get_spatialdata_image_options(
-        viewer,
+    assert get_coordinate_system_names_from_sdata(sdata_blobs) == ["aligned", "global", "local"]
+
+
+def test_get_image_channel_names_from_sdata_returns_channel_axis_names(sdata_blobs: SpatialData) -> None:
+    assert get_image_channel_names_from_sdata(sdata_blobs, "blobs_image") == ["0", "1", "2"]
+
+
+def test_get_image_channel_names_from_sdata_rejects_duplicate_channel_names(monkeypatch) -> None:
+    fake_sdata = SimpleNamespace(
+        images={
+            "image_with_duplicates": DataArray(
+                np.zeros((3, 2, 2)),
+                dims=("c", "y", "x"),
+                coords={"c": ["dup", "dup", "other"]},
+            )
+        }
+    )
+    monkeypatch.setattr(spatialdata_module, "_get_image_names", lambda sdata: ["image_with_duplicates"])
+
+    with pytest.raises(ValueError, match="duplicate channel names"):
+        get_image_channel_names_from_sdata(fake_sdata, "image_with_duplicates")
+
+
+def test_get_spatialdata_label_options_for_coordinate_system_from_sdata_filters_labels(
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    transformation_by_id = {
+        id(sdata_blobs.labels["blobs_labels"]): {"global": object(), "aligned": object()},
+        id(sdata_blobs.labels["blobs_multiscale_labels"]): {"global": object()},
+        id(sdata_blobs.images["blobs_image"]): {"global": object()},
+        id(sdata_blobs.images["blobs_multiscale_image"]): {"global": object()},
+    }
+
+    def _fake_get_transformation(element, get_all: bool = False):
+        del get_all
+        return transformation_by_id[id(element)]
+
+    monkeypatch.setattr(spatialdata_module, "get_transformation", _fake_get_transformation)
+
+    options = get_spatialdata_label_options_for_coordinate_system_from_sdata(
         sdata=sdata_blobs,
-        label_name="blobs_labels",
+        coordinate_system="aligned",
     )
 
-    assert [option.image_name for option in options] == ["blobs_image"]
-    assert options[0].sdata is sdata_blobs
+    assert [option.label_name for option in options] == ["blobs_labels"]
     assert options[0].coordinate_systems == ("aligned", "global")
 
 
-def test_spatialdata_viewer_binding_builds_layer_metadata_adata_from_selected_table(sdata_blobs: SpatialData) -> None:
-    viewer_binding = SpatialDataViewerBinding()
+def test_get_spatialdata_image_options_for_coordinate_system_from_sdata_filters_images(
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    transformation_by_id = {
+        id(sdata_blobs.labels["blobs_labels"]): {"global": object()},
+        id(sdata_blobs.labels["blobs_multiscale_labels"]): {"global": object()},
+        id(sdata_blobs.images["blobs_image"]): {"global": object(), "aligned": object()},
+        id(sdata_blobs.images["blobs_multiscale_image"]): {"local": object()},
+    }
 
-    metadata_adata = viewer_binding.build_layer_metadata_adata(sdata_blobs, "blobs_labels", "table")
+    def _fake_get_transformation(element, get_all: bool = False):
+        del get_all
+        return transformation_by_id[id(element)]
+
+    monkeypatch.setattr(spatialdata_module, "get_transformation", _fake_get_transformation)
+
+    options = get_spatialdata_image_options_for_coordinate_system_from_sdata(
+        sdata=sdata_blobs,
+        coordinate_system="aligned",
+    )
+
+    assert [option.image_name for option in options] == ["blobs_image"]
+    assert options[0].coordinate_systems == ("aligned", "global")
+
+def test_build_layer_metadata_adata_builds_from_selected_table(sdata_blobs: SpatialData) -> None:
+    metadata_adata = build_layer_metadata_adata(None, sdata_blobs, "blobs_labels", "table")
 
     assert metadata_adata is not None
     assert metadata_adata is not sdata_blobs["table"]
@@ -217,13 +230,12 @@ def test_spatialdata_viewer_binding_builds_layer_metadata_adata_from_selected_ta
     assert "features_2" in metadata_adata.obsm
 
 
-def test_spatialdata_viewer_binding_prefers_region_view_when_layer_indices_are_aligned(
+def test_build_layer_metadata_adata_prefers_region_view_when_layer_indices_are_aligned(
     monkeypatch,
     sdata_blobs: SpatialData,
 ) -> None:
     layer = make_blobs_labels_layer(sdata_blobs)
     layer.metadata["indices"] = list(reversed(sdata_blobs["table"].obs["instance_id"].to_list()))
-    viewer_binding = SpatialDataViewerBinding(SimpleNamespace(layers=[layer]))
 
     # check that we do not call join_spatialelement_table
     def _unexpected_join(*args, **kwargs):
@@ -231,20 +243,19 @@ def test_spatialdata_viewer_binding_prefers_region_view_when_layer_indices_are_a
 
     monkeypatch.setattr(spatialdata_module, "join_spatialelement_table", _unexpected_join)
 
-    metadata_adata = viewer_binding.build_layer_metadata_adata(sdata_blobs, "blobs_labels", "table")
+    metadata_adata = build_layer_metadata_adata(SimpleNamespace(layers=[layer]), sdata_blobs, "blobs_labels", "table")
 
     assert metadata_adata is not None
     assert metadata_adata.is_view
     assert set(metadata_adata.obs["instance_id"]) == set(layer.metadata["indices"])
 
 
-def test_spatialdata_viewer_binding_falls_back_to_join_when_layer_indices_are_misaligned(
+def test_build_layer_metadata_adata_falls_back_to_join_when_layer_indices_are_misaligned(
     monkeypatch,
     sdata_blobs: SpatialData,
 ) -> None:
     layer = make_blobs_labels_layer(sdata_blobs)
     layer.metadata["indices"] = sdata_blobs["table"].obs["instance_id"].to_list()[:-1]
-    viewer_binding = SpatialDataViewerBinding(SimpleNamespace(layers=[layer]))
     sentinel = sdata_blobs["table"].copy()
     sentinel.obs["from_join"] = range(sentinel.n_obs)
     join_called = False
@@ -256,14 +267,14 @@ def test_spatialdata_viewer_binding_falls_back_to_join_when_layer_indices_are_mi
 
     monkeypatch.setattr(spatialdata_module, "join_spatialelement_table", _fake_join)
 
-    metadata_adata = viewer_binding.build_layer_metadata_adata(sdata_blobs, "blobs_labels", "table")
+    metadata_adata = build_layer_metadata_adata(SimpleNamespace(layers=[layer]), sdata_blobs, "blobs_labels", "table")
 
     assert join_called is True
     assert metadata_adata is sentinel
     assert "from_join" in metadata_adata.obs
 
 
-def test_spatialdata_viewer_binding_refreshes_only_table_derived_layer_metadata(sdata_blobs: SpatialData) -> None:
+def test_refresh_layer_table_metadata_refreshes_only_table_derived_layer_metadata(sdata_blobs: SpatialData) -> None:
     layer = make_blobs_labels_layer(sdata_blobs)
     layer.metadata["adata"] = "stale"
     layer.metadata["region_key"] = "old_region"
@@ -272,12 +283,11 @@ def test_spatialdata_viewer_binding_refreshes_only_table_derived_layer_metadata(
     layer.metadata["indices"] = [1, 2, 3]
     layer.metadata["custom_flag"] = "keep-me"
     viewer = SimpleNamespace(layers=[layer])
-    viewer_binding = SpatialDataViewerBinding(viewer)
 
     sdata_blobs["table"].obs["reloaded_obs"] = range(sdata_blobs["table"].n_obs)
     sdata_blobs["table"].obsm["reloaded_features"] = sdata_blobs["table"].obsm["features_1"][:, :1]
 
-    refreshed = viewer_binding.refresh_layer_table_metadata(sdata_blobs, "blobs_labels", "table")
+    refreshed = refresh_layer_table_metadata(viewer, sdata_blobs, "blobs_labels", "table")
 
     assert refreshed is True
     assert layer.metadata["adata"] is not None
@@ -290,45 +300,78 @@ def test_spatialdata_viewer_binding_refreshes_only_table_derived_layer_metadata(
     assert layer.metadata["custom_flag"] == "keep-me"
 
 
-def test_spatialdata_viewer_binding_refresh_layer_table_metadata_returns_false_without_loaded_layer(
+def test_refresh_layer_table_metadata_returns_false_without_loaded_layer(
     sdata_blobs: SpatialData,
 ) -> None:
-    viewer_binding = SpatialDataViewerBinding(SimpleNamespace(layers=[]))
-
-    refreshed = viewer_binding.refresh_layer_table_metadata(sdata_blobs, "blobs_labels", "table")
+    refreshed = refresh_layer_table_metadata(SimpleNamespace(layers=[]), sdata_blobs, "blobs_labels", "table")
 
     assert refreshed is False
 
 
-def test_spatialdata_viewer_binding_get_image_layer_returns_loaded_image_layer(sdata_blobs: SpatialData) -> None:
+def test_get_loaded_spatialdata_layer_returns_loaded_image_layer(sdata_blobs: SpatialData) -> None:
     image_layer = make_blobs_image_layer(sdata_blobs)
-    viewer_binding = SpatialDataViewerBinding(SimpleNamespace(layers=[image_layer]))
-
-    loaded_layer = viewer_binding.get_image_layer(sdata_blobs, "blobs_image")
+    loaded_layer = spatialdata_module._get_loaded_spatialdata_layer(
+        SimpleNamespace(layers=[image_layer]),
+        sdata=sdata_blobs,
+        element_name="blobs_image",
+        layer_filter=lambda layer: isinstance(layer, Image),
+    )
 
     assert loaded_layer is image_layer
-    assert viewer_binding.get_image_layer(sdata_blobs, "blobs_multiscale_image") is None
+    assert (
+        spatialdata_module._get_loaded_spatialdata_layer(
+            SimpleNamespace(layers=[image_layer]),
+            sdata=sdata_blobs,
+            element_name="blobs_multiscale_image",
+            layer_filter=lambda layer: isinstance(layer, Image),
+        )
+        is None
+    )
 
 
-def test_spatialdata_viewer_binding_get_image_layer_rejects_non_image_layers(sdata_blobs: SpatialData) -> None:
+def test_get_loaded_spatialdata_layer_rejects_non_image_layers(sdata_blobs: SpatialData) -> None:
     fake_layer = SimpleNamespace(
         metadata={"sdata": sdata_blobs, "name": "blobs_image"},
     )
-    viewer_binding = SpatialDataViewerBinding(SimpleNamespace(layers=[fake_layer]))
-
-    loaded_layer = viewer_binding.get_image_layer(sdata_blobs, "blobs_image")
+    loaded_layer = spatialdata_module._get_loaded_spatialdata_layer(
+        SimpleNamespace(layers=[fake_layer]),
+        sdata=sdata_blobs,
+        element_name="blobs_image",
+        layer_filter=lambda layer: isinstance(layer, Image),
+    )
 
     assert loaded_layer is None
 
 
-def test_spatialdata_viewer_binding_get_labels_layer_rejects_non_labels_layers(sdata_blobs: SpatialData) -> None:
+def test_get_loaded_spatialdata_layer_rejects_non_labels_layers(sdata_blobs: SpatialData) -> None:
     fake_layer = SimpleNamespace(
         metadata={"sdata": sdata_blobs, "name": "blobs_labels"},
         selected_label=1,
         events=SimpleNamespace(selected_label=object()),
     )
-    viewer_binding = SpatialDataViewerBinding(SimpleNamespace(layers=[fake_layer]))
-
-    loaded_layer = viewer_binding.get_labels_layer(sdata_blobs, "blobs_labels")
+    loaded_layer = spatialdata_module._get_loaded_spatialdata_layer(
+        SimpleNamespace(layers=[fake_layer]),
+        sdata=sdata_blobs,
+        element_name="blobs_labels",
+        layer_filter=spatialdata_module._is_pickable_labels_layer,
+    )
 
     assert loaded_layer is None
+
+
+def test_get_loaded_spatialdata_layer_filters_by_coordinate_system(
+    sdata_blobs: SpatialData,
+) -> None:
+    global_layer = make_blobs_labels_layer(sdata_blobs)
+    global_layer.metadata["_current_cs"] = "global"
+    local_layer = make_blobs_labels_layer(sdata_blobs)
+    local_layer.metadata["_current_cs"] = "local"
+    loaded_layer = spatialdata_module._get_loaded_spatialdata_layer(
+        SimpleNamespace(layers=[local_layer, global_layer]),
+        sdata=sdata_blobs,
+        element_name="blobs_labels",
+        layer_filter=spatialdata_module._is_pickable_labels_layer,
+        coordinate_system="global",
+    )
+
+    assert loaded_layer is global_layer
