@@ -68,16 +68,3 @@ python scripts/debug_widget.py
 
 The script currently contains a hard-coded `SDATA_PATH`, so update that path as needed before running it.
 
-## Status
-
-Current implementation status:
-
-- the `Viewer` widget is now the primary Harpy entry point for loading and
-  viewing `SpatialData`
-- the `Feature Extraction` widget can write feature matrices into existing
-  linked tables
-- the `Object Classification` widget provides the working annotation and
-  classifier workflow for those tables and matrices
-
-Main remaining roadmap work is focused on polishing the shared widget flow and
-extending analysis workflows, rather than replacing the viewer layer again.
