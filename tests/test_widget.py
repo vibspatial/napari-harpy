@@ -197,7 +197,7 @@ def test_widget_can_be_instantiated(qtbot) -> None:
     assert widget.selected_feature_key is None
     assert widget.selected_coordinate_system is None
     assert widget.selected_color_by == "user_class"
-    assert not widget.refresh_button.isEnabled()
+    assert all(button.text() != "Rescan Viewer" for button in widget.findChildren(type(widget.retrain_button)))
     assert "No SpatialData Loaded" in widget.selection_status.text()
     assert widget.coordinate_system_combo.sizeAdjustPolicy() == (
         QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
@@ -222,7 +222,6 @@ def test_widget_refreshes_when_shared_sdata_changes(qtbot, sdata_blobs: SpatialD
 
     app_state.set_sdata(sdata_blobs)
 
-    assert widget.refresh_button.isEnabled()
     assert widget.coordinate_system_combo.count() == 1
     assert widget.coordinate_system_combo.itemText(0) == "global"
     assert widget.selected_coordinate_system == "global"
@@ -243,7 +242,6 @@ def test_widget_clears_when_shared_sdata_is_cleared(qtbot, sdata_blobs: SpatialD
     qtbot.addWidget(widget)
 
     assert widget.segmentation_combo.count() == 2
-    assert widget.refresh_button.isEnabled()
 
     app_state.clear_sdata()
 
@@ -260,7 +258,6 @@ def test_widget_clears_when_shared_sdata_is_cleared(qtbot, sdata_blobs: SpatialD
     assert not widget.table_combo.isEnabled()
     assert widget.feature_matrix_combo.count() == 0
     assert not widget.feature_matrix_combo.isEnabled()
-    assert not widget.refresh_button.isEnabled()
     assert "No SpatialData Loaded" in widget.selection_status.text()
 
 
@@ -295,7 +292,7 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_bl
     assert widget.selected_table_metadata is None
     assert "adata" not in layer.metadata
     assert widget.selected_instance_id is None
-    assert widget.refresh_button.text() == "Rescan Viewer"
+    assert all(button.text() != "Rescan Viewer" for button in widget.findChildren(type(widget.retrain_button)))
     assert widget.retrain_button.text() == "Retrain"
     assert widget.sync_button.text() == "Write"
     assert widget.reload_button.text() == "Reload"
@@ -1440,28 +1437,6 @@ def test_widget_exposes_label_metadata_in_napari_status_bar(qtbot, sdata_blobs: 
     assert "user_class: 4" in status["value"]
     assert "pred_class: 2" in status["value"]
     assert "pred_confidence: 0.95" in status["value"]
-
-
-def test_widget_rescans_viewer_without_retraining_same_classifier_context(
-    qtbot, monkeypatch, sdata_blobs: SpatialData
-) -> None:
-    layer = make_blobs_labels_layer(sdata_blobs)
-    viewer = DummyViewer(layers=[layer])
-    widget = HarpyWidget(viewer)
-    qtbot.addWidget(widget)
-    select_segmentation(widget)
-
-    retrain_calls: list[bool] = []
-
-    def fake_retrain(*, immediate: bool = False) -> bool:
-        retrain_calls.append(immediate)
-        return True
-
-    monkeypatch.setattr(widget._classifier_controller, "schedule_retrain", fake_retrain)
-
-    widget.refresh_button.click()
-
-    assert retrain_calls == []
 
 
 def test_widget_retrain_button_triggers_manual_retraining(qtbot, monkeypatch, sdata_blobs: SpatialData) -> None:
