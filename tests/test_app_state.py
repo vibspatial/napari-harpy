@@ -4,7 +4,7 @@ from collections.abc import Callable
 from types import SimpleNamespace
 
 import napari_harpy._interactive as interactive_module
-from napari_harpy._app_state import HarpyAppState, get_or_create_app_state
+from napari_harpy._app_state import FeatureMatrixWrittenEvent, HarpyAppState, get_or_create_app_state
 from napari_harpy.widgets._feature_extraction_widget import FeatureExtractionWidget
 from napari_harpy.widgets._object_classification_widget import ObjectClassificationWidget
 
@@ -89,6 +89,28 @@ def test_harpy_app_state_emits_sdata_changed(qtbot, sdata_blobs) -> None:
 
     assert blocker.args == [None]
     assert state.sdata is None
+
+
+def test_harpy_app_state_emits_feature_matrix_written_and_marks_table_dirty(qtbot, sdata_blobs) -> None:
+    state = HarpyAppState()
+    event = FeatureMatrixWrittenEvent(
+        sdata=sdata_blobs,
+        table_name="table",
+        feature_key="features_new",
+        change_kind="created",
+    )
+
+    assert state.is_table_dirty(sdata_blobs, "table") is False
+
+    with qtbot.waitSignal(state.feature_matrix_written) as blocker:
+        state.emit_feature_matrix_written(event)
+
+    assert blocker.args == [event]
+    assert state.is_table_dirty(sdata_blobs, "table") is True
+
+    state.clear_table_dirty(sdata_blobs, "table")
+
+    assert state.is_table_dirty(sdata_blobs, "table") is False
 
 
 def test_widgets_share_app_state_for_same_viewer(qtbot) -> None:

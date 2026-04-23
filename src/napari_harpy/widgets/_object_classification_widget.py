@@ -22,7 +22,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_harpy._annotation import UNLABELED_CLASS, AnnotationController
-from napari_harpy._app_state import HarpyAppState, get_or_create_app_state
+from napari_harpy._app_state import FeatureMatrixWrittenEvent, HarpyAppState, get_or_create_app_state
 from napari_harpy._classifier import ClassifierController
 from napari_harpy._persistence import PersistenceController
 from napari_harpy._spatialdata import (
@@ -116,7 +116,7 @@ class ObjectClassificationWidget(QWidget):
         self._viewer_styling_controller = ViewerStylingController(
             self._app_state.viewer_adapter,
         )
-        self._persistence_controller = PersistenceController()
+        self._persistence_controller = PersistenceController(self._app_state)
         self._coordinate_systems: list[str] = []
         self._selected_coordinate_system: str | None = None
         self._label_options: list[SpatialDataLabelsOption] = []
@@ -213,19 +213,6 @@ class ObjectClassificationWidget(QWidget):
         persistence_action_layout = QHBoxLayout(self.persistence_action_row)
         persistence_action_layout.setContentsMargins(0, 0, 0, 0)
         persistence_action_layout.setSpacing(8)
-        self.refresh_action_row = QWidget()
-        self.refresh_action_row.setObjectName("refresh_action_row")
-        refresh_action_layout = QHBoxLayout(self.refresh_action_row)
-        refresh_action_layout.setContentsMargins(0, 0, 0, 0)
-        refresh_action_layout.setSpacing(8)
-
-        self.refresh_button = QPushButton("Rescan Viewer")
-        self.refresh_button.clicked.connect(self._refresh_from_current_app_state)
-        self.refresh_button.setEnabled(False)
-        self.refresh_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.refresh_button.setMinimumHeight(28)
-        self.refresh_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
-
         self.retrain_button = QPushButton("Retrain")
         self.retrain_button.setObjectName("retrain_button")
         self.retrain_button.clicked.connect(self._retrain_classifier)
@@ -284,7 +271,6 @@ class ObjectClassificationWidget(QWidget):
         retrain_action_layout.addWidget(self.retrain_button, 1)
         persistence_action_layout.addWidget(self.sync_button, 1)
         persistence_action_layout.addWidget(self.reload_button, 1)
-        refresh_action_layout.addWidget(self.refresh_button, 1)
         self._annotation_shortcuts = self._create_annotation_shortcuts()
 
         self.annotation_feedback = QLabel()
@@ -313,7 +299,6 @@ class ObjectClassificationWidget(QWidget):
         content_layout.addLayout(selector_layout)
         content_layout.addWidget(self.retrain_action_row)
         content_layout.addWidget(self.persistence_action_row)
-        content_layout.addWidget(self.refresh_action_row)
         content_layout.addWidget(self.selection_status)
         content_layout.addWidget(self.annotation_feedback)
         content_layout.addWidget(self.classifier_feedback)
@@ -323,6 +308,7 @@ class ObjectClassificationWidget(QWidget):
 
         self._app_state.sdata_changed.connect(self._on_sdata_changed)
         self._app_state.viewer_adapter.labels_layers_changed.connect(self._on_labels_layers_changed)
+        self._app_state.feature_matrix_written.connect(self._on_feature_matrix_written)
         self.refresh_from_sdata(self._app_state.sdata)
 
     @property
@@ -405,7 +391,6 @@ class ObjectClassificationWidget(QWidget):
 
     def refresh_from_sdata(self, sdata: SpatialData | None) -> None:
         """Refresh the widget from the shared Harpy SpatialData state."""
-        self._update_refresh_button_state(sdata)
         if sdata is None:
             self._clear_selection_inputs()
             self._bind_current_selection()
@@ -419,6 +404,25 @@ class ObjectClassificationWidget(QWidget):
 
     def _on_sdata_changed(self, sdata: SpatialData | None) -> None:
         self.refresh_from_sdata(sdata)
+
+    def _on_feature_matrix_written(self, event: object) -> None:
+        if not isinstance(event, FeatureMatrixWrittenEvent):
+            return
+        if event.sdata is not self.selected_spatialdata or event.table_name != self.selected_table_name:
+            return
+
+        previous_feature_key = self.selected_feature_key
+        self._set_persistence_feedback("")
+        self._refresh_feature_matrix_keys()
+
+        if self.selected_feature_key != previous_feature_key:
+            self._bind_current_selection()
+            return
+
+        if event.change_kind == "updated" and previous_feature_key == event.feature_key:
+            self._classifier_controller.invalidate_for_feature_matrix_overwrite(event.feature_key)
+
+        self._update_selection_status()
 
     def _refresh_label_options(self) -> None:
         """Refresh segmentation choices from the selected coordinate system."""
@@ -450,12 +454,6 @@ class ObjectClassificationWidget(QWidget):
                 self.segmentation_combo.setCurrentIndex(-1)
 
         self._set_selected_label_option(self.segmentation_combo.currentIndex())
-
-    def _refresh_from_current_app_state(self) -> None:
-        self.refresh_from_sdata(self._app_state.sdata)
-
-    def _update_refresh_button_state(self, sdata: SpatialData | None) -> None:
-        self.refresh_button.setEnabled(self._viewer is not None and sdata is not None)
 
     def _clear_selection_inputs(self) -> None:
         self._coordinate_systems = []
@@ -1131,22 +1129,28 @@ class ObjectClassificationWidget(QWidget):
         self.reload_button.setEnabled(can_reload)
 
         if self.selected_spatialdata is None or self.selected_table_name is None:
-            sync_tooltip = "Choose a backed SpatialData annotation table to enable sync."
-            reload_tooltip = "Choose a backed SpatialData annotation table to enable reload."
+            sync_tooltip = "Choose a backed SpatialData annotation table to enable writing the in-memory table state to disk."
+            reload_tooltip = (
+                "Choose a backed SpatialData annotation table to enable discarding the current in-memory table state "
+                "and reloading it from disk."
+            )
         elif self._table_binding_error is not None:
             sync_tooltip = self._table_binding_error
             reload_tooltip = self._table_binding_error
         elif not can_sync or not can_reload:
-            sync_tooltip = "The selected SpatialData dataset is not backed by zarr."
-            reload_tooltip = "The selected SpatialData dataset is not backed by zarr."
+            sync_tooltip = "The selected SpatialData dataset is not backed by zarr, so the in-memory table state cannot be written to disk."
+            reload_tooltip = "The selected SpatialData dataset is not backed by zarr, so the table state cannot be reloaded from disk."
         else:
             table_store_path = self._persistence_controller.selected_table_store_path
             destination = self.selected_spatialdata.path if table_store_path is None else table_store_path
-            sync_tooltip = f"Write `{self.selected_table_name}` table state to `{destination}`."
-            reload_tooltip = f"Reload `{self.selected_table_name}` table state from `{destination}`."
+            sync_tooltip = f"Write the current in-memory `{self.selected_table_name}` table state to `{destination}`."
+            reload_tooltip = (
+                f"Discard the current in-memory `{self.selected_table_name}` table state and reload it from "
+                f"`{destination}`."
+            )
             if self._persistence_controller.is_dirty:
-                sync_tooltip += " Unsynced local table changes are present."
-                reload_tooltip += " Unsynced local table changes are present."
+                sync_tooltip += " Unsynced local in-memory table changes are present."
+                reload_tooltip += " Unsynced local in-memory table changes would be discarded."
 
         self._set_tooltip(self.sync_button, sync_tooltip)
         self._set_tooltip(self.reload_button, reload_tooltip)

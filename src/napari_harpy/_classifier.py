@@ -263,6 +263,16 @@ class ClassifierController:
         self._invalidate_async_jobs()
         self._update_idle_status()
 
+    def invalidate_for_feature_matrix_overwrite(self, feature_key: str) -> bool:
+        """Invalidate pending work when the selected feature matrix was overwritten in place."""
+        if self._get_bound_table() is None or self._selected_feature_key != feature_key:
+            return False
+
+        self._invalidate_async_jobs()
+        self._is_dirty = True
+        self._update_idle_status(reason=f"feature matrix `{feature_key}` was overwritten")
+        return True
+
     def reset_after_reload(self) -> None:
         """Recompute classifier state from the reloaded table without retraining."""
         self._invalidate_async_jobs()

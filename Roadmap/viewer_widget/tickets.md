@@ -599,6 +599,89 @@ The main remaining architectural question is lifecycle policy, especially:
 - VW-04
 - VW-05
 
+## VW-09: Allow Feature Extraction To Create A Linked Table
+
+### Goal
+
+Allow `FeatureExtractionWidget` to create a new linked table when the selected
+segmentation currently has no usable annotation table.
+
+### Scope
+
+- extend `FeatureExtractionWidget` with an explicit table-creation flow
+- keep the existing shared-`sdata`, coordinate-system-first selection model
+- support creating a new table only when the selected segmentation has no
+  usable linked table
+- keep the completed slice-7 feature-matrix synchronization model intact
+
+### Why this ticket exists
+
+Today `FeatureExtractionWidget` stops at a warning when the selected
+segmentation has no linked table:
+
+- the widget already tells the user that table creation is "coming soon"
+- there is no explicit flow yet for creating and binding that table
+- future local widget table-context refresh flows, such as creating a table or
+  relinking to a newly created table, are the main reason the controller still
+  keeps a separate local `on_table_state_changed` refresh hook
+
+This work was considered during `VW-05`, but it is now being tracked as a
+separate follow-up rather than part of the object-classification migration.
+
+### Required work
+
+- replace the current dead-end warning with an explicit table-creation path
+  inside `FeatureExtractionWidget`
+- require an explicit user action to create the table; do not silently create
+  one as a side effect of simply selecting a segmentation
+- let the user review or choose the new table name before creation
+- create the table in the selected shared in-memory `sdata`
+- link the new table to the selected segmentation so the normal
+  table-binding helpers recognize it
+- after successful table creation:
+  - refresh local table context in `FeatureExtractionWidget`
+  - bind the widget to the newly created table
+  - continue to use the normal feature-extraction write path so later
+    `.obsm[feature_key]` writes still flow through the shared
+    `feature_matrix_written` event
+- keep the first version focused on table creation from `Feature Extraction`;
+  broader table-management or relinking workflows can remain future work
+
+### Suggested files
+
+- `src/napari_harpy/widgets/_feature_extraction_widget.py`
+- `src/napari_harpy/_feature_extraction.py`
+- `src/napari_harpy/_spatialdata.py`
+- possibly `src/napari_harpy/_app_state.py`
+- `tests/test_feature_extraction_widget.py`
+- `tests/test_feature_extraction.py`
+- possibly a focused new test module for table-creation flow
+
+### Acceptance criteria
+
+- [ ] when the selected segmentation has no linked table, the widget exposes an
+  explicit table-creation action instead of only a passive warning
+- [ ] table creation is explicit and user-visible, with clear feedback about
+  what table will be created and which segmentation it will be linked to
+- [ ] after table creation, `FeatureExtractionWidget` refreshes local table
+  options and binds the new table without requiring reopening or manual refresh
+- [ ] after table creation, running feature extraction writes the requested
+  feature matrix into the new table
+- [ ] the new table is linked to the selected segmentation so the normal
+  table-binding helpers recognize it
+- [ ] shared dirty-table semantics remain correct after table creation and
+  later feature extraction writes
+- [ ] the flow remains compatible with the completed slice-7 behavior:
+  creating the table is a local widget table-context refresh, while later
+  feature-matrix writes are still propagated cross-widget through the shared
+  `feature_matrix_written` event
+
+### Depends on
+
+- VW-01
+- VW-04
+- VW-05
+
 ## Nice-To-Have Follow-Ups
 
 - add image visibility toggles and layer grouping behavior

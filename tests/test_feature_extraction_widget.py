@@ -9,7 +9,7 @@ from qtpy.QtWidgets import QCheckBox, QComboBox, QScrollArea
 from spatialdata import SpatialData
 
 import napari_harpy.widgets._feature_extraction_widget as feature_extraction_widget_module
-from napari_harpy._app_state import get_or_create_app_state
+from napari_harpy._app_state import FeatureMatrixWrittenEvent, get_or_create_app_state
 from napari_harpy._spatialdata import SpatialDataImageOption, SpatialDataLabelsOption
 from napari_harpy.widgets._feature_extraction_widget import FeatureExtractionWidget
 from napari_harpy.widgets._viewer_widget import ViewerWidget
@@ -770,6 +770,30 @@ def test_feature_extraction_widget_refreshes_table_state_after_controller_succes
     widget._on_controller_table_state_changed()
 
     assert calls == ["refresh_table_names", "bind_current_selection"]
+
+
+def test_feature_extraction_widget_reemits_feature_matrix_writes_to_shared_app_state(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+    app_state = get_or_create_app_state(viewer)
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    event = FeatureMatrixWrittenEvent(
+        sdata=sdata_blobs,
+        table_name="table",
+        feature_key="features_new",
+        change_kind="created",
+    )
+
+    with qtbot.waitSignal(app_state.feature_matrix_written) as blocker:
+        widget._on_controller_feature_matrix_written(event)
+
+    assert blocker.args == [event]
+    assert app_state.is_table_dirty(sdata_blobs, "table") is True
 
 
 def test_feature_extraction_widget_clears_when_shared_sdata_is_cleared(

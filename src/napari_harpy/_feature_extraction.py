@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from harpy.utils._keys import _FEATURE_MATRICES_KEY
 
+from napari_harpy._app_state import FeatureMatrixWriteChangeKind, FeatureMatrixWrittenEvent
 from napari_harpy._spatialdata import get_table
 
 if TYPE_CHECKING:
@@ -44,6 +45,7 @@ class FeatureExtractionJob:
     feature_names: tuple[str, ...]
     feature_key: str
     overwrite_feature_key: bool
+    change_kind: FeatureMatrixWriteChangeKind = "created"
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,7 @@ class FeatureExtractionResult:
     label_name: str
     table_name: str
     feature_key: str
+    change_kind: FeatureMatrixWriteChangeKind = "created"
 
 
 @thread_worker(start_thread=False, ignore_errors=True)
@@ -78,6 +81,7 @@ def _run_feature_extraction_job(job: FeatureExtractionJob) -> FeatureExtractionR
         label_name=job.label_name,
         table_name=job.table_name,
         feature_key=job.feature_key,
+        change_kind=job.change_kind,
     )
 
 
@@ -89,9 +93,11 @@ class FeatureExtractionController:
         *,
         on_state_changed: Callable[[], None] | None = None,
         on_table_state_changed: Callable[[], None] | None = None,
+        on_feature_matrix_written: Callable[[FeatureMatrixWrittenEvent], None] | None = None,
     ) -> None:
         self._on_state_changed = on_state_changed
         self._on_table_state_changed = on_table_state_changed
+        self._on_feature_matrix_written = on_feature_matrix_written
 
         self._selected_spatialdata: SpatialData | None = None
         self._selected_label_name: str | None = None
@@ -261,6 +267,7 @@ class FeatureExtractionController:
             overwrite_feature_key=(
                 self._overwrite_feature_key if overwrite_feature_key is None else bool(overwrite_feature_key)
             ),
+            change_kind="updated" if self._selected_feature_key in table.obsm else "created",
         )
 
     def _set_status(self, message: str, *, kind: str) -> None:
@@ -270,8 +277,27 @@ class FeatureExtractionController:
             self._on_state_changed()
 
     def _notify_table_state_changed(self) -> None:
+        # Keep this local widget refresh hook separate from the shared
+        # `feature_matrix_written` app-state event. The current successful
+        # feature-matrix-write path is already covered by that semantic event,
+        # so this hook is mainly retained for future local table-context
+        # refresh flows where running feature extraction may create or relink a
+        # table and the widget must refresh its table selection.
         if self._on_table_state_changed is not None:
             self._on_table_state_changed()
+
+    def _notify_feature_matrix_written(self, result: FeatureExtractionResult) -> None:
+        if self._on_feature_matrix_written is None or self._selected_spatialdata is None:
+            return
+
+        self._on_feature_matrix_written(
+            FeatureMatrixWrittenEvent(
+                sdata=self._selected_spatialdata,
+                table_name=result.table_name,
+                feature_key=result.feature_key,
+                change_kind=result.change_kind,
+            )
+        )
 
     def _update_idle_status(self) -> None:
         if self._selected_spatialdata is None or self._selected_label_name is None:
@@ -330,6 +356,7 @@ class FeatureExtractionController:
             return
 
         self._notify_table_state_changed()
+        self._notify_feature_matrix_written(result)
         self._set_status(
             "Feature extraction: "
             f"wrote `{result.feature_key}` into table `{result.table_name}` as "
