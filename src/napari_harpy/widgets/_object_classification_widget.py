@@ -307,7 +307,9 @@ class ObjectClassificationWidget(QWidget):
         content_layout.addStretch(1)
 
         self._app_state.sdata_changed.connect(self._on_sdata_changed)
-        self._app_state.viewer_adapter.labels_layers_changed.connect(self._on_labels_layers_changed)
+        self._app_state.viewer_adapter.labels_layers_changed.connect(
+            self._on_labels_layers_changed
+        )  # this should be made more narrow -> only listen to labels layer that will be annotated.
         self._app_state.feature_matrix_written.connect(self._on_feature_matrix_written)
         self.refresh_from_sdata(self._app_state.sdata)
 
@@ -1129,7 +1131,9 @@ class ObjectClassificationWidget(QWidget):
         self.reload_button.setEnabled(can_reload)
 
         if self.selected_spatialdata is None or self.selected_table_name is None:
-            sync_tooltip = "Choose a backed SpatialData annotation table to enable writing the in-memory table state to disk."
+            sync_tooltip = (
+                "Choose a backed SpatialData annotation table to enable writing the in-memory table state to disk."
+            )
             reload_tooltip = (
                 "Choose a backed SpatialData annotation table to enable discarding the current in-memory table state "
                 "and reloading it from disk."
