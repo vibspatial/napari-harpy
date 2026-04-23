@@ -277,6 +277,12 @@ class FeatureExtractionController:
             self._on_state_changed()
 
     def _notify_table_state_changed(self) -> None:
+        # Keep this local widget refresh hook separate from the shared
+        # `feature_matrix_written` app-state event. The current successful
+        # feature-matrix-write path is already covered by that semantic event,
+        # so this hook is mainly retained for future local table-context
+        # refresh flows where running feature extraction may create or relink a
+        # table and the widget must refresh its table selection.
         if self._on_table_state_changed is not None:
             self._on_table_state_changed()
 
