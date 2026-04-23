@@ -22,7 +22,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from napari_harpy._app_state import HarpyAppState, get_or_create_app_state
+from napari_harpy._app_state import FeatureMatrixWrittenEvent, HarpyAppState, get_or_create_app_state
 from napari_harpy._feature_extraction import FeatureExtractionController
 from napari_harpy._spatialdata import (
     SpatialDataImageOption,
@@ -128,6 +128,7 @@ class FeatureExtractionWidget(QWidget):
         self._feature_extraction_controller = FeatureExtractionController(
             on_state_changed=self._on_controller_state_changed,
             on_table_state_changed=self._on_controller_table_state_changed,
+            on_feature_matrix_written=self._on_controller_feature_matrix_written,
         )
 
         self._label_options: list[SpatialDataLabelsOption] = []
@@ -1083,3 +1084,6 @@ class FeatureExtractionWidget(QWidget):
     def _on_controller_table_state_changed(self) -> None:
         self._refresh_table_names()
         self._bind_current_selection()
+
+    def _on_controller_feature_matrix_written(self, event: FeatureMatrixWrittenEvent) -> None:
+        self._app_state.emit_feature_matrix_written(event)

@@ -7,6 +7,7 @@ import pytest
 from qtpy.QtCore import QObject, Signal
 from spatialdata import SpatialData
 
+from napari_harpy._app_state import FeatureMatrixWrittenEvent
 from napari_harpy._feature_extraction import (
     FEATURE_EXTRACTION_IDLE_STATUS,
     FeatureExtractionController,
@@ -279,6 +280,48 @@ def test_feature_extraction_controller_notifies_table_state_change_on_success(sd
         "with metadata in `.uns['feature_matrices']['feature_matrix_1']`."
     )
     assert controller.is_running is False
+
+
+def test_feature_extraction_controller_notifies_feature_matrix_written_on_success(sdata_blobs: SpatialData) -> None:
+    written_events: list[FeatureMatrixWrittenEvent] = []
+    deferred_worker = _DeferredWorker(
+        FeatureExtractionResult(
+            job_id=1,
+            label_name="blobs_labels",
+            table_name="table",
+            feature_key="feature_matrix_1",
+            change_kind="created",
+        )
+    )
+
+    controller = FeatureExtractionController(
+        on_feature_matrix_written=lambda event: written_events.append(event),
+    )
+    controller.bind(
+        sdata_blobs,
+        "blobs_labels",
+        "blobs_image",
+        "table",
+        "global",
+        ["mean", "area"],
+        "feature_matrix_1",
+    )
+    controller._create_feature_extraction_worker = lambda job: deferred_worker  # type: ignore[method-assign]
+
+    launched = controller.calculate()
+
+    assert launched is True
+
+    deferred_worker.emit_returned()
+
+    assert written_events == [
+        FeatureMatrixWrittenEvent(
+            sdata=sdata_blobs,
+            table_name="table",
+            feature_key="feature_matrix_1",
+            change_kind="created",
+        )
+    ]
 
 
 def test_feature_extraction_controller_calculate_accepts_one_shot_overwrite_override(

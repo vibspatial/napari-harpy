@@ -23,7 +23,7 @@ import napari_harpy._class_palette as class_palette_module
 import napari_harpy._classifier as classifier_module
 import napari_harpy.widgets._object_classification_widget as widget_module
 from napari_harpy._annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
-from napari_harpy._app_state import get_or_create_app_state
+from napari_harpy._app_state import FeatureMatrixWrittenEvent, get_or_create_app_state
 from napari_harpy._class_palette import default_class_colors
 from napari_harpy._classifier import (
     CLASSIFIER_CONFIG_KEY,
@@ -494,6 +494,126 @@ def test_widget_updates_selected_feature_key_when_feature_matrix_changes(qtbot, 
 
     assert widget.selected_feature_key == "features_2"
     assert "feature matrix changed" in widget.classifier_feedback.text()
+
+
+def test_widget_refreshes_feature_matrix_selector_when_first_key_is_written(qtbot, sdata_blobs: SpatialData) -> None:
+    table = sdata_blobs["table"]
+    for key in list(table.obsm.keys()):
+        del table.obsm[key]
+
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    app_state = get_or_create_app_state(viewer)
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+    mark_dirty_reasons: list[str | None] = []
+
+    def record_mark_dirty(*, reason: str | None = None) -> None:
+        mark_dirty_reasons.append(reason)
+
+    widget._classifier_controller.mark_dirty = record_mark_dirty  # type: ignore[method-assign]
+
+    assert widget.selected_feature_key is None
+    assert widget._persistence_controller.is_dirty is False
+
+    table.obsm["features_new"] = np.arange(table.n_obs, dtype=np.float64).reshape(table.n_obs, 1)
+    app_state.emit_feature_matrix_written(
+        FeatureMatrixWrittenEvent(
+            sdata=sdata_blobs,
+            table_name="table",
+            feature_key="features_new",
+            change_kind="created",
+        )
+    )
+
+    assert widget.feature_matrix_combo.count() == 1
+    assert widget.selected_feature_key == "features_new"
+    assert widget._persistence_controller.is_dirty is True
+    assert mark_dirty_reasons == []
+
+
+def test_widget_invalidates_classifier_when_selected_feature_matrix_is_overwritten(
+    qtbot, sdata_blobs: SpatialData
+) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    app_state = get_or_create_app_state(viewer)
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+    table = sdata_blobs["table"]
+    instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(
+        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
+        categories=[0, 1, 2],
+    )
+    worker = _DeferredWorker(
+        classifier_module.ClassifierJobResult(
+            job_id=1,
+            feature_key="features_1",
+            label_name="blobs_labels",
+            table_name="table",
+            active_positions=np.array([0, 1], dtype=np.int64),
+            pred_classes=np.array([1, 2], dtype=np.int64),
+            pred_confidences=np.array([0.9, 0.8], dtype=np.float64),
+            trained_at="2026-04-23T09:00:00+00:00",
+            model_params=dict(classifier_module.RANDOM_FOREST_PARAMS),
+            eligibility=classifier_module.TrainingEligibility(
+                eligible=True,
+                reason="Ready to train.",
+                active_row_count=2,
+                labeled_count=2,
+                class_labels=(1, 2),
+                n_features=2,
+            ),
+        )
+    )
+
+    widget._classifier_controller._create_training_worker = lambda job: worker  # type: ignore[method-assign]
+
+    assert widget._classifier_controller.schedule_retrain(immediate=True) is True
+    assert widget._classifier_controller.is_training is True
+
+    table.obsm["features_1"] = np.arange(table.n_obs * 2, dtype=np.float64).reshape(table.n_obs, 2)
+    app_state.emit_feature_matrix_written(
+        FeatureMatrixWrittenEvent(
+            sdata=sdata_blobs,
+            table_name="table",
+            feature_key="features_1",
+            change_kind="updated",
+        )
+    )
+
+    assert worker.quit_called is True
+    assert widget._classifier_controller.is_training is False
+    assert widget._classifier_controller.is_dirty is True
+    assert widget.selected_feature_key == "features_1"
+    assert widget._persistence_controller.is_dirty is True
+    assert "overwritten" in widget.classifier_feedback.text()
+
+
+def test_widget_ignores_feature_matrix_writes_for_other_tables(qtbot, sdata_blobs: SpatialData) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    app_state = get_or_create_app_state(viewer)
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+    previous_items = [widget.feature_matrix_combo.itemText(index) for index in range(widget.feature_matrix_combo.count())]
+
+    app_state.emit_feature_matrix_written(
+        FeatureMatrixWrittenEvent(
+            sdata=sdata_blobs,
+            table_name="other_table",
+            feature_key="features_new",
+            change_kind="created",
+        )
+    )
+
+    assert [widget.feature_matrix_combo.itemText(index) for index in range(widget.feature_matrix_combo.count())] == previous_items
+    assert widget.selected_feature_key == "features_1"
+    assert widget._persistence_controller.is_dirty is False
 
 
 def test_widget_updates_color_by_mode_when_selection_changes(qtbot, sdata_blobs: SpatialData) -> None:

@@ -9,6 +9,7 @@ from spatialdata import SpatialData, read_zarr
 from spatialdata.models import TableModel
 
 from napari_harpy._annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
+from napari_harpy._app_state import HarpyAppState
 from napari_harpy._classifier import (
     CLASSIFIER_CONFIG_KEY,
     PRED_CLASS_COLORS_KEY,
@@ -45,6 +46,18 @@ def test_persistence_controller_tracks_dirty_state_per_selected_table(
     assert controller.is_dirty is False
 
     controller.bind(sdata_blobs, "table")
+
+    assert controller.is_dirty is True
+
+
+def test_persistence_controller_reads_dirty_state_from_shared_app_state(sdata_blobs: SpatialData) -> None:
+    app_state = HarpyAppState()
+    controller = PersistenceController(app_state)
+    controller.bind(sdata_blobs, "table")
+
+    assert controller.is_dirty is False
+
+    app_state.mark_table_dirty(sdata_blobs, "table")
 
     assert controller.is_dirty is True
 

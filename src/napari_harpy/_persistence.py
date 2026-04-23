@@ -11,6 +11,7 @@ import zarr
 from spatialdata.models import TableModel
 
 from napari_harpy._annotation import USER_CLASS_COLORS_KEY
+from napari_harpy._app_state import HarpyAppState
 from napari_harpy._classifier import CLASSIFIER_CONFIG_KEY, PRED_CLASS_COLORS_KEY
 from napari_harpy._spatialdata import get_table, normalize_table_metadata
 
@@ -33,11 +34,11 @@ class TableDiskSnapshot:
 class PersistenceController:
     """Persist the selected SpatialData table back to its backed zarr store."""
 
-    def __init__(self) -> None:
+    def __init__(self, app_state: HarpyAppState | None = None) -> None:
+        self._app_state = HarpyAppState() if app_state is None else app_state
         self._selected_spatialdata: SpatialData | None = None
         self._selected_label_name: str | None = None
         self._selected_table_name: str | None = None
-        self._dirty_table_keys: set[tuple[int, str]] = set()
 
     @property
     def can_sync(self) -> bool:
@@ -56,8 +57,7 @@ class PersistenceController:
     @property
     def is_dirty(self) -> bool:
         """Return whether the current selected table has unsynced local changes."""
-        selection_key = self._current_selection_key()
-        return selection_key is not None and selection_key in self._dirty_table_keys
+        return self._app_state.is_table_dirty(self._selected_spatialdata, self._selected_table_name)
 
     @property
     def selected_store_path(self) -> Path | None:
@@ -91,19 +91,11 @@ class PersistenceController:
 
     def mark_dirty(self) -> None:
         """Mark the current selected table as having unsynced local changes."""
-        selection_key = self._current_selection_key()
-        if selection_key is None:
-            return
-
-        self._dirty_table_keys.add(selection_key)
+        self._app_state.mark_table_dirty(self._selected_spatialdata, self._selected_table_name)
 
     def clear_dirty(self) -> None:
         """Clear the unsynced-local-changes marker for the current selected table."""
-        selection_key = self._current_selection_key()
-        if selection_key is None:
-            return
-
-        self._dirty_table_keys.discard(selection_key)
+        self._app_state.clear_table_dirty(self._selected_spatialdata, self._selected_table_name)
 
     def read_table_snapshot_from_disk(self) -> TableDiskSnapshot:
         """Read the selected table's `obs`, `obsm`, and `uns` directly from zarr."""
@@ -338,17 +330,6 @@ class PersistenceController:
             )
 
         return table_paths[0]
-
-    def _current_selection_key(self) -> tuple[int, str] | None:
-        return self._selection_key(self._selected_spatialdata, self._selected_table_name)
-
-    @staticmethod
-    def _selection_key(sdata: SpatialData | None, table_name: str | None) -> tuple[int, str] | None:
-        if sdata is None or table_name is None:
-            return None
-
-        return (id(sdata), table_name)
-
 
 def _normalize_regions(region: str | list[str] | None) -> tuple[str, ...]:
     if region is None:

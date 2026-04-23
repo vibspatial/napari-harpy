@@ -22,7 +22,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_harpy._annotation import UNLABELED_CLASS, AnnotationController
-from napari_harpy._app_state import HarpyAppState, get_or_create_app_state
+from napari_harpy._app_state import FeatureMatrixWrittenEvent, HarpyAppState, get_or_create_app_state
 from napari_harpy._classifier import ClassifierController
 from napari_harpy._persistence import PersistenceController
 from napari_harpy._spatialdata import (
@@ -116,7 +116,7 @@ class ObjectClassificationWidget(QWidget):
         self._viewer_styling_controller = ViewerStylingController(
             self._app_state.viewer_adapter,
         )
-        self._persistence_controller = PersistenceController()
+        self._persistence_controller = PersistenceController(self._app_state)
         self._coordinate_systems: list[str] = []
         self._selected_coordinate_system: str | None = None
         self._label_options: list[SpatialDataLabelsOption] = []
@@ -308,6 +308,7 @@ class ObjectClassificationWidget(QWidget):
 
         self._app_state.sdata_changed.connect(self._on_sdata_changed)
         self._app_state.viewer_adapter.labels_layers_changed.connect(self._on_labels_layers_changed)
+        self._app_state.feature_matrix_written.connect(self._on_feature_matrix_written)
         self.refresh_from_sdata(self._app_state.sdata)
 
     @property
@@ -403,6 +404,25 @@ class ObjectClassificationWidget(QWidget):
 
     def _on_sdata_changed(self, sdata: SpatialData | None) -> None:
         self.refresh_from_sdata(sdata)
+
+    def _on_feature_matrix_written(self, event: object) -> None:
+        if not isinstance(event, FeatureMatrixWrittenEvent):
+            return
+        if event.sdata is not self.selected_spatialdata or event.table_name != self.selected_table_name:
+            return
+
+        previous_feature_key = self.selected_feature_key
+        self._set_persistence_feedback("")
+        self._refresh_feature_matrix_keys()
+
+        if self.selected_feature_key != previous_feature_key:
+            self._bind_current_selection()
+            return
+
+        if event.change_kind == "updated" and previous_feature_key == event.feature_key:
+            self._classifier_controller.invalidate_for_feature_matrix_overwrite(event.feature_key)
+
+        self._update_selection_status()
 
     def _refresh_label_options(self) -> None:
         """Refresh segmentation choices from the selected coordinate system."""

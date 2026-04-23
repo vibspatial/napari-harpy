@@ -9,6 +9,7 @@ from spatialdata import SpatialData
 
 import napari_harpy._classifier as classifier_module
 from napari_harpy._annotation import USER_CLASS_COLUMN
+from napari_harpy._class_palette import default_class_colors
 from napari_harpy._classifier import (
     CLASSIFIER_CONFIG_KEY,
     PRED_CLASS_COLORS_KEY,
@@ -16,7 +17,6 @@ from napari_harpy._classifier import (
     PRED_CONFIDENCE_COLUMN,
     ClassifierController,
 )
-from napari_harpy._class_palette import default_class_colors
 
 
 class _DeferredWorker(QObject):
@@ -288,6 +288,48 @@ def test_classifier_controller_freeze_for_reload_cancels_pending_debounce(
     assert controller.is_training is False
     assert controller.is_dirty is True
     assert controller.status_message == "Classifier: model is stale. Click Retrain to refresh predictions."
+
+
+def test_classifier_controller_invalidates_pending_work_for_selected_feature_matrix_overwrite(
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_deterministic_features(sdata_blobs)
+    _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
+    result = classifier_module.ClassifierJobResult(
+        job_id=1,
+        feature_key="features_1",
+        label_name="blobs_labels",
+        table_name="table",
+        active_positions=np.array([0, 1], dtype=np.int64),
+        pred_classes=np.array([1, 2], dtype=np.int64),
+        pred_confidences=np.array([0.9, 0.8], dtype=np.float64),
+        trained_at="2026-04-13T09:00:00+00:00",
+        model_params=dict(classifier_module.RANDOM_FOREST_PARAMS),
+        eligibility=classifier_module.TrainingEligibility(
+            eligible=True,
+            reason="Ready to train.",
+            active_row_count=2,
+            labeled_count=2,
+            class_labels=(1, 2),
+            n_features=2,
+        ),
+    )
+    worker = _DeferredWorker(result)
+
+    controller = ClassifierController(debounce_interval_ms=0)
+    controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
+    controller._create_training_worker = lambda job: worker  # type: ignore[method-assign]
+
+    assert controller.schedule_retrain(immediate=True) is True
+    assert controller.is_training is True
+
+    invalidated = controller.invalidate_for_feature_matrix_overwrite("features_1")
+
+    assert invalidated is True
+    assert worker.quit_called is True
+    assert controller.is_training is False
+    assert controller.is_dirty is True
+    assert "overwritten" in controller.status_message
 
 
 def test_classifier_controller_reset_after_reload_ignores_late_worker_results(
