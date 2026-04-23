@@ -1,6 +1,6 @@
 # Visualizing Transcripts With Tiled Multiscale Storage
 
-This note captures the design direction we discussed for transcript visualization in napari:
+This note captures the design direction for transcript visualization in napari:
 
 - explicit `tile_id`-based spatial partitioning
 - multiple sampled levels of detail
