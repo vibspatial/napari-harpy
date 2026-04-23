@@ -891,8 +891,10 @@ def test_widget_enables_sync_for_backed_spatialdata(qtbot, backed_sdata_blobs: S
 
     assert widget.sync_button.isEnabled()
     assert widget.reload_button.isEnabled()
-    assert f"Write `table` table state to `{expected_table_path}`." in sync_tooltip
-    assert f"Reload `table` table state from `{expected_table_path}`." in reload_tooltip
+    assert f"Write the current in-memory `table` table state to `{expected_table_path}`." in sync_tooltip
+    assert f"Discard the current in-memory `table` table state and reload it from `{expected_table_path}`." in (
+        reload_tooltip
+    )
 
 
 def test_widget_marks_persistence_dirty_on_annotation_change_and_clears_it_on_sync(
@@ -909,16 +911,20 @@ def test_widget_marks_persistence_dirty_on_annotation_change_and_clears_it_on_sy
     layer.selected_label = 5
     widget.class_spinbox.setValue(3)
     widget.apply_class_button.click()
+    sync_tooltip = unescape(widget.sync_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    reload_tooltip = unescape(widget.reload_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
 
     assert widget._persistence_controller.is_dirty is True
-    assert "Unsynced local table changes are present." in widget.sync_button.toolTip()
-    assert "Unsynced local table changes are present." in widget.reload_button.toolTip()
+    assert "Unsynced local in-memory table changes are present." in sync_tooltip
+    assert "Unsynced local in-memory table changes would be discarded." in reload_tooltip
 
     widget.sync_button.click()
+    sync_tooltip = unescape(widget.sync_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    reload_tooltip = unescape(widget.reload_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
 
     assert widget._persistence_controller.is_dirty is False
-    assert "Unsynced local table changes are present." not in widget.sync_button.toolTip()
-    assert "Unsynced local table changes are present." not in widget.reload_button.toolTip()
+    assert "Unsynced local in-memory table changes are present." not in sync_tooltip
+    assert "Unsynced local in-memory table changes would be discarded." not in reload_tooltip
 
 
 def test_widget_syncs_user_class_to_backed_zarr(qtbot, backed_sdata_blobs: SpatialData) -> None:
@@ -976,10 +982,12 @@ def test_widget_marks_persistence_dirty_after_classifier_writes_results(qtbot, b
         lambda: widget._persistence_controller.is_dirty and table.obs[PRED_CLASS_COLUMN].astype("string").ne("0").any(),
         timeout=5000,
     )
+    sync_tooltip = unescape(widget.sync_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    reload_tooltip = unescape(widget.reload_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
 
     assert widget._persistence_controller.is_dirty is True
-    assert "Unsynced local table changes are present." in widget.sync_button.toolTip()
-    assert "Unsynced local table changes are present." in widget.reload_button.toolTip()
+    assert "Unsynced local in-memory table changes are present." in sync_tooltip
+    assert "Unsynced local in-memory table changes would be discarded." in reload_tooltip
 
 
 def test_widget_cancels_dirty_reload_when_user_chooses_cancel(

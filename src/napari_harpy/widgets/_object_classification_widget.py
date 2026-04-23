@@ -1131,22 +1131,28 @@ class ObjectClassificationWidget(QWidget):
         self.reload_button.setEnabled(can_reload)
 
         if self.selected_spatialdata is None or self.selected_table_name is None:
-            sync_tooltip = "Choose a backed SpatialData annotation table to enable sync."
-            reload_tooltip = "Choose a backed SpatialData annotation table to enable reload."
+            sync_tooltip = "Choose a backed SpatialData annotation table to enable writing the in-memory table state to disk."
+            reload_tooltip = (
+                "Choose a backed SpatialData annotation table to enable discarding the current in-memory table state "
+                "and reloading it from disk."
+            )
         elif self._table_binding_error is not None:
             sync_tooltip = self._table_binding_error
             reload_tooltip = self._table_binding_error
         elif not can_sync or not can_reload:
-            sync_tooltip = "The selected SpatialData dataset is not backed by zarr."
-            reload_tooltip = "The selected SpatialData dataset is not backed by zarr."
+            sync_tooltip = "The selected SpatialData dataset is not backed by zarr, so the in-memory table state cannot be written to disk."
+            reload_tooltip = "The selected SpatialData dataset is not backed by zarr, so the table state cannot be reloaded from disk."
         else:
             table_store_path = self._persistence_controller.selected_table_store_path
             destination = self.selected_spatialdata.path if table_store_path is None else table_store_path
-            sync_tooltip = f"Write `{self.selected_table_name}` table state to `{destination}`."
-            reload_tooltip = f"Reload `{self.selected_table_name}` table state from `{destination}`."
+            sync_tooltip = f"Write the current in-memory `{self.selected_table_name}` table state to `{destination}`."
+            reload_tooltip = (
+                f"Discard the current in-memory `{self.selected_table_name}` table state and reload it from "
+                f"`{destination}`."
+            )
             if self._persistence_controller.is_dirty:
-                sync_tooltip += " Unsynced local table changes are present."
-                reload_tooltip += " Unsynced local table changes are present."
+                sync_tooltip += " Unsynced local in-memory table changes are present."
+                reload_tooltip += " Unsynced local in-memory table changes would be discarded."
 
         self._set_tooltip(self.sync_button, sync_tooltip)
         self._set_tooltip(self.reload_button, reload_tooltip)
