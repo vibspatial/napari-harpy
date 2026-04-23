@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class SpatialDataLabelsOption:
-    """A selectable labels element discovered from a viewer-linked SpatialData object."""
+    """A selectable labels element discovered from a loaded SpatialData object."""
 
     label_name: str
     # User-facing text for the dropdown. This may include the dataset name to
@@ -37,7 +37,7 @@ class SpatialDataLabelsOption:
 
 @dataclass(frozen=True)
 class SpatialDataImageOption:
-    """A selectable image element discovered from a viewer-linked SpatialData object."""
+    """A selectable image element discovered from a loaded SpatialData object."""
 
     image_name: str
     # User-facing text for the dropdown. This may include the dataset name to

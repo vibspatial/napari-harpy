@@ -455,11 +455,11 @@ renamed/refined.
 
 ### Acceptance criteria
 
-- [ ] the codebase has a deliberate post-migration decision on whether
+- [x] the codebase has a deliberate post-migration decision on whether
   `SpatialDataLabelsOption` / `SpatialDataImageOption` remain the shared
   selection models
-- [ ] any renaming or reshaping is reflected consistently across both widgets
-- [ ] their responsibilities and naming match the post-`VW-05` architecture
+- [x] any renaming or reshaping is reflected consistently across both widgets
+- [x] their responsibilities and naming match the post-`VW-05` architecture
 
 ### Depends on
 
