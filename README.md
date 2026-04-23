@@ -2,9 +2,10 @@
   <img src="docs/_static/logo.png" alt="Harpy logo" width="200">
 </p>
 
-`napari-harpy` is a napari plugin for feature extraction and interactive object
-classification on `SpatialData` datasets. It now includes its own
-viewer workflow for loading and browsing `SpatialData` inside napari.
+`napari-harpy` is a napari plugin for viewing, exploring, and analyzing
+`SpatialData` datasets. It includes its own viewer for loading and
+browsing data inside napari, alongside feature extraction and interactive
+object classification workflows.
 
 The current repository contains three working widgets:
 
@@ -67,4 +68,3 @@ python scripts/debug_widget.py
 ```
 
 The script currently contains a hard-coded `SDATA_PATH`, so update that path as needed before running it.
-
