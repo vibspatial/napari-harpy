@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from qtpy.QtCore import QPointF, QSignalBlocker, QSize, QStringListModel, Qt, Signal
-from qtpy.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+from qtpy.QtCore import QPointF, QRectF, QSignalBlocker, QSize, QStringListModel, Qt, Signal
+from qtpy.QtGui import QBrush, QColor, QIcon, QPainter, QPen, QPixmap
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -34,7 +34,7 @@ from napari_harpy._spatialdata import (
     get_table_color_source_options,
 )
 from napari_harpy._table_color_source import ColorSourceKind, TableColorSourceSpec
-from napari_harpy._viewer_adapter import DEFAULT_OVERLAY_COLORS
+from napari_harpy._viewer_adapter import AVAILABLE_OVERLAY_COLORS
 from napari_harpy.widgets._shared_styles import (
     ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,
 )
@@ -119,6 +119,27 @@ _CHANNEL_PANEL_STYLESHEET = "QWidget { background: transparent; }"
 _SUBSECTION_LABEL_STYLESHEET = "color: #64748b; font-size: 11px; font-weight: 600;"
 _MAX_VISIBLE_OVERLAY_CHANNELS = 5
 _DISCLOSURE_CHEVRON_SIZE = 14
+_COLOR_SWATCH_ICON_SIZE = 16
+_OVERLAY_COLOR_NAMES_BY_HEX = {
+    "#00FFFF": "Cyan",
+    "#FF00FF": "Magenta",
+    "#FFFF00": "Yellow",
+    "#00FF7F": "Green",
+    "#FF5050": "Red",
+    "#1E90FF": "Blue",
+    "#FFA500": "Orange",
+    "#9370DB": "Purple",
+    "#ADFF2F": "Green-yellow",
+    "#7B68EE": "Slate blue",
+    "#FF1493": "Deep pink",
+    "#20B2AA": "Teal",
+    "#FFD700": "Gold",
+    "#FF7F50": "Coral",
+    "#87CEFA": "Sky blue",
+    "#32CD32": "Lime green",
+    "#FF69B4": "Hot pink",
+    "#DDA0DD": "Plum",
+}
 
 
 @dataclass(frozen=True)
@@ -185,6 +206,33 @@ def _create_disclosure_chevron_icon(*, expanded: bool, color: str = WIDGET_TEXT_
 
     painter.end()
     return QIcon(pixmap)
+
+
+def _create_color_swatch_icon(color: str) -> QIcon:
+    pixmap = QPixmap(_COLOR_SWATCH_ICON_SIZE, _COLOR_SWATCH_ICON_SIZE)
+    pixmap.fill(Qt.GlobalColor.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setPen(QPen(QColor(WIDGET_BORDER_STRONG_COLOR), 1.0))
+    painter.setBrush(QBrush(QColor(color)))
+    painter.drawRoundedRect(
+        QRectF(1.0, 1.0, _COLOR_SWATCH_ICON_SIZE - 2.0, _COLOR_SWATCH_ICON_SIZE - 2.0),
+        4.0,
+        4.0,
+    )
+    painter.end()
+    return QIcon(pixmap)
+
+
+def _overlay_color_label(color: str) -> str:
+    return _OVERLAY_COLOR_NAMES_BY_HEX.get(color.upper(), color)
+
+
+def _populate_overlay_color_combo(combo: QComboBox) -> None:
+    combo.setIconSize(QSize(_COLOR_SWATCH_ICON_SIZE, _COLOR_SWATCH_ICON_SIZE))
+    for color in AVAILABLE_OVERLAY_COLORS:
+        combo.addItem(_create_color_swatch_icon(color), _overlay_color_label(color), color)
 
 
 class _ElidedToolButton(QToolButton):
@@ -710,8 +758,7 @@ class _ImageCardWidget(QFrame):
                 color_combo = QComboBox()
                 color_combo.setObjectName(f"viewer_widget_channel_color_combo_{image_name}_{channel_name}")
                 color_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
-                for color in DEFAULT_OVERLAY_COLORS:
-                    color_combo.addItem(color, color)
+                _populate_overlay_color_combo(color_combo)
                 color_combo.setCurrentIndex(index % color_combo.count())
 
                 row_layout.addWidget(checkbox, 1)
