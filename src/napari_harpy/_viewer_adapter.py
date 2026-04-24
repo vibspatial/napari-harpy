@@ -767,6 +767,11 @@ def _apply_minimal_layer_metadata(layer: Layer, binding: LayerBinding) -> None:
     _set_optional_metadata_value(
         metadata, "style_spec", binding.style_spec if isinstance(binding, LabelsLayerBinding) else None
     )
+    style_spec = binding.style_spec if isinstance(binding, LabelsLayerBinding) else None
+    _set_optional_metadata_value(metadata, "style_table_name", None if style_spec is None else style_spec.table_name)
+    _set_optional_metadata_value(metadata, "style_source_kind", None if style_spec is None else style_spec.source_kind)
+    _set_optional_metadata_value(metadata, "style_value_key", None if style_spec is None else style_spec.value_key)
+    _set_optional_metadata_value(metadata, "style_value_kind", None if style_spec is None else style_spec.value_kind)
     _set_optional_metadata_value(
         metadata,
         "image_display_mode",

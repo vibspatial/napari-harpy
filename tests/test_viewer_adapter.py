@@ -179,6 +179,10 @@ def test_layer_binding_registry_tracks_labels_role_and_style_spec() -> None:
     ) == [binding]
     assert layer.metadata["labels_role"] == "styled"
     assert layer.metadata["style_spec"] == style_spec
+    assert layer.metadata["style_table_name"] == "table"
+    assert layer.metadata["style_source_kind"] == "obs_column"
+    assert layer.metadata["style_value_key"] == "cell_type"
+    assert layer.metadata["style_value_kind"] == "categorical"
 
 
 def test_viewer_adapter_activate_layer_selects_only_matching_layer() -> None:
@@ -465,6 +469,10 @@ def test_viewer_adapter_ensure_styled_labels_loaded_creates_registered_overlay_w
     assert isinstance(binding, LabelsLayerBinding)
     assert binding.labels_role == "styled"
     assert binding.style_spec == style_spec
+    assert result.layer.metadata["style_table_name"] == "table"
+    assert result.layer.metadata["style_source_kind"] == "obs_column"
+    assert result.layer.metadata["style_value_key"] == "cell_type"
+    assert result.layer.metadata["style_value_kind"] == "categorical"
     assert list(result.layer.features.columns) == ["index", "instance_id", "cell_type"]
 
     odd_instance = int(region_rows.loc[region_rows["instance_id"] % 2 == 1, "instance_id"].iloc[0])

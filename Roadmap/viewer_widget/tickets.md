@@ -682,6 +682,86 @@ separate follow-up rather than part of the object-classification migration.
 - VW-04
 - VW-05
 
+## VW-10: Move Viewer Card Actions To Card-Local Feedback
+
+### Goal
+
+Make `ViewerWidget` action feedback appear close to the image or segmentation
+card that triggered it, while keeping the existing global feedback area for
+global viewer actions.
+
+### Scope
+
+- keep the global viewer feedback card for global actions such as:
+  - loading a `SpatialData` store
+  - dataset-level or coordinate-system-level errors
+- add local feedback cards to image and segmentation cards for actions that
+  originate from those cards
+- reuse the shared `set_status_card(...)` helper from `_shared_styles.py`
+- do not add a full legend, palette editor, or persistent notification system
+
+### Why this ticket exists
+
+`VW-07` introduced structured status-card feedback for the viewer, but the card
+currently lives near the top of the scrollable widget. That is acceptable for a
+single global "last action" message, but it can be easy to miss when the user
+clicks `Add / Update in viewer` from a lower image or segmentation card.
+
+For card-originated actions, feedback should feel attached to the object the
+user just acted on:
+
+- styled-overlay creation / update messages should appear on the relevant
+  segmentation card
+- palette fallback and categorical-coercion warnings should appear on that same
+  segmentation card
+- stack / overlay image loading messages should appear on the relevant image
+  card
+- global feedback should remain available for global actions and failures that
+  are not naturally tied to a card
+
+### Required work
+
+- add a hidden local feedback `QLabel` to `_LabelsCardWidget`
+- add a hidden local feedback `QLabel` to `_ImageCardWidget`
+- add small card methods such as:
+  - `set_feedback(...)`
+  - `clear_feedback()`
+- wire `ViewerWidget` card signals so the parent knows which card emitted the
+  action
+- route card-originated feedback through the emitting card when available
+- keep `_set_action_feedback(...)` as the global feedback path for global
+  viewer actions
+- clear stale card feedback when cards are rebuilt after changing
+  `SpatialData`, coordinate system, image selection context, or labels context
+- keep feedback styling centralized through `set_status_card(...)`
+
+### Suggested files
+
+- `src/napari_harpy/widgets/_viewer_widget.py`
+- `src/napari_harpy/widgets/_shared_styles.py` only if a tiny helper extension
+  is needed
+- `tests/test_viewer_widget.py`
+
+### Acceptance criteria
+
+- [ ] clicking a segmentation card's `Add / Update in viewer` shows feedback on
+  that segmentation card
+- [ ] styled-overlay palette-source and categorical-coercion messages are
+  visible on the relevant segmentation card
+- [ ] clicking an image card's `Add / Update in viewer` shows feedback on that
+  image card
+- [ ] successful card-local actions do not need to populate the global feedback
+  card
+- [ ] global actions, such as `Load SpatialData`, still use the global feedback
+  card
+- [ ] changing coordinate system or rebuilding cards clears stale local card
+  feedback
+- [ ] tests cover card-local success, warning, info, and error feedback paths
+
+### Depends on
+
+- VW-07
+
 ## Nice-To-Have Follow-Ups
 
 - add image visibility toggles and layer grouping behavior
