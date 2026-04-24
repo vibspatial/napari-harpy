@@ -104,6 +104,7 @@ _MORPHOLOGY_FEATURES = (
 )
 _DEFAULT_FEATURE_MATRIX_KEY = "features"
 _MAX_VISIBLE_EXTRACTION_CHANNELS = 5
+_FEATURE_GROUPS_TOP_SPACING = 12
 ImageIdentity = tuple[int, str]
 
 
@@ -302,6 +303,7 @@ class FeatureExtractionWidget(QWidget):
 
         content_layout.addWidget(title)
         content_layout.addLayout(selector_layout)
+        content_layout.addSpacing(_FEATURE_GROUPS_TOP_SPACING)
         content_layout.addWidget(self.intensity_features_group)
         content_layout.addWidget(self.morphology_features_group)
         content_layout.addWidget(self.calculate_action_row)
