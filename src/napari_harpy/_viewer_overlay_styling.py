@@ -13,7 +13,12 @@ from napari.utils.colormaps import DirectLabelColormap, label_colormap
 
 from napari_harpy._class_palette import default_categorical_colors, normalize_color_sequence
 from napari_harpy._spatialdata import get_table, get_table_metadata
-from napari_harpy._table_color_source import ColorValueKind, TableColorSourceSpec
+from napari_harpy._table_color_source import (
+    ColorValueKind,
+    TableColorSourceSpec,
+    has_high_cardinality_string_values,
+    string_categorical_warning_threshold,
+)
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -157,9 +162,6 @@ def _build_obs_column_colormap(
         return style_result, color_dict, pd.DataFrame({column_name: numeric_region_series}, index=region_rows.index)
 
     if _is_string_like_series(full_series):
-        logger.warning(
-            f"Coercing plain string/object observation column `{column_name}` to temporary categorical values for viewer coloring."
-        )
         full_values = pd.Series(
             [_normalize_string_value(value) for value in full_series],
             index=full_series.index,
@@ -172,6 +174,21 @@ def _build_obs_column_colormap(
             name=column_name,
             dtype="object",
         )
+        non_missing_values = full_values.dropna().tolist()
+        if has_high_cardinality_string_values(non_missing_values, row_count=len(full_series)):
+            unique_count = len({str(value) for value in non_missing_values})
+            threshold = string_categorical_warning_threshold(len(full_series))
+            logger.warning(
+                f"Observation column `{column_name}` has {unique_count} unique string values across "
+                f"{len(full_series)} rows, which exceeds the categorical viewer-coloring threshold of {threshold}. "
+                "Harpy will render it with the default categorical palette anyway; "
+                "convert the column to pandas categorical dtype to mark this as intentional."
+            )
+        else:
+            logger.warning(
+                f"Coercing plain string/object observation column `{column_name}` to temporary categorical values "
+                "for viewer coloring."
+            )
         categories = list(pd.unique(full_values.dropna()))
         palette = default_categorical_colors(len(categories))
         color_dict = _build_categorical_color_dict(region_values, categories=categories, palette=palette)

@@ -85,6 +85,12 @@ def test_get_table_obs_color_source_options_classifies_supported_columns(sdata_b
     table.obs["int_obs"] = pd.Series(np.arange(n_obs), index=table.obs.index, dtype="int64")
     table.obs["float_obs"] = pd.Series(np.linspace(0.0, 1.0, n_obs), index=table.obs.index, dtype="float64")
     table.obs["string_obs"] = pd.Series(repeated_values, index=table.obs.index, dtype="object")
+    table.obs["string_id_obs"] = pd.Series(
+        [f"cell-{index:04d}" for index in range(n_obs)],
+        index=table.obs.index,
+        dtype="object",
+    )
+    table.obs["cat_id_obs"] = pd.Categorical([f"cell-{index:04d}" for index in range(n_obs)])
     table.obs["datetime_obs"] = pd.date_range("2024-01-01", periods=n_obs)
     table.obs["object_obs"] = pd.Series([{"index": index} for index in range(n_obs)], index=table.obs.index, dtype="object")
 
@@ -100,6 +106,8 @@ def test_get_table_obs_color_source_options_classifies_supported_columns(sdata_b
     assert option_by_key["int_obs"].value_kind == "continuous"
     assert option_by_key["float_obs"].value_kind == "continuous"
     assert option_by_key["string_obs"].value_kind == "categorical"
+    assert option_by_key["string_id_obs"].value_kind == "categorical"
+    assert option_by_key["cat_id_obs"].value_kind == "categorical"
     assert "datetime_obs" not in option_by_key
     assert "object_obs" not in option_by_key
     assert option_by_key["cat_obs"].source_kind == "obs_column"
