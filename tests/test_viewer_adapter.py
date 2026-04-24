@@ -544,6 +544,99 @@ def test_viewer_adapter_ensure_styled_labels_loaded_invalid_palette_falls_back(s
     assert result.coercion_applied is False
 
 
+def test_viewer_adapter_ensure_styled_labels_loaded_colors_bool_obs_categorically(sdata_blobs) -> None:
+    table = sdata_blobs["table"]
+    table.obs["is_even"] = pd.Series(
+        table.obs["instance_id"].to_numpy(dtype=np.int64) % 2 == 0,
+        index=table.obs.index,
+    )
+    table.uns["is_even_colors"] = ["#ff0000", "#00ff00"]
+
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="is_even",
+        value_kind="categorical",
+    )
+
+    result = adapter.ensure_styled_labels_loaded(sdata_blobs, "blobs_labels", "global", style_spec)
+
+    assert result.value_kind == "categorical"
+    assert result.palette_source == "stored"
+    assert result.coercion_applied is False
+    features = result.layer.features.set_index("index")
+    odd_instance = int(table.obs.loc[table.obs["instance_id"] % 2 == 1, "instance_id"].iloc[0])
+    even_instance = int(table.obs.loc[table.obs["instance_id"] % 2 == 0, "instance_id"].iloc[0])
+    assert features.loc[odd_instance, "is_even"] == np.False_
+    assert features.loc[even_instance, "is_even"] == np.True_
+    assert np.allclose(result.layer.colormap.color_dict[odd_instance], np.asarray(to_rgba("#ff0000"), dtype=np.float32))
+    assert np.allclose(result.layer.colormap.color_dict[even_instance], np.asarray(to_rgba("#00ff00"), dtype=np.float32))
+
+
+def test_viewer_adapter_ensure_styled_labels_loaded_colors_binary_int_obs_categorically(sdata_blobs) -> None:
+    table = sdata_blobs["table"]
+    table.obs["binary_state"] = pd.Series(
+        table.obs["instance_id"].to_numpy(dtype=np.int64) % 2,
+        index=table.obs.index,
+        dtype="int64",
+    )
+    table.uns["binary_state_colors"] = ["#ff0000", "#00ff00"]
+
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="binary_state",
+        value_kind="categorical",
+    )
+
+    result = adapter.ensure_styled_labels_loaded(sdata_blobs, "blobs_labels", "global", style_spec)
+
+    assert result.value_kind == "categorical"
+    assert result.palette_source == "stored"
+    assert result.coercion_applied is False
+    features = result.layer.features.set_index("index")
+    zero_instance = int(table.obs.loc[table.obs["binary_state"] == 0, "instance_id"].iloc[0])
+    one_instance = int(table.obs.loc[table.obs["binary_state"] == 1, "instance_id"].iloc[0])
+    assert int(features.loc[zero_instance, "binary_state"]) == 0
+    assert int(features.loc[one_instance, "binary_state"]) == 1
+    assert np.allclose(result.layer.colormap.color_dict[zero_instance], np.asarray(to_rgba("#ff0000"), dtype=np.float32))
+    assert np.allclose(result.layer.colormap.color_dict[one_instance], np.asarray(to_rgba("#00ff00"), dtype=np.float32))
+
+
+def test_viewer_adapter_ensure_styled_labels_loaded_colors_non_binary_int_obs_continuously(sdata_blobs) -> None:
+    table = sdata_blobs["table"]
+    table.obs["object_score"] = pd.Series(
+        table.obs["instance_id"].to_numpy(dtype=np.int64),
+        index=table.obs.index,
+        dtype="int64",
+    )
+
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="object_score",
+        value_kind="continuous",
+    )
+
+    result = adapter.ensure_styled_labels_loaded(sdata_blobs, "blobs_labels", "global", style_spec)
+
+    assert result.value_kind == "continuous"
+    assert result.palette_source is None
+    assert result.coercion_applied is False
+    features = result.layer.features.set_index("index")
+    min_instance = int(table.obs["instance_id"].min())
+    max_instance = int(table.obs["instance_id"].max())
+    assert float(features.loc[min_instance, "object_score"]) == float(min_instance)
+    assert float(features.loc[max_instance, "object_score"]) == float(max_instance)
+    assert not np.allclose(result.layer.colormap.color_dict[min_instance], result.layer.colormap.color_dict[max_instance])
+
+
 def test_viewer_adapter_ensure_styled_labels_loaded_coerces_string_obs_to_categorical(sdata_blobs) -> None:
     table = sdata_blobs["table"]
     table.obs["sample_type"] = pd.Series(
