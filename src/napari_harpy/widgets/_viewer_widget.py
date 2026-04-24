@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from html import escape
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from qtpy.QtCore import QSignalBlocker, QStringListModel, Qt, Signal
 from qtpy.QtGui import QPixmap
@@ -81,6 +82,7 @@ _EMPTY_STATE_STYLESHEET = "color: #6b7280; font-weight: 500;"
 _CHANNEL_WARNING_STYLESHEET = "color: #b45309; font-weight: 600;"
 _CHANNEL_PANEL_STYLESHEET = "QWidget { background: transparent; }"
 _MAX_VISIBLE_OVERLAY_CHANNELS = 5
+_FeedbackKind = Literal["info", "warning", "success", "error"]
 
 
 @dataclass(frozen=True)
@@ -727,7 +729,11 @@ class ViewerWidget(QWidget):
         try:
             sdata = read_zarr(selected_path)
         except (OSError, ValueError) as error:
-            self._set_action_feedback(f"Could not load SpatialData store: {error}", is_error=True)
+            self._set_action_feedback(
+                title="SpatialData Load Error",
+                lines=[f"Could not load SpatialData store: {error}"],
+                kind="error",
+            )
             return
 
         self._app_state.set_sdata(sdata)
@@ -834,20 +840,25 @@ class ViewerWidget(QWidget):
         coordinate_system = self.coordinate_system_combo.currentText()
 
         if sdata is None or not coordinate_system:
-            self._set_action_feedback("Load a SpatialData object and select a coordinate system first.", is_error=True)
+            self._set_action_feedback(
+                title="Segmentation Load Error",
+                lines=["Load a SpatialData object and select a coordinate system first."],
+                kind="error",
+            )
             return
 
         try:
             layer = self._app_state.viewer_adapter.ensure_labels_loaded(sdata, label_name, coordinate_system)
         except ValueError as error:
-            self._set_action_feedback(str(error), is_error=True)
+            self._set_action_feedback(title="Segmentation Load Error", lines=[str(error)], kind="error")
             return
 
         self._app_state.viewer_adapter.activate_layer(layer)
         display_name, was_shortened = format_feedback_identifier(label_name)
         self._set_action_feedback(
-            f"Loaded segmentation `{display_name}` in coordinate system `{coordinate_system}`.",
-            is_error=False,
+            title="Segmentation Loaded",
+            lines=[f"Loaded segmentation `{display_name}` in coordinate system `{coordinate_system}`."],
+            kind="success",
             tooltip_message=(
                 f"Loaded segmentation `{label_name}` in coordinate system `{coordinate_system}`."
                 if was_shortened
@@ -860,21 +871,31 @@ class ViewerWidget(QWidget):
         coordinate_system = self.coordinate_system_combo.currentText()
 
         if sdata is None or not coordinate_system:
-            self._set_action_feedback("Load a SpatialData object and select a coordinate system first.", is_error=True)
+            self._set_action_feedback(
+                title="Colored Overlay Error",
+                lines=["Load a SpatialData object and select a coordinate system first."],
+                kind="error",
+            )
             return
 
         if request.table_name is None:
             self._set_action_feedback(
-                f"Segmentation `{request.label_name}` has no linked table for table-driven coloring.",
-                is_error=True,
+                title="Colored Overlay Error",
+                lines=[f"Segmentation `{request.label_name}` has no linked table for table-driven coloring."],
+                kind="error",
             )
             return
 
         if request.selected_color_source is None:
             missing_source_label = "observation column" if request.selected_source_kind == "obs_column" else "var"
+            missing_source_article = "an" if request.selected_source_kind == "obs_column" else "a"
             self._set_action_feedback(
-                f"Select a {missing_source_label} to create a colored overlay for `{request.label_name}`.",
-                is_error=True,
+                title="Colored Overlay Error",
+                lines=[
+                    f"Select {missing_source_article} {missing_source_label} "
+                    f"to create a colored overlay for `{request.label_name}`."
+                ],
+                kind="error",
             )
             return
 
@@ -886,7 +907,7 @@ class ViewerWidget(QWidget):
                 request.selected_color_source,
             )
         except ValueError as error:
-            self._set_action_feedback(str(error), is_error=True)
+            self._set_action_feedback(title="Colored Overlay Error", lines=[str(error)], kind="error")
             return
 
         self._app_state.viewer_adapter.activate_layer(result.layer)
@@ -896,22 +917,31 @@ class ViewerWidget(QWidget):
         else:
             source_text = f'X[:, "{request.selected_color_source.value_key}"]'
 
-        message = (
+        action_line = (
             f"{action} colored overlay for {source_text} on segmentation `{request.label_name}` "
             f"in coordinate system `{coordinate_system}`."
         )
+        feedback_kind: _FeedbackKind = "success"
+        title = f"Colored Overlay {action}"
+        lines = [action_line]
         if result.coercion_applied:
-            message += " Coerced string values to categorical and used the default categorical palette."
+            feedback_kind = "warning"
+            title = f"{title} With Warning"
+            lines.append("Coerced string values to categorical and used the default categorical palette.")
         elif result.palette_source == "stored":
-            message += " Used the stored categorical palette."
+            lines.append("Used the stored categorical palette.")
         elif result.palette_source == "default_invalid":
-            message += " The stored categorical palette was invalid, so Harpy used the default categorical palette."
+            feedback_kind = "warning"
+            title = f"{title} With Warning"
+            lines.append("The stored categorical palette was invalid, so Harpy used the default categorical palette.")
         elif result.palette_source == "default_missing":
-            message += " Used the default categorical palette."
+            feedback_kind = "info"
+            lines.append("Used the default categorical palette because no stored palette was present.")
 
         self._set_action_feedback(
-            message,
-            is_error=False,
+            title=title,
+            lines=lines,
+            kind=feedback_kind,
         )
 
     def _add_or_update_image_layer(self, request: ImageLoadRequest) -> None:
@@ -920,13 +950,21 @@ class ViewerWidget(QWidget):
         image_name = request.image_name
 
         if sdata is None or not coordinate_system:
-            self._set_action_feedback("Load a SpatialData object and select a coordinate system first.", is_error=True)
+            self._set_action_feedback(
+                title="Image Load Error",
+                lines=["Load a SpatialData object and select a coordinate system first."],
+                kind="error",
+            )
             return
 
         mode = request.mode
         if mode == "overlay" and not request.channels:
             self._app_state.viewer_adapter.remove_image_layers(sdata, image_name, coordinate_system)
-            self._set_action_feedback("Overlay mode requires at least one selected channel.", is_error=True)
+            self._set_action_feedback(
+                title="Image Load Error",
+                lines=["Overlay mode requires at least one selected channel."],
+                kind="error",
+            )
             return
 
         try:
@@ -939,22 +977,24 @@ class ViewerWidget(QWidget):
                 channel_colors=request.channel_colors if mode == "overlay" else None,
             )
         except ValueError as error:
-            self._set_action_feedback(str(error), is_error=True)
+            self._set_action_feedback(title="Image Load Error", lines=[str(error)], kind="error")
             return
 
         if mode == "stack":
             if isinstance(layer_or_layers, list):
                 self._set_action_feedback(
-                    f"Expected one stack image layer for `{image_name}`, but received multiple layers.",
-                    is_error=True,
+                    title="Image Load Error",
+                    lines=[f"Expected one stack image layer for `{image_name}`, but received multiple layers."],
+                    kind="error",
                 )
                 return
 
             self._app_state.viewer_adapter.activate_layer(layer_or_layers)
             display_name, was_shortened = format_feedback_identifier(image_name)
             self._set_action_feedback(
-                f"Loaded image `{display_name}` in stack mode for coordinate system `{coordinate_system}`.",
-                is_error=False,
+                title="Image Loaded",
+                lines=[f"Loaded image `{display_name}` in stack mode for coordinate system `{coordinate_system}`."],
+                kind="success",
                 tooltip_message=(
                     f"Loaded image `{image_name}` in stack mode for coordinate system `{coordinate_system}`."
                     if was_shortened
@@ -965,20 +1005,28 @@ class ViewerWidget(QWidget):
 
         if not isinstance(layer_or_layers, list):
             self._set_action_feedback(
-                f"Expected overlay image layers for `{image_name}`, but received a single layer.",
-                is_error=True,
+                title="Image Load Error",
+                lines=[f"Expected overlay image layers for `{image_name}`, but received a single layer."],
+                kind="error",
             )
             return
         if not layer_or_layers:
-            self._set_action_feedback(f"No overlay layers were returned for image `{image_name}`.", is_error=True)
+            self._set_action_feedback(
+                title="Image Load Error",
+                lines=[f"No overlay layers were returned for image `{image_name}`."],
+                kind="error",
+            )
             return
 
         self._app_state.viewer_adapter.activate_layer(layer_or_layers[0])
         display_name, was_shortened = format_feedback_identifier(image_name)
         self._set_action_feedback(
-            f"Loaded image `{display_name}` in overlay mode for channels {request.channels} "
-            f"in coordinate system `{coordinate_system}`.",
-            is_error=False,
+            title="Image Loaded",
+            lines=[
+                f"Loaded image `{display_name}` in overlay mode for channels {request.channels} "
+                f"in coordinate system `{coordinate_system}`."
+            ],
+            kind="success",
             tooltip_message=(
                 f"Loaded image `{image_name}` in overlay mode for channels {request.channels} "
                 f"in coordinate system `{coordinate_system}`."
@@ -999,17 +1047,34 @@ class ViewerWidget(QWidget):
         self._image_cards = []
         self._labels_cards = []
 
-    def _set_action_feedback(self, message: str, *, is_error: bool, tooltip_message: str | None = None) -> None:
-        self.action_feedback_label.setText(message)
-        self.action_feedback_label.setStyleSheet(
-            "color: #b91c1c; font-weight: 600;" if is_error else "color: #166534; font-weight: 600;"
-        )
+    def _set_action_feedback(
+        self,
+        message: str | None = None,
+        *,
+        title: str | None = None,
+        lines: list[str] | None = None,
+        kind: _FeedbackKind | None = None,
+        is_error: bool | None = None,
+        tooltip_message: str | None = None,
+    ) -> None:
+        """Render viewer action feedback as the shared status-card pattern."""
+        if lines is None:
+            if message is None:
+                lines = []
+            else:
+                lines = [message]
+        if kind is None:
+            kind = "error" if is_error else "success"
+        if title is None:
+            title = "Viewer Error" if kind == "error" else "Viewer Updated"
+
+        _set_status_card(self.action_feedback_label, title=title, lines=lines, kind=kind)
         self.action_feedback_label.setToolTip(format_tooltip(tooltip_message) if tooltip_message else "")
-        self.action_feedback_label.show()
 
     def _clear_action_feedback(self) -> None:
         self.action_feedback_label.clear()
         self.action_feedback_label.setToolTip("")
+        self.action_feedback_label.setStyleSheet("")
         self.action_feedback_label.hide()
 
     def _create_header_logo(self) -> QLabel:
@@ -1040,6 +1105,33 @@ def _clear_layout(layout: QLayout) -> None:
 
 def _create_form_label(text: str) -> QLabel:
     return create_form_label(text)
+
+
+def _set_status_card(label: QLabel, *, title: str, lines: list[str], kind: _FeedbackKind) -> None:
+    palette_by_kind = {
+        "info": {"text": "#1d4ed8", "border": "#93c5fd", "background": "#eff6ff"},
+        "warning": {"text": "#b45309", "border": "#fdba74", "background": "#fff7ed"},
+        "success": {"text": "#166534", "border": "#86efac", "background": "#f0fdf4"},
+        "error": {"text": "#b91c1c", "border": "#fca5a5", "background": "#fef2f2"},
+    }
+    palette = palette_by_kind.get(kind, palette_by_kind["info"])
+    formatted_lines = "<br>".join(f"<span>{escape(line, quote=False)}</span>" for line in lines)
+    label.setText(
+        "<div>"
+        f"<span style='font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;'>"
+        f"{escape(title, quote=False)}</span><br>"
+        f"{formatted_lines}"
+        "</div>"
+    )
+    label.setStyleSheet(
+        "font-weight: 500; "
+        f"color: {palette['text']}; "
+        f"background-color: {palette['background']}; "
+        f"border: 1px solid {palette['border']}; "
+        "border-radius: 8px; "
+        "padding: 10px 12px;"
+    )
+    label.setVisible(bool(lines))
 
 
 def _get_coordinate_systems_from_sdata(sdata: SpatialData) -> list[str]:

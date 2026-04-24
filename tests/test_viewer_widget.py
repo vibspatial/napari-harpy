@@ -44,6 +44,20 @@ class DummyViewer:
         self.layers = DummyLayers()
 
 
+_FEEDBACK_BACKGROUND_BY_KIND = {
+    "info": "#eff6ff",
+    "warning": "#fff7ed",
+    "success": "#f0fdf4",
+    "error": "#fef2f2",
+}
+
+
+def _assert_action_feedback_card(widget: ViewerWidget, *, title: str, kind: str) -> None:
+    assert title in widget.action_feedback_label.text()
+    assert f"background-color: {_FEEDBACK_BACKGROUND_BY_KIND[kind]}" in widget.action_feedback_label.styleSheet()
+    assert not widget.action_feedback_label.isHidden()
+
+
 def test_viewer_widget_can_be_instantiated(qtbot) -> None:
     widget = ViewerWidget()
 
@@ -419,6 +433,8 @@ def test_viewer_widget_add_update_labels_loads_and_activates_layer(qtbot, sdata_
     first_card.add_update_button.click()
 
     assert len(viewer.layers) == 1
+    _assert_action_feedback_card(widget, title="Segmentation Loaded", kind="success")
+    assert "Loaded segmentation `blobs_labels`" in widget.action_feedback_label.text()
 
 
 def test_viewer_widget_add_update_labels_dispatches_to_styled_overlay_path(qtbot, monkeypatch, sdata_blobs) -> None:
@@ -471,6 +487,7 @@ def test_viewer_widget_add_update_labels_creates_and_updates_styled_overlay(qtbo
     binding = widget.app_state.viewer_adapter.layer_bindings.get_binding(layer)
     assert binding is not None
     assert binding.labels_role == "styled"
+    _assert_action_feedback_card(widget, title="Colored Overlay Created", kind="success")
     assert "Created colored overlay for obs[\"cell_type\"]" in widget.action_feedback_label.text()
     assert "stored categorical palette" in widget.action_feedback_label.text()
 
@@ -478,7 +495,94 @@ def test_viewer_widget_add_update_labels_creates_and_updates_styled_overlay(qtbo
 
     assert len(viewer.layers) == 1
     assert viewer.layers[0] is layer
+    _assert_action_feedback_card(widget, title="Colored Overlay Updated", kind="success")
     assert "Updated colored overlay for obs[\"cell_type\"]" in widget.action_feedback_label.text()
+
+
+def test_viewer_widget_styled_overlay_missing_palette_uses_info_card(qtbot, sdata_blobs) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    table = sdata_blobs["table"]
+    table.obs["cell_type"] = ["odd" if instance_id % 2 else "even" for instance_id in table.obs["instance_id"]]
+    table.obs["cell_type"] = table.obs["cell_type"].astype("category")
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata_blobs)
+
+    first_card = widget.labels_cards[0]
+    first_card.color_source_kind_combo.setCurrentIndex(1)
+    first_card.color_source_value_input.setText("cell_type")
+
+    first_card.add_update_button.click()
+
+    _assert_action_feedback_card(widget, title="Colored Overlay Created", kind="info")
+    assert "no stored palette was present" in widget.action_feedback_label.text()
+
+
+def test_viewer_widget_styled_overlay_invalid_palette_uses_warning_card(qtbot, sdata_blobs) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    table = sdata_blobs["table"]
+    table.obs["cell_type"] = ["odd"] * table.n_obs
+    table.obs["cell_type"] = table.obs["cell_type"].astype("category")
+    table.uns["cell_type_colors"] = ["#ff0000", "#00ff00"]
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata_blobs)
+
+    first_card = widget.labels_cards[0]
+    first_card.color_source_kind_combo.setCurrentIndex(1)
+    first_card.color_source_value_input.setText("cell_type")
+
+    first_card.add_update_button.click()
+
+    _assert_action_feedback_card(widget, title="Colored Overlay Created With Warning", kind="warning")
+    assert "stored categorical palette was invalid" in widget.action_feedback_label.text()
+
+
+def test_viewer_widget_styled_overlay_string_coercion_uses_warning_card(qtbot, sdata_blobs) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    table = sdata_blobs["table"]
+    table.obs["sample_type"] = [
+        "odd" if instance_id % 2 else "even" for instance_id in table.obs["instance_id"]
+    ]
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata_blobs)
+
+    first_card = widget.labels_cards[0]
+    first_card.color_source_kind_combo.setCurrentIndex(1)
+    first_card.color_source_value_input.setText("sample_type")
+
+    first_card.add_update_button.click()
+
+    _assert_action_feedback_card(widget, title="Colored Overlay Created With Warning", kind="warning")
+    assert "Coerced string values to categorical" in widget.action_feedback_label.text()
+
+
+def test_viewer_widget_styled_overlay_precondition_error_uses_error_card(qtbot, sdata_blobs) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata_blobs)
+
+    first_card = widget.labels_cards[0]
+    first_card.color_source_kind_combo.setCurrentIndex(1)
+
+    first_card.add_update_button.click()
+
+    _assert_action_feedback_card(widget, title="Colored Overlay Error", kind="error")
+    assert "Select an observation column" in widget.action_feedback_label.text()
 
 
 def test_viewer_widget_add_update_image_loads_stack_layer(qtbot, sdata_blobs) -> None:
@@ -501,8 +605,8 @@ def test_viewer_widget_add_update_image_loads_stack_layer(qtbot, sdata_blobs) ->
     assert binding is not None
     assert binding.image_display_mode == "stack"
     assert viewer.layers.selection.active is layer
+    _assert_action_feedback_card(widget, title="Image Loaded", kind="success")
     assert "Loaded image `blobs_image` in stack mode" in widget.action_feedback_label.text()
-    assert not widget.action_feedback_label.isHidden()
 
 
 def test_viewer_widget_add_update_image_reuses_existing_stack_layer(qtbot, sdata_blobs) -> None:
