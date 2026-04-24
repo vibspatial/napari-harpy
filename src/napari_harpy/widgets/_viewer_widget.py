@@ -116,6 +116,7 @@ _SUMMARY_LABEL_STYLESHEET = f"color: {WIDGET_TEXT_SECONDARY_COLOR}; font-weight:
 _EMPTY_STATE_STYLESHEET = "color: #64748b; font-weight: 500;"
 _CHANNEL_WARNING_STYLESHEET = "color: #b45309; font-weight: 600;"
 _CHANNEL_PANEL_STYLESHEET = "QWidget { background: transparent; }"
+_SUBSECTION_LABEL_STYLESHEET = "color: #64748b; font-size: 11px; font-weight: 600;"
 _MAX_VISIBLE_OVERLAY_CHANNELS = 5
 _DISCLOSURE_CHEVRON_SIZE = 14
 
@@ -658,8 +659,13 @@ class _ImageCardWidget(QFrame):
         self.channel_panel.setStyleSheet(_CHANNEL_PANEL_STYLESHEET)
         self.channel_panel.setVisible(False)
         channel_layout = QVBoxLayout(self.channel_panel)
-        channel_layout.setContentsMargins(0, 0, 0, 0)
-        channel_layout.setSpacing(6)
+        channel_layout.setContentsMargins(24, 10, 0, 0)
+        channel_layout.setSpacing(8)
+
+        self.channel_section_label = QLabel("Channels")
+        self.channel_section_label.setObjectName(f"viewer_widget_channel_section_label_{image_name}")
+        self.channel_section_label.setStyleSheet(_SUBSECTION_LABEL_STYLESHEET)
+        channel_layout.addWidget(self.channel_section_label)
 
         self.channel_scroll_area = QScrollArea()
         self.channel_scroll_area.setObjectName(f"viewer_widget_channel_scroll_area_{image_name}")

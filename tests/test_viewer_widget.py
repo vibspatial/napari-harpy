@@ -347,6 +347,7 @@ def test_viewer_widget_image_mode_toggles_are_mutually_exclusive(qtbot, sdata_bl
     assert image_card.stack_toggle.isChecked()
     assert not image_card.overlay_toggle.isChecked()
     assert image_card.channel_panel.isHidden()
+    assert image_card.channel_section_label.text() == "Channels"
     assert image_card.add_update_button.isEnabled()
 
     image_card.overlay_toggle.setChecked(True)
