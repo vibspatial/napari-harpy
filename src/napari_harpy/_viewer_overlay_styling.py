@@ -9,7 +9,7 @@ from loguru import logger
 from matplotlib import colormaps
 from matplotlib.colors import to_rgba
 from napari.layers import Labels
-from napari.utils.colormaps import DirectLabelColormap
+from napari.utils.colormaps import DirectLabelColormap, label_colormap
 
 from napari_harpy._class_palette import default_categorical_colors, normalize_color_sequence
 from napari_harpy._spatialdata import get_table, get_table_metadata
@@ -57,12 +57,23 @@ def apply_table_color_source_to_labels_layer(
         raise ValueError(f"Table `{style_spec.table_name}` does not annotate segmentation `{label_name}`.")
 
     region_rows, obs_index = _get_region_rows_by_instance(table, table_metadata, label_name)
-    if style_spec.source_kind == "obs_column":
+    if style_spec.value_kind == "instance" or (
+        style_spec.source_kind == "obs_column" and style_spec.value_key == table_metadata.instance_key
+    ):
+        if style_spec.source_kind != "obs_column" or style_spec.value_key != table_metadata.instance_key:
+            raise ValueError(
+                "Instance ID coloring must use the table instance key "
+                f"`{table_metadata.instance_key}` as an observation source."
+            )
+        style_result, features = _build_instance_key_colormap(region_rows, instance_key=table_metadata.instance_key)
+        _apply_instance_labels_colormap(layer)
+    elif style_spec.source_kind == "obs_column":
         style_result, color_dict, features = _build_obs_column_colormap(
             table=table,
             region_rows=region_rows,
             column_name=style_spec.value_key,
         )
+        _apply_labels_colormap(layer, color_dict)
     else:
         style_result, color_dict, features = _build_x_var_colormap(
             table=table,
@@ -70,8 +81,8 @@ def apply_table_color_source_to_labels_layer(
             obs_index=obs_index,
             var_name=style_spec.value_key,
         )
+        _apply_labels_colormap(layer, color_dict)
 
-    _apply_labels_colormap(layer, color_dict)
     layer.features = _build_labels_features(features, instance_key=table_metadata.instance_key)
     return style_result
 
@@ -179,6 +190,24 @@ def _build_obs_column_colormap(
         coercion_applied=False,
     )
     return style_result, color_dict, pd.DataFrame({column_name: numeric_region_series}, index=region_rows.index)
+
+
+def _build_instance_key_colormap(
+    region_rows: pd.DataFrame,
+    *,
+    instance_key: str,
+) -> tuple[StyledLabelsStyleResult, pd.DataFrame]:
+    instance_values = pd.Series(
+        region_rows.index.to_numpy(dtype=np.int64, copy=False),
+        index=region_rows.index,
+        name=instance_key,
+    )
+    style_result = StyledLabelsStyleResult(
+        value_kind="instance",
+        palette_source=None,
+        coercion_applied=False,
+    )
+    return style_result, pd.DataFrame({instance_key: instance_values}, index=region_rows.index)
 
 
 def _build_x_var_colormap(
@@ -319,6 +348,13 @@ def _build_continuous_color_dict(values: pd.Series) -> dict[int | None, Any]:
 
 def _apply_labels_colormap(layer: Labels, layer_color_dict: dict[int | None, Any]) -> None:
     layer.colormap = DirectLabelColormap(color_dict=layer_color_dict, background_value=0)
+    refresh = getattr(layer, "refresh", None)
+    if callable(refresh):
+        refresh()
+
+
+def _apply_instance_labels_colormap(layer: Labels) -> None:
+    layer.colormap = label_colormap(background_value=0)
     refresh = getattr(layer, "refresh", None)
     if callable(refresh):
         refresh()

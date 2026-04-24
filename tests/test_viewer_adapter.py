@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.colors import to_rgba
 from napari.layers import Image, Labels
-from napari.utils.colormaps import DirectLabelColormap
+from napari.utils.colormaps import CyclicLabelColormap, DirectLabelColormap
 
 from napari_harpy._app_state import get_or_create_app_state
 from napari_harpy._table_color_source import TableColorSourceSpec
@@ -643,6 +643,34 @@ def test_viewer_adapter_ensure_styled_labels_loaded_colors_non_binary_int_obs_co
     assert float(features.loc[min_instance, "object_score"]) == float(min_instance)
     assert float(features.loc[max_instance, "object_score"]) == float(max_instance)
     assert not np.allclose(result.layer.colormap.color_dict[min_instance], result.layer.colormap.color_dict[max_instance])
+
+
+def test_viewer_adapter_ensure_styled_labels_loaded_colors_instance_key_as_labels(sdata_blobs) -> None:
+    table = sdata_blobs["table"]
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="instance_id",
+        value_kind="instance",
+    )
+
+    result = adapter.ensure_styled_labels_loaded(sdata_blobs, "blobs_labels", "global", style_spec)
+
+    assert result.value_kind == "instance"
+    assert result.palette_source is None
+    assert result.coercion_applied is False
+    assert isinstance(result.layer.colormap, CyclicLabelColormap)
+    assert result.layer.name == "blobs_labels[obs:instance_id]"
+    assert result.layer.metadata["style_value_kind"] == "instance"
+    assert list(result.layer.features.columns) == ["index", "instance_id"]
+
+    instance_ids = table.obs.loc[table.obs["region"] == "blobs_labels", "instance_id"].astype("int64").tolist()
+    first_instance, second_instance = instance_ids[:2]
+    mapped_colors = result.layer.colormap.map(np.asarray([first_instance, second_instance], dtype=np.int64))
+    assert not np.allclose(mapped_colors[0], mapped_colors[1])
+    assert np.allclose(result.layer.colormap.map(np.asarray([0], dtype=np.int64))[0], np.zeros(4))
 
 
 def test_viewer_adapter_ensure_styled_labels_loaded_coerces_string_obs_to_categorical(sdata_blobs) -> None:

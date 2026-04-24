@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 ColorSourceKind = Literal["obs_column", "x_var"]
-ColorValueKind = Literal["categorical", "continuous"]
+ColorValueKind = Literal["categorical", "continuous", "instance"]
 
 
 @dataclass(frozen=True)

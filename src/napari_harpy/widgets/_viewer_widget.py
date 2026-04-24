@@ -1314,7 +1314,9 @@ class ViewerWidget(QWidget):
         feedback_kind: StatusCardKind = "success"
         title = f"Colored Overlay {action}"
         lines = [action_line]
-        if result.coercion_applied:
+        if result.value_kind == "instance":
+            lines.append("Used instance label colors.")
+        elif result.coercion_applied:
             feedback_kind = "warning"
             title = f"{title} With Warning"
             lines.append("Coerced string values to categorical and used the default categorical palette.")

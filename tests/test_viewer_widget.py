@@ -294,8 +294,9 @@ def test_viewer_widget_labels_cards_expose_table_driven_coloring_controls(qtbot,
     assert first_card.action_status_label.text() == "Action: add/update primary labels layer"
 
     first_card.color_source_kind_combo.setCurrentIndex(1)
-    assert not first_card.color_source_value_input.isEnabled()
-    assert first_card.action_status_label.text() == "Action: no colorable observation columns available"
+    assert first_card.color_source_value_input.isEnabled()
+    assert first_card.color_source_value_input.completer().model().stringList() == ["instance_id"]
+    assert first_card.action_status_label.text() == 'Action: add/update colored overlay for obs["instance_id"]'
 
     first_card.color_source_kind_combo.setCurrentIndex(2)
     assert first_card.color_source_value_input.isEnabled()
@@ -656,6 +657,29 @@ def test_viewer_widget_styled_overlay_missing_palette_uses_info_card(qtbot, sdat
     assert "no stored palette was present" in widget.action_feedback_label.text()
 
 
+def test_viewer_widget_styled_overlay_instance_key_uses_success_card(qtbot, sdata_blobs) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata_blobs)
+
+    first_card = widget.labels_cards[0]
+    first_card.color_source_kind_combo.setCurrentIndex(1)
+
+    first_card.add_update_button.click()
+
+    _assert_action_feedback_card(widget, title="Colored Overlay Created", kind="success")
+    assert 'Created colored overlay for obs["instance_id"]' in widget.action_feedback_label.text()
+    assert "Used instance label colors." in widget.action_feedback_label.text()
+    binding = widget.app_state.viewer_adapter.layer_bindings.get_binding(viewer.layers[0])
+    assert binding is not None
+    assert binding.style_spec is not None
+    assert binding.style_spec.value_kind == "instance"
+
+
 def test_viewer_widget_styled_overlay_invalid_palette_uses_warning_card(qtbot, sdata_blobs) -> None:
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)
@@ -713,6 +737,7 @@ def test_viewer_widget_styled_overlay_precondition_error_uses_error_card(qtbot, 
 
     first_card = widget.labels_cards[0]
     first_card.color_source_kind_combo.setCurrentIndex(1)
+    first_card.color_source_value_input.setText("not_a_column")
 
     first_card.add_update_button.click()
 

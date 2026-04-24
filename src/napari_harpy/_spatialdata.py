@@ -147,14 +147,17 @@ def get_table_obs_color_source_options(sdata: SpatialData, table_name: str) -> l
     """Return colorable `obs` columns for one linked table."""
     table = get_table(sdata, table_name)
     table_metadata = get_table_metadata(sdata, table_name)
-    excluded_columns = {table_metadata.region_key, table_metadata.instance_key}
+    excluded_columns = {table_metadata.region_key}
 
     options: list[TableColorSourceSpec] = []
     for column_name in table.obs.columns:
         if column_name in excluded_columns:
             continue
 
-        value_kind = _classify_obs_color_source(table.obs[column_name])
+        if column_name == table_metadata.instance_key:
+            value_kind = "instance"
+        else:
+            value_kind = _classify_obs_color_source(table.obs[column_name])
         if value_kind is None:
             continue
 
