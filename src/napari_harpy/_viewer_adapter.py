@@ -13,6 +13,11 @@ from spatialdata.transformations import get_transformation
 from xarray import DataArray, DataTree
 
 from napari_harpy._table_color_source import TableColorSourceSpec
+from napari_harpy._viewer_overlay_styling import (
+    StyledLabelsLoadResult,
+    apply_table_color_source_to_labels_layer,
+    build_styled_labels_layer_name,
+)
 
 if TYPE_CHECKING:
     from spatialdata import SpatialData
@@ -449,25 +454,7 @@ class ViewerAdapter(QObject):
         if existing_layer is not None:
             return existing_layer
 
-        labels = getattr(sdata, "labels", {})
-        if label_name not in labels:
-            raise ValueError(f"Labels element `{label_name}` is not available in the selected SpatialData object.")
-
-        label_element = labels[label_name]
-        available_coordinate_systems = set(get_transformation(label_element, get_all=True).keys())
-        if coordinate_system not in available_coordinate_systems:
-            raise ValueError(
-                f"Coordinate system `{coordinate_system}` is not available for labels element `{label_name}`."
-            )
-
-        labels_data = (
-            _flatten_multiscale_element(label_element) if isinstance(label_element, DataTree) else label_element
-        )
-        layer = Labels(
-            labels_data,
-            name=label_name,
-            affine=_get_affine_transform(label_element, coordinate_system),
-        )
+        layer = _build_labels_layer(sdata, label_name, coordinate_system, name=label_name)
         _add_layer_to_viewer(self._viewer, layer)
         self.register_layer(
             layer,
@@ -477,6 +464,56 @@ class ViewerAdapter(QObject):
             coordinate_system=coordinate_system,
         )
         return layer
+
+    def ensure_styled_labels_loaded(
+        self,
+        sdata: SpatialData,
+        label_name: str,
+        coordinate_system: str,
+        style_spec: TableColorSourceSpec,
+    ) -> StyledLabelsLoadResult:
+        """Load or update one styled labels overlay variant."""
+        existing_layer = self.get_loaded_styled_labels_layer(
+            sdata,
+            label_name,
+            style_spec,
+            coordinate_system,
+        )
+        created = existing_layer is None
+        if existing_layer is None:
+            layer = _build_labels_layer(
+                sdata,
+                label_name,
+                coordinate_system,
+                name=build_styled_labels_layer_name(label_name, style_spec),
+            )
+            _add_layer_to_viewer(self._viewer, layer)
+            self.register_layer(
+                layer,
+                sdata=sdata,
+                element_name=label_name,
+                element_type="labels",
+                coordinate_system=coordinate_system,
+                labels_role="styled",
+                style_spec=style_spec,
+            )
+        else:
+            layer = existing_layer
+
+        layer.name = build_styled_labels_layer_name(label_name, style_spec)
+        style_result = apply_table_color_source_to_labels_layer(
+            layer,
+            sdata=sdata,
+            label_name=label_name,
+            style_spec=style_spec,
+        )
+        return StyledLabelsLoadResult(
+            layer=layer,
+            created=created,
+            value_kind=style_result.value_kind,
+            palette_source=style_result.palette_source,
+            coercion_applied=style_result.coercion_applied,
+        )
 
     def remove_labels_layer(self, sdata: SpatialData, label_name: str, coordinate_system: str) -> Labels | None:
         """Remove the loaded labels layer for one labels element in one coordinate system."""
@@ -910,6 +947,32 @@ def _flatten_multiscale_element(element: DataTree) -> list[DataArray]:
         assert len(values) == 1
         multiscale_data.append(next(iter(values)))
     return multiscale_data
+
+
+def _build_labels_layer(
+    sdata: SpatialData,
+    label_name: str,
+    coordinate_system: str,
+    *,
+    name: str,
+) -> Labels:
+    labels = getattr(sdata, "labels", {})
+    if label_name not in labels:
+        raise ValueError(f"Labels element `{label_name}` is not available in the selected SpatialData object.")
+
+    label_element = labels[label_name]
+    available_coordinate_systems = set(get_transformation(label_element, get_all=True).keys())
+    if coordinate_system not in available_coordinate_systems:
+        raise ValueError(
+            f"Coordinate system `{coordinate_system}` is not available for labels element `{label_name}`."
+        )
+
+    labels_data = _flatten_multiscale_element(label_element) if isinstance(label_element, DataTree) else label_element
+    return Labels(
+        labels_data,
+        name=name,
+        affine=_get_affine_transform(label_element, coordinate_system),
+    )
 
 
 def _get_affine_transform(element: DataArray | DataTree, coordinate_system: str) -> np.ndarray | None:

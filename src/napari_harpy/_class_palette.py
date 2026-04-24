@@ -84,10 +84,17 @@ def default_class_colors(
     ]
 
 
+def default_categorical_colors(length: int) -> list[str]:
+    """Return the default generic categorical palette used for viewer overlays."""
+    if length <= 0:
+        return []
+    return _default_labeled_class_colors(length)
+
+
 def default_labeled_class_color(class_id: int) -> str:
     """Return the deterministic default color for one positive class id."""
     palette_index = _class_palette_index(class_id)
-    palette = _default_labeled_class_colors(palette_index + 1)
+    palette = default_categorical_colors(palette_index + 1)
     return palette[palette_index]
 
 

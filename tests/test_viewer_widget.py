@@ -447,6 +447,40 @@ def test_viewer_widget_add_update_labels_dispatches_to_styled_overlay_path(qtbot
     assert request.selected_color_source.value_key == "channel_1_sum"
 
 
+def test_viewer_widget_add_update_labels_creates_and_updates_styled_overlay(qtbot, sdata_blobs) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    table = sdata_blobs["table"]
+    table.obs["cell_type"] = ["odd" if instance_id % 2 else "even" for instance_id in table.obs["instance_id"]]
+    table.obs["cell_type"] = table.obs["cell_type"].astype("category")
+    table.uns["cell_type_colors"] = ["#ff0000", "#00ff00"]
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata_blobs)
+
+    first_card = widget.labels_cards[0]
+    first_card.color_source_kind_combo.setCurrentIndex(1)
+    first_card.color_source_value_input.setText("cell_type")
+
+    first_card.add_update_button.click()
+
+    assert len(viewer.layers) == 1
+    layer = viewer.layers[0]
+    binding = widget.app_state.viewer_adapter.layer_bindings.get_binding(layer)
+    assert binding is not None
+    assert binding.labels_role == "styled"
+    assert "Created colored overlay for obs[\"cell_type\"]" in widget.action_feedback_label.text()
+    assert "stored categorical palette" in widget.action_feedback_label.text()
+
+    first_card.add_update_button.click()
+
+    assert len(viewer.layers) == 1
+    assert viewer.layers[0] is layer
+    assert "Updated colored overlay for obs[\"cell_type\"]" in widget.action_feedback_label.text()
+
+
 def test_viewer_widget_add_update_image_loads_stack_layer(qtbot, sdata_blobs) -> None:
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)

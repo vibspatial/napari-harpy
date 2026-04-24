@@ -870,34 +870,48 @@ class ViewerWidget(QWidget):
             )
             return
 
-        if request.selected_source_kind == "obs_column":
-            if request.selected_color_source is None:
-                self._set_action_feedback(
-                    f"Select an observation column to prepare a colored overlay for `{request.label_name}`.",
-                    is_error=True,
-                )
-                return
-
-            self._set_action_feedback(
-                f'Styled viewer overlays are not implemented yet. Prepared obs["{request.selected_color_source.value_key}"] '
-                f'from table `{request.table_name}` for segmentation `{request.label_name}` in coordinate system '
-                f'`{coordinate_system}`.',
-                is_error=True,
-            )
-            return
-
         if request.selected_color_source is None:
+            missing_source_label = "observation column" if request.selected_source_kind == "obs_column" else "var"
             self._set_action_feedback(
-                f"Select a var to prepare a colored overlay for `{request.label_name}`.",
+                f"Select a {missing_source_label} to create a colored overlay for `{request.label_name}`.",
                 is_error=True,
             )
             return
+
+        try:
+            result = self._app_state.viewer_adapter.ensure_styled_labels_loaded(
+                sdata,
+                request.label_name,
+                coordinate_system,
+                request.selected_color_source,
+            )
+        except ValueError as error:
+            self._set_action_feedback(str(error), is_error=True)
+            return
+
+        self._app_state.viewer_adapter.activate_layer(result.layer)
+        action = "Created" if result.created else "Updated"
+        if request.selected_color_source.source_kind == "obs_column":
+            source_text = f'obs["{request.selected_color_source.value_key}"]'
+        else:
+            source_text = f'X[:, "{request.selected_color_source.value_key}"]'
+
+        message = (
+            f"{action} colored overlay for {source_text} on segmentation `{request.label_name}` "
+            f"in coordinate system `{coordinate_system}`."
+        )
+        if result.coercion_applied:
+            message += " Coerced string values to categorical and used the default categorical palette."
+        elif result.palette_source == "stored":
+            message += " Used the stored categorical palette."
+        elif result.palette_source == "default_invalid":
+            message += " The stored categorical palette was invalid, so Harpy used the default categorical palette."
+        elif result.palette_source == "default_missing":
+            message += " Used the default categorical palette."
 
         self._set_action_feedback(
-            f'Styled viewer overlays are not implemented yet. Prepared X[:, "{request.selected_color_source.value_key}"] '
-            f'from table `{request.table_name}` for segmentation `{request.label_name}` in coordinate system '
-            f'`{coordinate_system}`.',
-            is_error=True,
+            message,
+            is_error=False,
         )
 
     def _add_or_update_image_layer(self, request: ImageLoadRequest) -> None:
