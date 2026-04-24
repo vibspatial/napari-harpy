@@ -27,6 +27,7 @@ from napari_harpy._spatialdata import (
     get_table_metadata,
 )
 from napari_harpy._viewer_adapter import ViewerAdapter
+from napari_harpy._viewer_overlay_styling import _build_labels_features
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -158,7 +159,13 @@ class ViewerStylingController:
         if self._labels_layer is None:
             return
 
-        self._labels_layer.features = self._get_region_feature_rows().reset_index()
+        instance_key = "instance_id"  # defensive fallback for the no metadata case.
+        if self._selected_table_metadata is not None:
+            instance_key = self._selected_table_metadata.instance_key
+        self._labels_layer.features = _build_labels_features(
+            self._get_region_feature_rows(),
+            instance_key=instance_key,
+        )
 
     def _get_bound_table(self) -> AnnData | None:
         if self._selected_spatialdata is None or self._selected_table_name is None:
