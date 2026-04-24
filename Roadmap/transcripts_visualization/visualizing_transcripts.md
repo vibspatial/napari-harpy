@@ -261,13 +261,114 @@ Do not load transcripts through the standard `napari-spatialdata` point path.
 
 Instead, add a Harpy-owned controller, for example `TranscriptTilesController`, that:
 
-1. listens to camera pan / zoom changes;
-2. computes the current viewport in the transcript coordinate system;
-3. chooses the coarsest level that keeps the visible point count below a render budget;
-4. finds intersecting tiles from `manifest.parquet`;
-5. loads only those row groups with `pyarrow`;
-6. filters by `gene_id` in memory;
-7. updates a single napari `Points` layer with the visible sample.
+1. owns one napari `Points` layer representing the currently visible subset only;
+2. listens to camera pan / zoom changes and to gene-selection changes;
+3. computes the current viewport in the transcript coordinate system;
+4. chooses the finest level that keeps the visible point count below a render budget;
+5. finds intersecting tiles from `manifest.parquet`;
+6. loads only the missing row groups with `pyarrow`;
+7. filters by `gene_id` in memory;
+8. updates the single napari `Points` layer with the visible sample.
+
+The important point is that the transcript layer should be a dynamic viewport-backed layer, not a static in-memory copy of all transcripts.
+
+### One dynamic napari layer
+
+For one transcript source, the viewer should expose one logical napari `Points` layer.
+
+That layer should always mean:
+
+- the currently visible points
+- at the currently chosen level
+- for the currently selected genes
+
+We should not create one napari layer per tile or one layer per zoom level. Internally the controller swaps the layer contents as the camera changes, but the user still sees one transcript layer in the viewer.
+
+### Event handling
+
+The controller should listen at minimum to:
+
+- camera center changes
+- camera zoom changes
+- gene-selection changes
+- transcript-layer visibility changes
+
+Camera events should be debounced slightly, so the viewer does not schedule a full refresh for every tiny mouse movement while panning.
+
+### Viewport computation
+
+At refresh time, the controller should:
+
+1. read the current camera center and zoom
+2. read the current canvas size
+3. convert canvas size and zoom into a world-coordinate viewport rectangle
+4. transform that rectangle into the transcript coordinate system if needed
+
+Conceptually:
+
+```text
+visible_width_world = canvas_width_px / zoom
+visible_height_world = canvas_height_px / zoom
+
+x0 = center_x - visible_width_world / 2
+x1 = center_x + visible_width_world / 2
+y0 = center_y - visible_height_world / 2
+y1 = center_y + visible_height_world / 2
+```
+
+### Level selection and exact-mode shortcut
+
+The controller should use two policies:
+
+1. if the selected genes have a small global count, force the finest exact level at all zoom levels;
+2. otherwise, choose the finest level whose estimated visible point count stays under the render budget.
+
+This means:
+
+- rare or small gene selections stay exact even when zoomed out
+- broad selections fall back to the multiscale overview levels
+
+Even in exact mode, we should still load only visible exact tiles, not the full exact dataset.
+
+### Tile reads and cache
+
+The controller should maintain:
+
+- an LRU cache keyed by `(level, tile_id)`
+- a small prefetch halo around the viewport
+- a request generation id so stale tile loads can be ignored
+
+The loading flow should be:
+
+1. compute visible `tile_id`s for the chosen level
+2. reuse cached tiles when available
+3. issue `pyarrow` reads only for missing tiles
+4. decode tile-local coordinates to absolute coordinates
+5. concatenate visible tiles into one point array
+6. update the napari layer on the main thread
+
+Tile reads should happen off the UI thread.
+
+### Filtering and layer update
+
+For the first implementation, filtering by selected genes should happen after visible tiles are loaded.
+
+Once the visible tiles are in memory:
+
+- apply the `gene_id` filter
+- reconstruct the visible coordinates
+- update `Points.data`
+- update any attached features or metadata needed for coloring and picking
+
+This keeps the architecture simple and is acceptable because the expensive step is spatial restriction, which has already happened before filtering.
+
+### Stability details
+
+To make the interaction feel stable, the controller should also use:
+
+- hysteresis around level switching
+- stale-request dropping when the camera moves again before a tile read finishes
+- no-op refreshes when the set of visible tiles and selected genes has not actually changed
 
 ### Render budget
 
