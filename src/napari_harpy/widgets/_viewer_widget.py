@@ -120,7 +120,9 @@ _CHANNEL_PANEL_STYLESHEET = "QWidget { background: transparent; }"
 _SUBSECTION_LABEL_STYLESHEET = "color: #64748b; font-size: 11px; font-weight: 600;"
 _MAX_VISIBLE_OVERLAY_CHANNELS = 5
 _DISCLOSURE_CHEVRON_SIZE = 14
-_OVERLAY_COLOR_BUTTON_SIZE = 28
+_OVERLAY_COLOR_BUTTON_WIDTH = 34
+_OVERLAY_COLOR_BUTTON_HEIGHT = 22
+_OVERLAY_COLOR_BUTTON_RADIUS = 6
 _OVERLAY_COLOR_NAMES_BY_HEX = {
     "#00FFFF": "Cyan",
     "#FF00FF": "Magenta",
@@ -228,7 +230,7 @@ class _OverlayColorButton(QPushButton):
         self._color = ""
         self.setText("")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedSize(_OVERLAY_COLOR_BUTTON_SIZE, _OVERLAY_COLOR_BUTTON_SIZE)
+        self.setFixedSize(_OVERLAY_COLOR_BUTTON_WIDTH, _OVERLAY_COLOR_BUTTON_HEIGHT)
         self.clicked.connect(self.choose_color)
         self.set_color(color)
 
@@ -245,11 +247,11 @@ class _OverlayColorButton(QPushButton):
             "QPushButton {"
             f"background-color: {self._color}; "
             f"border: 1px solid {WIDGET_BORDER_STRONG_COLOR}; "
-            f"border-radius: {_OVERLAY_COLOR_BUTTON_SIZE // 2}px; "
-            f"min-height: {_OVERLAY_COLOR_BUTTON_SIZE}px; "
-            f"max-height: {_OVERLAY_COLOR_BUTTON_SIZE}px; "
-            f"min-width: {_OVERLAY_COLOR_BUTTON_SIZE}px; "
-            f"max-width: {_OVERLAY_COLOR_BUTTON_SIZE}px; "
+            f"border-radius: {_OVERLAY_COLOR_BUTTON_RADIUS}px; "
+            f"min-height: {_OVERLAY_COLOR_BUTTON_HEIGHT}px; "
+            f"max-height: {_OVERLAY_COLOR_BUTTON_HEIGHT}px; "
+            f"min-width: {_OVERLAY_COLOR_BUTTON_WIDTH}px; "
+            f"max-width: {_OVERLAY_COLOR_BUTTON_WIDTH}px; "
             "padding: 0px;}"
             f"QPushButton:hover {{ border: 2px solid {WIDGET_ACCENT_BORDER_COLOR}; }}"
             f"QPushButton:focus {{ border: 2px solid {WIDGET_ACCENT_BORDER_COLOR}; }}"
