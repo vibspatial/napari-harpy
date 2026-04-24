@@ -307,9 +307,9 @@ class ObjectClassificationWidget(QWidget):
         content_layout.addStretch(1)
 
         self._app_state.sdata_changed.connect(self._on_sdata_changed)
-        self._app_state.viewer_adapter.labels_layers_changed.connect(
-            self._on_labels_layers_changed
-        )  # this should be made more narrow -> only listen to labels layer that will be annotated.
+        self._app_state.viewer_adapter.primary_labels_layers_changed.connect(
+            self._on_primary_labels_layers_changed
+        )
         self._app_state.feature_matrix_written.connect(self._on_feature_matrix_written)
         self.refresh_from_sdata(self._app_state.sdata)
 
@@ -494,7 +494,7 @@ class ObjectClassificationWidget(QWidget):
         self._set_classifier_feedback("")
         self._set_persistence_feedback("")
 
-    def _on_labels_layers_changed(self) -> None:
+    def _on_primary_labels_layers_changed(self) -> None:
         if self._is_preparing_labels_layer:
             return
         # A labels-layer insert/remove only changes live viewer availability,
@@ -525,7 +525,7 @@ class ObjectClassificationWidget(QWidget):
         ):
             return False
 
-        loaded_layer = self._app_state.viewer_adapter.get_loaded_labels_layer(
+        loaded_layer = self._app_state.viewer_adapter.get_loaded_primary_labels_layer(
             self.selected_spatialdata,
             self.selected_segmentation_name,
             self.selected_coordinate_system,
@@ -546,7 +546,7 @@ class ObjectClassificationWidget(QWidget):
         ):
             return False
 
-        loaded_layer = self._app_state.viewer_adapter.get_loaded_labels_layer(
+        loaded_layer = self._app_state.viewer_adapter.get_loaded_primary_labels_layer(
             self.selected_spatialdata,
             self.selected_segmentation_name,
             self.selected_coordinate_system,
@@ -634,7 +634,7 @@ class ObjectClassificationWidget(QWidget):
 
         self._is_preparing_labels_layer = True
         try:
-            existing_layer = self._app_state.viewer_adapter.get_loaded_labels_layer(
+            existing_layer = self._app_state.viewer_adapter.get_loaded_primary_labels_layer(
                 self.selected_spatialdata,
                 self.selected_segmentation_name,
                 self.selected_coordinate_system,

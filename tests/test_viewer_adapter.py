@@ -7,7 +7,13 @@ import numpy as np
 from napari.layers import Image, Labels
 
 from napari_harpy._app_state import get_or_create_app_state
-from napari_harpy._viewer_adapter import LayerBindingRegistry, ViewerAdapter
+from napari_harpy._viewer_adapter import (
+    ImageLayerBinding,
+    LabelsLayerBinding,
+    LabelsStyleSpec,
+    LayerBindingRegistry,
+    ViewerAdapter,
+)
 
 
 class DummyEventEmitter:
@@ -93,6 +99,7 @@ def test_layer_binding_registry_registers_and_unregisters_layers() -> None:
         coordinate_system="global",
     )
 
+    assert isinstance(binding, ImageLayerBinding)
     assert binding.layer is layer
     assert binding.element_name == "blobs_image"
     assert binding.element_type == "image"
@@ -123,6 +130,7 @@ def test_layer_binding_registry_tracks_channel_overlay_identity() -> None:
         channel_name="DAPI",
     )
 
+    assert isinstance(binding, ImageLayerBinding)
     assert binding.image_display_mode == "overlay"
     assert binding.channel_index == 0
     assert binding.channel_name == "DAPI"
@@ -136,6 +144,38 @@ def test_layer_binding_registry_tracks_channel_overlay_identity() -> None:
     assert layer.metadata["image_display_mode"] == "overlay"
     assert layer.metadata["channel_index"] == 0
     assert layer.metadata["channel_name"] == "DAPI"
+
+
+def test_layer_binding_registry_tracks_labels_role_and_style_spec() -> None:
+    registry = LayerBindingRegistry()
+    layer = make_labels_layer(sdata=SimpleNamespace(labels={"blobs_labels": np.zeros((2, 2), dtype=np.int32)}))
+    style_spec = LabelsStyleSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    binding = registry.register_layer(
+        layer,
+        element_name="blobs_labels",
+        element_type="labels",
+        coordinate_system="global",
+        labels_role="styled",
+        style_spec=style_spec,
+    )
+
+    assert isinstance(binding, LabelsLayerBinding)
+    assert binding.labels_role == "styled"
+    assert binding.style_spec == style_spec
+    assert registry.find_bindings(
+        element_name="blobs_labels",
+        element_type="labels",
+        labels_role="styled",
+        style_spec=style_spec,
+    ) == [binding]
+    assert layer.metadata["labels_role"] == "styled"
+    assert layer.metadata["style_spec"] == style_spec
 
 
 def test_viewer_adapter_activate_layer_selects_only_matching_layer() -> None:
@@ -186,7 +226,33 @@ def test_viewer_adapter_finds_registered_labels_layer(sdata_blobs) -> None:
         coordinate_system="global",
     )
 
-    assert adapter.get_loaded_labels_layer(sdata_blobs, "blobs_labels") is labels_layer
+    assert adapter.get_loaded_primary_labels_layer(sdata_blobs, "blobs_labels") is labels_layer
+
+
+def test_viewer_adapter_primary_labels_lookup_ignores_styled_variants(sdata_blobs) -> None:
+    styled_layer = make_labels_layer(sdata=sdata_blobs)
+    viewer = DummyViewer([styled_layer])
+    adapter = ViewerAdapter(viewer)
+    style_spec = LabelsStyleSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    adapter.register_layer(
+        styled_layer,
+        sdata=sdata_blobs,
+        element_name="blobs_labels",
+        element_type="labels",
+        coordinate_system="global",
+        labels_role="styled",
+        style_spec=style_spec,
+    )
+
+    assert adapter.get_loaded_primary_labels_layer(sdata_blobs, "blobs_labels", "global") is None
+    assert adapter.get_loaded_styled_labels_layer(sdata_blobs, "blobs_labels", style_spec, "global") is styled_layer
+    assert adapter.get_loaded_styled_labels_layers(sdata_blobs, "blobs_labels", "global") == [styled_layer]
 
 
 def test_viewer_adapter_ignores_unregistered_labels_layer_even_with_legacy_metadata(sdata_blobs) -> None:
@@ -197,7 +263,7 @@ def test_viewer_adapter_ignores_unregistered_labels_layer_even_with_legacy_metad
     viewer = DummyViewer([labels_layer])
     adapter = ViewerAdapter(viewer)
 
-    loaded_layer = adapter.get_loaded_labels_layer(sdata_blobs, "blobs_labels", "global")
+    loaded_layer = adapter.get_loaded_primary_labels_layer(sdata_blobs, "blobs_labels", "global")
 
     assert loaded_layer is None
     assert adapter.layer_bindings.get_binding(labels_layer) is None
@@ -299,7 +365,7 @@ def test_viewer_adapter_ensure_labels_loaded_adds_layer_and_registers_binding(sd
     adapter = ViewerAdapter(viewer)
     labels_events: list[str] = []
 
-    adapter.labels_layers_changed.connect(lambda: labels_events.append("changed"))
+    adapter.primary_labels_layers_changed.connect(lambda: labels_events.append("changed"))
 
     layer = adapter.ensure_labels_loaded(sdata_blobs, "blobs_labels", "global")
 
@@ -308,15 +374,61 @@ def test_viewer_adapter_ensure_labels_loaded_adds_layer_and_registers_binding(sd
     assert layer.affine is not None
     binding = adapter.layer_bindings.get_binding(layer)
     assert binding is not None
+    assert isinstance(binding, LabelsLayerBinding)
     assert binding.element_name == "blobs_labels"
     assert binding.element_type == "labels"
     assert binding.coordinate_system == "global"
+    assert binding.labels_role == "primary"
     assert layer.metadata["element_name"] == "blobs_labels"
     assert layer.metadata["element_type"] == "labels"
     assert layer.metadata["coordinate_system"] == "global"
+    assert layer.metadata["labels_role"] == "primary"
     assert "sdata" not in layer.metadata
     assert "_current_cs" not in layer.metadata
     assert labels_events == ["changed"]
+
+
+def test_viewer_adapter_primary_labels_signal_ignores_styled_bindings(sdata_blobs) -> None:
+    primary_layer = make_labels_layer(sdata=sdata_blobs, label_name="blobs_labels")
+    styled_layer = make_labels_layer(sdata=sdata_blobs, label_name="blobs_labels")
+    styled_layer.name = "blobs_labels[cell_type]"
+    viewer = DummyViewer([primary_layer, styled_layer])
+    adapter = ViewerAdapter(viewer)
+    labels_events: list[str] = []
+    style_spec = LabelsStyleSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    adapter.primary_labels_layers_changed.connect(lambda: labels_events.append("changed"))
+
+    adapter.register_layer(
+        styled_layer,
+        sdata=sdata_blobs,
+        element_name="blobs_labels",
+        element_type="labels",
+        coordinate_system="global",
+        labels_role="styled",
+        style_spec=style_spec,
+    )
+    assert labels_events == []
+
+    adapter.register_layer(
+        primary_layer,
+        sdata=sdata_blobs,
+        element_name="blobs_labels",
+        element_type="labels",
+        coordinate_system="global",
+    )
+    assert labels_events == ["changed"]
+
+    viewer.layers.remove(styled_layer)
+    assert labels_events == ["changed"]
+
+    viewer.layers.remove(primary_layer)
+    assert labels_events == ["changed", "changed"]
 
 
 def test_viewer_adapter_ensure_labels_loaded_reuses_matching_existing_layer(sdata_blobs) -> None:

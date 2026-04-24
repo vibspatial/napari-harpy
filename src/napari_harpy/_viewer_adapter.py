@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypeGuard
 
 import numpy as np
 from loguru import logger
@@ -27,26 +27,81 @@ DEFAULT_OVERLAY_COLORS = (
 )
 
 
-@dataclass(frozen=True)
-class LayerBinding:
+@dataclass(frozen=True, kw_only=True)
+class BaseLayerBinding:
     """Runtime binding between a napari layer and a SpatialData element."""
 
     layer: Layer
     element_name: str
-    element_type: str
+    element_type: Literal["labels", "image"]
     coordinate_system: str | None
     sdata_id: int | None = None
+
+
+@dataclass(frozen=True)
+class LabelsStyleSpec:
+    """Describe one styled labels overlay driven by table-backed values."""
+
+    table_name: str
+    source_kind: Literal["obs_column", "x_var"]
+    value_key: str
+    value_kind: Literal["categorical", "continuous"]
+
+
+@dataclass(frozen=True, kw_only=True)
+class LabelsLayerBinding(BaseLayerBinding):
+    """Binding metadata specific to labels layers."""
+
+    element_type: Literal["labels"] = "labels"
+    labels_role: Literal["primary", "styled"] = "primary"
+    style_spec: LabelsStyleSpec | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class ImageLayerBinding(BaseLayerBinding):
+    """Binding metadata specific to image layers."""
+
+    element_type: Literal["image"] = "image"
     image_display_mode: ImageDisplayMode | None = None
     channel_index: int | None = None
     channel_name: str | None = None
 
 
+LayerBinding = LabelsLayerBinding | ImageLayerBinding
+
+
 class LayerBindingRegistry:
     """In-memory mapping from napari layers to Harpy SpatialData element identity.
+
+    Internally, this registry is keyed by the live napari layer object
+    identity (``id(layer)``) and stores a ``LayerBinding`` value describing
+    what that layer means from Harpy's perspective.
+
+    In other words, it maps:
+
+    - a concrete napari layer object
+    - to the corresponding ``SpatialData`` element identity and Harpy-specific
+      binding metadata for that layer
+
+    That metadata includes the shared element identity:
+
+    - ``sdata_id``
+    - ``element_name``
+    - ``element_type``
+    - ``coordinate_system``
+
+    and also the layer-type-specific semantics that Harpy needs for lookup and
+    viewer behavior, for example:
+
+    - labels-layer role such as ``primary`` or ``styled``
+    - styled-labels overlay metadata via ``style_spec``
+    - image display mode such as ``stack`` or ``overlay``
+    - overlay channel identity via ``channel_index`` / ``channel_name``
 
     The registry is Harpy's source of truth for answering questions such as:
 
     - which napari layer represents a given labels element
+    - what styling / role metadata is attached to a given labels layer
     - which napari layers belong to a given image element
     - whether an image is shown in stack mode or overlay mode
     - which overlay layer corresponds to which image channel
@@ -63,24 +118,40 @@ class LayerBindingRegistry:
         layer: Layer,
         *,
         element_name: str,
-        element_type: str,
+        element_type: Literal["labels", "image"],
         coordinate_system: str | None = None,
         sdata: SpatialData | None = None,
+        labels_role: Literal["primary", "styled"] = "primary",
+        style_spec: LabelsStyleSpec | None = None,
         image_display_mode: ImageDisplayMode | None = None,
         channel_index: int | None = None,
         channel_name: str | None = None,
     ) -> LayerBinding:
         """Register a layer binding and attach lightweight metadata."""
-        binding = LayerBinding(
-            layer=layer,
-            element_name=element_name,
-            element_type=element_type,
-            coordinate_system=coordinate_system,
-            sdata_id=None if sdata is None else id(sdata),
-            image_display_mode=image_display_mode,
-            channel_index=channel_index,
-            channel_name=channel_name,
-        )
+        sdata_id = None if sdata is None else id(sdata)
+        if element_type == "labels":
+            if labels_role == "primary" and style_spec is not None:
+                raise ValueError("Primary labels bindings must not carry a style specification.")
+            if labels_role == "styled" and style_spec is None:
+                raise ValueError("Styled labels bindings require a style specification.")
+            binding = LabelsLayerBinding(
+                layer=layer,
+                element_name=element_name,
+                coordinate_system=coordinate_system,
+                sdata_id=sdata_id,
+                labels_role=labels_role,
+                style_spec=style_spec,
+            )
+        else:
+            binding = ImageLayerBinding(
+                layer=layer,
+                element_name=element_name,
+                coordinate_system=coordinate_system,
+                sdata_id=sdata_id,
+                image_display_mode=image_display_mode,
+                channel_index=channel_index,
+                channel_name=channel_name,
+            )
         self._bindings[id(layer)] = binding
         _apply_minimal_layer_metadata(layer, binding)
         return binding
@@ -102,8 +173,10 @@ class LayerBindingRegistry:
         *,
         sdata: SpatialData | None = None,
         element_name: str | None = None,
-        element_type: str | None = None,
+        element_type: Literal["labels", "image"] | None = None,
         coordinate_system: str | None = None,
+        labels_role: Literal["primary", "styled"] | None = None,
+        style_spec: LabelsStyleSpec | None = None,
         image_display_mode: ImageDisplayMode | None = None,
         channel_index: int | None = None,
         channel_name: str | None = None,
@@ -120,12 +193,21 @@ class LayerBindingRegistry:
                 continue
             if coordinate_system is not None and binding.coordinate_system != coordinate_system:
                 continue
-            if image_display_mode is not None and binding.image_display_mode != image_display_mode:
-                continue
-            if channel_index is not None and binding.channel_index != channel_index:
-                continue
-            if channel_name is not None and binding.channel_name != channel_name:
-                continue
+            if labels_role is not None:
+                if not isinstance(binding, LabelsLayerBinding) or binding.labels_role != labels_role:
+                    continue
+            if style_spec is not None:
+                if not isinstance(binding, LabelsLayerBinding) or binding.style_spec != style_spec:
+                    continue
+            if image_display_mode is not None:
+                if not isinstance(binding, ImageLayerBinding) or binding.image_display_mode != image_display_mode:
+                    continue
+            if channel_index is not None:
+                if not isinstance(binding, ImageLayerBinding) or binding.channel_index != channel_index:
+                    continue
+            if channel_name is not None:
+                if not isinstance(binding, ImageLayerBinding) or binding.channel_name != channel_name:
+                    continue
             matches.append(binding)
         return matches
 
@@ -149,10 +231,10 @@ class ViewerAdapter(QObject):
     mapping from napari layers to `SpatialData` element identity.
     """
 
-    # Emitted when the set/order of live pickable Labels layers changes.
-    # Used by consumers that depend on live labels-layer availability,
-    # currently ObjectClassificationWidget.
-    labels_layers_changed = Signal()
+    # Emitted when the set/order of live primary Labels layers changes.
+    # Used by consumers that depend on the annotation-capable labels-layer
+    # lifecycle, currently ObjectClassificationWidget.
+    primary_labels_layers_changed = Signal()
     active_layer_changed = Signal(object)
 
     def __init__(self, viewer: Any | None = None, layer_bindings: LayerBindingRegistry | None = None) -> None:
@@ -171,24 +253,39 @@ class ViewerAdapter(QObject):
         layer: Layer,
         *,
         element_name: str,
-        element_type: str,
+        element_type: Literal["labels", "image"],
         coordinate_system: str | None = None,
         sdata: SpatialData | None = None,
+        labels_role: Literal["primary", "styled"] = "primary",
+        style_spec: LabelsStyleSpec | None = None,
         image_display_mode: ImageDisplayMode | None = None,
         channel_index: int | None = None,
         channel_name: str | None = None,
     ) -> LayerBinding:
-        """Register a layer in the shared binding registry."""
+        """Register a layer in the shared binding registry.
+
+        For primary labels layers, registration itself may be the moment when a
+        live napari layer becomes Harpy-usable. This happens on the normal
+        ``insert -> register`` path used by ``ensure_labels_loaded(...)`` and
+        also when Harpy discovers a pre-existing viewer layer and binds it
+        later. Emit ``primary_labels_layers_changed`` here when the layer is
+        already present in the viewer so those flows do not depend on the
+        viewer's ``inserted`` event having seen a binding already.
+        """
         binding = self._layer_bindings.register_layer(
             layer,
             element_name=element_name,
             element_type=element_type,
             coordinate_system=coordinate_system,
             sdata=sdata,
+            labels_role=labels_role,
+            style_spec=style_spec,
             image_display_mode=image_display_mode,
             channel_index=channel_index,
             channel_name=channel_name,
         )
+        if _is_primary_labels_binding(binding) and self._is_layer_loaded_in_viewer(layer):
+            self.primary_labels_layers_changed.emit()
         return binding
 
     def unregister_layer(self, layer: Layer) -> LayerBinding | None:
@@ -213,12 +310,21 @@ class ViewerAdapter(QObject):
                 connect(handler)
 
     def _on_viewer_layer_inserted(self, event: Any) -> None:
+        """React to viewer-layer insertion when binding already exists.
+
+        In the current built-in loading paths, Harpy usually adds the napari
+        layer to the viewer first and registers it second, so this handler is
+        not the main signal path for primary labels availability. Keep it so
+        the adapter still behaves correctly for external or future flows where
+        a layer is registered before it is inserted into the viewer.
+        """
         layer = getattr(event, "value", None)
         if not isinstance(layer, Layer):
             logger.warning("Ignoring viewer layer insertion event without a napari Layer payload.")
             return
-        if _is_pickable_labels_layer(layer):
-            self.labels_layers_changed.emit()
+        binding = self._layer_bindings.get_binding(layer)
+        if _is_pickable_primary_labels_layer(layer, binding):
+            self.primary_labels_layers_changed.emit()
 
     def _on_viewer_layer_removed(self, event: Any) -> None:
         """Unregister Harpy-managed layers when they disappear from the viewer."""
@@ -226,19 +332,23 @@ class ViewerAdapter(QObject):
         if not isinstance(layer, Layer):
             logger.warning("Ignoring viewer layer removal event without a napari Layer payload.")
             return
-        had_labels_semantics = _is_pickable_labels_layer(layer)
+        binding = self._layer_bindings.get_binding(layer)
+        had_primary_labels_semantics = _is_pickable_primary_labels_layer(layer, binding)
         removed_binding = self.unregister_layer(layer)
         if removed_binding is None:
             logger.warning(
                 "Removed napari layer `%s` had no matching Harpy layer binding.", getattr(layer, "name", layer)
             )
-        if had_labels_semantics:
-            self.labels_layers_changed.emit()
+        if had_primary_labels_semantics:
+            self.primary_labels_layers_changed.emit()
 
     def _on_viewer_layers_reordered(self, event: Any) -> None:
         del event
-        if any(_is_pickable_labels_layer(layer) for layer in self._iter_candidate_layers()):
-            self.labels_layers_changed.emit()
+        if any(
+            _is_pickable_primary_labels_layer(layer, self._layer_bindings.get_binding(layer))
+            for layer in self._iter_candidate_layers()
+        ):
+            self.primary_labels_layers_changed.emit()
 
     def activate_layer(self, layer: Layer | None) -> bool:
         """Make a layer active in the viewer when supported."""
@@ -263,13 +373,13 @@ class ViewerAdapter(QObject):
 
         return False
 
-    def get_loaded_labels_layer(
+    def get_loaded_primary_labels_layer(
         self,
         sdata: SpatialData,
         label_name: str,
         coordinate_system: str | None = None,
     ) -> Labels | None:
-        """Return the loaded labels layer for a SpatialData labels element.
+        """Return the loaded primary labels layer for one labels element.
 
         This lookup is registry-backed only. A pre-existing viewer layer that
         happens to carry legacy ``metadata['sdata']`` / ``metadata['name']``
@@ -281,12 +391,65 @@ class ViewerAdapter(QObject):
                 continue
 
             binding = self._layer_bindings.get_binding(layer)
-            if _matches_binding(binding, sdata=sdata, element_name=label_name, element_type="labels"):
-                if coordinate_system is not None and binding.coordinate_system != coordinate_system:
-                    continue
+            if _matches_labels_binding(
+                binding,
+                sdata=sdata,
+                element_name=label_name,
+                coordinate_system=coordinate_system,
+                labels_role="primary",
+            ):
                 return layer
 
         return None
+
+    def get_loaded_styled_labels_layer(
+        self,
+        sdata: SpatialData,
+        label_name: str,
+        style_spec: LabelsStyleSpec,
+        coordinate_system: str | None = None,
+    ) -> Labels | None:
+        """Return one loaded styled labels layer for a specific style variant."""
+        for layer in self._iter_candidate_layers():
+            if not _is_pickable_labels_layer(layer):
+                continue
+
+            binding = self._layer_bindings.get_binding(layer)
+            if _matches_labels_binding(
+                binding,
+                sdata=sdata,
+                element_name=label_name,
+                coordinate_system=coordinate_system,
+                labels_role="styled",
+                style_spec=style_spec,
+            ):
+                return layer
+
+        return None
+
+    def get_loaded_styled_labels_layers(
+        self,
+        sdata: SpatialData,
+        label_name: str,
+        coordinate_system: str | None = None,
+    ) -> list[Labels]:
+        """Return all loaded styled labels layers for one labels element."""
+        matches: list[Labels] = []
+        for layer in self._iter_candidate_layers():
+            if not _is_pickable_labels_layer(layer):
+                continue
+
+            binding = self._layer_bindings.get_binding(layer)
+            if _matches_labels_binding(
+                binding,
+                sdata=sdata,
+                element_name=label_name,
+                coordinate_system=coordinate_system,
+                labels_role="styled",
+            ):
+                matches.append(layer)
+
+        return matches
 
     def ensure_labels_loaded(self, sdata: SpatialData, label_name: str, coordinate_system: str) -> Labels:
         """Load a labels element into napari if it is not already present."""
@@ -420,7 +583,7 @@ class ViewerAdapter(QObject):
         )
         for layer in existing_overlay_layers:
             binding = self._layer_bindings.get_binding(layer)
-            assert binding is not None
+            assert isinstance(binding, ImageLayerBinding)
             if binding.channel_index in desired_channel_indices:
                 continue
             self._remove_layer_from_viewer_and_registry(layer)
@@ -498,6 +661,9 @@ class ViewerAdapter(QObject):
             return tuple(layers)
         return ()
 
+    def _is_layer_loaded_in_viewer(self, layer: Layer) -> bool:
+        return any(candidate is layer for candidate in self._iter_candidate_layers())
+
     def _remove_layer_from_viewer_and_registry(self, layer: Layer) -> None:
         """Remove a layer from the viewer and keep the registry synchronized."""
         _remove_layer_from_viewer(self._viewer, layer)
@@ -506,7 +672,9 @@ class ViewerAdapter(QObject):
         # Keep this fallback for viewer-like objects that remove layers without
         # exposing or emitting the napari removal event.
         if self._layer_bindings.get_binding(layer) is not None:
-            self.unregister_layer(layer)
+            binding = self.unregister_layer(layer)
+            if _is_primary_labels_binding(binding):
+                self.primary_labels_layers_changed.emit()
 
     def _get_loaded_labels_layer_for_coordinate_system(
         self,
@@ -514,7 +682,7 @@ class ViewerAdapter(QObject):
         label_name: str,
         coordinate_system: str,
     ) -> Labels | None:
-        return self.get_loaded_labels_layer(sdata, label_name, coordinate_system)
+        return self.get_loaded_primary_labels_layer(sdata, label_name, coordinate_system)
 
     def _get_loaded_image_layer_for_coordinate_system(
         self,
@@ -532,6 +700,8 @@ class ViewerAdapter(QObject):
 
             binding = self._layer_bindings.get_binding(layer)
             if not _matches_binding(binding, sdata=sdata, element_name=image_name, element_type="image"):
+                continue
+            if not isinstance(binding, ImageLayerBinding):
                 continue
             if binding.coordinate_system != coordinate_system:
                 continue
@@ -551,6 +721,8 @@ def _apply_minimal_layer_metadata(layer: Layer, binding: LayerBinding) -> None:
     contract. These metadata fields are only a lightweight convenience so a
     napari layer remains somewhat self-describing during debugging or manual
     inspection.
+
+    # TODO -> inspect if this should be removed.
     """
     metadata = getattr(layer, "metadata", None)
     if not isinstance(metadata, dict):
@@ -560,9 +732,27 @@ def _apply_minimal_layer_metadata(layer: Layer, binding: LayerBinding) -> None:
     metadata["element_name"] = binding.element_name
     metadata["element_type"] = binding.element_type
     metadata["coordinate_system"] = binding.coordinate_system
-    _set_optional_metadata_value(metadata, "image_display_mode", binding.image_display_mode)
-    _set_optional_metadata_value(metadata, "channel_index", binding.channel_index)
-    _set_optional_metadata_value(metadata, "channel_name", binding.channel_name)
+    _set_optional_metadata_value(
+        metadata, "labels_role", binding.labels_role if isinstance(binding, LabelsLayerBinding) else None
+    )
+    _set_optional_metadata_value(
+        metadata, "style_spec", binding.style_spec if isinstance(binding, LabelsLayerBinding) else None
+    )
+    _set_optional_metadata_value(
+        metadata,
+        "image_display_mode",
+        binding.image_display_mode if isinstance(binding, ImageLayerBinding) else None,
+    )
+    _set_optional_metadata_value(
+        metadata,
+        "channel_index",
+        binding.channel_index if isinstance(binding, ImageLayerBinding) else None,
+    )
+    _set_optional_metadata_value(
+        metadata,
+        "channel_name",
+        binding.channel_name if isinstance(binding, ImageLayerBinding) else None,
+    )
 
 
 def _set_optional_metadata_value(metadata: dict[str, Any], key: str, value: Any) -> None:
@@ -749,13 +939,51 @@ def _matches_binding(
     *,
     sdata: SpatialData,
     element_name: str,
-    element_type: str,
+    element_type: Literal["labels", "image"],
 ) -> bool:
     if binding is None:
         return False
     return (
         binding.sdata_id == id(sdata) and binding.element_name == element_name and binding.element_type == element_type
     )
+
+
+def _matches_labels_binding(
+    binding: LayerBinding | None,
+    *,
+    sdata: SpatialData,
+    element_name: str,
+    coordinate_system: str | None = None,
+    labels_role: Literal["primary", "styled"] | None = None,
+    style_spec: LabelsStyleSpec | None = None,
+) -> bool:
+    if not isinstance(binding, LabelsLayerBinding):
+        return False
+    if binding.sdata_id != id(sdata) or binding.element_name != element_name:
+        return False
+    if coordinate_system is not None and binding.coordinate_system != coordinate_system:
+        return False
+    if labels_role is not None and binding.labels_role != labels_role:
+        return False
+    if style_spec is not None and binding.style_spec != style_spec:
+        return False
+    return True
+
+
+def _is_labels_binding(binding: LayerBinding | None) -> TypeGuard[LabelsLayerBinding]:
+    return isinstance(binding, LabelsLayerBinding)
+
+
+def _is_image_binding(binding: LayerBinding | None) -> TypeGuard[ImageLayerBinding]:
+    return isinstance(binding, ImageLayerBinding)
+
+
+def _is_primary_labels_binding(binding: LayerBinding | None) -> TypeGuard[LabelsLayerBinding]:
+    return isinstance(binding, LabelsLayerBinding) and binding.labels_role == "primary"
+
+
+def _is_pickable_primary_labels_layer(layer: Layer, binding: LayerBinding | None) -> bool:
+    return _is_pickable_labels_layer(layer) and _is_primary_labels_binding(binding)
 
 
 def _is_pickable_labels_layer(layer: Layer) -> bool:
