@@ -20,6 +20,7 @@ from qtpy.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -61,7 +62,12 @@ if TYPE_CHECKING:
 
 
 _INPUT_CONTROL_STYLESHEET = build_input_control_stylesheet("QComboBox")
-_CARD_STYLESHEET = "QFrame {background-color: #f8eeea; border: 1px solid #eadfd8; border-radius: 10px;}"
+_DETAIL_PANEL_STYLESHEET = (
+    "QFrame[harpyViewerDetailPanel='true'] {"
+    "background-color: #fff7f3; "
+    "border: 1px solid #eadfd8; "
+    "border-radius: 8px;}"
+)
 _CARD_TITLE_STYLESHEET = (
     "QLabel {"
     "background-color: #EFDCCF; "
@@ -71,12 +77,29 @@ _CARD_TITLE_STYLESHEET = (
     "font-weight: 700; "
     "padding: 6px 10px;}"
 )
-_SECTION_TITLE_STYLESHEET = "color: #374151; font-size: 14px; font-weight: 700;"
 _SECTION_GROUP_STYLESHEET = (
-    "QFrame#viewer_widget_images_group, QFrame#viewer_widget_labels_group {"
+    "QFrame[harpyViewerDisclosureSection='true'] {"
     "background-color: #f7ece7; "
     "border: 1px solid #e3d2c8; "
     "border-radius: 12px;}"
+)
+_DISCLOSURE_BUTTON_STYLESHEET = (
+    "QToolButton {"
+    "background-color: #fff8f5; "
+    "border: 1px solid #eadfd8; "
+    "border-radius: 8px; "
+    "color: #374151; "
+    "font-weight: 700; "
+    "padding: 7px 10px; "
+    "text-align: left;}"
+    "QToolButton:hover { background-color: #f6e8e0; border-color: #d9c5ba; }"
+    "QToolButton:checked { background-color: #efdccf; border-color: #d3b19e; }"
+)
+_ELEMENT_DISCLOSURE_STYLESHEET = (
+    "QFrame[harpyViewerDisclosureRow='true'] {"
+    "background-color: #fffaf7; "
+    "border: 1px solid #eadfd8; "
+    "border-radius: 10px;}"
 )
 _SUMMARY_LABEL_STYLESHEET = "color: #374151; font-weight: 500;"
 _EMPTY_STATE_STYLESHEET = "color: #6b7280; font-weight: 500;"
@@ -128,6 +151,136 @@ class _ElidedLabel(QLabel):
         self.setToolTip(format_tooltip(self._full_text) if elided_text != self._full_text else "")
 
 
+class _CollapsibleSectionWidget(QFrame):
+    """Top-level collapsible section for viewer element categories."""
+
+    def __init__(
+        self,
+        *,
+        title: str,
+        object_name: str,
+        toggle_object_name: str,
+        expanded: bool = False,
+    ) -> None:
+        super().__init__()
+        self._title = title
+        self.setObjectName(object_name)
+        self.setProperty("harpyViewerDisclosureSection", True)
+        self.setStyleSheet(_SECTION_GROUP_STYLESHEET)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        self.toggle_button = QToolButton()
+        self.toggle_button.setObjectName(toggle_object_name)
+        self.toggle_button.setCheckable(True)
+        self.toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.toggle_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.toggle_button.setMinimumWidth(0)
+        self.toggle_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.toggle_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.toggle_button.setStyleSheet(_DISCLOSURE_BUTTON_STYLESHEET)
+        self.toggle_button.toggled.connect(self._on_toggled)
+
+        self.content_widget = QWidget()
+        self.content_widget.setObjectName(f"{object_name}_content")
+        self.content_layout = QVBoxLayout(self.content_widget)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_layout.setSpacing(8)
+
+        layout.addWidget(self.toggle_button)
+        layout.addWidget(self.content_widget)
+        self.set_expanded(expanded)
+
+    def is_expanded(self) -> bool:
+        return self.toggle_button.isChecked()
+
+    def set_count(self, count: int) -> None:
+        self.toggle_button.setText(f"{self._title} ({count})")
+        self._update_accessible_text()
+
+    def set_expanded(self, expanded: bool) -> None:
+        with QSignalBlocker(self.toggle_button):
+            self.toggle_button.setChecked(expanded)
+        self._sync_expanded_state(expanded)
+
+    def _on_toggled(self, expanded: bool) -> None:
+        self._sync_expanded_state(expanded)
+
+    def _sync_expanded_state(self, expanded: bool) -> None:
+        self.content_widget.setVisible(expanded)
+        self.toggle_button.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        self._update_accessible_text()
+
+    def _update_accessible_text(self) -> None:
+        state = "expanded" if self.is_expanded() else "collapsed"
+        self.toggle_button.setAccessibleName(f"{self.toggle_button.text()} section, {state}")
+        self.toggle_button.setToolTip(f"{self.toggle_button.text()} section is {state}.")
+
+
+class _DisclosureElementWidget(QFrame):
+    """Compact element row with an expandable detail widget."""
+
+    expanded_changed = Signal(bool)
+
+    def __init__(
+        self,
+        *,
+        title: str,
+        object_name: str,
+        toggle_object_name: str,
+        detail_widget: QWidget,
+        expanded: bool = False,
+    ) -> None:
+        super().__init__()
+        self.title = title
+        self.detail_widget = detail_widget
+        self.setObjectName(object_name)
+        self.setProperty("harpyViewerDisclosureRow", True)
+        self.setStyleSheet(_ELEMENT_DISCLOSURE_STYLESHEET)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        self.toggle_button = QToolButton()
+        self.toggle_button.setObjectName(toggle_object_name)
+        self.toggle_button.setText(title)
+        self.toggle_button.setToolTip(format_tooltip(title))
+        self.toggle_button.setCheckable(True)
+        self.toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.toggle_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.toggle_button.setMinimumWidth(0)
+        self.toggle_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.toggle_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.toggle_button.setStyleSheet(_DISCLOSURE_BUTTON_STYLESHEET)
+        self.toggle_button.toggled.connect(self._on_toggled)
+
+        layout.addWidget(self.toggle_button)
+        layout.addWidget(self.detail_widget)
+        self.set_expanded(expanded)
+
+    def is_expanded(self) -> bool:
+        return self.toggle_button.isChecked()
+
+    def set_expanded(self, expanded: bool) -> None:
+        with QSignalBlocker(self.toggle_button):
+            self.toggle_button.setChecked(expanded)
+        self._sync_expanded_state(expanded)
+
+    def _on_toggled(self, expanded: bool) -> None:
+        self._sync_expanded_state(expanded)
+        self.expanded_changed.emit(expanded)
+
+    def _sync_expanded_state(self, expanded: bool) -> None:
+        self.detail_widget.setVisible(expanded)
+        self.toggle_button.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        state = "expanded" if expanded else "collapsed"
+        self.toggle_button.setAccessibleName(f"{self.title} element, {state}")
+        self.toggle_button.setToolTip(format_tooltip(f"{self.title} element is {state}."))
+
+
 class _LabelsCardWidget(QFrame):
     """Card UI for one labels element in the selected coordinate system."""
 
@@ -145,15 +298,17 @@ class _LabelsCardWidget(QFrame):
         self._table_color_sources_by_table = table_color_sources_by_table
         self._filtered_color_sources: list[TableColorSourceSpec] = []
         self.setObjectName(f"viewer_widget_labels_card_{label_name}")
-        self.setStyleSheet(_CARD_STYLESHEET)
+        self.setProperty("harpyViewerDetailPanel", True)
+        self.setStyleSheet(_DETAIL_PANEL_STYLESHEET)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
-        self.title_label = _ElidedLabel(label_name)
+        self.title_label = _ElidedLabel(label_name, self)
         self.title_label.setObjectName(f"viewer_widget_labels_card_title_{label_name}")
         self.title_label.setStyleSheet(_CARD_TITLE_STYLESHEET)
+        self.title_label.hide()
 
         form_layout = QFormLayout()
         form_layout.setContentsMargins(0, 0, 0, 0)
@@ -210,7 +365,6 @@ class _LabelsCardWidget(QFrame):
         form_layout.addRow(color_source_kind_label, self.color_source_kind_combo)
         form_layout.addRow(self.color_source_value_label, self.color_source_value_input)
 
-        layout.addWidget(self.title_label)
         layout.addLayout(form_layout)
         layout.addWidget(self.action_status_label)
         layout.addWidget(self.add_update_button)
@@ -369,15 +523,17 @@ class _ImageCardWidget(QFrame):
         self.channel_names = channel_names
         self.channel_error = channel_error
         self.setObjectName(f"viewer_widget_image_card_{image_name}")
-        self.setStyleSheet(_CARD_STYLESHEET)
+        self.setProperty("harpyViewerDetailPanel", True)
+        self.setStyleSheet(_DETAIL_PANEL_STYLESHEET)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
-        self.title_label = _ElidedLabel(image_name)
+        self.title_label = _ElidedLabel(image_name, self)
         self.title_label.setObjectName(f"viewer_widget_image_card_title_{image_name}")
         self.title_label.setStyleSheet(_CARD_TITLE_STYLESHEET)
+        self.title_label.hide()
 
         mode_layout = QHBoxLayout()
         mode_layout.setContentsMargins(0, 0, 0, 0)
@@ -485,7 +641,6 @@ class _ImageCardWidget(QFrame):
         self.stack_toggle.toggled.connect(self._on_stack_toggled)
         self.overlay_toggle.toggled.connect(self._on_overlay_toggled)
 
-        layout.addWidget(self.title_label)
         layout.addLayout(mode_layout)
         layout.addWidget(self.channel_warning_label)
         layout.addWidget(self.channel_panel)
@@ -566,6 +721,10 @@ class ViewerWidget(QWidget):
         self._app_state = get_or_create_app_state(napari_viewer)
         self._labels_cards: list[_LabelsCardWidget] = []
         self._image_cards: list[_ImageCardWidget] = []
+        self._labels_rows: list[_DisclosureElementWidget] = []
+        self._image_rows: list[_DisclosureElementWidget] = []
+        self._expanded_label_names: set[str] = set()
+        self._expanded_image_names: set[str] = set()
         self._logo_path = Path(__file__).resolve().parents[3] / "docs" / "_static" / "logo.png"
 
         root_layout = QVBoxLayout(self)
@@ -628,10 +787,6 @@ class ViewerWidget(QWidget):
         self.action_feedback_label.setWordWrap(True)
         self.action_feedback_label.hide()
 
-        self.images_section_title = QLabel("Images")
-        self.images_section_title.setObjectName("viewer_widget_images_section_title")
-        self.images_section_title.setStyleSheet(_SECTION_TITLE_STYLESHEET)
-
         self.images_empty_label = QLabel("No images available in the selected coordinate system.")
         self.images_empty_label.setObjectName("viewer_widget_images_empty_state")
         self.images_empty_label.setWordWrap(True)
@@ -642,19 +797,16 @@ class ViewerWidget(QWidget):
         self.images_section_layout = QVBoxLayout(self.images_section)
         self.images_section_layout.setContentsMargins(0, 0, 0, 0)
         self.images_section_layout.setSpacing(8)
-        self.images_group = QFrame()
-        self.images_group.setObjectName("viewer_widget_images_group")
-        self.images_group.setStyleSheet(_SECTION_GROUP_STYLESHEET)
-        self.images_group_layout = QVBoxLayout(self.images_group)
-        self.images_group_layout.setContentsMargins(12, 12, 12, 12)
-        self.images_group_layout.setSpacing(10)
-        self.images_group_layout.addWidget(self.images_section_title)
-        self.images_group_layout.addWidget(self.images_empty_label)
-        self.images_group_layout.addWidget(self.images_section)
-
-        self.labels_section_title = QLabel("Segmentations")
-        self.labels_section_title.setObjectName("viewer_widget_labels_section_title")
-        self.labels_section_title.setStyleSheet(_SECTION_TITLE_STYLESHEET)
+        self.images_group = _CollapsibleSectionWidget(
+            title="Images",
+            object_name="viewer_widget_images_group",
+            toggle_object_name="viewer_widget_images_section_toggle",
+            expanded=False,
+        )
+        self.images_group.content_layout.addWidget(self.images_empty_label)
+        self.images_group.content_layout.addWidget(self.images_section)
+        self.images_section_toggle = self.images_group.toggle_button
+        self.images_section_title = self.images_section_toggle
 
         self.labels_empty_label = QLabel("No segmentation masks available in the selected coordinate system.")
         self.labels_empty_label.setObjectName("viewer_widget_labels_empty_state")
@@ -666,15 +818,16 @@ class ViewerWidget(QWidget):
         self.labels_section_layout = QVBoxLayout(self.labels_section)
         self.labels_section_layout.setContentsMargins(0, 0, 0, 0)
         self.labels_section_layout.setSpacing(8)
-        self.labels_group = QFrame()
-        self.labels_group.setObjectName("viewer_widget_labels_group")
-        self.labels_group.setStyleSheet(_SECTION_GROUP_STYLESHEET)
-        self.labels_group_layout = QVBoxLayout(self.labels_group)
-        self.labels_group_layout.setContentsMargins(12, 12, 12, 12)
-        self.labels_group_layout.setSpacing(10)
-        self.labels_group_layout.addWidget(self.labels_section_title)
-        self.labels_group_layout.addWidget(self.labels_empty_label)
-        self.labels_group_layout.addWidget(self.labels_section)
+        self.labels_group = _CollapsibleSectionWidget(
+            title="Segmentations",
+            object_name="viewer_widget_labels_group",
+            toggle_object_name="viewer_widget_labels_section_toggle",
+            expanded=False,
+        )
+        self.labels_group.content_layout.addWidget(self.labels_empty_label)
+        self.labels_group.content_layout.addWidget(self.labels_section)
+        self.labels_section_toggle = self.labels_group.toggle_button
+        self.labels_section_title = self.labels_section_toggle
 
         self.content_layout.addWidget(header_logo)
         self.content_layout.addWidget(title)
@@ -707,6 +860,16 @@ class ViewerWidget(QWidget):
     def image_cards(self) -> list[_ImageCardWidget]:
         """Return the currently visible image cards."""
         return list(self._image_cards)
+
+    @property
+    def image_rows(self) -> list[_DisclosureElementWidget]:
+        """Return the currently visible compact image rows."""
+        return list(self._image_rows)
+
+    @property
+    def labels_rows(self) -> list[_DisclosureElementWidget]:
+        """Return the currently visible compact labels rows."""
+        return list(self._labels_rows)
 
     def _on_sdata_changed(self, sdata: SpatialData | None) -> None:
         """Refresh the widget when the shared loaded `SpatialData` changes."""
@@ -793,6 +956,8 @@ class ViewerWidget(QWidget):
     def _rebuild_image_cards(self, sdata: SpatialData, image_names: list[str]) -> None:
         _clear_layout(self.images_section_layout)
         self._image_cards = []
+        self._image_rows = []
+        self._expanded_image_names.intersection_update(image_names)
 
         for image_name in image_names:
             channel_error = None
@@ -807,12 +972,28 @@ class ViewerWidget(QWidget):
                 channel_error=channel_error,
             )
             card.add_update_requested.connect(self._add_or_update_image_layer)
-            self.images_section_layout.addWidget(card)
+            row = _DisclosureElementWidget(
+                title=image_name,
+                object_name=f"viewer_widget_image_row_{image_name}",
+                toggle_object_name=f"viewer_widget_image_row_toggle_{image_name}",
+                detail_widget=card,
+                expanded=image_name in self._expanded_image_names,
+            )
+            row.expanded_changed.connect(
+                lambda expanded, *, name=image_name: self._on_image_row_expanded(
+                    name,
+                    expanded,
+                )
+            )
+            self.images_section_layout.addWidget(row)
             self._image_cards.append(card)
+            self._image_rows.append(row)
 
     def _rebuild_labels_cards(self, sdata: SpatialData, label_names: list[str]) -> None:
         _clear_layout(self.labels_section_layout)
         self._labels_cards = []
+        self._labels_rows = []
+        self._expanded_label_names.intersection_update(label_names)
 
         for label_name in label_names:
             table_names = get_annotating_table_names(sdata, label_name)
@@ -825,8 +1006,44 @@ class ViewerWidget(QWidget):
                 table_color_sources_by_table=table_color_sources_by_table,
             )
             card.add_update_requested.connect(self._add_or_update_labels_layer)
-            self.labels_section_layout.addWidget(card)
+            row = _DisclosureElementWidget(
+                title=label_name,
+                object_name=f"viewer_widget_labels_row_{label_name}",
+                toggle_object_name=f"viewer_widget_labels_row_toggle_{label_name}",
+                detail_widget=card,
+                expanded=label_name in self._expanded_label_names,
+            )
+            row.expanded_changed.connect(
+                lambda expanded, *, name=label_name: self._on_labels_row_expanded(
+                    name,
+                    expanded,
+                )
+            )
+            self.labels_section_layout.addWidget(row)
             self._labels_cards.append(card)
+            self._labels_rows.append(row)
+
+    def _on_image_row_expanded(
+        self,
+        image_name: str,
+        expanded: bool,
+    ) -> None:
+        if expanded:
+            self._expanded_image_names.add(image_name)
+            return
+
+        self._expanded_image_names.discard(image_name)
+
+    def _on_labels_row_expanded(
+        self,
+        label_name: str,
+        expanded: bool,
+    ) -> None:
+        if expanded:
+            self._expanded_label_names.add(label_name)
+            return
+
+        self._expanded_label_names.discard(label_name)
 
     def _add_or_update_labels_layer(self, request: LabelsLoadRequest) -> None:
         if request.selected_source_kind is None:
@@ -1036,6 +1253,8 @@ class ViewerWidget(QWidget):
         )
 
     def _update_section_empty_states(self, image_names: list[str], label_names: list[str]) -> None:
+        self.images_group.set_count(len(image_names))
+        self.labels_group.set_count(len(label_names))
         self.images_empty_label.setVisible(not image_names)
         self.labels_empty_label.setVisible(not label_names)
         self.images_section.setVisible(bool(image_names))
@@ -1046,6 +1265,10 @@ class ViewerWidget(QWidget):
         _clear_layout(self.labels_section_layout)
         self._image_cards = []
         self._labels_cards = []
+        self._image_rows = []
+        self._labels_rows = []
+        self._expanded_image_names.clear()
+        self._expanded_label_names.clear()
 
     def _set_action_feedback(
         self,

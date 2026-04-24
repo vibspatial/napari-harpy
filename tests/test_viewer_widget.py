@@ -126,6 +126,14 @@ def test_viewer_widget_refreshes_cards_when_shared_sdata_changes(qtbot, sdata_bl
     assert widget.image_cards[0].stack_toggle.isChecked()
     assert widget.image_cards[0].overlay_toggle.text() == "overlay"
     assert not widget.image_cards[0].overlay_toggle.isChecked()
+    assert len(widget.image_rows) == 2
+    assert len(widget.labels_rows) == 2
+    assert widget.images_section_toggle.text() == "Images (2)"
+    assert widget.labels_section_toggle.text() == "Segmentations (2)"
+    assert not widget.images_group.is_expanded()
+    assert not widget.labels_group.is_expanded()
+    assert widget.image_rows[0].detail_widget.isHidden()
+    assert widget.labels_rows[0].detail_widget.isHidden()
     assert widget.labels_cards[0].linked_table_combo.count() == 1
     assert widget.labels_cards[0].linked_table_combo.itemText(0) == "table"
     assert widget.labels_cards[0].linked_table_combo.sizeAdjustPolicy() == (
@@ -135,6 +143,76 @@ def test_viewer_widget_refreshes_cards_when_shared_sdata_changes(qtbot, sdata_bl
     assert widget.labels_cards[1].linked_table_combo.itemText(0) == "No linked tables"
     assert not widget.labels_cards[1].linked_table_combo.isEnabled()
     assert "In coordinate system `global`" in widget.summary_label.text()
+
+
+def test_viewer_widget_progressive_disclosure_expands_sections_and_elements(qtbot, sdata_blobs) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata_blobs)
+
+    first_image_row = widget.image_rows[0]
+    second_image_row = widget.image_rows[1]
+    first_labels_row = widget.labels_rows[0]
+
+    assert widget.images_group.content_widget.isHidden()
+    assert widget.labels_group.content_widget.isHidden()
+    assert first_image_row.detail_widget.isHidden()
+    assert first_labels_row.detail_widget.isHidden()
+
+    widget.images_section_toggle.click()
+
+    assert widget.images_group.is_expanded()
+    assert not widget.images_group.content_widget.isHidden()
+    assert first_image_row.detail_widget.isHidden()
+
+    first_image_row.toggle_button.click()
+
+    assert first_image_row.is_expanded()
+    assert not first_image_row.detail_widget.isHidden()
+    assert widget.image_cards[0].stack_toggle.isChecked()
+
+    second_image_row.toggle_button.click()
+
+    assert first_image_row.is_expanded()
+    assert not first_image_row.detail_widget.isHidden()
+    assert second_image_row.is_expanded()
+    assert not second_image_row.detail_widget.isHidden()
+
+    widget.labels_section_toggle.click()
+    first_labels_row.toggle_button.click()
+
+    assert widget.labels_group.is_expanded()
+    assert first_labels_row.is_expanded()
+    assert not first_labels_row.detail_widget.isHidden()
+    assert widget.labels_cards[0].linked_table_combo.currentText() == "table"
+
+
+def test_viewer_widget_progressive_disclosure_actions_still_load_layers(qtbot, sdata_blobs) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata_blobs)
+
+    widget.images_section_toggle.click()
+    widget.image_rows[0].toggle_button.click()
+    widget.image_cards[0].add_update_button.click()
+
+    assert len(viewer.layers) == 1
+    assert viewer.layers[0].name == "blobs_image"
+
+    widget.labels_section_toggle.click()
+    widget.labels_rows[0].toggle_button.click()
+    widget.labels_cards[0].add_update_button.click()
+
+    assert len(viewer.layers) == 2
+    assert viewer.layers[1].name == "blobs_labels"
 
 
 def test_viewer_widget_labels_cards_expose_table_driven_coloring_controls(qtbot, sdata_blobs) -> None:
