@@ -2,14 +2,18 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from numbers import Integral, Real
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+import pandas as pd
 from napari.layers import Labels
 from spatialdata import get_element_annotators, join_spatialelement_table
 from spatialdata.models import TableModel, get_axes_names
 from spatialdata.transformations import get_transformation
 from xarray import DataArray
+
+from napari_harpy._table_color_source import ColorValueKind, TableColorSourceSpec
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -137,6 +141,54 @@ def get_table_obsm_keys(sdata: SpatialData, table_name: str) -> list[str]:
     """Return the available feature matrix keys from `adata.obsm` for a table in a SpatialData object."""
     table = get_table(sdata, table_name)
     return sorted(table.obsm.keys())
+
+
+def get_table_obs_color_source_options(sdata: SpatialData, table_name: str) -> list[TableColorSourceSpec]:
+    """Return colorable `obs` columns for one linked table."""
+    table = get_table(sdata, table_name)
+    table_metadata = get_table_metadata(sdata, table_name)
+    excluded_columns = {table_metadata.region_key, table_metadata.instance_key}
+
+    options: list[TableColorSourceSpec] = []
+    for column_name in table.obs.columns:
+        if column_name in excluded_columns:
+            continue
+
+        value_kind = _classify_obs_color_source(table.obs[column_name])
+        if value_kind is None:
+            continue
+
+        options.append(
+            TableColorSourceSpec(
+                table_name=table_name,
+                source_kind="obs_column",
+                value_key=str(column_name),
+                value_kind=value_kind,
+            )
+        )
+
+    return options
+
+
+def get_table_x_var_color_source_options(sdata: SpatialData, table_name: str) -> list[TableColorSourceSpec]:
+    """Return colorable `X[:, var_name]` sources for one linked table."""
+    table = get_table(sdata, table_name)
+    return [
+        TableColorSourceSpec(
+            table_name=table_name,
+            source_kind="x_var",
+            value_key=str(var_name),
+            value_kind="continuous",
+        )
+        for var_name in table.var_names
+    ]
+
+
+def get_table_color_source_options(sdata: SpatialData, table_name: str) -> list[TableColorSourceSpec]:
+    """Return all colorable table-backed sources for one linked table."""
+    return get_table_obs_color_source_options(sdata, table_name) + get_table_x_var_color_source_options(
+        sdata, table_name
+    )
 
 
 def get_spatialdata_label_options_from_sdata(sdata: SpatialData) -> list[SpatialDataLabelsOption]:
@@ -388,6 +440,65 @@ def _normalize_layer_indices(indices: Any) -> list[Any] | None:
             return None
 
     return [index for index in indices if index != 0]
+
+
+def _classify_obs_color_source(column: pd.Series) -> ColorValueKind | None:
+    if isinstance(column.dtype, pd.CategoricalDtype):
+        return "categorical"
+
+    non_null = column.dropna()
+    if non_null.empty:
+        return None
+
+    if pd.api.types.is_bool_dtype(column.dtype):
+        return "categorical"
+
+    if pd.api.types.is_integer_dtype(column.dtype):
+        return "categorical" if _has_exact_binary_zero_one_values(non_null.tolist()) else "continuous"
+
+    if pd.api.types.is_float_dtype(column.dtype):
+        return "continuous"
+
+    return _classify_scalar_values_as_color_source(non_null.tolist())
+
+
+def _classify_scalar_values_as_color_source(
+    values: Sequence[Any],
+) -> ColorValueKind | None:
+    if all(_is_bool_scalar(value) for value in values):
+        return "categorical"
+
+    if all(_is_integer_scalar(value) for value in values):
+        return "categorical" if _has_exact_binary_zero_one_values(values) else "continuous"
+
+    if all(_is_real_scalar(value) for value in values):
+        return "continuous"
+
+    if all(_is_string_scalar(value) for value in values):
+        return "categorical"
+
+    return None
+
+
+def _has_exact_binary_zero_one_values(values: Sequence[Any]) -> bool:
+    unique_values = {int(value) for value in values}
+    return unique_values == {0, 1}
+
+
+def _is_bool_scalar(value: Any) -> bool:
+    return isinstance(value, bool | np.bool_)
+
+
+def _is_integer_scalar(value: Any) -> bool:
+    return isinstance(value, Integral) and not _is_bool_scalar(value)
+
+
+def _is_real_scalar(value: Any) -> bool:
+    return isinstance(value, Real) and not _is_bool_scalar(value)
+
+
+def _is_string_scalar(value: Any) -> bool:
+    return isinstance(value, str | bytes | np.str_ | np.bytes_)
 
 
 def _is_pickable_labels_layer(layer: Any) -> bool:

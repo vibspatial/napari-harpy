@@ -12,6 +12,8 @@ from spatialdata.models import get_axes_names
 from spatialdata.transformations import get_transformation
 from xarray import DataArray, DataTree
 
+from napari_harpy._table_color_source import TableColorSourceSpec
+
 if TYPE_CHECKING:
     from spatialdata import SpatialData
 
@@ -38,23 +40,13 @@ class BaseLayerBinding:
     sdata_id: int | None = None
 
 
-@dataclass(frozen=True)
-class LabelsStyleSpec:
-    """Describe one styled labels overlay driven by table-backed values."""
-
-    table_name: str
-    source_kind: Literal["obs_column", "x_var"]
-    value_key: str
-    value_kind: Literal["categorical", "continuous"]
-
-
 @dataclass(frozen=True, kw_only=True)
 class LabelsLayerBinding(BaseLayerBinding):
     """Binding metadata specific to labels layers."""
 
     element_type: Literal["labels"] = "labels"
     labels_role: Literal["primary", "styled"] = "primary"
-    style_spec: LabelsStyleSpec | None = None
+    style_spec: TableColorSourceSpec | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -122,7 +114,7 @@ class LayerBindingRegistry:
         coordinate_system: str | None = None,
         sdata: SpatialData | None = None,
         labels_role: Literal["primary", "styled"] = "primary",
-        style_spec: LabelsStyleSpec | None = None,
+        style_spec: TableColorSourceSpec | None = None,
         image_display_mode: ImageDisplayMode | None = None,
         channel_index: int | None = None,
         channel_name: str | None = None,
@@ -176,7 +168,7 @@ class LayerBindingRegistry:
         element_type: Literal["labels", "image"] | None = None,
         coordinate_system: str | None = None,
         labels_role: Literal["primary", "styled"] | None = None,
-        style_spec: LabelsStyleSpec | None = None,
+        style_spec: TableColorSourceSpec | None = None,
         image_display_mode: ImageDisplayMode | None = None,
         channel_index: int | None = None,
         channel_name: str | None = None,
@@ -257,7 +249,7 @@ class ViewerAdapter(QObject):
         coordinate_system: str | None = None,
         sdata: SpatialData | None = None,
         labels_role: Literal["primary", "styled"] = "primary",
-        style_spec: LabelsStyleSpec | None = None,
+        style_spec: TableColorSourceSpec | None = None,
         image_display_mode: ImageDisplayMode | None = None,
         channel_index: int | None = None,
         channel_name: str | None = None,
@@ -406,7 +398,7 @@ class ViewerAdapter(QObject):
         self,
         sdata: SpatialData,
         label_name: str,
-        style_spec: LabelsStyleSpec,
+        style_spec: TableColorSourceSpec,
         coordinate_system: str | None = None,
     ) -> Labels | None:
         """Return one loaded styled labels layer for a specific style variant."""
@@ -955,7 +947,7 @@ def _matches_labels_binding(
     element_name: str,
     coordinate_system: str | None = None,
     labels_role: Literal["primary", "styled"] | None = None,
-    style_spec: LabelsStyleSpec | None = None,
+    style_spec: TableColorSourceSpec | None = None,
 ) -> bool:
     if not isinstance(binding, LabelsLayerBinding):
         return False

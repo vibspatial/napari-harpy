@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
+import pandas as pd
 import pytest
 from napari.layers import Image, Labels
 from spatialdata import SpatialData
@@ -19,8 +20,11 @@ from napari_harpy._spatialdata import (
     get_spatialdata_label_options_for_coordinate_system_from_sdata,
     get_spatialdata_label_options_from_sdata,
     get_table,
+    get_table_color_source_options,
     get_table_metadata,
+    get_table_obs_color_source_options,
     get_table_obsm_keys,
+    get_table_x_var_color_source_options,
     normalize_table_metadata,
     refresh_layer_table_metadata,
     validate_table_binding,
@@ -68,6 +72,64 @@ def test_get_table_obsm_keys_returns_sorted_feature_matrix_keys(sdata_blobs: Spa
     obsm_keys = get_table_obsm_keys(sdata_blobs, "table")
 
     assert obsm_keys == ["features_1", "features_2"]
+
+
+def test_get_table_obs_color_source_options_classifies_supported_columns(sdata_blobs: SpatialData) -> None:
+    table = sdata_blobs["table"]
+    n_obs = table.n_obs
+    repeated_values = ["a", "b"] * (n_obs // 2) + (["a"] if n_obs % 2 else [])
+
+    table.obs["cat_obs"] = pd.Categorical(repeated_values)
+    table.obs["bool_obs"] = pd.Series([index % 2 == 0 for index in range(n_obs)], index=table.obs.index)
+    table.obs["binary_int_obs"] = pd.Series([index % 2 for index in range(n_obs)], index=table.obs.index, dtype="int64")
+    table.obs["int_obs"] = pd.Series(np.arange(n_obs), index=table.obs.index, dtype="int64")
+    table.obs["float_obs"] = pd.Series(np.linspace(0.0, 1.0, n_obs), index=table.obs.index, dtype="float64")
+    table.obs["string_obs"] = pd.Series(repeated_values, index=table.obs.index, dtype="object")
+    table.obs["datetime_obs"] = pd.date_range("2024-01-01", periods=n_obs)
+    table.obs["object_obs"] = pd.Series([{"index": index} for index in range(n_obs)], index=table.obs.index, dtype="object")
+
+    options = get_table_obs_color_source_options(sdata_blobs, "table")
+
+    option_by_key = {option.value_key: option for option in options}
+
+    assert "region" not in option_by_key
+    assert "instance_id" not in option_by_key
+    assert option_by_key["cat_obs"].value_kind == "categorical"
+    assert option_by_key["bool_obs"].value_kind == "categorical"
+    assert option_by_key["binary_int_obs"].value_kind == "categorical"
+    assert option_by_key["int_obs"].value_kind == "continuous"
+    assert option_by_key["float_obs"].value_kind == "continuous"
+    assert option_by_key["string_obs"].value_kind == "categorical"
+    assert "datetime_obs" not in option_by_key
+    assert "object_obs" not in option_by_key
+    assert option_by_key["cat_obs"].source_kind == "obs_column"
+    assert option_by_key["cat_obs"].display_name == "cat_obs"
+    assert option_by_key["cat_obs"].identity == ("table", "obs_column", "cat_obs")
+
+
+def test_get_table_x_var_color_source_options_exposes_var_names_as_continuous_sources(
+    sdata_blobs: SpatialData,
+) -> None:
+    options = get_table_x_var_color_source_options(sdata_blobs, "table")
+
+    assert [option.value_key for option in options] == ["channel_0_sum", "channel_1_sum", "channel_2_sum"]
+    assert all(option.source_kind == "x_var" for option in options)
+    assert all(option.value_kind == "continuous" for option in options)
+    assert [option.display_name for option in options] == ["channel_0_sum", "channel_1_sum", "channel_2_sum"]
+
+
+def test_get_table_color_source_options_combines_obs_and_x_var_sources(sdata_blobs: SpatialData) -> None:
+    table = sdata_blobs["table"]
+    table.obs["cat_obs"] = pd.Categorical(["a"] * table.n_obs)
+
+    options = get_table_color_source_options(sdata_blobs, "table")
+
+    assert [option.identity for option in options] == [
+        ("table", "obs_column", "cat_obs"),
+        ("table", "x_var", "channel_0_sum"),
+        ("table", "x_var", "channel_1_sum"),
+        ("table", "x_var", "channel_2_sum"),
+    ]
 
 
 def test_get_table_metadata_resolves_table_metadata(sdata_blobs: SpatialData) -> None:

@@ -7,10 +7,10 @@ import numpy as np
 from napari.layers import Image, Labels
 
 from napari_harpy._app_state import get_or_create_app_state
+from napari_harpy._table_color_source import TableColorSourceSpec
 from napari_harpy._viewer_adapter import (
     ImageLayerBinding,
     LabelsLayerBinding,
-    LabelsStyleSpec,
     LayerBindingRegistry,
     ViewerAdapter,
 )
@@ -149,7 +149,7 @@ def test_layer_binding_registry_tracks_channel_overlay_identity() -> None:
 def test_layer_binding_registry_tracks_labels_role_and_style_spec() -> None:
     registry = LayerBindingRegistry()
     layer = make_labels_layer(sdata=SimpleNamespace(labels={"blobs_labels": np.zeros((2, 2), dtype=np.int32)}))
-    style_spec = LabelsStyleSpec(
+    style_spec = TableColorSourceSpec(
         table_name="table",
         source_kind="obs_column",
         value_key="cell_type",
@@ -233,7 +233,7 @@ def test_viewer_adapter_primary_labels_lookup_ignores_styled_variants(sdata_blob
     styled_layer = make_labels_layer(sdata=sdata_blobs)
     viewer = DummyViewer([styled_layer])
     adapter = ViewerAdapter(viewer)
-    style_spec = LabelsStyleSpec(
+    style_spec = TableColorSourceSpec(
         table_name="table",
         source_kind="obs_column",
         value_key="cell_type",
@@ -395,7 +395,7 @@ def test_viewer_adapter_primary_labels_signal_ignores_styled_bindings(sdata_blob
     viewer = DummyViewer([primary_layer, styled_layer])
     adapter = ViewerAdapter(viewer)
     labels_events: list[str] = []
-    style_spec = LabelsStyleSpec(
+    style_spec = TableColorSourceSpec(
         table_name="table",
         source_kind="obs_column",
         value_key="cell_type",
