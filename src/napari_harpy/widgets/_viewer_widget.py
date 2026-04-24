@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from html import escape
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from qtpy.QtCore import QSignalBlocker, QStringListModel, Qt, Signal
 from qtpy.QtGui import QPixmap
@@ -46,12 +45,14 @@ from napari_harpy.widgets._shared_styles import (
 )
 from napari_harpy.widgets._shared_styles import (
     CompactComboBox,
+    StatusCardKind,
     apply_scroll_content_surface,
     apply_widget_surface,
     build_input_control_stylesheet,
     create_form_label,
     format_feedback_identifier,
     format_tooltip,
+    set_status_card,
 )
 
 if TYPE_CHECKING:
@@ -82,7 +83,6 @@ _EMPTY_STATE_STYLESHEET = "color: #6b7280; font-weight: 500;"
 _CHANNEL_WARNING_STYLESHEET = "color: #b45309; font-weight: 600;"
 _CHANNEL_PANEL_STYLESHEET = "QWidget { background: transparent; }"
 _MAX_VISIBLE_OVERLAY_CHANNELS = 5
-_FeedbackKind = Literal["info", "warning", "success", "error"]
 
 
 @dataclass(frozen=True)
@@ -921,7 +921,7 @@ class ViewerWidget(QWidget):
             f"{action} colored overlay for {source_text} on segmentation `{request.label_name}` "
             f"in coordinate system `{coordinate_system}`."
         )
-        feedback_kind: _FeedbackKind = "success"
+        feedback_kind: StatusCardKind = "success"
         title = f"Colored Overlay {action}"
         lines = [action_line]
         if result.coercion_applied:
@@ -1053,7 +1053,7 @@ class ViewerWidget(QWidget):
         *,
         title: str | None = None,
         lines: list[str] | None = None,
-        kind: _FeedbackKind | None = None,
+        kind: StatusCardKind | None = None,
         is_error: bool | None = None,
         tooltip_message: str | None = None,
     ) -> None:
@@ -1068,8 +1068,13 @@ class ViewerWidget(QWidget):
         if title is None:
             title = "Viewer Error" if kind == "error" else "Viewer Updated"
 
-        _set_status_card(self.action_feedback_label, title=title, lines=lines, kind=kind)
-        self.action_feedback_label.setToolTip(format_tooltip(tooltip_message) if tooltip_message else "")
+        set_status_card(
+            self.action_feedback_label,
+            title=title,
+            lines=lines,
+            kind=kind,
+            tooltip_message=tooltip_message,
+        )
 
     def _clear_action_feedback(self) -> None:
         self.action_feedback_label.clear()
@@ -1105,33 +1110,6 @@ def _clear_layout(layout: QLayout) -> None:
 
 def _create_form_label(text: str) -> QLabel:
     return create_form_label(text)
-
-
-def _set_status_card(label: QLabel, *, title: str, lines: list[str], kind: _FeedbackKind) -> None:
-    palette_by_kind = {
-        "info": {"text": "#1d4ed8", "border": "#93c5fd", "background": "#eff6ff"},
-        "warning": {"text": "#b45309", "border": "#fdba74", "background": "#fff7ed"},
-        "success": {"text": "#166534", "border": "#86efac", "background": "#f0fdf4"},
-        "error": {"text": "#b91c1c", "border": "#fca5a5", "background": "#fef2f2"},
-    }
-    palette = palette_by_kind.get(kind, palette_by_kind["info"])
-    formatted_lines = "<br>".join(f"<span>{escape(line, quote=False)}</span>" for line in lines)
-    label.setText(
-        "<div>"
-        f"<span style='font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;'>"
-        f"{escape(title, quote=False)}</span><br>"
-        f"{formatted_lines}"
-        "</div>"
-    )
-    label.setStyleSheet(
-        "font-weight: 500; "
-        f"color: {palette['text']}; "
-        f"background-color: {palette['background']}; "
-        f"border: 1px solid {palette['border']}; "
-        "border-radius: 8px; "
-        "padding: 10px 12px;"
-    )
-    label.setVisible(bool(lines))
 
 
 def _get_coordinate_systems_from_sdata(sdata: SpatialData) -> list[str]:

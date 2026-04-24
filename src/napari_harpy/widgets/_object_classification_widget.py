@@ -50,11 +50,13 @@ from napari_harpy.widgets._shared_styles import (
 )
 from napari_harpy.widgets._shared_styles import (
     CompactComboBox,
+    StatusCardKind,
     apply_scroll_content_surface,
     apply_widget_surface,
     build_input_control_stylesheet,
     create_form_label,
     format_tooltip,
+    set_status_card,
 )
 
 if TYPE_CHECKING:
@@ -1050,7 +1052,7 @@ class ObjectClassificationWidget(QWidget):
         )
         self._update_selection_status()
 
-    def _set_annotation_feedback(self, message: str, *, kind: str = "success") -> None:
+    def _set_annotation_feedback(self, message: str, *, kind: StatusCardKind = "success") -> None:
         if not message:
             self.annotation_feedback.setText("")
             self.annotation_feedback.setVisible(False)
@@ -1061,17 +1063,17 @@ class ObjectClassificationWidget(QWidget):
             "warning": "Annotation Warning",
             "success": "Annotation Updated",
         }
-        self._set_status_card(
+        set_status_card(
             self.annotation_feedback,
             title=title_by_kind.get(kind, "Annotation"),
             lines=[message],
             kind=kind,
         )
 
-    def _set_selection_status(self, title: str, lines: list[str], *, kind: str) -> None:
-        self._set_status_card(self.selection_status, title=title, lines=lines, kind=kind)
+    def _set_selection_status(self, title: str, lines: list[str], *, kind: StatusCardKind) -> None:
+        set_status_card(self.selection_status, title=title, lines=lines, kind=kind)
 
-    def _set_classifier_feedback(self, message: str, *, kind: str = "info") -> None:
+    def _set_classifier_feedback(self, message: str, *, kind: StatusCardKind = "info") -> None:
         if not message:
             self.classifier_feedback.setText("")
             self.classifier_feedback.setVisible(False)
@@ -1084,38 +1086,12 @@ class ObjectClassificationWidget(QWidget):
             "info": "Classifier",
         }
         body = message.removeprefix("Classifier: ").strip()
-        self._set_status_card(
+        set_status_card(
             self.classifier_feedback,
             title=title_by_kind.get(kind, "Classifier"),
             lines=[body],
             kind=kind,
         )
-
-    def _set_status_card(self, label: QLabel, *, title: str, lines: list[str], kind: str) -> None:
-        palette_by_kind = {
-            "info": {"text": "#1d4ed8", "border": "#93c5fd", "background": "#eff6ff"},
-            "warning": {"text": "#b45309", "border": "#fdba74", "background": "#fff7ed"},
-            "success": {"text": "#166534", "border": "#86efac", "background": "#f0fdf4"},
-            "error": {"text": "#b91c1c", "border": "#fca5a5", "background": "#fef2f2"},
-        }
-        palette = palette_by_kind.get(kind, palette_by_kind["info"])
-        formatted_lines = "<br>".join(f"<span>{escape(line)}</span>" for line in lines)
-        label.setText(
-            "<div>"
-            f"<span style='font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;'>"
-            f"{escape(title)}</span><br>"
-            f"{formatted_lines}"
-            "</div>"
-        )
-        label.setStyleSheet(
-            "font-weight: 500; "
-            f"color: {palette['text']}; "
-            f"background-color: {palette['background']}; "
-            f"border: 1px solid {palette['border']}; "
-            "border-radius: 8px; "
-            "padding: 10px 12px;"
-        )
-        label.setVisible(bool(lines))
 
     def _selected_instance_key_name(self) -> str:
         instance_key_name = self._annotation_controller.selected_instance_key_name
@@ -1365,7 +1341,7 @@ class ObjectClassificationWidget(QWidget):
 
         kind = "error" if error else "success"
         title = "Persistence Error" if error else "Persistence Updated"
-        self._set_status_card(
+        set_status_card(
             self.persistence_feedback,
             title=title,
             lines=[message],

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from html import escape
+from typing import Literal
 
 from qtpy.QtCore import QSize, Qt
 from qtpy.QtGui import QColor, QPalette
@@ -53,6 +54,7 @@ CHECKBOX_STYLESHEET = (
     "border-color: #e9ddd7; "
     "background-color: #f7efea;}"
 )
+StatusCardKind = Literal["info", "warning", "success", "error"]
 
 
 def build_input_control_stylesheet(control_selector: str) -> str:
@@ -196,3 +198,39 @@ def format_feedback_identifier(name: str, *, max_length: int = 56) -> tuple[str,
     head_length = 32
     tail_length = max_length - head_length - 1
     return f"{name[:head_length]}…{name[-tail_length:]}", True
+
+
+def set_status_card(
+    label: QLabel,
+    *,
+    title: str,
+    lines: list[str],
+    kind: StatusCardKind,
+    tooltip_message: str | None = None,
+) -> None:
+    """Render a compact titled status card into a QLabel."""
+    palette_by_kind = {
+        "info": {"text": "#1d4ed8", "border": "#93c5fd", "background": "#eff6ff"},
+        "warning": {"text": "#b45309", "border": "#fdba74", "background": "#fff7ed"},
+        "success": {"text": "#166534", "border": "#86efac", "background": "#f0fdf4"},
+        "error": {"text": "#b91c1c", "border": "#fca5a5", "background": "#fef2f2"},
+    }
+    palette = palette_by_kind.get(kind, palette_by_kind["info"])
+    formatted_lines = "<br>".join(f"<span>{escape(line, quote=False)}</span>" for line in lines)
+    label.setText(
+        "<div>"
+        f"<span style='font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;'>"
+        f"{escape(title, quote=False)}</span><br>"
+        f"{formatted_lines}"
+        "</div>"
+    )
+    label.setStyleSheet(
+        "font-weight: 500; "
+        f"color: {palette['text']}; "
+        f"background-color: {palette['background']}; "
+        f"border: 1px solid {palette['border']}; "
+        "border-radius: 8px; "
+        "padding: 10px 12px;"
+    )
+    label.setToolTip(format_tooltip(tooltip_message) if tooltip_message else "")
+    label.setVisible(bool(lines))
