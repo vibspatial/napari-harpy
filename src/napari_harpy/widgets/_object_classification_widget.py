@@ -24,6 +24,13 @@ from qtpy.QtWidgets import (
 from napari_harpy._annotation import UNLABELED_CLASS, AnnotationController
 from napari_harpy._app_state import FeatureMatrixWrittenEvent, HarpyAppState, get_or_create_app_state
 from napari_harpy._classifier import ClassifierController
+from napari_harpy._classifier_viewer_styling import (
+    COLOR_BY_OPTIONS,
+    COLOR_BY_PRED_CLASS,
+    COLOR_BY_PRED_CONFIDENCE,
+    COLOR_BY_USER_CLASS,
+    ViewerStylingController,
+)
 from napari_harpy._persistence import PersistenceController
 from napari_harpy._spatialdata import (
     SpatialDataLabelsOption,
@@ -35,13 +42,6 @@ from napari_harpy._spatialdata import (
     get_table_obsm_keys,
     validate_table_binding,
 )
-from napari_harpy._viewer_styling import (
-    COLOR_BY_OPTIONS,
-    COLOR_BY_PRED_CLASS,
-    COLOR_BY_PRED_CONFIDENCE,
-    COLOR_BY_USER_CLASS,
-    ViewerStylingController,
-)
 from napari_harpy.widgets._shared_styles import (
     ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,
 )
@@ -50,11 +50,13 @@ from napari_harpy.widgets._shared_styles import (
 )
 from napari_harpy.widgets._shared_styles import (
     CompactComboBox,
+    StatusCardKind,
     apply_scroll_content_surface,
     apply_widget_surface,
     build_input_control_stylesheet,
     create_form_label,
     format_tooltip,
+    set_status_card,
 )
 
 if TYPE_CHECKING:
@@ -307,7 +309,9 @@ class ObjectClassificationWidget(QWidget):
         content_layout.addStretch(1)
 
         self._app_state.sdata_changed.connect(self._on_sdata_changed)
-        self._app_state.viewer_adapter.labels_layers_changed.connect(self._on_labels_layers_changed)
+        self._app_state.viewer_adapter.primary_labels_layers_changed.connect(
+            self._on_primary_labels_layers_changed
+        )
         self._app_state.feature_matrix_written.connect(self._on_feature_matrix_written)
         self.refresh_from_sdata(self._app_state.sdata)
 
@@ -492,7 +496,7 @@ class ObjectClassificationWidget(QWidget):
         self._set_classifier_feedback("")
         self._set_persistence_feedback("")
 
-    def _on_labels_layers_changed(self) -> None:
+    def _on_primary_labels_layers_changed(self) -> None:
         if self._is_preparing_labels_layer:
             return
         # A labels-layer insert/remove only changes live viewer availability,
@@ -523,7 +527,7 @@ class ObjectClassificationWidget(QWidget):
         ):
             return False
 
-        loaded_layer = self._app_state.viewer_adapter.get_loaded_labels_layer(
+        loaded_layer = self._app_state.viewer_adapter.get_loaded_primary_labels_layer(
             self.selected_spatialdata,
             self.selected_segmentation_name,
             self.selected_coordinate_system,
@@ -544,7 +548,7 @@ class ObjectClassificationWidget(QWidget):
         ):
             return False
 
-        loaded_layer = self._app_state.viewer_adapter.get_loaded_labels_layer(
+        loaded_layer = self._app_state.viewer_adapter.get_loaded_primary_labels_layer(
             self.selected_spatialdata,
             self.selected_segmentation_name,
             self.selected_coordinate_system,
@@ -632,7 +636,7 @@ class ObjectClassificationWidget(QWidget):
 
         self._is_preparing_labels_layer = True
         try:
-            existing_layer = self._app_state.viewer_adapter.get_loaded_labels_layer(
+            existing_layer = self._app_state.viewer_adapter.get_loaded_primary_labels_layer(
                 self.selected_spatialdata,
                 self.selected_segmentation_name,
                 self.selected_coordinate_system,
@@ -1048,7 +1052,7 @@ class ObjectClassificationWidget(QWidget):
         )
         self._update_selection_status()
 
-    def _set_annotation_feedback(self, message: str, *, kind: str = "success") -> None:
+    def _set_annotation_feedback(self, message: str, *, kind: StatusCardKind = "success") -> None:
         if not message:
             self.annotation_feedback.setText("")
             self.annotation_feedback.setVisible(False)
@@ -1059,17 +1063,17 @@ class ObjectClassificationWidget(QWidget):
             "warning": "Annotation Warning",
             "success": "Annotation Updated",
         }
-        self._set_status_card(
+        set_status_card(
             self.annotation_feedback,
             title=title_by_kind.get(kind, "Annotation"),
             lines=[message],
             kind=kind,
         )
 
-    def _set_selection_status(self, title: str, lines: list[str], *, kind: str) -> None:
-        self._set_status_card(self.selection_status, title=title, lines=lines, kind=kind)
+    def _set_selection_status(self, title: str, lines: list[str], *, kind: StatusCardKind) -> None:
+        set_status_card(self.selection_status, title=title, lines=lines, kind=kind)
 
-    def _set_classifier_feedback(self, message: str, *, kind: str = "info") -> None:
+    def _set_classifier_feedback(self, message: str, *, kind: StatusCardKind = "info") -> None:
         if not message:
             self.classifier_feedback.setText("")
             self.classifier_feedback.setVisible(False)
@@ -1082,38 +1086,12 @@ class ObjectClassificationWidget(QWidget):
             "info": "Classifier",
         }
         body = message.removeprefix("Classifier: ").strip()
-        self._set_status_card(
+        set_status_card(
             self.classifier_feedback,
             title=title_by_kind.get(kind, "Classifier"),
             lines=[body],
             kind=kind,
         )
-
-    def _set_status_card(self, label: QLabel, *, title: str, lines: list[str], kind: str) -> None:
-        palette_by_kind = {
-            "info": {"text": "#1d4ed8", "border": "#93c5fd", "background": "#eff6ff"},
-            "warning": {"text": "#b45309", "border": "#fdba74", "background": "#fff7ed"},
-            "success": {"text": "#166534", "border": "#86efac", "background": "#f0fdf4"},
-            "error": {"text": "#b91c1c", "border": "#fca5a5", "background": "#fef2f2"},
-        }
-        palette = palette_by_kind.get(kind, palette_by_kind["info"])
-        formatted_lines = "<br>".join(f"<span>{escape(line)}</span>" for line in lines)
-        label.setText(
-            "<div>"
-            f"<span style='font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;'>"
-            f"{escape(title)}</span><br>"
-            f"{formatted_lines}"
-            "</div>"
-        )
-        label.setStyleSheet(
-            "font-weight: 500; "
-            f"color: {palette['text']}; "
-            f"background-color: {palette['background']}; "
-            f"border: 1px solid {palette['border']}; "
-            "border-radius: 8px; "
-            "padding: 10px 12px;"
-        )
-        label.setVisible(bool(lines))
 
     def _selected_instance_key_name(self) -> str:
         instance_key_name = self._annotation_controller.selected_instance_key_name
@@ -1129,7 +1107,9 @@ class ObjectClassificationWidget(QWidget):
         self.reload_button.setEnabled(can_reload)
 
         if self.selected_spatialdata is None or self.selected_table_name is None:
-            sync_tooltip = "Choose a backed SpatialData annotation table to enable writing the in-memory table state to disk."
+            sync_tooltip = (
+                "Choose a backed SpatialData annotation table to enable writing the in-memory table state to disk."
+            )
             reload_tooltip = (
                 "Choose a backed SpatialData annotation table to enable discarding the current in-memory table state "
                 "and reloading it from disk."
@@ -1361,7 +1341,7 @@ class ObjectClassificationWidget(QWidget):
 
         kind = "error" if error else "success"
         title = "Persistence Error" if error else "Persistence Updated"
-        self._set_status_card(
+        set_status_card(
             self.persistence_feedback,
             title=title,
             lines=[message],

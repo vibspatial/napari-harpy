@@ -4,10 +4,19 @@ from collections.abc import Callable
 from types import SimpleNamespace
 
 import numpy as np
+import pandas as pd
+from matplotlib.colors import to_rgba
 from napari.layers import Image, Labels
+from napari.utils.colormaps import DirectLabelColormap
 
 from napari_harpy._app_state import get_or_create_app_state
-from napari_harpy._viewer_adapter import LayerBindingRegistry, ViewerAdapter
+from napari_harpy._table_color_source import TableColorSourceSpec
+from napari_harpy._viewer_adapter import (
+    ImageLayerBinding,
+    LabelsLayerBinding,
+    LayerBindingRegistry,
+    ViewerAdapter,
+)
 
 
 class DummyEventEmitter:
@@ -93,6 +102,7 @@ def test_layer_binding_registry_registers_and_unregisters_layers() -> None:
         coordinate_system="global",
     )
 
+    assert isinstance(binding, ImageLayerBinding)
     assert binding.layer is layer
     assert binding.element_name == "blobs_image"
     assert binding.element_type == "image"
@@ -123,6 +133,7 @@ def test_layer_binding_registry_tracks_channel_overlay_identity() -> None:
         channel_name="DAPI",
     )
 
+    assert isinstance(binding, ImageLayerBinding)
     assert binding.image_display_mode == "overlay"
     assert binding.channel_index == 0
     assert binding.channel_name == "DAPI"
@@ -136,6 +147,42 @@ def test_layer_binding_registry_tracks_channel_overlay_identity() -> None:
     assert layer.metadata["image_display_mode"] == "overlay"
     assert layer.metadata["channel_index"] == 0
     assert layer.metadata["channel_name"] == "DAPI"
+
+
+def test_layer_binding_registry_tracks_labels_role_and_style_spec() -> None:
+    registry = LayerBindingRegistry()
+    layer = make_labels_layer(sdata=SimpleNamespace(labels={"blobs_labels": np.zeros((2, 2), dtype=np.int32)}))
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    binding = registry.register_layer(
+        layer,
+        element_name="blobs_labels",
+        element_type="labels",
+        coordinate_system="global",
+        labels_role="styled",
+        style_spec=style_spec,
+    )
+
+    assert isinstance(binding, LabelsLayerBinding)
+    assert binding.labels_role == "styled"
+    assert binding.style_spec == style_spec
+    assert registry.find_bindings(
+        element_name="blobs_labels",
+        element_type="labels",
+        labels_role="styled",
+        style_spec=style_spec,
+    ) == [binding]
+    assert layer.metadata["labels_role"] == "styled"
+    assert layer.metadata["style_spec"] == style_spec
+    assert layer.metadata["style_table_name"] == "table"
+    assert layer.metadata["style_source_kind"] == "obs_column"
+    assert layer.metadata["style_value_key"] == "cell_type"
+    assert layer.metadata["style_value_kind"] == "categorical"
 
 
 def test_viewer_adapter_activate_layer_selects_only_matching_layer() -> None:
@@ -186,7 +233,33 @@ def test_viewer_adapter_finds_registered_labels_layer(sdata_blobs) -> None:
         coordinate_system="global",
     )
 
-    assert adapter.get_loaded_labels_layer(sdata_blobs, "blobs_labels") is labels_layer
+    assert adapter.get_loaded_primary_labels_layer(sdata_blobs, "blobs_labels") is labels_layer
+
+
+def test_viewer_adapter_primary_labels_lookup_ignores_styled_variants(sdata_blobs) -> None:
+    styled_layer = make_labels_layer(sdata=sdata_blobs)
+    viewer = DummyViewer([styled_layer])
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    adapter.register_layer(
+        styled_layer,
+        sdata=sdata_blobs,
+        element_name="blobs_labels",
+        element_type="labels",
+        coordinate_system="global",
+        labels_role="styled",
+        style_spec=style_spec,
+    )
+
+    assert adapter.get_loaded_primary_labels_layer(sdata_blobs, "blobs_labels", "global") is None
+    assert adapter.get_loaded_styled_labels_layer(sdata_blobs, "blobs_labels", style_spec, "global") is styled_layer
+    assert adapter.get_loaded_styled_labels_layers(sdata_blobs, "blobs_labels", "global") == [styled_layer]
 
 
 def test_viewer_adapter_ignores_unregistered_labels_layer_even_with_legacy_metadata(sdata_blobs) -> None:
@@ -197,7 +270,7 @@ def test_viewer_adapter_ignores_unregistered_labels_layer_even_with_legacy_metad
     viewer = DummyViewer([labels_layer])
     adapter = ViewerAdapter(viewer)
 
-    loaded_layer = adapter.get_loaded_labels_layer(sdata_blobs, "blobs_labels", "global")
+    loaded_layer = adapter.get_loaded_primary_labels_layer(sdata_blobs, "blobs_labels", "global")
 
     assert loaded_layer is None
     assert adapter.layer_bindings.get_binding(labels_layer) is None
@@ -299,7 +372,7 @@ def test_viewer_adapter_ensure_labels_loaded_adds_layer_and_registers_binding(sd
     adapter = ViewerAdapter(viewer)
     labels_events: list[str] = []
 
-    adapter.labels_layers_changed.connect(lambda: labels_events.append("changed"))
+    adapter.primary_labels_layers_changed.connect(lambda: labels_events.append("changed"))
 
     layer = adapter.ensure_labels_loaded(sdata_blobs, "blobs_labels", "global")
 
@@ -308,15 +381,312 @@ def test_viewer_adapter_ensure_labels_loaded_adds_layer_and_registers_binding(sd
     assert layer.affine is not None
     binding = adapter.layer_bindings.get_binding(layer)
     assert binding is not None
+    assert isinstance(binding, LabelsLayerBinding)
     assert binding.element_name == "blobs_labels"
     assert binding.element_type == "labels"
     assert binding.coordinate_system == "global"
+    assert binding.labels_role == "primary"
     assert layer.metadata["element_name"] == "blobs_labels"
     assert layer.metadata["element_type"] == "labels"
     assert layer.metadata["coordinate_system"] == "global"
+    assert layer.metadata["labels_role"] == "primary"
     assert "sdata" not in layer.metadata
     assert "_current_cs" not in layer.metadata
     assert labels_events == ["changed"]
+
+
+def test_viewer_adapter_primary_labels_signal_ignores_styled_bindings(sdata_blobs) -> None:
+    primary_layer = make_labels_layer(sdata=sdata_blobs, label_name="blobs_labels")
+    styled_layer = make_labels_layer(sdata=sdata_blobs, label_name="blobs_labels")
+    styled_layer.name = "blobs_labels[cell_type]"
+    viewer = DummyViewer([primary_layer, styled_layer])
+    adapter = ViewerAdapter(viewer)
+    labels_events: list[str] = []
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    adapter.primary_labels_layers_changed.connect(lambda: labels_events.append("changed"))
+
+    adapter.register_layer(
+        styled_layer,
+        sdata=sdata_blobs,
+        element_name="blobs_labels",
+        element_type="labels",
+        coordinate_system="global",
+        labels_role="styled",
+        style_spec=style_spec,
+    )
+    assert labels_events == []
+
+    adapter.register_layer(
+        primary_layer,
+        sdata=sdata_blobs,
+        element_name="blobs_labels",
+        element_type="labels",
+        coordinate_system="global",
+    )
+    assert labels_events == ["changed"]
+
+    viewer.layers.remove(styled_layer)
+    assert labels_events == ["changed"]
+
+    viewer.layers.remove(primary_layer)
+    assert labels_events == ["changed", "changed"]
+
+
+def test_viewer_adapter_ensure_styled_labels_loaded_creates_registered_overlay_with_stored_palette(sdata_blobs) -> None:
+    table = sdata_blobs["table"]
+    region_rows = table.obs.loc[table.obs["region"] == "blobs_labels"].copy()
+    table.obs["cell_type"] = pd.Categorical(
+        np.where(region_rows["instance_id"].to_numpy() % 2 == 0, "even", "odd"),
+        categories=["odd", "even"],
+    )
+    table.uns["cell_type_colors"] = ["#ff0000", "#00ff00"]
+
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    result = adapter.ensure_styled_labels_loaded(sdata_blobs, "blobs_labels", "global", style_spec)
+
+    assert result.created is True
+    assert result.value_kind == "categorical"
+    assert result.palette_source == "stored"
+    assert result.coercion_applied is False
+    assert result.layer in viewer.layers
+    assert result.layer.name == "blobs_labels[obs:cell_type]"
+    assert isinstance(result.layer.colormap, DirectLabelColormap)
+    binding = adapter.layer_bindings.get_binding(result.layer)
+    assert isinstance(binding, LabelsLayerBinding)
+    assert binding.labels_role == "styled"
+    assert binding.style_spec == style_spec
+    assert result.layer.metadata["style_table_name"] == "table"
+    assert result.layer.metadata["style_source_kind"] == "obs_column"
+    assert result.layer.metadata["style_value_key"] == "cell_type"
+    assert result.layer.metadata["style_value_kind"] == "categorical"
+    assert list(result.layer.features.columns) == ["index", "instance_id", "cell_type"]
+
+    odd_instance = int(region_rows.loc[region_rows["instance_id"] % 2 == 1, "instance_id"].iloc[0])
+    even_instance = int(region_rows.loc[region_rows["instance_id"] % 2 == 0, "instance_id"].iloc[0])
+    odd_feature_row = result.layer.features.iloc[result.layer._label_index[odd_instance]]
+    assert odd_feature_row["index"] == odd_instance
+    assert odd_feature_row["instance_id"] == odd_instance
+    assert np.allclose(result.layer.colormap.color_dict[odd_instance], np.asarray(to_rgba("#ff0000"), dtype=np.float32))
+    assert np.allclose(result.layer.colormap.color_dict[even_instance], np.asarray(to_rgba("#00ff00"), dtype=np.float32))
+
+
+def test_viewer_adapter_ensure_styled_labels_loaded_reuses_matching_variant(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="x_var",
+        value_key="channel_0_sum",
+        value_kind="continuous",
+    )
+
+    first = adapter.ensure_styled_labels_loaded(sdata_blobs, "blobs_labels", "global", style_spec)
+    second = adapter.ensure_styled_labels_loaded(sdata_blobs, "blobs_labels", "global", style_spec)
+
+    assert first.layer is second.layer
+    assert first.created is True
+    assert second.created is False
+    assert second.value_kind == "continuous"
+    assert len(viewer.layers) == 1
+
+
+def test_viewer_adapter_ensure_styled_labels_loaded_creates_distinct_variants_for_different_style_specs(sdata_blobs) -> None:
+    table = sdata_blobs["table"]
+    table.obs["cell_type"] = pd.Categorical(["odd"] * table.n_obs)
+    style_a = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+    style_b = TableColorSourceSpec(
+        table_name="table",
+        source_kind="x_var",
+        value_key="channel_0_sum",
+        value_kind="continuous",
+    )
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    first = adapter.ensure_styled_labels_loaded(sdata_blobs, "blobs_labels", "global", style_a)
+    second = adapter.ensure_styled_labels_loaded(sdata_blobs, "blobs_labels", "global", style_b)
+
+    assert first.layer is not second.layer
+    assert len(viewer.layers) == 2
+    assert adapter.get_loaded_styled_labels_layer(sdata_blobs, "blobs_labels", style_a, "global") is first.layer
+    assert adapter.get_loaded_styled_labels_layer(sdata_blobs, "blobs_labels", style_b, "global") is second.layer
+
+
+def test_viewer_adapter_ensure_styled_labels_loaded_invalid_palette_falls_back(sdata_blobs) -> None:
+    table = sdata_blobs["table"]
+    table.obs["cell_type"] = pd.Categorical(["odd"] * table.n_obs + [])
+    table.uns["cell_type_colors"] = ["#ff0000", "#00ff00"]
+    table.obs["cell_type"] = pd.Categorical(["odd"] * table.n_obs, categories=["odd"])
+
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    result = adapter.ensure_styled_labels_loaded(sdata_blobs, "blobs_labels", "global", style_spec)
+
+    assert result.palette_source == "default_invalid"
+    assert result.coercion_applied is False
+
+
+def test_viewer_adapter_ensure_styled_labels_loaded_colors_bool_obs_categorically(sdata_blobs) -> None:
+    table = sdata_blobs["table"]
+    table.obs["is_even"] = pd.Series(
+        table.obs["instance_id"].to_numpy(dtype=np.int64) % 2 == 0,
+        index=table.obs.index,
+    )
+    table.uns["is_even_colors"] = ["#ff0000", "#00ff00"]
+
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="is_even",
+        value_kind="categorical",
+    )
+
+    result = adapter.ensure_styled_labels_loaded(sdata_blobs, "blobs_labels", "global", style_spec)
+
+    assert result.value_kind == "categorical"
+    assert result.palette_source == "stored"
+    assert result.coercion_applied is False
+    features = result.layer.features.set_index("index")
+    odd_instance = int(table.obs.loc[table.obs["instance_id"] % 2 == 1, "instance_id"].iloc[0])
+    even_instance = int(table.obs.loc[table.obs["instance_id"] % 2 == 0, "instance_id"].iloc[0])
+    assert features.loc[odd_instance, "is_even"] == np.False_
+    assert features.loc[even_instance, "is_even"] == np.True_
+    assert np.allclose(result.layer.colormap.color_dict[odd_instance], np.asarray(to_rgba("#ff0000"), dtype=np.float32))
+    assert np.allclose(result.layer.colormap.color_dict[even_instance], np.asarray(to_rgba("#00ff00"), dtype=np.float32))
+
+
+def test_viewer_adapter_ensure_styled_labels_loaded_colors_binary_int_obs_categorically(sdata_blobs) -> None:
+    table = sdata_blobs["table"]
+    table.obs["binary_state"] = pd.Series(
+        table.obs["instance_id"].to_numpy(dtype=np.int64) % 2,
+        index=table.obs.index,
+        dtype="int64",
+    )
+    table.uns["binary_state_colors"] = ["#ff0000", "#00ff00"]
+
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="binary_state",
+        value_kind="categorical",
+    )
+
+    result = adapter.ensure_styled_labels_loaded(sdata_blobs, "blobs_labels", "global", style_spec)
+
+    assert result.value_kind == "categorical"
+    assert result.palette_source == "stored"
+    assert result.coercion_applied is False
+    features = result.layer.features.set_index("index")
+    zero_instance = int(table.obs.loc[table.obs["binary_state"] == 0, "instance_id"].iloc[0])
+    one_instance = int(table.obs.loc[table.obs["binary_state"] == 1, "instance_id"].iloc[0])
+    assert int(features.loc[zero_instance, "binary_state"]) == 0
+    assert int(features.loc[one_instance, "binary_state"]) == 1
+    assert np.allclose(result.layer.colormap.color_dict[zero_instance], np.asarray(to_rgba("#ff0000"), dtype=np.float32))
+    assert np.allclose(result.layer.colormap.color_dict[one_instance], np.asarray(to_rgba("#00ff00"), dtype=np.float32))
+
+
+def test_viewer_adapter_ensure_styled_labels_loaded_colors_non_binary_int_obs_continuously(sdata_blobs) -> None:
+    table = sdata_blobs["table"]
+    table.obs["object_score"] = pd.Series(
+        table.obs["instance_id"].to_numpy(dtype=np.int64),
+        index=table.obs.index,
+        dtype="int64",
+    )
+
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="object_score",
+        value_kind="continuous",
+    )
+
+    result = adapter.ensure_styled_labels_loaded(sdata_blobs, "blobs_labels", "global", style_spec)
+
+    assert result.value_kind == "continuous"
+    assert result.palette_source is None
+    assert result.coercion_applied is False
+    features = result.layer.features.set_index("index")
+    min_instance = int(table.obs["instance_id"].min())
+    max_instance = int(table.obs["instance_id"].max())
+    assert float(features.loc[min_instance, "object_score"]) == float(min_instance)
+    assert float(features.loc[max_instance, "object_score"]) == float(max_instance)
+    assert not np.allclose(result.layer.colormap.color_dict[min_instance], result.layer.colormap.color_dict[max_instance])
+
+
+def test_viewer_adapter_ensure_styled_labels_loaded_coerces_string_obs_to_categorical(sdata_blobs) -> None:
+    table = sdata_blobs["table"]
+    table.obs["sample_type"] = pd.Series(
+        np.where(table.obs["instance_id"].to_numpy() % 2 == 0, "even", "odd"),
+        index=table.obs.index,
+        dtype="object",
+    )
+    table.uns["sample_type_colors"] = ["#123456", "#654321"]
+
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="sample_type",
+        value_kind="categorical",
+    )
+
+    result = adapter.ensure_styled_labels_loaded(sdata_blobs, "blobs_labels", "global", style_spec)
+
+    assert result.value_kind == "categorical"
+    assert result.coercion_applied is True
+    assert result.palette_source == "default_missing"
+    assert isinstance(result.layer.colormap, DirectLabelColormap)
+
+
+def test_viewer_adapter_ensure_styled_labels_loaded_x_var_is_continuous(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="x_var",
+        value_key="channel_1_sum",
+        value_kind="continuous",
+    )
+
+    result = adapter.ensure_styled_labels_loaded(sdata_blobs, "blobs_labels", "global", style_spec)
+
+    assert result.value_kind == "continuous"
+    assert result.palette_source is None
+    assert result.coercion_applied is False
+    assert isinstance(result.layer.colormap, DirectLabelColormap)
 
 
 def test_viewer_adapter_ensure_labels_loaded_reuses_matching_existing_layer(sdata_blobs) -> None:

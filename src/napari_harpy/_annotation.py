@@ -153,7 +153,7 @@ class AnnotationController:
         """Bind the controller to the selected labels layer and annotation table."""
         next_layer = None
         if sdata is not None and label_name is not None:
-            next_layer = self._viewer_adapter.get_loaded_labels_layer(sdata, label_name, coordinate_system)
+            next_layer = self._viewer_adapter.get_loaded_primary_labels_layer(sdata, label_name, coordinate_system)
 
         next_table_metadata = None
         if sdata is not None and table_name is not None:

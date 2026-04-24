@@ -1,3 +1,5 @@
+"""Primary-label viewer styling used by object classification."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
@@ -27,6 +29,7 @@ from napari_harpy._spatialdata import (
     get_table_metadata,
 )
 from napari_harpy._viewer_adapter import ViewerAdapter
+from napari_harpy._viewer_overlay_styling import _build_labels_features
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -78,7 +81,11 @@ class ViewerStylingController:
         """Bind styling to the selected labels layer and annotation table."""
         next_layer = None
         if sdata is not None and label_name is not None:
-            next_layer = self._viewer_adapter.get_loaded_labels_layer(sdata, label_name, coordinate_system)
+            next_layer = self._viewer_adapter.get_loaded_primary_labels_layer(
+                sdata,
+                label_name,
+                coordinate_system,
+            )
 
         next_table_metadata = None
         if sdata is not None and table_name is not None:
@@ -154,7 +161,13 @@ class ViewerStylingController:
         if self._labels_layer is None:
             return
 
-        self._labels_layer.features = self._get_region_feature_rows().reset_index()
+        instance_key = "instance_id"  # defensive fallback for the no metadata case.
+        if self._selected_table_metadata is not None:
+            instance_key = self._selected_table_metadata.instance_key
+        self._labels_layer.features = _build_labels_features(
+            self._get_region_feature_rows(),
+            instance_key=instance_key,
+        )
 
     def _get_bound_table(self) -> AnnData | None:
         if self._selected_spatialdata is None or self._selected_table_name is None:

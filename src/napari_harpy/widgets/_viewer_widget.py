@@ -4,17 +4,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from qtpy.QtCore import QSignalBlocker, Qt, Signal
+from qtpy.QtCore import QSignalBlocker, QStringListModel, Qt, Signal
 from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QCompleter,
     QFileDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLayout,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -25,7 +27,12 @@ from spatialdata import read_zarr
 from spatialdata.transformations import get_transformation
 
 from napari_harpy._app_state import HarpyAppState, get_or_create_app_state
-from napari_harpy._spatialdata import get_annotating_table_names, get_image_channel_names_from_sdata
+from napari_harpy._spatialdata import (
+    get_annotating_table_names,
+    get_image_channel_names_from_sdata,
+    get_table_color_source_options,
+)
+from napari_harpy._table_color_source import ColorSourceKind, TableColorSourceSpec
 from napari_harpy._viewer_adapter import DEFAULT_OVERLAY_COLORS
 from napari_harpy.widgets._shared_styles import (
     ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,
@@ -38,12 +45,14 @@ from napari_harpy.widgets._shared_styles import (
 )
 from napari_harpy.widgets._shared_styles import (
     CompactComboBox,
+    StatusCardKind,
     apply_scroll_content_surface,
     apply_widget_surface,
     build_input_control_stylesheet,
     create_form_label,
     format_feedback_identifier,
     format_tooltip,
+    set_status_card,
 )
 
 if TYPE_CHECKING:
@@ -84,6 +93,14 @@ class ImageLoadRequest:
     channel_colors: list[str]
 
 
+@dataclass(frozen=True)
+class LabelsLoadRequest:
+    label_name: str
+    table_name: str | None
+    selected_source_kind: ColorSourceKind | None
+    selected_color_source: TableColorSourceSpec | None
+
+
 class _ElidedLabel(QLabel):
     """Single-line label that shows a tooltip only when the text is elided."""
 
@@ -114,16 +131,19 @@ class _ElidedLabel(QLabel):
 class _LabelsCardWidget(QFrame):
     """Card UI for one labels element in the selected coordinate system."""
 
-    add_update_requested = Signal(str)
+    add_update_requested = Signal(object)
 
     def __init__(
         self,
         *,
         label_name: str,
         table_names: list[str],
+        table_color_sources_by_table: dict[str, list[TableColorSourceSpec]],
     ) -> None:
         super().__init__()
         self.label_name = label_name
+        self._table_color_sources_by_table = table_color_sources_by_table
+        self._filtered_color_sources: list[TableColorSourceSpec] = []
         self.setObjectName(f"viewer_widget_labels_card_{label_name}")
         self.setStyleSheet(_CARD_STYLESHEET)
 
@@ -150,6 +170,35 @@ class _LabelsCardWidget(QFrame):
             self.linked_table_combo.addItem("No linked tables")
             self.linked_table_combo.setEnabled(False)
 
+        color_source_kind_label = _create_form_label("Color source")
+        self.color_source_kind_combo = CompactComboBox()
+        self.color_source_kind_combo.setObjectName(f"viewer_widget_color_source_kind_combo_{label_name}")
+        self.color_source_kind_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
+        self.color_source_kind_combo.addItem("None", None)
+        self.color_source_kind_combo.addItem("Observations", "obs_column")
+        self.color_source_kind_combo.addItem("Vars", "x_var")
+
+        self.color_source_value_label = _create_form_label("Value source")
+        self.color_source_value_input = QLineEdit()
+        self.color_source_value_input.setObjectName(f"viewer_widget_color_source_value_input_{label_name}")
+        self.color_source_value_input.setStyleSheet(
+            build_input_control_stylesheet("QLineEdit")
+        )
+        self.color_source_value_input.setMinimumWidth(0)
+        self.color_source_value_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.color_source_value_input.setEnabled(False)
+
+        self._color_source_completer_model = QStringListModel(self.color_source_value_input)
+        self._color_source_completer = QCompleter(self._color_source_completer_model, self.color_source_value_input)
+        self._color_source_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self._color_source_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.color_source_value_input.setCompleter(self._color_source_completer)
+
+        self.action_status_label = QLabel()
+        self.action_status_label.setObjectName(f"viewer_widget_action_status_{label_name}")
+        self.action_status_label.setWordWrap(True)
+        self.action_status_label.setStyleSheet(_SUMMARY_LABEL_STYLESHEET)
+
         self.add_update_button = QPushButton("Add / Update in viewer")
         self.add_update_button.setObjectName(f"viewer_widget_add_update_labels_button_{label_name}")
         self.add_update_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -158,13 +207,149 @@ class _LabelsCardWidget(QFrame):
         self.add_update_button.clicked.connect(self._emit_add_update_request)
 
         form_layout.addRow(linked_table_label, self.linked_table_combo)
+        form_layout.addRow(color_source_kind_label, self.color_source_kind_combo)
+        form_layout.addRow(self.color_source_value_label, self.color_source_value_input)
 
         layout.addWidget(self.title_label)
         layout.addLayout(form_layout)
+        layout.addWidget(self.action_status_label)
         layout.addWidget(self.add_update_button)
 
+        self.linked_table_combo.currentIndexChanged.connect(self._refresh_color_source_controls)
+        self.color_source_kind_combo.currentIndexChanged.connect(self._refresh_color_source_controls)
+        self.color_source_value_input.textChanged.connect(self._update_action_status)
+        self.color_source_value_input.editingFinished.connect(self._sync_current_source_selection)
+
+        self._refresh_color_source_controls()
+
+    @property
+    def selected_table_name(self) -> str | None:
+        if not self.linked_table_combo.isEnabled():
+            return None
+
+        table_name = self.linked_table_combo.currentText()
+        return table_name if table_name in self._table_color_sources_by_table else None
+
+    @property
+    def selected_source_kind(self) -> ColorSourceKind | None:
+        value = self.color_source_kind_combo.currentData()
+        return value if value in {"obs_column", "x_var"} else None
+
+    @property
+    def selected_color_source(self) -> TableColorSourceSpec | None:
+        current_text = self.color_source_value_input.text().strip()
+        for source in self._filtered_color_sources:
+            if source.display_name == current_text:
+                return source
+        return None
+
+    def _refresh_color_source_controls(self, _index: int | None = None) -> None:
+        selected_source_identity = self.selected_color_source.identity if self.selected_color_source is not None else None
+        source_kind = self.selected_source_kind
+        table_name = self.selected_table_name
+
+        if source_kind == "obs_column":
+            self.color_source_value_label.setText("Observation")
+        elif source_kind == "x_var":
+            self.color_source_value_label.setText("Var")
+        else:
+            self.color_source_value_label.setText("Value source")
+
+        available_sources = list(self._table_color_sources_by_table.get(table_name, ())) if table_name is not None else []
+        self._filtered_color_sources = [
+            source for source in available_sources if source_kind is None or source.source_kind == source_kind
+        ]
+
+        with QSignalBlocker(self.color_source_value_input):
+            if source_kind is None:
+                self.color_source_value_input.setEnabled(False)
+                self.color_source_value_input.clear()
+                self.color_source_value_input.setPlaceholderText("Select a color source kind first")
+            else:
+                self.color_source_value_input.setEnabled(bool(self._filtered_color_sources))
+                if selected_source_identity is not None:
+                    matching_source = next(
+                        (source for source in self._filtered_color_sources if source.identity == selected_source_identity),
+                        None,
+                    )
+                    if matching_source is not None:
+                        self.color_source_value_input.setText(matching_source.display_name)
+                    elif self._filtered_color_sources:
+                        self.color_source_value_input.setText(self._filtered_color_sources[0].display_name)
+                    else:
+                        self.color_source_value_input.clear()
+                elif self._filtered_color_sources:
+                    self.color_source_value_input.setText(self._filtered_color_sources[0].display_name)
+                else:
+                    self.color_source_value_input.clear()
+
+                if source_kind == "obs_column":
+                    self.color_source_value_input.setPlaceholderText("Search observations")
+                else:
+                    self.color_source_value_input.setPlaceholderText("Search vars")
+
+            self._color_source_completer_model.setStringList(
+                [source.display_name for source in self._filtered_color_sources]
+            )
+
+        self._update_action_status()
+
+    def _sync_current_source_selection(self) -> None:
+        if not self.color_source_value_input.isEnabled():
+            return
+
+        current_text = self.color_source_value_input.text().strip()
+        for source in self._filtered_color_sources:
+            if source.display_name == current_text:
+                self.color_source_value_input.setText(source.display_name)
+                break
+        self._update_action_status()
+
+    def _update_action_status(self) -> None:
+        source_kind = self.selected_source_kind
+        table_name = self.selected_table_name
+        selected_source = self.selected_color_source
+
+        if source_kind is None:
+            self.action_status_label.setText("Action: add/update primary labels layer")
+            return
+
+        if table_name is None:
+            self.action_status_label.setText("Action: colored overlays require a linked table")
+            return
+
+        if source_kind == "obs_column":
+            if selected_source is None:
+                if self._filtered_color_sources:
+                    self.action_status_label.setText("Action: select an observation column for a colored overlay")
+                else:
+                    self.action_status_label.setText("Action: no colorable observation columns available")
+                return
+            self.action_status_label.setText(
+                f'Action: add/update colored overlay for obs["{selected_source.value_key}"]'
+            )
+            return
+
+        if selected_source is None:
+            if self._filtered_color_sources:
+                self.action_status_label.setText("Action: select a var for a colored overlay")
+            else:
+                self.action_status_label.setText("Action: no vars available for a colored overlay")
+            return
+
+        self.action_status_label.setText(
+            f'Action: add/update colored overlay for X[:, "{selected_source.value_key}"]'
+        )
+
     def _emit_add_update_request(self, _checked: bool = False) -> None:
-        self.add_update_requested.emit(self.label_name)
+        self.add_update_requested.emit(
+            LabelsLoadRequest(
+                label_name=self.label_name,
+                table_name=self.selected_table_name,
+                selected_source_kind=self.selected_source_kind,
+                selected_color_source=self.selected_color_source,
+            )
+        )
 
 
 class _ImageCardWidget(QFrame):
@@ -544,7 +729,11 @@ class ViewerWidget(QWidget):
         try:
             sdata = read_zarr(selected_path)
         except (OSError, ValueError) as error:
-            self._set_action_feedback(f"Could not load SpatialData store: {error}", is_error=True)
+            self._set_action_feedback(
+                title="SpatialData Load Error",
+                lines=[f"Could not load SpatialData store: {error}"],
+                kind="error",
+            )
             return
 
         self._app_state.set_sdata(sdata)
@@ -626,38 +815,133 @@ class ViewerWidget(QWidget):
         self._labels_cards = []
 
         for label_name in label_names:
+            table_names = get_annotating_table_names(sdata, label_name)
+            table_color_sources_by_table = {
+                table_name: get_table_color_source_options(sdata, table_name) for table_name in table_names
+            }
             card = _LabelsCardWidget(
                 label_name=label_name,
-                table_names=get_annotating_table_names(sdata, label_name),
+                table_names=table_names,
+                table_color_sources_by_table=table_color_sources_by_table,
             )
             card.add_update_requested.connect(self._add_or_update_labels_layer)
             self.labels_section_layout.addWidget(card)
             self._labels_cards.append(card)
 
-    def _add_or_update_labels_layer(self, label_name: str) -> None:
+    def _add_or_update_labels_layer(self, request: LabelsLoadRequest) -> None:
+        if request.selected_source_kind is None:
+            self._add_or_update_primary_labels_layer(request.label_name)
+            return
+
+        self._add_or_update_styled_labels_layer(request)
+
+    def _add_or_update_primary_labels_layer(self, label_name: str) -> None:
         sdata = self._app_state.sdata
         coordinate_system = self.coordinate_system_combo.currentText()
 
         if sdata is None or not coordinate_system:
-            self._set_action_feedback("Load a SpatialData object and select a coordinate system first.", is_error=True)
+            self._set_action_feedback(
+                title="Segmentation Load Error",
+                lines=["Load a SpatialData object and select a coordinate system first."],
+                kind="error",
+            )
             return
 
         try:
             layer = self._app_state.viewer_adapter.ensure_labels_loaded(sdata, label_name, coordinate_system)
         except ValueError as error:
-            self._set_action_feedback(str(error), is_error=True)
+            self._set_action_feedback(title="Segmentation Load Error", lines=[str(error)], kind="error")
             return
 
         self._app_state.viewer_adapter.activate_layer(layer)
         display_name, was_shortened = format_feedback_identifier(label_name)
         self._set_action_feedback(
-            f"Loaded segmentation `{display_name}` in coordinate system `{coordinate_system}`.",
-            is_error=False,
+            title="Segmentation Loaded",
+            lines=[f"Loaded segmentation `{display_name}` in coordinate system `{coordinate_system}`."],
+            kind="success",
             tooltip_message=(
                 f"Loaded segmentation `{label_name}` in coordinate system `{coordinate_system}`."
                 if was_shortened
                 else None
             ),
+        )
+
+    def _add_or_update_styled_labels_layer(self, request: LabelsLoadRequest) -> None:
+        sdata = self._app_state.sdata
+        coordinate_system = self.coordinate_system_combo.currentText()
+
+        if sdata is None or not coordinate_system:
+            self._set_action_feedback(
+                title="Colored Overlay Error",
+                lines=["Load a SpatialData object and select a coordinate system first."],
+                kind="error",
+            )
+            return
+
+        if request.table_name is None:
+            self._set_action_feedback(
+                title="Colored Overlay Error",
+                lines=[f"Segmentation `{request.label_name}` has no linked table for table-driven coloring."],
+                kind="error",
+            )
+            return
+
+        if request.selected_color_source is None:
+            missing_source_label = "observation column" if request.selected_source_kind == "obs_column" else "var"
+            missing_source_article = "an" if request.selected_source_kind == "obs_column" else "a"
+            self._set_action_feedback(
+                title="Colored Overlay Error",
+                lines=[
+                    f"Select {missing_source_article} {missing_source_label} "
+                    f"to create a colored overlay for `{request.label_name}`."
+                ],
+                kind="error",
+            )
+            return
+
+        try:
+            result = self._app_state.viewer_adapter.ensure_styled_labels_loaded(
+                sdata,
+                request.label_name,
+                coordinate_system,
+                request.selected_color_source,
+            )
+        except ValueError as error:
+            self._set_action_feedback(title="Colored Overlay Error", lines=[str(error)], kind="error")
+            return
+
+        self._app_state.viewer_adapter.activate_layer(result.layer)
+        action = "Created" if result.created else "Updated"
+        if request.selected_color_source.source_kind == "obs_column":
+            source_text = f'obs["{request.selected_color_source.value_key}"]'
+        else:
+            source_text = f'X[:, "{request.selected_color_source.value_key}"]'
+
+        action_line = (
+            f"{action} colored overlay for {source_text} on segmentation `{request.label_name}` "
+            f"in coordinate system `{coordinate_system}`."
+        )
+        feedback_kind: StatusCardKind = "success"
+        title = f"Colored Overlay {action}"
+        lines = [action_line]
+        if result.coercion_applied:
+            feedback_kind = "warning"
+            title = f"{title} With Warning"
+            lines.append("Coerced string values to categorical and used the default categorical palette.")
+        elif result.palette_source == "stored":
+            lines.append("Used the stored categorical palette.")
+        elif result.palette_source == "default_invalid":
+            feedback_kind = "warning"
+            title = f"{title} With Warning"
+            lines.append("The stored categorical palette was invalid, so Harpy used the default categorical palette.")
+        elif result.palette_source == "default_missing":
+            feedback_kind = "info"
+            lines.append("Used the default categorical palette because no stored palette was present.")
+
+        self._set_action_feedback(
+            title=title,
+            lines=lines,
+            kind=feedback_kind,
         )
 
     def _add_or_update_image_layer(self, request: ImageLoadRequest) -> None:
@@ -666,13 +950,21 @@ class ViewerWidget(QWidget):
         image_name = request.image_name
 
         if sdata is None or not coordinate_system:
-            self._set_action_feedback("Load a SpatialData object and select a coordinate system first.", is_error=True)
+            self._set_action_feedback(
+                title="Image Load Error",
+                lines=["Load a SpatialData object and select a coordinate system first."],
+                kind="error",
+            )
             return
 
         mode = request.mode
         if mode == "overlay" and not request.channels:
             self._app_state.viewer_adapter.remove_image_layers(sdata, image_name, coordinate_system)
-            self._set_action_feedback("Overlay mode requires at least one selected channel.", is_error=True)
+            self._set_action_feedback(
+                title="Image Load Error",
+                lines=["Overlay mode requires at least one selected channel."],
+                kind="error",
+            )
             return
 
         try:
@@ -685,22 +977,24 @@ class ViewerWidget(QWidget):
                 channel_colors=request.channel_colors if mode == "overlay" else None,
             )
         except ValueError as error:
-            self._set_action_feedback(str(error), is_error=True)
+            self._set_action_feedback(title="Image Load Error", lines=[str(error)], kind="error")
             return
 
         if mode == "stack":
             if isinstance(layer_or_layers, list):
                 self._set_action_feedback(
-                    f"Expected one stack image layer for `{image_name}`, but received multiple layers.",
-                    is_error=True,
+                    title="Image Load Error",
+                    lines=[f"Expected one stack image layer for `{image_name}`, but received multiple layers."],
+                    kind="error",
                 )
                 return
 
             self._app_state.viewer_adapter.activate_layer(layer_or_layers)
             display_name, was_shortened = format_feedback_identifier(image_name)
             self._set_action_feedback(
-                f"Loaded image `{display_name}` in stack mode for coordinate system `{coordinate_system}`.",
-                is_error=False,
+                title="Image Loaded",
+                lines=[f"Loaded image `{display_name}` in stack mode for coordinate system `{coordinate_system}`."],
+                kind="success",
                 tooltip_message=(
                     f"Loaded image `{image_name}` in stack mode for coordinate system `{coordinate_system}`."
                     if was_shortened
@@ -711,20 +1005,28 @@ class ViewerWidget(QWidget):
 
         if not isinstance(layer_or_layers, list):
             self._set_action_feedback(
-                f"Expected overlay image layers for `{image_name}`, but received a single layer.",
-                is_error=True,
+                title="Image Load Error",
+                lines=[f"Expected overlay image layers for `{image_name}`, but received a single layer."],
+                kind="error",
             )
             return
         if not layer_or_layers:
-            self._set_action_feedback(f"No overlay layers were returned for image `{image_name}`.", is_error=True)
+            self._set_action_feedback(
+                title="Image Load Error",
+                lines=[f"No overlay layers were returned for image `{image_name}`."],
+                kind="error",
+            )
             return
 
         self._app_state.viewer_adapter.activate_layer(layer_or_layers[0])
         display_name, was_shortened = format_feedback_identifier(image_name)
         self._set_action_feedback(
-            f"Loaded image `{display_name}` in overlay mode for channels {request.channels} "
-            f"in coordinate system `{coordinate_system}`.",
-            is_error=False,
+            title="Image Loaded",
+            lines=[
+                f"Loaded image `{display_name}` in overlay mode for channels {request.channels} "
+                f"in coordinate system `{coordinate_system}`."
+            ],
+            kind="success",
             tooltip_message=(
                 f"Loaded image `{image_name}` in overlay mode for channels {request.channels} "
                 f"in coordinate system `{coordinate_system}`."
@@ -745,17 +1047,39 @@ class ViewerWidget(QWidget):
         self._image_cards = []
         self._labels_cards = []
 
-    def _set_action_feedback(self, message: str, *, is_error: bool, tooltip_message: str | None = None) -> None:
-        self.action_feedback_label.setText(message)
-        self.action_feedback_label.setStyleSheet(
-            "color: #b91c1c; font-weight: 600;" if is_error else "color: #166534; font-weight: 600;"
+    def _set_action_feedback(
+        self,
+        message: str | None = None,
+        *,
+        title: str | None = None,
+        lines: list[str] | None = None,
+        kind: StatusCardKind | None = None,
+        is_error: bool | None = None,
+        tooltip_message: str | None = None,
+    ) -> None:
+        """Render viewer action feedback as the shared status-card pattern."""
+        if lines is None:
+            if message is None:
+                lines = []
+            else:
+                lines = [message]
+        if kind is None:
+            kind = "error" if is_error else "success"
+        if title is None:
+            title = "Viewer Error" if kind == "error" else "Viewer Updated"
+
+        set_status_card(
+            self.action_feedback_label,
+            title=title,
+            lines=lines,
+            kind=kind,
+            tooltip_message=tooltip_message,
         )
-        self.action_feedback_label.setToolTip(format_tooltip(tooltip_message) if tooltip_message else "")
-        self.action_feedback_label.show()
 
     def _clear_action_feedback(self) -> None:
         self.action_feedback_label.clear()
         self.action_feedback_label.setToolTip("")
+        self.action_feedback_label.setStyleSheet("")
         self.action_feedback_label.hide()
 
     def _create_header_logo(self) -> QLabel:

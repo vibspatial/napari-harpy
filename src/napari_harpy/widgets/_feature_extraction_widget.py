@@ -49,12 +49,14 @@ from napari_harpy.widgets._shared_styles import (
 )
 from napari_harpy.widgets._shared_styles import (
     CompactComboBox,
+    StatusCardKind,
     apply_scroll_content_surface,
     apply_widget_surface,
     build_input_control_stylesheet,
     create_form_label,
     format_feedback_identifier,
     format_tooltip,
+    set_status_card,
 )
 
 if TYPE_CHECKING:
@@ -994,10 +996,10 @@ class FeatureExtractionWidget(QWidget):
         title: str,
         lines: list[str],
         *,
-        kind: str,
+        kind: StatusCardKind,
         tooltip_message: str | None = None,
     ) -> None:
-        self._set_status_card(
+        set_status_card(
             self.selection_status,
             title=title,
             lines=lines,
@@ -1005,7 +1007,7 @@ class FeatureExtractionWidget(QWidget):
             tooltip_message=tooltip_message,
         )
 
-    def _set_feature_extraction_feedback(self, message: str, *, kind: str = "info") -> None:
+    def _set_feature_extraction_feedback(self, message: str, *, kind: StatusCardKind = "info") -> None:
         if not message:
             self.controller_feedback.setText("")
             self.controller_feedback.setVisible(False)
@@ -1018,47 +1020,12 @@ class FeatureExtractionWidget(QWidget):
             "info": "Feature Extraction",
         }
         body = message.removeprefix("Feature extraction: ").strip()
-        self._set_status_card(
+        set_status_card(
             self.controller_feedback,
             title=title_by_kind.get(kind, "Feature Extraction"),
             lines=[body],
             kind=kind,
         )
-
-    def _set_status_card(
-        self,
-        label: QLabel,
-        *,
-        title: str,
-        lines: list[str],
-        kind: str,
-        tooltip_message: str | None = None,
-    ) -> None:
-        palette_by_kind = {
-            "info": {"text": "#1d4ed8", "border": "#93c5fd", "background": "#eff6ff"},
-            "warning": {"text": "#b45309", "border": "#fdba74", "background": "#fff7ed"},
-            "success": {"text": "#166534", "border": "#86efac", "background": "#f0fdf4"},
-            "error": {"text": "#b91c1c", "border": "#fca5a5", "background": "#fef2f2"},
-        }
-        palette = palette_by_kind.get(kind, palette_by_kind["info"])
-        formatted_lines = "<br>".join(f"<span>{escape(line)}</span>" for line in lines)
-        label.setText(
-            "<div>"
-            f"<span style='font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;'>"
-            f"{escape(title)}</span><br>"
-            f"{formatted_lines}"
-            "</div>"
-        )
-        label.setStyleSheet(
-            "font-weight: 500; "
-            f"color: {palette['text']}; "
-            f"background-color: {palette['background']}; "
-            f"border: 1px solid {palette['border']}; "
-            "border-radius: 8px; "
-            "padding: 10px 12px;"
-        )
-        label.setToolTip(format_tooltip(tooltip_message) if tooltip_message else "")
-        label.setVisible(bool(lines))
 
     def _update_calculate_controls(self) -> None:
         can_calculate = self._feature_extraction_controller.can_calculate

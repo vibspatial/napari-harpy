@@ -42,7 +42,7 @@ Relevant code paths:
 - `src/napari_harpy/_spatialdata.py`
 - `src/napari_harpy/_annotation.py`
 - `src/napari_harpy/_classifier.py`
-- `src/napari_harpy/_viewer_styling.py`
+- `src/napari_harpy/_classifier_viewer_styling.py`
 - `src/napari_harpy/_persistence.py`
 
 This is good news for phase 6, because there is already a natural authoritative object to keep.

@@ -968,7 +968,9 @@ def test_widget_recolors_layer_from_user_class_annotations(qtbot, sdata_blobs: S
     assert layer.colormap.color_dict[5][3] > 0
     assert layer.colormap.color_dict[6][3] > 0
     assert not np.allclose(layer.colormap.color_dict[5], layer.colormap.color_dict[6])
+    assert "instance_id" in layer.features.columns
     assert USER_CLASS_COLUMN in layer.features.columns
+    assert layer.features.set_index("index").loc[5, "instance_id"] == 5
     assert layer.features.set_index("index").loc[5, USER_CLASS_COLUMN] == 4
 
 
@@ -1554,6 +1556,7 @@ def test_widget_exposes_label_metadata_in_napari_status_bar(qtbot, sdata_blobs: 
     coords = tuple(float(value) for value in np.argwhere(np.asarray(sdata_blobs.labels["blobs_labels"]) == 5)[0])
     status = layer.get_status(position=coords, view_direction=np.array([1.0, 0.0]), dims_displayed=[0, 1])
 
+    assert "instance_id: 5" in status["value"]
     assert "user_class: 4" in status["value"]
     assert "pred_class: 2" in status["value"]
     assert "pred_confidence: 0.95" in status["value"]
