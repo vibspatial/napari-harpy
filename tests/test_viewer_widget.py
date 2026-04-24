@@ -5,6 +5,7 @@ from html import unescape
 from types import SimpleNamespace
 
 from qtpy.QtCore import Qt
+from qtpy.QtGui import QColor
 from qtpy.QtWidgets import QComboBox
 
 import napari_harpy.widgets._viewer_widget as viewer_widget_module
@@ -136,6 +137,24 @@ def test_elided_tool_button_only_shows_tooltip_when_text_is_truncated(qtbot, mon
     assert "..." in button.text() or "\u2026" in button.text()
 
 
+def test_overlay_color_button_uses_color_dialog_selection(qtbot, monkeypatch) -> None:
+    button = viewer_widget_module._OverlayColorButton("#00FFFF")
+
+    qtbot.addWidget(button)
+
+    monkeypatch.setattr(
+        viewer_widget_module.QColorDialog,
+        "getColor",
+        lambda *args, **kwargs: QColor("#123456"),
+    )
+
+    button.choose_color()
+
+    assert button.current_color == "#123456"
+    assert "background-color: #123456" in button.styleSheet()
+    assert "Current color" in button.toolTip()
+
+
 def test_viewer_widget_refreshes_cards_when_shared_sdata_changes(qtbot, sdata_blobs) -> None:
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)
@@ -158,10 +177,9 @@ def test_viewer_widget_refreshes_cards_when_shared_sdata_changes(qtbot, sdata_bl
     assert widget.image_cards[0].stack_toggle.isChecked()
     assert widget.image_cards[0].overlay_toggle.text() == "overlay"
     assert not widget.image_cards[0].overlay_toggle.isChecked()
-    assert widget.image_cards[0].channel_color_combos[0].count() > 8
-    assert widget.image_cards[0].channel_color_combos[0].itemText(0) == "Cyan"
-    assert widget.image_cards[0].channel_color_combos[0].itemData(0) == "#00FFFF"
-    assert not widget.image_cards[0].channel_color_combos[0].itemIcon(0).isNull()
+    assert widget.image_cards[0].channel_color_buttons[0].current_color == "#00FFFF"
+    assert "background-color: #00FFFF" in widget.image_cards[0].channel_color_buttons[0].styleSheet()
+    assert "Cyan" in widget.image_cards[0].channel_color_buttons[0].toolTip()
     assert len(widget.image_rows) == 2
     assert len(widget.labels_rows) == 2
     assert widget.images_section_toggle.text() == "Images (2)"
@@ -784,8 +802,8 @@ def test_viewer_widget_add_update_image_overlay_passes_selected_channels_and_col
     image_card.overlay_toggle.setChecked(True)
     image_card.channel_checkboxes[0].setChecked(True)
     image_card.channel_checkboxes[2].setChecked(True)
-    image_card.channel_color_combos[0].setCurrentText("Cyan")
-    image_card.channel_color_combos[2].setCurrentText("Orange")
+    image_card.channel_color_buttons[0].set_color("#00FFFF")
+    image_card.channel_color_buttons[2].set_color("#FFA500")
 
     image_card.add_update_button.click()
 

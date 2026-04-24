@@ -4,10 +4,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from qtpy.QtCore import QPointF, QRectF, QSignalBlocker, QSize, QStringListModel, Qt, Signal
-from qtpy.QtGui import QBrush, QColor, QIcon, QPainter, QPen, QPixmap
+from qtpy.QtCore import QPointF, QSignalBlocker, QSize, QStringListModel, Qt, Signal
+from qtpy.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from qtpy.QtWidgets import (
     QCheckBox,
+    QColorDialog,
     QComboBox,
     QCompleter,
     QFileDialog,
@@ -34,7 +35,7 @@ from napari_harpy._spatialdata import (
     get_table_color_source_options,
 )
 from napari_harpy._table_color_source import ColorSourceKind, TableColorSourceSpec
-from napari_harpy._viewer_adapter import AVAILABLE_OVERLAY_COLORS
+from napari_harpy._viewer_adapter import DEFAULT_OVERLAY_COLORS
 from napari_harpy.widgets._shared_styles import (
     ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,
 )
@@ -119,7 +120,7 @@ _CHANNEL_PANEL_STYLESHEET = "QWidget { background: transparent; }"
 _SUBSECTION_LABEL_STYLESHEET = "color: #64748b; font-size: 11px; font-weight: 600;"
 _MAX_VISIBLE_OVERLAY_CHANNELS = 5
 _DISCLOSURE_CHEVRON_SIZE = 14
-_COLOR_SWATCH_ICON_SIZE = 16
+_OVERLAY_COLOR_BUTTON_SIZE = 28
 _OVERLAY_COLOR_NAMES_BY_HEX = {
     "#00FFFF": "Cyan",
     "#FF00FF": "Magenta",
@@ -208,31 +209,56 @@ def _create_disclosure_chevron_icon(*, expanded: bool, color: str = WIDGET_TEXT_
     return QIcon(pixmap)
 
 
-def _create_color_swatch_icon(color: str) -> QIcon:
-    pixmap = QPixmap(_COLOR_SWATCH_ICON_SIZE, _COLOR_SWATCH_ICON_SIZE)
-    pixmap.fill(Qt.GlobalColor.transparent)
-
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    painter.setPen(QPen(QColor(WIDGET_BORDER_STRONG_COLOR), 1.0))
-    painter.setBrush(QBrush(QColor(color)))
-    painter.drawRoundedRect(
-        QRectF(1.0, 1.0, _COLOR_SWATCH_ICON_SIZE - 2.0, _COLOR_SWATCH_ICON_SIZE - 2.0),
-        4.0,
-        4.0,
-    )
-    painter.end()
-    return QIcon(pixmap)
-
-
 def _overlay_color_label(color: str) -> str:
     return _OVERLAY_COLOR_NAMES_BY_HEX.get(color.upper(), color)
 
 
-def _populate_overlay_color_combo(combo: QComboBox) -> None:
-    combo.setIconSize(QSize(_COLOR_SWATCH_ICON_SIZE, _COLOR_SWATCH_ICON_SIZE))
-    for color in AVAILABLE_OVERLAY_COLORS:
-        combo.addItem(_create_color_swatch_icon(color), _overlay_color_label(color), color)
+def _normalize_hex_color(color: str) -> str:
+    normalized_color = QColor(color)
+    if not normalized_color.isValid():
+        return color.upper()
+    return normalized_color.name(QColor.NameFormat.HexRgb).upper()
+
+
+class _OverlayColorButton(QPushButton):
+    """Button that shows the current channel color and opens a color picker on click."""
+
+    def __init__(self, color: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._color = ""
+        self.setText("")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedSize(_OVERLAY_COLOR_BUTTON_SIZE, _OVERLAY_COLOR_BUTTON_SIZE)
+        self.clicked.connect(self.choose_color)
+        self.set_color(color)
+
+    @property
+    def current_color(self) -> str:
+        return self._color
+
+    def set_color(self, color: str) -> None:
+        self._color = _normalize_hex_color(color)
+        label = _overlay_color_label(self._color)
+        self.setAccessibleName(f"Channel color {label} {self._color}")
+        self.setToolTip(format_tooltip(f"Click to choose channel color. Current color: {label} ({self._color})."))
+        self.setStyleSheet(
+            "QPushButton {"
+            f"background-color: {self._color}; "
+            f"border: 1px solid {WIDGET_BORDER_STRONG_COLOR}; "
+            f"border-radius: {_OVERLAY_COLOR_BUTTON_SIZE // 2}px; "
+            f"min-height: {_OVERLAY_COLOR_BUTTON_SIZE}px; "
+            f"max-height: {_OVERLAY_COLOR_BUTTON_SIZE}px; "
+            f"min-width: {_OVERLAY_COLOR_BUTTON_SIZE}px; "
+            f"max-width: {_OVERLAY_COLOR_BUTTON_SIZE}px; "
+            "padding: 0px;}"
+            f"QPushButton:hover {{ border: 2px solid {WIDGET_ACCENT_BORDER_COLOR}; }}"
+            f"QPushButton:focus {{ border: 2px solid {WIDGET_ACCENT_BORDER_COLOR}; }}"
+        )
+
+    def choose_color(self) -> None:
+        selected_color = QColorDialog.getColor(QColor(self._color), self, "Select channel color")
+        if selected_color.isValid():
+            self.set_color(selected_color.name(QColor.NameFormat.HexRgb))
 
 
 class _ElidedToolButton(QToolButton):
@@ -733,7 +759,7 @@ class _ImageCardWidget(QFrame):
         channel_layout.addWidget(self.channel_scroll_area)
 
         self.channel_checkboxes: list[QCheckBox] = []
-        self.channel_color_combos: list[QComboBox] = []
+        self.channel_color_buttons: list[_OverlayColorButton] = []
         channel_rows: list[QWidget] = []
 
         if channel_error is not None:
@@ -755,18 +781,15 @@ class _ImageCardWidget(QFrame):
                 checkbox.setObjectName(f"viewer_widget_channel_checkbox_{image_name}_{channel_name}")
                 checkbox.setStyleSheet(_CHECKBOX_STYLESHEET)
 
-                color_combo = QComboBox()
-                color_combo.setObjectName(f"viewer_widget_channel_color_combo_{image_name}_{channel_name}")
-                color_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
-                _populate_overlay_color_combo(color_combo)
-                color_combo.setCurrentIndex(index % color_combo.count())
+                color_button = _OverlayColorButton(DEFAULT_OVERLAY_COLORS[index % len(DEFAULT_OVERLAY_COLORS)])
+                color_button.setObjectName(f"viewer_widget_channel_color_button_{image_name}_{channel_name}")
 
                 row_layout.addWidget(checkbox, 1)
-                row_layout.addWidget(color_combo)
+                row_layout.addWidget(color_button)
 
                 self.channel_list_layout.addWidget(row)
                 self.channel_checkboxes.append(checkbox)
-                self.channel_color_combos.append(color_combo)
+                self.channel_color_buttons.append(color_button)
                 channel_rows.append(row)
         else:
             no_channels_label = QLabel("No channel axis available for this image.")
@@ -829,8 +852,8 @@ class _ImageCardWidget(QFrame):
 
     def get_selected_overlay_colors(self) -> list[str]:
         return [
-            str(color_combo.currentData() or color_combo.currentText())
-            for checkbox, color_combo in zip(self.channel_checkboxes, self.channel_color_combos, strict=False)
+            color_button.current_color
+            for checkbox, color_button in zip(self.channel_checkboxes, self.channel_color_buttons, strict=False)
             if checkbox.isChecked()
         ]
 

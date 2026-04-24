@@ -33,19 +33,6 @@ DEFAULT_OVERLAY_COLORS = (
     "#FFA500",  # orange
     "#9370DB",  # purple
 )
-AVAILABLE_OVERLAY_COLORS = (
-    *DEFAULT_OVERLAY_COLORS,
-    "#ADFF2F",  # green-yellow
-    "#7B68EE",  # medium slate blue
-    "#FF1493",  # deep pink
-    "#20B2AA",  # teal
-    "#FFD700",  # gold
-    "#FF7F50",  # coral
-    "#87CEFA",  # sky blue
-    "#32CD32",  # lime green
-    "#FF69B4",  # hot pink
-    "#DDA0DD",  # plum
-)
 
 
 @dataclass(frozen=True, kw_only=True)
