@@ -50,6 +50,9 @@ from napari_harpy.widgets._shared_styles import (
 from napari_harpy.widgets._shared_styles import (
     CompactComboBox,
     StatusCardKind,
+    WIDGET_BORDER_COLOR,
+    WIDGET_PANEL_COLOR,
+    WIDGET_TEXT_SECONDARY_COLOR,
     apply_scroll_content_surface,
     apply_widget_surface,
     build_input_control_stylesheet,
@@ -67,17 +70,17 @@ if TYPE_CHECKING:
 _INPUT_CONTROL_STYLESHEET = build_input_control_stylesheet("QComboBox, QLineEdit")
 _FEATURE_GROUP_STYLESHEET = (
     "QGroupBox {"
-    "background-color: #f8eeea; "
-    "border: 1px solid #eadfd8; "
+    f"background-color: {WIDGET_PANEL_COLOR}; "
+    f"border: 1px solid {WIDGET_BORDER_COLOR}; "
     "border-radius: 10px; "
-    "color: #374151; "
+    f"color: {WIDGET_TEXT_SECONDARY_COLOR}; "
     "font-weight: 600; "
     "margin-top: 10px; "
     "padding: 12px 12px 10px 12px;}"
     "QGroupBox::title {"
     "subcontrol-origin: margin; "
     "left: 12px; "
-    f"padding: 0 6px; color: #374151; background-color: {_WIDGET_SURFACE_COLOR};"
+    f"padding: 0 6px; color: {WIDGET_TEXT_SECONDARY_COLOR}; background-color: {_WIDGET_SURFACE_COLOR};"
     "}"
 )
 _FEATURE_HINT_INFO_STYLESHEET = "color: #6b7280; font-size: 12px; font-weight: 500;"
@@ -783,8 +786,8 @@ class FeatureExtractionWidget(QWidget):
         warning_card.setStyleSheet(
             "font-weight: 500; "
             "color: #b45309; "
-            "background-color: #fff7ed; "
-            "border: 1px solid #fdba74; "
+            "background-color: #fffbeb; "
+            "border: 1px solid #fde68a; "
             "border-radius: 10px; "
             "padding: 12px 14px;"
         )

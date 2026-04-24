@@ -42,9 +42,15 @@ from napari_harpy.widgets._shared_styles import (
     CHECKBOX_STYLESHEET as _CHECKBOX_STYLESHEET,
 )
 from napari_harpy.widgets._shared_styles import (
-    WIDGET_MIN_WIDTH as _WIDGET_MIN_WIDTH,
-)
-from napari_harpy.widgets._shared_styles import (
+    WIDGET_ACCENT_BORDER_COLOR,
+    WIDGET_ACCENT_SOFT_COLOR,
+    WIDGET_BORDER_COLOR,
+    WIDGET_BORDER_STRONG_COLOR,
+    WIDGET_PANEL_COLOR,
+    WIDGET_PANEL_MUTED_COLOR,
+    WIDGET_PANEL_SUBTLE_COLOR,
+    WIDGET_TEXT_COLOR,
+    WIDGET_TEXT_SECONDARY_COLOR,
     CompactComboBox,
     StatusCardKind,
     apply_scroll_content_surface,
@@ -55,6 +61,9 @@ from napari_harpy.widgets._shared_styles import (
     format_tooltip,
     set_status_card,
 )
+from napari_harpy.widgets._shared_styles import (
+    WIDGET_MIN_WIDTH as _WIDGET_MIN_WIDTH,
+)
 
 if TYPE_CHECKING:
     import napari
@@ -63,45 +72,48 @@ if TYPE_CHECKING:
 
 _INPUT_CONTROL_STYLESHEET = build_input_control_stylesheet("QComboBox")
 _DETAIL_PANEL_STYLESHEET = (
-    "QFrame[harpyViewerDetailPanel='true'] {background-color: #fff7f3; border: 1px solid #eadfd8; border-radius: 8px;}"
+    "QFrame[harpyViewerDetailPanel='true'] {"
+    f"background-color: {WIDGET_PANEL_COLOR}; "
+    f"border: 1px solid {WIDGET_BORDER_COLOR}; "
+    "border-radius: 8px;}"
 )
 _CARD_TITLE_STYLESHEET = (
     "QLabel {"
-    "background-color: #EFDCCF; "
-    "border: 1px solid #D3B19E; "
+    f"background-color: {WIDGET_ACCENT_SOFT_COLOR}; "
+    f"border: 1px solid {WIDGET_ACCENT_BORDER_COLOR}; "
     "border-radius: 8px; "
-    "color: #374151; "
+    f"color: {WIDGET_TEXT_SECONDARY_COLOR}; "
     "font-weight: 700; "
     "padding: 6px 10px;}"
 )
 _SECTION_GROUP_STYLESHEET = (
     "QFrame[harpyViewerDisclosureSection='true'] {"
-    "background-color: #f7ece7; "
-    "border: 1px solid #e3d2c8; "
+    f"background-color: {WIDGET_PANEL_MUTED_COLOR}; "
+    f"border: 1px solid {WIDGET_BORDER_COLOR}; "
     "border-radius: 12px;}"
 )
 _DISCLOSURE_BUTTON_STYLESHEET = (
     "QToolButton {"
-    "background-color: #fff8f5; "
-    "border: 1px solid #eadfd8; "
+    f"background-color: {WIDGET_PANEL_COLOR}; "
+    f"border: 1px solid {WIDGET_BORDER_COLOR}; "
     "border-radius: 8px; "
-    "color: #111827; "
+    f"color: {WIDGET_TEXT_COLOR}; "
     "font-size: 13px; "
     "font-weight: 600; "
     "padding: 4px 10px; "
     "min-height: 30px; "
     "text-align: left;}"
-    "QToolButton:hover { background-color: #f6e8e0; border-color: #d9c5ba; }"
-    "QToolButton:checked { background-color: #efdccf; border-color: #d3b19e; }"
+    f"QToolButton:hover {{ background-color: {WIDGET_PANEL_MUTED_COLOR}; border-color: {WIDGET_BORDER_STRONG_COLOR}; }}"
+    f"QToolButton:checked {{ background-color: {WIDGET_ACCENT_SOFT_COLOR}; border-color: {WIDGET_ACCENT_BORDER_COLOR}; }}"
 )
 _ELEMENT_DISCLOSURE_STYLESHEET = (
     "QFrame[harpyViewerDisclosureRow='true'] {"
-    "background-color: #fffaf7; "
-    "border: 1px solid #eadfd8; "
+    f"background-color: {WIDGET_PANEL_SUBTLE_COLOR}; "
+    f"border: 1px solid {WIDGET_BORDER_COLOR}; "
     "border-radius: 10px;}"
 )
-_SUMMARY_LABEL_STYLESHEET = "color: #374151; font-weight: 500;"
-_EMPTY_STATE_STYLESHEET = "color: #6b7280; font-weight: 500;"
+_SUMMARY_LABEL_STYLESHEET = f"color: {WIDGET_TEXT_SECONDARY_COLOR}; font-weight: 500;"
+_EMPTY_STATE_STYLESHEET = "color: #64748b; font-weight: 500;"
 _CHANNEL_WARNING_STYLESHEET = "color: #b45309; font-weight: 600;"
 _CHANNEL_PANEL_STYLESHEET = "QWidget { background: transparent; }"
 _MAX_VISIBLE_OVERLAY_CHANNELS = 5
@@ -151,7 +163,7 @@ class _ElidedLabel(QLabel):
         self.setToolTip(format_tooltip(self._full_text) if elided_text != self._full_text else "")
 
 
-def _create_disclosure_chevron_icon(*, expanded: bool, color: str = "#111827") -> QIcon:
+def _create_disclosure_chevron_icon(*, expanded: bool, color: str = WIDGET_TEXT_COLOR) -> QIcon:
     pixmap = QPixmap(_DISCLOSURE_CHEVRON_SIZE, _DISCLOSURE_CHEVRON_SIZE)
     pixmap.fill(Qt.GlobalColor.transparent)
 

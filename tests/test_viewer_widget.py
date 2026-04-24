@@ -45,9 +45,9 @@ class DummyViewer:
 
 
 _FEEDBACK_BACKGROUND_BY_KIND = {
-    "info": "#eff6ff",
-    "warning": "#fff7ed",
-    "success": "#f0fdf4",
+    "info": "#eef6ff",
+    "warning": "#fffbeb",
+    "success": "#ecfdf5",
     "error": "#fef2f2",
 }
 

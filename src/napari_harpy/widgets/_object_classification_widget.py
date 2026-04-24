@@ -46,9 +46,8 @@ from napari_harpy.widgets._shared_styles import (
     ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,
 )
 from napari_harpy.widgets._shared_styles import (
-    WIDGET_MIN_WIDTH as _WIDGET_MIN_WIDTH,
-)
-from napari_harpy.widgets._shared_styles import (
+    WIDGET_BORDER_COLOR,
+    WIDGET_PANEL_COLOR,
     CompactComboBox,
     StatusCardKind,
     apply_scroll_content_surface,
@@ -57,6 +56,9 @@ from napari_harpy.widgets._shared_styles import (
     create_form_label,
     format_tooltip,
     set_status_card,
+)
+from napari_harpy.widgets._shared_styles import (
+    WIDGET_MIN_WIDTH as _WIDGET_MIN_WIDTH,
 )
 
 if TYPE_CHECKING:
@@ -74,7 +76,8 @@ _APPLY_CLASS_SHORTCUT = "A"
 _REMOVE_CLASS_SHORTCUT = "R"
 _INPUT_CONTROL_STYLESHEET = build_input_control_stylesheet("QComboBox, QSpinBox")
 _CLASS_EDITOR_STYLESHEET = (
-    "QWidget#class_editor {background-color: #f8eeea; border: 1px solid #eadfd8; border-radius: 10px;}"
+    f"QWidget#class_editor {{background-color: {WIDGET_PANEL_COLOR}; "
+    f"border: 1px solid {WIDGET_BORDER_COLOR}; border-radius: 10px;}}"
 )
 
 
@@ -309,9 +312,7 @@ class ObjectClassificationWidget(QWidget):
         content_layout.addStretch(1)
 
         self._app_state.sdata_changed.connect(self._on_sdata_changed)
-        self._app_state.viewer_adapter.primary_labels_layers_changed.connect(
-            self._on_primary_labels_layers_changed
-        )
+        self._app_state.viewer_adapter.primary_labels_layers_changed.connect(self._on_primary_labels_layers_changed)
         self._app_state.feature_matrix_written.connect(self._on_feature_matrix_written)
         self.refresh_from_sdata(self._app_state.sdata)
 
@@ -1272,8 +1273,8 @@ class ObjectClassificationWidget(QWidget):
         warning_card.setStyleSheet(
             "font-weight: 500; "
             "color: #b45309; "
-            "background-color: #fff7ed; "
-            "border: 1px solid #fdba74; "
+            "background-color: #fffbeb; "
+            "border: 1px solid #fde68a; "
             "border-radius: 10px; "
             "padding: 12px 14px;"
         )
@@ -1298,13 +1299,13 @@ class ObjectClassificationWidget(QWidget):
         )
         discard_button.setStyleSheet(
             "QPushButton {"
-            "background-color: #fff7ed; "
+            "background-color: #fffbeb; "
             "color: #9a3412; "
-            "border: 1px solid #fdba74; "
+            "border: 1px solid #fde68a; "
             "border-radius: 6px; "
             "padding: 7px 14px; "
             "font-weight: 600;}"
-            "QPushButton:hover { background-color: #ffedd5; }"
+            "QPushButton:hover { background-color: #fef3c7; }"
         )
         cancel_button.setStyleSheet(
             "QPushButton {"
