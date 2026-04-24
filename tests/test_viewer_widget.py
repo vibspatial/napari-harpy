@@ -104,6 +104,38 @@ def test_elided_label_only_shows_tooltip_when_text_is_truncated(qtbot, monkeypat
     assert "..." in label.text() or "\u2026" in label.text()
 
 
+def test_elided_tool_button_only_shows_tooltip_when_text_is_truncated(qtbot, monkeypatch) -> None:
+    button = viewer_widget_module._ElidedToolButton("blobs_image_long_name_blobs_image_long_name")
+
+    qtbot.addWidget(button)
+
+    class _FakeRect:
+        def __init__(self, width: int) -> None:
+            self._width = width
+
+        def width(self) -> int:
+            return self._width
+
+    class _FakeFontMetrics:
+        def elidedText(self, text: str, mode: object, width: int) -> str:
+            del mode
+            return text if width >= len(text) else "blobs_image..."
+
+    monkeypatch.setattr(button, "fontMetrics", lambda: _FakeFontMetrics())
+    monkeypatch.setattr(button, "contentsRect", lambda: _FakeRect(400))
+    button.refresh_elision()
+
+    assert button.toolTip() == ""
+
+    monkeypatch.setattr(button, "contentsRect", lambda: _FakeRect(20))
+    button.refresh_elision()
+
+    tooltip = unescape(button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    assert "blobs_image_long_name_blobs_image_long_name" in tooltip
+    assert "collapsed" not in tooltip
+    assert "..." in button.text() or "\u2026" in button.text()
+
+
 def test_viewer_widget_refreshes_cards_when_shared_sdata_changes(qtbot, sdata_blobs) -> None:
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)
@@ -162,6 +194,8 @@ def test_viewer_widget_progressive_disclosure_expands_sections_and_elements(qtbo
     assert widget.labels_group.content_widget.isHidden()
     assert first_image_row.detail_widget.isHidden()
     assert first_labels_row.detail_widget.isHidden()
+    assert widget.images_section_toggle.arrowType() == Qt.ArrowType.NoArrow
+    assert not widget.images_section_toggle.icon().isNull()
 
     widget.images_section_toggle.click()
 

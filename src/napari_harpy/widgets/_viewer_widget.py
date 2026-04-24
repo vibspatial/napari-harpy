@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from qtpy.QtCore import QSignalBlocker, QStringListModel, Qt, Signal
-from qtpy.QtGui import QPixmap
+from qtpy.QtCore import QPointF, QSignalBlocker, QSize, QStringListModel, Qt, Signal
+from qtpy.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -63,10 +63,7 @@ if TYPE_CHECKING:
 
 _INPUT_CONTROL_STYLESHEET = build_input_control_stylesheet("QComboBox")
 _DETAIL_PANEL_STYLESHEET = (
-    "QFrame[harpyViewerDetailPanel='true'] {"
-    "background-color: #fff7f3; "
-    "border: 1px solid #eadfd8; "
-    "border-radius: 8px;}"
+    "QFrame[harpyViewerDetailPanel='true'] {background-color: #fff7f3; border: 1px solid #eadfd8; border-radius: 8px;}"
 )
 _CARD_TITLE_STYLESHEET = (
     "QLabel {"
@@ -88,9 +85,11 @@ _DISCLOSURE_BUTTON_STYLESHEET = (
     "background-color: #fff8f5; "
     "border: 1px solid #eadfd8; "
     "border-radius: 8px; "
-    "color: #374151; "
-    "font-weight: 700; "
-    "padding: 7px 10px; "
+    "color: #111827; "
+    "font-size: 13px; "
+    "font-weight: 600; "
+    "padding: 4px 10px; "
+    "min-height: 30px; "
     "text-align: left;}"
     "QToolButton:hover { background-color: #f6e8e0; border-color: #d9c5ba; }"
     "QToolButton:checked { background-color: #efdccf; border-color: #d3b19e; }"
@@ -106,6 +105,7 @@ _EMPTY_STATE_STYLESHEET = "color: #6b7280; font-weight: 500;"
 _CHANNEL_WARNING_STYLESHEET = "color: #b45309; font-weight: 600;"
 _CHANNEL_PANEL_STYLESHEET = "QWidget { background: transparent; }"
 _MAX_VISIBLE_OVERLAY_CHANNELS = 5
+_DISCLOSURE_CHEVRON_SIZE = 14
 
 
 @dataclass(frozen=True)
@@ -151,6 +151,91 @@ class _ElidedLabel(QLabel):
         self.setToolTip(format_tooltip(self._full_text) if elided_text != self._full_text else "")
 
 
+def _create_disclosure_chevron_icon(*, expanded: bool, color: str = "#111827") -> QIcon:
+    pixmap = QPixmap(_DISCLOSURE_CHEVRON_SIZE, _DISCLOSURE_CHEVRON_SIZE)
+    pixmap.fill(Qt.GlobalColor.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    pen = QPen(QColor(color))
+    pen.setWidthF(2.0)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+
+    if expanded:
+        painter.drawLine(QPointF(3.5, 5.0), QPointF(7.0, 8.5))
+        painter.drawLine(QPointF(7.0, 8.5), QPointF(10.5, 5.0))
+    else:
+        painter.drawLine(QPointF(5.0, 3.5), QPointF(8.5, 7.0))
+        painter.drawLine(QPointF(8.5, 7.0), QPointF(5.0, 10.5))
+
+    painter.end()
+    return QIcon(pixmap)
+
+
+class _ElidedToolButton(QToolButton):
+    """Tool button that elides visible text and only shows a tooltip when shortened."""
+
+    def __init__(
+        self,
+        text: str = "",
+        parent: QWidget | None = None,
+        *,
+        max_size_hint_width: int = 320,
+    ) -> None:
+        super().__init__(parent)
+        self._full_text = text
+        self._max_size_hint_width = max_size_hint_width
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setIconSize(QSize(_DISCLOSURE_CHEVRON_SIZE, _DISCLOSURE_CHEVRON_SIZE))
+        self.set_chevron_expanded(False)
+        self._update_elided_text()
+
+    def full_text(self) -> str:
+        return self._full_text
+
+    def set_full_text(self, text: str) -> None:
+        self._full_text = text
+        self._update_elided_text()
+
+    def sizeHint(self) -> QSize:
+        return self._capped_size(super().sizeHint())
+
+    def minimumSizeHint(self) -> QSize:
+        hint = super().minimumSizeHint()
+        return QSize(min(hint.width(), 48), hint.height())
+
+    def resizeEvent(self, event: object) -> None:
+        super().resizeEvent(event)
+        self._update_elided_text()
+
+    def refresh_elision(self) -> None:
+        self._update_elided_text()
+
+    def set_chevron_expanded(self, expanded: bool) -> None:
+        self.setIcon(_create_disclosure_chevron_icon(expanded=expanded))
+
+    def _capped_size(self, hint: QSize) -> QSize:
+        return QSize(min(hint.width(), self._max_size_hint_width), hint.height())
+
+    def _update_elided_text(self) -> None:
+        available_width = self.contentsRect().width()
+        if available_width <= 0:
+            available_width = self._max_size_hint_width
+        available_width = min(available_width, self._max_size_hint_width)
+        text_width = max(0, available_width - 42)
+        elided_text = self.fontMetrics().elidedText(
+            self._full_text,
+            Qt.TextElideMode.ElideRight,
+            text_width,
+        )
+        if self.text() != elided_text:
+            super().setText(elided_text)
+        self.setToolTip(format_tooltip(self._full_text) if elided_text != self._full_text else "")
+
+
 class _CollapsibleSectionWidget(QFrame):
     """Top-level collapsible section for viewer element categories."""
 
@@ -172,13 +257,11 @@ class _CollapsibleSectionWidget(QFrame):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
 
-        self.toggle_button = QToolButton()
+        self.toggle_button = _ElidedToolButton()
         self.toggle_button.setObjectName(toggle_object_name)
         self.toggle_button.setCheckable(True)
         self.toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.toggle_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.toggle_button.setMinimumWidth(0)
-        self.toggle_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.toggle_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.toggle_button.setStyleSheet(_DISCLOSURE_BUTTON_STYLESHEET)
         self.toggle_button.toggled.connect(self._on_toggled)
@@ -197,7 +280,7 @@ class _CollapsibleSectionWidget(QFrame):
         return self.toggle_button.isChecked()
 
     def set_count(self, count: int) -> None:
-        self.toggle_button.setText(f"{self._title} ({count})")
+        self.toggle_button.set_full_text(f"{self._title} ({count})")
         self._update_accessible_text()
 
     def set_expanded(self, expanded: bool) -> None:
@@ -210,13 +293,13 @@ class _CollapsibleSectionWidget(QFrame):
 
     def _sync_expanded_state(self, expanded: bool) -> None:
         self.content_widget.setVisible(expanded)
-        self.toggle_button.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        self.toggle_button.set_chevron_expanded(expanded)
+        self.toggle_button.refresh_elision()
         self._update_accessible_text()
 
     def _update_accessible_text(self) -> None:
         state = "expanded" if self.is_expanded() else "collapsed"
-        self.toggle_button.setAccessibleName(f"{self.toggle_button.text()} section, {state}")
-        self.toggle_button.setToolTip(f"{self.toggle_button.text()} section is {state}.")
+        self.toggle_button.setAccessibleName(f"{self.toggle_button.full_text()} section, {state}")
 
 
 class _DisclosureElementWidget(QFrame):
@@ -244,15 +327,11 @@ class _DisclosureElementWidget(QFrame):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
-        self.toggle_button = QToolButton()
+        self.toggle_button = _ElidedToolButton(title)
         self.toggle_button.setObjectName(toggle_object_name)
-        self.toggle_button.setText(title)
-        self.toggle_button.setToolTip(format_tooltip(title))
         self.toggle_button.setCheckable(True)
         self.toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.toggle_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.toggle_button.setMinimumWidth(0)
-        self.toggle_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.toggle_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.toggle_button.setStyleSheet(_DISCLOSURE_BUTTON_STYLESHEET)
         self.toggle_button.toggled.connect(self._on_toggled)
@@ -275,10 +354,10 @@ class _DisclosureElementWidget(QFrame):
 
     def _sync_expanded_state(self, expanded: bool) -> None:
         self.detail_widget.setVisible(expanded)
-        self.toggle_button.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        self.toggle_button.set_chevron_expanded(expanded)
+        self.toggle_button.refresh_elision()
         state = "expanded" if expanded else "collapsed"
         self.toggle_button.setAccessibleName(f"{self.title} element, {state}")
-        self.toggle_button.setToolTip(format_tooltip(f"{self.title} element is {state}."))
 
 
 class _LabelsCardWidget(QFrame):
@@ -336,9 +415,7 @@ class _LabelsCardWidget(QFrame):
         self.color_source_value_label = _create_form_label("Value source")
         self.color_source_value_input = QLineEdit()
         self.color_source_value_input.setObjectName(f"viewer_widget_color_source_value_input_{label_name}")
-        self.color_source_value_input.setStyleSheet(
-            build_input_control_stylesheet("QLineEdit")
-        )
+        self.color_source_value_input.setStyleSheet(build_input_control_stylesheet("QLineEdit"))
         self.color_source_value_input.setMinimumWidth(0)
         self.color_source_value_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.color_source_value_input.setEnabled(False)
@@ -398,7 +475,9 @@ class _LabelsCardWidget(QFrame):
         return None
 
     def _refresh_color_source_controls(self, _index: int | None = None) -> None:
-        selected_source_identity = self.selected_color_source.identity if self.selected_color_source is not None else None
+        selected_source_identity = (
+            self.selected_color_source.identity if self.selected_color_source is not None else None
+        )
         source_kind = self.selected_source_kind
         table_name = self.selected_table_name
 
@@ -409,7 +488,9 @@ class _LabelsCardWidget(QFrame):
         else:
             self.color_source_value_label.setText("Value source")
 
-        available_sources = list(self._table_color_sources_by_table.get(table_name, ())) if table_name is not None else []
+        available_sources = (
+            list(self._table_color_sources_by_table.get(table_name, ())) if table_name is not None else []
+        )
         self._filtered_color_sources = [
             source for source in available_sources if source_kind is None or source.source_kind == source_kind
         ]
@@ -423,7 +504,11 @@ class _LabelsCardWidget(QFrame):
                 self.color_source_value_input.setEnabled(bool(self._filtered_color_sources))
                 if selected_source_identity is not None:
                     matching_source = next(
-                        (source for source in self._filtered_color_sources if source.identity == selected_source_identity),
+                        (
+                            source
+                            for source in self._filtered_color_sources
+                            if source.identity == selected_source_identity
+                        ),
                         None,
                     )
                     if matching_source is not None:
@@ -491,9 +576,7 @@ class _LabelsCardWidget(QFrame):
                 self.action_status_label.setText("Action: no vars available for a colored overlay")
             return
 
-        self.action_status_label.setText(
-            f'Action: add/update colored overlay for X[:, "{selected_source.value_key}"]'
-        )
+        self.action_status_label.setText(f'Action: add/update colored overlay for X[:, "{selected_source.value_key}"]')
 
     def _emit_add_update_request(self, _checked: bool = False) -> None:
         self.add_update_requested.emit(
