@@ -24,6 +24,13 @@ from qtpy.QtWidgets import (
 from napari_harpy._annotation import UNLABELED_CLASS, AnnotationController
 from napari_harpy._app_state import FeatureMatrixWrittenEvent, HarpyAppState, get_or_create_app_state
 from napari_harpy._classifier import ClassifierController
+from napari_harpy._classifier_viewer_styling import (
+    COLOR_BY_OPTIONS,
+    COLOR_BY_PRED_CLASS,
+    COLOR_BY_PRED_CONFIDENCE,
+    COLOR_BY_USER_CLASS,
+    ViewerStylingController,
+)
 from napari_harpy._persistence import PersistenceController
 from napari_harpy._spatialdata import (
     SpatialDataLabelsOption,
@@ -34,13 +41,6 @@ from napari_harpy._spatialdata import (
     get_table_metadata,
     get_table_obsm_keys,
     validate_table_binding,
-)
-from napari_harpy._viewer_styling import (
-    COLOR_BY_OPTIONS,
-    COLOR_BY_PRED_CLASS,
-    COLOR_BY_PRED_CONFIDENCE,
-    COLOR_BY_USER_CLASS,
-    ViewerStylingController,
 )
 from napari_harpy.widgets._shared_styles import (
     ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,

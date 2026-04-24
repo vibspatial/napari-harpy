@@ -388,7 +388,7 @@ loaded and activated in napari.
 
 - `src/napari_harpy/widgets/_object_classification_widget.py`
 - `src/napari_harpy/_annotation.py`
-- `src/napari_harpy/_viewer_styling.py`
+- `src/napari_harpy/_classifier_viewer_styling.py`
 - `src/napari_harpy/_spatialdata.py`
 - `tests/test_widget.py`
 - possibly new viewer-adapter integration tests
@@ -497,7 +497,7 @@ without switching to a separate workflow first.
 ### Suggested files
 
 - `src/napari_harpy/widgets/_viewer_widget.py`
-- `src/napari_harpy/_viewer_styling.py`
+- `src/napari_harpy/_classifier_viewer_styling.py`
 - `src/napari_harpy/_spatialdata.py`
 - `tests/test_viewer_widget.py`
 - possibly new viewer-styling tests
