@@ -218,7 +218,7 @@ class ObjectClassificationWidget(QWidget):
         persistence_action_layout = QHBoxLayout(self.persistence_action_row)
         persistence_action_layout.setContentsMargins(0, 0, 0, 0)
         persistence_action_layout.setSpacing(8)
-        self.retrain_button = QPushButton("Retrain")
+        self.retrain_button = QPushButton("Train Classifier")
         self.retrain_button.setObjectName("retrain_button")
         self.retrain_button.clicked.connect(self._retrain_classifier)
         self.retrain_button.setEnabled(False)
@@ -1162,17 +1162,17 @@ class ObjectClassificationWidget(QWidget):
         self.retrain_button.setEnabled(can_retrain)
 
         if self.selected_spatialdata is None or self.selected_table_name is None:
-            tooltip = "Choose a segmentation and annotation table to enable retraining."
+            tooltip = "Choose a segmentation and annotation table to enable classifier training."
         elif self._table_binding_error is not None:
             tooltip = self._table_binding_error
         elif self.selected_feature_key is None:
-            tooltip = "Choose a feature matrix before retraining the classifier."
+            tooltip = "Choose a feature matrix before training the classifier."
         elif self._classifier_controller.is_training:
-            tooltip = "A classifier retraining job is currently running."
+            tooltip = "A classifier training job is currently running."
         elif self._classifier_controller.is_dirty:
-            tooltip = "The classifier model is stale. Click to retrain and refresh predictions."
+            tooltip = "The classifier model is stale. Click Train Classifier to refresh predictions."
         else:
-            tooltip = "Retrain the classifier using the current annotations and feature matrix."
+            tooltip = "Train the classifier using the current annotations and feature matrix."
 
         self._set_tooltip(self.retrain_button, tooltip)
 
@@ -1375,7 +1375,7 @@ class ObjectClassificationWidget(QWidget):
         self._update_classifier_controls()
 
     def _retrain_classifier(self) -> None:
-        self._classifier_controller.mark_dirty(reason="the user requested a retrain")
+        self._classifier_controller.mark_dirty(reason="the user requested classifier training")
         self._classifier_controller.retrain_now()
         self._update_selection_status()
 
