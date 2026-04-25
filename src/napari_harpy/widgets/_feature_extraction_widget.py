@@ -42,17 +42,11 @@ from napari_harpy.widgets._shared_styles import (
     CHECKBOX_STYLESHEET as _FEATURE_CHECKBOX_STYLESHEET,
 )
 from napari_harpy.widgets._shared_styles import (
-    WIDGET_MIN_WIDTH as _WIDGET_MIN_WIDTH,
-)
-from napari_harpy.widgets._shared_styles import (
-    WIDGET_SURFACE_COLOR as _WIDGET_SURFACE_COLOR,
-)
-from napari_harpy.widgets._shared_styles import (
-    CompactComboBox,
-    StatusCardKind,
     WIDGET_BORDER_COLOR,
     WIDGET_PANEL_COLOR,
     WIDGET_TEXT_SECONDARY_COLOR,
+    CompactComboBox,
+    StatusCardKind,
     apply_scroll_content_surface,
     apply_widget_surface,
     build_input_control_stylesheet,
@@ -60,6 +54,12 @@ from napari_harpy.widgets._shared_styles import (
     format_feedback_identifier,
     format_tooltip,
     set_status_card,
+)
+from napari_harpy.widgets._shared_styles import (
+    WIDGET_MIN_WIDTH as _WIDGET_MIN_WIDTH,
+)
+from napari_harpy.widgets._shared_styles import (
+    WIDGET_SURFACE_COLOR as _WIDGET_SURFACE_COLOR,
 )
 
 if TYPE_CHECKING:
@@ -535,7 +535,9 @@ class FeatureExtractionWidget(QWidget):
             for option in self._image_options:
                 self.image_combo.addItem(option.display_name)
 
-            self.image_combo.setEnabled(self.selected_spatialdata is not None and self.selected_coordinate_system is not None)
+            self.image_combo.setEnabled(
+                self.selected_spatialdata is not None and self.selected_coordinate_system is not None
+            )
 
             next_index = self._find_image_option_index(previous_identity)
             if self.image_combo.count() == 1:
@@ -966,7 +968,9 @@ class FeatureExtractionWidget(QWidget):
 
         segmentation_name, segmentation_shortened = format_feedback_identifier(self.selected_segmentation_name)
         table_name, table_shortened = format_feedback_identifier(self.selected_table_name)
-        coordinate_system_name, coordinate_system_shortened = format_feedback_identifier(self.selected_coordinate_system)
+        coordinate_system_name, coordinate_system_shortened = format_feedback_identifier(
+            self.selected_coordinate_system
+        )
 
         shortened = [segmentation_shortened, table_shortened, coordinate_system_shortened]
         tooltip_lines = [
