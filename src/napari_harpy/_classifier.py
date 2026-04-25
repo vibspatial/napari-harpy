@@ -242,7 +242,7 @@ class ClassifierController:
             self._set_status("Classifier: choose an annotation table and feature matrix.", kind="warning")
             return False
         if self._selected_feature_key is None:
-            self._set_status("Classifier: choose a feature matrix before retraining.", kind="warning")
+            self._set_status("Classifier: choose a feature matrix before training.", kind="warning")
             return False
 
         self._latest_requested_job_id += 1
@@ -254,7 +254,7 @@ class ClassifierController:
             self._launch_retrain_job(self._latest_requested_job_id)
         else:
             self._debounce_timer.start()
-            self._set_status("Classifier: model is stale. Retraining is scheduled.", kind="info")
+            self._set_status("Classifier: model is stale. Classifier training is scheduled.", kind="info")
 
         return True
 
@@ -676,7 +676,10 @@ class ClassifierController:
 
         if self._is_dirty:
             if reason is None:
-                self._set_status("Classifier: model is stale. Click Retrain to refresh predictions.", kind="warning")
+                self._set_status(
+                    "Classifier: model is stale. Click Train Classifier to refresh predictions.",
+                    kind="warning",
+                )
             else:
                 self._set_status(f"Classifier: model is stale because {reason}", kind="warning")
             return

@@ -85,6 +85,12 @@ def test_get_table_obs_color_source_options_classifies_supported_columns(sdata_b
     table.obs["int_obs"] = pd.Series(np.arange(n_obs), index=table.obs.index, dtype="int64")
     table.obs["float_obs"] = pd.Series(np.linspace(0.0, 1.0, n_obs), index=table.obs.index, dtype="float64")
     table.obs["string_obs"] = pd.Series(repeated_values, index=table.obs.index, dtype="object")
+    table.obs["string_id_obs"] = pd.Series(
+        [f"cell-{index:04d}" for index in range(n_obs)],
+        index=table.obs.index,
+        dtype="object",
+    )
+    table.obs["cat_id_obs"] = pd.Categorical([f"cell-{index:04d}" for index in range(n_obs)])
     table.obs["datetime_obs"] = pd.date_range("2024-01-01", periods=n_obs)
     table.obs["object_obs"] = pd.Series([{"index": index} for index in range(n_obs)], index=table.obs.index, dtype="object")
 
@@ -93,18 +99,23 @@ def test_get_table_obs_color_source_options_classifies_supported_columns(sdata_b
     option_by_key = {option.value_key: option for option in options}
 
     assert "region" not in option_by_key
-    assert "instance_id" not in option_by_key
+    assert option_by_key["instance_id"].value_kind == "instance"
     assert option_by_key["cat_obs"].value_kind == "categorical"
     assert option_by_key["bool_obs"].value_kind == "categorical"
     assert option_by_key["binary_int_obs"].value_kind == "categorical"
     assert option_by_key["int_obs"].value_kind == "continuous"
     assert option_by_key["float_obs"].value_kind == "continuous"
     assert option_by_key["string_obs"].value_kind == "categorical"
+    assert option_by_key["string_id_obs"].value_kind == "categorical"
+    assert option_by_key["cat_id_obs"].value_kind == "categorical"
     assert "datetime_obs" not in option_by_key
     assert "object_obs" not in option_by_key
     assert option_by_key["cat_obs"].source_kind == "obs_column"
+    assert option_by_key["instance_id"].source_kind == "obs_column"
     assert option_by_key["cat_obs"].display_name == "cat_obs"
+    assert option_by_key["instance_id"].display_name == "instance_id"
     assert option_by_key["cat_obs"].identity == ("table", "obs_column", "cat_obs")
+    assert option_by_key["instance_id"].identity == ("table", "obs_column", "instance_id")
 
 
 def test_get_table_x_var_color_source_options_exposes_var_names_as_continuous_sources(
@@ -125,6 +136,7 @@ def test_get_table_color_source_options_combines_obs_and_x_var_sources(sdata_blo
     options = get_table_color_source_options(sdata_blobs, "table")
 
     assert [option.identity for option in options] == [
+        ("table", "obs_column", "instance_id"),
         ("table", "obs_column", "cat_obs"),
         ("table", "x_var", "channel_0_sum"),
         ("table", "x_var", "channel_1_sum"),

@@ -4,10 +4,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from qtpy.QtCore import QSignalBlocker, QStringListModel, Qt, Signal
-from qtpy.QtGui import QPixmap
+from qtpy.QtCore import QPointF, QSignalBlocker, QSize, QStringListModel, Qt, Signal
+from qtpy.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from qtpy.QtWidgets import (
     QCheckBox,
+    QColorDialog,
     QComboBox,
     QCompleter,
     QFileDialog,
@@ -20,6 +21,7 @@ from qtpy.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -41,9 +43,15 @@ from napari_harpy.widgets._shared_styles import (
     CHECKBOX_STYLESHEET as _CHECKBOX_STYLESHEET,
 )
 from napari_harpy.widgets._shared_styles import (
-    WIDGET_MIN_WIDTH as _WIDGET_MIN_WIDTH,
-)
-from napari_harpy.widgets._shared_styles import (
+    WIDGET_ACCENT_BORDER_COLOR,
+    WIDGET_ACCENT_SOFT_COLOR,
+    WIDGET_BORDER_COLOR,
+    WIDGET_BORDER_STRONG_COLOR,
+    WIDGET_PANEL_COLOR,
+    WIDGET_PANEL_MUTED_COLOR,
+    WIDGET_PANEL_SUBTLE_COLOR,
+    WIDGET_TEXT_COLOR,
+    WIDGET_TEXT_SECONDARY_COLOR,
     CompactComboBox,
     StatusCardKind,
     apply_scroll_content_surface,
@@ -54,6 +62,9 @@ from napari_harpy.widgets._shared_styles import (
     format_tooltip,
     set_status_card,
 )
+from napari_harpy.widgets._shared_styles import (
+    WIDGET_MIN_WIDTH as _WIDGET_MIN_WIDTH,
+)
 
 if TYPE_CHECKING:
     import napari
@@ -61,28 +72,77 @@ if TYPE_CHECKING:
 
 
 _INPUT_CONTROL_STYLESHEET = build_input_control_stylesheet("QComboBox")
-_CARD_STYLESHEET = "QFrame {background-color: #f8eeea; border: 1px solid #eadfd8; border-radius: 10px;}"
+_DETAIL_PANEL_STYLESHEET = (
+    "QFrame[harpyViewerDetailPanel='true'] {"
+    f"background-color: {WIDGET_PANEL_COLOR}; "
+    f"border: 1px solid {WIDGET_BORDER_COLOR}; "
+    "border-radius: 8px;}"
+)
 _CARD_TITLE_STYLESHEET = (
     "QLabel {"
-    "background-color: #EFDCCF; "
-    "border: 1px solid #D3B19E; "
+    f"background-color: {WIDGET_ACCENT_SOFT_COLOR}; "
+    f"border: 1px solid {WIDGET_ACCENT_BORDER_COLOR}; "
     "border-radius: 8px; "
-    "color: #374151; "
+    f"color: {WIDGET_TEXT_SECONDARY_COLOR}; "
     "font-weight: 700; "
     "padding: 6px 10px;}"
 )
-_SECTION_TITLE_STYLESHEET = "color: #374151; font-size: 14px; font-weight: 700;"
 _SECTION_GROUP_STYLESHEET = (
-    "QFrame#viewer_widget_images_group, QFrame#viewer_widget_labels_group {"
-    "background-color: #f7ece7; "
-    "border: 1px solid #e3d2c8; "
+    "QFrame[harpyViewerDisclosureSection='true'] {"
+    f"background-color: {WIDGET_PANEL_MUTED_COLOR}; "
+    f"border: 1px solid {WIDGET_BORDER_COLOR}; "
     "border-radius: 12px;}"
 )
-_SUMMARY_LABEL_STYLESHEET = "color: #374151; font-weight: 500;"
-_EMPTY_STATE_STYLESHEET = "color: #6b7280; font-weight: 500;"
+_DISCLOSURE_BUTTON_STYLESHEET = (
+    "QToolButton {"
+    f"background-color: {WIDGET_PANEL_COLOR}; "
+    f"border: 1px solid {WIDGET_BORDER_COLOR}; "
+    "border-radius: 8px; "
+    f"color: {WIDGET_TEXT_COLOR}; "
+    "font-size: 13px; "
+    "font-weight: 600; "
+    "padding: 4px 10px; "
+    "min-height: 30px; "
+    "text-align: left;}"
+    f"QToolButton:hover {{ background-color: {WIDGET_PANEL_MUTED_COLOR}; border-color: {WIDGET_BORDER_STRONG_COLOR}; }}"
+    f"QToolButton:checked {{ background-color: {WIDGET_ACCENT_SOFT_COLOR}; border-color: {WIDGET_ACCENT_BORDER_COLOR}; }}"
+)
+_ELEMENT_DISCLOSURE_STYLESHEET = (
+    "QFrame[harpyViewerDisclosureRow='true'] {"
+    f"background-color: {WIDGET_PANEL_SUBTLE_COLOR}; "
+    f"border: 1px solid {WIDGET_BORDER_COLOR}; "
+    "border-radius: 10px;}"
+)
+_SUMMARY_LABEL_STYLESHEET = f"color: {WIDGET_TEXT_SECONDARY_COLOR}; font-weight: 500;"
+_EMPTY_STATE_STYLESHEET = "color: #64748b; font-weight: 500;"
 _CHANNEL_WARNING_STYLESHEET = "color: #b45309; font-weight: 600;"
 _CHANNEL_PANEL_STYLESHEET = "QWidget { background: transparent; }"
+_SUBSECTION_LABEL_STYLESHEET = "color: #64748b; font-size: 11px; font-weight: 600;"
 _MAX_VISIBLE_OVERLAY_CHANNELS = 5
+_DISCLOSURE_CHEVRON_SIZE = 14
+_OVERLAY_COLOR_BUTTON_WIDTH = 34
+_OVERLAY_COLOR_BUTTON_HEIGHT = 22
+_OVERLAY_COLOR_BUTTON_RADIUS = 6
+_OVERLAY_COLOR_NAMES_BY_HEX = {
+    "#00FFFF": "Cyan",
+    "#FF00FF": "Magenta",
+    "#FFFF00": "Yellow",
+    "#00FF7F": "Green",
+    "#FF5050": "Red",
+    "#1E90FF": "Blue",
+    "#FFA500": "Orange",
+    "#9370DB": "Purple",
+    "#ADFF2F": "Green-yellow",
+    "#7B68EE": "Slate blue",
+    "#FF1493": "Deep pink",
+    "#20B2AA": "Teal",
+    "#FFD700": "Gold",
+    "#FF7F50": "Coral",
+    "#87CEFA": "Sky blue",
+    "#32CD32": "Lime green",
+    "#FF69B4": "Hot pink",
+    "#DDA0DD": "Plum",
+}
 
 
 @dataclass(frozen=True)
@@ -128,6 +188,267 @@ class _ElidedLabel(QLabel):
         self.setToolTip(format_tooltip(self._full_text) if elided_text != self._full_text else "")
 
 
+def _create_disclosure_chevron_icon(*, expanded: bool, color: str = WIDGET_TEXT_COLOR) -> QIcon:
+    pixmap = QPixmap(_DISCLOSURE_CHEVRON_SIZE, _DISCLOSURE_CHEVRON_SIZE)
+    pixmap.fill(Qt.GlobalColor.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    pen = QPen(QColor(color))
+    pen.setWidthF(2.0)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+
+    if expanded:
+        painter.drawLine(QPointF(3.5, 5.0), QPointF(7.0, 8.5))
+        painter.drawLine(QPointF(7.0, 8.5), QPointF(10.5, 5.0))
+    else:
+        painter.drawLine(QPointF(5.0, 3.5), QPointF(8.5, 7.0))
+        painter.drawLine(QPointF(8.5, 7.0), QPointF(5.0, 10.5))
+
+    painter.end()
+    return QIcon(pixmap)
+
+
+def _overlay_color_label(color: str) -> str:
+    return _OVERLAY_COLOR_NAMES_BY_HEX.get(color.upper(), color)
+
+
+def _normalize_hex_color(color: str) -> str:
+    normalized_color = QColor(color)
+    if not normalized_color.isValid():
+        return color.upper()
+    return normalized_color.name(QColor.NameFormat.HexRgb).upper()
+
+
+class _OverlayColorButton(QPushButton):
+    """Button that shows the current channel color and opens a color picker on click."""
+
+    def __init__(self, color: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._color = ""
+        self.setText("")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedSize(_OVERLAY_COLOR_BUTTON_WIDTH, _OVERLAY_COLOR_BUTTON_HEIGHT)
+        self.clicked.connect(self.choose_color)
+        self.set_color(color)
+
+    @property
+    def current_color(self) -> str:
+        return self._color
+
+    def set_color(self, color: str) -> None:
+        self._color = _normalize_hex_color(color)
+        label = _overlay_color_label(self._color)
+        self.setAccessibleName(f"Channel color {label} {self._color}")
+        self.setToolTip(format_tooltip(f"Click to choose channel color. Current color: {label} ({self._color})."))
+        self.setStyleSheet(
+            "QPushButton {"
+            f"background-color: {self._color}; "
+            f"border: 1px solid {WIDGET_BORDER_STRONG_COLOR}; "
+            f"border-radius: {_OVERLAY_COLOR_BUTTON_RADIUS}px; "
+            f"min-height: {_OVERLAY_COLOR_BUTTON_HEIGHT}px; "
+            f"max-height: {_OVERLAY_COLOR_BUTTON_HEIGHT}px; "
+            f"min-width: {_OVERLAY_COLOR_BUTTON_WIDTH}px; "
+            f"max-width: {_OVERLAY_COLOR_BUTTON_WIDTH}px; "
+            "padding: 0px;}"
+            f"QPushButton:hover {{ border: 2px solid {WIDGET_ACCENT_BORDER_COLOR}; }}"
+            f"QPushButton:focus {{ border: 2px solid {WIDGET_ACCENT_BORDER_COLOR}; }}"
+        )
+
+    def choose_color(self) -> None:
+        selected_color = QColorDialog.getColor(QColor(self._color), self, "Select channel color")
+        if selected_color.isValid():
+            self.set_color(selected_color.name(QColor.NameFormat.HexRgb))
+
+
+class _ElidedToolButton(QToolButton):
+    """Tool button that elides visible text and only shows a tooltip when shortened."""
+
+    def __init__(
+        self,
+        text: str = "",
+        parent: QWidget | None = None,
+        *,
+        max_size_hint_width: int = 320,
+    ) -> None:
+        super().__init__(parent)
+        self._full_text = text
+        self._max_size_hint_width = max_size_hint_width
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setIconSize(QSize(_DISCLOSURE_CHEVRON_SIZE, _DISCLOSURE_CHEVRON_SIZE))
+        self.set_chevron_expanded(False)
+        self._update_elided_text()
+
+    def full_text(self) -> str:
+        return self._full_text
+
+    def set_full_text(self, text: str) -> None:
+        self._full_text = text
+        self._update_elided_text()
+
+    def sizeHint(self) -> QSize:
+        return self._capped_size(super().sizeHint())
+
+    def minimumSizeHint(self) -> QSize:
+        hint = super().minimumSizeHint()
+        return QSize(min(hint.width(), 48), hint.height())
+
+    def resizeEvent(self, event: object) -> None:
+        super().resizeEvent(event)
+        self._update_elided_text()
+
+    def refresh_elision(self) -> None:
+        self._update_elided_text()
+
+    def set_chevron_expanded(self, expanded: bool) -> None:
+        self.setIcon(_create_disclosure_chevron_icon(expanded=expanded))
+
+    def _capped_size(self, hint: QSize) -> QSize:
+        return QSize(min(hint.width(), self._max_size_hint_width), hint.height())
+
+    def _update_elided_text(self) -> None:
+        available_width = self.contentsRect().width()
+        if available_width <= 0:
+            available_width = self._max_size_hint_width
+        available_width = min(available_width, self._max_size_hint_width)
+        text_width = max(0, available_width - 42)
+        elided_text = self.fontMetrics().elidedText(
+            self._full_text,
+            Qt.TextElideMode.ElideRight,
+            text_width,
+        )
+        if self.text() != elided_text:
+            super().setText(elided_text)
+        self.setToolTip(format_tooltip(self._full_text) if elided_text != self._full_text else "")
+
+
+class _CollapsibleSectionWidget(QFrame):
+    """Top-level collapsible section for viewer element categories."""
+
+    def __init__(
+        self,
+        *,
+        title: str,
+        object_name: str,
+        toggle_object_name: str,
+        expanded: bool = False,
+    ) -> None:
+        super().__init__()
+        self._title = title
+        self.setObjectName(object_name)
+        self.setProperty("harpyViewerDisclosureSection", True)
+        self.setStyleSheet(_SECTION_GROUP_STYLESHEET)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        self.toggle_button = _ElidedToolButton()
+        self.toggle_button.setObjectName(toggle_object_name)
+        self.toggle_button.setCheckable(True)
+        self.toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.toggle_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.toggle_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.toggle_button.setStyleSheet(_DISCLOSURE_BUTTON_STYLESHEET)
+        self.toggle_button.toggled.connect(self._on_toggled)
+
+        self.content_widget = QWidget()
+        self.content_widget.setObjectName(f"{object_name}_content")
+        self.content_layout = QVBoxLayout(self.content_widget)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_layout.setSpacing(8)
+
+        layout.addWidget(self.toggle_button)
+        layout.addWidget(self.content_widget)
+        self.set_expanded(expanded)
+
+    def is_expanded(self) -> bool:
+        return self.toggle_button.isChecked()
+
+    def set_count(self, count: int) -> None:
+        self.toggle_button.set_full_text(f"{self._title} ({count})")
+        self._update_accessible_text()
+
+    def set_expanded(self, expanded: bool) -> None:
+        with QSignalBlocker(self.toggle_button):
+            self.toggle_button.setChecked(expanded)
+        self._sync_expanded_state(expanded)
+
+    def _on_toggled(self, expanded: bool) -> None:
+        self._sync_expanded_state(expanded)
+
+    def _sync_expanded_state(self, expanded: bool) -> None:
+        self.content_widget.setVisible(expanded)
+        self.toggle_button.set_chevron_expanded(expanded)
+        self.toggle_button.refresh_elision()
+        self._update_accessible_text()
+
+    def _update_accessible_text(self) -> None:
+        state = "expanded" if self.is_expanded() else "collapsed"
+        self.toggle_button.setAccessibleName(f"{self.toggle_button.full_text()} section, {state}")
+
+
+class _DisclosureElementWidget(QFrame):
+    """Compact element row with an expandable detail widget."""
+
+    expanded_changed = Signal(bool)
+
+    def __init__(
+        self,
+        *,
+        title: str,
+        object_name: str,
+        toggle_object_name: str,
+        detail_widget: QWidget,
+        expanded: bool = False,
+    ) -> None:
+        super().__init__()
+        self.title = title
+        self.detail_widget = detail_widget
+        self.setObjectName(object_name)
+        self.setProperty("harpyViewerDisclosureRow", True)
+        self.setStyleSheet(_ELEMENT_DISCLOSURE_STYLESHEET)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        self.toggle_button = _ElidedToolButton(title)
+        self.toggle_button.setObjectName(toggle_object_name)
+        self.toggle_button.setCheckable(True)
+        self.toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.toggle_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.toggle_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.toggle_button.setStyleSheet(_DISCLOSURE_BUTTON_STYLESHEET)
+        self.toggle_button.toggled.connect(self._on_toggled)
+
+        layout.addWidget(self.toggle_button)
+        layout.addWidget(self.detail_widget)
+        self.set_expanded(expanded)
+
+    def is_expanded(self) -> bool:
+        return self.toggle_button.isChecked()
+
+    def set_expanded(self, expanded: bool) -> None:
+        with QSignalBlocker(self.toggle_button):
+            self.toggle_button.setChecked(expanded)
+        self._sync_expanded_state(expanded)
+
+    def _on_toggled(self, expanded: bool) -> None:
+        self._sync_expanded_state(expanded)
+        self.expanded_changed.emit(expanded)
+
+    def _sync_expanded_state(self, expanded: bool) -> None:
+        self.detail_widget.setVisible(expanded)
+        self.toggle_button.set_chevron_expanded(expanded)
+        self.toggle_button.refresh_elision()
+        state = "expanded" if expanded else "collapsed"
+        self.toggle_button.setAccessibleName(f"{self.title} element, {state}")
+
+
 class _LabelsCardWidget(QFrame):
     """Card UI for one labels element in the selected coordinate system."""
 
@@ -145,15 +466,17 @@ class _LabelsCardWidget(QFrame):
         self._table_color_sources_by_table = table_color_sources_by_table
         self._filtered_color_sources: list[TableColorSourceSpec] = []
         self.setObjectName(f"viewer_widget_labels_card_{label_name}")
-        self.setStyleSheet(_CARD_STYLESHEET)
+        self.setProperty("harpyViewerDetailPanel", True)
+        self.setStyleSheet(_DETAIL_PANEL_STYLESHEET)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
-        self.title_label = _ElidedLabel(label_name)
+        self.title_label = _ElidedLabel(label_name, self)
         self.title_label.setObjectName(f"viewer_widget_labels_card_title_{label_name}")
         self.title_label.setStyleSheet(_CARD_TITLE_STYLESHEET)
+        self.title_label.hide()
 
         form_layout = QFormLayout()
         form_layout.setContentsMargins(0, 0, 0, 0)
@@ -181,9 +504,7 @@ class _LabelsCardWidget(QFrame):
         self.color_source_value_label = _create_form_label("Value source")
         self.color_source_value_input = QLineEdit()
         self.color_source_value_input.setObjectName(f"viewer_widget_color_source_value_input_{label_name}")
-        self.color_source_value_input.setStyleSheet(
-            build_input_control_stylesheet("QLineEdit")
-        )
+        self.color_source_value_input.setStyleSheet(build_input_control_stylesheet("QLineEdit"))
         self.color_source_value_input.setMinimumWidth(0)
         self.color_source_value_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.color_source_value_input.setEnabled(False)
@@ -210,7 +531,6 @@ class _LabelsCardWidget(QFrame):
         form_layout.addRow(color_source_kind_label, self.color_source_kind_combo)
         form_layout.addRow(self.color_source_value_label, self.color_source_value_input)
 
-        layout.addWidget(self.title_label)
         layout.addLayout(form_layout)
         layout.addWidget(self.action_status_label)
         layout.addWidget(self.add_update_button)
@@ -244,7 +564,9 @@ class _LabelsCardWidget(QFrame):
         return None
 
     def _refresh_color_source_controls(self, _index: int | None = None) -> None:
-        selected_source_identity = self.selected_color_source.identity if self.selected_color_source is not None else None
+        selected_source_identity = (
+            self.selected_color_source.identity if self.selected_color_source is not None else None
+        )
         source_kind = self.selected_source_kind
         table_name = self.selected_table_name
 
@@ -255,7 +577,9 @@ class _LabelsCardWidget(QFrame):
         else:
             self.color_source_value_label.setText("Value source")
 
-        available_sources = list(self._table_color_sources_by_table.get(table_name, ())) if table_name is not None else []
+        available_sources = (
+            list(self._table_color_sources_by_table.get(table_name, ())) if table_name is not None else []
+        )
         self._filtered_color_sources = [
             source for source in available_sources if source_kind is None or source.source_kind == source_kind
         ]
@@ -269,7 +593,11 @@ class _LabelsCardWidget(QFrame):
                 self.color_source_value_input.setEnabled(bool(self._filtered_color_sources))
                 if selected_source_identity is not None:
                     matching_source = next(
-                        (source for source in self._filtered_color_sources if source.identity == selected_source_identity),
+                        (
+                            source
+                            for source in self._filtered_color_sources
+                            if source.identity == selected_source_identity
+                        ),
                         None,
                     )
                     if matching_source is not None:
@@ -337,9 +665,7 @@ class _LabelsCardWidget(QFrame):
                 self.action_status_label.setText("Action: no vars available for a colored overlay")
             return
 
-        self.action_status_label.setText(
-            f'Action: add/update colored overlay for X[:, "{selected_source.value_key}"]'
-        )
+        self.action_status_label.setText(f'Action: add/update colored overlay for X[:, "{selected_source.value_key}"]')
 
     def _emit_add_update_request(self, _checked: bool = False) -> None:
         self.add_update_requested.emit(
@@ -369,15 +695,17 @@ class _ImageCardWidget(QFrame):
         self.channel_names = channel_names
         self.channel_error = channel_error
         self.setObjectName(f"viewer_widget_image_card_{image_name}")
-        self.setStyleSheet(_CARD_STYLESHEET)
+        self.setProperty("harpyViewerDetailPanel", True)
+        self.setStyleSheet(_DETAIL_PANEL_STYLESHEET)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
-        self.title_label = _ElidedLabel(image_name)
+        self.title_label = _ElidedLabel(image_name, self)
         self.title_label.setObjectName(f"viewer_widget_image_card_title_{image_name}")
         self.title_label.setStyleSheet(_CARD_TITLE_STYLESHEET)
+        self.title_label.hide()
 
         mode_layout = QHBoxLayout()
         mode_layout.setContentsMargins(0, 0, 0, 0)
@@ -407,8 +735,13 @@ class _ImageCardWidget(QFrame):
         self.channel_panel.setStyleSheet(_CHANNEL_PANEL_STYLESHEET)
         self.channel_panel.setVisible(False)
         channel_layout = QVBoxLayout(self.channel_panel)
-        channel_layout.setContentsMargins(0, 0, 0, 0)
-        channel_layout.setSpacing(6)
+        channel_layout.setContentsMargins(24, 10, 0, 0)
+        channel_layout.setSpacing(8)
+
+        self.channel_section_label = QLabel("Channels")
+        self.channel_section_label.setObjectName(f"viewer_widget_channel_section_label_{image_name}")
+        self.channel_section_label.setStyleSheet(_SUBSECTION_LABEL_STYLESHEET)
+        channel_layout.addWidget(self.channel_section_label)
 
         self.channel_scroll_area = QScrollArea()
         self.channel_scroll_area.setObjectName(f"viewer_widget_channel_scroll_area_{image_name}")
@@ -428,7 +761,7 @@ class _ImageCardWidget(QFrame):
         channel_layout.addWidget(self.channel_scroll_area)
 
         self.channel_checkboxes: list[QCheckBox] = []
-        self.channel_color_combos: list[QComboBox] = []
+        self.channel_color_buttons: list[_OverlayColorButton] = []
         channel_rows: list[QWidget] = []
 
         if channel_error is not None:
@@ -450,19 +783,15 @@ class _ImageCardWidget(QFrame):
                 checkbox.setObjectName(f"viewer_widget_channel_checkbox_{image_name}_{channel_name}")
                 checkbox.setStyleSheet(_CHECKBOX_STYLESHEET)
 
-                color_combo = QComboBox()
-                color_combo.setObjectName(f"viewer_widget_channel_color_combo_{image_name}_{channel_name}")
-                color_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
-                for color in DEFAULT_OVERLAY_COLORS:
-                    color_combo.addItem(color, color)
-                color_combo.setCurrentIndex(index % color_combo.count())
+                color_button = _OverlayColorButton(DEFAULT_OVERLAY_COLORS[index % len(DEFAULT_OVERLAY_COLORS)])
+                color_button.setObjectName(f"viewer_widget_channel_color_button_{image_name}_{channel_name}")
 
                 row_layout.addWidget(checkbox, 1)
-                row_layout.addWidget(color_combo)
+                row_layout.addWidget(color_button)
 
                 self.channel_list_layout.addWidget(row)
                 self.channel_checkboxes.append(checkbox)
-                self.channel_color_combos.append(color_combo)
+                self.channel_color_buttons.append(color_button)
                 channel_rows.append(row)
         else:
             no_channels_label = QLabel("No channel axis available for this image.")
@@ -485,7 +814,6 @@ class _ImageCardWidget(QFrame):
         self.stack_toggle.toggled.connect(self._on_stack_toggled)
         self.overlay_toggle.toggled.connect(self._on_overlay_toggled)
 
-        layout.addWidget(self.title_label)
         layout.addLayout(mode_layout)
         layout.addWidget(self.channel_warning_label)
         layout.addWidget(self.channel_panel)
@@ -526,8 +854,8 @@ class _ImageCardWidget(QFrame):
 
     def get_selected_overlay_colors(self) -> list[str]:
         return [
-            str(color_combo.currentData() or color_combo.currentText())
-            for checkbox, color_combo in zip(self.channel_checkboxes, self.channel_color_combos, strict=False)
+            color_button.current_color
+            for checkbox, color_button in zip(self.channel_checkboxes, self.channel_color_buttons, strict=False)
             if checkbox.isChecked()
         ]
 
@@ -566,6 +894,10 @@ class ViewerWidget(QWidget):
         self._app_state = get_or_create_app_state(napari_viewer)
         self._labels_cards: list[_LabelsCardWidget] = []
         self._image_cards: list[_ImageCardWidget] = []
+        self._labels_rows: list[_DisclosureElementWidget] = []
+        self._image_rows: list[_DisclosureElementWidget] = []
+        self._expanded_label_names: set[str] = set()
+        self._expanded_image_names: set[str] = set()
         self._logo_path = Path(__file__).resolve().parents[3] / "docs" / "_static" / "logo.png"
 
         root_layout = QVBoxLayout(self)
@@ -628,10 +960,6 @@ class ViewerWidget(QWidget):
         self.action_feedback_label.setWordWrap(True)
         self.action_feedback_label.hide()
 
-        self.images_section_title = QLabel("Images")
-        self.images_section_title.setObjectName("viewer_widget_images_section_title")
-        self.images_section_title.setStyleSheet(_SECTION_TITLE_STYLESHEET)
-
         self.images_empty_label = QLabel("No images available in the selected coordinate system.")
         self.images_empty_label.setObjectName("viewer_widget_images_empty_state")
         self.images_empty_label.setWordWrap(True)
@@ -642,19 +970,16 @@ class ViewerWidget(QWidget):
         self.images_section_layout = QVBoxLayout(self.images_section)
         self.images_section_layout.setContentsMargins(0, 0, 0, 0)
         self.images_section_layout.setSpacing(8)
-        self.images_group = QFrame()
-        self.images_group.setObjectName("viewer_widget_images_group")
-        self.images_group.setStyleSheet(_SECTION_GROUP_STYLESHEET)
-        self.images_group_layout = QVBoxLayout(self.images_group)
-        self.images_group_layout.setContentsMargins(12, 12, 12, 12)
-        self.images_group_layout.setSpacing(10)
-        self.images_group_layout.addWidget(self.images_section_title)
-        self.images_group_layout.addWidget(self.images_empty_label)
-        self.images_group_layout.addWidget(self.images_section)
-
-        self.labels_section_title = QLabel("Segmentations")
-        self.labels_section_title.setObjectName("viewer_widget_labels_section_title")
-        self.labels_section_title.setStyleSheet(_SECTION_TITLE_STYLESHEET)
+        self.images_group = _CollapsibleSectionWidget(
+            title="Images",
+            object_name="viewer_widget_images_group",
+            toggle_object_name="viewer_widget_images_section_toggle",
+            expanded=False,
+        )
+        self.images_group.content_layout.addWidget(self.images_empty_label)
+        self.images_group.content_layout.addWidget(self.images_section)
+        self.images_section_toggle = self.images_group.toggle_button
+        self.images_section_title = self.images_section_toggle
 
         self.labels_empty_label = QLabel("No segmentation masks available in the selected coordinate system.")
         self.labels_empty_label.setObjectName("viewer_widget_labels_empty_state")
@@ -666,15 +991,16 @@ class ViewerWidget(QWidget):
         self.labels_section_layout = QVBoxLayout(self.labels_section)
         self.labels_section_layout.setContentsMargins(0, 0, 0, 0)
         self.labels_section_layout.setSpacing(8)
-        self.labels_group = QFrame()
-        self.labels_group.setObjectName("viewer_widget_labels_group")
-        self.labels_group.setStyleSheet(_SECTION_GROUP_STYLESHEET)
-        self.labels_group_layout = QVBoxLayout(self.labels_group)
-        self.labels_group_layout.setContentsMargins(12, 12, 12, 12)
-        self.labels_group_layout.setSpacing(10)
-        self.labels_group_layout.addWidget(self.labels_section_title)
-        self.labels_group_layout.addWidget(self.labels_empty_label)
-        self.labels_group_layout.addWidget(self.labels_section)
+        self.labels_group = _CollapsibleSectionWidget(
+            title="Segmentations",
+            object_name="viewer_widget_labels_group",
+            toggle_object_name="viewer_widget_labels_section_toggle",
+            expanded=False,
+        )
+        self.labels_group.content_layout.addWidget(self.labels_empty_label)
+        self.labels_group.content_layout.addWidget(self.labels_section)
+        self.labels_section_toggle = self.labels_group.toggle_button
+        self.labels_section_title = self.labels_section_toggle
 
         self.content_layout.addWidget(header_logo)
         self.content_layout.addWidget(title)
@@ -707,6 +1033,16 @@ class ViewerWidget(QWidget):
     def image_cards(self) -> list[_ImageCardWidget]:
         """Return the currently visible image cards."""
         return list(self._image_cards)
+
+    @property
+    def image_rows(self) -> list[_DisclosureElementWidget]:
+        """Return the currently visible compact image rows."""
+        return list(self._image_rows)
+
+    @property
+    def labels_rows(self) -> list[_DisclosureElementWidget]:
+        """Return the currently visible compact labels rows."""
+        return list(self._labels_rows)
 
     def _on_sdata_changed(self, sdata: SpatialData | None) -> None:
         """Refresh the widget when the shared loaded `SpatialData` changes."""
@@ -793,6 +1129,8 @@ class ViewerWidget(QWidget):
     def _rebuild_image_cards(self, sdata: SpatialData, image_names: list[str]) -> None:
         _clear_layout(self.images_section_layout)
         self._image_cards = []
+        self._image_rows = []
+        self._expanded_image_names.intersection_update(image_names)
 
         for image_name in image_names:
             channel_error = None
@@ -807,12 +1145,28 @@ class ViewerWidget(QWidget):
                 channel_error=channel_error,
             )
             card.add_update_requested.connect(self._add_or_update_image_layer)
-            self.images_section_layout.addWidget(card)
+            row = _DisclosureElementWidget(
+                title=image_name,
+                object_name=f"viewer_widget_image_row_{image_name}",
+                toggle_object_name=f"viewer_widget_image_row_toggle_{image_name}",
+                detail_widget=card,
+                expanded=image_name in self._expanded_image_names,
+            )
+            row.expanded_changed.connect(
+                lambda expanded, *, name=image_name: self._on_image_row_expanded(
+                    name,
+                    expanded,
+                )
+            )
+            self.images_section_layout.addWidget(row)
             self._image_cards.append(card)
+            self._image_rows.append(row)
 
     def _rebuild_labels_cards(self, sdata: SpatialData, label_names: list[str]) -> None:
         _clear_layout(self.labels_section_layout)
         self._labels_cards = []
+        self._labels_rows = []
+        self._expanded_label_names.intersection_update(label_names)
 
         for label_name in label_names:
             table_names = get_annotating_table_names(sdata, label_name)
@@ -825,8 +1179,44 @@ class ViewerWidget(QWidget):
                 table_color_sources_by_table=table_color_sources_by_table,
             )
             card.add_update_requested.connect(self._add_or_update_labels_layer)
-            self.labels_section_layout.addWidget(card)
+            row = _DisclosureElementWidget(
+                title=label_name,
+                object_name=f"viewer_widget_labels_row_{label_name}",
+                toggle_object_name=f"viewer_widget_labels_row_toggle_{label_name}",
+                detail_widget=card,
+                expanded=label_name in self._expanded_label_names,
+            )
+            row.expanded_changed.connect(
+                lambda expanded, *, name=label_name: self._on_labels_row_expanded(
+                    name,
+                    expanded,
+                )
+            )
+            self.labels_section_layout.addWidget(row)
             self._labels_cards.append(card)
+            self._labels_rows.append(row)
+
+    def _on_image_row_expanded(
+        self,
+        image_name: str,
+        expanded: bool,
+    ) -> None:
+        if expanded:
+            self._expanded_image_names.add(image_name)
+            return
+
+        self._expanded_image_names.discard(image_name)
+
+    def _on_labels_row_expanded(
+        self,
+        label_name: str,
+        expanded: bool,
+    ) -> None:
+        if expanded:
+            self._expanded_label_names.add(label_name)
+            return
+
+        self._expanded_label_names.discard(label_name)
 
     def _add_or_update_labels_layer(self, request: LabelsLoadRequest) -> None:
         if request.selected_source_kind is None:
@@ -924,7 +1314,9 @@ class ViewerWidget(QWidget):
         feedback_kind: StatusCardKind = "success"
         title = f"Colored Overlay {action}"
         lines = [action_line]
-        if result.coercion_applied:
+        if result.value_kind == "instance":
+            lines.append("Used instance label colors.")
+        elif result.coercion_applied:
             feedback_kind = "warning"
             title = f"{title} With Warning"
             lines.append("Coerced string values to categorical and used the default categorical palette.")
@@ -1036,6 +1428,8 @@ class ViewerWidget(QWidget):
         )
 
     def _update_section_empty_states(self, image_names: list[str], label_names: list[str]) -> None:
+        self.images_group.set_count(len(image_names))
+        self.labels_group.set_count(len(label_names))
         self.images_empty_label.setVisible(not image_names)
         self.labels_empty_label.setVisible(not label_names)
         self.images_section.setVisible(bool(image_names))
@@ -1046,6 +1440,10 @@ class ViewerWidget(QWidget):
         _clear_layout(self.labels_section_layout)
         self._image_cards = []
         self._labels_cards = []
+        self._image_rows = []
+        self._labels_rows = []
+        self._expanded_image_names.clear()
+        self._expanded_label_names.clear()
 
     def _set_action_feedback(
         self,

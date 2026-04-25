@@ -15,27 +15,39 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-WIDGET_SURFACE_COLOR = "#fcf6f3"
+WIDGET_SURFACE_COLOR = "#f8fafc"
 WIDGET_SURFACE_STYLESHEET = f"background-color: {WIDGET_SURFACE_COLOR};"
 WIDGET_MIN_WIDTH = 370
-TOOLTIP_TEXT_COLOR = "#111827"
-FORM_LABEL_STYLESHEET = "color: #374151; font-weight: 600; padding-top: 6px;"
+WIDGET_PANEL_COLOR = "#ffffff"
+WIDGET_PANEL_MUTED_COLOR = "#f1f5f9"
+WIDGET_PANEL_SUBTLE_COLOR = "#f8fafc"
+WIDGET_BORDER_COLOR = "#d7dee8"
+WIDGET_BORDER_STRONG_COLOR = "#b8c4d2"
+WIDGET_TEXT_COLOR = "#0f172a"
+WIDGET_TEXT_MUTED_COLOR = "#64748b"
+WIDGET_TEXT_SECONDARY_COLOR = "#334155"
+WIDGET_ACCENT_COLOR = "#0891b2"
+WIDGET_ACCENT_SOFT_COLOR = "#e6f7fb"
+WIDGET_ACCENT_BORDER_COLOR = "#7dd3e8"
+TOOLTIP_TEXT_COLOR = WIDGET_TEXT_COLOR
+FORM_LABEL_STYLESHEET = f"color: {WIDGET_TEXT_SECONDARY_COLOR}; font-weight: 600; padding-top: 6px;"
 ACTION_BUTTON_STYLESHEET = (
     "QPushButton {"
-    "background-color: #f7ede8; "
-    "border: 1px solid #ddcfc7; "
+    f"background-color: {WIDGET_PANEL_COLOR}; "
+    f"border: 1px solid {WIDGET_BORDER_COLOR}; "
     "border-radius: 8px; "
-    "color: #111827; "
+    f"color: {WIDGET_TEXT_COLOR}; "
     "font-weight: 600; "
     "padding: 4px 10px; "
     "min-height: 30px;}"
-    "QPushButton:hover { background-color: #f3e5de; border-color: #c9b6ac; }"
-    "QPushButton:pressed { background-color: #ebd7cf; border-color: #b59a8e; }"
-    "QPushButton:disabled { background-color: #faf4f1; border-color: #ede3dd; color: #a8a29e; }"
+    f"QPushButton:hover {{ background-color: {WIDGET_PANEL_MUTED_COLOR}; border-color: {WIDGET_BORDER_STRONG_COLOR}; }}"
+    f"QPushButton:pressed {{ background-color: #e2e8f0; border-color: {WIDGET_BORDER_STRONG_COLOR}; }}"
+    f"QPushButton:disabled {{ background-color: {WIDGET_PANEL_SUBTLE_COLOR}; "
+    "border-color: #e2e8f0; color: #94a3b8; }"
 )
 CHECKBOX_STYLESHEET = (
     "QCheckBox {"
-    "color: #111827; "
+    f"color: {WIDGET_TEXT_COLOR}; "
     "font-weight: 500; "
     "spacing: 8px; "
     "background: transparent;}"
@@ -44,15 +56,15 @@ CHECKBOX_STYLESHEET = (
     "width: 16px; "
     "height: 16px; "
     "border-radius: 4px; "
-    "border: 1px solid #d8c8bf; "
-    "background-color: #fffdfb;}"
-    "QCheckBox::indicator:hover { border-color: #c7b2a7; }"
+    f"border: 1px solid {WIDGET_BORDER_COLOR}; "
+    f"background-color: {WIDGET_PANEL_COLOR};}}"
+    f"QCheckBox::indicator:hover {{ border-color: {WIDGET_ACCENT_BORDER_COLOR}; }}"
     "QCheckBox::indicator:checked {"
-    "border-color: #7aa7bd; "
-    "background-color: #8fb6c9;}"
+    f"border-color: {WIDGET_ACCENT_COLOR}; "
+    f"background-color: {WIDGET_ACCENT_COLOR};}}"
     "QCheckBox::indicator:disabled {"
-    "border-color: #e9ddd7; "
-    "background-color: #f7efea;}"
+    "border-color: #e2e8f0; "
+    f"background-color: {WIDGET_PANEL_MUTED_COLOR};}}"
 )
 StatusCardKind = Literal["info", "warning", "success", "error"]
 
@@ -64,19 +76,19 @@ def build_input_control_stylesheet(control_selector: str) -> str:
 
     return (
         f"{control_selector} {{"
-        "background-color: #fffdfb; "
-        "border: 1px solid #ddcfc7; "
+        f"background-color: {WIDGET_PANEL_COLOR}; "
+        f"border: 1px solid {WIDGET_BORDER_COLOR}; "
         "border-radius: 8px; "
-        "color: #111827; "
+        f"color: {WIDGET_TEXT_COLOR}; "
         "padding: 4px 10px; "
         "min-height: 20px;}"
         f"{disabled_selector} {{"
-        "background-color: #f7efea; "
-        "border-color: #e9ddd7; "
+        f"background-color: {WIDGET_PANEL_MUTED_COLOR}; "
+        "border-color: #e2e8f0; "
         "color: #9ca3af;}"
         f"{focus_selector} {{"
-        "border-color: #8fb6c9; "
-        "background-color: #ffffff;}"
+        f"border-color: {WIDGET_ACCENT_COLOR}; "
+        f"background-color: {WIDGET_PANEL_COLOR};}}"
         "QComboBox { padding-right: 24px; }"
         "QComboBox::drop-down {"
         "subcontrol-origin: padding; "
@@ -210,10 +222,10 @@ def set_status_card(
 ) -> None:
     """Render a compact titled status card into a QLabel."""
     palette_by_kind = {
-        "info": {"text": "#1d4ed8", "border": "#93c5fd", "background": "#eff6ff"},
-        "warning": {"text": "#b45309", "border": "#fdba74", "background": "#fff7ed"},
-        "success": {"text": "#166534", "border": "#86efac", "background": "#f0fdf4"},
-        "error": {"text": "#b91c1c", "border": "#fca5a5", "background": "#fef2f2"},
+        "info": {"text": "#1d4ed8", "border": "#bfdbfe", "background": "#eef6ff"},
+        "warning": {"text": "#b45309", "border": "#fde68a", "background": "#fffbeb"},
+        "success": {"text": "#047857", "border": "#a7f3d0", "background": "#ecfdf5"},
+        "error": {"text": "#b91c1c", "border": "#fecaca", "background": "#fef2f2"},
     }
     palette = palette_by_kind.get(kind, palette_by_kind["info"])
     formatted_lines = "<br>".join(f"<span>{escape(line, quote=False)}</span>" for line in lines)

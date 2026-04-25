@@ -762,6 +762,143 @@ user just acted on:
 
 - VW-07
 
+## VW-11: Simplify Viewer Widget With Progressive Disclosure
+
+### Goal
+
+Make the `Viewer` widget easier to scan by showing only the major viewer
+categories first, then revealing image or segmentation controls only after the
+user opens the relevant section and element.
+
+### Scope
+
+- reorganize the existing `ViewerWidget` UI, not the underlying adapter or
+  table-coloring behavior
+- keep the current coordinate-system-first browsing model
+- keep existing image loading behavior:
+  - stack mode
+  - overlay mode
+  - channel selection
+  - duplicate-channel warnings
+- keep existing segmentation behavior:
+  - primary labels loading
+  - table-driven styled overlays
+  - linked-table and color-source controls
+- keep shared status-card styling and any later card-local feedback behavior
+- do not add new visualization features, legends, palette editors, or layer
+  grouping in this ticket
+
+### Why this ticket exists
+
+After `VW-07`, the viewer has more useful controls, but the first visible
+screen can feel busy because every image and segmentation element is rendered
+as a full expanded card at the same time.
+
+The desired interaction is more like a small browser:
+
+1. show only the high-level groups:
+   - `Images`
+   - `Segmentations`
+2. when the user opens `Images`, show the available image elements:
+   - `blobs_image`
+   - `blobs_multiscale_image`
+   - other image elements
+3. when the user opens `blobs_image`, show that image's controls:
+   - stack / overlay mode
+   - overlay channel controls when needed
+   - `Add / Update in viewer`
+4. apply the same pattern to `Segmentations`:
+   - first show segmentation element names
+   - only show linked-table and color-source controls after opening one
+     segmentation element
+
+This reduces the amount of UI visible at once while keeping all current
+capabilities reachable.
+
+### Recommended UX
+
+- use collapsible section headers for `Images` and `Segmentations`
+- show section counts in the header if useful, for example:
+  - `Images (3)`
+  - `Segmentations (2)`
+- default state should be compact:
+  - both sections visible
+  - no element controls expanded by default, or only the first section expanded
+    without expanding an element
+- inside an open section, render elements as compact rows with the element name
+  and a disclosure affordance
+- clicking an element row expands its detail panel below that row
+- support multiple expanded elements per section so users can compare or edit
+  several images / segmentations without each row closing the previous one
+- preserve the current selected / typed values when collapsing and expanding an
+  element whenever the card object has not been rebuilt
+- keep warnings close to the detail panel they affect:
+  - duplicate-channel warnings inside the expanded image detail
+  - missing linked-table or missing color-source state inside the expanded
+    segmentation detail
+- avoid nesting visually heavy cards inside other heavy cards; the compact row
+  plus inline detail panel should feel lighter than the current full-card list
+
+### Required work
+
+- introduce a small reusable collapsible section / disclosure-row pattern for
+  the viewer widget
+- split the current `_ImageCardWidget` presentation into:
+  - compact image row/header
+  - expandable image detail controls
+- split the current `_LabelsCardWidget` presentation into:
+  - compact segmentation row/header
+  - expandable segmentation detail controls
+- update `ViewerWidget._rebuild_image_cards(...)` and
+  `ViewerWidget._rebuild_labels_cards(...)` to render compact element rows
+  inside collapsible `Images` / `Segmentations` sections
+- decide and implement expansion state behavior:
+  - whether sections remember open / closed state across coordinate-system
+    refreshes
+  - whether expanded element identity is restored when still available
+  - whether switching coordinate system collapses all details
+- make keyboard and accessibility behavior reasonable:
+  - section and element headers should be focusable / clickable
+  - expanded / collapsed state should be reflected in accessible text or
+    tooltip where practical
+- keep layout stable on narrow dock widths:
+  - long element names should elide or wrap predictably
+  - controls should not overflow the card/detail area
+- preserve all existing action signal contracts where possible, or update tests
+  to the new structure without changing adapter behavior
+
+### Suggested files
+
+- `src/napari_harpy/widgets/_viewer_widget.py`
+- `src/napari_harpy/widgets/_shared_styles.py` if a reusable disclosure
+  helper or shared stylesheet is useful
+- `tests/test_viewer_widget.py`
+
+### Acceptance criteria
+
+- [x] the top-level viewer content shows compact `Images` and `Segmentations`
+  sections instead of immediately showing every element's full controls
+- [x] opening `Images` reveals compact image element rows
+- [x] opening an image element reveals its stack / overlay controls and
+  `Add / Update in viewer` action
+- [x] opening `Segmentations` reveals compact segmentation element rows
+- [x] opening a segmentation element reveals linked-table and color-source
+  controls
+- [x] existing image stack / overlay behavior still works
+- [x] existing table-driven segmentation overlay behavior still works
+- [x] duplicate-channel warnings remain visible when the affected image element
+  is expanded
+- [x] missing linked-table / missing color-source states remain visible when
+  the affected segmentation element is expanded
+- [x] tests cover section expansion, element expansion, and at least one image
+  and one segmentation action through the new UI
+- [x] the compact UI remains readable at the current minimum widget width
+
+### Depends on
+
+- VW-07
+- VW-10
+
 ## Nice-To-Have Follow-Ups
 
 - add image visibility toggles and layer grouping behavior

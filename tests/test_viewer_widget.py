@@ -5,6 +5,7 @@ from html import unescape
 from types import SimpleNamespace
 
 from qtpy.QtCore import Qt
+from qtpy.QtGui import QColor
 from qtpy.QtWidgets import QComboBox
 
 import napari_harpy.widgets._viewer_widget as viewer_widget_module
@@ -45,9 +46,9 @@ class DummyViewer:
 
 
 _FEEDBACK_BACKGROUND_BY_KIND = {
-    "info": "#eff6ff",
-    "warning": "#fff7ed",
-    "success": "#f0fdf4",
+    "info": "#eef6ff",
+    "warning": "#fffbeb",
+    "success": "#ecfdf5",
     "error": "#fef2f2",
 }
 
@@ -104,6 +105,56 @@ def test_elided_label_only_shows_tooltip_when_text_is_truncated(qtbot, monkeypat
     assert "..." in label.text() or "\u2026" in label.text()
 
 
+def test_elided_tool_button_only_shows_tooltip_when_text_is_truncated(qtbot, monkeypatch) -> None:
+    button = viewer_widget_module._ElidedToolButton("blobs_image_long_name_blobs_image_long_name")
+
+    qtbot.addWidget(button)
+
+    class _FakeRect:
+        def __init__(self, width: int) -> None:
+            self._width = width
+
+        def width(self) -> int:
+            return self._width
+
+    class _FakeFontMetrics:
+        def elidedText(self, text: str, mode: object, width: int) -> str:
+            del mode
+            return text if width >= len(text) else "blobs_image..."
+
+    monkeypatch.setattr(button, "fontMetrics", lambda: _FakeFontMetrics())
+    monkeypatch.setattr(button, "contentsRect", lambda: _FakeRect(400))
+    button.refresh_elision()
+
+    assert button.toolTip() == ""
+
+    monkeypatch.setattr(button, "contentsRect", lambda: _FakeRect(20))
+    button.refresh_elision()
+
+    tooltip = unescape(button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    assert "blobs_image_long_name_blobs_image_long_name" in tooltip
+    assert "collapsed" not in tooltip
+    assert "..." in button.text() or "\u2026" in button.text()
+
+
+def test_overlay_color_button_uses_color_dialog_selection(qtbot, monkeypatch) -> None:
+    button = viewer_widget_module._OverlayColorButton("#00FFFF")
+
+    qtbot.addWidget(button)
+
+    monkeypatch.setattr(
+        viewer_widget_module.QColorDialog,
+        "getColor",
+        lambda *args, **kwargs: QColor("#123456"),
+    )
+
+    button.choose_color()
+
+    assert button.current_color == "#123456"
+    assert "background-color: #123456" in button.styleSheet()
+    assert "Current color" in button.toolTip()
+
+
 def test_viewer_widget_refreshes_cards_when_shared_sdata_changes(qtbot, sdata_blobs) -> None:
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)
@@ -126,6 +177,17 @@ def test_viewer_widget_refreshes_cards_when_shared_sdata_changes(qtbot, sdata_bl
     assert widget.image_cards[0].stack_toggle.isChecked()
     assert widget.image_cards[0].overlay_toggle.text() == "overlay"
     assert not widget.image_cards[0].overlay_toggle.isChecked()
+    assert widget.image_cards[0].channel_color_buttons[0].current_color == "#00FFFF"
+    assert "background-color: #00FFFF" in widget.image_cards[0].channel_color_buttons[0].styleSheet()
+    assert "Cyan" in widget.image_cards[0].channel_color_buttons[0].toolTip()
+    assert len(widget.image_rows) == 2
+    assert len(widget.labels_rows) == 2
+    assert widget.images_section_toggle.text() == "Images (2)"
+    assert widget.labels_section_toggle.text() == "Segmentations (2)"
+    assert not widget.images_group.is_expanded()
+    assert not widget.labels_group.is_expanded()
+    assert widget.image_rows[0].detail_widget.isHidden()
+    assert widget.labels_rows[0].detail_widget.isHidden()
     assert widget.labels_cards[0].linked_table_combo.count() == 1
     assert widget.labels_cards[0].linked_table_combo.itemText(0) == "table"
     assert widget.labels_cards[0].linked_table_combo.sizeAdjustPolicy() == (
@@ -135,6 +197,78 @@ def test_viewer_widget_refreshes_cards_when_shared_sdata_changes(qtbot, sdata_bl
     assert widget.labels_cards[1].linked_table_combo.itemText(0) == "No linked tables"
     assert not widget.labels_cards[1].linked_table_combo.isEnabled()
     assert "In coordinate system `global`" in widget.summary_label.text()
+
+
+def test_viewer_widget_progressive_disclosure_expands_sections_and_elements(qtbot, sdata_blobs) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata_blobs)
+
+    first_image_row = widget.image_rows[0]
+    second_image_row = widget.image_rows[1]
+    first_labels_row = widget.labels_rows[0]
+
+    assert widget.images_group.content_widget.isHidden()
+    assert widget.labels_group.content_widget.isHidden()
+    assert first_image_row.detail_widget.isHidden()
+    assert first_labels_row.detail_widget.isHidden()
+    assert widget.images_section_toggle.arrowType() == Qt.ArrowType.NoArrow
+    assert not widget.images_section_toggle.icon().isNull()
+
+    widget.images_section_toggle.click()
+
+    assert widget.images_group.is_expanded()
+    assert not widget.images_group.content_widget.isHidden()
+    assert first_image_row.detail_widget.isHidden()
+
+    first_image_row.toggle_button.click()
+
+    assert first_image_row.is_expanded()
+    assert not first_image_row.detail_widget.isHidden()
+    assert widget.image_cards[0].stack_toggle.isChecked()
+
+    second_image_row.toggle_button.click()
+
+    assert first_image_row.is_expanded()
+    assert not first_image_row.detail_widget.isHidden()
+    assert second_image_row.is_expanded()
+    assert not second_image_row.detail_widget.isHidden()
+
+    widget.labels_section_toggle.click()
+    first_labels_row.toggle_button.click()
+
+    assert widget.labels_group.is_expanded()
+    assert first_labels_row.is_expanded()
+    assert not first_labels_row.detail_widget.isHidden()
+    assert widget.labels_cards[0].linked_table_combo.currentText() == "table"
+
+
+def test_viewer_widget_progressive_disclosure_actions_still_load_layers(qtbot, sdata_blobs) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata_blobs)
+
+    widget.images_section_toggle.click()
+    widget.image_rows[0].toggle_button.click()
+    widget.image_cards[0].add_update_button.click()
+
+    assert len(viewer.layers) == 1
+    assert viewer.layers[0].name == "blobs_image"
+
+    widget.labels_section_toggle.click()
+    widget.labels_rows[0].toggle_button.click()
+    widget.labels_cards[0].add_update_button.click()
+
+    assert len(viewer.layers) == 2
+    assert viewer.layers[1].name == "blobs_labels"
 
 
 def test_viewer_widget_labels_cards_expose_table_driven_coloring_controls(qtbot, sdata_blobs) -> None:
@@ -160,8 +294,9 @@ def test_viewer_widget_labels_cards_expose_table_driven_coloring_controls(qtbot,
     assert first_card.action_status_label.text() == "Action: add/update primary labels layer"
 
     first_card.color_source_kind_combo.setCurrentIndex(1)
-    assert not first_card.color_source_value_input.isEnabled()
-    assert first_card.action_status_label.text() == "Action: no colorable observation columns available"
+    assert first_card.color_source_value_input.isEnabled()
+    assert first_card.color_source_value_input.completer().model().stringList() == ["instance_id"]
+    assert first_card.action_status_label.text() == 'Action: add/update colored overlay for obs["instance_id"]'
 
     first_card.color_source_kind_combo.setCurrentIndex(2)
     assert first_card.color_source_value_input.isEnabled()
@@ -235,6 +370,7 @@ def test_viewer_widget_image_mode_toggles_are_mutually_exclusive(qtbot, sdata_bl
     assert image_card.stack_toggle.isChecked()
     assert not image_card.overlay_toggle.isChecked()
     assert image_card.channel_panel.isHidden()
+    assert image_card.channel_section_label.text() == "Channels"
     assert image_card.add_update_button.isEnabled()
 
     image_card.overlay_toggle.setChecked(True)
@@ -521,6 +657,29 @@ def test_viewer_widget_styled_overlay_missing_palette_uses_info_card(qtbot, sdat
     assert "no stored palette was present" in widget.action_feedback_label.text()
 
 
+def test_viewer_widget_styled_overlay_instance_key_uses_success_card(qtbot, sdata_blobs) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata_blobs)
+
+    first_card = widget.labels_cards[0]
+    first_card.color_source_kind_combo.setCurrentIndex(1)
+
+    first_card.add_update_button.click()
+
+    _assert_action_feedback_card(widget, title="Colored Overlay Created", kind="success")
+    assert 'Created colored overlay for obs["instance_id"]' in widget.action_feedback_label.text()
+    assert "Used instance label colors." in widget.action_feedback_label.text()
+    binding = widget.app_state.viewer_adapter.layer_bindings.get_binding(viewer.layers[0])
+    assert binding is not None
+    assert binding.style_spec is not None
+    assert binding.style_spec.value_kind == "instance"
+
+
 def test_viewer_widget_styled_overlay_invalid_palette_uses_warning_card(qtbot, sdata_blobs) -> None:
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)
@@ -578,6 +737,7 @@ def test_viewer_widget_styled_overlay_precondition_error_uses_error_card(qtbot, 
 
     first_card = widget.labels_cards[0]
     first_card.color_source_kind_combo.setCurrentIndex(1)
+    first_card.color_source_value_input.setText("not_a_column")
 
     first_card.add_update_button.click()
 
@@ -667,8 +827,8 @@ def test_viewer_widget_add_update_image_overlay_passes_selected_channels_and_col
     image_card.overlay_toggle.setChecked(True)
     image_card.channel_checkboxes[0].setChecked(True)
     image_card.channel_checkboxes[2].setChecked(True)
-    image_card.channel_color_combos[0].setCurrentText("#00FFFF")
-    image_card.channel_color_combos[2].setCurrentText("#FFA500")
+    image_card.channel_color_buttons[0].set_color("#00FFFF")
+    image_card.channel_color_buttons[2].set_color("#FFA500")
 
     image_card.add_update_button.click()
 

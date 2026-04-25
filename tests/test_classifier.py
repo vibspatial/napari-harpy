@@ -287,7 +287,7 @@ def test_classifier_controller_freeze_for_reload_cancels_pending_debounce(
     assert created_job_ids == []
     assert controller.is_training is False
     assert controller.is_dirty is True
-    assert controller.status_message == "Classifier: model is stale. Click Retrain to refresh predictions."
+    assert controller.status_message == "Classifier: model is stale. Click Train Classifier to refresh predictions."
 
 
 def test_classifier_controller_invalidates_pending_work_for_selected_feature_matrix_overwrite(

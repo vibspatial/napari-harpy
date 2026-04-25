@@ -46,9 +46,8 @@ from napari_harpy.widgets._shared_styles import (
     ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,
 )
 from napari_harpy.widgets._shared_styles import (
-    WIDGET_MIN_WIDTH as _WIDGET_MIN_WIDTH,
-)
-from napari_harpy.widgets._shared_styles import (
+    WIDGET_BORDER_COLOR,
+    WIDGET_PANEL_COLOR,
     CompactComboBox,
     StatusCardKind,
     apply_scroll_content_surface,
@@ -57,6 +56,9 @@ from napari_harpy.widgets._shared_styles import (
     create_form_label,
     format_tooltip,
     set_status_card,
+)
+from napari_harpy.widgets._shared_styles import (
+    WIDGET_MIN_WIDTH as _WIDGET_MIN_WIDTH,
 )
 
 if TYPE_CHECKING:
@@ -74,7 +76,8 @@ _APPLY_CLASS_SHORTCUT = "A"
 _REMOVE_CLASS_SHORTCUT = "R"
 _INPUT_CONTROL_STYLESHEET = build_input_control_stylesheet("QComboBox, QSpinBox")
 _CLASS_EDITOR_STYLESHEET = (
-    "QWidget#class_editor {background-color: #f8eeea; border: 1px solid #eadfd8; border-radius: 10px;}"
+    f"QWidget#class_editor {{background-color: {WIDGET_PANEL_COLOR}; "
+    f"border: 1px solid {WIDGET_BORDER_COLOR}; border-radius: 10px;}}"
 )
 
 
@@ -215,7 +218,7 @@ class ObjectClassificationWidget(QWidget):
         persistence_action_layout = QHBoxLayout(self.persistence_action_row)
         persistence_action_layout.setContentsMargins(0, 0, 0, 0)
         persistence_action_layout.setSpacing(8)
-        self.retrain_button = QPushButton("Retrain")
+        self.retrain_button = QPushButton("Train Classifier")
         self.retrain_button.setObjectName("retrain_button")
         self.retrain_button.clicked.connect(self._retrain_classifier)
         self.retrain_button.setEnabled(False)
@@ -309,9 +312,7 @@ class ObjectClassificationWidget(QWidget):
         content_layout.addStretch(1)
 
         self._app_state.sdata_changed.connect(self._on_sdata_changed)
-        self._app_state.viewer_adapter.primary_labels_layers_changed.connect(
-            self._on_primary_labels_layers_changed
-        )
+        self._app_state.viewer_adapter.primary_labels_layers_changed.connect(self._on_primary_labels_layers_changed)
         self._app_state.feature_matrix_written.connect(self._on_feature_matrix_written)
         self.refresh_from_sdata(self._app_state.sdata)
 
@@ -1161,17 +1162,17 @@ class ObjectClassificationWidget(QWidget):
         self.retrain_button.setEnabled(can_retrain)
 
         if self.selected_spatialdata is None or self.selected_table_name is None:
-            tooltip = "Choose a segmentation and annotation table to enable retraining."
+            tooltip = "Choose a segmentation and annotation table to enable classifier training."
         elif self._table_binding_error is not None:
             tooltip = self._table_binding_error
         elif self.selected_feature_key is None:
-            tooltip = "Choose a feature matrix before retraining the classifier."
+            tooltip = "Choose a feature matrix before training the classifier."
         elif self._classifier_controller.is_training:
-            tooltip = "A classifier retraining job is currently running."
+            tooltip = "A classifier training job is currently running."
         elif self._classifier_controller.is_dirty:
-            tooltip = "The classifier model is stale. Click to retrain and refresh predictions."
+            tooltip = "The classifier model is stale. Click Train Classifier to refresh predictions."
         else:
-            tooltip = "Retrain the classifier using the current annotations and feature matrix."
+            tooltip = "Train the classifier using the current annotations and feature matrix."
 
         self._set_tooltip(self.retrain_button, tooltip)
 
@@ -1272,8 +1273,8 @@ class ObjectClassificationWidget(QWidget):
         warning_card.setStyleSheet(
             "font-weight: 500; "
             "color: #b45309; "
-            "background-color: #fff7ed; "
-            "border: 1px solid #fdba74; "
+            "background-color: #fffbeb; "
+            "border: 1px solid #fde68a; "
             "border-radius: 10px; "
             "padding: 12px 14px;"
         )
@@ -1298,13 +1299,13 @@ class ObjectClassificationWidget(QWidget):
         )
         discard_button.setStyleSheet(
             "QPushButton {"
-            "background-color: #fff7ed; "
+            "background-color: #fffbeb; "
             "color: #9a3412; "
-            "border: 1px solid #fdba74; "
+            "border: 1px solid #fde68a; "
             "border-radius: 6px; "
             "padding: 7px 14px; "
             "font-weight: 600;}"
-            "QPushButton:hover { background-color: #ffedd5; }"
+            "QPushButton:hover { background-color: #fef3c7; }"
         )
         cancel_button.setStyleSheet(
             "QPushButton {"
@@ -1374,7 +1375,7 @@ class ObjectClassificationWidget(QWidget):
         self._update_classifier_controls()
 
     def _retrain_classifier(self) -> None:
-        self._classifier_controller.mark_dirty(reason="the user requested a retrain")
+        self._classifier_controller.mark_dirty(reason="the user requested classifier training")
         self._classifier_controller.retrain_now()
         self._update_selection_status()
 

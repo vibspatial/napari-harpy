@@ -26,11 +26,12 @@ ImageDisplayMode = Literal["stack", "overlay"]
 DEFAULT_OVERLAY_COLORS = (
     "#00FFFF",  # cyan
     "#FF00FF",  # magenta
+    "#FFFF00",  # yellow
+    "#00FF7F",  # green
+    "#FF5050",  # red
+    "#1E90FF",  # blue
     "#FFA500",  # orange
-    "#ADFF2F",  # green-yellow
-    "#FF5050",  # light red
-    "#7B68EE",  # medium slate blue
-    "#FF1493",  # deep pink
+    "#9370DB",  # purple
 )
 
 

@@ -42,12 +42,9 @@ from napari_harpy.widgets._shared_styles import (
     CHECKBOX_STYLESHEET as _FEATURE_CHECKBOX_STYLESHEET,
 )
 from napari_harpy.widgets._shared_styles import (
-    WIDGET_MIN_WIDTH as _WIDGET_MIN_WIDTH,
-)
-from napari_harpy.widgets._shared_styles import (
-    WIDGET_SURFACE_COLOR as _WIDGET_SURFACE_COLOR,
-)
-from napari_harpy.widgets._shared_styles import (
+    WIDGET_BORDER_COLOR,
+    WIDGET_PANEL_COLOR,
+    WIDGET_TEXT_SECONDARY_COLOR,
     CompactComboBox,
     StatusCardKind,
     apply_scroll_content_surface,
@@ -58,6 +55,12 @@ from napari_harpy.widgets._shared_styles import (
     format_tooltip,
     set_status_card,
 )
+from napari_harpy.widgets._shared_styles import (
+    WIDGET_MIN_WIDTH as _WIDGET_MIN_WIDTH,
+)
+from napari_harpy.widgets._shared_styles import (
+    WIDGET_SURFACE_COLOR as _WIDGET_SURFACE_COLOR,
+)
 
 if TYPE_CHECKING:
     import napari
@@ -67,17 +70,17 @@ if TYPE_CHECKING:
 _INPUT_CONTROL_STYLESHEET = build_input_control_stylesheet("QComboBox, QLineEdit")
 _FEATURE_GROUP_STYLESHEET = (
     "QGroupBox {"
-    "background-color: #f8eeea; "
-    "border: 1px solid #eadfd8; "
+    f"background-color: {WIDGET_PANEL_COLOR}; "
+    f"border: 1px solid {WIDGET_BORDER_COLOR}; "
     "border-radius: 10px; "
-    "color: #374151; "
+    f"color: {WIDGET_TEXT_SECONDARY_COLOR}; "
     "font-weight: 600; "
     "margin-top: 10px; "
     "padding: 12px 12px 10px 12px;}"
     "QGroupBox::title {"
     "subcontrol-origin: margin; "
     "left: 12px; "
-    f"padding: 0 6px; color: #374151; background-color: {_WIDGET_SURFACE_COLOR};"
+    f"padding: 0 6px; color: {WIDGET_TEXT_SECONDARY_COLOR}; background-color: {_WIDGET_SURFACE_COLOR};"
     "}"
 )
 _FEATURE_HINT_INFO_STYLESHEET = "color: #6b7280; font-size: 12px; font-weight: 500;"
@@ -101,6 +104,7 @@ _MORPHOLOGY_FEATURES = (
 )
 _DEFAULT_FEATURE_MATRIX_KEY = "features"
 _MAX_VISIBLE_EXTRACTION_CHANNELS = 5
+_FEATURE_GROUPS_TOP_SPACING = 12
 ImageIdentity = tuple[int, str]
 
 
@@ -299,6 +303,7 @@ class FeatureExtractionWidget(QWidget):
 
         content_layout.addWidget(title)
         content_layout.addLayout(selector_layout)
+        content_layout.addSpacing(_FEATURE_GROUPS_TOP_SPACING)
         content_layout.addWidget(self.intensity_features_group)
         content_layout.addWidget(self.morphology_features_group)
         content_layout.addWidget(self.calculate_action_row)
@@ -530,7 +535,9 @@ class FeatureExtractionWidget(QWidget):
             for option in self._image_options:
                 self.image_combo.addItem(option.display_name)
 
-            self.image_combo.setEnabled(self.selected_spatialdata is not None and self.selected_coordinate_system is not None)
+            self.image_combo.setEnabled(
+                self.selected_spatialdata is not None and self.selected_coordinate_system is not None
+            )
 
             next_index = self._find_image_option_index(previous_identity)
             if self.image_combo.count() == 1:
@@ -783,8 +790,8 @@ class FeatureExtractionWidget(QWidget):
         warning_card.setStyleSheet(
             "font-weight: 500; "
             "color: #b45309; "
-            "background-color: #fff7ed; "
-            "border: 1px solid #fdba74; "
+            "background-color: #fffbeb; "
+            "border: 1px solid #fde68a; "
             "border-radius: 10px; "
             "padding: 12px 14px;"
         )
@@ -961,7 +968,9 @@ class FeatureExtractionWidget(QWidget):
 
         segmentation_name, segmentation_shortened = format_feedback_identifier(self.selected_segmentation_name)
         table_name, table_shortened = format_feedback_identifier(self.selected_table_name)
-        coordinate_system_name, coordinate_system_shortened = format_feedback_identifier(self.selected_coordinate_system)
+        coordinate_system_name, coordinate_system_shortened = format_feedback_identifier(
+            self.selected_coordinate_system
+        )
 
         shortened = [segmentation_shortened, table_shortened, coordinate_system_shortened]
         tooltip_lines = [

@@ -293,7 +293,7 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_bl
     assert "adata" not in layer.metadata
     assert widget.selected_instance_id is None
     assert all(button.text() != "Rescan Viewer" for button in widget.findChildren(type(widget.retrain_button)))
-    assert widget.retrain_button.text() == "Retrain"
+    assert widget.retrain_button.text() == "Train Classifier"
     assert widget.sync_button.text() == "Write"
     assert widget.reload_button.text() == "Reload"
     assert not widget.sync_button.isEnabled()
@@ -1438,7 +1438,7 @@ def test_widget_retrain_button_recovers_after_worker_finishes(qtbot, monkeypatch
     qtbot.waitUntil(lambda: widget.retrain_button.isEnabled(), timeout=1000)
 
     assert "currently running" not in widget.retrain_button.toolTip()
-    assert "Retrain the classifier using the current annotations and feature matrix." in widget.retrain_button.toolTip()
+    assert "Train the classifier using the current annotations and feature matrix." in widget.retrain_button.toolTip()
     assert "model is up to date" in widget.classifier_feedback.text()
 
 
