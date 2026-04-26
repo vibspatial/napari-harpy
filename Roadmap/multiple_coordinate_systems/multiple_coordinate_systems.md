@@ -175,8 +175,12 @@ Recommended behavior:
 - annotation writes update the shared AnnData table rows for the active
   segmentation region;
 - table lookup continues to use `region_key` and `instance_key`;
-- classifier training can use labeled rows from the whole selected table;
-- classifier prediction scope should be configurable in the UI.
+- classifier training should use labeled rows from the whole selected table by
+  default;
+- classifier prediction / inference should update only the active segmentation
+  region by default;
+- complete-table prediction should be available, but it should be an explicit
+  user action or setting because it can touch many hidden rows.
 
 The first version should keep the interaction sample-by-sample:
 
@@ -190,25 +194,26 @@ The first version should keep the interaction sample-by-sample:
 This avoids showing multiple samples in the viewer while still allowing the
 table to accumulate annotations across samples.
 
-Open design question:
+Scope recommendation:
 
-- Should classifier prediction be table-wide by default, or scoped to the active
-  segmentation region?
+- training data default: all labeled rows in the selected table;
+- prediction scope default: active segmentation / visible sample only;
+- optional prediction scope: all eligible rows in the selected table.
 
-Recommendation for now:
+This keeps training semantically table-level while keeping inference responsive
+and viewer-local by default. It also avoids accidentally launching a large
+complete-table prediction from an interactive retrain action.
 
-- training can use the whole selected table by default;
-- prediction scope should be an explicit object-classification setting;
-- the first UI can offer:
-  - active segmentation only
-  - all regions in selected table
-- default to active segmentation only if we want the safer viewer-local behavior;
-- default to all regions if we want the classifier to behave as a table-level
-  batch prediction tool.
+The UI should make both scopes and row counts visible before predictions are
+generated. For example:
 
-The UI setting should make the write scope visible before predictions are
-generated, because table-wide prediction can modify rows that are not currently
-visible in the viewer.
+```text
+Training: 182 labeled rows across 4 regions
+Prediction: 12,440 rows in active region
+```
+
+When complete-table prediction is selected, the UI should communicate that rows
+outside the currently visible coordinate system may be updated.
 
 ## App-State Signal
 
@@ -596,7 +601,7 @@ Acceptance:
 - no feature extraction run accidentally pairs a labels element with an image
   from a different coordinate system.
 
-### 8. Add object-classification prediction-scope setting
+### 8. Add object-classification training and prediction scopes
 
 Files:
 
@@ -607,21 +612,28 @@ Files:
 
 Work:
 
-- add a prediction-scope UI control to `ObjectClassificationWidget`;
-- support at least:
-  - active segmentation only
-  - all regions in selected table
-- make the selected scope part of the classifier/controller binding;
+- add training-scope and prediction-scope controls to
+  `ObjectClassificationWidget`;
+- default training scope to all labeled rows in the selected table;
+- default prediction scope to active segmentation only;
+- support complete-table prediction as an explicit non-default option;
+- make the selected scopes part of the classifier/controller binding;
+- surface row counts for the current training and prediction scopes before
+  launching a classifier job;
 - ensure active-region prediction only writes rows matching the selected
   `region_key`;
-- ensure table-wide prediction can still use labels from all regions while
-  writing predictions for all eligible table rows;
+- ensure complete-table prediction writes predictions for all eligible table
+  rows;
 - surface status text that makes the current write scope clear.
 
 Acceptance:
 
+- classifier training uses all eligible labeled rows from the selected table by
+  default;
+- classifier prediction defaults to the active sample / segmentation region;
 - users can choose whether classifier predictions update only the active sample
   / segmentation or the whole selected table;
+- the UI shows training and prediction row counts before launching work;
 - active-region prediction does not modify prediction columns for other table
   regions, except where existing classifier metadata explicitly requires a
   reset;
@@ -653,9 +665,10 @@ Acceptance:
 4. For object classification, should classifier prediction be table-wide or
    active-region-only when the table spans multiple samples?
 
-   Recommendation: make this configurable in the object-classification UI.
-   Prediction write scope should be explicit because table-wide prediction can
-   update rows that are not currently visible.
+   Recommendation: default training to all labeled rows in the selected table,
+   but default prediction to the active region. Complete-table prediction should
+   be available as an explicit option because it can update rows that are not
+   currently visible and can be slow for large tables.
 
 ## Summary
 
