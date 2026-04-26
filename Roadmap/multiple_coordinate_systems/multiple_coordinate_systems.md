@@ -134,12 +134,13 @@ Important behavior:
 - do not run a Cartesian product of all selected labels and all selected images;
 - require an explicit labels/image pairing per coordinate system;
 - when a labels region is selected, filter image choices to images that are
-  aligned with that labels element: same spatial shape and same transformation
-  in the target coordinate system;
+  aligned with that labels element: same spatial shape, ignoring the image
+  channel axis, and same effective transform in the target coordinate system;
 - filter out labels/image pairs whose transformations are unsupported by
   Harpy feature extraction. At the time of writing, feature extraction only
-  supports coordinate-system mappings made of identity, translation, or a
-  sequence of translations;
+  supports transforms that resolve to pure `x` / `y` translation. This includes
+  identity, translation, a sequence of translations, and affine transforms whose
+  affine matrix is equivalent to pure `x` / `y` translation;
 - validate that each selected labels element is actually annotated by the table;
 - validate duplicate `instance_key` values within each `region_key` region, not
   globally across the entire table;
@@ -576,12 +577,15 @@ Work:
 - for each `(region, coordinate_system)`, list candidate images registered in
   the same coordinate system;
 - add an image eligibility helper for feature extraction that checks:
-  same spatial shape as the labels element, same transformation in the selected
-  coordinate system, and a Harpy-supported transformation chain;
+  same spatial shape as the labels element while ignoring the image channel axis,
+  same effective transform in the selected coordinate system, and a
+  Harpy-supported transform that resolves to pure `x` / `y` translation;
 - model a batch extraction request as explicit per-region targets, not as
   independent labels/image selections;
-- run feature extraction target by target as one explicit user request and write
-  into the same table;
+- make one multi-target Harpy feature-extraction call by passing lists of
+  `labels_layer`, `img_layer`, and `to_coordinate_system`, so the table is
+  populated by one explicit batch operation rather than through repeated
+  single-region writes;
 - keep row alignment based on `region_key` and `instance_key`.
 
 Acceptance:
@@ -591,7 +595,10 @@ Acceptance:
 - each feature-extraction target has one labels element and zero or one image
   in the same coordinate system;
 - image selectors only show images that are aligned with the selected labels
-  element and whose transformations are supported by Harpy feature extraction;
+  element and whose transforms resolve to pure `x` / `y` translation supported
+  by Harpy feature extraction;
+- multi-region feature extraction is submitted through one multi-target Harpy
+  call, not as user-visible incremental filling of the same feature matrix;
 - duplicate instance ids are rejected within a region, but the same instance id
   can appear in another region;
 - users can select multiple labels regions and choose the aligned image for each
@@ -618,6 +625,21 @@ Work:
 - default prediction scope to active segmentation only;
 - support complete-table prediction as an explicit non-default option;
 - make the selected scopes part of the classifier/controller binding;
+- define classifier-eligible rows explicitly:
+  valid row in the selected feature matrix, finite/non-missing feature values,
+  valid `region_key` and `instance_key` values, and, for training, a user class
+  other than the unlabeled sentinel;
+- extend classifier metadata stored in `table.uns[CLASSIFIER_CONFIG_KEY]` with
+  scope and count information:
+  - `training_scope`: the selected training mode;
+  - `training_regions`: all segmentation masks whose labeled rows were used for
+    training;
+  - `n_training_rows`: number of eligible rows used for fitting;
+  - `prediction_scope`: the table name the classifier predictions were written
+    into;
+  - `prediction_regions`: all segmentation masks whose rows were updated by the
+    classifier run;
+  - `n_predicted_rows`: number of eligible rows updated by inference;
 - surface row counts for the current training and prediction scopes before
   launching a classifier job;
 - ensure active-region prediction only writes rows matching the selected
@@ -631,8 +653,13 @@ Acceptance:
 - classifier training uses all eligible labeled rows from the selected table by
   default;
 - classifier prediction defaults to the active sample / segmentation region;
+- eligible classifier rows exclude rows whose selected feature-matrix values are
+  missing or non-finite, which matters when a multi-region feature matrix still
+  contains `NaN` values for regions that have not been extracted;
 - users can choose whether classifier predictions update only the active sample
   / segmentation or the whole selected table;
+- classifier metadata records training scope, training regions, training row
+  count, prediction table, prediction regions, and predicted row count;
 - the UI shows training and prediction row counts before launching work;
 - active-region prediction does not modify prediction columns for other table
   regions, except where existing classifier metadata explicitly requires a
