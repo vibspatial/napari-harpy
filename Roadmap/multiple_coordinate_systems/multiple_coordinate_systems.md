@@ -109,7 +109,8 @@ The intended workflow should be:
 1. user selects an AnnData table;
 2. Harpy reads the table metadata and discovers all annotated labels regions;
 3. Harpy derives candidate extraction targets from those regions;
-4. for each target, Harpy offers images available in the same coordinate system;
+4. for each target, Harpy offers only images that are eligible for feature
+   extraction with that labels region;
 5. user confirms which targets to calculate;
 6. Harpy runs feature extraction per target;
 7. Harpy writes all features back into the same AnnData table, aligned by
@@ -118,14 +119,34 @@ The intended workflow should be:
 This means the table remains the authoritative cross-sample object table, while
 feature extraction becomes a batch of per-region jobs.
 
+The current single-region implementation can technically incrementally fill a
+shared multi-region AnnData table: Harpy writes a full `.obsm[feature_key]`
+matrix, updates rows whose `region_key` matches the selected segmentation, and
+leaves other regions as existing values or `NaN`. Treat that as an implementation
+capability, not the intended napari-harpy UX. The feature-extraction widget
+should not encourage users to build a cross-sample feature matrix through
+repeated single-region writes. Instead, the supported cross-sample workflow
+should let users select multiple labels regions, choose the aligned image for
+each region, and run one explicit multi-region extraction request.
+
 Important behavior:
 
 - do not run a Cartesian product of all selected labels and all selected images;
 - require an explicit labels/image pairing per coordinate system;
+- when a labels region is selected, filter image choices to images that are
+  aligned with that labels element: same spatial shape and same transformation
+  in the target coordinate system;
+- filter out labels/image pairs whose transformations are unsupported by
+  Harpy feature extraction. At the time of writing, feature extraction only
+  supports coordinate-system mappings made of identity, translation, or a
+  sequence of translations;
 - validate that each selected labels element is actually annotated by the table;
 - validate duplicate `instance_key` values within each `region_key` region, not
   globally across the entire table;
-- write feature rows back to the matching table rows for that labels region.
+- write feature rows back to the matching table rows for each selected labels
+  region;
+- avoid presenting incremental single-region filling as the supported way to
+  populate a shared multi-region feature matrix.
 
 Suggested UI direction:
 
@@ -134,8 +155,11 @@ Suggested UI direction:
 - in batch mode, show a target list grouped by coordinate system;
 - each row represents one labels region and its selected image;
 - default image selection can be inferred only when exactly one registered image
-  is available for that labels region's coordinate system;
-- otherwise require the user to choose the image for that target.
+  is eligible for that labels region's coordinate system;
+- otherwise require the user to choose the image for that target;
+- if no eligible image exists for a labels region, show that target as
+  unavailable with a short reason rather than allowing a calculation that Harpy
+  will reject.
 
 ## Object Classification With Cross-Sample Tables
 
@@ -546,9 +570,13 @@ Work:
 - for each labels region, derive available coordinate systems;
 - for each `(region, coordinate_system)`, list candidate images registered in
   the same coordinate system;
+- add an image eligibility helper for feature extraction that checks:
+  same spatial shape as the labels element, same transformation in the selected
+  coordinate system, and a Harpy-supported transformation chain;
 - model a batch extraction request as explicit per-region targets, not as
   independent labels/image selections;
-- run feature extraction target by target and write into the same table;
+- run feature extraction target by target as one explicit user request and write
+  into the same table;
 - keep row alignment based on `region_key` and `instance_key`.
 
 Acceptance:
@@ -557,8 +585,14 @@ Acceptance:
   coordinate systems;
 - each feature-extraction target has one labels element and zero or one image
   in the same coordinate system;
+- image selectors only show images that are aligned with the selected labels
+  element and whose transformations are supported by Harpy feature extraction;
 - duplicate instance ids are rejected within a region, but the same instance id
   can appear in another region;
+- users can select multiple labels regions and choose the aligned image for each
+  region before running feature extraction;
+- the widget does not present repeated single-region writes as the supported
+  cross-sample feature-matrix workflow;
 - no feature extraction run accidentally pairs a labels element with an image
   from a different coordinate system.
 
