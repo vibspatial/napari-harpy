@@ -280,6 +280,8 @@ Concretely, when switching to `next_coordinate_system`:
 - keep registered layers where `binding.coordinate_system == next_coordinate_system`;
 - if the new coordinate system is `None`, remove all Harpy-managed layers for
   the active `sdata`;
+- when replacing or clearing `sdata`, remove all Harpy-managed layers whose
+  binding belongs to the previous `sdata`;
 - leave unregistered napari layers alone.
 
 The last point is important. Harpy should only remove layers it owns through
@@ -318,7 +320,7 @@ def remove_layers_outside_coordinate_system(
     ...
 ```
 
-and possibly:
+and:
 
 ```python
 def remove_layers_for_sdata(self, sdata: SpatialData | None) -> list[LayerBinding]:
@@ -407,12 +409,31 @@ Recommended policy:
 - `set_sdata(new_sdata)` clears the active coordinate system if the previous
   coordinate system is not available in `new_sdata`;
 - when `sdata` is cleared, active coordinate system becomes `None`;
-- when `sdata` changes, remove Harpy-managed layers from the previous dataset;
+- when `sdata` changes, remove all Harpy-managed napari layers from the previous
+  dataset by using the registry's `sdata_id` binding metadata;
 - widgets choose the first available coordinate system only when app state has
   no valid active coordinate system.
 
+The cleanup must happen before `sdata_changed` is emitted. Widgets already listen
+to `sdata_changed` and immediately refresh/rebind local UI and controllers, so
+`HarpyAppState.set_sdata(...)` or an adjacent app-state-owned helper should
+first prune old registered layers and clear or revalidate the shared coordinate
+system, then assign `self.sdata`, then emit `sdata_changed(new_sdata)`.
+
+Recommended first-version order:
+
+1. keep `old_sdata = self.sdata`;
+2. remove Harpy-managed layers for `old_sdata` through
+   `viewer_adapter.remove_layers_for_sdata(old_sdata)`;
+3. clear the shared active coordinate system to `None`;
+4. assign `self.sdata = new_sdata`;
+5. emit `sdata_changed(new_sdata)`;
+6. let widgets repopulate choices and publish the first valid coordinate system
+   only when app state still has no active coordinate system.
+
 This keeps `HarpyAppState` from owning coordinate-system discovery details while
-still keeping the active coordinate system coherent.
+still ensuring widgets never rebind against stale napari layers or stale
+coordinate-system state.
 
 Possible first-version simplification:
 
@@ -439,14 +460,16 @@ Work:
 - add `coordinate_system_changed = Signal(object)`;
 - add `self.coordinate_system`;
 - add `set_coordinate_system(...)` and `clear_coordinate_system(...)`;
-- decide whether `set_sdata(...)` clears coordinate system immediately or lets
-  widgets revalidate it.
+- make `set_sdata(...)` remove Harpy-managed layers for the previous `sdata`
+  and clear shared coordinate-system state before emitting `sdata_changed`.
 
 Acceptance:
 
 - setting a new coordinate system emits one event;
 - setting the same coordinate system is a no-op;
 - clearing `sdata` clears coordinate system;
+- replacing or clearing `sdata` removes registered napari layers belonging to
+  the previous `sdata`;
 - event contains previous and next coordinate systems.
 
 ### 2. Add viewer-layer pruning by coordinate system
@@ -459,9 +482,12 @@ Files:
 Work:
 
 - add `remove_layers_outside_coordinate_system(...)`;
+- add `remove_layers_for_sdata(...)`;
 - add focused tests with image, primary labels, and styled labels bindings;
 - verify matching-coordinate layers remain;
 - verify nonmatching-coordinate layers are removed and unregistered;
+- verify all registered layers for a removed/replaced `sdata` are removed and
+  unregistered;
 - verify unregistered layers are not touched.
 
 Acceptance:
