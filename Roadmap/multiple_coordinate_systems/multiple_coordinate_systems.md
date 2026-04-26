@@ -269,6 +269,12 @@ The event should be emitted before pruning layers so widgets can first update
 their local selection state. This avoids object classification reacting to old
 layer removals while it still thinks the old coordinate system is selected.
 
+Signal/pruning order for a coordinate-system-only switch:
+
+1. update `app_state.coordinate_system`;
+2. emit `coordinate_system_changed`;
+3. prune Harpy-managed layers outside the new coordinate system.
+
 ## Layer Removal Policy
 
 On coordinate-system switch, Harpy should remove Harpy-managed layers whose
@@ -417,19 +423,33 @@ Recommended policy:
 The cleanup must happen before `sdata_changed` is emitted. Widgets already listen
 to `sdata_changed` and immediately refresh/rebind local UI and controllers, so
 `HarpyAppState.set_sdata(...)` or an adjacent app-state-owned helper should
-first prune old registered layers and clear or revalidate the shared coordinate
-system, then assign `self.sdata`, then emit `sdata_changed(new_sdata)`.
+first prune old registered layers and clear the shared coordinate system, then
+assign `self.sdata`, then emit `sdata_changed(new_sdata)`.
 
 Recommended first-version order:
 
 1. keep `old_sdata = self.sdata`;
-2. remove Harpy-managed layers for `old_sdata` through
+2. keep `old_coordinate_system = self.coordinate_system`;
+3. remove Harpy-managed layers for `old_sdata` through
    `viewer_adapter.remove_layers_for_sdata(old_sdata)`;
-3. clear the shared active coordinate system to `None`;
-4. assign `self.sdata = new_sdata`;
-5. emit `sdata_changed(new_sdata)`;
-6. let widgets repopulate choices and publish the first valid coordinate system
+4. clear the shared active coordinate system to `None`;
+5. emit `coordinate_system_changed` with a `CoordinateSystemChangedEvent` whose
+   `coordinate_system` is `None`, if `old_coordinate_system` was not already
+   `None`;
+6. assign `self.sdata = new_sdata`;
+7. emit `sdata_changed(new_sdata)`;
+8. let widgets repopulate choices and publish the first valid coordinate system
    only when app state still has no active coordinate system.
+
+In short:
+
+```text
+coordinate-system switch:
+    coordinate_system_changed -> prune old-coordinate layers
+
+sdata switch:
+    prune old-sdata layers -> coordinate_system_changed(event.coordinate_system=None) -> sdata_changed(new_sdata)
+```
 
 This keeps `HarpyAppState` from owning coordinate-system discovery details while
 still ensuring widgets never rebind against stale napari layers or stale
