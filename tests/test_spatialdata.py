@@ -16,10 +16,13 @@ from napari_harpy._spatialdata import (
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
     get_image_channel_names_from_sdata,
+    get_spatialdata_feature_extraction_label_options_for_coordinate_system_from_sdata,
     get_spatialdata_image_options_for_coordinate_system_from_sdata,
     get_spatialdata_label_options_for_coordinate_system_from_sdata,
     get_spatialdata_label_options_from_sdata,
+    get_spatialdata_matching_image_options_for_coordinate_system_and_label_from_sdata,
     get_table,
+    get_table_annotated_label_names,
     get_table_color_source_options,
     get_table_metadata,
     get_table_obs_color_source_options,
@@ -27,7 +30,9 @@ from napari_harpy._spatialdata import (
     get_table_x_var_color_source_options,
     normalize_table_metadata,
     refresh_layer_table_metadata,
+    validate_table_annotation_coverage,
     validate_table_binding,
+    validate_table_region_instance_ids,
 )
 
 
@@ -45,6 +50,25 @@ def make_blobs_image_layer(sdata: SpatialData, image_name: str = "blobs_image") 
         name=image_name,
         metadata={"sdata": sdata, "name": image_name},
     )
+
+
+class DummySpatialData:
+    def __init__(self, *, labels=None, images=None, tables=None) -> None:
+        self.labels = {} if labels is None else labels
+        self.images = {} if images is None else images
+        self._tables = {} if tables is None else tables
+
+    def __getitem__(self, key: str):
+        return self._tables[key]
+
+
+class FakeTransform:
+    def __init__(self, matrix: np.ndarray | list[list[float]]) -> None:
+        self._matrix = np.asarray(matrix, dtype=float)
+
+    def to_affine_matrix(self, *, input_axes, output_axes):
+        assert input_axes == output_axes
+        return self._matrix
 
 
 def test_get_annotating_table_names_returns_tables_for_annotated_label(sdata_blobs: SpatialData) -> None:
@@ -171,6 +195,107 @@ def test_validate_table_binding_rejects_duplicate_instance_ids_within_selected_r
         validate_table_binding(sdata_blobs, "blobs_labels", "table")
 
 
+def test_get_table_annotated_label_names_returns_sorted_regions_for_multi_region_table(
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs["table"].copy()
+    table.obs["region"] = table.obs["region"].cat.add_categories(["blobs_multiscale_labels"])
+    table.obs.loc[table.obs.index[0], "region"] = "blobs_multiscale_labels"
+    table.uns[TableModel.ATTRS_KEY] = {
+        **table.uns[TableModel.ATTRS_KEY],
+        TableModel.REGION_KEY: ["blobs_multiscale_labels", "blobs_labels"],
+    }
+    fake_sdata = DummySpatialData(
+        labels={
+            "blobs_labels": sdata_blobs.labels["blobs_labels"],
+            "blobs_multiscale_labels": sdata_blobs.labels["blobs_multiscale_labels"],
+        },
+        tables={"table": table},
+    )
+
+    assert get_table_annotated_label_names(fake_sdata, "table") == ["blobs_labels", "blobs_multiscale_labels"]
+
+
+def test_get_table_annotated_label_names_rejects_invalid_regions(sdata_blobs: SpatialData) -> None:
+    table = sdata_blobs["table"].copy()
+    table.obs["region"] = table.obs["region"].cat.add_categories(["missing_labels"])
+    table.obs.loc[table.obs.index[0], "region"] = "missing_labels"
+    table.uns[TableModel.ATTRS_KEY] = {
+        **table.uns[TableModel.ATTRS_KEY],
+        TableModel.REGION_KEY: ["blobs_labels", "missing_labels"],
+    }
+    fake_sdata = DummySpatialData(
+        labels={"blobs_labels": sdata_blobs.labels["blobs_labels"]},
+        tables={"table": table},
+    )
+
+    with pytest.raises(ValueError, match="missing_labels"):
+        get_table_annotated_label_names(fake_sdata, "table")
+
+
+def test_validate_table_annotation_coverage_rejects_unannotated_regions(sdata_blobs: SpatialData) -> None:
+    table = sdata_blobs["table"].copy()
+    fake_sdata = DummySpatialData(
+        labels={
+            "blobs_labels": sdata_blobs.labels["blobs_labels"],
+            "blobs_multiscale_labels": sdata_blobs.labels["blobs_multiscale_labels"],
+        },
+        tables={"table": table},
+    )
+
+    with pytest.raises(ValueError, match="does not annotate segmentation region\\(s\\) `blobs_multiscale_labels`"):
+        validate_table_annotation_coverage(fake_sdata, "table", ["blobs_multiscale_labels"])
+
+
+def test_validate_table_region_instance_ids_allows_duplicate_instance_ids_across_regions(
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs["table"].copy()
+    table.obs["region"] = table.obs["region"].cat.add_categories(["blobs_multiscale_labels"])
+    table.uns[TableModel.ATTRS_KEY] = {
+        **table.uns[TableModel.ATTRS_KEY],
+        TableModel.REGION_KEY: ["blobs_labels", "blobs_multiscale_labels"],
+    }
+    first_index, second_index = table.obs.index[:2]
+    table.obs.loc[second_index, "region"] = "blobs_multiscale_labels"
+    table.obs.loc[second_index, "instance_id"] = table.obs.loc[first_index, "instance_id"]
+    fake_sdata = DummySpatialData(
+        labels={
+            "blobs_labels": sdata_blobs.labels["blobs_labels"],
+            "blobs_multiscale_labels": sdata_blobs.labels["blobs_multiscale_labels"],
+        },
+        tables={"table": table},
+    )
+
+    metadata = validate_table_region_instance_ids(fake_sdata, "table")
+
+    assert metadata.regions == ("blobs_labels", "blobs_multiscale_labels")
+
+
+def test_validate_table_region_instance_ids_rejects_duplicates_with_region_specific_message(
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs["table"].copy()
+    table.obs["region"] = table.obs["region"].cat.add_categories(["blobs_multiscale_labels"])
+    table.uns[TableModel.ATTRS_KEY] = {
+        **table.uns[TableModel.ATTRS_KEY],
+        TableModel.REGION_KEY: ["blobs_labels", "blobs_multiscale_labels"],
+    }
+    first_index, second_index = table.obs.index[:2]
+    table.obs.loc[[first_index, second_index], "region"] = "blobs_multiscale_labels"
+    table.obs.loc[second_index, "instance_id"] = table.obs.loc[first_index, "instance_id"]
+    fake_sdata = DummySpatialData(
+        labels={
+            "blobs_labels": sdata_blobs.labels["blobs_labels"],
+            "blobs_multiscale_labels": sdata_blobs.labels["blobs_multiscale_labels"],
+        },
+        tables={"table": table},
+    )
+
+    with pytest.raises(ValueError, match="segmentation region `blobs_multiscale_labels`"):
+        validate_table_region_instance_ids(fake_sdata, "table")
+
+
 def test_normalize_table_metadata_normalizes_numpy_array_region_attrs_in_place(sdata_blobs: SpatialData) -> None:
     table = sdata_blobs["table"]
     table.uns[TableModel.ATTRS_KEY] = {
@@ -183,6 +308,7 @@ def test_normalize_table_metadata_normalizes_numpy_array_region_attrs_in_place(s
 
     assert validated is table
     assert table.uns[TableModel.ATTRS_KEY][TableModel.REGION_KEY] == ["blobs_labels"]
+
 
 def test_get_spatialdata_label_options_from_sdata_returns_all_labels(sdata_blobs: SpatialData) -> None:
     options = get_spatialdata_label_options_from_sdata(sdata_blobs)
@@ -292,6 +418,87 @@ def test_get_spatialdata_image_options_for_coordinate_system_from_sdata_filters_
 
     assert [option.image_name for option in options] == ["blobs_image"]
     assert options[0].coordinate_systems == ("aligned", "global")
+
+
+def test_get_spatialdata_feature_extraction_label_options_for_coordinate_system_filters_to_translation_compatible_labels(
+    monkeypatch,
+) -> None:
+    eligible_alpha = DataArray(np.zeros((4, 5), dtype=np.int32), dims=("y", "x"))
+    eligible_beta = DataArray(np.zeros((4, 5), dtype=np.int32), dims=("y", "x"))
+    rotated = DataArray(np.zeros((4, 5), dtype=np.int32), dims=("y", "x"))
+    scaled = DataArray(np.zeros((4, 5), dtype=np.int32), dims=("y", "x"))
+    fake_sdata = DummySpatialData(
+        labels={
+            "scaled": scaled,
+            "eligible_beta": eligible_beta,
+            "rotated": rotated,
+            "eligible_alpha": eligible_alpha,
+        }
+    )
+    transformation_by_id = {
+        id(eligible_alpha): {"global": FakeTransform([[1, 0, 3], [0, 1, -2], [0, 0, 1]])},
+        id(eligible_beta): {"global": FakeTransform([[1, 0, 0], [0, 1, 0], [0, 0, 1]])},
+        id(rotated): {"global": FakeTransform([[0, -1, 0], [1, 0, 0], [0, 0, 1]])},
+        id(scaled): {"global": FakeTransform([[2, 0, 0], [0, 1, 0], [0, 0, 1]])},
+    }
+
+    def _fake_get_transformation(element, get_all: bool = False):
+        del get_all
+        return transformation_by_id[id(element)]
+
+    monkeypatch.setattr(spatialdata_module, "get_transformation", _fake_get_transformation)
+
+    options = get_spatialdata_feature_extraction_label_options_for_coordinate_system_from_sdata(
+        sdata=fake_sdata,
+        coordinate_system="global",
+    )
+
+    assert [option.label_name for option in options] == ["eligible_alpha", "eligible_beta"]
+
+
+def test_get_spatialdata_matching_image_options_for_coordinate_system_and_label_filters_by_shape_and_transform(
+    monkeypatch,
+) -> None:
+    segmentation = DataArray(np.zeros((4, 5), dtype=np.int32), dims=("y", "x"))
+    matching_a = DataArray(np.zeros((4, 5), dtype=np.float32), dims=("y", "x"))
+    matching_b = DataArray(np.zeros((3, 4, 5), dtype=np.float32), dims=("c", "y", "x"))
+    wrong_shape = DataArray(np.zeros((3, 4, 6), dtype=np.float32), dims=("c", "y", "x"))
+    wrong_transform = DataArray(np.zeros((4, 5), dtype=np.float32), dims=("y", "x"))
+    scaled = DataArray(np.zeros((4, 5), dtype=np.float32), dims=("y", "x"))
+    fake_sdata = DummySpatialData(
+        labels={"segmentation": segmentation},
+        images={
+            "scaled": scaled,
+            "matching_b": matching_b,
+            "wrong_shape": wrong_shape,
+            "matching_a": matching_a,
+            "wrong_transform": wrong_transform,
+        },
+    )
+    transformation_by_id = {
+        id(segmentation): {"global": FakeTransform([[1, 0, 7], [0, 1, -4], [0, 0, 1]])},
+        id(matching_a): {"global": FakeTransform([[1, 0, 7], [0, 1, -4], [0, 0, 1]])},
+        id(matching_b): {"global": FakeTransform([[1, 0, 7], [0, 1, -4], [0, 0, 1]])},
+        id(wrong_shape): {"global": FakeTransform([[1, 0, 7], [0, 1, -4], [0, 0, 1]])},
+        id(wrong_transform): {"global": FakeTransform([[1, 0, 1], [0, 1, 2], [0, 0, 1]])},
+        id(scaled): {"global": FakeTransform([[2, 0, 0], [0, 1, 0], [0, 0, 1]])},
+    }
+
+    def _fake_get_transformation(element, get_all: bool = False):
+        del get_all
+        return transformation_by_id[id(element)]
+
+    monkeypatch.setattr(spatialdata_module, "get_transformation", _fake_get_transformation)
+
+    options = get_spatialdata_matching_image_options_for_coordinate_system_and_label_from_sdata(
+        sdata=fake_sdata,
+        coordinate_system="global",
+        label_name="segmentation",
+    )
+
+    assert [option.image_name for option in options] == ["matching_a", "matching_b"]
+    assert all(option.coordinate_systems == ("global",) for option in options)
+
 
 def test_build_layer_metadata_adata_builds_from_selected_table(sdata_blobs: SpatialData) -> None:
     metadata_adata = build_layer_metadata_adata(None, sdata_blobs, "blobs_labels", "table")
