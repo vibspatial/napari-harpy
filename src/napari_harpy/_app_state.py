@@ -105,7 +105,7 @@ class HarpyAppState(QObject):
 
         self.sdata = sdata
         next_coordinate_system = self._resolve_coordinate_system_for_sdata(sdata, previous=old_coordinate_system)
-        self._set_coordinate_system_without_pruning(next_coordinate_system, source="set_sdata")
+        self._update_coordinate_system_state(next_coordinate_system, source="set_sdata")
         # Notify connected widgets/controllers that the loaded SpatialData changed
         # (controllers/widgets that listen via e.g. self._app_state.sdata_changed.connect(self._on_sdata_changed))
         self.sdata_changed.emit(sdata)
@@ -123,7 +123,7 @@ class HarpyAppState(QObject):
         """Set the shared active coordinate system for the current loaded SpatialData."""
         normalized_coordinate_system = self._normalize_coordinate_system(coordinate_system)
         self._validate_coordinate_system(normalized_coordinate_system)
-        changed = self._set_coordinate_system_without_pruning(normalized_coordinate_system, source=source)
+        changed = self._update_coordinate_system_state(normalized_coordinate_system, source=source)
         if not changed:
             return False
 
@@ -191,7 +191,7 @@ class HarpyAppState(QObject):
                 f"Coordinate system `{coordinate_system}` is not available in the selected SpatialData object."
             )
 
-    def _set_coordinate_system_without_pruning(
+    def _update_coordinate_system_state(
         self,
         coordinate_system: str | None,
         *,
