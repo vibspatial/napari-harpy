@@ -561,25 +561,25 @@ Files:
 
 Recommended scenarios:
 
-- same viewer, `ViewerWidget` plus `ObjectClassificationWidget`: change in one
+- [x] same viewer, `ViewerWidget` plus `ObjectClassificationWidget`: change in one
   updates the other;
-- replacing `sdata` keeps the previous coordinate system when it is still
+- [x] replacing `sdata` keeps the previous coordinate system when it is still
   available;
-- replacing `sdata` selects the first sorted available coordinate system when
+- [x] replacing `sdata` selects the first sorted available coordinate system when
   the previous one is no longer valid;
-- switching coordinate system removes old Harpy-managed image and labels layers;
-- registry contains no stale bindings after coordinate switch;
-- unregistered external layers remain in the viewer;
-- clearing or replacing `sdata` clears active coordinate state.
+- [x] switching coordinate system removes old Harpy-managed image and labels layers;
+- [x] registry contains no stale bindings after coordinate switch;
+- [x] unregistered external layers remain in the viewer;
+- [x] clearing or replacing `sdata` clears active coordinate state.
 
 Acceptance:
 
-- phase 1 is not complete until these tests exist and pass;
-- the shared coordinate-system behavior is verified across app state, viewer
+- [x] phase 1 is not complete until these tests exist and pass;
+- [x] the shared coordinate-system behavior is verified across app state, viewer
   layer cleanup, and synchronization between `ViewerWidget` and
   `ObjectClassificationWidget` rather than only through widget-local filtering
   tests;
-- `FeatureExtractionWidget` is intentionally excluded from the phase-1
+- [x] `FeatureExtractionWidget` is intentionally excluded from the phase-1
   synchronization gate pending the cross-sample design.
 
 

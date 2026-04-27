@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import napari_harpy._app_state as app_state_module
 import napari_harpy._interactive as interactive_module
+import napari_harpy.widgets._object_classification_widget as object_widget_module
+import napari_harpy.widgets._viewer_widget as viewer_widget_module
 from napari_harpy._app_state import (
     CoordinateSystemChangedEvent,
     FeatureMatrixWrittenEvent,
@@ -13,6 +15,7 @@ from napari_harpy._app_state import (
 )
 from napari_harpy.widgets._feature_extraction_widget import FeatureExtractionWidget
 from napari_harpy.widgets._object_classification_widget import ObjectClassificationWidget
+from napari_harpy.widgets._viewer_widget import ViewerWidget
 
 
 class DummyEventEmitter:
@@ -68,6 +71,25 @@ class DummyViewer:
     def __init__(self) -> None:
         self.layers = DummyLayers()
         self.window = DummyWindow()
+
+
+def _patch_shared_coordinate_system_names(monkeypatch, coordinate_systems_by_sdata_id: dict[int, list[str]]) -> None:
+    def _get_coordinate_system_names(sdata: object) -> list[str]:
+        return list(coordinate_systems_by_sdata_id.get(id(sdata), []))
+
+    monkeypatch.setattr(app_state_module, "get_coordinate_system_names_from_sdata", _get_coordinate_system_names)
+    monkeypatch.setattr(viewer_widget_module, "get_coordinate_system_names_from_sdata", _get_coordinate_system_names)
+    monkeypatch.setattr(object_widget_module, "get_coordinate_system_names_from_sdata", _get_coordinate_system_names)
+
+
+def _patch_empty_shared_widget_content(monkeypatch) -> None:
+    monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(
+        object_widget_module,
+        "get_spatialdata_label_options_for_coordinate_system_from_sdata",
+        lambda *, sdata, coordinate_system: [],
+    )
 
 
 def test_get_or_create_app_state_returns_same_state_for_same_viewer() -> None:
@@ -262,6 +284,97 @@ def test_widgets_share_app_state_for_same_viewer(qtbot) -> None:
 
     assert feature_widget.app_state is object_widget.app_state
     assert feature_widget.app_state is get_or_create_app_state(viewer)
+
+
+def test_shared_viewer_and_object_widgets_keep_previous_coordinate_system_when_replacing_sdata(qtbot, monkeypatch) -> None:
+    first_sdata = object()
+    second_sdata = object()
+    _patch_shared_coordinate_system_names(
+        monkeypatch,
+        {
+            id(first_sdata): ["global", "local"],
+            id(second_sdata): ["local", "zeta"],
+        },
+    )
+    _patch_empty_shared_widget_content(monkeypatch)
+
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    viewer_widget = ViewerWidget(viewer)
+    object_widget = ObjectClassificationWidget(viewer)
+
+    qtbot.addWidget(viewer_widget)
+    qtbot.addWidget(object_widget)
+
+    with qtbot.waitSignal(app_state.sdata_changed):
+        app_state.set_sdata(first_sdata)
+
+    assert app_state.coordinate_system == "global"
+    assert viewer_widget.coordinate_system_combo.currentText() == "global"
+    assert object_widget.coordinate_system_combo.currentText() == "global"
+
+    with qtbot.waitSignal(app_state.coordinate_system_changed):
+        viewer_widget.coordinate_system_combo.setCurrentIndex(1)
+
+    assert app_state.coordinate_system == "local"
+    assert viewer_widget.coordinate_system_combo.currentText() == "local"
+    assert object_widget.coordinate_system_combo.currentText() == "local"
+
+    with qtbot.waitSignal(app_state.sdata_changed):
+        app_state.set_sdata(second_sdata)
+
+    assert app_state.sdata is second_sdata
+    assert app_state.coordinate_system == "local"
+    assert viewer_widget.coordinate_system_combo.currentText() == "local"
+    assert object_widget.coordinate_system_combo.currentText() == "local"
+
+
+def test_shared_viewer_and_object_widgets_select_first_coordinate_system_when_previous_is_invalid_and_clear_on_sdata_clear(
+    qtbot, monkeypatch
+) -> None:
+    first_sdata = object()
+    second_sdata = object()
+    _patch_shared_coordinate_system_names(
+        monkeypatch,
+        {
+            id(first_sdata): ["local"],
+            id(second_sdata): ["alpha", "beta"],
+        },
+    )
+    _patch_empty_shared_widget_content(monkeypatch)
+
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    viewer_widget = ViewerWidget(viewer)
+    object_widget = ObjectClassificationWidget(viewer)
+
+    qtbot.addWidget(viewer_widget)
+    qtbot.addWidget(object_widget)
+
+    with qtbot.waitSignal(app_state.sdata_changed):
+        app_state.set_sdata(first_sdata)
+
+    assert app_state.coordinate_system == "local"
+    assert viewer_widget.coordinate_system_combo.currentText() == "local"
+    assert object_widget.coordinate_system_combo.currentText() == "local"
+
+    with qtbot.waitSignal(app_state.sdata_changed):
+        app_state.set_sdata(second_sdata)
+
+    assert app_state.sdata is second_sdata
+    assert app_state.coordinate_system == "alpha"
+    assert viewer_widget.coordinate_system_combo.currentText() == "alpha"
+    assert object_widget.coordinate_system_combo.currentText() == "alpha"
+
+    with qtbot.waitSignal(app_state.sdata_changed):
+        app_state.clear_sdata()
+
+    assert app_state.sdata is None
+    assert app_state.coordinate_system is None
+    assert viewer_widget.coordinate_system_combo.count() == 0
+    assert object_widget.coordinate_system_combo.count() == 0
+    assert viewer_widget.coordinate_system_combo.currentIndex() == -1
+    assert object_widget.coordinate_system_combo.currentIndex() == -1
 
 
 def test_interactive_headless_sets_sdata_without_running_event_loop(monkeypatch, sdata_blobs) -> None:
