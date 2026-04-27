@@ -288,12 +288,12 @@ When `coordinate_system_changed` is received:
 
 - update the combo with `QSignalBlocker`;
 - refresh segmentation options for the new coordinate system;
-- preserve the selected segmentation only if it is still valid in the new
-  coordinate system;
-- refresh linked tables and feature matrices;
-- rebind annotation, classifier, styling, and persistence controllers;
-- auto-load/activate the selected labels layer only if a valid segmentation is
-  still selected.
+- force the segmentation combo back to index `-1` / "Choose segmentation";
+- clear linked tables and feature matrices;
+- rebind annotation, classifier, styling, and persistence controllers to the
+  now-unbound segmentation state;
+- do not auto-load or auto-activate a replacement labels layer in the new
+  coordinate system.
 
 The controllers should not subscribe directly to the app-state signal. The
 widget remains the place where UI selection is translated into controller
@@ -468,43 +468,42 @@ Work:
 - move local refresh logic into an app-state signal handler;
 - refresh from `app_state.coordinate_system` on `sdata_changed` without
   choosing a widget-local default;
-- make object classification preserve selected segmentation only when valid in
-  the new coordinate system;
-- ensure layer pruning does not incorrectly clear a still-valid selected
-  segmentation after the widget has rebound to the new coordinate system.
+- on coordinate-system change, clear the selected segmentation back to
+  "Choose segmentation" instead of auto-preserving or auto-loading a
+  segmentation in the new coordinate system;
+- ensure layer pruning happens after the widget has already cleared its
+  segmentation-dependent selection and controller state.
 
 Decision:
 
-- treat the selected segmentation as a `SpatialData` labels element identity,
-  not as the old live napari layer object;
-- on shared coordinate-system change, `ObjectClassificationWidget` must rebind
-  from `app_state.coordinate_system` in its `coordinate_system_changed`
-  handler before reacting to the old-layer removal path;
-- this relies on the shared `HarpyAppState.set_coordinate_system(...)` order:
-  update app-state coordinate system -> emit `coordinate_system_changed` ->
-  prune old Harpy-managed layers;
-- the coordinate-system signal handler should therefore refresh coordinate
-  system selection, segmentation options, table options, labels-layer
-  preparation, and controller binding before
-  `_on_primary_labels_layers_changed()` can interpret old-layer removal as
-  “the current segmentation disappeared”;
+- do not try to preserve or auto-reload a selected segmentation across
+  coordinate-system switches, even if the same labels element also exists in
+  the new coordinate system;
+- on shared coordinate-system change, `ObjectClassificationWidget` should sync
+  the coordinate-system combo, refresh the segmentation options for the new
+  coordinate system, force the segmentation combo back to index `-1`, clear
+  table / feature / controller binding state, and wait for the user to make an
+  explicit new segmentation choice;
+- this intentionally avoids the duplicate-name / eager-reload path that can
+  occur when `HarpyAppState.set_coordinate_system(...)` emits
+  `coordinate_system_changed` before pruning old Harpy-managed layers;
 - add a narrow safety guard (for example a short-lived
   `_is_handling_coordinate_system_change` flag) so
   `_on_primary_labels_layers_changed()` ignores pruning churn while the
-  coordinate-system signal handler is actively rebinding the widget to the new
-  coordinate context;
-- in other words: for a coordinate-system switch, rebinding to the new
-  coordinate context is the primary reaction; live-layer removal is secondary
-  cleanup.
+  coordinate-system signal handler is actively clearing and rebinding the
+  widget to the empty segmentation state;
+- in other words: for a coordinate-system switch, clearing the
+  segmentation-dependent form state is the primary reaction; live-layer
+  removal is secondary cleanup.
 
 Acceptance:
 
 - changing coordinate system in object classification updates `ViewerWidget`;
 - the selected labels layer from the old coordinate system is removed;
-- if the selected segmentation is not available in the new coordinate system,
-  annotation and classifier state are unbound;
-- if the selected segmentation is available, it is loaded/activated in the new
-  coordinate system only.
+- the segmentation combo falls back to "Choose segmentation" even if a
+  same-named segmentation exists in the new coordinate system;
+- annotation and classifier state are unbound until the user explicitly
+  selects a segmentation in the new coordinate system.
 
 ### 5. Wire `FeatureExtractionWidget`
 

@@ -19,8 +19,10 @@ from spatialdata.models import TableModel
 from spatialdata.transformations import get_transformation
 
 import napari_harpy._annotation as annotation_module
+import napari_harpy._app_state as app_state_module
 import napari_harpy._class_palette as class_palette_module
 import napari_harpy._classifier as classifier_module
+import napari_harpy.widgets._viewer_widget as viewer_widget_module
 import napari_harpy.widgets._object_classification_widget as widget_module
 from napari_harpy._annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
 from napari_harpy._app_state import FeatureMatrixWrittenEvent, get_or_create_app_state
@@ -32,6 +34,7 @@ from napari_harpy._classifier import (
     PRED_CONFIDENCE_COLUMN,
 )
 from napari_harpy._spatialdata import SpatialDataLabelsOption
+from napari_harpy.widgets._viewer_widget import ViewerWidget
 from napari_harpy.widgets._object_classification_widget import (
     ObjectClassificationWidget as HarpyWidget,
 )
@@ -135,6 +138,24 @@ def _assert_persistence_success_feedback(widget: HarpyWidget, expected_message: 
     assert f"color: {_SUCCESS_FEEDBACK_STYLE['text']}" in stylesheet
     assert f"background-color: {_SUCCESS_FEEDBACK_STYLE['background']}" in stylesheet
     assert f"border: 1px solid {_SUCCESS_FEEDBACK_STYLE['border']}" in stylesheet
+
+
+def _patch_coordinate_system_names(monkeypatch, coordinate_systems: list[str]) -> None:
+    monkeypatch.setattr(
+        widget_module,
+        "get_coordinate_system_names_from_sdata",
+        lambda sdata: list(coordinate_systems),
+    )
+    monkeypatch.setattr(
+        app_state_module,
+        "get_coordinate_system_names_from_sdata",
+        lambda sdata: list(coordinate_systems),
+    )
+    monkeypatch.setattr(
+        viewer_widget_module,
+        "get_coordinate_system_names_from_sdata",
+        lambda sdata: list(coordinate_systems),
+    )
 
 
 class _DeferredWorker(QObject):
@@ -353,6 +374,7 @@ def test_widget_populates_segmentation_choices_from_shared_sdata_without_loaded_
 
 
 def test_widget_filters_segmentation_choices_by_selected_coordinate_system(qtbot, monkeypatch, sdata_blobs: SpatialData) -> None:
+    _patch_coordinate_system_names(monkeypatch, ["cells", "global"])
     viewer = make_viewer_with_shared_sdata(sdata_blobs)
 
     global_option = SpatialDataLabelsOption(
@@ -366,12 +388,6 @@ def test_widget_filters_segmentation_choices_by_selected_coordinate_system(qtbot
         display_name="blobs_multiscale_labels",
         sdata=sdata_blobs,
         coordinate_systems=("cells",),
-    )
-
-    monkeypatch.setattr(
-        widget_module,
-        "get_coordinate_system_names_from_sdata",
-        lambda _sdata: ["cells", "global"],
     )
     monkeypatch.setattr(
         widget_module,
@@ -394,8 +410,12 @@ def test_widget_filters_segmentation_choices_by_selected_coordinate_system(qtbot
     assert widget.selected_table_name is None
     assert widget.selected_feature_key is None
 
-    widget.coordinate_system_combo.setCurrentIndex(1)
+    with qtbot.waitSignal(widget.app_state.coordinate_system_changed) as blocker:
+        widget.coordinate_system_combo.setCurrentIndex(1)
 
+    assert blocker.args[0].previous_coordinate_system == "cells"
+    assert blocker.args[0].coordinate_system == "global"
+    assert blocker.args[0].source == "object_classification_widget"
     assert widget.selected_coordinate_system == "global"
     assert widget.segmentation_combo.count() == 1
     assert widget.segmentation_combo.itemText(0) == "blobs_labels"
@@ -408,6 +428,165 @@ def test_widget_filters_segmentation_choices_by_selected_coordinate_system(qtbot
     assert widget.selected_segmentation_name == "blobs_labels"
     assert widget.selected_table_name == "table"
     assert widget.selected_feature_key == "features_1"
+
+
+def test_widget_coordinate_system_change_updates_viewer_widget(qtbot, monkeypatch) -> None:
+    _patch_coordinate_system_names(monkeypatch, ["global", "local"])
+    fake_sdata = object()
+    shared_option = SpatialDataLabelsOption(
+        label_name="shared_labels",
+        display_name="shared_labels",
+        sdata=fake_sdata,
+        coordinate_systems=("global", "local"),
+    )
+
+    monkeypatch.setattr(
+        widget_module,
+        "get_spatialdata_label_options_for_coordinate_system_from_sdata",
+        lambda *, sdata, coordinate_system: [shared_option],
+    )
+    monkeypatch.setattr(widget_module, "get_annotating_table_names", lambda sdata, label_name: [])
+    monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: [])
+
+    viewer = DummyViewer(seed_shared_sdata=False)
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(fake_sdata)
+    viewer_widget = ViewerWidget(viewer)
+    object_widget = HarpyWidget(viewer)
+
+    qtbot.addWidget(viewer_widget)
+    qtbot.addWidget(object_widget)
+
+    assert viewer_widget.coordinate_system_combo.currentText() == "global"
+    assert object_widget.coordinate_system_combo.currentText() == "global"
+
+    with qtbot.waitSignal(app_state.coordinate_system_changed) as blocker:
+        object_widget.coordinate_system_combo.setCurrentIndex(1)
+
+    assert blocker.args[0].previous_coordinate_system == "global"
+    assert blocker.args[0].coordinate_system == "local"
+    assert blocker.args[0].source == "object_classification_widget"
+    assert viewer_widget.coordinate_system_combo.currentText() == "local"
+    assert object_widget.coordinate_system_combo.currentText() == "local"
+
+
+def test_widget_clears_selected_segmentation_on_coordinate_system_change_even_when_it_is_valid(
+    qtbot, monkeypatch
+) -> None:
+    _patch_coordinate_system_names(monkeypatch, ["global", "local"])
+    fake_sdata = object()
+    shared_option = SpatialDataLabelsOption(
+        label_name="shared_labels",
+        display_name="shared_labels",
+        sdata=fake_sdata,
+        coordinate_systems=("global", "local"),
+    )
+    global_layer = Labels(np.ones((4, 4), dtype=np.int32), name="shared_labels")
+
+    monkeypatch.setattr(
+        widget_module,
+        "get_spatialdata_label_options_for_coordinate_system_from_sdata",
+        lambda *, sdata, coordinate_system: [shared_option],
+    )
+    monkeypatch.setattr(widget_module, "get_annotating_table_names", lambda sdata, label_name: [])
+
+    viewer = DummyViewer(seed_shared_sdata=False)
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(fake_sdata)
+    viewer.layers.append(global_layer)
+    app_state.viewer_adapter.register_layer(
+        global_layer,
+        sdata=fake_sdata,
+        element_name="shared_labels",
+        element_type="labels",
+        coordinate_system="global",
+    )
+
+    monkeypatch.setattr(
+        app_state.viewer_adapter,
+        "ensure_labels_loaded",
+        lambda sdata, label_name, coordinate_system: (_ for _ in ()).throw(
+            AssertionError("Coordinate-system switching should not auto-load a replacement segmentation layer.")
+        ),
+    )
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    assert widget.selected_segmentation_name == "shared_labels"
+    assert widget._annotation_controller.labels_layer is global_layer
+    assert viewer.layers.selection.active is global_layer
+
+    with qtbot.waitSignal(app_state.coordinate_system_changed):
+        widget.coordinate_system_combo.setCurrentIndex(1)
+
+    assert widget.selected_coordinate_system == "local"
+    assert widget.selected_segmentation_name is None
+    assert widget.selected_table_name is None
+    assert widget.selected_feature_key is None
+    assert widget._annotation_controller.labels_layer is None
+    assert widget._viewer_styling_controller.labels_layer is None
+    assert list(viewer.layers) == []
+    assert app_state.viewer_adapter.layer_bindings.get_binding(global_layer) is None
+    assert "Choose a segmentation mask" in widget.selection_status.text()
+
+
+def test_widget_unbinds_when_selected_segmentation_is_not_valid_in_new_coordinate_system(qtbot, monkeypatch) -> None:
+    _patch_coordinate_system_names(monkeypatch, ["global", "local"])
+    fake_sdata = object()
+    global_option = SpatialDataLabelsOption(
+        label_name="global_labels",
+        display_name="global_labels",
+        sdata=fake_sdata,
+        coordinate_systems=("global",),
+    )
+    local_option = SpatialDataLabelsOption(
+        label_name="local_labels",
+        display_name="local_labels",
+        sdata=fake_sdata,
+        coordinate_systems=("local",),
+    )
+    global_layer = Labels(np.ones((4, 4), dtype=np.int32), name="global_labels")
+
+    monkeypatch.setattr(
+        widget_module,
+        "get_spatialdata_label_options_for_coordinate_system_from_sdata",
+        lambda *, sdata, coordinate_system: [global_option] if coordinate_system == "global" else [local_option],
+    )
+    monkeypatch.setattr(widget_module, "get_annotating_table_names", lambda sdata, label_name: [])
+
+    viewer = DummyViewer(seed_shared_sdata=False)
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(fake_sdata)
+    viewer.layers.append(global_layer)
+    app_state.viewer_adapter.register_layer(
+        global_layer,
+        sdata=fake_sdata,
+        element_name="global_labels",
+        element_type="labels",
+        coordinate_system="global",
+    )
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    assert widget.selected_segmentation_name == "global_labels"
+    assert widget._annotation_controller.labels_layer is global_layer
+
+    with qtbot.waitSignal(app_state.coordinate_system_changed):
+        widget.coordinate_system_combo.setCurrentIndex(1)
+
+    assert widget.selected_coordinate_system == "local"
+    assert widget.selected_segmentation_name is None
+    assert widget.selected_table_name is None
+    assert widget.selected_feature_key is None
+    assert widget._annotation_controller.labels_layer is None
+    assert widget._viewer_styling_controller.labels_layer is None
+    assert list(viewer.layers) == []
+    assert "Choose a segmentation mask" in widget.selection_status.text()
 
 
 def test_widget_surfaces_invalid_table_binding_for_duplicate_instance_ids(qtbot, sdata_blobs: SpatialData) -> None:
