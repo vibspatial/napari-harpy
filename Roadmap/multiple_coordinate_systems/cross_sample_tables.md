@@ -201,6 +201,15 @@ But the feature-extraction request model may be broader than the viewer:
 This means cross-sample feature extraction is allowed to be broader than the
 currently visible sample, even though viewer interaction stays sample-local.
 
+Lifecycle rule:
+
+- `FeatureExtractionWidget` does not subscribe to
+  `HarpyAppState.coordinate_system_changed`;
+- `FeatureExtractionWidget` does not publish its coordinate-system choices
+  through `HarpyAppState.coordinate_system`;
+- on `sdata_changed`, discard any staged triplets and rebuild the available
+  triplets from a fresh local widget state.
+
 ### Intended Workflow
 
 1. The user selects one coordinate system or several coordinate systems.
@@ -348,6 +357,11 @@ So the intended UX should expose training scope explicitly, for example:
 - selected region only;
 - all eligible labeled regions in the selected table.
 
+Here, `selected region only` means:
+
+- the `region_key` for the segmentation currently selected in
+  `ObjectClassificationWidget`.
+
 Classifier-eligible training rows should be defined explicitly:
 
 - row belongs to the selected table;
@@ -371,6 +385,11 @@ So the intended UX should expose prediction scope explicitly, for example:
 - selected region only;
 - all eligible regions in the selected table.
 
+For prediction, `selected region only` has the same meaning:
+
+- the `region_key` for the segmentation currently selected in
+  `ObjectClassificationWidget`.
+
 This split keeps interactive retraining responsive and avoids unexpectedly
 writing predictions into hidden rows.
 
@@ -378,7 +397,7 @@ The UI should make the scope visible before running prediction. For example:
 
 ```text
 Training: 182 labeled rows across 4 regions
-Prediction: 12,440 rows in active region
+Prediction: 12,440 rows in selected region
 ```
 
 When complete-table prediction is selected, the UI should explicitly warn that
@@ -397,6 +416,18 @@ Recommended additions:
 - `prediction_scope`
 - `prediction_regions`
 - `n_predicted_rows`
+
+Encoding rule:
+
+- `training_scope` and `prediction_scope` store the user-facing mode, e.g.
+  `all` or `selected_region_only`;
+- `training_regions` and `prediction_regions` store the concrete resolved list
+  of `region_key` values actually used for that run;
+- when scope is `all`, resolve that mode at execution time to the full set of
+  eligible `region_key` values and persist that expanded list;
+- when scope is `selected_region_only`, resolve it at execution time to the
+  one `region_key` for the segmentation currently selected in
+  `ObjectClassificationWidget`, and persist that one-item list.
 
 This helps future reload, debugging, and user-facing status text.
 
@@ -442,6 +473,9 @@ Work:
   not as independent labels and image selections;
 - extend the controller to submit multi-target requests to Harpy;
 - preserve current single-triplet mode as the simple path;
+- keep feature extraction decoupled from `HarpyAppState.coordinate_system`;
+- on `sdata_changed`, clear any staged triplets and rebuild the available
+  triplet choices from fresh local state;
 - make stale-work cancellation still happen when the widget-local extraction
   request changes.
 
@@ -489,7 +523,7 @@ Work:
 - add training-scope and prediction-scope controls;
 - default training to all eligible labeled rows in the selected table;
 - support explicit training on the selected region only;
-- default prediction to the active region;
+- default prediction to the selected region only;
 - support explicit complete-table prediction;
 - record scope metadata and row counts.
 
