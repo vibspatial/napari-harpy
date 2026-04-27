@@ -53,8 +53,10 @@ This active coordinate system means:
 - widget selectors are synchronized to the same coordinate system;
 - newly loaded Harpy-managed layers use that coordinate system;
 - Harpy-managed layers from other coordinate systems are removed from the viewer;
-- feature extraction and object classification bind against the same coordinate
-  context that the viewer displays.
+- `ObjectClassificationWidget` binds against the same coordinate context that
+  the viewer displays;
+- `FeatureExtractionWidget` is deferred from this phase and may keep its own
+  local coordinate-system selector until the cross-sample redesign.
 
 This does not mean Harpy has only one coordinate system in the data model. It
 means the viewer has one active coordinate-system context at a time.
@@ -301,24 +303,37 @@ bindings.
 
 ### `FeatureExtractionWidget`
 
-Even though the original symptom is viewer/object-classification mismatch,
-feature extraction should also participate because it has its own coordinate
-system selector.
+`FeatureExtractionWidget` is intentionally deferred from this phase.
 
-When the user changes the feature-extraction coordinate-system combo:
+Phase 1 should make the shared viewer context unambiguous for:
 
-- publish through `HarpyAppState`;
-- let the shared signal refresh local labels/images/tables;
-- let the existing controller `bind(...)` path cancel stale active work when
-  the coordinate system changes.
+- `ViewerWidget`;
+- `ObjectClassificationWidget`;
+- Harpy-managed viewer layers and layer bindings.
 
-When `coordinate_system_changed` is received:
+`FeatureExtractionWidget` should keep its local coordinate-system selector for
+now.
 
-- update the combo with `QSignalBlocker`;
-- refresh labels, images, channels, and tables;
-- rebind `FeatureExtractionController`.
+Reason:
 
-This keeps calculation context aligned with the viewer context.
+- the next design step for feature extraction is no longer "mirror the shared
+  viewer coordinate system";
+- it is the richer multi-sample / cross-sample request model described in
+  `Roadmap/multiple_coordinate_systems/cross_sample_tables.md`, where feature
+  extraction is built around explicit widget-local
+  `coordinate_system -> segmentation -> image` triplets plus an output table.
+
+So for this roadmap:
+
+- do not wire `FeatureExtractionWidget` to
+  `HarpyAppState.coordinate_system_changed`;
+- do not require feature extraction to publish coordinate-system changes
+  through `HarpyAppState`;
+- treat feature extraction as intentionally out of scope for the phase-1 shared
+  coordinate-system refactor.
+
+This keeps phase 1 focused on the shared viewer context and avoids premature
+coupling that would be undone by the cross-sample feature-extraction redesign.
 
 ## `sdata` Lifecycle
 
@@ -507,6 +522,12 @@ Acceptance:
 
 ### 5. Wire `FeatureExtractionWidget`
 
+Status:
+
+- deferred;
+- superseded by the feature-extraction redesign in
+  `Roadmap/multiple_coordinate_systems/cross_sample_tables.md`.
+
 Files:
 
 - `src/napari_harpy/widgets/_feature_extraction_widget.py`
@@ -514,20 +535,21 @@ Files:
 
 Work:
 
-- connect `coordinate_system_changed`;
-- make local combo changes publish to app state;
-- refresh labels/images/tables from the shared coordinate system;
-- refresh from `app_state.coordinate_system` on `sdata_changed` without
-  choosing a widget-local default;
-- rely on `FeatureExtractionController.bind(...)` to cancel stale jobs when the
-  coordinate context changes.
+- do not implement shared-coordinate-system wiring for feature extraction in
+  this phase;
+- keep the current widget-local coordinate-system behavior until the
+  cross-sample feature-extraction model is implemented;
+- use `Roadmap/multiple_coordinate_systems/cross_sample_tables.md` as the
+  source of truth for the next feature-extraction redesign.
 
 Acceptance:
 
-- changing coordinate system in feature extraction updates the other widgets;
-- labels and images remain filtered to the shared active coordinate system;
-- feature extraction cannot keep a stale coordinate system after viewer context
-  changes.
+- phase 1 does not require `FeatureExtractionWidget` to stay synchronized with
+  `HarpyAppState.coordinate_system`;
+- `FeatureExtractionWidget` may keep an independent local coordinate-system
+  selector in this phase;
+- feature extraction shared-coordinate behavior will be specified and tested in
+  the cross-sample roadmap instead.
 
 ### 6. Hard acceptance gate: add cross-widget integration tests
 
@@ -536,13 +558,11 @@ Files:
 - `tests/test_app_state.py`
 - `tests/test_viewer_widget.py`
 - `tests/test_widget.py`
-- `tests/test_feature_extraction_widget.py`
 
 Recommended scenarios:
 
 - same viewer, `ViewerWidget` plus `ObjectClassificationWidget`: change in one
   updates the other;
-- same viewer, all three widgets: all coordinate-system combos stay in sync;
 - replacing `sdata` keeps the previous coordinate system when it is still
   available;
 - replacing `sdata` selects the first sorted available coordinate system when
@@ -556,21 +576,20 @@ Acceptance:
 
 - phase 1 is not complete until these tests exist and pass;
 - the shared coordinate-system behavior is verified across app state, viewer
-  layer cleanup, and widget synchronization rather than only through
-  widget-local filtering tests.
+  layer cleanup, and synchronization between `ViewerWidget` and
+  `ObjectClassificationWidget` rather than only through widget-local filtering
+  tests;
+- `FeatureExtractionWidget` is intentionally excluded from the phase-1
+  synchronization gate pending the cross-sample design.
 
-## Open Questions
 
 1. Should switching coordinate systems remove layers or hide them?
 
-   Recommendation: remove them for the first implementation. Add a separate
-   display-state cache later if preserving per-coordinate-system display choices
-   becomes important.
+   Remove
 
 2. Should external/unregistered napari layers be removed?
 
-   Recommendation: no. Only remove Harpy-managed registered layers. External
-   layers are outside Harpy's ownership unless we explicitly adopt/register them.
+   No
 
 ## Summary
 

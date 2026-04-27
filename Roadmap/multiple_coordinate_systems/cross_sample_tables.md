@@ -61,13 +61,30 @@ The current codebase already provides part of the needed behavior.
 ### Feature Extraction
 
 Today, `FeatureExtractionWidget` and `FeatureExtractionController` are
-single-region:
+single-region and coordinate-system-first:
 
 - one selected coordinate system;
 - one selected segmentation;
 - zero or one selected image;
 - one selected table;
 - one selected output key.
+
+The current UI flow is already ordered roughly as:
+
+```text
+coordinate system -> segmentation -> image -> table -> output key
+```
+
+but it is still limited in important ways:
+
+- it only supports one selection at each step;
+- labels and images are filtered only by coordinate-system membership;
+- segmentation options are not yet surfaced with explicit "valid /
+  invalid-for-feature-extraction" eligibility states;
+- the widget does not yet auto-derive one matching image per selected
+  segmentation;
+- output table selection is still a single-region binding step rather than a
+  cross-sample request validation step.
 
 The controller already treats coordinate-system rebinding as context change and
 cancels stale work. That behavior should stay.
@@ -141,51 +158,77 @@ multi-select lists:
 - multiple segmentation masks;
 - multiple images.
 
-That would allow ambiguous or invalid pairings. The correct unit is an explicit
-per-region extraction target.
+That would allow ambiguous or invalid pairings.
 
-### Extraction Target
-
-Each extraction target represents:
+The correct unit is an explicit per-sample triplet:
 
 ```text
 coordinate system / sample
-labels region
-optional aligned image
-selected channels
-shared AnnData table
+labels region / segmentation mask
+matching image
 ```
 
-`optional aligned image` matters because:
+The full feature-extraction request is then:
 
-- morphology-only extraction may not need an image;
-- intensity-derived extraction does require one.
+```text
+one or more triplets
+selected channels per triplet
+one output AnnData table
+one output feature key
+```
+
+`matching image` still remains optional at execution time when the chosen
+feature set is morphology-only, but the UI model should stay segmentation-led:
+
+- first choose a coordinate system and segmentation;
+- then derive matching images for that segmentation;
+- then validate the output table against the selected segmentation regions.
+
+### Viewer Context vs Extraction Request
+
+The viewer invariant still holds:
+
+- the napari viewer shows one active coordinate system at a time.
+
+But the feature-extraction request model may be broader than the viewer:
+
+- the widget may stage one or more triplets from one or more coordinate
+  systems;
+- those triplets are widget-local request state;
+- they should not be forced into one shared `HarpyAppState.coordinate_system`
+  value.
+
+This means cross-sample feature extraction is allowed to be broader than the
+currently visible sample, even though viewer interaction stays sample-local.
 
 ### Intended Workflow
 
-1. The user selects an AnnData table.
-2. Harpy reads the table metadata and discovers all annotated labels regions.
-3. Harpy derives candidate extraction targets from those regions.
-4. For each target, Harpy offers only eligible images in the same coordinate
-   system.
-5. The user confirms which targets to calculate.
-6. Harpy submits one explicit multi-target feature-extraction request.
-7. Harpy writes feature rows back into the same AnnData table, aligned by
+1. The user selects one coordinate system or several coordinate systems.
+2. Harpy shows segmentation masks in those coordinate systems.
+3. Segmentation masks remain visible in the UI, but only transform-eligible
+   masks should be selectable for feature extraction.
+4. For each selected segmentation mask, Harpy derives matching image candidates
+   in the same coordinate system.
+5. Harpy resolves a concrete `coordinate_system -> segmentation -> image`
+   triplet for each selected sample:
+   - if exactly one matching image exists, use it automatically;
+   - if multiple matching images exist, require an explicit user choice;
+   - if no matching image exists, allow only morphology-only extraction.
+6. The user selects the output AnnData table.
+7. Harpy validates that the selected table annotates every selected
+   segmentation region.
+8. Harpy submits one explicit multi-target feature-extraction request.
+9. Harpy writes feature rows back into the same AnnData table, aligned by
    `region_key` plus `instance_key`.
 
-### Eligibility Rules
+### Segmentation Eligibility
 
-Harpy should never build a Cartesian product of selected labels and selected
-images.
+A segmentation mask is feature-extraction-selectable only when:
 
-For each labels region, an image is eligible only when:
-
-- the image is available in the same coordinate system as the labels region;
-- the image has the same spatial shape as the labels element, ignoring the
-  image channel axis;
-- the image and labels element resolve to the same effective transform in the
-  target coordinate system;
-- the transform is supported by Harpy feature extraction.
+- it is available in the chosen coordinate system;
+- its transform in that coordinate system is supported by Harpy feature
+  extraction;
+- the transform resolves to pure `x` / `y` translation semantics.
 
 At the time of writing, Harpy feature extraction supports transforms that
 resolve to pure `x` / `y` translation, including:
@@ -196,32 +239,60 @@ resolve to pure `x` / `y` translation, including:
 - an affine transform whose affine matrix is equivalent to pure `x` / `y`
   translation.
 
-Harpy should also validate:
+Transforms that imply rotation, shear, or scale should make the segmentation
+visibly unavailable for feature extraction in the UI rather than silently
+selectable.
 
-- the selected table actually annotates each selected labels region;
+### Image Matching Rules
+
+Harpy should never build a Cartesian product of selected labels and selected
+images.
+
+For one selected segmentation mask, an image is a valid match only when:
+
+- the image is available in the same coordinate system as the segmentation;
+- the image has the same spatial shape as the segmentation, ignoring the image
+  channel axis;
+- the image and segmentation resolve to the same effective transform in that
+  coordinate system;
+- the transform is supported by Harpy feature extraction.
+
+This is the operational meaning of a `matching image` in the UI.
+
+### Table Eligibility
+
+The output table is selected after the triplets are assembled.
+
+That table is valid only when:
+
+- the selected table annotates every selected segmentation region;
 - duplicate `instance_key` values are rejected within each selected region;
-- no selected target mixes labels and image elements from different coordinate
-  systems.
+- the request does not mix segmentation-image pairs that violate the matching
+  rules above.
 
 ### UI Direction
 
-The current single-region flow should remain the simple path.
-
-A later batch mode should be explicit rather than implicit.
+The current single-region flow should remain recognizable, but it should grow
+into a triplet-based model rather than a table-first model.
 
 Suggested direction:
 
-- keep today’s selector flow for single-region extraction;
-- add a separate batch or multi-region mode for cross-sample tables;
-- show one target row per labels region;
-- group rows by coordinate system or sample;
-- default the image only when exactly one eligible image exists for that
-  target;
-- require an explicit image choice when multiple eligible images exist;
-- show a short unavailable reason when a region cannot currently be extracted.
+- keep the selector order centered on `coordinate system -> segmentation ->
+  image -> table`;
+- for one-sample extraction, the widget operates on one triplet;
+- for cross-sample extraction, the widget operates on several explicit triplets;
+- group triplets by coordinate system or sample;
+- show segmentation masks in the selected coordinate systems even when they are
+  not currently eligible, but make only eligible ones selectable;
+- show only matching images for a chosen segmentation rather than an
+  independent image universe;
+- auto-fill the image when exactly one valid match exists;
+- require explicit image choice when several valid matches exist;
+- validate the selected output table against all chosen segmentation regions.
 
 Examples of unavailable reasons:
 
+- the segmentation transform is not supported for feature extraction;
 - no aligned image is available for intensity features;
 - the image transform is not supported;
 - the table does not annotate that labels region.
@@ -233,9 +304,9 @@ operation, even if the backend computes it as a batch of per-target jobs.
 
 Important behavior:
 
-- write features back only to rows matching each target’s `region_key` and
+- write features back only to rows matching each triplet’s `region_key` and
   `instance_key`;
-- allow one table to accumulate features for multiple regions;
+- allow one table to accumulate features for multiple triplets / regions;
 - do not present repeated single-region writes as the intended UX for building a
   shared cross-sample feature matrix.
 
@@ -327,9 +398,10 @@ Work:
 
 - add helpers that derive table-annotated labels regions from
   `SpatialDataTableMetadata.regions`;
-- add helpers that derive candidate coordinate systems per region;
-- add helpers that derive eligible images for a `(labels region,
-  coordinate_system)` pair;
+- add helpers that derive feature-extraction-eligible segmentations per
+  coordinate system;
+- add helpers that derive matching images for a
+  `(coordinate system, segmentation)` pair;
 - add explicit validation helpers for per-region duplicate instance ids and
   table annotation coverage.
 
@@ -350,17 +422,19 @@ Files:
 
 Work:
 
-- model a batch request as explicit per-region targets, not as independent
-  labels and image selections;
+- model a batch request as explicit
+  `coordinate_system -> segmentation -> image` triplets plus one output table,
+  not as independent labels and image selections;
 - extend the controller to submit multi-target requests to Harpy;
-- preserve current single-region mode as the simple path;
-- make stale-work cancellation still happen when the shared coordinate context
-  changes.
+- preserve current single-triplet mode as the simple path;
+- make stale-work cancellation still happen when the widget-local extraction
+  request changes.
 
 Acceptance:
 
 - multi-region extraction is submitted as one explicit multi-target request;
-- no target pairs labels with an image from a different coordinate system;
+- no triplet pairs a segmentation with an image from a different coordinate
+  system or with a non-matching transform / shape;
 - one shared feature matrix can be populated for multiple regions.
 
 ### 3. Add Batch Feature-Extraction UI
@@ -372,16 +446,19 @@ Files:
 
 Work:
 
-- add a batch or multi-region mode;
-- render one target row per table-annotated labels region;
-- surface unavailable targets with short reasons;
-- show when image selection is inferred versus user-chosen.
+- extend the widget from one triplet to several triplets;
+- render triplets grouped by coordinate system or sample;
+- surface unavailable segmentations and missing-image states with short reasons;
+- show when image selection is inferred versus user-chosen;
+- keep output-table selection as a later validation step over the chosen
+  triplets.
 
 Acceptance:
 
-- users can review all regions before launching work;
-- unavailable targets are blocked before backend submission;
-- the UI communicates which regions will be written.
+- users can review all selected triplets before launching work;
+- unavailable segmentations or invalid image matches are blocked before backend
+  submission;
+- the UI communicates which regions / triplets will be written.
 
 ### 4. Add Classifier Training and Prediction Scopes
 
@@ -430,11 +507,12 @@ Recommended scenarios:
 
 ## Open Questions
 
-1. Should cross-sample feature extraction launch from the existing widget with a
-   separate mode, or from a dedicated dialog?
+1. Should cross-sample feature extraction launch from the existing widget, or
+   from a dedicated dialog?
 
-   Recommendation: start with a separate mode inside the existing widget so the
-   current single-region flow remains intact.
+   Recommendation: start inside the existing widget by evolving the current
+   single-region selectors into an explicit triplet list, so the current flow
+   remains recognizable.
 
 2. Should batch feature extraction allow targets with no image?
 
@@ -461,7 +539,8 @@ Phase 1 should make the viewer context unambiguous.
 
 Phase 2 should then make table-level workflows explicit:
 
-- feature extraction becomes a batch of explicit per-region targets;
+- feature extraction becomes a batch of explicit
+  `coordinate_system -> segmentation -> image` triplets plus one output table;
 - classifier training becomes table-level by default;
 - classifier prediction remains active-region by default, with explicit
   complete-table prediction as an option.
