@@ -473,6 +473,25 @@ Work:
 - ensure layer pruning does not incorrectly clear a still-valid selected
   segmentation after the widget has rebound to the new coordinate system.
 
+Decision:
+
+- treat the selected segmentation as a `SpatialData` labels element identity,
+  not as the old live napari layer object;
+- on shared coordinate-system change, `ObjectClassificationWidget` must rebind
+  from `app_state.coordinate_system` in its `coordinate_system_changed`
+  handler before reacting to the old-layer removal path;
+- this relies on the shared `HarpyAppState.set_coordinate_system(...)` order:
+  update app-state coordinate system -> emit `coordinate_system_changed` ->
+  prune old Harpy-managed layers;
+- the coordinate-system signal handler should therefore refresh coordinate
+  system selection, segmentation options, table options, labels-layer
+  preparation, and controller binding before
+  `_on_primary_labels_layers_changed()` can interpret old-layer removal as
+  “the current segmentation disappeared”;
+- in other words: for a coordinate-system switch, rebinding to the new
+  coordinate context is the primary reaction; live-layer removal is secondary
+  cleanup.
+
 Acceptance:
 
 - changing coordinate system in object classification updates `ViewerWidget`;
