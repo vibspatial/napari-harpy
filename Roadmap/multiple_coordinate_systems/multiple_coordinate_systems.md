@@ -488,6 +488,11 @@ Decision:
   preparation, and controller binding before
   `_on_primary_labels_layers_changed()` can interpret old-layer removal as
   “the current segmentation disappeared”;
+- add a narrow safety guard (for example a short-lived
+  `_is_handling_coordinate_system_change` flag) so
+  `_on_primary_labels_layers_changed()` ignores pruning churn while the
+  coordinate-system signal handler is actively rebinding the widget to the new
+  coordinate context;
 - in other words: for a coordinate-system switch, rebinding to the new
   coordinate context is the primary reaction; live-layer removal is secondary
   cleanup.
