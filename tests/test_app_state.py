@@ -3,8 +3,14 @@ from __future__ import annotations
 from collections.abc import Callable
 from types import SimpleNamespace
 
+import napari_harpy._app_state as app_state_module
 import napari_harpy._interactive as interactive_module
-from napari_harpy._app_state import FeatureMatrixWrittenEvent, HarpyAppState, get_or_create_app_state
+from napari_harpy._app_state import (
+    CoordinateSystemChangedEvent,
+    FeatureMatrixWrittenEvent,
+    HarpyAppState,
+    get_or_create_app_state,
+)
 from napari_harpy.widgets._feature_extraction_widget import FeatureExtractionWidget
 from napari_harpy.widgets._object_classification_widget import ObjectClassificationWidget
 
@@ -111,6 +117,139 @@ def test_harpy_app_state_emits_feature_matrix_written_and_marks_table_dirty(qtbo
     state.clear_table_dirty(sdata_blobs, "table")
 
     assert state.is_table_dirty(sdata_blobs, "table") is False
+
+
+def test_harpy_app_state_set_coordinate_system_emits_event_and_prunes_layers(qtbot, monkeypatch, sdata_blobs) -> None:
+    state = HarpyAppState()
+    state.sdata = sdata_blobs
+    removed_calls: list[dict[str, object | None]] = []
+
+    monkeypatch.setattr(
+        state.viewer_adapter,
+        "remove_layers_outside_coordinate_system",
+        lambda *, sdata, coordinate_system: removed_calls.append(
+            {"sdata": sdata, "coordinate_system": coordinate_system}
+        )
+        or [],
+    )
+
+    with qtbot.waitSignal(state.coordinate_system_changed) as blocker:
+        changed = state.set_coordinate_system("global", source="test")
+
+    assert changed is True
+    assert state.coordinate_system == "global"
+    assert removed_calls == [{"sdata": sdata_blobs, "coordinate_system": "global"}]
+    assert isinstance(blocker.args[0], CoordinateSystemChangedEvent)
+    assert blocker.args[0] == CoordinateSystemChangedEvent(
+        sdata=sdata_blobs,
+        previous_coordinate_system=None,
+        coordinate_system="global",
+        source="test",
+    )
+
+    changed = state.set_coordinate_system("global", source="test")
+
+    assert changed is False
+    assert removed_calls == [{"sdata": sdata_blobs, "coordinate_system": "global"}]
+
+
+def test_harpy_app_state_set_sdata_keeps_previous_coordinate_system_when_still_valid(monkeypatch) -> None:
+    first_sdata = object()
+    second_sdata = object()
+    state = HarpyAppState()
+    removed_sdata_calls: list[object] = []
+    coordinate_events: list[CoordinateSystemChangedEvent] = []
+
+    coordinate_systems_by_sdata_id = {
+        id(first_sdata): ["global", "local"],
+        id(second_sdata): ["local", "zeta"],
+    }
+    monkeypatch.setattr(
+        app_state_module,
+        "get_coordinate_system_names_from_sdata",
+        lambda sdata: coordinate_systems_by_sdata_id[id(sdata)],
+    )
+    monkeypatch.setattr(
+        state.viewer_adapter,
+        "remove_layers_for_sdata",
+        lambda sdata: removed_sdata_calls.append(sdata) or [],
+    )
+    state.coordinate_system_changed.connect(coordinate_events.append)
+
+    state.set_sdata(first_sdata)
+    assert state.coordinate_system == "global"
+
+    coordinate_events.clear()
+    state.set_coordinate_system("local", source="test")
+    assert state.coordinate_system == "local"
+
+    coordinate_events.clear()
+    removed_sdata_calls.clear()
+    state.set_sdata(second_sdata)
+
+    assert state.sdata is second_sdata
+    assert state.coordinate_system == "local"
+    assert removed_sdata_calls == [first_sdata]
+    assert coordinate_events == []
+
+
+def test_harpy_app_state_set_sdata_selects_first_sorted_coordinate_system_when_previous_is_invalid(monkeypatch) -> None:
+    first_sdata = object()
+    second_sdata = object()
+    state = HarpyAppState()
+    removed_sdata_calls: list[object] = []
+    coordinate_events: list[CoordinateSystemChangedEvent] = []
+
+    coordinate_systems_by_sdata_id = {
+        id(first_sdata): ["local"],
+        id(second_sdata): ["alpha", "beta"],
+    }
+    monkeypatch.setattr(
+        app_state_module,
+        "get_coordinate_system_names_from_sdata",
+        lambda sdata: coordinate_systems_by_sdata_id[id(sdata)],
+    )
+    monkeypatch.setattr(
+        state.viewer_adapter,
+        "remove_layers_for_sdata",
+        lambda sdata: removed_sdata_calls.append(sdata) or [],
+    )
+    state.coordinate_system_changed.connect(coordinate_events.append)
+
+    state.set_sdata(first_sdata)
+    assert state.coordinate_system == "local"
+
+    coordinate_events.clear()
+    removed_sdata_calls.clear()
+    state.set_sdata(second_sdata)
+
+    assert state.sdata is second_sdata
+    assert state.coordinate_system == "alpha"
+    assert removed_sdata_calls == [first_sdata]
+    assert coordinate_events == [
+        CoordinateSystemChangedEvent(
+            sdata=second_sdata,
+            previous_coordinate_system="local",
+            coordinate_system="alpha",
+            source="set_sdata",
+        )
+    ]
+
+    coordinate_events.clear()
+    removed_sdata_calls.clear()
+    state.clear_sdata()
+
+    assert state.sdata is None
+    assert state.coordinate_system is None
+    assert removed_sdata_calls == [second_sdata]
+    assert coordinate_events == [
+        CoordinateSystemChangedEvent(
+            sdata=None,
+            previous_coordinate_system="alpha",
+            coordinate_system=None,
+            source="set_sdata",
+        )
+    ]
 
 
 def test_widgets_share_app_state_for_same_viewer(qtbot) -> None:

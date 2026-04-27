@@ -354,6 +354,89 @@ def test_viewer_adapter_remove_image_layers_removes_stack_and_overlay_bindings(s
     assert adapter.layer_bindings.get_binding(overlay_layer) is None
 
 
+def test_viewer_adapter_remove_layers_outside_coordinate_system_removes_only_nonmatching_registered_layers(
+    sdata_blobs,
+) -> None:
+    keep_layer = make_image_layer(name="keep")
+    remove_image_layer = make_image_layer(name="remove_image")
+    remove_labels_layer = make_labels_layer(sdata=sdata_blobs)
+    external_layer = make_image_layer(name="external")
+    viewer = DummyViewer([keep_layer, remove_image_layer, remove_labels_layer, external_layer])
+    adapter = ViewerAdapter(viewer)
+
+    adapter.register_layer(
+        keep_layer,
+        sdata=sdata_blobs,
+        element_name="keep_image",
+        element_type="image",
+        coordinate_system="global",
+    )
+    adapter.register_layer(
+        remove_image_layer,
+        sdata=sdata_blobs,
+        element_name="remove_image",
+        element_type="image",
+        coordinate_system="local",
+    )
+    adapter.register_layer(
+        remove_labels_layer,
+        sdata=sdata_blobs,
+        element_name="blobs_labels",
+        element_type="labels",
+        coordinate_system="local",
+    )
+
+    removed_bindings = adapter.remove_layers_outside_coordinate_system(sdata=sdata_blobs, coordinate_system="global")
+
+    assert [binding.element_name for binding in removed_bindings] == ["remove_image", "blobs_labels"]
+    assert list(viewer.layers) == [keep_layer, external_layer]
+    assert adapter.layer_bindings.get_binding(keep_layer) is not None
+    assert adapter.layer_bindings.get_binding(remove_image_layer) is None
+    assert adapter.layer_bindings.get_binding(remove_labels_layer) is None
+    assert adapter.layer_bindings.get_binding(external_layer) is None
+
+
+def test_viewer_adapter_remove_layers_for_sdata_removes_only_matching_registered_layers(sdata_blobs) -> None:
+    removed_image_layer = make_image_layer(name="remove_image")
+    removed_labels_layer = make_labels_layer(sdata=sdata_blobs)
+    kept_layer = make_image_layer(name="keep")
+    external_layer = make_image_layer(name="external")
+    other_sdata = SimpleNamespace()
+    viewer = DummyViewer([removed_image_layer, removed_labels_layer, kept_layer, external_layer])
+    adapter = ViewerAdapter(viewer)
+
+    adapter.register_layer(
+        removed_image_layer,
+        sdata=sdata_blobs,
+        element_name="remove_image",
+        element_type="image",
+        coordinate_system="global",
+    )
+    adapter.register_layer(
+        removed_labels_layer,
+        sdata=sdata_blobs,
+        element_name="blobs_labels",
+        element_type="labels",
+        coordinate_system="global",
+    )
+    adapter.register_layer(
+        kept_layer,
+        sdata=other_sdata,
+        element_name="keep_image",
+        element_type="image",
+        coordinate_system="global",
+    )
+
+    removed_bindings = adapter.remove_layers_for_sdata(sdata_blobs)
+
+    assert [binding.element_name for binding in removed_bindings] == ["remove_image", "blobs_labels"]
+    assert list(viewer.layers) == [kept_layer, external_layer]
+    assert adapter.layer_bindings.get_binding(removed_image_layer) is None
+    assert adapter.layer_bindings.get_binding(removed_labels_layer) is None
+    assert adapter.layer_bindings.get_binding(kept_layer) is not None
+    assert adapter.layer_bindings.get_binding(external_layer) is None
+
+
 def test_viewer_adapter_ignores_unregistered_image_layer_even_with_legacy_metadata(sdata_blobs) -> None:
     image_layer = make_image_layer(
         name="raw image",

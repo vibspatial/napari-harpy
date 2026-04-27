@@ -396,16 +396,16 @@ Work:
 
 Acceptance:
 
-- setting a new coordinate system emits one event;
-- setting the same coordinate system is a no-op;
-- `set_sdata(...)` keeps the previous coordinate system when still valid in the
+- [x] setting a new coordinate system emits one event;
+- [x] setting the same coordinate system is a no-op;
+- [x] `set_sdata(...)` keeps the previous coordinate system when still valid in the
   new dataset;
-- otherwise `set_sdata(...)` selects the first sorted available coordinate
+- [x] otherwise `set_sdata(...)` selects the first sorted available coordinate
   system, or `None` when none exist;
-- clearing `sdata` clears coordinate system;
-- replacing or clearing `sdata` removes registered napari layers belonging to
+- [x] clearing `sdata` clears coordinate system;
+- [x] replacing or clearing `sdata` removes registered napari layers belonging to
   the previous `sdata`;
-- event contains previous and next coordinate systems.
+- [x] event contains previous and next coordinate systems.
 
 ### 2. Add viewer-layer pruning by coordinate system
 

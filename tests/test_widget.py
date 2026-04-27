@@ -120,6 +120,23 @@ def select_segmentation(widget: HarpyWidget, index: int = 0) -> None:
     widget.segmentation_combo.setCurrentIndex(index)
 
 
+_SUCCESS_FEEDBACK_STYLE = {
+    "text": "#047857",
+    "border": "#a7f3d0",
+    "background": "#ecfdf5",
+}
+
+
+def _assert_persistence_success_feedback(widget: HarpyWidget, expected_message: str) -> None:
+    assert "Persistence Updated" in widget.persistence_feedback.text()
+    assert expected_message in widget.persistence_feedback.text()
+
+    stylesheet = widget.persistence_feedback.styleSheet()
+    assert f"color: {_SUCCESS_FEEDBACK_STYLE['text']}" in stylesheet
+    assert f"background-color: {_SUCCESS_FEEDBACK_STYLE['background']}" in stylesheet
+    assert f"border: 1px solid {_SUCCESS_FEEDBACK_STYLE['border']}" in stylesheet
+
+
 class _DeferredWorker(QObject):
     returned = Signal(object)
     errored = Signal(object)
@@ -1065,9 +1082,7 @@ def test_widget_syncs_user_class_to_backed_zarr(qtbot, backed_sdata_blobs: Spati
 
     assert widget.sync_button.isEnabled()
     assert widget.reload_button.isEnabled()
-    assert "Persistence Updated" in widget.persistence_feedback.text()
-    assert f"Wrote `table` table state to `{expected_table_path}`." in widget.persistence_feedback.text()
-    assert "#166534" in widget.persistence_feedback.styleSheet()
+    _assert_persistence_success_feedback(widget, f"Wrote `table` table state to `{expected_table_path}`.")
     assert isinstance(reread["table"].obs[USER_CLASS_COLUMN].dtype, pd.CategoricalDtype)
     assert list(reread["table"].obs[USER_CLASS_COLUMN].cat.categories) == [0, 3]
     assert reread["table"].obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
@@ -1173,12 +1188,10 @@ def test_widget_dirty_reload_can_write_then_reload(qtbot, monkeypatch, backed_sd
     assert widget._persistence_controller.is_dirty is False
     assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
     assert reread["table"].obs.loc[disk_mask, USER_CLASS_COLUMN].tolist() == [3]
-    assert "Persistence Updated" in widget.persistence_feedback.text()
-    assert (
-        f"Wrote local changes and reloaded `table` table state from `{expected_table_path}`."
-        in widget.persistence_feedback.text()
+    _assert_persistence_success_feedback(
+        widget,
+        f"Wrote local changes and reloaded `table` table state from `{expected_table_path}`.",
     )
-    assert "#166534" in widget.persistence_feedback.styleSheet()
 
 
 def test_widget_dirty_reload_can_discard_local_edits(qtbot, monkeypatch, backed_sdata_blobs: SpatialData) -> None:
@@ -1213,9 +1226,7 @@ def test_widget_dirty_reload_can_discard_local_edits(qtbot, monkeypatch, backed_
     assert widget._persistence_controller.is_dirty is False
     assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [0]
     assert reread["table"].obs.loc[disk_mask, USER_CLASS_COLUMN].tolist() == [0]
-    assert "Persistence Updated" in widget.persistence_feedback.text()
-    assert f"Reloaded `table` table state from `{expected_table_path}`." in widget.persistence_feedback.text()
-    assert "#166534" in widget.persistence_feedback.styleSheet()
+    _assert_persistence_success_feedback(widget, f"Reloaded `table` table state from `{expected_table_path}`.")
 
 
 def test_widget_reloads_table_state_from_backed_zarr(qtbot, backed_sdata_blobs: SpatialData) -> None:
@@ -1245,9 +1256,7 @@ def test_widget_reloads_table_state_from_backed_zarr(qtbot, backed_sdata_blobs: 
         table.obs["instance_id"] == int(table.obs["instance_id"].iloc[-1])
     )
 
-    assert "Persistence Updated" in widget.persistence_feedback.text()
-    assert f"Reloaded `table` table state from `{expected_table_path}`." in widget.persistence_feedback.text()
-    assert "#166534" in widget.persistence_feedback.styleSheet()
+    _assert_persistence_success_feedback(widget, f"Reloaded `table` table state from `{expected_table_path}`.")
     assert isinstance(table.obs[USER_CLASS_COLUMN].dtype, pd.CategoricalDtype)
     assert list(table.obs[USER_CLASS_COLUMN].cat.categories) == [0, 7]
     assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [7]
@@ -1285,9 +1294,7 @@ def test_widget_reload_falls_back_when_selected_feature_key_disappears(qtbot, ba
         widget.feature_matrix_combo.itemText(index) for index in range(widget.feature_matrix_combo.count())
     ]
 
-    assert "Persistence Updated" in widget.persistence_feedback.text()
-    assert f"Reloaded `table` table state from `{expected_table_path}`." in widget.persistence_feedback.text()
-    assert "#166534" in widget.persistence_feedback.styleSheet()
+    _assert_persistence_success_feedback(widget, f"Reloaded `table` table state from `{expected_table_path}`.")
     assert feature_matrix_items == ["features_1"]
     assert widget.selected_feature_key == "features_1"
     assert "features_2" not in table.obsm
@@ -1370,9 +1377,7 @@ def test_widget_reload_freezes_classifier_worker_and_ignores_late_results(
     assert workers[0].quit_called is True
     assert widget._classifier_controller.is_training is False
     assert widget._classifier_controller.is_dirty is False
-    assert "Persistence Updated" in widget.persistence_feedback.text()
-    assert f"Reloaded `table` table state from `{expected_table_path}`." in widget.persistence_feedback.text()
-    assert "#166534" in widget.persistence_feedback.styleSheet()
+    _assert_persistence_success_feedback(widget, f"Reloaded `table` table state from `{expected_table_path}`.")
     assert table.obs[PRED_CLASS_COLUMN].eq(7).all()
     assert table.obs[PRED_CONFIDENCE_COLUMN].eq(0.77).all()
     assert "Loaded predictions for" in widget.classifier_feedback.text()
