@@ -478,15 +478,15 @@ Files:
 
 Work:
 
-- connect `coordinate_system_changed`;
-- make local combo changes publish to app state;
-- move local refresh logic into an app-state signal handler;
-- refresh from `app_state.coordinate_system` on `sdata_changed` without
+- [x] connect `coordinate_system_changed`;
+- [x] make local combo changes publish to app state;
+- [x] move local refresh logic into an app-state signal handler;
+- [x] refresh from `app_state.coordinate_system` on `sdata_changed` without
   choosing a widget-local default;
-- on coordinate-system change, clear the selected segmentation back to
+- [x] on coordinate-system change, clear the selected segmentation back to
   "Choose segmentation" instead of auto-preserving or auto-loading a
   segmentation in the new coordinate system;
-- ensure layer pruning happens after the widget has already cleared its
+- [x] ensure layer pruning happens after the widget has already cleared its
   segmentation-dependent selection and controller state.
 
 Decision:
@@ -513,11 +513,11 @@ Decision:
 
 Acceptance:
 
-- changing coordinate system in object classification updates `ViewerWidget`;
-- the selected labels layer from the old coordinate system is removed;
-- the segmentation combo falls back to "Choose segmentation" even if a
+- [x] changing coordinate system in object classification updates `ViewerWidget`;
+- [x] the selected labels layer from the old coordinate system is removed;
+- [x] the segmentation combo falls back to "Choose segmentation" even if a
   same-named segmentation exists in the new coordinate system;
-- annotation and classifier state are unbound until the user explicitly
+- [x] annotation and classifier state are unbound until the user explicitly
   selects a segmentation in the new coordinate system.
 
 ### 5. Wire `FeatureExtractionWidget`
