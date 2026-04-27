@@ -418,9 +418,12 @@ class ObjectClassificationWidget(QWidget):
         self.refresh_from_sdata(sdata)
 
     def _on_app_state_coordinate_system_changed(self, event: CoordinateSystemChangedEvent) -> None:
+        del event
         self._is_handling_coordinate_system_change = True
         try:
-            self._sync_coordinate_system_combo_selection(event.coordinate_system)
+            self._sync_coordinate_system_combo_selection(
+                self._app_state.coordinate_system
+            )  # we prefer to read .coordinate_system from authorative app state instead of from event
             self._set_selected_coordinate_system(self.coordinate_system_combo.currentIndex())
             self._refresh_label_options()
             # Coordinate-system switches intentionally clear the selected
