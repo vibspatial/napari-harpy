@@ -440,19 +440,19 @@ Files:
 
 Work:
 
-- connect `self._app_state.coordinate_system_changed` in `__init__`;
-- replace local coordinate-system discovery with the shared helper from
+- [x] connect `self._app_state.coordinate_system_changed` in `__init__`;
+- [x] replace local coordinate-system discovery with the shared helper from
   `_spatialdata.py`;
-- make combo changes call `app_state.set_coordinate_system(...)`;
-- make the signal handler update the combo and refresh cards;
-- on `sdata_changed`, populate combo choices around `app_state.coordinate_system`;
-- never select or publish a default coordinate system locally.
+- [x] make combo changes call `app_state.set_coordinate_system(...)`;
+- [x] make the signal handler update the combo and refresh cards;
+- [x] on `sdata_changed`, populate combo choices around `app_state.coordinate_system`;
+- [x] never select or publish a default coordinate system locally.
 
 Acceptance:
 
-- changing the viewer widget coordinate system emits app-state change;
-- cards refresh from the shared active coordinate system;
-- layers from the old coordinate system are removed.
+- [x] changing the viewer widget coordinate system emits app-state change;
+- [x] cards refresh from the shared active coordinate system;
+- [x] layers from the old coordinate system are removed.
 
 ### 4. Wire `ObjectClassificationWidget`
 

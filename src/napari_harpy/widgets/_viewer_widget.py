@@ -28,9 +28,10 @@ from qtpy.QtWidgets import (
 from spatialdata import read_zarr
 from spatialdata.transformations import get_transformation
 
-from napari_harpy._app_state import HarpyAppState, get_or_create_app_state
+from napari_harpy._app_state import CoordinateSystemChangedEvent, HarpyAppState, get_or_create_app_state
 from napari_harpy._spatialdata import (
     get_annotating_table_names,
+    get_coordinate_system_names_from_sdata,
     get_image_channel_names_from_sdata,
     get_table_color_source_options,
 )
@@ -1017,6 +1018,7 @@ class ViewerWidget(QWidget):
         root_layout.addWidget(self.scroll_area)
 
         self._app_state.sdata_changed.connect(self._on_sdata_changed)
+        self._app_state.coordinate_system_changed.connect(self._on_app_state_coordinate_system_changed)
         self.refresh_from_sdata(self._app_state.sdata)
 
     @property
@@ -1048,8 +1050,18 @@ class ViewerWidget(QWidget):
         """Refresh the widget when the shared loaded `SpatialData` changes."""
         self.refresh_from_sdata(sdata)
 
-    def _on_coordinate_system_changed(self) -> None:
-        """Refresh the filtered image and labels cards when the coordinate system changes."""
+    def _on_coordinate_system_changed(self, index: int) -> None:
+        """Publish explicit user coordinate-system changes to shared app state."""
+        coordinate_system = self.coordinate_system_combo.itemData(index)
+        self._app_state.set_coordinate_system(
+            coordinate_system if isinstance(coordinate_system, str) else None,
+            source="viewer_widget",
+        )
+
+    def _on_app_state_coordinate_system_changed(self, event: CoordinateSystemChangedEvent) -> None:
+        """Refresh the combo and cards when the shared coordinate system changes."""
+        del event
+        self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
         self._refresh_coordinate_system_content()
 
     def _open_spatialdata(self, _checked: bool = False) -> None:
@@ -1078,7 +1090,6 @@ class ViewerWidget(QWidget):
     def refresh_from_sdata(self, sdata: SpatialData | None) -> None:
         """Refresh the viewer widget from the currently loaded `SpatialData`."""
         with QSignalBlocker(self.coordinate_system_combo):
-            previous_coordinate_system = self.coordinate_system_combo.currentText()
             self.coordinate_system_combo.clear()
 
             if sdata is None:
@@ -1089,22 +1100,19 @@ class ViewerWidget(QWidget):
                 self._update_section_empty_states([], [])
                 return
 
-            coordinate_systems = _get_coordinate_systems_from_sdata(sdata)
-            self.coordinate_system_combo.addItems(coordinate_systems)
-
-            if previous_coordinate_system in coordinate_systems:
-                self.coordinate_system_combo.setCurrentIndex(coordinate_systems.index(previous_coordinate_system))
-            elif coordinate_systems:
-                self.coordinate_system_combo.setCurrentIndex(0)
+            coordinate_systems = get_coordinate_system_names_from_sdata(sdata)
+            for coordinate_system in coordinate_systems:
+                self.coordinate_system_combo.addItem(coordinate_system, coordinate_system)
 
             self.empty_state_label.hide()
             self.coordinate_system_combo.setEnabled(bool(coordinate_systems))
 
+        self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
         self._refresh_coordinate_system_content()
 
     def _refresh_coordinate_system_content(self) -> None:
         sdata = self._app_state.sdata
-        coordinate_system = self.coordinate_system_combo.currentText()
+        coordinate_system = self._app_state.coordinate_system
 
         if sdata is None or not coordinate_system:
             self._clear_cards()
@@ -1227,7 +1235,7 @@ class ViewerWidget(QWidget):
 
     def _add_or_update_primary_labels_layer(self, label_name: str) -> None:
         sdata = self._app_state.sdata
-        coordinate_system = self.coordinate_system_combo.currentText()
+        coordinate_system = self._app_state.coordinate_system
 
         if sdata is None or not coordinate_system:
             self._set_action_feedback(
@@ -1258,7 +1266,7 @@ class ViewerWidget(QWidget):
 
     def _add_or_update_styled_labels_layer(self, request: LabelsLoadRequest) -> None:
         sdata = self._app_state.sdata
-        coordinate_system = self.coordinate_system_combo.currentText()
+        coordinate_system = self._app_state.coordinate_system
 
         if sdata is None or not coordinate_system:
             self._set_action_feedback(
@@ -1338,7 +1346,7 @@ class ViewerWidget(QWidget):
 
     def _add_or_update_image_layer(self, request: ImageLoadRequest) -> None:
         sdata = self._app_state.sdata
-        coordinate_system = self.coordinate_system_combo.currentText()
+        coordinate_system = self._app_state.coordinate_system
         image_name = request.image_name
 
         if sdata is None or not coordinate_system:
@@ -1480,6 +1488,15 @@ class ViewerWidget(QWidget):
         self.action_feedback_label.setStyleSheet("")
         self.action_feedback_label.hide()
 
+    def _sync_coordinate_system_combo_selection(self, coordinate_system: str | None) -> None:
+        with QSignalBlocker(self.coordinate_system_combo):
+            if coordinate_system is None:
+                self.coordinate_system_combo.setCurrentIndex(-1)
+                return
+
+            index = self.coordinate_system_combo.findData(coordinate_system)
+            self.coordinate_system_combo.setCurrentIndex(index)
+
     def _create_header_logo(self) -> QLabel:
         logo_label = QLabel()
         logo_label.setObjectName("viewer_widget_header_logo")
@@ -1508,17 +1525,6 @@ def _clear_layout(layout: QLayout) -> None:
 
 def _create_form_label(text: str) -> QLabel:
     return create_form_label(text)
-
-
-def _get_coordinate_systems_from_sdata(sdata: SpatialData) -> list[str]:
-    coordinate_systems: set[str] = set()
-
-    for collection_name in ("labels", "images"):
-        collection = getattr(sdata, collection_name, {})
-        for element in collection.values():
-            coordinate_systems.update(get_transformation(element, get_all=True).keys())
-
-    return sorted(coordinate_systems)
 
 
 def _get_labels_in_coordinate_system(sdata: SpatialData, coordinate_system: str) -> list[str]:

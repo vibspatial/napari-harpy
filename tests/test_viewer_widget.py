@@ -4,10 +4,13 @@ from collections.abc import Callable
 from html import unescape
 from types import SimpleNamespace
 
+import numpy as np
+from napari.layers import Image
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import QComboBox
 
+import napari_harpy._app_state as app_state_module
 import napari_harpy.widgets._viewer_widget as viewer_widget_module
 from napari_harpy._table_color_source import TableColorSourceSpec
 from napari_harpy.widgets._viewer_widget import ViewerWidget
@@ -57,6 +60,19 @@ def _assert_action_feedback_card(widget: ViewerWidget, *, title: str, kind: str)
     assert title in widget.action_feedback_label.text()
     assert f"background-color: {_FEEDBACK_BACKGROUND_BY_KIND[kind]}" in widget.action_feedback_label.styleSheet()
     assert not widget.action_feedback_label.isHidden()
+
+
+def _patch_coordinate_system_names(monkeypatch, coordinate_systems: list[str]) -> None:
+    monkeypatch.setattr(
+        viewer_widget_module,
+        "get_coordinate_system_names_from_sdata",
+        lambda sdata: list(coordinate_systems),
+    )
+    monkeypatch.setattr(
+        app_state_module,
+        "get_coordinate_system_names_from_sdata",
+        lambda sdata: list(coordinate_systems),
+    )
 
 
 def test_viewer_widget_can_be_instantiated(qtbot) -> None:
@@ -318,7 +334,7 @@ def test_viewer_widget_labels_card_repopulates_color_sources_when_linked_table_c
 
     qtbot.addWidget(widget)
 
-    monkeypatch.setattr(viewer_widget_module, "_get_coordinate_systems_from_sdata", lambda sdata: ["global"])
+    _patch_coordinate_system_names(monkeypatch, ["global"])
     monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: [])
     monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: ["labels"])
     monkeypatch.setattr(viewer_widget_module, "get_annotating_table_names", lambda sdata, label_name: ["table_a", "table_b"])
@@ -396,7 +412,7 @@ def test_viewer_widget_overlay_channel_panel_scrolls_when_many_channels(qtbot, m
 
     qtbot.addWidget(widget)
 
-    monkeypatch.setattr(viewer_widget_module, "_get_coordinate_systems_from_sdata", lambda sdata: ["global"])
+    _patch_coordinate_system_names(monkeypatch, ["global"])
     monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
     monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: ["image"])
     monkeypatch.setattr(viewer_widget_module, "get_image_channel_names_from_sdata", lambda sdata, image_name: many_channels)
@@ -419,7 +435,7 @@ def test_viewer_widget_surfaces_duplicate_channel_names_and_disables_overlay(qtb
 
     qtbot.addWidget(widget)
 
-    monkeypatch.setattr(viewer_widget_module, "_get_coordinate_systems_from_sdata", lambda sdata: ["global"])
+    _patch_coordinate_system_names(monkeypatch, ["global"])
     monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
     monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: ["image"])
     monkeypatch.setattr(
@@ -455,7 +471,7 @@ def test_viewer_widget_filters_cards_by_selected_coordinate_system(qtbot, monkey
 
     qtbot.addWidget(widget)
 
-    monkeypatch.setattr(viewer_widget_module, "_get_coordinate_systems_from_sdata", lambda sdata: ["global", "local"])
+    _patch_coordinate_system_names(monkeypatch, ["global", "local"])
     monkeypatch.setattr(
         viewer_widget_module,
         "_get_labels_in_coordinate_system",
@@ -482,13 +498,99 @@ def test_viewer_widget_filters_cards_by_selected_coordinate_system(qtbot, monkey
         widget.app_state.set_sdata(fake_sdata)
 
     assert widget.coordinate_system_combo.count() == 2
+    assert widget.app_state.coordinate_system == "global"
     assert [card.image_name for card in widget.image_cards] == ["image_global"]
     assert [card.label_name for card in widget.labels_cards] == ["labels_global"]
 
-    widget.coordinate_system_combo.setCurrentIndex(1)
+    with qtbot.waitSignal(widget.app_state.coordinate_system_changed) as blocker:
+        widget.coordinate_system_combo.setCurrentIndex(1)
 
+    assert blocker.args[0].previous_coordinate_system == "global"
+    assert blocker.args[0].coordinate_system == "local"
+    assert blocker.args[0].source == "viewer_widget"
+    assert widget.app_state.coordinate_system == "local"
     assert [card.image_name for card in widget.image_cards] == ["image_local"]
     assert [card.label_name for card in widget.labels_cards] == ["labels_local"]
+
+
+def test_viewer_widget_refreshes_from_shared_coordinate_system_changes(qtbot, monkeypatch) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    fake_sdata = object()
+
+    qtbot.addWidget(widget)
+
+    _patch_coordinate_system_names(monkeypatch, ["global", "local"])
+    monkeypatch.setattr(
+        viewer_widget_module,
+        "_get_labels_in_coordinate_system",
+        lambda sdata, coordinate_system: ["labels_global"] if coordinate_system == "global" else ["labels_local"],
+    )
+    monkeypatch.setattr(
+        viewer_widget_module,
+        "_get_images_in_coordinate_system",
+        lambda sdata, coordinate_system: ["image_global"] if coordinate_system == "global" else ["image_local"],
+    )
+    monkeypatch.setattr(viewer_widget_module, "get_image_channel_names_from_sdata", lambda sdata, image_name: ["c0", "c1"])
+    monkeypatch.setattr(
+        viewer_widget_module,
+        "get_annotating_table_names",
+        lambda sdata, label_name: ["table_global"] if label_name == "labels_global" else ["table_local"],
+    )
+    monkeypatch.setattr(viewer_widget_module, "get_table_color_source_options", lambda sdata, table_name: [])
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(fake_sdata)
+
+    changed = widget.app_state.set_coordinate_system("local", source="object_classification_widget")
+
+    assert changed is True
+    assert widget.coordinate_system_combo.currentText() == "local"
+    assert [card.image_name for card in widget.image_cards] == ["image_local"]
+    assert [card.label_name for card in widget.labels_cards] == ["labels_local"]
+
+
+def test_viewer_widget_coordinate_system_switch_prunes_old_harpy_layers(qtbot, monkeypatch) -> None:
+    global_layer = Image(np.zeros((2, 2), dtype=np.float32), name="global_layer")
+    local_layer = Image(np.zeros((2, 2), dtype=np.float32), name="local_layer")
+    external_layer = Image(np.zeros((2, 2), dtype=np.float32), name="external_layer")
+    viewer = DummyViewer()
+    viewer.layers.extend([global_layer, local_layer, external_layer])
+    widget = ViewerWidget(viewer)
+    fake_sdata = object()
+
+    qtbot.addWidget(widget)
+
+    _patch_coordinate_system_names(monkeypatch, ["global", "local"])
+    monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: [])
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(fake_sdata)
+
+    widget.app_state.viewer_adapter.register_layer(
+        global_layer,
+        sdata=fake_sdata,
+        element_name="global_image",
+        element_type="image",
+        coordinate_system="global",
+    )
+    widget.app_state.viewer_adapter.register_layer(
+        local_layer,
+        sdata=fake_sdata,
+        element_name="local_image",
+        element_type="image",
+        coordinate_system="local",
+    )
+
+    with qtbot.waitSignal(widget.app_state.coordinate_system_changed):
+        widget.coordinate_system_combo.setCurrentIndex(1)
+
+    assert widget.app_state.coordinate_system == "local"
+    assert list(viewer.layers) == [local_layer, external_layer]
+    assert widget.app_state.viewer_adapter.layer_bindings.get_binding(global_layer) is None
+    assert widget.app_state.viewer_adapter.layer_bindings.get_binding(local_layer) is not None
+    assert widget.app_state.viewer_adapter.layer_bindings.get_binding(external_layer) is None
 
 
 def test_viewer_widget_open_spatialdata_loads_selected_store(qtbot, monkeypatch, sdata_blobs) -> None:
@@ -799,7 +901,7 @@ def test_viewer_widget_add_update_image_overlay_passes_selected_channels_and_col
 
     qtbot.addWidget(widget)
 
-    monkeypatch.setattr(viewer_widget_module, "_get_coordinate_systems_from_sdata", lambda sdata: ["global"])
+    _patch_coordinate_system_names(monkeypatch, ["global"])
     monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
     monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: ["image"])
     monkeypatch.setattr(
@@ -904,7 +1006,7 @@ def test_viewer_widget_add_update_image_uses_selected_coordinate_system(qtbot, m
 
     qtbot.addWidget(widget)
 
-    monkeypatch.setattr(viewer_widget_module, "_get_coordinate_systems_from_sdata", lambda sdata: ["global", "local"])
+    _patch_coordinate_system_names(monkeypatch, ["global", "local"])
     monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
     monkeypatch.setattr(
         viewer_widget_module,
