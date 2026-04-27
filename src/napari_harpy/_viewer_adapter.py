@@ -685,6 +685,38 @@ class ViewerAdapter(QObject):
 
         return removed_layers
 
+    def remove_layers_outside_coordinate_system(
+        self,
+        *,
+        sdata: SpatialData | None,
+        coordinate_system: str | None,
+    ) -> list[LayerBinding]:
+        """Remove Harpy-managed layers that do not belong to the active coordinate system."""
+        removed_bindings: list[LayerBinding] = []
+        for binding in self._layer_bindings.iter_bindings():
+            if sdata is not None and binding.sdata_id != id(sdata):
+                continue
+            if coordinate_system is not None and binding.coordinate_system == coordinate_system:
+                continue
+            removed_bindings.append(binding)
+            self._remove_layer_from_viewer_and_registry(binding.layer)
+
+        return removed_bindings
+
+    def remove_layers_for_sdata(self, sdata: SpatialData | None) -> list[LayerBinding]:
+        """Remove all Harpy-managed layers for one SpatialData object."""
+        if sdata is None:
+            return []
+
+        removed_bindings: list[LayerBinding] = []
+        for binding in self._layer_bindings.iter_bindings():
+            if binding.sdata_id != id(sdata):
+                continue
+            removed_bindings.append(binding)
+            self._remove_layer_from_viewer_and_registry(binding.layer)
+
+        return removed_bindings
+
     def _iter_candidate_layers(self) -> Iterable[Layer]:
         layers = getattr(self._viewer, "layers", None)
         if layers is not None:
@@ -701,6 +733,8 @@ class ViewerAdapter(QObject):
         # `_on_viewer_layer_removed(...)` has already unregistered the binding.
         # Keep this fallback for viewer-like objects that remove layers without
         # exposing or emitting the napari removal event.
+        # So in short: normal path is event-driven.
+        # We do the manual cleanup as a safety net.
         if self._layer_bindings.get_binding(layer) is not None:
             binding = self.unregister_layer(layer)
             if _is_primary_labels_binding(binding):
@@ -969,9 +1003,7 @@ def _build_labels_layer(
     label_element = labels[label_name]
     available_coordinate_systems = set(get_transformation(label_element, get_all=True).keys())
     if coordinate_system not in available_coordinate_systems:
-        raise ValueError(
-            f"Coordinate system `{coordinate_system}` is not available for labels element `{label_name}`."
-        )
+        raise ValueError(f"Coordinate system `{coordinate_system}` is not available for labels element `{label_name}`.")
 
     labels_data = _flatten_multiscale_element(label_element) if isinstance(label_element, DataTree) else label_element
     return Labels(

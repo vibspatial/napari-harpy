@@ -22,7 +22,12 @@ from qtpy.QtWidgets import (
 )
 
 from napari_harpy._annotation import UNLABELED_CLASS, AnnotationController
-from napari_harpy._app_state import FeatureMatrixWrittenEvent, HarpyAppState, get_or_create_app_state
+from napari_harpy._app_state import (
+    CoordinateSystemChangedEvent,
+    FeatureMatrixWrittenEvent,
+    HarpyAppState,
+    get_or_create_app_state,
+)
 from napari_harpy._classifier import ClassifierController
 from napari_harpy._classifier_viewer_styling import (
     COLOR_BY_OPTIONS,
@@ -127,6 +132,7 @@ class ObjectClassificationWidget(QWidget):
         self._label_options: list[SpatialDataLabelsOption] = []
         self._selected_label_option: SpatialDataLabelsOption | None = None
         self._is_preparing_labels_layer = False
+        self._is_handling_coordinate_system_change = False
         self._labels_layer_preparation_message: str | None = None
         self._labels_layer_preparation_error: str | None = None
         self._table_names: list[str] = []
@@ -312,6 +318,7 @@ class ObjectClassificationWidget(QWidget):
         content_layout.addStretch(1)
 
         self._app_state.sdata_changed.connect(self._on_sdata_changed)
+        self._app_state.coordinate_system_changed.connect(self._on_app_state_coordinate_system_changed)
         self._app_state.viewer_adapter.primary_labels_layers_changed.connect(self._on_primary_labels_layers_changed)
         self._app_state.feature_matrix_written.connect(self._on_feature_matrix_written)
         self.refresh_from_sdata(self._app_state.sdata)
@@ -410,6 +417,27 @@ class ObjectClassificationWidget(QWidget):
     def _on_sdata_changed(self, sdata: SpatialData | None) -> None:
         self.refresh_from_sdata(sdata)
 
+    def _on_app_state_coordinate_system_changed(self, event: CoordinateSystemChangedEvent) -> None:
+        del event
+        self._is_handling_coordinate_system_change = True
+        try:
+            self._sync_coordinate_system_combo_selection(
+                self._app_state.coordinate_system
+            )  # we prefer to read .coordinate_system from authorative app state instead of from event
+            self._set_selected_coordinate_system(self.coordinate_system_combo.currentIndex())
+            self._refresh_label_options()
+            # Coordinate-system switches intentionally clear the selected
+            # segmentation instead of trying to preserve or auto-reload it in
+            # the new coordinate system
+            # (e.g. the case where a segmentation mask would be in two coordinate systems).
+            # this is consistent with the viewer widget, where we also clear the napari viewer when switching coordinate system.
+            self._clear_selected_segmentation()
+            self._labels_layer_preparation_message = None
+            self._labels_layer_preparation_error = None
+            self._bind_current_selection(classifier_dirty_reason="the coordinate system changed")
+        finally:
+            self._is_handling_coordinate_system_change = False
+
     def _on_feature_matrix_written(self, event: object) -> None:
         if not isinstance(event, FeatureMatrixWrittenEvent):
             return
@@ -498,7 +526,7 @@ class ObjectClassificationWidget(QWidget):
         self._set_persistence_feedback("")
 
     def _on_primary_labels_layers_changed(self) -> None:
-        if self._is_preparing_labels_layer:
+        if self._is_preparing_labels_layer or self._is_handling_coordinate_system_change:
             return
         # A labels-layer insert/remove only changes live viewer availability,
         # not the shared SpatialData selection model. React narrow here:
@@ -564,8 +592,6 @@ class ObjectClassificationWidget(QWidget):
         self._refresh_table_names()
 
     def _refresh_coordinate_systems(self) -> None:
-        previous_coordinate_system = self.selected_coordinate_system
-
         if self.selected_spatialdata is None:
             self._coordinate_systems = []
         else:
@@ -579,28 +605,28 @@ class ObjectClassificationWidget(QWidget):
             has_coordinate_systems = bool(self._coordinate_systems)
             self.coordinate_system_combo.setEnabled(has_coordinate_systems)
 
-            next_index = (
-                -1
-                if previous_coordinate_system is None
-                else self.coordinate_system_combo.findData(previous_coordinate_system)
-            )
-            if has_coordinate_systems:
-                self.coordinate_system_combo.setCurrentIndex(0 if next_index < 0 else next_index)
-            else:
-                self.coordinate_system_combo.setCurrentIndex(-1)
-
+        self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
         self._set_selected_coordinate_system(self.coordinate_system_combo.currentIndex())
 
     def _on_coordinate_system_changed(self, index: int) -> None:
-        self._set_selected_coordinate_system(index)
-        self._refresh_label_options()
-        self._refresh_table_names()
-        self._prepare_selected_labels_layer()
-        self._bind_current_selection(classifier_dirty_reason="the segmentation selection changed")
+        coordinate_system = self.coordinate_system_combo.itemData(index)
+        self._app_state.set_coordinate_system(
+            coordinate_system if isinstance(coordinate_system, str) else None,
+            source="object_classification_widget",
+        )
 
     def _set_selected_coordinate_system(self, index: int) -> None:
         coordinate_system = self.coordinate_system_combo.itemData(index)
         self._selected_coordinate_system = coordinate_system if isinstance(coordinate_system, str) else None
+
+    def _sync_coordinate_system_combo_selection(self, coordinate_system: str | None) -> None:
+        with QSignalBlocker(self.coordinate_system_combo):
+            if coordinate_system is None:
+                self.coordinate_system_combo.setCurrentIndex(-1)
+                return
+
+            index = self.coordinate_system_combo.findData(coordinate_system)
+            self.coordinate_system_combo.setCurrentIndex(index)
 
     def _on_segmentation_changed(self, index: int) -> None:
         self._set_selected_label_option(index)

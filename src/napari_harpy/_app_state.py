@@ -31,6 +31,7 @@ from weakref import WeakKeyDictionary
 
 from qtpy.QtCore import QObject, Signal
 
+from napari_harpy._spatialdata import get_coordinate_system_names_from_sdata
 from napari_harpy._viewer_adapter import LayerBindingRegistry, ViewerAdapter
 
 if TYPE_CHECKING:
@@ -50,6 +51,16 @@ class FeatureMatrixWrittenEvent:
     feature_key: str
     change_kind: FeatureMatrixWriteChangeKind
     source: str = "feature_extraction"
+
+
+@dataclass(frozen=True)
+class CoordinateSystemChangedEvent:
+    """Describe a shared active coordinate-system change for one viewer session."""
+
+    sdata: SpatialData | None
+    previous_coordinate_system: str | None
+    coordinate_system: str | None
+    source: str | None = None
 
 
 class HarpyAppState(QObject):
@@ -73,18 +84,28 @@ class HarpyAppState(QObject):
 
     sdata_changed = Signal(object)
     feature_matrix_written = Signal(object)
+    coordinate_system_changed = Signal(object)
 
     def __init__(self, viewer: object | None = None) -> None:
         super().__init__()
         self.viewer = viewer
         self.sdata: SpatialData | None = None
+        self.coordinate_system: str | None = None
         self.layer_bindings = LayerBindingRegistry()
         self.viewer_adapter = ViewerAdapter(viewer=viewer, layer_bindings=self.layer_bindings)
         self._dirty_table_keys: set[tuple[int, str]] = set()
 
     def set_sdata(self, sdata: SpatialData | None) -> None:
         """Set the loaded SpatialData object and notify listeners."""
+        old_sdata = self.sdata
+        old_coordinate_system = self.coordinate_system
+
+        if old_sdata is not None:
+            self.viewer_adapter.remove_layers_for_sdata(old_sdata)
+
         self.sdata = sdata
+        next_coordinate_system = self._resolve_coordinate_system_for_sdata(sdata, previous=old_coordinate_system)
+        self._update_coordinate_system_state(next_coordinate_system, source="set_sdata")
         # Notify connected widgets/controllers that the loaded SpatialData changed
         # (controllers/widgets that listen via e.g. self._app_state.sdata_changed.connect(self._on_sdata_changed))
         self.sdata_changed.emit(sdata)
@@ -92,6 +113,29 @@ class HarpyAppState(QObject):
     def clear_sdata(self) -> None:
         """Clear the loaded SpatialData object and notify listeners."""
         self.set_sdata(None)
+
+    def set_coordinate_system(
+        self,
+        coordinate_system: str | None,
+        *,
+        source: str | None = None,
+    ) -> bool:
+        """Set the shared active coordinate system for the current loaded SpatialData."""
+        normalized_coordinate_system = self._normalize_coordinate_system(coordinate_system)
+        self._validate_coordinate_system(normalized_coordinate_system)
+        changed = self._update_coordinate_system_state(normalized_coordinate_system, source=source)
+        if not changed:
+            return False
+
+        self.viewer_adapter.remove_layers_outside_coordinate_system(
+            sdata=self.sdata,
+            coordinate_system=normalized_coordinate_system,
+        )
+        return True
+
+    def clear_coordinate_system(self, *, source: str | None = None) -> bool:
+        """Clear the shared active coordinate system."""
+        return self.set_coordinate_system(None, source=source)
 
     def emit_feature_matrix_written(self, event: FeatureMatrixWrittenEvent) -> None:
         """Broadcast that a feature matrix was written into a shared in-memory table."""
@@ -125,6 +169,64 @@ class HarpyAppState(QObject):
             return None
 
         return (id(sdata), table_name)
+
+    @staticmethod
+    def _normalize_coordinate_system(coordinate_system: str | None) -> str | None:
+        if coordinate_system is None:
+            return None
+
+        normalized_coordinate_system = coordinate_system.strip()
+        return normalized_coordinate_system or None
+
+    def _validate_coordinate_system(self, coordinate_system: str | None) -> None:
+        if coordinate_system is None:
+            return
+
+        if self.sdata is None:
+            raise ValueError("Cannot set an active coordinate system when no SpatialData is loaded.")
+
+        available_coordinate_systems = get_coordinate_system_names_from_sdata(self.sdata)
+        if coordinate_system not in available_coordinate_systems:
+            raise ValueError(
+                f"Coordinate system `{coordinate_system}` is not available in the selected SpatialData object."
+            )
+
+    def _update_coordinate_system_state(
+        self,
+        coordinate_system: str | None,
+        *,
+        source: str | None = None,
+    ) -> bool:
+        previous_coordinate_system = self.coordinate_system
+        if coordinate_system == previous_coordinate_system:
+            return False
+
+        self.coordinate_system = coordinate_system
+        self.coordinate_system_changed.emit(
+            CoordinateSystemChangedEvent(
+                sdata=self.sdata,
+                previous_coordinate_system=previous_coordinate_system,
+                coordinate_system=coordinate_system,
+                source=source,
+            )
+        )
+        return True
+
+    @staticmethod
+    def _resolve_coordinate_system_for_sdata(
+        sdata: SpatialData | None,
+        *,
+        previous: str | None,
+    ) -> str | None:
+        if sdata is None:
+            return None
+
+        available_coordinate_systems = get_coordinate_system_names_from_sdata(sdata)
+        if previous is not None and previous in available_coordinate_systems:
+            return previous
+        if available_coordinate_systems:
+            return available_coordinate_systems[0]
+        return None
 
 
 def get_or_create_app_state(napari_viewer: object | None) -> HarpyAppState:
