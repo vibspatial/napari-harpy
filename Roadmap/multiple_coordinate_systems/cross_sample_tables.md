@@ -339,9 +339,19 @@ Recommended default:
 This makes classifier training table-level by default, which is usually what the
 user wants once multiple samples contribute annotations to the same table.
 
+Optional non-default mode:
+
+- training uses only the selected region.
+
+So the intended UX should expose training scope explicitly, for example:
+
+- selected region only;
+- all eligible labeled regions in the selected table.
+
 Classifier-eligible training rows should be defined explicitly:
 
 - row belongs to the selected table;
+- row belongs to the chosen training region scope;
 - row has valid `region_key` and `instance_key` values;
 - row has finite, non-missing values in the selected feature matrix;
 - row has a user class other than the unlabeled sentinel.
@@ -350,11 +360,16 @@ Classifier-eligible training rows should be defined explicitly:
 
 Recommended default:
 
-- prediction updates only the active segmentation region.
+- prediction updates only the selected region.
 
 Optional non-default mode:
 
 - prediction updates all eligible rows in the selected table.
+
+So the intended UX should expose prediction scope explicitly, for example:
+
+- selected region only;
+- all eligible regions in the selected table.
 
 This split keeps interactive retraining responsive and avoids unexpectedly
 writing predictions into hidden rows.
@@ -473,14 +488,16 @@ Work:
 
 - add training-scope and prediction-scope controls;
 - default training to all eligible labeled rows in the selected table;
+- support explicit training on the selected region only;
 - default prediction to the active region;
 - support explicit complete-table prediction;
 - record scope metadata and row counts.
 
 Acceptance:
 
-- training can use labeled rows from multiple regions;
-- active-region prediction updates only active-region rows;
+- training can use labeled rows from multiple regions by default;
+- training can be restricted to the selected region only;
+- selected-region-only prediction updates only selected-region rows;
 - complete-table prediction updates all eligible rows only when explicitly
   requested;
 - UI text makes the write scope clear before work starts.
@@ -501,7 +518,8 @@ Recommended scenarios:
 - same `instance_key` value is allowed in different regions;
 - duplicate `instance_key` values within one region are rejected;
 - classifier training uses labeled rows across regions by default;
-- active-region prediction leaves hidden-region prediction rows unchanged;
+- classifier training can be restricted to the selected region only;
+- selected-region-only prediction leaves hidden-region prediction rows unchanged;
 - complete-table prediction updates eligible rows across all regions only when
   explicitly selected.
 
@@ -521,14 +539,16 @@ Recommended scenarios:
 
 3. Should classifier retraining automatically use all labeled rows in the table?
 
-   Recommendation: yes by default, but the UI should show row counts so the
-   scope is obvious.
+   Recommendation: yes by default, but the UI should also allow explicit
+   restriction to the selected region only and should show row counts so the
+   chosen scope is obvious.
 
 4. Should complete-table prediction overwrite hidden-region predictions every
    time?
 
-   Recommendation: only when explicitly requested, and the UI should make that
-   write scope visible before the run starts.
+   Recommendation: only when explicitly requested. The UI should expose only
+   two prediction modes, `selected region only` and `all`, and should make the
+   chosen write scope visible before the run starts.
 
 ## Summary
 
@@ -541,9 +561,10 @@ Phase 2 should then make table-level workflows explicit:
 
 - feature extraction becomes a batch of explicit
   `coordinate_system -> segmentation -> image` triplets plus one output table;
-- classifier training becomes table-level by default;
-- classifier prediction remains active-region by default, with explicit
-  complete-table prediction as an option.
+- classifier training becomes table-level by default, with optional
+  selected-region-only training;
+- classifier prediction remains selected-region-only by default, with optional
+  complete-table prediction as the only non-default option.
 
 This keeps the viewer simple, the table model explicit, and the roadmap easier
 to implement against the current codebase.
