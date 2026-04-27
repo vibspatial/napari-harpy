@@ -1,0 +1,470 @@
+# Cross-Sample Tables
+
+## Purpose
+
+This document covers the follow-on design work that starts after Harpy has a
+shared active coordinate system per viewer.
+
+That first phase is described in
+`Roadmap/multiple_coordinate_systems/multiple_coordinate_systems.md` and should
+stay focused on:
+
+- one active coordinate system per `HarpyAppState`;
+- synchronized coordinate-system selectors across widgets;
+- pruning Harpy-managed layers from inactive coordinate systems;
+- keeping viewer state, widget state, and controller bindings aligned.
+
+This document covers the next problem:
+
+- one AnnData table may legitimately annotate labels regions from multiple
+  coordinate systems or samples;
+- feature extraction and object classification must then operate on a table that
+  spans more than the currently visible sample.
+
+## Core Invariant
+
+Cross-sample tables do not change the viewer invariant.
+
+Harpy should still show and interact with one active coordinate system at a
+time. The viewer remains sample-local even when the selected table is
+table-global.
+
+In short:
+
+```text
+viewer context: one coordinate system
+table context: one or more coordinate systems / labels regions
+```
+
+## Problem
+
+Valid workflows exist where:
+
+- coordinate system `sample_1` contains image and labels for sample 1;
+- coordinate system `sample_2` contains image and labels for sample 2;
+- one AnnData table contains rows for both labels regions.
+
+This is not a viewer problem. It is a table semantics and workflow problem.
+
+The viewer should still operate on one sample at a time, but:
+
+- feature extraction may need to populate one feature matrix from multiple
+  labels regions;
+- classifier training may need to use labeled rows from multiple regions;
+- classifier prediction may need to update either the active region only or the
+  entire selected table.
+
+## Current Codebase Baseline
+
+The current codebase already provides part of the needed behavior.
+
+### Feature Extraction
+
+Today, `FeatureExtractionWidget` and `FeatureExtractionController` are
+single-region:
+
+- one selected coordinate system;
+- one selected segmentation;
+- zero or one selected image;
+- one selected table;
+- one selected output key.
+
+The controller already treats coordinate-system rebinding as context change and
+cancels stale work. That behavior should stay.
+
+### Object Classification
+
+Today, `ObjectClassificationWidget` is also sample-local:
+
+- annotation binds to one selected segmentation;
+- styling binds to one loaded labels layer;
+- classifier preparation and prediction operate on rows whose `region_key`
+  matches the active segmentation.
+
+This is a good default for interactive work, but it is narrower than the
+cross-sample table use case.
+
+### Table Validation
+
+Current table binding already has an important cross-sample property:
+
+- duplicate `instance_key` values are rejected within a selected `region_key`
+  region, not globally across the entire table.
+
+That should remain the rule.
+
+### Backend Capability
+
+The current Harpy backend already supports multi-region feature extraction by
+accepting list-valued `labels_layer`, `img_layer`, and `to_coordinate_system`
+inputs and aligning results by `region_key` plus `instance_key`.
+
+That means the main missing work in napari-harpy is UI, selection modeling,
+eligibility validation, and controller orchestration rather than inventing a
+new backend feature format from scratch.
+
+## Data Model
+
+The selected AnnData table should remain the authoritative cross-sample object
+table.
+
+Its row identity is:
+
+```text
+region_key + instance_key
+```
+
+This means:
+
+- the same `instance_key` value may appear in different regions;
+- table-level operations must always be explicit about which regions they read
+  and which regions they write;
+- feature matrices written into `.obsm[feature_key]` are table-level assets even
+  when calculated region by region.
+
+## Non-Goals
+
+This document does not propose:
+
+- showing multiple coordinate systems in the same viewer at once;
+- replacing the phase-1 shared-coordinate-system design;
+- making every workflow table-wide by default;
+- making hidden samples silently update without clear UI communication.
+
+## Feature Extraction Design
+
+### Why This Needs Its Own Model
+
+Cross-sample feature extraction should not be modeled as two independent
+multi-select lists:
+
+- multiple segmentation masks;
+- multiple images.
+
+That would allow ambiguous or invalid pairings. The correct unit is an explicit
+per-region extraction target.
+
+### Extraction Target
+
+Each extraction target represents:
+
+```text
+coordinate system / sample
+labels region
+optional aligned image
+selected channels
+shared AnnData table
+```
+
+`optional aligned image` matters because:
+
+- morphology-only extraction may not need an image;
+- intensity-derived extraction does require one.
+
+### Intended Workflow
+
+1. The user selects an AnnData table.
+2. Harpy reads the table metadata and discovers all annotated labels regions.
+3. Harpy derives candidate extraction targets from those regions.
+4. For each target, Harpy offers only eligible images in the same coordinate
+   system.
+5. The user confirms which targets to calculate.
+6. Harpy submits one explicit multi-target feature-extraction request.
+7. Harpy writes feature rows back into the same AnnData table, aligned by
+   `region_key` plus `instance_key`.
+
+### Eligibility Rules
+
+Harpy should never build a Cartesian product of selected labels and selected
+images.
+
+For each labels region, an image is eligible only when:
+
+- the image is available in the same coordinate system as the labels region;
+- the image has the same spatial shape as the labels element, ignoring the
+  image channel axis;
+- the image and labels element resolve to the same effective transform in the
+  target coordinate system;
+- the transform is supported by Harpy feature extraction.
+
+At the time of writing, Harpy feature extraction supports transforms that
+resolve to pure `x` / `y` translation, including:
+
+- identity;
+- translation;
+- a sequence of translations;
+- an affine transform whose affine matrix is equivalent to pure `x` / `y`
+  translation.
+
+Harpy should also validate:
+
+- the selected table actually annotates each selected labels region;
+- duplicate `instance_key` values are rejected within each selected region;
+- no selected target mixes labels and image elements from different coordinate
+  systems.
+
+### UI Direction
+
+The current single-region flow should remain the simple path.
+
+A later batch mode should be explicit rather than implicit.
+
+Suggested direction:
+
+- keep today’s selector flow for single-region extraction;
+- add a separate batch or multi-region mode for cross-sample tables;
+- show one target row per labels region;
+- group rows by coordinate system or sample;
+- default the image only when exactly one eligible image exists for that
+  target;
+- require an explicit image choice when multiple eligible images exist;
+- show a short unavailable reason when a region cannot currently be extracted.
+
+Examples of unavailable reasons:
+
+- no aligned image is available for intensity features;
+- the image transform is not supported;
+- the table does not annotate that labels region.
+
+### Write Semantics
+
+Cross-sample feature extraction should be presented as one explicit table-level
+operation, even if the backend computes it as a batch of per-target jobs.
+
+Important behavior:
+
+- write features back only to rows matching each target’s `region_key` and
+  `instance_key`;
+- allow one table to accumulate features for multiple regions;
+- do not present repeated single-region writes as the intended UX for building a
+  shared cross-sample feature matrix.
+
+The current implementation can already fill a shared table incrementally. Treat
+that as implementation capability, not as the preferred workflow the UI should
+encourage.
+
+## Object Classification Design
+
+Object classification is easier than feature extraction because interactive
+annotation is already naturally sample-by-sample.
+
+The intended first behavior should be:
+
+- choose the active coordinate system;
+- choose a segmentation in that coordinate system;
+- annotate objects in the visible sample;
+- write annotations into the shared table rows for that segmentation region;
+- switch coordinate system and continue on another sample if needed.
+
+This keeps interaction local while allowing one table to accumulate labels
+across regions.
+
+### Training Scope
+
+Recommended default:
+
+- training uses all eligible labeled rows in the selected table.
+
+This makes classifier training table-level by default, which is usually what the
+user wants once multiple samples contribute annotations to the same table.
+
+Classifier-eligible training rows should be defined explicitly:
+
+- row belongs to the selected table;
+- row has valid `region_key` and `instance_key` values;
+- row has finite, non-missing values in the selected feature matrix;
+- row has a user class other than the unlabeled sentinel.
+
+### Prediction Scope
+
+Recommended default:
+
+- prediction updates only the active segmentation region.
+
+Optional non-default mode:
+
+- prediction updates all eligible rows in the selected table.
+
+This split keeps interactive retraining responsive and avoids unexpectedly
+writing predictions into hidden rows.
+
+The UI should make the scope visible before running prediction. For example:
+
+```text
+Training: 182 labeled rows across 4 regions
+Prediction: 12,440 rows in active region
+```
+
+When complete-table prediction is selected, the UI should explicitly warn that
+rows outside the visible coordinate system may be updated.
+
+### Metadata
+
+Classifier metadata stored in `table.uns` should become more explicit once table
+scope and prediction scope diverge.
+
+Recommended additions:
+
+- `training_scope`
+- `training_regions`
+- `n_training_rows`
+- `prediction_scope`
+- `prediction_regions`
+- `n_predicted_rows`
+
+This helps future reload, debugging, and user-facing status text.
+
+## Proposed Phase-2 Implementation Plan
+
+### 1. Add Cross-Sample Table Helpers
+
+Files:
+
+- `src/napari_harpy/_spatialdata.py`
+- `tests/test_spatialdata.py`
+
+Work:
+
+- add helpers that derive table-annotated labels regions from
+  `SpatialDataTableMetadata.regions`;
+- add helpers that derive candidate coordinate systems per region;
+- add helpers that derive eligible images for a `(labels region,
+  coordinate_system)` pair;
+- add explicit validation helpers for per-region duplicate instance ids and
+  table annotation coverage.
+
+Acceptance:
+
+- one table can expose multiple annotated labels regions;
+- helper output is deterministic and sorted where appropriate;
+- invalid regions or duplicate ids are rejected with region-specific messages.
+
+### 2. Add Batch Feature-Extraction Selection Model
+
+Files:
+
+- `src/napari_harpy/widgets/_feature_extraction_widget.py`
+- `src/napari_harpy/_feature_extraction.py`
+- `tests/test_feature_extraction_widget.py`
+- `tests/test_feature_extraction.py`
+
+Work:
+
+- model a batch request as explicit per-region targets, not as independent
+  labels and image selections;
+- extend the controller to submit multi-target requests to Harpy;
+- preserve current single-region mode as the simple path;
+- make stale-work cancellation still happen when the shared coordinate context
+  changes.
+
+Acceptance:
+
+- multi-region extraction is submitted as one explicit multi-target request;
+- no target pairs labels with an image from a different coordinate system;
+- one shared feature matrix can be populated for multiple regions.
+
+### 3. Add Batch Feature-Extraction UI
+
+Files:
+
+- `src/napari_harpy/widgets/_feature_extraction_widget.py`
+- `tests/test_feature_extraction_widget.py`
+
+Work:
+
+- add a batch or multi-region mode;
+- render one target row per table-annotated labels region;
+- surface unavailable targets with short reasons;
+- show when image selection is inferred versus user-chosen.
+
+Acceptance:
+
+- users can review all regions before launching work;
+- unavailable targets are blocked before backend submission;
+- the UI communicates which regions will be written.
+
+### 4. Add Classifier Training and Prediction Scopes
+
+Files:
+
+- `src/napari_harpy/widgets/_object_classification_widget.py`
+- `src/napari_harpy/_classifier.py`
+- `tests/test_widget.py`
+- `tests/test_classifier.py`
+
+Work:
+
+- add training-scope and prediction-scope controls;
+- default training to all eligible labeled rows in the selected table;
+- default prediction to the active region;
+- support explicit complete-table prediction;
+- record scope metadata and row counts.
+
+Acceptance:
+
+- training can use labeled rows from multiple regions;
+- active-region prediction updates only active-region rows;
+- complete-table prediction updates all eligible rows only when explicitly
+  requested;
+- UI text makes the write scope clear before work starts.
+
+### 5. Add Integration Tests
+
+Files:
+
+- `tests/test_feature_extraction_widget.py`
+- `tests/test_feature_extraction.py`
+- `tests/test_widget.py`
+- `tests/test_classifier.py`
+
+Recommended scenarios:
+
+- one table annotates multiple labels regions across coordinate systems;
+- feature extraction fills one `.obsm[feature_key]` matrix for several regions;
+- same `instance_key` value is allowed in different regions;
+- duplicate `instance_key` values within one region are rejected;
+- classifier training uses labeled rows across regions by default;
+- active-region prediction leaves hidden-region prediction rows unchanged;
+- complete-table prediction updates eligible rows across all regions only when
+  explicitly selected.
+
+## Open Questions
+
+1. Should cross-sample feature extraction launch from the existing widget with a
+   separate mode, or from a dedicated dialog?
+
+   Recommendation: start with a separate mode inside the existing widget so the
+   current single-region flow remains intact.
+
+2. Should batch feature extraction allow targets with no image?
+
+   Recommendation: yes, but only for morphology-only feature sets. Intensity
+   features must still require an eligible image.
+
+3. Should classifier retraining automatically use all labeled rows in the table?
+
+   Recommendation: yes by default, but the UI should show row counts so the
+   scope is obvious.
+
+4. Should complete-table prediction overwrite hidden-region predictions every
+   time?
+
+   Recommendation: only when explicitly requested, and the UI should make that
+   write scope visible before the run starts.
+
+## Summary
+
+Cross-sample tables are a valid and important extension, but they should remain
+separate from the shared active coordinate-system refactor.
+
+Phase 1 should make the viewer context unambiguous.
+
+Phase 2 should then make table-level workflows explicit:
+
+- feature extraction becomes a batch of explicit per-region targets;
+- classifier training becomes table-level by default;
+- classifier prediction remains active-region by default, with explicit
+  complete-table prediction as an option.
+
+This keeps the viewer simple, the table model explicit, and the roadmap easier
+to implement against the current codebase.

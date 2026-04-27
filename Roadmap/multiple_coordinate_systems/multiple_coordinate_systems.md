@@ -59,162 +59,49 @@ This active coordinate system means:
 This does not mean Harpy has only one coordinate system in the data model. It
 means the viewer has one active coordinate-system context at a time.
 
-## Cross-Sample Tables
+## Relationship To Cross-Sample Tables
 
-There is a second, related requirement when coordinate systems represent
-different samples.
+Cross-sample AnnData tables are a related but separate problem.
 
-Example:
+This document stays focused on shared viewer context:
 
-- coordinate system `sample_1` contains image and labels for sample 1;
-- coordinate system `sample_2` contains image and labels for sample 2;
-- one AnnData table annotates segmentation masks from both samples.
+- one active coordinate system per `HarpyAppState`;
+- synchronized widget selectors;
+- pruning Harpy-managed layers from inactive coordinate systems;
+- keeping viewer state and controller bindings aligned with the active
+  coordinate system.
 
-This is a valid and important workflow. The viewer should still show only one
-coordinate system at a time, but the table may span multiple coordinate systems
-and multiple labels regions.
+Table-level behavior that spans multiple regions or samples is covered in:
 
-This mainly affects:
+- `Roadmap/multiple_coordinate_systems/cross_sample_tables.md`
 
-- `FeatureExtractionWidget`
-- `ObjectClassificationWidget`
+That companion document keeps the same viewer invariant: one visible /
+interactive coordinate system at a time.
 
-It should not change the viewer invariant. The active coordinate system remains
-the currently visible / interactive sample context.
+## Testing Requirement
 
-## Multi-Region Feature Extraction
+The testing gap for this work is real and should be treated as part of the
+first implementation, not as follow-up coverage.
 
-For feature extraction, avoid modeling this as two independent multi-select
-lists:
+Current tests already prove useful pieces of the existing behavior, including:
 
-- multiple segmentation masks
-- multiple images
+- shared app-state identity for widgets attached to the same viewer;
+- widget-local coordinate filtering in `ViewerWidget`;
+- widget-local coordinate filtering in `ObjectClassificationWidget`;
+- widget-local coordinate filtering in `FeatureExtractionWidget`.
 
-That would be ambiguous because the correct pairing matters. An image should be
-paired with a segmentation mask only when both are registered in the same
-coordinate system.
+What is still missing for this roadmap is coordinated phase-1 coverage for:
 
-The better unit is a per-region extraction target:
+- `coordinate_system_changed` events on shared app state;
+- bulk pruning of Harpy-managed layers by coordinate system;
+- bulk pruning of Harpy-managed layers when `sdata` is replaced or cleared;
+- cross-widget synchronization of coordinate-system selectors on the same
+  viewer;
+- registry cleanup guarantees after coordinate-system switches;
+- protection of unregistered external napari layers during Harpy-owned cleanup.
 
-```text
-coordinate system / sample
-segmentation mask
-registered image
-selected channels
-shared AnnData table
-```
-
-The intended workflow should be:
-
-1. user selects an AnnData table;
-2. Harpy reads the table metadata and discovers all annotated labels regions;
-3. Harpy derives candidate extraction targets from those regions;
-4. for each target, Harpy offers only images that are eligible for feature
-   extraction with that labels region;
-5. user confirms which targets to calculate;
-6. Harpy runs feature extraction per target;
-7. Harpy writes all features back into the same AnnData table, aligned by
-   `region_key` plus `instance_key`.
-
-This means the table remains the authoritative cross-sample object table, while
-feature extraction becomes a batch of per-region jobs.
-
-The current single-region implementation can technically incrementally fill a
-shared multi-region AnnData table: Harpy writes a full `.obsm[feature_key]`
-matrix, updates rows whose `region_key` matches the selected segmentation, and
-leaves other regions as existing values or `NaN`. Treat that as an implementation
-capability, not the intended napari-harpy UX. The feature-extraction widget
-should not encourage users to build a cross-sample feature matrix through
-repeated single-region writes. Instead, the supported cross-sample workflow
-should let users select multiple labels regions, choose the aligned image for
-each region, and run one explicit multi-region extraction request.
-
-Important behavior:
-
-- do not run a Cartesian product of all selected labels and all selected images;
-- require an explicit labels/image pairing per coordinate system;
-- when a labels region is selected, filter image choices to images that are
-  aligned with that labels element: same spatial shape, ignoring the image
-  channel axis, and same effective transform in the target coordinate system;
-- filter out labels/image pairs whose transformations are unsupported by
-  Harpy feature extraction. At the time of writing, feature extraction only
-  supports transforms that resolve to pure `x` / `y` translation. This includes
-  identity, translation, a sequence of translations, and affine transforms whose
-  affine matrix is equivalent to pure `x` / `y` translation;
-- validate that each selected labels element is actually annotated by the table;
-- validate duplicate `instance_key` values within each `region_key` region, not
-  globally across the entire table;
-- write feature rows back to the matching table rows for each selected labels
-  region;
-- avoid presenting incremental single-region filling as the supported way to
-  populate a shared multi-region feature matrix.
-
-Suggested UI direction:
-
-- keep the current single-coordinate-system mode as the simple path;
-- add an explicit batch / multi-region mode later;
-- in batch mode, show a target list grouped by coordinate system;
-- each row represents one labels region and its selected image;
-- default image selection can be inferred only when exactly one registered image
-  is eligible for that labels region's coordinate system;
-- otherwise require the user to choose the image for that target;
-- if no eligible image exists for a labels region, show that target as
-  unavailable with a short reason rather than allowing a calculation that Harpy
-  will reject.
-
-## Object Classification With Cross-Sample Tables
-
-Object classification is less problematic.
-
-The user will usually annotate one sample at a time because the viewer only has
-one active coordinate system. That is fine. The selected AnnData table can still
-contain rows for multiple samples or labels regions.
-
-Recommended behavior:
-
-- object classification remains bound to the active coordinate system;
-- annotation writes update the shared AnnData table rows for the active
-  segmentation region;
-- table lookup continues to use `region_key` and `instance_key`;
-- classifier training should use labeled rows from the whole selected table by
-  default;
-- classifier prediction / inference should update only the active segmentation
-  region by default;
-- complete-table prediction should be available, but it should be an explicit
-  user action or setting because it can touch many hidden rows.
-
-The first version should keep the interaction sample-by-sample:
-
-- choose active coordinate system;
-- choose segmentation in that coordinate system;
-- annotate objects;
-- write to the shared table;
-- switch coordinate system;
-- continue annotating another sample into the same table.
-
-This avoids showing multiple samples in the viewer while still allowing the
-table to accumulate annotations across samples.
-
-Scope recommendation:
-
-- training data default: all labeled rows in the selected table;
-- prediction scope default: active segmentation / visible sample only;
-- optional prediction scope: all eligible rows in the selected table.
-
-This keeps training semantically table-level while keeping inference responsive
-and viewer-local by default. It also avoids accidentally launching a large
-complete-table prediction from an interactive retrain action.
-
-The UI should make both scopes and row counts visible before predictions are
-generated. For example:
-
-```text
-Training: 182 labeled rows across 4 regions
-Prediction: 12,440 rows in active region
-```
-
-When complete-table prediction is selected, the UI should communicate that rows
-outside the currently visible coordinate system may be updated.
+These tests should be treated as a hard acceptance gate for phase 1, not as an
+optional later test pass after implementation is already considered complete.
 
 ## App-State Signal
 
@@ -274,6 +161,34 @@ Signal/pruning order for a coordinate-system-only switch:
 1. update `app_state.coordinate_system`;
 2. emit `coordinate_system_changed`;
 3. prune Harpy-managed layers outside the new coordinate system.
+
+## Default Selection Ownership
+
+`HarpyAppState` should own the default active coordinate system.
+
+This should not be left to widgets, because widget-local fallback selection
+would make the resulting active coordinate system depend on widget
+initialization order and signal timing.
+
+Chosen policy:
+
+- `HarpyAppState.coordinate_system` is the authoritative active value;
+- `HarpyAppState.set_sdata(...)` resolves the active coordinate system for the
+  new dataset by using the shared helper
+  `get_coordinate_system_names_from_sdata(...)` from `_spatialdata.py`;
+- if the previous coordinate system is still available in the new `sdata`, keep
+  it;
+- otherwise select the first sorted coordinate system returned by the shared
+  helper;
+- if no coordinate systems are available, set the active coordinate system to
+  `None`;
+- widgets must not invent or publish a default coordinate system on
+  `sdata_changed`;
+- widgets call `set_coordinate_system(...)` only on explicit user action.
+
+This also means the viewer widget should stop using its own local coordinate
+system discovery helper and should instead rely on the same shared helper used
+by app state.
 
 ## Layer Removal Policy
 
@@ -412,19 +327,23 @@ changes.
 
 Recommended policy:
 
-- `set_sdata(new_sdata)` clears the active coordinate system if the previous
-  coordinate system is not available in `new_sdata`;
+- `set_sdata(new_sdata)` owns coordinate-system resolution for the new dataset;
+- it uses `get_coordinate_system_names_from_sdata(new_sdata)` as the shared
+  discovery helper;
+- if the previous coordinate system is still available in `new_sdata`, keep it;
+- otherwise set the active coordinate system to the first sorted available
+  coordinate system;
 - when `sdata` is cleared, active coordinate system becomes `None`;
 - when `sdata` changes, remove all Harpy-managed napari layers from the previous
   dataset by using the registry's `sdata_id` binding metadata;
-- widgets choose the first available coordinate system only when app state has
-  no valid active coordinate system.
+- widgets refresh around `app_state.coordinate_system` and do not choose a
+  fallback locally.
 
 The cleanup must happen before `sdata_changed` is emitted. Widgets already listen
 to `sdata_changed` and immediately refresh/rebind local UI and controllers, so
 `HarpyAppState.set_sdata(...)` or an adjacent app-state-owned helper should
-first prune old registered layers and clear the shared coordinate system, then
-assign `self.sdata`, then emit `sdata_changed(new_sdata)`.
+first prune old registered layers, then assign `self.sdata`, resolve the active
+coordinate system for the new dataset, and finally emit `sdata_changed(new_sdata)`.
 
 Recommended first-version order:
 
@@ -432,14 +351,15 @@ Recommended first-version order:
 2. keep `old_coordinate_system = self.coordinate_system`;
 3. remove Harpy-managed layers for `old_sdata` through
    `viewer_adapter.remove_layers_for_sdata(old_sdata)`;
-4. clear the shared active coordinate system to `None`;
-5. emit `coordinate_system_changed` with a `CoordinateSystemChangedEvent` whose
-   `coordinate_system` is `None`, if `old_coordinate_system` was not already
-   `None`;
-6. assign `self.sdata = new_sdata`;
-7. emit `sdata_changed(new_sdata)`;
-8. let widgets repopulate choices and publish the first valid coordinate system
-   only when app state still has no active coordinate system.
+4. assign `self.sdata = new_sdata`;
+5. resolve `next_coordinate_system` with
+   `get_coordinate_system_names_from_sdata(new_sdata)`;
+6. keep `old_coordinate_system` if it is still valid in `new_sdata`;
+7. otherwise choose the first sorted available coordinate system, or `None` if
+   none exist;
+8. update `self.coordinate_system`;
+9. emit `coordinate_system_changed` if the active coordinate system changed;
+10. emit `sdata_changed(new_sdata)`.
 
 In short:
 
@@ -448,22 +368,11 @@ coordinate-system switch:
     coordinate_system_changed -> prune old-coordinate layers
 
 sdata switch:
-    prune old-sdata layers -> coordinate_system_changed(event.coordinate_system=None) -> sdata_changed(new_sdata)
+    prune old-sdata layers -> resolve active coordinate system in app state -> sdata_changed(new_sdata)
 ```
 
-This keeps `HarpyAppState` from owning coordinate-system discovery details while
-still ensuring widgets never rebind against stale napari layers or stale
-coordinate-system state.
-
-Possible first-version simplification:
-
-- on every `set_sdata(...)`, clear `coordinate_system` to `None`;
-- widgets refresh from `sdata_changed`;
-- the first attached widget with available coordinate systems sets the first
-  sorted coordinate system through `set_coordinate_system(...)`.
-
-That is deterministic if all widgets use the same sorted helper,
-`get_coordinate_system_names_from_sdata(...)`.
+This makes default selection deterministic and keeps widgets from racing to
+choose their own fallback coordinate system.
 
 ## Implementation Plan
 
@@ -480,13 +389,19 @@ Work:
 - add `coordinate_system_changed = Signal(object)`;
 - add `self.coordinate_system`;
 - add `set_coordinate_system(...)` and `clear_coordinate_system(...)`;
+- make `set_sdata(...)` resolve the default active coordinate system centrally
+  by using `get_coordinate_system_names_from_sdata(...)`;
 - make `set_sdata(...)` remove Harpy-managed layers for the previous `sdata`
-  and clear shared coordinate-system state before emitting `sdata_changed`.
+  and update shared coordinate-system state before emitting `sdata_changed`.
 
 Acceptance:
 
 - setting a new coordinate system emits one event;
 - setting the same coordinate system is a no-op;
+- `set_sdata(...)` keeps the previous coordinate system when still valid in the
+  new dataset;
+- otherwise `set_sdata(...)` selects the first sorted available coordinate
+  system, or `None` when none exist;
 - clearing `sdata` clears coordinate system;
 - replacing or clearing `sdata` removes registered napari layers belonging to
   the previous `sdata`;
@@ -526,11 +441,12 @@ Files:
 Work:
 
 - connect `self._app_state.coordinate_system_changed` in `__init__`;
+- replace local coordinate-system discovery with the shared helper from
+  `_spatialdata.py`;
 - make combo changes call `app_state.set_coordinate_system(...)`;
 - make the signal handler update the combo and refresh cards;
 - on `sdata_changed`, populate combo choices around `app_state.coordinate_system`;
-- if no active coordinate system is valid, select and publish the first
-  available coordinate system.
+- never select or publish a default coordinate system locally.
 
 Acceptance:
 
@@ -550,6 +466,8 @@ Work:
 - connect `coordinate_system_changed`;
 - make local combo changes publish to app state;
 - move local refresh logic into an app-state signal handler;
+- refresh from `app_state.coordinate_system` on `sdata_changed` without
+  choosing a widget-local default;
 - make object classification preserve selected segmentation only when valid in
   the new coordinate system;
 - ensure layer pruning does not incorrectly clear a still-valid selected
@@ -576,6 +494,8 @@ Work:
 - connect `coordinate_system_changed`;
 - make local combo changes publish to app state;
 - refresh labels/images/tables from the shared coordinate system;
+- refresh from `app_state.coordinate_system` on `sdata_changed` without
+  choosing a widget-local default;
 - rely on `FeatureExtractionController.bind(...)` to cancel stale jobs when the
   coordinate context changes.
 
@@ -586,7 +506,7 @@ Acceptance:
 - feature extraction cannot keep a stale coordinate system after viewer context
   changes.
 
-### 6. Add cross-widget integration tests
+### 6. Hard acceptance gate: add cross-widget integration tests
 
 Files:
 
@@ -600,148 +520,34 @@ Recommended scenarios:
 - same viewer, `ViewerWidget` plus `ObjectClassificationWidget`: change in one
   updates the other;
 - same viewer, all three widgets: all coordinate-system combos stay in sync;
+- replacing `sdata` keeps the previous coordinate system when it is still
+  available;
+- replacing `sdata` selects the first sorted available coordinate system when
+  the previous one is no longer valid;
 - switching coordinate system removes old Harpy-managed image and labels layers;
 - registry contains no stale bindings after coordinate switch;
 - unregistered external layers remain in the viewer;
 - clearing or replacing `sdata` clears active coordinate state.
 
-### 7. Add multi-region feature-extraction design
-
-Files:
-
-- `src/napari_harpy/widgets/_feature_extraction_widget.py`
-- `src/napari_harpy/_feature_extraction.py`
-- `src/napari_harpy/_spatialdata.py`
-- `tests/test_feature_extraction_widget.py`
-- `tests/test_feature_extraction.py`
-
-Work:
-
-- add helpers that derive table-annotated labels regions from
-  `SpatialDataTableMetadata.regions`;
-- for each labels region, derive available coordinate systems;
-- for each `(region, coordinate_system)`, list candidate images registered in
-  the same coordinate system;
-- add an image eligibility helper for feature extraction that checks:
-  same spatial shape as the labels element while ignoring the image channel axis,
-  same effective transform in the selected coordinate system, and a
-  Harpy-supported transform that resolves to pure `x` / `y` translation;
-- model a batch extraction request as explicit per-region targets, not as
-  independent labels/image selections;
-- make one multi-target Harpy feature-extraction call by passing lists of
-  `labels_layer`, `img_layer`, and `to_coordinate_system`, so the table is
-  populated by one explicit batch operation rather than through repeated
-  single-region writes;
-- keep row alignment based on `region_key` and `instance_key`.
-
 Acceptance:
 
-- one AnnData table can receive features for labels regions from multiple
-  coordinate systems;
-- each feature-extraction target has one labels element and zero or one image
-  in the same coordinate system;
-- image selectors only show images that are aligned with the selected labels
-  element and whose transforms resolve to pure `x` / `y` translation supported
-  by Harpy feature extraction;
-- multi-region feature extraction is submitted through one multi-target Harpy
-  call, not as user-visible incremental filling of the same feature matrix;
-- duplicate instance ids are rejected within a region, but the same instance id
-  can appear in another region;
-- users can select multiple labels regions and choose the aligned image for each
-  region before running feature extraction;
-- the widget does not present repeated single-region writes as the supported
-  cross-sample feature-matrix workflow;
-- no feature extraction run accidentally pairs a labels element with an image
-  from a different coordinate system.
-
-### 8. Add object-classification training and prediction scopes
-
-Files:
-
-- `src/napari_harpy/widgets/_object_classification_widget.py`
-- `src/napari_harpy/_classifier.py`
-- `tests/test_widget.py`
-- `tests/test_classifier.py`
-
-Work:
-
-- add training-scope and prediction-scope controls to
-  `ObjectClassificationWidget`;
-- default training scope to all labeled rows in the selected table;
-- default prediction scope to active segmentation only;
-- support complete-table prediction as an explicit non-default option;
-- make the selected scopes part of the classifier/controller binding;
-- define classifier-eligible rows explicitly:
-  valid row in the selected feature matrix, finite/non-missing feature values,
-  valid `region_key` and `instance_key` values, and, for training, a user class
-  other than the unlabeled sentinel;
-- extend classifier metadata stored in `table.uns[CLASSIFIER_CONFIG_KEY]` with
-  scope and count information:
-  - `training_scope`: the selected training mode;
-  - `training_regions`: all segmentation masks whose labeled rows were used for
-    training;
-  - `n_training_rows`: number of eligible rows used for fitting;
-  - `prediction_scope`: the table name the classifier predictions were written
-    into;
-  - `prediction_regions`: all segmentation masks whose rows were updated by the
-    classifier run;
-  - `n_predicted_rows`: number of eligible rows updated by inference;
-- surface row counts for the current training and prediction scopes before
-  launching a classifier job;
-- ensure active-region prediction only writes rows matching the selected
-  `region_key`;
-- ensure complete-table prediction writes predictions for all eligible table
-  rows;
-- surface status text that makes the current write scope clear.
-
-Acceptance:
-
-- classifier training uses all eligible labeled rows from the selected table by
-  default;
-- classifier prediction defaults to the active sample / segmentation region;
-- eligible classifier rows exclude rows whose selected feature-matrix values are
-  missing or non-finite, which matters when a multi-region feature matrix still
-  contains `NaN` values for regions that have not been extracted;
-- users can choose whether classifier predictions update only the active sample
-  / segmentation or the whole selected table;
-- classifier metadata records training scope, training regions, training row
-  count, prediction table, prediction regions, and predicted row count;
-- the UI shows training and prediction row counts before launching work;
-- active-region prediction does not modify prediction columns for other table
-  regions, except where existing classifier metadata explicitly requires a
-  reset;
-- table-wide prediction updates eligible rows across all regions in the selected
-  table;
-- the UI clearly communicates which prediction scope will be used.
+- phase 1 is not complete until these tests exist and pass;
+- the shared coordinate-system behavior is verified across app state, viewer
+  layer cleanup, and widget synchronization rather than only through
+  widget-local filtering tests.
 
 ## Open Questions
 
-1. Should `HarpyAppState.set_sdata(...)` choose the default coordinate system
-   centrally, or should widgets choose the first available coordinate system
-   after `sdata_changed`?
-
-   Recommendation: keep discovery in widgets for now, but make all widgets use
-   the same sorted helper and publish the first available coordinate system only
-   when app state has no valid active coordinate system.
-
-2. Should switching coordinate systems remove layers or hide them?
+1. Should switching coordinate systems remove layers or hide them?
 
    Recommendation: remove them for the first implementation. Add a separate
    display-state cache later if preserving per-coordinate-system display choices
    becomes important.
 
-3. Should external/unregistered napari layers be removed?
+2. Should external/unregistered napari layers be removed?
 
    Recommendation: no. Only remove Harpy-managed registered layers. External
    layers are outside Harpy's ownership unless we explicitly adopt/register them.
-
-4. For object classification, should classifier prediction be table-wide or
-   active-region-only when the table spans multiple samples?
-
-   Recommendation: default training to all labeled rows in the selected table,
-   but default prediction to the active region. Complete-table prediction should
-   be available as an explicit option because it can update rows that are not
-   currently visible and can be slow for large tables.
 
 ## Summary
 
@@ -754,11 +560,13 @@ to match the active coordinate system. Instead, use the existing
 `coordinate_system` stored on each binding to remove Harpy-managed layers that
 do not belong to the newly active coordinate system.
 
+`HarpyAppState` should also own default coordinate-system selection when `sdata`
+changes, using the shared `get_coordinate_system_names_from_sdata(...)` helper.
+Widgets should mirror that state and only publish coordinate-system changes in
+response to explicit user interaction.
+
 All widgets with a coordinate-system selector should listen to and publish this
 shared state. Controllers should stay passive and be rebound by their widgets.
 
-For cross-sample AnnData tables, keep the viewer single-coordinate-system, but
-let table-driven workflows span multiple labels regions. Feature extraction
-should grow a batch mode based on explicit per-region labels/image targets.
-Object classification can remain sample-by-sample in the viewer while updating
-and learning from the shared table.
+Cross-sample table behavior is intentionally out of scope here and is described
+separately in `Roadmap/multiple_coordinate_systems/cross_sample_tables.md`.
