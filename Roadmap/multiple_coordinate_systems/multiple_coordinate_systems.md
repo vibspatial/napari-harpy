@@ -427,9 +427,9 @@ Work:
 
 Acceptance:
 
-- switching active coordinate system leaves the registry containing only live
+- [x] switching active coordinate system leaves the registry containing only live
   Harpy-managed layers for the active coordinate system;
-- no binding is mutated from one coordinate system to another.
+- [x] no binding is mutated from one coordinate system to another.
 
 ### 3. Wire `ViewerWidget`
 
