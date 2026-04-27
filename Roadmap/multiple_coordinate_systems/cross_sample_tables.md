@@ -442,20 +442,20 @@ Files:
 
 Work:
 
-- add helpers that derive table-annotated labels regions from
+- [x] add helpers that derive table-annotated labels regions from
   `SpatialDataTableMetadata.regions`;
-- add helpers that derive feature-extraction-eligible segmentations per
+- [x] add helpers that derive feature-extraction-eligible segmentations per
   coordinate system;
-- add helpers that derive matching images for a
+- [x] add helpers that derive matching images for a
   `(coordinate system, segmentation)` pair;
-- add explicit validation helpers for per-region duplicate instance ids and
+- [x] add explicit validation helpers for per-region duplicate instance ids and
   table annotation coverage.
 
 Acceptance:
 
-- one table can expose multiple annotated labels regions;
-- helper output is deterministic and sorted where appropriate;
-- invalid regions or duplicate ids are rejected with region-specific messages.
+- [x] one table can expose multiple annotated labels regions;
+- [x] helper output is deterministic and sorted where appropriate;
+- [x] invalid regions or duplicate ids are rejected with region-specific messages.
 
 ### 2. Add Batch Feature-Extraction Selection Model
 
