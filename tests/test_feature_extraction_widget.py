@@ -215,7 +215,7 @@ def test_feature_extraction_widget_filters_labels_and_images_by_coordinate_syste
         "No image",
         "image_aligned_labels_aligned",
     ]
-    assert widget.selected_image_name == "image_aligned_labels_aligned"
+    assert widget.selected_image_name is None
     assert widget.table_combo.itemText(0) == "table"
 
     widget.coordinate_system_combo.setCurrentIndex(1)
@@ -229,8 +229,108 @@ def test_feature_extraction_widget_filters_labels_and_images_by_coordinate_syste
         "No image",
         "image_global_labels_global",
     ]
-    assert widget.selected_image_name == "image_global_labels_global"
+    assert widget.selected_image_name is None
     assert widget.table_combo.itemText(0) == "table"
+
+
+def test_feature_extraction_widget_restores_explicit_triplet_when_returning_to_coordinate_system(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+
+    aligned_label_1 = SpatialDataLabelsOption(
+        label_name="labels_aligned_1",
+        display_name="labels_aligned_1",
+        sdata=sdata_blobs,
+        coordinate_systems=("aligned",),
+    )
+    aligned_label_2 = SpatialDataLabelsOption(
+        label_name="labels_aligned_2",
+        display_name="labels_aligned_2",
+        sdata=sdata_blobs,
+        coordinate_systems=("aligned",),
+    )
+    global_label = SpatialDataLabelsOption(
+        label_name="labels_global",
+        display_name="labels_global",
+        sdata=sdata_blobs,
+        coordinate_systems=("global",),
+    )
+    image_by_label = {
+        "labels_aligned_1": SpatialDataImageOption(
+            image_name="image_aligned_1",
+            display_name="image_aligned_1",
+            sdata=sdata_blobs,
+            coordinate_systems=("aligned",),
+        ),
+        "labels_aligned_2": SpatialDataImageOption(
+            image_name="image_aligned_2",
+            display_name="image_aligned_2",
+            sdata=sdata_blobs,
+            coordinate_systems=("aligned",),
+        ),
+        "labels_global": SpatialDataImageOption(
+            image_name="image_global",
+            display_name="image_global",
+            sdata=sdata_blobs,
+            coordinate_systems=("global",),
+        ),
+    }
+
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_coordinate_system_names_from_sdata",
+        lambda sdata: ["aligned", "global"],
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_spatialdata_feature_extraction_label_options_for_coordinate_system_from_sdata",
+        lambda *, sdata, coordinate_system: (
+            [aligned_label_1, aligned_label_2] if coordinate_system == "aligned" else [global_label]
+        ),
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_spatialdata_matching_image_options_for_coordinate_system_and_label_from_sdata",
+        lambda *, sdata, coordinate_system, label_name: [image_by_label[label_name]],
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_annotating_table_names",
+        lambda sdata, label_name: ["table"],
+    )
+
+    widget = FeatureExtractionWidget(viewer)
+    qtbot.addWidget(widget)
+
+    assert widget.selected_coordinate_system == "aligned"
+    assert widget.selected_segmentation_name == "labels_aligned_1"
+    assert widget.selected_image_name is None
+
+    widget.segmentation_combo.setCurrentIndex(1)
+    widget.image_combo.setCurrentIndex(1)
+
+    assert widget.selected_coordinate_system == "aligned"
+    assert widget.selected_segmentation_name == "labels_aligned_2"
+    assert widget.selected_image_name == "image_aligned_2"
+
+    widget.coordinate_system_combo.setCurrentIndex(1)
+
+    assert widget.selected_coordinate_system == "global"
+    assert widget.selected_segmentation_name == "labels_global"
+    assert widget.selected_image_name is None
+
+    widget.image_combo.setCurrentIndex(1)
+
+    assert widget.selected_image_name == "image_global"
+
+    widget.coordinate_system_combo.setCurrentIndex(0)
+
+    assert widget.selected_coordinate_system == "aligned"
+    assert widget.selected_segmentation_name == "labels_aligned_2"
+    assert widget.selected_image_name == "image_aligned_2"
 
 
 def test_feature_extraction_widget_hides_channel_selection_without_image(
