@@ -118,9 +118,17 @@ Scope:
 - forbid selecting the same segmentation in more than one card;
 - allow valid image reuse across cards;
 - keep selected cards visible even when they are temporarily invalid;
+- when a card already holds a duplicate segmentation selection, keep that
+  duplicate selection visible rather than clearing it automatically;
+- mark duplicate-selection cards invalid with a short inline warning;
+- exclude already-selected segmentations from the selectable choices offered in
+  other cards until the user resolves the duplicate;
 - show only selectable segmentations and images in the card combo boxes;
 - surface unavailable segmentation/image counts with short inline reasons;
 - block submission while any selected card is invalid.
+- keep calculation disabled in this slice; this slice introduces widget-local
+  batch validity state and inline invalidity UI, while fully meaningful batch
+  submission gating remains part of slices 4 and 5.
 
 Clarification:
 
