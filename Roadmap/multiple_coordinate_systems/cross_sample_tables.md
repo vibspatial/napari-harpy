@@ -172,7 +172,7 @@ The full feature-extraction request is then:
 
 ```text
 one or more triplets
-selected channels per triplet
+one shared channel selection for batch intensity extraction
 one output AnnData table
 one output feature key
 ```
@@ -183,6 +183,34 @@ feature set is morphology-only, but the UI model should stay segmentation-led:
 - first choose a coordinate system and segmentation;
 - then derive matching images for that segmentation;
 - then validate the output table against the selected segmentation regions.
+
+For channels:
+
+- batch feature extraction uses one shared channel selection across all
+  selected triplets when intensity-derived features are requested;
+- that shared selector is read from the first selected image in the batch;
+- every later triplet must expose the same ordered channel-name list to remain
+  intensity-compatible with the batch;
+- if a later triplet's image exposes a different channel schema, that triplet
+  must be blocked from joining the batch for intensity extraction with a short
+  explanatory reason;
+- controller validation should continue to reject mixed selected-channel states
+  across triplets before backend submission.
+
+Selection uniqueness rule:
+
+- a segmentation / labels element may appear at most once across the staged
+  batch request, even if that same element is available in more than one
+  coordinate system;
+- this is deliberate, because duplicate segmentation selection would create
+  ambiguous repeated writes against the same table region identity;
+- an image element may be reused across multiple triplets when it is a valid
+  match for each selected segmentation;
+- this asymmetry is deliberate: duplicate image reuse does not by itself imply
+  duplicate row writes, while duplicate segmentation reuse does.
+- this deliberate asymmetry should also be documented in a code docstring near
+  the batch triplet validation / normalization path so future refactors do not
+  “simplify” it away accidentally.
 
 ### Viewer Context vs Extraction Request
 
@@ -213,21 +241,41 @@ Lifecycle rule:
 ### Intended Workflow
 
 1. The user selects one coordinate system or several coordinate systems.
-2. Harpy shows segmentation masks in those coordinate systems.
-3. Segmentation masks remain visible in the UI, but only transform-eligible
-   masks should be selectable for feature extraction.
-4. For each selected segmentation mask, Harpy derives matching image candidates
-   in the same coordinate system.
-5. Harpy resolves a concrete `coordinate_system -> segmentation -> image`
-   triplet for each selected sample:
+2. Harpy renders one triplet card per selected coordinate system.
+3. One selected coordinate system maps to one triplet card and therefore to
+   one `coordinate_system -> segmentation -> image` triplet.
+4. The same segmentation element cannot be selected in two different cards,
+   even if it appears in more than one selected coordinate system.
+5. Inside each card, Harpy shows a segmentation combo filtered to that
+   coordinate system.
+6. Only transform-eligible segmentation masks should appear as selectable
+   options in that combo.
+7. If additional segmentation masks exist in the same coordinate system but
+   are not feature-extraction-eligible, Harpy should communicate that with a
+   short inline note such as “2 segmentations unavailable due to unsupported
+   transform” rather than cluttering the combo with disabled items.
+8. For the selected segmentation in each card, Harpy derives matching image
+   candidates in the same coordinate system.
+9. Only selectable matching images should appear in the per-card image combo.
+10. If additional images exist in the same coordinate system but are not valid
+   matches because of shape mismatch, transform mismatch, or unsupported
+   transform semantics, Harpy should communicate that with a short inline note
+   rather than cluttering the combo with disabled items.
+11. The same image element may still be reused across several cards when it is
+    a valid match for each card's selected segmentation.
+12. Harpy resolves a concrete `coordinate_system -> segmentation -> image`
+   triplet for each selected coordinate system:
    - if exactly one matching image exists, use it automatically;
    - if multiple matching images exist, require an explicit user choice;
    - if no matching image exists, allow only morphology-only extraction.
-6. The user selects the output AnnData table.
-7. Harpy validates that the selected table annotates every selected
+13. Below the cards, Harpy shows one shared channel-selection area, one output
+   table selector, one feature-matrix-key field, and the shared feature
+   groups.
+14. The user selects the output AnnData table.
+15. Harpy validates that the selected table annotates every selected
    segmentation region.
-8. Harpy submits one explicit multi-target feature-extraction request.
-9. Harpy writes feature rows back into the same AnnData table, aligned by
+16. Harpy submits one explicit multi-target feature-extraction request.
+17. Harpy writes feature rows back into the same AnnData table, aligned by
    `region_key` plus `instance_key`.
 
 ### Segmentation Eligibility
@@ -495,10 +543,31 @@ Files:
 
 Work:
 
-- extend the widget from one triplet to several triplets;
-- render triplets grouped by coordinate system or sample;
-- surface unavailable segmentations and missing-image states with short reasons;
+- extend the widget from one triplet to several triplet cards;
+- let users select one or more coordinate systems, and render one triplet card
+  per selected coordinate system;
+- treat one selected coordinate system as one triplet;
+- forbid selecting the same segmentation element in more than one card, even
+  when it appears in multiple coordinate systems;
+- allow reusing the same image element across cards when it remains a valid
+  match for each card's selected segmentation;
+- document that segmentation/image asymmetry in a nearby code docstring when
+  implementing the batch selection validation;
+- in each card, keep the existing segmentation and image selectors filtered to
+  that coordinate system;
+- show only selectable segmentations in the per-card combo box, and surface
+  unavailable segmentation counts with short inline reasons;
+- show only selectable images in the per-card combo box, and surface
+  unavailable image counts with short inline reasons;
+- surface missing-image states with short reasons;
 - show when image selection is inferred versus user-chosen;
+- for intensity features, show one shared batch channel selector derived from
+  the first selected image rather than independent per-triplet channel
+  controls;
+- block triplets with incompatible ordered channel-name schemas from joining an
+  intensity batch, with a short reason;
+- keep the shared `Channels`, `Table`, `Feature matrix key`, `Intensity
+  Features`, and `Morphology Features` controls below the triplet cards;
 - keep output-table selection as a later validation step over the chosen
   triplets.
 
@@ -507,6 +576,13 @@ Acceptance:
 - users can review all selected triplets before launching work;
 - unavailable segmentations or invalid image matches are blocked before backend
   submission;
+- for intensity extraction, the UI makes it clear that one shared channel
+  selection will be used for the whole batch and blocks incompatible image
+  channel schemas before submission;
+- one selected coordinate system produces one visible triplet card and one
+  explicit triplet in the staged batch request;
+- the UI prevents duplicate segmentation selection across cards while allowing
+  valid image reuse across cards;
 - the UI communicates which regions / triplets will be written.
 
 ### 4. Add Classifier Training and Prediction Scopes
