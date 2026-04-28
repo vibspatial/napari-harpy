@@ -28,6 +28,8 @@ In practice, that means:
 
 ### 1. Extract a Single Triplet Card
 
+Status: [x] Completed
+
 Goal:
 
 - keep the existing UX and behavior;
