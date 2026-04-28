@@ -173,7 +173,7 @@ def test_feature_extraction_widget_filters_labels_and_images_by_coordinate_syste
     )
     monkeypatch.setattr(
         feature_extraction_widget_module,
-        "get_spatialdata_label_options_for_coordinate_system_from_sdata",
+        "get_spatialdata_feature_extraction_label_options_for_coordinate_system_from_sdata",
         lambda *, sdata, coordinate_system: [
             SpatialDataLabelsOption(
                 label_name=f"labels_{coordinate_system}",
@@ -185,11 +185,11 @@ def test_feature_extraction_widget_filters_labels_and_images_by_coordinate_syste
     )
     monkeypatch.setattr(
         feature_extraction_widget_module,
-        "get_spatialdata_image_options_for_coordinate_system_from_sdata",
-        lambda *, sdata, coordinate_system: [
+        "get_spatialdata_matching_image_options_for_coordinate_system_and_label_from_sdata",
+        lambda *, sdata, coordinate_system, label_name: [
             SpatialDataImageOption(
-                image_name=f"image_{coordinate_system}",
-                display_name=f"image_{coordinate_system}",
+                image_name=f"image_{coordinate_system}_{label_name}",
+                display_name=f"image_{coordinate_system}_{label_name}",
                 sdata=sdata,
                 coordinate_systems=(coordinate_system,),
             )
@@ -213,8 +213,9 @@ def test_feature_extraction_widget_filters_labels_and_images_by_coordinate_syste
     ]
     assert [widget.image_combo.itemText(index) for index in range(widget.image_combo.count())] == [
         "No image",
-        "image_aligned",
+        "image_aligned_labels_aligned",
     ]
+    assert widget.selected_image_name == "image_aligned_labels_aligned"
     assert widget.table_combo.itemText(0) == "table"
 
     widget.coordinate_system_combo.setCurrentIndex(1)
@@ -226,8 +227,9 @@ def test_feature_extraction_widget_filters_labels_and_images_by_coordinate_syste
     ]
     assert [widget.image_combo.itemText(index) for index in range(widget.image_combo.count())] == [
         "No image",
-        "image_global",
+        "image_global_labels_global",
     ]
+    assert widget.selected_image_name == "image_global_labels_global"
     assert widget.table_combo.itemText(0) == "table"
 
 

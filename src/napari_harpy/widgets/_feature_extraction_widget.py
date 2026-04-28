@@ -30,8 +30,8 @@ from napari_harpy._spatialdata import (
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
     get_image_channel_names_from_sdata,
-    get_spatialdata_image_options_for_coordinate_system_from_sdata,
-    get_spatialdata_label_options_for_coordinate_system_from_sdata,
+    get_spatialdata_feature_extraction_label_options_for_coordinate_system_from_sdata,
+    get_spatialdata_matching_image_options_for_coordinate_system_and_label_from_sdata,
     get_table,
     validate_table_binding,
 )
@@ -385,6 +385,7 @@ class FeatureExtractionWidget(QWidget):
             self._bind_current_selection()
             return
 
+        self._reset_staged_triplet_state()
         self._refresh_coordinate_systems()
         self._refresh_label_options()
         self._refresh_image_options()
@@ -396,17 +397,7 @@ class FeatureExtractionWidget(QWidget):
         self.refresh_from_sdata(sdata)
 
     def _clear_selection_inputs(self) -> None:
-        self._label_options = []
-        self._selected_label_option = None
-        self._image_options = []
-        self._selected_image_option = None
-        self._clear_image_channel_options()
-        self._table_names = []
-        self._selected_table_name = None
-        self._coordinate_systems = []
-        self._selected_coordinate_system = None
-        self._table_binding_error = None
-        self._image_channel_error = None
+        self._reset_staged_triplet_state()
 
         with QSignalBlocker(self.segmentation_combo):
             self.segmentation_combo.clear()
@@ -428,6 +419,20 @@ class FeatureExtractionWidget(QWidget):
             self.coordinate_system_combo.clear()
             self.coordinate_system_combo.setEnabled(False)
             self.coordinate_system_combo.setCurrentIndex(-1)
+
+    def _reset_staged_triplet_state(self) -> None:
+        self._label_options = []
+        self._selected_label_option = None
+        self._image_options = []
+        self._selected_image_option = None
+        self._selected_channel_names_by_image_identity = {}
+        self._clear_image_channel_options()
+        self._table_names = []
+        self._selected_table_name = None
+        self._coordinate_systems = []
+        self._selected_coordinate_system = None
+        self._table_binding_error = None
+        self._image_channel_error = None
 
     def _create_header_logo(self) -> QLabel:
         logo_label = QLabel()
@@ -472,6 +477,7 @@ class FeatureExtractionWidget(QWidget):
 
     def _on_segmentation_changed(self, index: int) -> None:
         self._set_selected_label_option(index)
+        self._refresh_image_options()
         self._refresh_table_names()
         self._bind_current_selection()
 
@@ -497,7 +503,7 @@ class FeatureExtractionWidget(QWidget):
         if self.selected_spatialdata is None or self.selected_coordinate_system is None:
             self._label_options = []
         else:
-            self._label_options = get_spatialdata_label_options_for_coordinate_system_from_sdata(
+            self._label_options = get_spatialdata_feature_extraction_label_options_for_coordinate_system_from_sdata(
                 sdata=self.selected_spatialdata,
                 coordinate_system=self.selected_coordinate_system,
             )
@@ -521,12 +527,17 @@ class FeatureExtractionWidget(QWidget):
     def _refresh_image_options(self) -> None:
         previous_identity = None if self._selected_image_option is None else self._selected_image_option.identity
 
-        if self.selected_spatialdata is None or self.selected_coordinate_system is None:
+        if (
+            self.selected_spatialdata is None
+            or self.selected_coordinate_system is None
+            or self.selected_segmentation_name is None
+        ):
             self._image_options = []
         else:
-            self._image_options = get_spatialdata_image_options_for_coordinate_system_from_sdata(
+            self._image_options = get_spatialdata_matching_image_options_for_coordinate_system_and_label_from_sdata(
                 sdata=self.selected_spatialdata,
                 coordinate_system=self.selected_coordinate_system,
+                label_name=self.selected_segmentation_name,
             )
 
         with QSignalBlocker(self.image_combo):
@@ -536,12 +547,16 @@ class FeatureExtractionWidget(QWidget):
                 self.image_combo.addItem(option.display_name)
 
             self.image_combo.setEnabled(
-                self.selected_spatialdata is not None and self.selected_coordinate_system is not None
+                self.selected_spatialdata is not None
+                and self.selected_coordinate_system is not None
+                and self.selected_segmentation_name is not None
             )
 
             next_index = self._find_image_option_index(previous_identity)
             if self.image_combo.count() == 1:
                 self.image_combo.setCurrentIndex(0)
+            elif next_index is None and len(self._image_options) == 1:
+                self.image_combo.setCurrentIndex(1)
             elif next_index is None:
                 self.image_combo.setCurrentIndex(0)
             else:

@@ -468,23 +468,23 @@ Files:
 
 Work:
 
-- model a batch request as explicit
+- [x] model a batch request as explicit
   `coordinate_system -> segmentation -> image` triplets plus one output table,
   not as independent labels and image selections;
-- extend the controller to submit multi-target requests to Harpy;
-- preserve current single-triplet mode as the simple path;
-- keep feature extraction decoupled from `HarpyAppState.coordinate_system`;
-- on `sdata_changed`, clear any staged triplets and rebuild the available
+- [x] extend the controller to submit multi-target requests to Harpy;
+- [x] preserve current single-triplet mode as the simple path;
+- [x] keep feature extraction decoupled from `HarpyAppState.coordinate_system`;
+- [x] on `sdata_changed`, clear any staged triplets and rebuild the available
   triplet choices from fresh local state;
-- make stale-work cancellation still happen when the widget-local extraction
+- [x] make stale-work cancellation still happen when the widget-local extraction
   request changes.
 
 Acceptance:
 
-- multi-region extraction is submitted as one explicit multi-target request;
-- no triplet pairs a segmentation with an image from a different coordinate
+- [x] multi-region extraction is submitted as one explicit multi-target request;
+- [x] no triplet pairs a segmentation with an image from a different coordinate
   system or with a non-matching transform / shape;
-- one shared feature matrix can be populated for multiple regions.
+- [x] one shared feature matrix can be populated for multiple regions.
 
 ### 3. Add Batch Feature-Extraction UI
 

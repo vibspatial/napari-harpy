@@ -12,7 +12,9 @@ from napari_harpy._feature_extraction import (
     FEATURE_EXTRACTION_IDLE_STATUS,
     FeatureExtractionController,
     FeatureExtractionJob,
+    FeatureExtractionRequest,
     FeatureExtractionResult,
+    FeatureExtractionTriplet,
     _run_feature_extraction_job,
 )
 
@@ -90,7 +92,10 @@ def test_feature_extraction_controller_blocks_when_no_table_is_selected(sdata_bl
 
     assert controller.can_calculate is False
     assert controller.status_kind == "warning"
-    assert controller.status_message == "Feature extraction: choose an annotation table linked to the selected segmentation."
+    assert (
+        controller.status_message
+        == "Feature extraction: choose an annotation table linked to the selected segmentation."
+    )
 
 
 def test_feature_extraction_controller_requires_image_for_intensity_features(sdata_blobs: SpatialData) -> None:
@@ -127,6 +132,25 @@ def test_feature_extraction_controller_requires_coordinate_system(sdata_blobs: S
     assert controller.can_calculate is False
     assert controller.status_kind == "warning"
     assert controller.status_message == "Feature extraction: choose a coordinate system."
+    assert controller._prepare_feature_extraction_job(8) is None
+
+
+def test_feature_extraction_controller_requires_segmentation_mask(sdata_blobs: SpatialData) -> None:
+    controller = FeatureExtractionController()
+
+    controller.bind(
+        sdata_blobs,
+        None,
+        None,
+        "table",
+        "global",
+        ["area"],
+        "feature_matrix_1",
+    )
+
+    assert controller.can_calculate is False
+    assert controller.status_kind == "warning"
+    assert controller.status_message == "Feature extraction: choose a segmentation mask."
     assert controller._prepare_feature_extraction_job(8) is None
 
 
@@ -182,6 +206,14 @@ def test_feature_extraction_controller_prepares_immutable_job_payload(sdata_blob
     assert job.feature_names == ("mean", "area")
     assert job.feature_key == "feature_matrix_1"
     assert job.overwrite_feature_key is True
+    assert job.request.triplets == (
+        FeatureExtractionTriplet(
+            coordinate_system="global",
+            label_name="blobs_labels",
+            image_name="blobs_image",
+            channels=None,
+        ),
+    )
 
 
 def test_feature_extraction_controller_bind_stores_selected_channels_in_job(sdata_blobs: SpatialData) -> None:
@@ -237,6 +269,70 @@ def test_feature_extraction_controller_morphology_only_job_keeps_channels_none(s
     assert isinstance(job, FeatureExtractionJob)
     assert job.image_name is None
     assert job.channels is None
+
+
+def test_feature_extraction_controller_bind_batch_is_ready_for_multi_target_request(
+    sdata_blobs: SpatialData,
+) -> None:
+    controller = FeatureExtractionController()
+
+    context_changed = controller.bind_batch(
+        sdata_blobs,
+        (
+            FeatureExtractionTriplet(
+                coordinate_system="global",
+                label_name="blobs_labels",
+                image_name=None,
+            ),
+            FeatureExtractionTriplet(
+                coordinate_system="global",
+                label_name="blobs_multiscale_labels",
+                image_name=None,
+            ),
+        ),
+        "table",
+        ["area", "perimeter"],
+        "feature_matrix_batch",
+    )
+
+    assert context_changed is True
+    assert controller.status_message == "Feature extraction: ready to calculate."
+    assert controller.status_kind == "success"
+    assert controller.can_calculate is True
+
+
+def test_feature_extraction_controller_bind_batch_rejects_mixed_channel_selections_for_intensity_features(
+    sdata_blobs: SpatialData,
+) -> None:
+    controller = FeatureExtractionController()
+
+    controller.bind_batch(
+        sdata_blobs,
+        (
+            FeatureExtractionTriplet(
+                coordinate_system="global",
+                label_name="blobs_labels",
+                image_name="blobs_image",
+                channels=("0", "1"),
+            ),
+            FeatureExtractionTriplet(
+                coordinate_system="global",
+                label_name="blobs_multiscale_labels",
+                image_name="blobs_multiscale_image",
+                channels=("2",),
+            ),
+        ),
+        "table",
+        ["mean"],
+        "feature_matrix_batch",
+    )
+
+    assert controller.can_calculate is False
+    assert controller.status_kind == "warning"
+    assert (
+        controller.status_message
+        == "Feature extraction: all selected extraction targets must currently use the same channel selection."
+    )
 
 
 def test_feature_extraction_controller_notifies_table_state_change_on_success(sdata_blobs: SpatialData) -> None:
@@ -414,14 +510,20 @@ def test_run_feature_extraction_job_passes_channels_to_harpy(monkeypatch, sdata_
         FeatureExtractionJob(
             job_id=4,
             sdata=sdata_blobs,
-            label_name="blobs_labels",
-            image_name="blobs_image",
-            channels=("0", "2"),
-            table_name="table",
-            coordinate_system="global",
-            feature_names=("mean", "area"),
-            feature_key="feature_matrix_1",
-            overwrite_feature_key=False,
+            request=FeatureExtractionRequest(
+                triplets=(
+                    FeatureExtractionTriplet(
+                        coordinate_system="global",
+                        label_name="blobs_labels",
+                        image_name="blobs_image",
+                        channels=("0", "2"),
+                    ),
+                ),
+                table_name="table",
+                feature_names=("mean", "area"),
+                feature_key="feature_matrix_1",
+                overwrite_feature_key=False,
+            ),
         )
     )
 
@@ -432,6 +534,63 @@ def test_run_feature_extraction_job_passes_channels_to_harpy(monkeypatch, sdata_
         label_name="blobs_labels",
         table_name="table",
         feature_key="feature_matrix_1",
+    )
+
+
+def test_run_feature_extraction_job_submits_multi_target_request_to_harpy(
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    captured_kwargs: dict[str, object] = {}
+
+    def fake_add_feature_matrix(**kwargs):
+        captured_kwargs.update(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "harpy",
+        SimpleNamespace(tb=SimpleNamespace(add_feature_matrix=fake_add_feature_matrix)),
+    )
+
+    result = _run_feature_extraction_job.__wrapped__(
+        FeatureExtractionJob(
+            job_id=5,
+            sdata=sdata_blobs,
+            request=FeatureExtractionRequest(
+                triplets=(
+                    FeatureExtractionTriplet(
+                        coordinate_system="global",
+                        label_name="blobs_labels",
+                        image_name="blobs_image",
+                        channels=("0", "2"),
+                    ),
+                    FeatureExtractionTriplet(
+                        coordinate_system="aligned",
+                        label_name="blobs_multiscale_labels",
+                        image_name="blobs_multiscale_image",
+                        channels=("0", "2"),
+                    ),
+                ),
+                table_name="table",
+                feature_names=("mean", "area"),
+                feature_key="feature_matrix_batch",
+                overwrite_feature_key=True,
+            ),
+        )
+    )
+
+    assert captured_kwargs["labels_name"] == ["blobs_labels", "blobs_multiscale_labels"]
+    assert captured_kwargs["image_name"] == ["blobs_image", "blobs_multiscale_image"]
+    assert captured_kwargs["table_name"] == "table"
+    assert captured_kwargs["to_coordinate_system"] == ["global", "aligned"]
+    assert captured_kwargs["channels"] == ["0", "2"]
+    assert captured_kwargs["overwrite_feature_key"] is True
+    assert result == FeatureExtractionResult(
+        job_id=5,
+        label_name=None,
+        table_name="table",
+        feature_key="feature_matrix_batch",
+        triplet_count=2,
     )
 
 
