@@ -66,7 +66,7 @@ Expected outcome:
 
 ### 2. Add Coordinate-System Checkbox Selection and Multi-Card Rendering
 
-Status: Partially completed
+Status: [x] Completed
 
 Goal:
 
