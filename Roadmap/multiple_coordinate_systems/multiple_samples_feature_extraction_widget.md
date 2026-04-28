@@ -74,17 +74,28 @@ Goal:
 Scope:
 
 - replace the coordinate-system combo box with a checkbox list;
+- keep the checkbox list sorted in the same order as the rendered cards;
+- check the first sorted coordinate system by default on first load;
 - render one triplet card per selected coordinate system;
 - render cards in sorted coordinate-system order;
 - keep one selected coordinate system equal to one triplet card;
+- when a coordinate system is unchecked, hide its card but keep its remembered
+  triplet state while the current `sdata` remains loaded;
+- when a previously unchecked coordinate system is checked again, restore its
+  remembered triplet if it is still valid;
 - keep shared controls below the cards.
+- treat this slice as a rendering/state step only;
+- keep calculation disabled while multi-card execution semantics are still
+  incomplete.
 
 Expected outcome:
 
 - users can select multiple coordinate systems;
 - the widget renders one card per selected coordinate system;
 - cards still use the existing segmentation/image filtering logic per
-  coordinate system.
+  coordinate system;
+- the widget can show and preserve multiple remembered triplet states without
+  yet exposing a fully working batch calculation flow.
 
 ### 3. Add Batch Validity Rules
 
