@@ -222,6 +222,11 @@ class FeatureExtractionWidget(QWidget):
         selector_layout.setHorizontalSpacing(12)
         selector_layout.setVerticalSpacing(10)
 
+        shared_controls_layout = QFormLayout()
+        shared_controls_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        shared_controls_layout.setHorizontalSpacing(12)
+        shared_controls_layout.setVerticalSpacing(10)
+
         self._triplet_card_widgets = self._create_placeholder_triplet_card_widgets()
         self.segmentation_combo = self._triplet_card_widgets.segmentation_combo
         self.image_combo = self._triplet_card_widgets.image_combo
@@ -343,15 +348,16 @@ class FeatureExtractionWidget(QWidget):
         self.controller_feedback.hide()
 
         selector_layout.addRow(self._create_form_label("Coordinate systems"), self.coordinate_system_selection_container)
-        selector_layout.addRow(self._create_form_label("Selections"), self.triplet_cards_container)
-        selector_layout.addRow(self.channel_selection_label, self.channel_selection_container)
-        selector_layout.addRow(self._create_form_label("Table"), self.table_combo)
-        selector_layout.addRow(self._create_form_label("Feature matrix key"), self.output_key_line_edit)
+        shared_controls_layout.addRow(self.channel_selection_label, self.channel_selection_container)
+        shared_controls_layout.addRow(self._create_form_label("Table"), self.table_combo)
+        shared_controls_layout.addRow(self._create_form_label("Feature matrix key"), self.output_key_line_edit)
 
         calculate_action_layout.addWidget(self.calculate_button, 1)
 
         content_layout.addWidget(title)
         content_layout.addLayout(selector_layout)
+        content_layout.addWidget(self.triplet_cards_container)
+        content_layout.addLayout(shared_controls_layout)
         content_layout.addSpacing(_FEATURE_GROUPS_TOP_SPACING)
         content_layout.addWidget(self.intensity_features_group)
         content_layout.addWidget(self.morphology_features_group)
@@ -541,11 +547,9 @@ class FeatureExtractionWidget(QWidget):
         container.setObjectName(f"feature_extraction_triplet_card_{coordinate_system}")
         container.setStyleSheet(_FEATURE_GROUP_STYLESHEET)
 
-        layout = QFormLayout(container)
+        layout = QVBoxLayout(container)
         layout.setContentsMargins(12, 18, 12, 10)
-        layout.setHorizontalSpacing(12)
-        layout.setVerticalSpacing(10)
-        layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        layout.setSpacing(10)
 
         segmentation_combo = CompactComboBox()
         segmentation_combo.setObjectName(f"feature_extraction_segmentation_combo_{coordinate_system}")
@@ -565,8 +569,10 @@ class FeatureExtractionWidget(QWidget):
         )
         image_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
 
-        layout.addRow(self._create_form_label("Segmentation mask"), segmentation_combo)
-        layout.addRow(self._create_form_label("Image"), image_combo)
+        layout.addWidget(self._create_form_label("Segmentation mask"))
+        layout.addWidget(segmentation_combo)
+        layout.addWidget(self._create_form_label("Image"))
+        layout.addWidget(image_combo)
 
         return _FeatureExtractionTripletCardWidgets(
             coordinate_system=coordinate_system,
