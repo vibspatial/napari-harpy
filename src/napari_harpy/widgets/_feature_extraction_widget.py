@@ -106,7 +106,7 @@ _MORPHOLOGY_FEATURES = (
 _DEFAULT_FEATURE_MATRIX_KEY = "features"
 _MAX_VISIBLE_EXTRACTION_CHANNELS = 5
 _FEATURE_GROUPS_TOP_SPACING = 12
-ImageIdentity = tuple[int, str]
+ElementIdentity = tuple[int, str]
 
 
 @dataclass(frozen=True)
@@ -159,9 +159,14 @@ class FeatureExtractionWidget(QWidget):
         self._selected_image_option: SpatialDataImageOption | None = None
         self._image_channel_names: list[str] = []
         self._image_channel_checkboxes: list[QCheckBox] = []
-        self._selected_channel_names_by_image_identity: dict[ImageIdentity, tuple[str, ...]] = {}
-        self._remembered_label_identity_by_coordinate_system: dict[str, tuple[int, str] | None] = {}
-        self._remembered_image_identity_by_coordinate_system: dict[str, tuple[int, str] | None] = {}
+        self._selected_channel_names_by_image_identity: dict[ElementIdentity, tuple[str, ...]] = {}
+        # Persistent per-coordinate-system memory of the last explicit user
+        # triplet choice. During one rebuild we pass one remembered identity
+        # through as a one-shot "candidate to preserve", but these dicts are
+        # the longer-lived source of truth across coordinate-system switches
+        # while the current SpatialData object remains loaded.
+        self._remembered_label_identity_by_coordinate_system: dict[str, ElementIdentity | None] = {}
+        self._remembered_image_identity_by_coordinate_system: dict[str, ElementIdentity | None] = {}
         self._table_names: list[str] = []
         self._selected_table_name: str | None = None
         self._coordinate_systems: list[str] = []
@@ -497,7 +502,7 @@ class FeatureExtractionWidget(QWidget):
     def _get_remembered_triplet_identities_for_coordinate_system(
         self,
         coordinate_system: str | None,
-    ) -> tuple[tuple[int, str] | None, tuple[int, str] | None]:
+    ) -> tuple[ElementIdentity | None, ElementIdentity | None]:
         if coordinate_system is None:
             return None, None
 
@@ -534,8 +539,8 @@ class FeatureExtractionWidget(QWidget):
     def _build_triplet_card_state(
         self,
         *,
-        previous_label_identity: tuple[int, str] | None,
-        previous_image_identity: tuple[int, str] | None,
+        previous_label_identity: ElementIdentity | None,
+        previous_image_identity: ElementIdentity | None,
     ) -> _FeatureExtractionTripletCardState:
         """Resolve the current single-triplet selection state from shared `SpatialData`."""
         if self.selected_spatialdata is None or self.selected_coordinate_system is None:
@@ -637,8 +642,8 @@ class FeatureExtractionWidget(QWidget):
     def _refresh_triplet_card(
         self,
         *,
-        previous_label_identity: tuple[int, str] | None = None,
-        previous_image_identity: tuple[int, str] | None = None,
+        previous_label_identity: ElementIdentity | None = None,
+        previous_image_identity: ElementIdentity | None = None,
     ) -> None:
         if previous_label_identity is None and self._selected_label_option is not None:
             previous_label_identity = self._selected_label_option.identity
@@ -677,7 +682,7 @@ class FeatureExtractionWidget(QWidget):
         else:
             self._selected_label_option = self._label_options[index]
 
-    def _find_label_option_index(self, identity: tuple[int, str] | None) -> int | None:
+    def _find_label_option_index(self, identity: ElementIdentity | None) -> int | None:
         if identity is None:
             return None
 
@@ -709,7 +714,7 @@ class FeatureExtractionWidget(QWidget):
         else:
             self._selected_image_option = self._image_options[index - 1]
 
-    def _find_image_option_index(self, identity: tuple[int, str] | None) -> int | None:
+    def _find_image_option_index(self, identity: ElementIdentity | None) -> int | None:
         if identity is None:
             return None
 
