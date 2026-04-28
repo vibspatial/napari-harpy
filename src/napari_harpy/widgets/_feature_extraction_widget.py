@@ -45,6 +45,7 @@ from napari_harpy.widgets._shared_styles import (
 from napari_harpy.widgets._shared_styles import (
     WIDGET_BORDER_COLOR,
     WIDGET_PANEL_COLOR,
+    WIDGET_TEXT_COLOR,
     WIDGET_TEXT_SECONDARY_COLOR,
     CompactComboBox,
     StatusCardKind,
@@ -80,8 +81,8 @@ _FEATURE_GROUP_STYLESHEET = (
     "QGroupBox::title {"
     "subcontrol-origin: margin; "
     "left: 12px; "
-    f"padding: 0 6px; color: {WIDGET_TEXT_SECONDARY_COLOR}; background-color: {_WIDGET_SURFACE_COLOR};"
-    "font-weight: 600;"
+    f"padding: 0 6px; color: {WIDGET_TEXT_COLOR}; background-color: {_WIDGET_SURFACE_COLOR};"
+    "font-weight: 700;"
     "}"
 )
 _FEATURE_HINT_INFO_STYLESHEET = "color: #6b7280; font-size: 12px; font-weight: 500;"
