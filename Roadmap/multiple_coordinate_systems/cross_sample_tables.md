@@ -188,7 +188,9 @@ For channels:
 
 - batch feature extraction uses one shared channel selection across all
   selected triplets when intensity-derived features are requested;
-- that shared selector is read from the first selected image in the batch;
+- cards are rendered in sorted coordinate-system order;
+- that shared selector is read from the first card in that stable order that
+  currently has an image selected;
 - every later triplet must expose the same ordered channel-name list to remain
   intensity-compatible with the batch;
 - if a later triplet's image exposes a different channel schema, that triplet
@@ -240,7 +242,8 @@ Lifecycle rule:
 
 ### Intended Workflow
 
-1. The user selects one coordinate system or several coordinate systems.
+1. The user selects one coordinate system or several coordinate systems via a
+   checkbox list.
 2. Harpy renders one triplet card per selected coordinate system.
 3. One selected coordinate system maps to one triplet card and therefore to
    one `coordinate_system -> segmentation -> image` triplet.
@@ -254,29 +257,38 @@ Lifecycle rule:
    are not feature-extraction-eligible, Harpy should communicate that with a
    short inline note such as “2 segmentations unavailable due to unsupported
    transform” rather than cluttering the combo with disabled items.
-8. For the selected segmentation in each card, Harpy derives matching image
+8. If a selected coordinate system has no eligible segmentation masks at all,
+   the card should still be rendered, but the segmentation selector should be
+   empty or disabled and the card should show a short inline message such as
+   “No selectable segmentations in this coordinate system.”
+9. That card cannot contribute a staged triplet until a valid segmentation
+   becomes selectable.
+10. For the selected segmentation in each card, Harpy derives matching image
    candidates in the same coordinate system.
-9. Only selectable matching images should appear in the per-card image combo.
-10. If additional images exist in the same coordinate system but are not valid
+11. Only selectable matching images should appear in the per-card image combo.
+12. If additional images exist in the same coordinate system but are not valid
    matches because of shape mismatch, transform mismatch, or unsupported
    transform semantics, Harpy should communicate that with a short inline note
    rather than cluttering the combo with disabled items.
-11. The same image element may still be reused across several cards when it is
+13. The same image element may still be reused across several cards when it is
     a valid match for each card's selected segmentation.
-12. Harpy resolves a concrete `coordinate_system -> segmentation -> image`
-   triplet for each selected coordinate system:
+14. Harpy resolves a concrete `coordinate_system -> segmentation -> image`
+    triplet for each selected coordinate system:
    - if exactly one matching image exists, use it automatically;
    - if multiple matching images exist, require an explicit user choice;
    - if no matching image exists, allow only morphology-only extraction.
-13. Below the cards, Harpy shows one shared channel-selection area, one output
+15. Below the cards, Harpy shows one shared channel-selection area, one output
    table selector, one feature-matrix-key field, and the shared feature
    groups.
-14. The user selects the output AnnData table.
-15. Harpy validates that the selected table annotates every selected
+16. The user selects the output AnnData table.
+17. Harpy validates that the selected table annotates every selected
    segmentation region.
-16. Harpy submits one explicit multi-target feature-extraction request.
-17. Harpy writes feature rows back into the same AnnData table, aligned by
-   `region_key` plus `instance_key`.
+18. Harpy blocks submission while any selected coordinate-system card remains
+    invalid rather than silently dropping that selected card from the staged
+    batch request.
+19. Harpy submits one explicit multi-target feature-extraction request.
+20. Harpy writes feature rows back into the same AnnData table, aligned by
+    `region_key` plus `instance_key`.
 
 ### Segmentation Eligibility
 
@@ -544,8 +556,9 @@ Files:
 Work:
 
 - extend the widget from one triplet to several triplet cards;
-- let users select one or more coordinate systems, and render one triplet card
-  per selected coordinate system;
+- let users select one or more coordinate systems through a checkbox list, and
+  render one triplet card per selected coordinate system;
+- render those cards in sorted coordinate-system order;
 - treat one selected coordinate system as one triplet;
 - forbid selecting the same segmentation element in more than one card, even
   when it appears in multiple coordinate systems;
@@ -557,6 +570,8 @@ Work:
   that coordinate system;
 - show only selectable segmentations in the per-card combo box, and surface
   unavailable segmentation counts with short inline reasons;
+- still render a selected coordinate-system card when it has no eligible
+  segmentation, but keep that card non-contributing until it becomes valid;
 - show only selectable images in the per-card combo box, and surface
   unavailable image counts with short inline reasons;
 - surface missing-image states with short reasons;
@@ -568,6 +583,8 @@ Work:
   intensity batch, with a short reason;
 - keep the shared `Channels`, `Table`, `Feature matrix key`, `Intensity
   Features`, and `Morphology Features` controls below the triplet cards;
+- block submission while any selected coordinate-system card remains invalid,
+  rather than silently omitting that card from the request;
 - keep output-table selection as a later validation step over the chosen
   triplets.
 
@@ -583,6 +600,8 @@ Acceptance:
   explicit triplet in the staged batch request;
 - the UI prevents duplicate segmentation selection across cards while allowing
   valid image reuse across cards;
+- submission stays blocked until every selected coordinate-system card is in a
+  valid state;
 - the UI communicates which regions / triplets will be written.
 
 ### 4. Add Classifier Training and Prediction Scopes
