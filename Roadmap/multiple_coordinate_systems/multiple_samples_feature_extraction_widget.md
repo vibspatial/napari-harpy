@@ -66,6 +66,8 @@ Expected outcome:
 
 ### 2. Add Coordinate-System Checkbox Selection and Multi-Card Rendering
 
+Status: Partially completed
+
 Goal:
 
 - move from one visible coordinate-system selection flow to one or more
@@ -75,7 +77,8 @@ Scope:
 
 - replace the coordinate-system combo box with a checkbox list;
 - keep the checkbox list sorted in the same order as the rendered cards;
-- check the first sorted coordinate system by default on first load;
+- on startup or `sdata_changed`, leave all coordinate systems unchecked by
+  default;
 - render one triplet card per selected coordinate system;
 - render cards in sorted coordinate-system order;
 - keep one selected coordinate system equal to one triplet card;
@@ -87,15 +90,22 @@ Scope:
 - treat this slice as a rendering/state step only;
 - keep calculation disabled while multi-card execution semantics are still
   incomplete.
+- when no coordinate systems are checked, render no triplet cards and show a
+  status prompt such as `Choose one or more coordinate systems to start
+  building extraction targets`.
 
 Expected outcome:
 
 - users can select multiple coordinate systems;
+- the widget starts from an explicitly empty batch-selection state;
 - the widget renders one card per selected coordinate system;
 - cards still use the existing segmentation/image filtering logic per
   coordinate system;
 - the widget can show and preserve multiple remembered triplet states without
-  yet exposing a fully working batch calculation flow.
+  yet exposing a fully working batch calculation flow;
+- cross-card batch-validity checks are still intentionally out of scope here:
+  duplicate segmentation prevention, unavailable-item reasoning, and other
+  multi-card consistency rules are deferred to slice 3.
 
 ### 3. Add Batch Validity Rules
 
@@ -111,6 +121,14 @@ Scope:
 - show only selectable segmentations and images in the card combo boxes;
 - surface unavailable segmentation/image counts with short inline reasons;
 - block submission while any selected card is invalid.
+
+Clarification:
+
+- all cross-card validity checks belong to this slice, not slice 2;
+- that includes the case where one card would otherwise default to the same
+  only-available segmentation that is already selected in another card;
+- in other words, slice 3 is where the widget stops treating each card as an
+  isolated local selector and starts enforcing whole-batch selection safety.
 
 Expected outcome:
 
