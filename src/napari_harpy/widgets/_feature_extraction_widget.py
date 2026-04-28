@@ -46,7 +46,6 @@ from napari_harpy.widgets._shared_styles import (
     WIDGET_BORDER_COLOR,
     WIDGET_PANEL_COLOR,
     WIDGET_TEXT_COLOR,
-    WIDGET_TEXT_SECONDARY_COLOR,
     CompactComboBox,
     StatusCardKind,
     apply_scroll_content_surface,
@@ -75,14 +74,17 @@ _FEATURE_GROUP_STYLESHEET = (
     f"background-color: {WIDGET_PANEL_COLOR}; "
     f"border: 1px solid {WIDGET_BORDER_COLOR}; "
     "border-radius: 10px; "
-    f"color: {WIDGET_TEXT_SECONDARY_COLOR}; "
+    f"color: {WIDGET_TEXT_COLOR}; "
+    "font-weight: 700; "
     "margin-top: 10px; "
     "padding: 12px 12px 10px 12px;}"
+    "QGroupBox QComboBox, QGroupBox QLineEdit {"
+    "font-weight: 400;"
+    "}"
     "QGroupBox::title {"
     "subcontrol-origin: margin; "
     "left: 12px; "
     f"padding: 0 6px; color: {WIDGET_TEXT_COLOR}; background-color: {_WIDGET_SURFACE_COLOR};"
-    "font-weight: 700;"
     "}"
 )
 _FEATURE_HINT_INFO_STYLESHEET = "color: #6b7280; font-size: 12px; font-weight: 500;"
@@ -233,7 +235,9 @@ class FeatureExtractionWidget(QWidget):
         self.image_combo = self._triplet_card_widgets.image_combo
 
         self.coordinate_system_selection_container = QWidget()
-        self.coordinate_system_selection_container.setObjectName("feature_extraction_coordinate_system_selection_container")
+        self.coordinate_system_selection_container.setObjectName(
+            "feature_extraction_coordinate_system_selection_container"
+        )
         coordinate_system_selection_layout = QVBoxLayout(self.coordinate_system_selection_container)
         coordinate_system_selection_layout.setContentsMargins(0, 0, 0, 0)
         coordinate_system_selection_layout.setSpacing(6)
@@ -348,7 +352,9 @@ class FeatureExtractionWidget(QWidget):
         self.controller_feedback.setWordWrap(True)
         self.controller_feedback.hide()
 
-        selector_layout.addRow(self._create_form_label("Coordinate systems"), self.coordinate_system_selection_container)
+        selector_layout.addRow(
+            self._create_form_label("Coordinate systems"), self.coordinate_system_selection_container
+        )
         shared_controls_layout.addRow(self.channel_selection_label, self.channel_selection_container)
         shared_controls_layout.addRow(self._create_form_label("Table"), self.table_combo)
         shared_controls_layout.addRow(self._create_form_label("Feature matrix key"), self.output_key_line_edit)
@@ -661,11 +667,7 @@ class FeatureExtractionWidget(QWidget):
         if label_options:
             selected_label_option = label_options[0 if next_label_index is None else next_label_index]
 
-        if (
-            self.selected_spatialdata is None
-            or coordinate_system is None
-            or selected_label_option is None
-        ):
+        if self.selected_spatialdata is None or coordinate_system is None or selected_label_option is None:
             image_options: list[SpatialDataImageOption] = []
         else:
             image_options = get_spatialdata_matching_image_options_for_coordinate_system_and_label_from_sdata(
@@ -708,7 +710,7 @@ class FeatureExtractionWidget(QWidget):
 
             next_segmentation_index = self._find_label_option_index_in_options(
                 state.label_options,
-                None if state.selected_label_option is None else state.selected_label_option.identity
+                None if state.selected_label_option is None else state.selected_label_option.identity,
             )
             if has_label_options:
                 widgets.segmentation_combo.setCurrentIndex(
@@ -731,7 +733,7 @@ class FeatureExtractionWidget(QWidget):
 
             next_image_index = self._find_image_option_index_in_options(
                 state.image_options,
-                None if state.selected_image_option is None else state.selected_image_option.identity
+                None if state.selected_image_option is None else state.selected_image_option.identity,
             )
             if next_image_index is None:
                 widgets.image_combo.setCurrentIndex(0)
@@ -784,8 +786,8 @@ class FeatureExtractionWidget(QWidget):
             checkbox.setStyleSheet(_FEATURE_CHECKBOX_STYLESHEET)
             checkbox.setChecked(coordinate_system in checked_coordinate_systems)
             checkbox.toggled.connect(
-                lambda checked, current_coordinate_system=coordinate_system: self._on_coordinate_system_checkbox_toggled(
-                    current_coordinate_system, checked
+                lambda checked, current_coordinate_system=coordinate_system: (
+                    self._on_coordinate_system_checkbox_toggled(current_coordinate_system, checked)
                 )
             )
             self.coordinate_system_selection_layout.addWidget(checkbox)
@@ -807,8 +809,8 @@ class FeatureExtractionWidget(QWidget):
         previous_image_identity: ElementIdentity | None = None,
     ) -> None:
         if previous_label_identity is None or previous_image_identity is None:
-            remembered_label_identity, remembered_image_identity = self._get_remembered_triplet_identities_for_coordinate_system(
-                coordinate_system
+            remembered_label_identity, remembered_image_identity = (
+                self._get_remembered_triplet_identities_for_coordinate_system(coordinate_system)
             )
             if previous_label_identity is None:
                 previous_label_identity = remembered_label_identity
@@ -873,7 +875,9 @@ class FeatureExtractionWidget(QWidget):
         self._set_selected_coordinate_system_by_name(coordinate_system)
         card_state = self._triplet_card_states_by_coordinate_system.get(coordinate_system)
         previous_image_identity = (
-            None if card_state is None or card_state.selected_image_option is None else card_state.selected_image_option.identity
+            None
+            if card_state is None or card_state.selected_image_option is None
+            else card_state.selected_image_option.identity
         )
 
         selected_label_option = None
@@ -890,7 +894,9 @@ class FeatureExtractionWidget(QWidget):
         )
         refreshed_state = self._triplet_card_states_by_coordinate_system.get(coordinate_system)
         self._remembered_image_identity_by_coordinate_system[coordinate_system] = (
-            None if refreshed_state is None or refreshed_state.selected_image_option is None else refreshed_state.selected_image_option.identity
+            None
+            if refreshed_state is None or refreshed_state.selected_image_option is None
+            else refreshed_state.selected_image_option.identity
         )
         self._sync_active_triplet_card_state()
         self._refresh_table_names()
@@ -1106,7 +1112,9 @@ class FeatureExtractionWidget(QWidget):
         ]
 
         if self.selected_coordinate_system not in checked_coordinate_systems:
-            next_active_coordinate_system = self._checked_coordinate_systems[0] if self._checked_coordinate_systems else None
+            next_active_coordinate_system = (
+                self._checked_coordinate_systems[0] if self._checked_coordinate_systems else None
+            )
             self._set_selected_coordinate_system_by_name(next_active_coordinate_system)
 
         self._sync_coordinate_system_combo_items()
@@ -1151,7 +1159,9 @@ class FeatureExtractionWidget(QWidget):
         if checked:
             next_active_coordinate_system = coordinate_system
         elif next_active_coordinate_system == coordinate_system:
-            next_active_coordinate_system = self._checked_coordinate_systems[0] if self._checked_coordinate_systems else None
+            next_active_coordinate_system = (
+                self._checked_coordinate_systems[0] if self._checked_coordinate_systems else None
+            )
 
         self._set_selected_coordinate_system_by_name(next_active_coordinate_system)
         self._refresh_triplet_cards()
@@ -1474,8 +1484,7 @@ class FeatureExtractionWidget(QWidget):
     def _update_calculate_controls(self) -> None:
         self.calculate_button.setEnabled(False)
         tooltip = (
-            "Calculation is temporarily disabled while the multi-sample feature-extraction "
-            "widget is being refactored."
+            "Calculation is temporarily disabled while the multi-sample feature-extraction widget is being refactored."
         )
         self._set_tooltip(self.calculate_button, tooltip)
 
