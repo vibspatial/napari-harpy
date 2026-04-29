@@ -883,8 +883,7 @@ def test_feature_extraction_widget_keeps_shared_channel_selector_visible_for_inc
     assert [checkbox.text() for checkbox in widget._batch_channel_checkboxes] == ["0", "1", "2"]
     assert not widget.channel_selection_label.isHidden()
     assert not widget.channel_selection_container.isHidden()
-    assert "image_global" in widget.channel_selection_note_label.text()
-    assert "does not match the shared ordered channel names" in widget.channel_selection_note_label.text()
+    assert widget.channel_selection_note_label.text() == "Channel names of selected images do not match."
 
 
 def test_feature_extraction_widget_remembers_shared_channel_selection_by_schema(
@@ -1008,8 +1007,10 @@ def test_feature_extraction_widget_surfaces_duplicate_channel_names_as_batch_err
     assert widget.selected_image_name == "blobs_image"
     assert widget.channel_selection_label.isHidden()
     assert widget.channel_selection_container.isHidden()
-    assert "duplicate channel names" in widget.intensity_features_hint.text()
-    assert "sdata.set_channel_names(...)" in widget.intensity_features_hint.text()
+    assert widget.intensity_features_hint.text() == (
+        "One or more selected images expose duplicate channel names. "
+        "Rename channels with `sdata.set_channel_names(...)` or choose a different image."
+    )
     assert bind_calls
     args, kwargs = bind_calls[-1]
     assert args == (

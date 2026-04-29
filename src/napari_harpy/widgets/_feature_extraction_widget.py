@@ -1316,44 +1316,17 @@ class FeatureExtractionWidget(QWidget):
     def _build_batch_channel_error_text(
         self,
         *,
-        reference_coordinate_system: str | None,
-        reference_image_option: SpatialDataImageOption | None,
-        duplicate_error_messages: list[str],
-        schema_mismatch_targets: list[tuple[str, SpatialDataImageOption]],
+        has_duplicate_channel_names: bool,
+        has_schema_mismatch: bool,
     ) -> str | None:
-        if reference_image_option is None and not duplicate_error_messages and not schema_mismatch_targets:
-            return None
-
         fragments: list[str] = []
-        if reference_image_option is None:
-            if duplicate_error_messages:
-                return duplicate_error_messages[0] if len(duplicate_error_messages) == 1 else (
-                    "Selected images do not expose a usable shared channel schema because one or more images "
-                    "have duplicate channel names."
-                )
-            return "No selected image exposes a usable shared channel schema for batch intensity extraction."
-
-        if duplicate_error_messages:
-            fragments.extend(duplicate_error_messages)
-
-        if schema_mismatch_targets:
-            reference_image_name = reference_image_option.image_name
-            if len(schema_mismatch_targets) == 1:
-                coordinate_system, image_option = schema_mismatch_targets[0]
-                fragments.append(
-                    f"Image `{image_option.image_name}` in `{coordinate_system}` does not match the shared ordered "
-                    f"channel names from `{reference_image_name}`."
-                )
-            else:
-                reference_target = (
-                    f"`{reference_image_name}` in `{reference_coordinate_system}`"
-                    if reference_coordinate_system is not None
-                    else f"`{reference_image_name}`"
-                )
-                fragments.append(
-                    f"{self._format_count_phrase(len(schema_mismatch_targets), 'selected image')} do not match "
-                    f"the shared ordered channel schema from {reference_target}."
-                )
+        if has_schema_mismatch:
+            fragments.append("Channel names of selected images do not match.")
+        if has_duplicate_channel_names:
+            fragments.append(
+                "One or more selected images expose duplicate channel names. "
+                "Rename channels with `sdata.set_channel_names(...)` or choose a different image."
+            )
 
         if not fragments:
             return None
@@ -1386,8 +1359,8 @@ class FeatureExtractionWidget(QWidget):
         reference_channel_names: tuple[str, ...] = ()
         incompatible_coordinate_systems: list[str] = []
         incompatible_image_names: list[str] = []
-        duplicate_error_messages: list[str] = []
-        schema_mismatch_targets: list[tuple[str, SpatialDataImageOption]] = []
+        has_duplicate_channel_names = False
+        has_schema_mismatch = False
 
         for coordinate_system, image_option in selected_images:
             try:
@@ -1397,10 +1370,7 @@ class FeatureExtractionWidget(QWidget):
             except ValueError:
                 incompatible_coordinate_systems.append(coordinate_system)
                 incompatible_image_names.append(image_option.image_name)
-                duplicate_error_messages.append(
-                    f"Image `{image_option.image_name}` in `{coordinate_system}` exposes duplicate channel names, "
-                    "so rename its channels with `sdata.set_channel_names(...)` or choose a different image."
-                )
+                has_duplicate_channel_names = True
                 continue
 
             if not channel_names:
@@ -1418,13 +1388,11 @@ class FeatureExtractionWidget(QWidget):
             if channel_names != reference_channel_names:
                 incompatible_coordinate_systems.append(coordinate_system)
                 incompatible_image_names.append(image_option.image_name)
-                schema_mismatch_targets.append((coordinate_system, image_option))
+                has_schema_mismatch = True
 
         error_text = self._build_batch_channel_error_text(
-            reference_coordinate_system=reference_coordinate_system,
-            reference_image_option=reference_image_option,
-            duplicate_error_messages=duplicate_error_messages,
-            schema_mismatch_targets=schema_mismatch_targets,
+            has_duplicate_channel_names=has_duplicate_channel_names,
+            has_schema_mismatch=has_schema_mismatch,
         )
         return _FeatureExtractionBatchChannelState(
             reference_coordinate_system=reference_coordinate_system,
