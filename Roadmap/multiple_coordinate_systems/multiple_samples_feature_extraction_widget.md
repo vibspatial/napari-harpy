@@ -581,16 +581,15 @@ Expected outcome:
 - the batch channel rule is visible in the UI;
 - channel compatibility is validated before backend submission.
 
-### 5. Finalize Batch Status, Binding, and Submission Flow
+### 5. Finalize Batch Binding and Submission Flow
 
 Goal:
 
-- make the batch UI communicate clearly and bind cleanly to the batch-aware
-  controller.
+- make staged batch assembly, table flow, and controller binding clean and
+  submission-ready.
 
 Scope:
 
-- ensure the widget reports which triplets will be written;
 - ensure the calculate button is gated by batch validity, table validation, and
   controller readiness;
 - ensure the widget builds one authoritative staged batch request from the
@@ -601,8 +600,7 @@ Scope:
 - if any checked card is invalid, do not bind a partial valid subset into the
   controller; instead, keep the invalid card visible in widget-local staged
   state, block submission, and bind no batch request at all until the full
-  checked batch is valid;
-- tighten status-card and tooltip messaging for the new batch flow.
+  checked batch is valid.
 
 Implementation detail:
 
@@ -610,10 +608,9 @@ Implementation detail:
   batch request from the currently checked cards, analogous to slice 4's
   `_resolve_batch_channel_state()`;
 - that helper should become the source of truth for:
-  - the triplet summary shown in the UI;
   - the decision to call `bind_batch(...)` versus binding no batch;
-  - the calculate-button enabled state and blocking tooltip/message;
-  - batch-level widget feedback about invalid checked cards;
+  - the calculate-button enabled state;
+  - widget-local batch validity decisions that feed later UI messaging;
 - a recommended shape is:
 
 ```python
@@ -664,12 +661,115 @@ def _resolve_staged_batch_state(self) -> _FeatureExtractionStagedBatchState:
 - once the staged batch and selected table are both valid, call
   `bind_batch(...)` with the full explicit triplet list; otherwise bind no
   batch and let the widget own the blocking feedback.
+- the calculate button should be enabled only when all of the following are
+  true, in this order:
+  - a `SpatialData` object is loaded;
+  - at least one coordinate system is checked;
+  - the staged batch state is bindable;
+  - a batch-eligible output table is selected;
+  - batch table validation passes for all staged triplet label names;
+  - at least one feature is selected;
+  - the output feature key is non-empty;
+  - the controller is bound to that same full staged batch;
+  - `controller.can_calculate` is `True`;
+- implementation note for that enablement list:
+  - items 1, 4, 6, 7, and 9 already have natural hooks in the current widget
+    or controller state;
+  - items 3 and 5 should be implemented through the new staged-batch and
+    batch-table helpers introduced in slice 5;
+  - item 8 should be supported by one small read-only controller exposure so
+    the widget can verify cleanly that the controller is bound to the same full
+    staged batch it is currently presenting in the UI.
+- treat that ordered enablement list as the disabled-tooltip precedence too:
+  - when the button is disabled, show the first unmet prerequisite from that
+    same list rather than combining several blocking reasons at once;
+  - keep the tooltip widget-owned until a full bindable batch exists and has
+    been bound;
+  - only fall through to controller-owned messaging once widget-side batch and
+    table validation have passed and the remaining blocking reason is truly
+    controller-owned;
+  - when the button is enabled, leave the tooltip empty.
+- for slice 5, status-card behavior may remain intentionally coarse while the
+  richer status-surface ownership work is deferred to slice 6:
+  - do not use placeholder strings such as `to be implemented` in the widget;
+  - `selection_status` should own the interim coarse batch-assembly and
+    table-validity messages, while `controller_feedback` should stay hidden
+    unless a bindable batch exists and the controller has real post-bind state
+    to report;
+  - prefer short but accurate batch-level messages such as
+    `Choose Coordinate Systems`, `Batch Incomplete`,
+    `Selected table does not annotate all staged segmentations.`,
+    `N extraction targets staged.`, or `Batch ready to bind.`;
+  - if no bindable batch is currently staged, it is acceptable for
+    `controller_feedback` to stay hidden rather than attempting to preview the
+    later slice-6 messaging contract.
+
+Expected outcome:
+
+- the widget assembles one authoritative staged batch from the checked cards;
+- the table selector reflects only batch-eligible output tables;
+- the controller never reflects a silently reduced subset of the checked cards;
+- submission stays blocked until the full checked batch and selected table are
+  valid;
+- controller binding reflects the same batch request the widget is prepared to
+  submit;
+- slice 5 can ship with minimal but accurate interim status messages while
+  detailed staged-batch summaries remain deferred to slice 6.
+
+### 6. Finalize Status-Card Ownership and Messaging
+
+Goal:
+
+- make the batch UI communicate staged-batch state clearly without mixing
+  widget-local validation with controller lifecycle feedback.
+
+Scope:
+
+- ensure the widget reports which triplets will be written;
+- keep the current two status-card surfaces, but give them strict ownership:
+  - `selection_status` should become the widget-owned staged-batch summary and
+    batch-validity card;
+  - `controller_feedback` should become the controller-owned bound-request and
+    execution-lifecycle card;
+- `selection_status` should be driven from the staged batch state plus
+  batch-level table validation, not from active-card-only selection state and
+  not from controller readiness alone;
+- `selection_status` should:
+  - report one line per checked card, because one checked card corresponds to
+    one intended triplet slot in the staged batch;
+  - show valid checked cards as concrete triplet summaries such as
+    `coordinate_system: segmentation -> image` or
+    `coordinate_system: segmentation -> no image` for morphology-only targets;
+  - keep invalid checked cards visible in that summary with a short blocking
+    reason rather than omitting them from the card;
+  - summarize overall staged-batch state with titles such as
+    `Choose Coordinate Systems`, `Batch Incomplete`, `Table Not Ready`, or
+    `Batch Ready`;
+  - use tooltip text for the full unshortened staged triplet summary when
+    names are long;
+- `controller_feedback` should:
+  - report only controller-owned state after binding, such as
+    `ready to calculate`, `calculating N extraction targets`, successful write
+    completion, or backend failure;
+  - not own widget-local validation messages such as missing segmentation,
+    invalid checked cards, batch table coverage issues, or shared channel
+    compatibility errors;
+  - stay hidden when no bindable batch is currently staged, rather than
+    duplicating widget-owned blocking feedback;
+- the calculate button's blocking tooltip/message should follow the same
+  top-level staged-batch validity that `selection_status` reports, so the
+  batch summary, button state, and controller binding all describe the same
+  request;
+- tighten status-card and tooltip messaging for the new batch flow.
 
 Expected outcome:
 
 - users can review the staged triplets before launching work;
-- controller binding and UI messaging reflect the same batch request;
-- the controller never reflects a silently reduced subset of the checked cards;
+- `selection_status` and `controller_feedback` no longer compete to explain the
+  same condition;
+- controller lifecycle feedback appears only when a real bindable batch exists;
+- UI messaging reflects the same staged batch request the widget is preparing
+  to submit;
 - the widget is aligned with the step-3 acceptance criteria in
   `cross_sample_tables.md`.
 
@@ -681,7 +781,8 @@ Recommended order:
 2. add checkbox selection and multi-card rendering;
 3. add batch validity rules;
 4. add shared batch channel selection;
-5. finalize status, binding, and submission flow.
+5. finalize batch binding and submission flow;
+6. finalize status-card ownership and messaging.
 
 ## Testing Strategy
 
