@@ -250,13 +250,20 @@ self._remembered_card_selection_by_coordinate_system: dict[
   for all visible cards, not only for the card that changed.
 - keep that recomputation on an in-place state-refresh path rather than on a
   destructive widget-recreation path.
+- to make that distinction obvious in code, prefer naming that uses
+  `rebuild` for widget-structure changes and `recompute` for in-place state
+  derivation.
 - in other words:
-  - use the existing/full `_refresh_triplet_cards()`-style path only when the
-    set of visible cards changes, such as after `sdata` changes or after
+  - rename `_refresh_triplet_cards()` to
+    `_rebuild_visible_triplet_cards()` and use that structural path only when
+    the set of visible cards changes, such as after `sdata` changes or after
     coordinate systems are checked/unchecked;
   - do not use that structural rebuild path for ordinary segmentation changes;
   - instead, recompute and reapply state onto the already-rendered card
     widgets.
+- similarly, rename `_refresh_triplet_card_for_coordinate_system(...)` to
+  `_recompute_triplet_card_state_for_coordinate_system(...)`, because that
+  helper resolves one card state rather than structurally rebuilding cards.
 - the helper shape should make that boundary explicit, for example:
 
 ```python
@@ -266,7 +273,7 @@ def _snapshot_visible_card_selections(
     """Capture current staged card selections before cross-card recomputation."""
 
 
-def _refresh_visible_triplet_card_states(
+def _recompute_visible_triplet_card_states(
     self,
     *,
     preferred_selection_by_coordinate_system: Mapping[
@@ -280,17 +287,19 @@ def _refresh_visible_triplet_card_states(
 - `_snapshot_visible_card_selections()` is optional but recommended for
   maintainability: it gives the recomputation step one stable snapshot of the
   current staged selections before any card state is rebuilt.
-- `_refresh_visible_triplet_card_states()` should:
+- `_recompute_visible_triplet_card_states()` should:
   - iterate over the currently visible coordinate systems in display order;
-  - rebuild each card state from the current `sdata`, the current checked-card
-    set, and the preferred remembered/current selections for that card;
+  - call `_recompute_triplet_card_state_for_coordinate_system(...)` or an
+    equivalent single-card recomputation path for each visible card, using the
+    current `sdata`, the current checked-card set, and the preferred
+    remembered/current selections for that card;
   - update `_triplet_card_states_by_coordinate_system`;
   - call `_apply_triplet_card_state(...)` on the existing widgets instead of
     clearing and recreating them;
   - finish by syncing the active-card compatibility bridge.
 - `_on_triplet_card_segmentation_changed(...)` should therefore update the
   remembered selection for the changed card and then call
-  `_refresh_visible_triplet_card_states(...)`, not the structural
+  `_recompute_visible_triplet_card_states(...)`, not the structural
   card-recreation path.
 - in practice, recompute visible card states when:
   - `sdata` changes;
