@@ -16,11 +16,11 @@ from napari_harpy._spatialdata import (
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
     get_image_channel_names_from_sdata,
-    get_spatialdata_feature_extraction_label_options_for_coordinate_system_from_sdata,
+    get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata,
+    get_spatialdata_feature_extraction_label_discovery_for_coordinate_system_from_sdata,
     get_spatialdata_image_options_for_coordinate_system_from_sdata,
     get_spatialdata_label_options_for_coordinate_system_from_sdata,
     get_spatialdata_label_options_from_sdata,
-    get_spatialdata_matching_image_options_for_coordinate_system_and_label_from_sdata,
     get_table,
     get_table_annotated_label_names,
     get_table_color_source_options,
@@ -448,12 +448,15 @@ def test_get_spatialdata_feature_extraction_label_options_for_coordinate_system_
 
     monkeypatch.setattr(spatialdata_module, "get_transformation", _fake_get_transformation)
 
-    options = get_spatialdata_feature_extraction_label_options_for_coordinate_system_from_sdata(
+    discovery = get_spatialdata_feature_extraction_label_discovery_for_coordinate_system_from_sdata(
         sdata=fake_sdata,
         coordinate_system="global",
     )
 
-    assert [option.label_name for option in options] == ["eligible_alpha", "eligible_beta"]
+    assert discovery.coordinate_system == "global"
+    assert [option.label_name for option in discovery.eligible_label_options] == ["eligible_alpha", "eligible_beta"]
+    assert discovery.coordinate_system_label_count == 4
+    assert discovery.unavailable_label_count == 2
 
 
 def test_get_spatialdata_matching_image_options_for_coordinate_system_and_label_filters_by_shape_and_transform(
@@ -490,14 +493,19 @@ def test_get_spatialdata_matching_image_options_for_coordinate_system_and_label_
 
     monkeypatch.setattr(spatialdata_module, "get_transformation", _fake_get_transformation)
 
-    options = get_spatialdata_matching_image_options_for_coordinate_system_and_label_from_sdata(
+    discovery = get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata(
         sdata=fake_sdata,
         coordinate_system="global",
         label_name="segmentation",
     )
 
-    assert [option.image_name for option in options] == ["matching_a", "matching_b"]
-    assert all(option.coordinate_systems == ("global",) for option in options)
+    assert discovery.coordinate_system == "global"
+    assert discovery.label_name == "segmentation"
+    assert [option.image_name for option in discovery.eligible_image_options] == ["matching_a", "matching_b"]
+    assert discovery.coordinate_system_image_count == 5
+    assert discovery.unavailable_image_count == 3
+    assert [option.image_name for option in discovery.eligible_image_options] == ["matching_a", "matching_b"]
+    assert all(option.coordinate_systems == ("global",) for option in discovery.eligible_image_options)
 
 
 def test_build_layer_metadata_adata_builds_from_selected_table(sdata_blobs: SpatialData) -> None:

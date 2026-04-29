@@ -374,10 +374,8 @@ def get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and
   and one `image_note_text`, combine cross-card duplicate warnings and coarse
   unavailable-count feedback into one short sentence when both apply, rather
   than treating them as separate competing note slots.
-- during the refactor, the older option-only feature-extraction helpers may
-  remain temporarily as thin wrappers over these discovery helpers, but the
-  discovery helpers are the intended source of truth and the end-state API the
-  widget should consume directly.
+- the older option-only feature-extraction helpers are removed; the discovery
+  helpers are now the source of truth and the API the widget consumes directly.
 - a remembered segmentation that becomes blocked by another selected card is
   not kept as a blocked current selection in state; instead:
   - the card resets to `Choose a segmentation mask`;

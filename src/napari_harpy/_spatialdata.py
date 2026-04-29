@@ -60,6 +60,27 @@ class SpatialDataImageOption:
 
 
 @dataclass(frozen=True)
+class SpatialDataFeatureExtractionLabelDiscovery:
+    """Feature-extraction label discovery summary for one coordinate system."""
+
+    coordinate_system: str
+    eligible_label_options: list[SpatialDataLabelsOption]
+    coordinate_system_label_count: int
+    unavailable_label_count: int
+
+
+@dataclass(frozen=True)
+class SpatialDataFeatureExtractionImageDiscovery:
+    """Feature-extraction image discovery summary for one `(coordinate system, label)` pair."""
+
+    coordinate_system: str
+    label_name: str
+    eligible_image_options: list[SpatialDataImageOption]
+    coordinate_system_image_count: int
+    unavailable_image_count: int
+
+
+@dataclass(frozen=True)
 class SpatialDataTableMetadata:
     """Metadata that links a table to the labels elements it annotates."""
 
@@ -345,24 +366,34 @@ def get_spatialdata_label_options_for_coordinate_system_from_sdata(
         if coordinate_system in _get_element_coordinate_systems(sdata.labels[label_name])
     ]
 
-
-def get_spatialdata_feature_extraction_label_options_for_coordinate_system_from_sdata(
+def get_spatialdata_feature_extraction_label_discovery_for_coordinate_system_from_sdata(
     *,
     sdata: SpatialData,
     coordinate_system: str,
-) -> list[SpatialDataLabelsOption]:
-    """Return feature-extraction-eligible labels options for one coordinate system."""
-    return [
+) -> SpatialDataFeatureExtractionLabelDiscovery:
+    """Return feature-extraction label discovery summary for one coordinate system."""
+    coordinate_system_label_names = [
+        label_name
+        for label_name in _get_label_names(sdata)
+        if coordinate_system in _get_element_coordinate_systems(sdata.labels[label_name])
+    ]
+    eligible_label_options = [
         SpatialDataLabelsOption(
             label_name=label_name,
             display_name=label_name,
             sdata=sdata,
             coordinate_systems=_get_element_coordinate_systems(sdata.labels[label_name]),
         )
-        for label_name in _get_label_names(sdata)
-        if coordinate_system in _get_element_coordinate_systems(sdata.labels[label_name])
-        and _is_feature_extraction_transform_supported(sdata.labels[label_name], coordinate_system)
+        for label_name in coordinate_system_label_names
+        if _is_feature_extraction_transform_supported(sdata.labels[label_name], coordinate_system)
     ]
+    coordinate_system_label_count = len(coordinate_system_label_names)
+    return SpatialDataFeatureExtractionLabelDiscovery(
+        coordinate_system=coordinate_system,
+        eligible_label_options=eligible_label_options,
+        coordinate_system_label_count=coordinate_system_label_count,
+        unavailable_label_count=coordinate_system_label_count - len(eligible_label_options),
+    )
 
 
 def get_spatialdata_image_options_for_coordinate_system_from_sdata(
@@ -382,14 +413,13 @@ def get_spatialdata_image_options_for_coordinate_system_from_sdata(
         if coordinate_system in _get_element_coordinate_systems(sdata.images[image_name])
     ]
 
-
-def get_spatialdata_matching_image_options_for_coordinate_system_and_label_from_sdata(
+def get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata(
     *,
     sdata: SpatialData,
     coordinate_system: str,
     label_name: str,
-) -> list[SpatialDataImageOption]:
-    """Return image options that exactly match a `(coordinate system, segmentation)` pair."""
+) -> SpatialDataFeatureExtractionImageDiscovery:
+    """Return feature-extraction image discovery summary for one `(coordinate system, label)` pair."""
     available_label_names = _get_label_names(sdata)
     if label_name not in available_label_names:
         raise ValueError(f"Labels element `{label_name}` is not available in the selected SpatialData object.")
@@ -402,33 +432,41 @@ def get_spatialdata_matching_image_options_for_coordinate_system_and_label_from_
 
     label_shape = _get_spatial_shape(label_element)
     label_affine = _get_feature_extraction_affine_matrix(label_element, coordinate_system)
-    if label_affine is None or not label_shape:
-        return []
+    coordinate_system_image_names = [
+        image_name
+        for image_name in _get_image_names(sdata)
+        if coordinate_system in _get_element_coordinate_systems(sdata.images[image_name])
+    ]
 
     matches: list[SpatialDataImageOption] = []
-    for image_name in _get_image_names(sdata):
-        image_element = sdata.images[image_name]
-        if coordinate_system not in _get_element_coordinate_systems(image_element):
-            continue
+    if label_affine is not None and label_shape:
+        for image_name in coordinate_system_image_names:
+            image_element = sdata.images[image_name]
+            image_shape = _get_spatial_shape(image_element)
+            if image_shape != label_shape:
+                continue
 
-        image_shape = _get_spatial_shape(image_element)
-        if image_shape != label_shape:
-            continue
+            image_affine = _get_feature_extraction_affine_matrix(image_element, coordinate_system)
+            if image_affine is None or not np.allclose(image_affine, label_affine):
+                continue
 
-        image_affine = _get_feature_extraction_affine_matrix(image_element, coordinate_system)
-        if image_affine is None or not np.allclose(image_affine, label_affine):
-            continue
-
-        matches.append(
-            SpatialDataImageOption(
-                image_name=image_name,
-                display_name=image_name,
-                sdata=sdata,
-                coordinate_systems=(coordinate_system,),
+            matches.append(
+                SpatialDataImageOption(
+                    image_name=image_name,
+                    display_name=image_name,
+                    sdata=sdata,
+                    coordinate_systems=(coordinate_system,),
+                )
             )
-        )
 
-    return matches
+    coordinate_system_image_count = len(coordinate_system_image_names)
+    return SpatialDataFeatureExtractionImageDiscovery(
+        coordinate_system=coordinate_system,
+        label_name=label_name,
+        eligible_image_options=matches,
+        coordinate_system_image_count=coordinate_system_image_count,
+        unavailable_image_count=coordinate_system_image_count - len(matches),
+    )
 
 
 def _get_table_model_attrs(table: AnnData, table_name: str) -> dict[str, Any]:

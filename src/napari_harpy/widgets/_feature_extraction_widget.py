@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from html import escape
 from pathlib import Path
@@ -31,8 +32,8 @@ from napari_harpy._spatialdata import (
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
     get_image_channel_names_from_sdata,
-    get_spatialdata_feature_extraction_label_options_for_coordinate_system_from_sdata,
-    get_spatialdata_matching_image_options_for_coordinate_system_and_label_from_sdata,
+    get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata,
+    get_spatialdata_feature_extraction_label_discovery_for_coordinate_system_from_sdata,
     get_table,
     validate_table_binding,
 )
@@ -109,6 +110,7 @@ _MORPHOLOGY_FEATURES = (
 _DEFAULT_FEATURE_MATRIX_KEY = "features"
 _MAX_VISIBLE_EXTRACTION_CHANNELS = 5
 _FEATURE_GROUPS_TOP_SPACING = 12
+_CHOOSE_SEGMENTATION_TEXT = "Choose a segmentation mask"
 ElementIdentity = tuple[int, str]
 
 
@@ -117,16 +119,26 @@ class _FeatureExtractionTripletCardWidgets:
     coordinate_system: str
     container: QGroupBox
     segmentation_combo: CompactComboBox
+    segmentation_note_label: QLabel
     image_combo: CompactComboBox
+    image_note_label: QLabel
 
 
 @dataclass(frozen=True)
 class _FeatureExtractionTripletCardState:
     coordinate_system: str | None
-    label_options: list[SpatialDataLabelsOption]
+    selectable_label_options: list[SpatialDataLabelsOption]
     selected_label_option: SpatialDataLabelsOption | None
-    image_options: list[SpatialDataImageOption]
+    segmentation_note_text: str | None
+    selectable_image_options: list[SpatialDataImageOption]
     selected_image_option: SpatialDataImageOption | None
+    image_note_text: str | None
+
+
+@dataclass(frozen=True)
+class _FeatureExtractionCardSelection:
+    label_identity: ElementIdentity | None
+    image_identity: ElementIdentity | None
 
 
 class FeatureExtractionWidget(QWidget):
@@ -166,12 +178,8 @@ class FeatureExtractionWidget(QWidget):
         self._image_channel_checkboxes: list[QCheckBox] = []
         self._selected_channel_names_by_image_identity: dict[ElementIdentity, tuple[str, ...]] = {}
         # Persistent per-coordinate-system memory of the last explicit user
-        # triplet choice. During one rebuild we pass one remembered identity
-        # through as a one-shot "candidate to preserve", but these dicts are
-        # the longer-lived source of truth across coordinate-system switches
-        # while the current SpatialData object remains loaded.
-        self._remembered_label_identity_by_coordinate_system: dict[str, ElementIdentity | None] = {}
-        self._remembered_image_identity_by_coordinate_system: dict[str, ElementIdentity | None] = {}
+        # card selection while the current SpatialData object remains loaded.
+        self._remembered_card_selection_by_coordinate_system: dict[str, _FeatureExtractionCardSelection] = {}
         self._table_names: list[str] = []
         self._selected_table_name: str | None = None
         self._coordinate_systems: list[str] = []
@@ -190,10 +198,12 @@ class FeatureExtractionWidget(QWidget):
         self._triplet_card_states_by_coordinate_system: dict[str, _FeatureExtractionTripletCardState] = {}
         self._triplet_card_state = _FeatureExtractionTripletCardState(
             coordinate_system=None,
-            label_options=[],
+            selectable_label_options=[],
             selected_label_option=None,
-            image_options=[],
+            segmentation_note_text=None,
+            selectable_image_options=[],
             selected_image_option=None,
+            image_note_text=None,
         )
         self._logo_path = Path(__file__).resolve().parents[3] / "docs" / "_static" / "logo.png"
 
@@ -489,8 +499,7 @@ class FeatureExtractionWidget(QWidget):
         self._image_options = []
         self._selected_image_option = None
         self._selected_channel_names_by_image_identity = {}
-        self._remembered_label_identity_by_coordinate_system = {}
-        self._remembered_image_identity_by_coordinate_system = {}
+        self._remembered_card_selection_by_coordinate_system = {}
         self._clear_image_channel_options()
         self._table_names = []
         self._selected_table_name = None
@@ -504,10 +513,12 @@ class FeatureExtractionWidget(QWidget):
         self._triplet_card_states_by_coordinate_system = {}
         self._triplet_card_state = _FeatureExtractionTripletCardState(
             coordinate_system=None,
-            label_options=[],
+            selectable_label_options=[],
             selected_label_option=None,
-            image_options=[],
+            segmentation_note_text=None,
+            selectable_image_options=[],
             selected_image_option=None,
+            image_note_text=None,
         )
 
     def _create_header_logo(self) -> QLabel:
@@ -526,17 +537,30 @@ class FeatureExtractionWidget(QWidget):
     def _create_form_label(self, text: str) -> QLabel:
         return create_form_label(text)
 
+    def _create_triplet_card_note_label(self, object_name: str) -> QLabel:
+        note_label = QLabel()
+        note_label.setObjectName(object_name)
+        note_label.setWordWrap(True)
+        note_label.setStyleSheet(_FEATURE_HINT_WARNING_STYLESHEET)
+        note_label.hide()
+        return note_label
+
     def _create_placeholder_triplet_card_widgets(self) -> _FeatureExtractionTripletCardWidgets:
         """Create hidden placeholder controls used when no visible card is active."""
         segmentation_combo = CompactComboBox()
         segmentation_combo.setObjectName("feature_extraction_segmentation_combo")
+        segmentation_combo.setPlaceholderText(_CHOOSE_SEGMENTATION_TEXT)
         segmentation_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
         segmentation_combo.hide()
+        segmentation_note_label = self._create_triplet_card_note_label("feature_extraction_segmentation_note")
+        segmentation_note_label.hide()
 
         image_combo = CompactComboBox()
         image_combo.setObjectName("feature_extraction_image_combo")
         image_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
         image_combo.hide()
+        image_note_label = self._create_triplet_card_note_label("feature_extraction_image_note")
+        image_note_label.hide()
 
         container = QGroupBox()
         container.hide()
@@ -545,7 +569,9 @@ class FeatureExtractionWidget(QWidget):
             coordinate_system="",
             container=container,
             segmentation_combo=segmentation_combo,
+            segmentation_note_label=segmentation_note_label,
             image_combo=image_combo,
+            image_note_label=image_note_label,
         )
 
     def _create_triplet_card_widgets(self, coordinate_system: str) -> _FeatureExtractionTripletCardWidgets:
@@ -565,7 +591,11 @@ class FeatureExtractionWidget(QWidget):
                 current_coordinate_system, index
             )
         )
+        segmentation_combo.setPlaceholderText(_CHOOSE_SEGMENTATION_TEXT)
         segmentation_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
+        segmentation_note_label = self._create_triplet_card_note_label(
+            f"feature_extraction_segmentation_note_{coordinate_system}"
+        )
 
         image_combo = CompactComboBox()
         image_combo.setObjectName(f"feature_extraction_image_combo_{coordinate_system}")
@@ -575,29 +605,34 @@ class FeatureExtractionWidget(QWidget):
             )
         )
         image_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
+        image_note_label = self._create_triplet_card_note_label(f"feature_extraction_image_note_{coordinate_system}")
 
         layout.addWidget(self._create_form_label("Segmentation mask"))
         layout.addWidget(segmentation_combo)
+        layout.addWidget(segmentation_note_label)
         layout.addWidget(self._create_form_label("Image"))
         layout.addWidget(image_combo)
+        layout.addWidget(image_note_label)
 
         return _FeatureExtractionTripletCardWidgets(
             coordinate_system=coordinate_system,
             container=container,
             segmentation_combo=segmentation_combo,
+            segmentation_note_label=segmentation_note_label,
             image_combo=image_combo,
+            image_note_label=image_note_label,
         )
 
-    def _get_remembered_triplet_identities_for_coordinate_system(
+    def _get_remembered_card_selection_for_coordinate_system(
         self,
         coordinate_system: str | None,
-    ) -> tuple[ElementIdentity | None, ElementIdentity | None]:
+    ) -> _FeatureExtractionCardSelection:
         if coordinate_system is None:
-            return None, None
+            return _FeatureExtractionCardSelection(label_identity=None, image_identity=None)
 
-        return (
-            self._remembered_label_identity_by_coordinate_system.get(coordinate_system),
-            self._remembered_image_identity_by_coordinate_system.get(coordinate_system),
+        return self._remembered_card_selection_by_coordinate_system.get(
+            coordinate_system,
+            _FeatureExtractionCardSelection(label_identity=None, image_identity=None),
         )
 
     def _clear_coordinate_system_checkboxes(self) -> None:
@@ -642,56 +677,186 @@ class FeatureExtractionWidget(QWidget):
     def _set_tooltip(self, widget: QWidget, message: str) -> None:
         widget.setToolTip(format_tooltip(message))
 
-    def _build_triplet_card_state(
+    @staticmethod
+    def _format_count_phrase(count: int, singular: str) -> str:
+        suffix = "" if count == 1 else "s"
+        return f"{count} {singular}{suffix}"
+
+    def _set_triplet_card_note_text(self, note_label: QLabel, text: str | None) -> None:
+        note_label.setText(text or "")
+        note_label.setVisible(bool(text))
+
+    def _build_segmentation_note_text(
+        self,
+        *,
+        blocked_label_options_by_owner: list[tuple[str, SpatialDataLabelsOption]],
+        blocked_restored_selection: tuple[str, SpatialDataLabelsOption] | None,
+        unavailable_label_count: int,
+    ) -> str | None:
+        fragments: list[str] = []
+
+        if blocked_restored_selection is not None:
+            owner_coordinate_system, blocked_option = blocked_restored_selection
+            fragments.append(
+                f"`{blocked_option.display_name}` already selected in `{owner_coordinate_system}`, "
+                "so choose a different segmentation mask"
+            )
+        elif blocked_label_options_by_owner:
+            if len(blocked_label_options_by_owner) == 1:
+                owner_coordinate_system, blocked_option = blocked_label_options_by_owner[0]
+                fragments.append(f"`{blocked_option.display_name}` already selected in `{owner_coordinate_system}`")
+            else:
+                fragments.append(
+                    f"{self._format_count_phrase(len(blocked_label_options_by_owner), 'segmentation')} already selected in other cards"
+                )
+
+        if unavailable_label_count > 0:
+            fragments.append(f"{self._format_count_phrase(unavailable_label_count, 'segmentation')} unavailable")
+
+        if not fragments:
+            return None
+
+        return "; ".join(fragments) + "."
+
+    def _build_image_note_text(self, unavailable_image_count: int) -> str | None:
+        if unavailable_image_count <= 0:
+            return None
+
+        if unavailable_image_count == 1:
+            return "1 image unavailable because it does not satisfy matching requirements."
+
+        return f"{unavailable_image_count} images unavailable because they do not satisfy matching requirements."
+
+    def _sync_remembered_card_selection_from_state(
+        self,
+        coordinate_system: str,
+        state: _FeatureExtractionTripletCardState,
+    ) -> None:
+        self._remembered_card_selection_by_coordinate_system[coordinate_system] = _FeatureExtractionCardSelection(
+            label_identity=None if state.selected_label_option is None else state.selected_label_option.identity,
+            image_identity=None if state.selected_image_option is None else state.selected_image_option.identity,
+        )
+
+    def _recompute_triplet_card_state_for_coordinate_system(
         self,
         coordinate_system: str | None,
         *,
-        previous_label_identity: ElementIdentity | None,
-        previous_image_identity: ElementIdentity | None,
+        preferred_selection: _FeatureExtractionCardSelection | None = None,
+        selected_label_identity: ElementIdentity | None = None,
+        selected_label_owner_by_identity: Mapping[ElementIdentity, str] | None = None,
     ) -> _FeatureExtractionTripletCardState:
         """Resolve one coordinate-system card state from shared `SpatialData`."""
         if self.selected_spatialdata is None or coordinate_system is None:
-            label_options: list[SpatialDataLabelsOption] = []
-        else:
-            label_options = get_spatialdata_feature_extraction_label_options_for_coordinate_system_from_sdata(
-                sdata=self.selected_spatialdata,
+            return _FeatureExtractionTripletCardState(
                 coordinate_system=coordinate_system,
+                selectable_label_options=[],
+                selected_label_option=None,
+                segmentation_note_text=None,
+                selectable_image_options=[],
+                selected_image_option=None,
+                image_note_text=None,
             )
 
-        next_label_index = None
-        for index, option in enumerate(label_options):
-            if option.identity == previous_label_identity:
-                next_label_index = index
-                break
-        selected_label_option = None
-        if label_options:
-            selected_label_option = label_options[0 if next_label_index is None else next_label_index]
+        preferred_selection = (
+            self._get_remembered_card_selection_for_coordinate_system(coordinate_system)
+            if preferred_selection is None
+            else preferred_selection
+        )
+        selected_label_identity = preferred_selection.label_identity if selected_label_identity is None else selected_label_identity
+        label_discovery = get_spatialdata_feature_extraction_label_discovery_for_coordinate_system_from_sdata(
+            sdata=self.selected_spatialdata,
+            coordinate_system=coordinate_system,
+        )
+        eligible_label_options = label_discovery.eligible_label_options
+        selected_label_owner_by_identity = {} if selected_label_owner_by_identity is None else dict(
+            selected_label_owner_by_identity
+        )
+        selectable_label_options = [
+            option
+            for option in eligible_label_options
+            if selected_label_owner_by_identity.get(option.identity) in (None, coordinate_system)
+        ]
 
-        if self.selected_spatialdata is None or coordinate_system is None or selected_label_option is None:
-            image_options: list[SpatialDataImageOption] = []
-        else:
-            image_options = get_spatialdata_matching_image_options_for_coordinate_system_and_label_from_sdata(
-                sdata=self.selected_spatialdata,
+        blocked_label_options_by_owner = [
+            (selected_label_owner_by_identity[option.identity], option)
+            for option in eligible_label_options
+            if selected_label_owner_by_identity.get(option.identity) not in (None, coordinate_system)
+        ]
+        blocked_restored_selection: tuple[str, SpatialDataLabelsOption] | None = None
+        if (
+            preferred_selection.label_identity is not None
+            and selected_label_identity is None
+            and preferred_selection.label_identity in selected_label_owner_by_identity
+            and selected_label_owner_by_identity[preferred_selection.label_identity] != coordinate_system
+        ):
+            blocked_option = next(
+                (
+                    option
+                    for option in eligible_label_options
+                    if option.identity == preferred_selection.label_identity
+                ),
+                None,
+            )
+            if blocked_option is not None:
+                blocked_restored_selection = (
+                    selected_label_owner_by_identity[preferred_selection.label_identity],
+                    blocked_option,
+                )
+                blocked_label_options_by_owner = [
+                    (owner_coordinate_system, option)
+                    for owner_coordinate_system, option in blocked_label_options_by_owner
+                    if option.identity != preferred_selection.label_identity
+                ]
+
+        selected_label_option = next(
+            (
+                option
+                for option in selectable_label_options
+                if option.identity == selected_label_identity
+            ),
+            None,
+        )
+        segmentation_note_text = self._build_segmentation_note_text(
+            blocked_label_options_by_owner=blocked_label_options_by_owner,
+            blocked_restored_selection=blocked_restored_selection,
+            unavailable_label_count=label_discovery.unavailable_label_count,
+        )
+
+        if selected_label_option is None:
+            return _FeatureExtractionTripletCardState(
                 coordinate_system=coordinate_system,
-                label_name=selected_label_option.label_name,
+                selectable_label_options=selectable_label_options,
+                selected_label_option=None,
+                segmentation_note_text=segmentation_note_text,
+                selectable_image_options=[],
+                selected_image_option=None,
+                image_note_text=None,
             )
 
-        next_image_index = None
-        for index, option in enumerate(image_options):
-            if option.identity == previous_image_identity:
-                next_image_index = index
-                break
-        if next_image_index is not None:
-            selected_image_option = image_options[next_image_index]
-        else:
-            selected_image_option = None
+        image_discovery = get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata(
+            sdata=self.selected_spatialdata,
+            coordinate_system=coordinate_system,
+            label_name=selected_label_option.label_name,
+        )
+        selectable_image_options = image_discovery.eligible_image_options
+        selected_image_option = next(
+            (
+                option
+                for option in selectable_image_options
+                if option.identity == preferred_selection.image_identity
+            ),
+            None,
+        )
+        image_note_text = self._build_image_note_text(image_discovery.unavailable_image_count)
 
         return _FeatureExtractionTripletCardState(
             coordinate_system=coordinate_system,
-            label_options=label_options,
+            selectable_label_options=selectable_label_options,
             selected_label_option=selected_label_option,
-            image_options=image_options,
+            segmentation_note_text=segmentation_note_text,
+            selectable_image_options=selectable_image_options,
             selected_image_option=selected_image_option,
+            image_note_text=image_note_text,
         )
 
     def _apply_triplet_card_state(
@@ -702,27 +867,24 @@ class FeatureExtractionWidget(QWidget):
         """Apply a resolved state to one visible triplet-card widget."""
         with QSignalBlocker(widgets.segmentation_combo):
             widgets.segmentation_combo.clear()
-            for option in state.label_options:
+            for option in state.selectable_label_options:
                 widgets.segmentation_combo.addItem(option.display_name)
 
-            has_label_options = bool(state.label_options)
+            has_label_options = bool(state.selectable_label_options)
             widgets.segmentation_combo.setEnabled(has_label_options)
 
             next_segmentation_index = self._find_label_option_index_in_options(
-                state.label_options,
+                state.selectable_label_options,
                 None if state.selected_label_option is None else state.selected_label_option.identity,
             )
-            if has_label_options:
-                widgets.segmentation_combo.setCurrentIndex(
-                    0 if next_segmentation_index is None else next_segmentation_index
-                )
-            else:
-                widgets.segmentation_combo.setCurrentIndex(-1)
+            widgets.segmentation_combo.setCurrentIndex(-1 if next_segmentation_index is None else next_segmentation_index)
+
+        self._set_triplet_card_note_text(widgets.segmentation_note_label, state.segmentation_note_text)
 
         with QSignalBlocker(widgets.image_combo):
             widgets.image_combo.clear()
             widgets.image_combo.addItem(_NO_IMAGE_TEXT, None)
-            for option in state.image_options:
+            for option in state.selectable_image_options:
                 widgets.image_combo.addItem(option.display_name)
 
             widgets.image_combo.setEnabled(
@@ -732,13 +894,110 @@ class FeatureExtractionWidget(QWidget):
             )
 
             next_image_index = self._find_image_option_index_in_options(
-                state.image_options,
+                state.selectable_image_options,
                 None if state.selected_image_option is None else state.selected_image_option.identity,
             )
-            if next_image_index is None:
-                widgets.image_combo.setCurrentIndex(0)
-            else:
-                widgets.image_combo.setCurrentIndex(next_image_index + 1)
+            widgets.image_combo.setCurrentIndex(0 if next_image_index is None else next_image_index + 1)
+
+        self._set_triplet_card_note_text(widgets.image_note_label, state.image_note_text)
+
+    def _snapshot_rendered_card_selections(self) -> dict[str, _FeatureExtractionCardSelection]:
+        snapshot: dict[str, _FeatureExtractionCardSelection] = {}
+        for coordinate_system, state in self._triplet_card_states_by_coordinate_system.items():
+            snapshot[coordinate_system] = _FeatureExtractionCardSelection(
+                label_identity=None if state.selected_label_option is None else state.selected_label_option.identity,
+                image_identity=None if state.selected_image_option is None else state.selected_image_option.identity,
+            )
+
+        return snapshot
+
+    def _resolve_visible_label_selections(
+        self,
+        *,
+        preferred_selection_by_coordinate_system: Mapping[str, _FeatureExtractionCardSelection],
+        authoritative_coordinate_systems: set[str],
+    ) -> tuple[dict[str, ElementIdentity | None], dict[ElementIdentity, str]]:
+        checked_coordinate_systems = self._checked_coordinate_system_names()
+        authoritative_order = [
+            coordinate_system
+            for coordinate_system in checked_coordinate_systems
+            if coordinate_system in authoritative_coordinate_systems
+        ]
+        restore_order = [
+            coordinate_system
+            for coordinate_system in checked_coordinate_systems
+            if coordinate_system not in authoritative_coordinate_systems
+        ]
+
+        selected_label_identity_by_coordinate_system: dict[str, ElementIdentity | None] = {}
+        selected_label_owner_by_identity: dict[ElementIdentity, str] = {}
+        for coordinate_system in [*authoritative_order, *restore_order]:
+            preferred_selection = preferred_selection_by_coordinate_system.get(
+                coordinate_system,
+                self._get_remembered_card_selection_for_coordinate_system(coordinate_system),
+            )
+            label_discovery = get_spatialdata_feature_extraction_label_discovery_for_coordinate_system_from_sdata(
+                sdata=self.selected_spatialdata,
+                coordinate_system=coordinate_system,
+            )
+            eligible_label_identities = {option.identity for option in label_discovery.eligible_label_options}
+            selected_label_identity = preferred_selection.label_identity
+            if (
+                selected_label_identity is None
+                or selected_label_identity not in eligible_label_identities
+                or selected_label_identity in selected_label_owner_by_identity
+            ):
+                selected_label_identity = None
+
+            selected_label_identity_by_coordinate_system[coordinate_system] = selected_label_identity
+            if selected_label_identity is not None:
+                selected_label_owner_by_identity[selected_label_identity] = coordinate_system
+
+        return selected_label_identity_by_coordinate_system, selected_label_owner_by_identity
+
+    def _recompute_visible_triplet_card_states(
+        self,
+        *,
+        preferred_selection_by_coordinate_system: Mapping[str, _FeatureExtractionCardSelection] | None = None,
+        authoritative_coordinate_systems: set[str] | None = None,
+    ) -> None:
+        checked_coordinate_systems = self._checked_coordinate_system_names()
+        if preferred_selection_by_coordinate_system is None:
+            preferred_selection_by_coordinate_system = {
+                coordinate_system: self._get_remembered_card_selection_for_coordinate_system(coordinate_system)
+                for coordinate_system in checked_coordinate_systems
+            }
+        if authoritative_coordinate_systems is None:
+            authoritative_coordinate_systems = set(checked_coordinate_systems)
+
+        authoritative_coordinate_systems = {
+            coordinate_system
+            for coordinate_system in authoritative_coordinate_systems
+            if coordinate_system in checked_coordinate_systems
+        }
+        selected_label_identity_by_coordinate_system, selected_label_owner_by_identity = self._resolve_visible_label_selections(
+            preferred_selection_by_coordinate_system=preferred_selection_by_coordinate_system,
+            authoritative_coordinate_systems=authoritative_coordinate_systems,
+        )
+        next_states_by_coordinate_system: dict[str, _FeatureExtractionTripletCardState] = {}
+        for coordinate_system in checked_coordinate_systems:
+            state = self._recompute_triplet_card_state_for_coordinate_system(
+                coordinate_system=coordinate_system,
+                preferred_selection=preferred_selection_by_coordinate_system.get(
+                    coordinate_system,
+                    self._get_remembered_card_selection_for_coordinate_system(coordinate_system),
+                ),
+                selected_label_identity=selected_label_identity_by_coordinate_system.get(coordinate_system),
+                selected_label_owner_by_identity=selected_label_owner_by_identity,
+            )
+            next_states_by_coordinate_system[coordinate_system] = state
+            self._sync_remembered_card_selection_from_state(coordinate_system, state)
+            widgets = self._triplet_card_widgets_by_coordinate_system.get(coordinate_system)
+            if widgets is not None:
+                self._apply_triplet_card_state(widgets, state)
+
+        self._triplet_card_states_by_coordinate_system = next_states_by_coordinate_system
+        self._sync_active_triplet_card_state()
 
     def _set_active_card_widgets(self, coordinate_system: str | None) -> None:
         if coordinate_system is None:
@@ -801,32 +1060,6 @@ class FeatureExtractionWidget(QWidget):
             if coordinate_system in checked_coordinate_systems
         ]
 
-    def _refresh_triplet_card_for_coordinate_system(
-        self,
-        coordinate_system: str,
-        *,
-        previous_label_identity: ElementIdentity | None = None,
-        previous_image_identity: ElementIdentity | None = None,
-    ) -> None:
-        if previous_label_identity is None or previous_image_identity is None:
-            remembered_label_identity, remembered_image_identity = (
-                self._get_remembered_triplet_identities_for_coordinate_system(coordinate_system)
-            )
-            if previous_label_identity is None:
-                previous_label_identity = remembered_label_identity
-            if previous_image_identity is None:
-                previous_image_identity = remembered_image_identity
-
-        state = self._build_triplet_card_state(
-            coordinate_system,
-            previous_label_identity=previous_label_identity,
-            previous_image_identity=previous_image_identity,
-        )
-        self._triplet_card_states_by_coordinate_system[coordinate_system] = state
-        widgets = self._triplet_card_widgets_by_coordinate_system.get(coordinate_system)
-        if widgets is not None:
-            self._apply_triplet_card_state(widgets, state)
-
     def _sync_active_triplet_card_state(self) -> None:
         self._set_active_card_widgets(self.selected_coordinate_system)
         state = (
@@ -837,10 +1070,12 @@ class FeatureExtractionWidget(QWidget):
         if state is None:
             self._triplet_card_state = _FeatureExtractionTripletCardState(
                 coordinate_system=self.selected_coordinate_system,
-                label_options=[],
+                selectable_label_options=[],
                 selected_label_option=None,
-                image_options=[],
+                segmentation_note_text=None,
+                selectable_image_options=[],
                 selected_image_option=None,
+                image_note_text=None,
             )
             self._label_options = []
             self._selected_label_option = None
@@ -850,20 +1085,34 @@ class FeatureExtractionWidget(QWidget):
             return
 
         self._triplet_card_state = state
-        self._label_options = state.label_options
+        self._label_options = state.selectable_label_options
         self._selected_label_option = state.selected_label_option
-        self._image_options = state.image_options
+        self._image_options = state.selectable_image_options
         self._selected_image_option = state.selected_image_option
         self._refresh_image_channel_options()
 
-    def _refresh_triplet_cards(self) -> None:
+    def _rebuild_visible_triplet_cards(self) -> None:
         selected_coordinate_systems = self._checked_coordinate_system_names()
+        previous_rendered_card_selections = self._snapshot_rendered_card_selections()
         self._clear_triplet_cards()
         for coordinate_system in selected_coordinate_systems:
             widgets = self._create_triplet_card_widgets(coordinate_system)
             self._triplet_card_widgets_by_coordinate_system[coordinate_system] = widgets
             self.triplet_cards_layout.addWidget(widgets.container)
-            self._refresh_triplet_card_for_coordinate_system(coordinate_system)
+
+        preferred_selection_by_coordinate_system = {
+            coordinate_system: previous_rendered_card_selections.get(
+                coordinate_system,
+                self._get_remembered_card_selection_for_coordinate_system(coordinate_system),
+            )
+            for coordinate_system in selected_coordinate_systems
+        }
+        # Cards that were already rendered keep authority over their staged selections;
+        # newly re-added cards only attempt to restore remembered selections around them.
+        self._recompute_visible_triplet_card_states(
+            preferred_selection_by_coordinate_system=preferred_selection_by_coordinate_system,
+            authoritative_coordinate_systems=set(previous_rendered_card_selections),
+        )
 
         if self.selected_coordinate_system not in selected_coordinate_systems:
             next_active_coordinate_system = selected_coordinate_systems[0] if selected_coordinate_systems else None
@@ -874,31 +1123,28 @@ class FeatureExtractionWidget(QWidget):
     def _on_triplet_card_segmentation_changed(self, coordinate_system: str, index: int) -> None:
         self._set_selected_coordinate_system_by_name(coordinate_system)
         card_state = self._triplet_card_states_by_coordinate_system.get(coordinate_system)
-        previous_image_identity = (
-            None
-            if card_state is None or card_state.selected_image_option is None
-            else card_state.selected_image_option.identity
-        )
-
-        selected_label_option = None
-        if card_state is not None and 0 <= index < len(card_state.label_options):
-            selected_label_option = card_state.label_options[index]
-
-        self._remembered_label_identity_by_coordinate_system[coordinate_system] = (
-            None if selected_label_option is None else selected_label_option.identity
-        )
-        self._refresh_triplet_card_for_coordinate_system(
+        preferred_selection_by_coordinate_system = self._snapshot_rendered_card_selections()
+        previous_selection = preferred_selection_by_coordinate_system.get(
             coordinate_system,
-            previous_label_identity=None if selected_label_option is None else selected_label_option.identity,
-            previous_image_identity=previous_image_identity,
+            _FeatureExtractionCardSelection(label_identity=None, image_identity=None),
         )
-        refreshed_state = self._triplet_card_states_by_coordinate_system.get(coordinate_system)
-        self._remembered_image_identity_by_coordinate_system[coordinate_system] = (
-            None
-            if refreshed_state is None or refreshed_state.selected_image_option is None
-            else refreshed_state.selected_image_option.identity
+        selected_label_option = None
+        if card_state is not None and 0 <= index < len(card_state.selectable_label_options):
+            selected_label_option = card_state.selectable_label_options[index]
+
+        preferred_selection_by_coordinate_system[coordinate_system] = _FeatureExtractionCardSelection(
+            label_identity=None if selected_label_option is None else selected_label_option.identity,
+            image_identity=previous_selection.image_identity,
         )
-        self._sync_active_triplet_card_state()
+        self._remembered_card_selection_by_coordinate_system[coordinate_system] = preferred_selection_by_coordinate_system[
+            coordinate_system
+        ]
+        # During a live edit, every currently visible card reflects active staged state,
+        # so the full checked set is authoritative for duplicate-resolution.
+        self._recompute_visible_triplet_card_states(
+            preferred_selection_by_coordinate_system=preferred_selection_by_coordinate_system,
+            authoritative_coordinate_systems=set(self._checked_coordinate_system_names()),
+        )
         self._refresh_table_names()
         self._update_intensity_features_hint()
         self._bind_current_selection()
@@ -924,16 +1170,6 @@ class FeatureExtractionWidget(QWidget):
     def _find_label_option_index(self, identity: ElementIdentity | None) -> int | None:
         return self._find_label_option_index_in_options(self._label_options, identity)
 
-    def _refresh_label_options(self) -> None:
-        for coordinate_system in self._checked_coordinate_system_names():
-            self._refresh_triplet_card_for_coordinate_system(coordinate_system)
-        self._sync_active_triplet_card_state()
-
-    def _refresh_image_options(self) -> None:
-        for coordinate_system in self._checked_coordinate_system_names():
-            self._refresh_triplet_card_for_coordinate_system(coordinate_system)
-        self._sync_active_triplet_card_state()
-
     def _on_triplet_card_image_changed(self, coordinate_system: str, index: int) -> None:
         self._set_selected_coordinate_system_by_name(coordinate_system)
         card_state = self._triplet_card_states_by_coordinate_system.get(coordinate_system)
@@ -941,15 +1177,18 @@ class FeatureExtractionWidget(QWidget):
             return
 
         selected_image_option = None
-        if 0 < index <= len(card_state.image_options):
-            selected_image_option = card_state.image_options[index - 1]
+        if 0 < index <= len(card_state.selectable_image_options):
+            selected_image_option = card_state.selectable_image_options[index - 1]
 
         self._triplet_card_states_by_coordinate_system[coordinate_system] = replace(
             card_state,
             selected_image_option=selected_image_option,
         )
-        self._remembered_image_identity_by_coordinate_system[coordinate_system] = (
-            None if selected_image_option is None else selected_image_option.identity
+        self._remembered_card_selection_by_coordinate_system[coordinate_system] = _FeatureExtractionCardSelection(
+            label_identity=(
+                None if card_state.selected_label_option is None else card_state.selected_label_option.identity
+            ),
+            image_identity=None if selected_image_option is None else selected_image_option.identity,
         )
         self._sync_active_triplet_card_state()
         self._update_intensity_features_hint()
@@ -1119,7 +1358,7 @@ class FeatureExtractionWidget(QWidget):
 
         self._sync_coordinate_system_combo_items()
         self._sync_coordinate_system_checkboxes()
-        self._refresh_triplet_cards()
+        self._rebuild_visible_triplet_cards()
 
     def _on_coordinate_system_changed(self, index: int) -> None:
         coordinate_system = self.coordinate_system_combo.itemData(index)
@@ -1131,7 +1370,7 @@ class FeatureExtractionWidget(QWidget):
             if checkbox is not None:
                 with QSignalBlocker(checkbox):
                     checkbox.setChecked(True)
-            self._refresh_triplet_cards()
+            self._rebuild_visible_triplet_cards()
 
         self._set_selected_coordinate_system_by_name(next_coordinate_system)
         self._sync_active_triplet_card_state()
@@ -1164,7 +1403,7 @@ class FeatureExtractionWidget(QWidget):
             )
 
         self._set_selected_coordinate_system_by_name(next_active_coordinate_system)
-        self._refresh_triplet_cards()
+        self._rebuild_visible_triplet_cards()
         self._refresh_table_names()
         self._update_intensity_features_hint()
         self._bind_current_selection()
