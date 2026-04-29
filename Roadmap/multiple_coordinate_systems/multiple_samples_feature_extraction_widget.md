@@ -215,6 +215,12 @@ class _FeatureExtractionTripletCardState:
   - one valid currently staged option.
 - `selectable_label_options` and `selectable_image_options` represent the
   options the user may actively choose from at that moment.
+- `selectable_label_options` contains only real selectable label elements;
+  `Choose a segmentation mask` remains a UI placeholder rather than a real
+  option, represented in state by `selected_label_option=None`.
+- `selectable_image_options` contains only real selectable image elements;
+  `No image` remains a UI sentinel rendered by the combo box, represented in
+  state by `selected_image_option=None`.
 - keep remembered user choices in a separate structure rather than embedding
   them into `_FeatureExtractionTripletCardState`; remembered selection is
   restoration input, while triplet-card state is the current resolved UI
