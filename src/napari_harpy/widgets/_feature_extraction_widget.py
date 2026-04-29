@@ -541,7 +541,7 @@ class FeatureExtractionWidget(QWidget):
         note_label = QLabel()
         note_label.setObjectName(object_name)
         note_label.setWordWrap(True)
-        note_label.setStyleSheet(_FEATURE_HINT_WARNING_STYLESHEET)
+        note_label.setStyleSheet(_FEATURE_HINT_INFO_STYLESHEET)
         note_label.hide()
         return note_label
 
