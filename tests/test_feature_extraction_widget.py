@@ -4,6 +4,7 @@ from html import unescape
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from napari.layers import Labels
 from qtpy.QtWidgets import QCheckBox, QComboBox, QScrollArea
 from spatialdata import SpatialData
@@ -783,7 +784,7 @@ def test_feature_extraction_widget_shows_selected_image_channels_and_defaults_to
     assert not widget.channel_selection_container.isHidden()
 
 
-def test_feature_extraction_widget_hides_channel_selection_when_selected_image_has_no_channel_axis(
+def test_feature_extraction_widget_raises_when_selected_image_has_no_channel_axis(
     qtbot,
     monkeypatch,
     sdata_blobs: SpatialData,
@@ -792,91 +793,22 @@ def test_feature_extraction_widget_hides_channel_selection_when_selected_image_h
     widget = FeatureExtractionWidget(viewer)
 
     qtbot.addWidget(widget)
-
-    monkeypatch.setattr(feature_extraction_widget_module, "get_image_channel_names_from_sdata", lambda sdata, image_name: [])
 
     check_coordinate_system(widget, "global")
     select_segmentation(widget, "global", 0)
     widget.image_combo.setCurrentIndex(1)
 
-    assert widget.selected_image_name == "blobs_image"
-    assert widget.selected_extraction_channel_names is None
-    assert widget.selected_extraction_channel_indices is None
-    assert widget.channel_selection_label.isHidden()
-    assert widget.channel_selection_container.isHidden()
-
-
-def test_feature_extraction_widget_skips_channel_less_images_when_choosing_shared_reference_schema(
-    qtbot,
-    monkeypatch,
-    sdata_blobs: SpatialData,
-) -> None:
-    viewer = make_viewer_with_shared_sdata(sdata_blobs)
-
-    monkeypatch.setattr(
-        feature_extraction_widget_module,
-        "get_coordinate_system_names_from_sdata",
-        lambda sdata: ["aligned", "global"],
-    )
-    monkeypatch.setattr(
-        feature_extraction_widget_module,
-        "get_spatialdata_feature_extraction_label_discovery_for_coordinate_system_from_sdata",
-        lambda *, sdata, coordinate_system: make_label_discovery(
-            coordinate_system=coordinate_system,
-            options=[
-                SpatialDataLabelsOption(
-                    label_name=f"labels_{coordinate_system}",
-                    display_name=f"labels_{coordinate_system}",
-                    sdata=sdata,
-                    coordinate_systems=(coordinate_system,),
-                )
-            ],
-        ),
-    )
-    monkeypatch.setattr(
-        feature_extraction_widget_module,
-        "get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata",
-        lambda *, sdata, coordinate_system, label_name: make_image_discovery(
-            coordinate_system=coordinate_system,
-            label_name=label_name,
-            options=[
-                SpatialDataImageOption(
-                    image_name=f"image_{coordinate_system}",
-                    display_name=f"image_{coordinate_system}",
-                    sdata=sdata,
-                    coordinate_systems=(coordinate_system,),
-                )
-            ],
-        ),
-    )
-    monkeypatch.setattr(
-        feature_extraction_widget_module,
-        "get_annotating_table_names",
-        lambda sdata, label_name: ["table"],
-    )
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "get_image_channel_names_from_sdata",
-        lambda sdata, image_name: [] if image_name == "image_aligned" else ["0", "1", "2"],
+        lambda sdata, image_name: [],
     )
 
-    widget = FeatureExtractionWidget(viewer)
-    qtbot.addWidget(widget)
-
-    check_coordinate_system(widget, "aligned")
-    select_segmentation(widget, "aligned", 0)
-    widget._triplet_card_widgets_by_coordinate_system["aligned"].image_combo.setCurrentIndex(1)
-
-    check_coordinate_system(widget, "global")
-    select_segmentation(widget, "global", 0)
-    widget._triplet_card_widgets_by_coordinate_system["global"].image_combo.setCurrentIndex(1)
-
-    assert widget.selected_extraction_channel_names == ("0", "1", "2")
-    assert [checkbox.text() for checkbox in widget._batch_channel_checkboxes] == ["0", "1", "2"]
-    assert not widget.channel_selection_label.isHidden()
-    assert not widget.channel_selection_container.isHidden()
-    assert "image_aligned" in widget.channel_selection_note_label.text()
-    assert "does not expose channels" in widget.channel_selection_note_label.text()
+    with pytest.raises(
+        ValueError,
+        match="does not expose channel names, but feature extraction expects images with an explicit channel axis",
+    ):
+        widget._resolve_batch_channel_state()
 
 
 def test_feature_extraction_widget_keeps_shared_channel_selector_visible_for_incompatible_later_image(

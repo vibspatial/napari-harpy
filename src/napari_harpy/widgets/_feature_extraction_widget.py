@@ -1319,51 +1319,22 @@ class FeatureExtractionWidget(QWidget):
         reference_coordinate_system: str | None,
         reference_image_option: SpatialDataImageOption | None,
         duplicate_error_messages: list[str],
-        channel_less_targets: list[tuple[str, SpatialDataImageOption]],
         schema_mismatch_targets: list[tuple[str, SpatialDataImageOption]],
     ) -> str | None:
-        if (
-            reference_image_option is None
-            and not duplicate_error_messages
-            and not channel_less_targets
-            and not schema_mismatch_targets
-        ):
+        if reference_image_option is None and not duplicate_error_messages and not schema_mismatch_targets:
             return None
 
         fragments: list[str] = []
         if reference_image_option is None:
-            if channel_less_targets and not duplicate_error_messages:
-                if len(channel_less_targets) == 1:
-                    coordinate_system, image_option = channel_less_targets[0]
-                    return (
-                        f"Image `{image_option.image_name}` in `{coordinate_system}` does not expose channels, "
-                        "so choose an image with channels before calculating intensity features."
-                    )
-                return "Selected images do not expose channels, so choose channel-enabled images before calculating intensity features."
-
-            if duplicate_error_messages and not channel_less_targets:
+            if duplicate_error_messages:
                 return duplicate_error_messages[0] if len(duplicate_error_messages) == 1 else (
                     "Selected images do not expose a usable shared channel schema because one or more images "
                     "have duplicate channel names."
                 )
-
             return "No selected image exposes a usable shared channel schema for batch intensity extraction."
 
         if duplicate_error_messages:
             fragments.extend(duplicate_error_messages)
-
-        if channel_less_targets:
-            if len(channel_less_targets) == 1:
-                coordinate_system, image_option = channel_less_targets[0]
-                fragments.append(
-                    f"Image `{image_option.image_name}` in `{coordinate_system}` does not expose channels and cannot "
-                    "join the shared batch channel selection."
-                )
-            else:
-                fragments.append(
-                    f"{self._format_count_phrase(len(channel_less_targets), 'selected image')} do not expose channels "
-                    "and cannot join the shared batch channel selection"
-                )
 
         if schema_mismatch_targets:
             reference_image_name = reference_image_option.image_name
@@ -1416,7 +1387,6 @@ class FeatureExtractionWidget(QWidget):
         incompatible_coordinate_systems: list[str] = []
         incompatible_image_names: list[str] = []
         duplicate_error_messages: list[str] = []
-        channel_less_targets: list[tuple[str, SpatialDataImageOption]] = []
         schema_mismatch_targets: list[tuple[str, SpatialDataImageOption]] = []
 
         for coordinate_system, image_option in selected_images:
@@ -1434,10 +1404,10 @@ class FeatureExtractionWidget(QWidget):
                 continue
 
             if not channel_names:
-                incompatible_coordinate_systems.append(coordinate_system)
-                incompatible_image_names.append(image_option.image_name)
-                channel_less_targets.append((coordinate_system, image_option))
-                continue
+                raise ValueError(
+                    f"Image `{image_option.image_name}` in `{coordinate_system}` does not expose channel names, "
+                    "but feature extraction expects images with an explicit channel axis."
+                )
 
             if reference_image_option is None:
                 reference_coordinate_system = coordinate_system
@@ -1454,7 +1424,6 @@ class FeatureExtractionWidget(QWidget):
             reference_coordinate_system=reference_coordinate_system,
             reference_image_option=reference_image_option,
             duplicate_error_messages=duplicate_error_messages,
-            channel_less_targets=channel_less_targets,
             schema_mismatch_targets=schema_mismatch_targets,
         )
         return _FeatureExtractionBatchChannelState(
