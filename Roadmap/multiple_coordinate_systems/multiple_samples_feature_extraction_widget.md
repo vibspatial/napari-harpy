@@ -223,13 +223,13 @@ class _FeatureExtractionTripletCardState:
 
 ```python
 @dataclass(frozen=True)
-class _FeatureExtractionRememberedCardSelection:
+class _FeatureExtractionCardSelection:
     label_identity: ElementIdentity | None
     image_identity: ElementIdentity | None
 
 
 self._remembered_card_selection_by_coordinate_system: dict[
-    str, _FeatureExtractionRememberedCardSelection
+    str, _FeatureExtractionCardSelection
 ]
 ```
 
@@ -248,6 +248,50 @@ self._remembered_card_selection_by_coordinate_system: dict[
 - because of that cross-card dependency, changing the selected segmentation in
   one visible card must trigger recomputation of `selectable_label_options`
   for all visible cards, not only for the card that changed.
+- keep that recomputation on an in-place state-refresh path rather than on a
+  destructive widget-recreation path.
+- in other words:
+  - use the existing/full `_refresh_triplet_cards()`-style path only when the
+    set of visible cards changes, such as after `sdata` changes or after
+    coordinate systems are checked/unchecked;
+  - do not use that structural rebuild path for ordinary segmentation changes;
+  - instead, recompute and reapply state onto the already-rendered card
+    widgets.
+- the helper shape should make that boundary explicit, for example:
+
+```python
+def _snapshot_visible_card_selections(
+    self,
+) -> dict[str, _FeatureExtractionCardSelection]:
+    """Capture current staged card selections before cross-card recomputation."""
+
+
+def _refresh_visible_triplet_card_states(
+    self,
+    *,
+    preferred_selection_by_coordinate_system: Mapping[
+        str, _FeatureExtractionCardSelection
+    ]
+    | None = None,
+) -> None:
+    """Recompute and reapply state for visible cards without recreating widgets."""
+```
+
+- `_snapshot_visible_card_selections()` is optional but recommended for
+  maintainability: it gives the recomputation step one stable snapshot of the
+  current staged selections before any card state is rebuilt.
+- `_refresh_visible_triplet_card_states()` should:
+  - iterate over the currently visible coordinate systems in display order;
+  - rebuild each card state from the current `sdata`, the current checked-card
+    set, and the preferred remembered/current selections for that card;
+  - update `_triplet_card_states_by_coordinate_system`;
+  - call `_apply_triplet_card_state(...)` on the existing widgets instead of
+    clearing and recreating them;
+  - finish by syncing the active-card compatibility bridge.
+- `_on_triplet_card_segmentation_changed(...)` should therefore update the
+  remembered selection for the changed card and then call
+  `_refresh_visible_triplet_card_states(...)`, not the structural
+  card-recreation path.
 - in practice, recompute visible card states when:
   - `sdata` changes;
   - the set of checked coordinate systems changes;
