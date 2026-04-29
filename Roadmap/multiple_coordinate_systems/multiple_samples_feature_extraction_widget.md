@@ -307,6 +307,10 @@ def _recompute_visible_triplet_card_states(
   remembered selection for the changed card and then call
   `_recompute_visible_triplet_card_states(...)`, not the structural
   card-recreation path.
+- remove the older partial-refresh helpers such as `_refresh_label_options()`
+  and `_refresh_image_options()` during the slice 3 refactor rather than
+  keeping multiple overlapping refresh entry points; `_recompute_visible_triplet_card_states(...)`
+  should become the one authoritative visible-card recomputation flow.
 - in practice, recompute visible card states when:
   - `sdata` changes;
   - the set of checked coordinate systems changes;
