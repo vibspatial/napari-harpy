@@ -128,6 +128,10 @@ Scope:
   selected cards;
 - in those other cards, surface a short inline note that the segmentation is
   unavailable because it is already selected in another coordinate system card;
+- keep image choice explicit in batch mode as well:
+  even when exactly one matching image remains valid for a selected
+  segmentation, keep the card at `No image` until the user explicitly chooses
+  that image;
 - if a card is restored with a previously explicit segmentation selection that
   has since become blocked by another selected card, clear the card back to
   `Choose a segmentation mask`, show a short explanatory note, and drop that
@@ -149,6 +153,18 @@ Clarification:
   currently selectable segmentation options; the current staged selection is
   either empty or one valid segmentation, while the selectable options exclude
   segmentations already chosen in other selected cards;
+- slice 3 is limited to widget-local batch validity and per-card inline
+  feedback;
+- in this slice, the shared controls below the cards may still use the current
+  active-card compatibility bridge rather than a fully batch-aware binding
+  model;
+- that means table selection, image-channel UI, top-level status text, and
+  controller binding may still reflect the active card only during slice 3;
+- slice 3 should therefore not be treated as the point where those shared
+  controls become batch-authoritative;
+- true batch-wide table validation, shared channel derivation, batch status
+  messaging, and controller `bind_batch(...)` integration are deferred to
+  slices 4 and 5;
 - in other words, slice 3 is where the widget stops treating each card as an
   isolated local selector and starts enforcing whole-batch selection safety.
 
@@ -159,6 +175,14 @@ Implementation detail:
   - one current staged selection per card;
   - the currently selectable options for that card;
   - short inline note text for segmentation and image availability feedback.
+- the current widget still projects one selected card into older
+  single-triplet fields used by the lower half of the widget; slice 3 may keep
+  that compatibility bridge in place while refactoring card-level selection
+  and validity state.
+- do not expand slice 3 to make the table selector, shared channel selector,
+  primary status card, or controller binding fully batch-aware; use slice 3 to
+  make card rendering, selectable-option derivation, duplicate prevention, and
+  inline invalidity messaging correct first.
 - the recommended shape is:
 
 ```python
@@ -204,6 +228,63 @@ class _FeatureExtractionTripletCardState:
   - any visible card changes its selected segmentation.
 - image changes, channel changes, feature-checkbox changes, and table changes
   do not by themselves change `selectable_label_options`.
+- for slice 3 note text, the widget should not reimplement feature-extraction
+  discovery and matching logic locally. Instead, `_spatialdata.py` should
+  become the source of truth for feature-extraction discovery summaries.
+- the recommended discovery API shape is:
+
+```python
+@dataclass(frozen=True)
+class SpatialDataFeatureExtractionLabelDiscovery:
+    coordinate_system: str
+    eligible_label_options: list[SpatialDataLabelsOption]
+    coordinate_system_label_count: int
+    unavailable_label_count: int
+
+
+@dataclass(frozen=True)
+class SpatialDataFeatureExtractionImageDiscovery:
+    coordinate_system: str
+    label_name: str
+    eligible_image_options: list[SpatialDataImageOption]
+    coordinate_system_image_count: int
+    unavailable_image_count: int
+
+
+def get_spatialdata_feature_extraction_label_discovery_for_coordinate_system_from_sdata(
+    *,
+    sdata: SpatialData,
+    coordinate_system: str,
+) -> SpatialDataFeatureExtractionLabelDiscovery:
+    ...
+
+
+def get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata(
+    *,
+    sdata: SpatialData,
+    coordinate_system: str,
+    label_name: str,
+) -> SpatialDataFeatureExtractionImageDiscovery:
+    ...
+```
+
+- `eligible_label_options` means labels in the coordinate system that satisfy
+  feature-extraction eligibility rules.
+- `eligible_image_options` means images that are eligible for the specific
+  `(coordinate_system, label_name)` pair; although the field name is
+  symmetric with labels, its semantics remain label-dependent.
+- the widget then derives:
+  - `selectable_label_options` from `eligible_label_options`, minus
+    segmentations already selected in the other checked cards;
+  - `selectable_image_options` directly from `eligible_image_options`, because
+    valid image reuse across cards is allowed.
+- `unavailable_label_count` and `unavailable_image_count` support the coarse
+  slice 3 notes such as `2 segmentations unavailable` and
+  `3 images unavailable because they do not satisfy matching requirements`.
+- during the refactor, the older option-only feature-extraction helpers may
+  remain temporarily as thin wrappers over these discovery helpers, but the
+  discovery helpers are the intended source of truth and the end-state API the
+  widget should consume directly.
 - a remembered segmentation that becomes blocked by another selected card is
   not kept as a blocked current selection in state; instead:
   - the card resets to `Choose a segmentation mask`;
@@ -232,8 +313,8 @@ Goal:
 
 Scope:
 
-- derive the shared channel selector from the first selected image in sorted
-  card order;
+- derive the shared channel selector from the first explicitly selected image
+  in sorted card order;
 - hide channel selection when no selected image exposes channels;
 - block intensity batches when later selected images expose incompatible
   ordered channel-name schemas;

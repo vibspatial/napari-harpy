@@ -301,7 +301,9 @@ Lifecycle rule:
     a valid match for each card's selected segmentation.
 17. Harpy resolves a concrete `coordinate_system -> segmentation -> image`
     triplet for each selected coordinate system:
-   - if exactly one matching image exists, use it automatically;
+   - if exactly one matching image exists, show it as the only selectable
+     image option but keep the card at `No image` until the user explicitly
+     chooses it;
    - if multiple matching images exist, require an explicit user choice;
    - if no matching image exists, allow only morphology-only extraction.
 18. Below the cards, Harpy shows one shared channel-selection area, one output
@@ -578,7 +580,9 @@ Acceptance:
 Files:
 
 - `src/napari_harpy/widgets/_feature_extraction_widget.py`
+- `src/napari_harpy/_spatialdata.py`
 - `tests/test_feature_extraction_widget.py`
+- `tests/test_spatialdata.py`
 
 Work:
 
@@ -593,6 +597,20 @@ Work:
   match for each card's selected segmentation;
 - document that segmentation/image asymmetry in a nearby code docstring when
   implementing the batch selection validation;
+- move feature-extraction discovery in `_spatialdata.py` to structured
+  discovery helpers that expose both eligible options and coarse unavailable
+  counts, so the widget can show short inline notes without duplicating
+  matching logic;
+- use discovery helpers of the following shape as the source of truth for the
+  widget:
+  - `SpatialDataFeatureExtractionLabelDiscovery` with
+    `eligible_label_options`, `coordinate_system_label_count`, and
+    `unavailable_label_count`;
+  - `SpatialDataFeatureExtractionImageDiscovery` with
+    `eligible_image_options`, `coordinate_system_image_count`, and
+    `unavailable_image_count`;
+  - `get_spatialdata_feature_extraction_label_discovery_for_coordinate_system_from_sdata(...)`;
+  - `get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata(...)`;
 - in each card, keep the existing segmentation and image selectors filtered to
   that coordinate system;
 - show only selectable segmentations in the per-card combo box, and surface
@@ -602,10 +620,9 @@ Work:
 - show only selectable images in the per-card combo box, and surface
   unavailable image counts with short inline reasons;
 - surface missing-image states with short reasons;
-- show when image selection is inferred versus user-chosen;
 - for intensity features, show one shared batch channel selector derived from
-  the first selected image rather than independent per-triplet channel
-  controls;
+  the first explicitly selected image rather than independent per-triplet
+  channel controls;
 - block triplets with incompatible ordered channel-name schemas from joining an
   intensity batch, with a short reason;
 - keep the shared `Channels`, `Table`, `Feature matrix key`, `Intensity
