@@ -117,12 +117,21 @@ Scope:
 
 - forbid selecting the same segmentation in more than one card;
 - allow valid image reuse across cards;
-- keep selected cards visible even when they are temporarily invalid;
-- when a card already holds a duplicate segmentation selection, keep that
-  duplicate selection visible rather than clearing it automatically;
-- mark duplicate-selection cards invalid with a short inline warning;
-- exclude already-selected segmentations from the selectable choices offered in
-  other cards until the user resolves the duplicate;
+- in this slice, treat segmentation choice as explicit rather than eager:
+  when a card is first shown, its segmentation combo starts at `Choose a
+  segmentation mask` instead of auto-selecting the first available
+  segmentation for that coordinate system;
+- keep selected cards visible even when they are temporarily incomplete or
+  invalid;
+- when the user explicitly selects a segmentation in one card, immediately
+  exclude that segmentation from the selectable choices offered in the other
+  selected cards;
+- in those other cards, surface a short inline note that the segmentation is
+  unavailable because it is already selected in another coordinate system card;
+- if a card is restored with a previously explicit segmentation selection that
+  has since become blocked by another selected card, clear the card back to
+  `Choose a segmentation mask`, show a short explanatory note, and drop that
+  remembered selection instead of silently restoring it later;
 - show only selectable segmentations and images in the card combo boxes;
 - surface unavailable segmentation/image counts with short inline reasons;
 - block submission while any selected card is invalid.
@@ -133,15 +142,85 @@ Scope:
 Clarification:
 
 - all cross-card validity checks belong to this slice, not slice 2;
-- that includes the case where one card would otherwise default to the same
-  only-available segmentation that is already selected in another card;
+- cards stop auto-defaulting to the first available segmentation in this
+  slice; each checked card now starts from an explicit `Choose a segmentation
+  mask` state;
+- each card distinguishes between its current staged selection and its
+  currently selectable segmentation options; the current staged selection is
+  either empty or one valid segmentation, while the selectable options exclude
+  segmentations already chosen in other selected cards;
 - in other words, slice 3 is where the widget stops treating each card as an
   isolated local selector and starts enforcing whole-batch selection safety.
+
+Implementation detail:
+
+- before implementing slice 3 behavior, update the triplet-card widget/state
+  data model so it can represent:
+  - one current staged selection per card;
+  - the currently selectable options for that card;
+  - short inline note text for segmentation and image availability feedback.
+- the recommended shape is:
+
+```python
+@dataclass(frozen=True)
+class _FeatureExtractionTripletCardWidgets:
+    coordinate_system: str
+    container: QGroupBox
+    segmentation_combo: CompactComboBox
+    segmentation_note_label: QLabel
+    image_combo: CompactComboBox
+    image_note_label: QLabel
+
+
+@dataclass(frozen=True)
+class _FeatureExtractionTripletCardState:
+    coordinate_system: str | None
+    selectable_label_options: list[SpatialDataLabelsOption]
+    selected_label_option: SpatialDataLabelsOption | None
+    segmentation_note_text: str | None
+    selectable_image_options: list[SpatialDataImageOption]
+    selected_image_option: SpatialDataImageOption | None
+    image_note_text: str | None
+```
+
+- `selected_label_option` and `selected_image_option` represent the current
+  staged selection and may therefore be only:
+  - `None` / placeholder;
+  - one valid currently staged option.
+- `selectable_label_options` and `selectable_image_options` represent the
+  options the user may actively choose from at that moment.
+- `selectable_label_options` should be treated as derived state rather than as
+  a locally mutated list on one card.
+- for one card, `selectable_label_options` depends on:
+  - the card's coordinate system;
+  - the currently loaded `sdata`;
+  - the segmentation selections currently staged in the other checked cards.
+- because of that cross-card dependency, changing the selected segmentation in
+  one visible card must trigger recomputation of `selectable_label_options`
+  for all visible cards, not only for the card that changed.
+- in practice, recompute visible card states when:
+  - `sdata` changes;
+  - the set of checked coordinate systems changes;
+  - any visible card changes its selected segmentation.
+- image changes, channel changes, feature-checkbox changes, and table changes
+  do not by themselves change `selectable_label_options`.
+- a remembered segmentation that becomes blocked by another selected card is
+  not kept as a blocked current selection in state; instead:
+  - the card resets to `Choose a segmentation mask`;
+  - `selected_label_option` becomes `None`;
+  - the remembered segmentation identity is dropped;
+  - `segmentation_note_text` explains why the prior selection could not be
+    restored.
+- for maintainability, prefer using combo-box placeholder behavior for
+  `Choose a segmentation mask` rather than storing that placeholder as a fake
+  selectable option in state.
 
 Expected outcome:
 
 - the UI no longer allows ambiguous duplicate segmentation selection;
-- invalid cards remain visible and understandable;
+- normal interactive card selection no longer creates duplicate segmentation
+  choices across cards, while blocked remembered selections reset clearly back
+  to placeholder state with an explanatory note;
 - the batch selection model is safe before calculation.
 
 ### 4. Add Shared Batch Channel Selection

@@ -204,6 +204,20 @@ Selection uniqueness rule:
 - a segmentation / labels element may appear at most once across the staged
   batch request, even if that same element is available in more than one
   coordinate system;
+- each checked coordinate-system card starts with no segmentation selected and
+  a placeholder such as `Choose a segmentation mask`; Harpy does not
+  auto-select the first available segmentation in that card;
+- once the user explicitly selects a segmentation in one card, Harpy removes
+  that segmentation from the selectable choices in the other selected cards
+  and may show a short inline note explaining where it is already selected;
+- if a card is restored from remembered widget state with a segmentation that
+  has since become blocked by another selected card, Harpy clears the card
+  back to `Choose a segmentation mask`, shows a short explanatory note, and
+  drops that remembered selection rather than silently restoring it later;
+- each card therefore distinguishes between its current staged selection and
+  its currently selectable segmentation options: the current staged selection
+  is either empty or one valid segmentation, while the selectable options may
+  exclude segmentations already chosen in other selected cards;
 - this is deliberate, because duplicate segmentation selection would create
   ambiguous repeated writes against the same table region identity;
 - an image element may be reused across multiple triplets when it is a valid
@@ -251,43 +265,56 @@ Lifecycle rule:
    even if it appears in more than one selected coordinate system.
 5. Inside each card, Harpy shows a segmentation combo filtered to that
    coordinate system.
-6. Only transform-eligible segmentation masks should appear as selectable
+6. Each newly shown card starts with an explicit placeholder such as
+   `Choose a segmentation mask`; Harpy does not auto-select the first
+   available segmentation in that coordinate system.
+7. Only transform-eligible segmentation masks should appear as selectable
    options in that combo.
-7. If additional segmentation masks exist in the same coordinate system but
+8. If the user explicitly selects one segmentation in another card, Harpy
+   immediately removes that segmentation from this card's selectable choices
+   and may show a short inline note such as
+   “`segmentation_1` is unavailable because it is already selected in
+   `global_1`.”
+9. If additional segmentation masks exist in the same coordinate system but
    are not feature-extraction-eligible, Harpy should communicate that with a
    short inline note such as “2 segmentations unavailable due to unsupported
    transform” rather than cluttering the combo with disabled items.
-8. If a selected coordinate system has no eligible segmentation masks at all,
+10. If a selected coordinate system has no eligible segmentation masks at all,
    the card should still be rendered, but the segmentation selector should be
    empty or disabled and the card should show a short inline message such as
    “No selectable segmentations in this coordinate system.”
-9. That card cannot contribute a staged triplet until a valid segmentation
+11. That card cannot contribute a staged triplet until a valid segmentation
    becomes selectable.
-10. For the selected segmentation in each card, Harpy derives matching image
+12. If a card is restored from remembered widget state with a segmentation
+    that has since become blocked by another selected card, Harpy clears the
+    card back to `Choose a segmentation mask`, shows a short explanatory note,
+    and drops that remembered selection rather than silently restoring it
+    later.
+13. For the selected segmentation in each card, Harpy derives matching image
    candidates in the same coordinate system.
-11. Only selectable matching images should appear in the per-card image combo.
-12. If additional images exist in the same coordinate system but are not valid
+14. Only selectable matching images should appear in the per-card image combo.
+15. If additional images exist in the same coordinate system but are not valid
    matches because of shape mismatch, transform mismatch, or unsupported
    transform semantics, Harpy should communicate that with a short inline note
    rather than cluttering the combo with disabled items.
-13. The same image element may still be reused across several cards when it is
+16. The same image element may still be reused across several cards when it is
     a valid match for each card's selected segmentation.
-14. Harpy resolves a concrete `coordinate_system -> segmentation -> image`
+17. Harpy resolves a concrete `coordinate_system -> segmentation -> image`
     triplet for each selected coordinate system:
    - if exactly one matching image exists, use it automatically;
    - if multiple matching images exist, require an explicit user choice;
    - if no matching image exists, allow only morphology-only extraction.
-15. Below the cards, Harpy shows one shared channel-selection area, one output
+18. Below the cards, Harpy shows one shared channel-selection area, one output
    table selector, one feature-matrix-key field, and the shared feature
    groups.
-16. The user selects the output AnnData table.
-17. Harpy validates that the selected table annotates every selected
+19. The user selects the output AnnData table.
+20. Harpy validates that the selected table annotates every selected
    segmentation region.
-18. Harpy blocks submission while any selected coordinate-system card remains
+21. Harpy blocks submission while any selected coordinate-system card remains
     invalid rather than silently dropping that selected card from the staged
     batch request.
-19. Harpy submits one explicit multi-target feature-extraction request.
-20. Harpy writes feature rows back into the same AnnData table, aligned by
+22. Harpy submits one explicit multi-target feature-extraction request.
+23. Harpy writes feature rows back into the same AnnData table, aligned by
     `region_key` plus `instance_key`.
 
 ### Segmentation Eligibility
