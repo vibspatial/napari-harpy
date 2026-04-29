@@ -617,6 +617,7 @@ Implementation detail:
 @dataclass(frozen=True)
 class _FeatureExtractionStagedBatchState:
     checked_coordinate_systems: tuple[str, ...]
+    label_names: tuple[str, ...]
     triplets: tuple[FeatureExtractionTriplet, ...]
     invalid_coordinate_systems: tuple[str, ...]
     error_text: str | None
@@ -632,6 +633,9 @@ def _resolve_staged_batch_state(self) -> _FeatureExtractionStagedBatchState:
 
 - `_resolve_staged_batch_state()` should:
   - walk checked cards in sorted visible-card order;
+  - collect the ordered set of checked-card segmentation label names
+    separately from the bindable triplet tuple, so batch table discovery can
+    still operate even when the full checked batch is not yet bindable;
   - stage one explicit `FeatureExtractionTriplet` per checked card only when
     that card has a valid segmentation selection and, when needed, a valid
     image selection;
@@ -640,13 +644,16 @@ def _resolve_staged_batch_state(self) -> _FeatureExtractionStagedBatchState:
   - return `triplets=()` and one shared batch `error_text` whenever any
     checked card is invalid, so the widget binds no batch request at all
     rather than binding a partial valid subset;
+  - keep `label_names` populated for the checked cards whose segmentation
+    choice is already known, even when `triplets=()` because the full batch is
+    still invalid;
   - return the full ordered triplet tuple only when every checked card is
     currently valid;
 - use that staged-batch helper before table discovery:
   - while not every checked card has a valid segmentation selection, keep the
     table combo disabled because the required batch label set is not yet known;
-  - once the staged batch is valid enough to expose label names, show only
-    tables that annotate every staged triplet label name rather than showing a
+  - once the staged batch is valid enough to expose `label_names`, show only
+    tables that annotate every staged batch label name rather than showing a
     broader list plus a later incompatibility error;
   - for batch table discovery, derive selectable tables from the staged batch
     label set rather than from the active card's single selected segmentation;
