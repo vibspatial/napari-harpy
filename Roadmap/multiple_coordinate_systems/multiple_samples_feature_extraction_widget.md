@@ -414,6 +414,121 @@ Scope:
   ordered channel-name schemas;
 - keep morphology-only execution possible without images.
 
+Clarification:
+
+- slice 4 changes the meaning of the shared `Channels` control: it no longer
+  reflects the active card's current image, but instead reflects the current
+  batch's shared channel schema;
+- that shared schema should be derived from the first explicitly selected
+  image in sorted visible-card order;
+- later selected images do not get independent channel controls; they either
+  match that shared ordered channel-name schema or make the intensity batch
+  incompatible;
+- morphology-only extraction must still remain possible when no selected image
+  exists, so the absence of a shared channel selector is not itself an error;
+- calculation may remain disabled in slice 4 while the widget adopts the
+  shared channel-selection model; the goal of this slice is to make shared
+  channel state visible and internally consistent before slice 5 finalizes
+  batch binding and submission gating.
+
+Implementation detail:
+
+- replace the current image-local channel memory model with one shared current
+  batch channel selection plus remembered selections keyed by ordered channel
+  schema;
+- in particular, do not keep slice 4 tied to
+  `_selected_channel_names_by_image_identity`, because one shared channel
+  selector no longer maps cleanly to one remembered selection per image;
+- the recommended shared state shape is:
+
+```python
+self._batch_channel_names: list[str] = []
+self._selected_batch_channel_names: tuple[str, ...] | None = None
+self._batch_channel_error: str | None = None
+self._selected_channel_names_by_schema: dict[tuple[str, ...], tuple[str, ...]] = {}
+```
+
+- derive the ordered shared channel schema from the first explicitly selected
+  image in sorted visible-card order;
+- if no selected image exists, hide the shared channel selector entirely;
+- if the reference image exposes no channels, also hide the shared channel
+  selector;
+- when a shared channel schema is available:
+  - render one shared checkbox list from that ordered schema;
+  - first check whether `self._selected_batch_channel_names` is still a valid
+    subset of the current schema and preserve it when possible;
+  - otherwise try restoring the selection remembered for that exact ordered
+    schema from `self._selected_channel_names_by_schema`;
+  - if neither the current shared selection nor schema-keyed remembered state
+    is valid, default to all channels selected;
+- when the user changes the shared channel selection, store that selection
+  back into both:
+  - `self._selected_batch_channel_names` as the current batch state;
+  - `self._selected_channel_names_by_schema[current_schema]` as the
+    remembered selection for that ordered schema;
+- key remembered channel state by the full ordered channel schema, not by a
+  set of names, because ordered channel-name compatibility is the actual batch
+  rule;
+- for every other selected image in the batch, compare its ordered channel
+  names against the reference schema;
+- if a later image exposes a different ordered schema, do not create a second
+  channel selector; instead, surface a short batch-level incompatibility
+  message and block intensity execution semantics for that batch;
+- the widget should therefore introduce a helper that resolves:
+  - the reference selected image for the current batch;
+  - the shared ordered channel schema, if any;
+  - whether the selected images are channel-compatible for intensity
+    extraction;
+- a recommended helper shape is:
+
+```python
+@dataclass(frozen=True)
+class _FeatureExtractionBatchChannelState:
+    reference_coordinate_system: str | None
+    reference_image_option: SpatialDataImageOption | None
+    channel_names: tuple[str, ...]
+    incompatible_coordinate_systems: tuple[str, ...]
+    incompatible_image_names: tuple[str, ...]
+    error_text: str | None
+
+    @property
+    def is_compatible(self) -> bool:
+        return self.error_text is None
+
+
+def _resolve_batch_channel_state(self) -> _FeatureExtractionBatchChannelState:
+    ...
+```
+
+- `_resolve_batch_channel_state()` should:
+  - walk visible cards in sorted display order and pick the first explicitly
+    selected image as the reference image for the batch;
+  - return an empty `channel_names` tuple when no selected image exists, so
+    morphology-only batches can proceed without channel UI;
+  - read ordered channel names from the reference image and treat that ordered
+    tuple as the shared schema for the batch;
+  - compare every other selected image's full ordered channel-name tuple
+    against that schema;
+  - collect incompatible coordinate systems and image names into the returned
+    state rather than hiding those images from their per-card image selectors;
+  - surface one shared `error_text` when selected images do not expose the
+    same ordered channel-name schema.
+- use that shared batch helper as the source of truth for both the visible
+  channel selector and the intensity-features hint;
+- use that shared batch helper as the source of truth for the shared channel
+  selector refresh path too, rather than deriving channel UI from the active
+  card's selected image;
+- this schema-keyed memory is important for flows where one selected image
+  disappears from the batch and a later image with the same ordered channel
+  schema becomes the new reference image; in that case, Harpy should restore
+  the prior shared channel selection instead of falling back to the full set
+  of channels.
+- keep per-card image notes focused on card-local image matching; channel
+  schema compatibility is a shared batch concern and belongs below the cards;
+- slice 4 does not need to fully switch the widget to `bind_batch(...)` yet,
+  but it should stop deriving channel UI from `self._selected_image_option`
+  alone.
+
 Expected outcome:
 
 - the batch channel rule is visible in the UI;
