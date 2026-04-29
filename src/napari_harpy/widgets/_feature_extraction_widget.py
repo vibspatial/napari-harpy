@@ -689,6 +689,7 @@ class FeatureExtractionWidget(QWidget):
     def _build_segmentation_note_text(
         self,
         *,
+        coordinate_system: str,
         blocked_label_options_by_owner: list[tuple[str, SpatialDataLabelsOption]],
         blocked_restored_selection: tuple[str, SpatialDataLabelsOption] | None,
         unavailable_label_count: int,
@@ -711,21 +712,32 @@ class FeatureExtractionWidget(QWidget):
                 )
 
         if unavailable_label_count > 0:
-            fragments.append(f"{self._format_count_phrase(unavailable_label_count, 'segmentation')} unavailable")
+            transform_subject = "its" if unavailable_label_count == 1 else "their"
+            fragments.append(
+                f"{self._format_count_phrase(unavailable_label_count, 'segmentation')} unavailable because "
+                f"{transform_subject} supported transform relative to `{coordinate_system}` is not "
+                "translation-only or identity"
+            )
 
         if not fragments:
             return None
 
         return "; ".join(fragments) + "."
 
-    def _build_image_note_text(self, unavailable_image_count: int) -> str | None:
+    def _build_image_note_text(self, *, coordinate_system: str, unavailable_image_count: int) -> str | None:
         if unavailable_image_count <= 0:
             return None
 
         if unavailable_image_count == 1:
-            return "1 image unavailable because it does not satisfy matching requirements."
+            return (
+                "1 image unavailable because it does not have the same shape and transform relative "
+                f"to `{coordinate_system}` as the selected segmentation mask."
+            )
 
-        return f"{unavailable_image_count} images unavailable because they do not satisfy matching requirements."
+        return (
+            f"{unavailable_image_count} images unavailable because they do not have the same shape and "
+            f"transform relative to `{coordinate_system}` as the selected segmentation mask."
+        )
 
     def _sync_remembered_card_selection_from_state(
         self,
@@ -817,6 +829,7 @@ class FeatureExtractionWidget(QWidget):
             None,
         )
         segmentation_note_text = self._build_segmentation_note_text(
+            coordinate_system=coordinate_system,
             blocked_label_options_by_owner=blocked_label_options_by_owner,
             blocked_restored_selection=blocked_restored_selection,
             unavailable_label_count=label_discovery.unavailable_label_count,
@@ -847,7 +860,10 @@ class FeatureExtractionWidget(QWidget):
             ),
             None,
         )
-        image_note_text = self._build_image_note_text(image_discovery.unavailable_image_count)
+        image_note_text = self._build_image_note_text(
+            coordinate_system=coordinate_system,
+            unavailable_image_count=image_discovery.unavailable_image_count,
+        )
 
         return _FeatureExtractionTripletCardState(
             coordinate_system=coordinate_system,
