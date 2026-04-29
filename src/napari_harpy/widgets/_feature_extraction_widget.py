@@ -141,6 +141,20 @@ class _FeatureExtractionCardSelection:
     image_identity: ElementIdentity | None
 
 
+@dataclass(frozen=True)
+class _FeatureExtractionBatchChannelState:
+    reference_coordinate_system: str | None
+    reference_image_option: SpatialDataImageOption | None
+    channel_names: tuple[str, ...]
+    incompatible_coordinate_systems: tuple[str, ...]
+    incompatible_image_names: tuple[str, ...]
+    error_text: str | None
+
+    @property
+    def is_compatible(self) -> bool:
+        return self.error_text is None
+
+
 class FeatureExtractionWidget(QWidget):
     """
     Widget for feature extraction.
@@ -174,9 +188,19 @@ class FeatureExtractionWidget(QWidget):
         self._selected_label_option: SpatialDataLabelsOption | None = None
         self._image_options: list[SpatialDataImageOption] = []
         self._selected_image_option: SpatialDataImageOption | None = None
-        self._image_channel_names: list[str] = []
-        self._image_channel_checkboxes: list[QCheckBox] = []
-        self._selected_channel_names_by_image_identity: dict[ElementIdentity, tuple[str, ...]] = {}
+        self._batch_channel_names: list[str] = []
+        self._batch_channel_checkboxes: list[QCheckBox] = []
+        self._selected_batch_channel_names: tuple[str, ...] | None = None
+        self._batch_channel_error: str | None = None
+        self._selected_channel_names_by_schema: dict[tuple[str, ...], tuple[str, ...]] = {}
+        self._batch_channel_state = _FeatureExtractionBatchChannelState(
+            reference_coordinate_system=None,
+            reference_image_option=None,
+            channel_names=(),
+            incompatible_coordinate_systems=(),
+            incompatible_image_names=(),
+            error_text=None,
+        )
         # Persistent per-coordinate-system memory of the last explicit user
         # card selection while the current SpatialData object remains loaded.
         self._remembered_card_selection_by_coordinate_system: dict[str, _FeatureExtractionCardSelection] = {}
@@ -186,7 +210,6 @@ class FeatureExtractionWidget(QWidget):
         self._checked_coordinate_systems: list[str] = []
         self._selected_coordinate_system: str | None = None
         self._table_binding_error: str | None = None
-        self._image_channel_error: str | None = None
         self._feature_checkboxes: dict[str, QCheckBox] = {}
         self._coordinate_system_checkboxes: dict[str, QCheckBox] = {}
         # Multi-card state is split into:
@@ -288,6 +311,12 @@ class FeatureExtractionWidget(QWidget):
         self.channel_selection_list_layout.setSpacing(6)
         self.channel_selection_scroll_area.setWidget(self.channel_selection_list_widget)
         channel_selection_layout.addWidget(self.channel_selection_scroll_area)
+        self.channel_selection_note_label = QLabel()
+        self.channel_selection_note_label.setObjectName("feature_extraction_channel_selection_note")
+        self.channel_selection_note_label.setWordWrap(True)
+        self.channel_selection_note_label.setStyleSheet(_FEATURE_HINT_WARNING_STYLESHEET)
+        self.channel_selection_note_label.hide()
+        channel_selection_layout.addWidget(self.channel_selection_note_label)
 
         self.channel_selection_label.hide()
         self.channel_selection_container.hide()
@@ -409,19 +438,19 @@ class FeatureExtractionWidget(QWidget):
 
     @property
     def selected_extraction_channel_names(self) -> tuple[str, ...] | None:
-        """Return the locally selected extraction-channel names for the current image."""
-        if self.selected_image_name is None or not self._image_channel_names:
+        """Return the shared batch extraction-channel names for the current schema."""
+        if not self._batch_channel_names:
             return None
 
-        return tuple(checkbox.text() for checkbox in self._image_channel_checkboxes if checkbox.isChecked())
+        return tuple(checkbox.text() for checkbox in self._batch_channel_checkboxes if checkbox.isChecked())
 
     @property
     def selected_extraction_channel_indices(self) -> tuple[int, ...] | None:
-        """Return the locally selected extraction-channel indices for the current image."""
-        if self.selected_image_name is None or not self._image_channel_names:
+        """Return the shared batch extraction-channel indices for the current schema."""
+        if not self._batch_channel_names:
             return None
 
-        return tuple(index for index, checkbox in enumerate(self._image_channel_checkboxes) if checkbox.isChecked())
+        return tuple(index for index, checkbox in enumerate(self._batch_channel_checkboxes) if checkbox.isChecked())
 
     @property
     def selected_table_name(self) -> str | None:
@@ -459,6 +488,7 @@ class FeatureExtractionWidget(QWidget):
 
         self._reset_staged_triplet_state()
         self._refresh_coordinate_systems()
+        self._refresh_batch_channel_options()
         self._refresh_table_names()
         self._update_intensity_features_hint()
         self._bind_current_selection()
@@ -498,16 +528,27 @@ class FeatureExtractionWidget(QWidget):
         self._selected_label_option = None
         self._image_options = []
         self._selected_image_option = None
-        self._selected_channel_names_by_image_identity = {}
+        self._batch_channel_names = []
+        self._batch_channel_checkboxes = []
+        self._selected_batch_channel_names = None
+        self._batch_channel_error = None
+        self._selected_channel_names_by_schema = {}
+        self._batch_channel_state = _FeatureExtractionBatchChannelState(
+            reference_coordinate_system=None,
+            reference_image_option=None,
+            channel_names=(),
+            incompatible_coordinate_systems=(),
+            incompatible_image_names=(),
+            error_text=None,
+        )
         self._remembered_card_selection_by_coordinate_system = {}
-        self._clear_image_channel_options()
+        self._clear_batch_channel_options()
         self._table_names = []
         self._selected_table_name = None
         self._coordinate_systems = []
         self._checked_coordinate_systems = []
         self._selected_coordinate_system = None
         self._table_binding_error = None
-        self._image_channel_error = None
         self._coordinate_system_checkboxes = {}
         self._triplet_card_widgets_by_coordinate_system = {}
         self._triplet_card_states_by_coordinate_system = {}
@@ -1097,7 +1138,6 @@ class FeatureExtractionWidget(QWidget):
             self._selected_label_option = None
             self._image_options = []
             self._selected_image_option = None
-            self._clear_image_channel_options()
             return
 
         self._triplet_card_state = state
@@ -1105,7 +1145,6 @@ class FeatureExtractionWidget(QWidget):
         self._selected_label_option = state.selected_label_option
         self._image_options = state.selectable_image_options
         self._selected_image_option = state.selected_image_option
-        self._refresh_image_channel_options()
 
     def _rebuild_visible_triplet_cards(self) -> None:
         selected_coordinate_systems = self._checked_coordinate_system_names()
@@ -1162,6 +1201,7 @@ class FeatureExtractionWidget(QWidget):
             authoritative_coordinate_systems=set(self._checked_coordinate_system_names()),
         )
         self._refresh_table_names()
+        self._refresh_batch_channel_options()
         self._update_intensity_features_hint()
         self._bind_current_selection()
 
@@ -1207,6 +1247,7 @@ class FeatureExtractionWidget(QWidget):
             image_identity=None if selected_image_option is None else selected_image_option.identity,
         )
         self._sync_active_triplet_card_state()
+        self._refresh_batch_channel_options()
         self._update_intensity_features_hint()
         self._bind_current_selection()
 
@@ -1237,9 +1278,9 @@ class FeatureExtractionWidget(QWidget):
     def _find_image_option_index(self, identity: ElementIdentity | None) -> int | None:
         return self._find_image_option_index_in_options(self._image_options, identity)
 
-    def _clear_image_channel_options(self) -> None:
-        self._image_channel_names = []
-        self._image_channel_checkboxes = []
+    def _clear_batch_channel_options(self) -> None:
+        self._batch_channel_names = []
+        self._batch_channel_checkboxes = []
 
         while self.channel_selection_list_layout.count():
             item = self.channel_selection_list_layout.takeAt(0)
@@ -1247,60 +1288,240 @@ class FeatureExtractionWidget(QWidget):
             if widget is not None:
                 widget.deleteLater()
 
+        self.channel_selection_note_label.clear()
+        self.channel_selection_note_label.hide()
         self.channel_selection_label.hide()
         self.channel_selection_container.hide()
         self.channel_selection_scroll_area.setMaximumHeight(0)
 
-    def _refresh_image_channel_options(self) -> None:
-        self._clear_image_channel_options()
-        self._image_channel_error = None
+    def _selected_visible_image_options(self) -> list[tuple[str, SpatialDataImageOption]]:
+        selected_images: list[tuple[str, SpatialDataImageOption]] = []
+        for coordinate_system in self._checked_coordinate_system_names():
+            state = self._triplet_card_states_by_coordinate_system.get(coordinate_system)
+            if state is None or state.selected_image_option is None:
+                continue
+            selected_images.append((coordinate_system, state.selected_image_option))
+        return selected_images
 
-        if self.selected_spatialdata is None or self._selected_image_option is None:
-            return
+    def _is_valid_batch_channel_selection(
+        self,
+        schema: tuple[str, ...],
+        selection: tuple[str, ...] | None,
+    ) -> bool:
+        if selection is None:
+            return False
+        schema_set = set(schema)
+        return all(channel_name in schema_set for channel_name in selection)
 
-        try:
-            channel_names = get_image_channel_names_from_sdata(self.selected_spatialdata, self.selected_image_name)
-        except ValueError as error:
-            self._image_channel_error = str(error)
-            return
+    def _build_batch_channel_error_text(
+        self,
+        *,
+        reference_coordinate_system: str | None,
+        reference_image_option: SpatialDataImageOption | None,
+        duplicate_error_messages: list[str],
+        channel_less_targets: list[tuple[str, SpatialDataImageOption]],
+        schema_mismatch_targets: list[tuple[str, SpatialDataImageOption]],
+    ) -> str | None:
+        if (
+            reference_image_option is None
+            and not duplicate_error_messages
+            and not channel_less_targets
+            and not schema_mismatch_targets
+        ):
+            return None
+
+        fragments: list[str] = []
+        if reference_image_option is None:
+            if channel_less_targets and not duplicate_error_messages:
+                if len(channel_less_targets) == 1:
+                    coordinate_system, image_option = channel_less_targets[0]
+                    return (
+                        f"Image `{image_option.image_name}` in `{coordinate_system}` does not expose channels, "
+                        "so choose an image with channels before calculating intensity features."
+                    )
+                return "Selected images do not expose channels, so choose channel-enabled images before calculating intensity features."
+
+            if duplicate_error_messages and not channel_less_targets:
+                return duplicate_error_messages[0] if len(duplicate_error_messages) == 1 else (
+                    "Selected images do not expose a usable shared channel schema because one or more images "
+                    "have duplicate channel names."
+                )
+
+            return "No selected image exposes a usable shared channel schema for batch intensity extraction."
+
+        if duplicate_error_messages:
+            fragments.extend(duplicate_error_messages)
+
+        if channel_less_targets:
+            if len(channel_less_targets) == 1:
+                coordinate_system, image_option = channel_less_targets[0]
+                fragments.append(
+                    f"Image `{image_option.image_name}` in `{coordinate_system}` does not expose channels and cannot "
+                    "join the shared batch channel selection."
+                )
+            else:
+                fragments.append(
+                    f"{self._format_count_phrase(len(channel_less_targets), 'selected image')} do not expose channels "
+                    "and cannot join the shared batch channel selection"
+                )
+
+        if schema_mismatch_targets:
+            reference_image_name = reference_image_option.image_name
+            if len(schema_mismatch_targets) == 1:
+                coordinate_system, image_option = schema_mismatch_targets[0]
+                fragments.append(
+                    f"Image `{image_option.image_name}` in `{coordinate_system}` does not match the shared ordered "
+                    f"channel names from `{reference_image_name}`."
+                )
+            else:
+                reference_target = (
+                    f"`{reference_image_name}` in `{reference_coordinate_system}`"
+                    if reference_coordinate_system is not None
+                    else f"`{reference_image_name}`"
+                )
+                fragments.append(
+                    f"{self._format_count_phrase(len(schema_mismatch_targets), 'selected image')} do not match "
+                    f"the shared ordered channel schema from {reference_target}."
+                )
+
+        if not fragments:
+            return None
+        return " ".join(fragment if fragment.endswith(".") else f"{fragment}." for fragment in fragments)
+
+    def _resolve_batch_channel_state(self) -> _FeatureExtractionBatchChannelState:
+        if self.selected_spatialdata is None:
+            return _FeatureExtractionBatchChannelState(
+                reference_coordinate_system=None,
+                reference_image_option=None,
+                channel_names=(),
+                incompatible_coordinate_systems=(),
+                incompatible_image_names=(),
+                error_text=None,
+            )
+
+        selected_images = self._selected_visible_image_options()
+        if not selected_images:
+            return _FeatureExtractionBatchChannelState(
+                reference_coordinate_system=None,
+                reference_image_option=None,
+                channel_names=(),
+                incompatible_coordinate_systems=(),
+                incompatible_image_names=(),
+                error_text=None,
+            )
+
+        reference_coordinate_system: str | None = None
+        reference_image_option: SpatialDataImageOption | None = None
+        reference_channel_names: tuple[str, ...] = ()
+        incompatible_coordinate_systems: list[str] = []
+        incompatible_image_names: list[str] = []
+        duplicate_error_messages: list[str] = []
+        channel_less_targets: list[tuple[str, SpatialDataImageOption]] = []
+        schema_mismatch_targets: list[tuple[str, SpatialDataImageOption]] = []
+
+        for coordinate_system, image_option in selected_images:
+            try:
+                channel_names = tuple(
+                    get_image_channel_names_from_sdata(self.selected_spatialdata, image_option.image_name)
+                )
+            except ValueError:
+                incompatible_coordinate_systems.append(coordinate_system)
+                incompatible_image_names.append(image_option.image_name)
+                duplicate_error_messages.append(
+                    f"Image `{image_option.image_name}` in `{coordinate_system}` exposes duplicate channel names, "
+                    "so rename its channels with `sdata.set_channel_names(...)` or choose a different image."
+                )
+                continue
+
+            if not channel_names:
+                incompatible_coordinate_systems.append(coordinate_system)
+                incompatible_image_names.append(image_option.image_name)
+                channel_less_targets.append((coordinate_system, image_option))
+                continue
+
+            if reference_image_option is None:
+                reference_coordinate_system = coordinate_system
+                reference_image_option = image_option
+                reference_channel_names = channel_names
+                continue
+
+            if channel_names != reference_channel_names:
+                incompatible_coordinate_systems.append(coordinate_system)
+                incompatible_image_names.append(image_option.image_name)
+                schema_mismatch_targets.append((coordinate_system, image_option))
+
+        error_text = self._build_batch_channel_error_text(
+            reference_coordinate_system=reference_coordinate_system,
+            reference_image_option=reference_image_option,
+            duplicate_error_messages=duplicate_error_messages,
+            channel_less_targets=channel_less_targets,
+            schema_mismatch_targets=schema_mismatch_targets,
+        )
+        return _FeatureExtractionBatchChannelState(
+            reference_coordinate_system=reference_coordinate_system,
+            reference_image_option=reference_image_option,
+            channel_names=reference_channel_names,
+            incompatible_coordinate_systems=tuple(incompatible_coordinate_systems),
+            incompatible_image_names=tuple(incompatible_image_names),
+            error_text=error_text,
+        )
+
+    def _refresh_batch_channel_options(self) -> None:
+        previous_selected_batch_channel_names = self._selected_batch_channel_names
+        self._clear_batch_channel_options()
+        self._batch_channel_state = self._resolve_batch_channel_state()
+        self._batch_channel_error = self._batch_channel_state.error_text
+
+        channel_names = self._batch_channel_state.channel_names
         if not channel_names:
             return
 
-        self._image_channel_names = channel_names
-        current_image_identity = self._selected_image_option.identity
-        selected_channel_names = self._selected_channel_names_by_image_identity.get(current_image_identity)
-        if selected_channel_names is None:
-            selected_channel_name_set = set(channel_names)
+        current_schema = channel_names
+        if self._is_valid_batch_channel_selection(current_schema, previous_selected_batch_channel_names):
+            selected_channel_names = previous_selected_batch_channel_names
         else:
-            selected_channel_name_set = set(selected_channel_names)
+            remembered_selection = self._selected_channel_names_by_schema.get(current_schema)
+            if self._is_valid_batch_channel_selection(current_schema, remembered_selection):
+                selected_channel_names = remembered_selection
+            else:
+                selected_channel_names = current_schema
+
+        self._batch_channel_names = list(current_schema)
+        self._selected_batch_channel_names = selected_channel_names
+        self._selected_channel_names_by_schema[current_schema] = selected_channel_names
+        selected_channel_name_set = set(selected_channel_names)
 
         channel_rows: list[QWidget] = []
-        for channel_name in channel_names:
+        for channel_name in current_schema:
             checkbox = QCheckBox(channel_name)
             checkbox.setObjectName(f"feature_extraction_channel_checkbox_{channel_name}")
             checkbox.setStyleSheet(_FEATURE_CHECKBOX_STYLESHEET)
             checkbox.setChecked(channel_name in selected_channel_name_set)
             checkbox.toggled.connect(self._on_channel_selection_changed)
             self.channel_selection_list_layout.addWidget(checkbox)
-            self._image_channel_checkboxes.append(checkbox)
+            self._batch_channel_checkboxes.append(checkbox)
             channel_rows.append(checkbox)
 
         self._set_channel_selection_scroll_height(channel_rows)
+        self.channel_selection_note_label.setText(self._batch_channel_error or "")
+        self.channel_selection_note_label.setVisible(bool(self._batch_channel_error))
         self.channel_selection_label.show()
         self.channel_selection_container.show()
-        self._store_selected_channel_names_for_current_image()
 
     def _on_channel_selection_changed(self, _checked: bool) -> None:
-        self._store_selected_channel_names_for_current_image()
+        self._store_selected_batch_channel_names()
+        self._update_intensity_features_hint()
         self._bind_current_selection()
 
-    def _store_selected_channel_names_for_current_image(self) -> None:
-        if self._selected_image_option is None or not self._image_channel_names:
+    def _store_selected_batch_channel_names(self) -> None:
+        if not self._batch_channel_names:
             return
 
-        self._selected_channel_names_by_image_identity[self._selected_image_option.identity] = tuple(
-            checkbox.text() for checkbox in self._image_channel_checkboxes if checkbox.isChecked()
+        current_schema = tuple(self._batch_channel_names)
+        self._selected_batch_channel_names = tuple(
+            checkbox.text() for checkbox in self._batch_channel_checkboxes if checkbox.isChecked()
         )
+        self._selected_channel_names_by_schema[current_schema] = self._selected_batch_channel_names
 
     def _set_channel_selection_scroll_height(self, channel_rows: list[QWidget]) -> None:
         visible_rows = channel_rows[:_MAX_VISIBLE_EXTRACTION_CHANNELS]
@@ -1391,6 +1612,7 @@ class FeatureExtractionWidget(QWidget):
         self._set_selected_coordinate_system_by_name(next_coordinate_system)
         self._sync_active_triplet_card_state()
         self._refresh_table_names()
+        self._refresh_batch_channel_options()
         self._update_intensity_features_hint()
         self._bind_current_selection()
 
@@ -1421,6 +1643,7 @@ class FeatureExtractionWidget(QWidget):
         self._set_selected_coordinate_system_by_name(next_active_coordinate_system)
         self._rebuild_visible_triplet_cards()
         self._refresh_table_names()
+        self._refresh_batch_channel_options()
         self._update_intensity_features_hint()
         self._bind_current_selection()
 
@@ -1534,9 +1757,53 @@ class FeatureExtractionWidget(QWidget):
 
         return True if dialog.exec() == QDialog.DialogCode.Accepted else None
 
+    def _has_intensity_features_selected(self) -> bool:
+        return any(self._feature_checkboxes[name].isChecked() for name in _INTENSITY_FEATURES)
+
+    def _has_selected_segmentation_without_image(self) -> bool:
+        for coordinate_system in self._checked_coordinate_system_names():
+            state = self._triplet_card_states_by_coordinate_system.get(coordinate_system)
+            if state is None or state.selected_label_option is None:
+                continue
+            if state.selected_image_option is None:
+                return True
+        return False
+
+    def _selected_image_is_batch_channel_incompatible(self) -> bool:
+        if self.selected_coordinate_system is None or self.selected_image_name is None:
+            return False
+
+        return any(
+            coordinate_system == self.selected_coordinate_system and image_name == self.selected_image_name
+            for coordinate_system, image_name in zip(
+                self._batch_channel_state.incompatible_coordinate_systems,
+                self._batch_channel_state.incompatible_image_names,
+                strict=False,
+            )
+        )
+
     def _update_intensity_features_hint(self) -> None:
-        intensity_selected = any(self._feature_checkboxes[name].isChecked() for name in _INTENSITY_FEATURES)
-        if intensity_selected and self.selected_image_name is None:
+        if not self._has_intensity_features_selected():
+            self.intensity_features_hint.setText("")
+            self.intensity_features_hint.setStyleSheet(_FEATURE_HINT_INFO_STYLESHEET)
+            self.intensity_features_hint.setVisible(False)
+            return
+
+        if self._has_selected_segmentation_without_image():
+            self.intensity_features_hint.setText(
+                "Intensity features are selected, so choose an image for every extraction target before calculating."
+            )
+            self.intensity_features_hint.setStyleSheet(_FEATURE_HINT_WARNING_STYLESHEET)
+            self.intensity_features_hint.setVisible(True)
+            return
+
+        if self._batch_channel_error is not None:
+            self.intensity_features_hint.setText(self._batch_channel_error)
+            self.intensity_features_hint.setStyleSheet(_FEATURE_HINT_WARNING_STYLESHEET)
+            self.intensity_features_hint.setVisible(True)
+            return
+
+        if not self._selected_visible_image_options():
             self.intensity_features_hint.setText(
                 "Intensity features are selected, so choose an image before calculating."
             )
@@ -1570,8 +1837,11 @@ class FeatureExtractionWidget(QWidget):
     def _bind_current_selection(self) -> None:
         self._table_binding_error = self._validate_selected_table_binding()
         effective_table_name = None if self._table_binding_error is not None else self.selected_table_name
-        effective_image_name = None if self._image_channel_error is not None else self.selected_image_name
-        effective_channels = None if self._image_channel_error is not None else self.selected_extraction_channel_names
+        effective_image_name = self.selected_image_name
+        effective_channels = self.selected_extraction_channel_names
+        if self._has_intensity_features_selected() and self._selected_image_is_batch_channel_incompatible():
+            effective_image_name = None
+            effective_channels = None
         self._feature_extraction_controller.bind(
             self.selected_spatialdata,
             self.selected_segmentation_name,
@@ -1587,6 +1857,7 @@ class FeatureExtractionWidget(QWidget):
 
     def _update_selection_status(self) -> None:
         self._update_primary_status_card()
+        self._update_feature_extraction_feedback()
         self._update_calculate_controls()
 
     def _update_primary_status_card(self) -> None:
@@ -1649,19 +1920,6 @@ class FeatureExtractionWidget(QWidget):
                 "Table Binding Issue",
                 lines,
                 tooltip_message=self._table_binding_error,
-                kind="warning",
-            )
-            return
-
-        if self._image_channel_error is not None and self.selected_image_name is not None:
-            image_name, _ = format_feedback_identifier(self.selected_image_name)
-            self._set_selection_status(
-                "Image Channel Issue",
-                [
-                    f"Image `{image_name}` has duplicate channel names, which Harpy does not support.",
-                    "Use `sdata.set_channel_names(...)` to rename the channels, or choose a different image.",
-                ],
-                tooltip_message=self._image_channel_error,
                 kind="warning",
             )
             return
@@ -1736,6 +1994,19 @@ class FeatureExtractionWidget(QWidget):
             kind=kind,
         )
 
+    def _update_feature_extraction_feedback(self) -> None:
+        if self._has_intensity_features_selected() and self._batch_channel_error is not None:
+            self._set_feature_extraction_feedback(
+                f"Feature extraction: {self._batch_channel_error}",
+                kind="warning",
+            )
+            return
+
+        self._set_feature_extraction_feedback(
+            self._feature_extraction_controller.status_message,
+            kind=self._feature_extraction_controller.status_kind,
+        )
+
     def _update_calculate_controls(self) -> None:
         self.calculate_button.setEnabled(False)
         tooltip = (
@@ -1744,10 +2015,7 @@ class FeatureExtractionWidget(QWidget):
         self._set_tooltip(self.calculate_button, tooltip)
 
     def _on_controller_state_changed(self) -> None:
-        self._set_feature_extraction_feedback(
-            self._feature_extraction_controller.status_message,
-            kind=self._feature_extraction_controller.status_kind,
-        )
+        self._update_feature_extraction_feedback()
         self._update_calculate_controls()
 
     def _on_controller_table_state_changed(self) -> None:
