@@ -400,6 +400,8 @@ Expected outcome:
 
 ### 4. Add Shared Batch Channel Selection
 
+Status: [x] Completed
+
 Goal:
 
 - move from per-image channel handling to one shared batch channel selector for
@@ -408,10 +410,11 @@ Goal:
 Scope:
 
 - derive the shared channel selector from the first explicitly selected image
-  in sorted card order that exposes channels;
-- hide channel selection when no selected image exposes channels;
+  in sorted card order;
 - block intensity batches when later selected images expose incompatible
   ordered channel-name schemas;
+- treat selected images without explicit channel names as invalid for feature
+  extraction rather than folding them into batch compatibility rules;
 - keep morphology-only execution possible without images.
 
 Clarification:
@@ -420,11 +423,10 @@ Clarification:
   reflects the active card's current image, but instead reflects the current
   batch's shared channel schema;
 - that shared schema should be derived from the first explicitly selected
-  image in sorted visible-card order that exposes channels;
-- selected images with no channel axis are skipped when choosing that
-  reference schema; they are not treated as implicit single-channel matches;
-- if intensity-derived features are selected, a selected image with no
-  channel axis is batch-incompatible with the shared channel-selection model;
+  image in sorted visible-card order;
+- slice 4 assumes image elements used for feature extraction expose explicit
+  channel names; if a selected image does not, that is invalid state and
+  should raise rather than being silently skipped or treated as compatible;
 - later selected images do not get independent channel controls; they either
   match that shared ordered channel-name schema or make the intensity batch
   incompatible;
@@ -477,10 +479,8 @@ self._selected_channel_names_by_schema: dict[tuple[str, ...], tuple[str, ...]] =
   - shared channel checkbox changes should update both
     `self._selected_batch_channel_names` and the schema-keyed remembered map;
 - derive the ordered shared channel schema from the first explicitly selected
-  image in sorted visible-card order that exposes channels;
+  image in sorted visible-card order;
 - if no selected image exists, hide the shared channel selector entirely;
-- if no selected image exposes channels, also hide the shared channel
-  selector;
 - when a shared channel schema is available:
   - render one shared checkbox list from that ordered schema;
   - first check whether `self._selected_batch_channel_names` is still a valid
@@ -535,20 +535,16 @@ def _resolve_batch_channel_state(self) -> _FeatureExtractionBatchChannelState:
 
 - `_resolve_batch_channel_state()` should:
   - walk visible cards in sorted display order and pick the first explicitly
-    selected image that exposes channels as the reference image for the
-    batch;
+    selected image as the reference image for the batch;
   - return an empty `channel_names` tuple when no selected image exists, so
     morphology-only batches can proceed without channel UI;
-  - skip selected images without a channel axis when choosing the reference
-    schema;
   - read ordered channel names from the reference image and treat that ordered
     tuple as the shared schema for the batch;
+  - treat a selected image without channel names as invalid state and raise,
+    rather than skipping it or inventing an implicit schema;
   - treat duplicate channel names in any selected image as a shared batch
     error, rather than leaving duplicate-channel validation tied only to the
     active card;
-  - treat selected images without a channel axis as incompatible with the
-    shared batch channel model for intensity extraction, rather than inventing
-    an implicit schema for them;
   - compare every other selected image's full ordered channel-name tuple
     against that schema;
   - collect incompatible coordinate systems and image names into the returned
