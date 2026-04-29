@@ -595,6 +595,8 @@ Scope:
   controller readiness;
 - ensure the widget builds one authoritative staged batch request from the
   currently checked cards;
+- ensure the table selector is batch-aware and shows only tables that annotate
+  every currently staged segmentation region;
 - ensure the widget binds one explicit staged batch request into the controller;
 - if any checked card is invalid, do not bind a partial valid subset into the
   controller; instead, keep the invalid card visible in widget-local staged
@@ -643,9 +645,22 @@ def _resolve_staged_batch_state(self) -> _FeatureExtractionStagedBatchState:
     rather than binding a partial valid subset;
   - return the full ordered triplet tuple only when every checked card is
     currently valid;
-- use that staged-batch helper before table validation, then validate the
-  selected output table against all staged triplet label names as a later
-  batch-level step;
+- use that staged-batch helper before table discovery:
+  - while not every checked card has a valid segmentation selection, keep the
+    table combo disabled because the required batch label set is not yet known;
+  - once the staged batch is valid enough to expose label names, show only
+    tables that annotate every staged triplet label name rather than showing a
+    broader list plus a later incompatibility error;
+  - for batch table discovery, derive selectable tables from the staged batch
+    label set rather than from the active card's single selected segmentation;
+- after table discovery, validate the selected output table against all staged
+  triplet label names as a later batch-level step:
+  - use `validate_table_annotation_coverage(...)` to confirm full region
+    coverage for the batch;
+  - use `validate_table_region_instance_ids(...)` to confirm per-region
+    `instance_key` uniqueness before submission;
+  - do not keep slice 5 tied to the old single-label
+    `validate_table_binding(...)` path for batch validation;
 - once the staged batch and selected table are both valid, call
   `bind_batch(...)` with the full explicit triplet list; otherwise bind no
   batch and let the widget own the blocking feedback.
