@@ -593,13 +593,68 @@ Scope:
 - ensure the widget reports which triplets will be written;
 - ensure the calculate button is gated by batch validity, table validation, and
   controller readiness;
+- ensure the widget builds one authoritative staged batch request from the
+  currently checked cards;
 - ensure the widget binds one explicit staged batch request into the controller;
+- if any checked card is invalid, do not bind a partial valid subset into the
+  controller; instead, keep the invalid card visible in widget-local staged
+  state, block submission, and bind no batch request at all until the full
+  checked batch is valid;
 - tighten status-card and tooltip messaging for the new batch flow.
+
+Implementation detail:
+
+- slice 5 should introduce one authoritative helper that resolves the staged
+  batch request from the currently checked cards, analogous to slice 4's
+  `_resolve_batch_channel_state()`;
+- that helper should become the source of truth for:
+  - the triplet summary shown in the UI;
+  - the decision to call `bind_batch(...)` versus binding no batch;
+  - the calculate-button enabled state and blocking tooltip/message;
+  - batch-level widget feedback about invalid checked cards;
+- a recommended shape is:
+
+```python
+@dataclass(frozen=True)
+class _FeatureExtractionStagedBatchState:
+    checked_coordinate_systems: tuple[str, ...]
+    triplets: tuple[FeatureExtractionTriplet, ...]
+    invalid_coordinate_systems: tuple[str, ...]
+    error_text: str | None
+
+    @property
+    def is_bindable(self) -> bool:
+        return self.error_text is None and bool(self.triplets)
+
+
+def _resolve_staged_batch_state(self) -> _FeatureExtractionStagedBatchState:
+    ...
+```
+
+- `_resolve_staged_batch_state()` should:
+  - walk checked cards in sorted visible-card order;
+  - stage one explicit `FeatureExtractionTriplet` per checked card only when
+    that card has a valid segmentation selection and, when needed, a valid
+    image selection;
+  - preserve invalid checked cards in returned widget-local state rather than
+    silently dropping them from the staged batch model;
+  - return `triplets=()` and one shared batch `error_text` whenever any
+    checked card is invalid, so the widget binds no batch request at all
+    rather than binding a partial valid subset;
+  - return the full ordered triplet tuple only when every checked card is
+    currently valid;
+- use that staged-batch helper before table validation, then validate the
+  selected output table against all staged triplet label names as a later
+  batch-level step;
+- once the staged batch and selected table are both valid, call
+  `bind_batch(...)` with the full explicit triplet list; otherwise bind no
+  batch and let the widget own the blocking feedback.
 
 Expected outcome:
 
 - users can review the staged triplets before launching work;
 - controller binding and UI messaging reflect the same batch request;
+- the controller never reflects a silently reduced subset of the checked cards;
 - the widget is aligned with the step-3 acceptance criteria in
   `cross_sample_tables.md`.
 
