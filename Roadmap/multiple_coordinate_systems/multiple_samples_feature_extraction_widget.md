@@ -135,7 +135,9 @@ Scope:
 - if a card is restored with a previously explicit segmentation selection that
   has since become blocked by another selected card, clear the card back to
   `Choose a segmentation mask`, show a short explanatory note, and drop that
-  remembered selection instead of silently restoring it later;
+  remembered selection instead of silently restoring it later; clear the
+  remembered image identity for that card at the same time so stale image
+  memory cannot survive the failed restore;
 - show only selectable segmentations and images in the card combo boxes;
 - surface unavailable segmentation/image counts with short inline reasons;
 - block submission while any selected card is invalid.
@@ -213,6 +215,30 @@ class _FeatureExtractionTripletCardState:
   - one valid currently staged option.
 - `selectable_label_options` and `selectable_image_options` represent the
   options the user may actively choose from at that moment.
+- keep remembered user choices in a separate structure rather than embedding
+  them into `_FeatureExtractionTripletCardState`; remembered selection is
+  restoration input, while triplet-card state is the current resolved UI
+  state for this rebuild.
+- the recommended remembered-selection shape is:
+
+```python
+@dataclass(frozen=True)
+class _FeatureExtractionRememberedCardSelection:
+    label_identity: ElementIdentity | None
+    image_identity: ElementIdentity | None
+
+
+self._remembered_card_selection_by_coordinate_system: dict[
+    str, _FeatureExtractionRememberedCardSelection
+]
+```
+
+- do not store `remembered_label_option` or `remembered_image_option` inside
+  `_FeatureExtractionTripletCardState`.
+- when a card is rebuilt, use the remembered-card-selection map only as a
+  candidate source for restoration; the rebuilt card state should still expose
+  only the current staged selections, selectable options, and inline note
+  text.
 - `selectable_label_options` should be treated as derived state rather than as
   a locally mutated list on one card.
 - for one card, `selectable_label_options` depends on:
@@ -290,6 +316,7 @@ def get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and
   - the card resets to `Choose a segmentation mask`;
   - `selected_label_option` becomes `None`;
   - the remembered segmentation identity is dropped;
+  - the remembered image identity for that card is dropped at the same time;
   - `segmentation_note_text` explains why the prior selection could not be
     restored.
 - for maintainability, prefer using combo-box placeholder behavior for

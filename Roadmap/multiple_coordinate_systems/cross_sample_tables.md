@@ -214,6 +214,8 @@ Selection uniqueness rule:
   has since become blocked by another selected card, Harpy clears the card
   back to `Choose a segmentation mask`, shows a short explanatory note, and
   drops that remembered selection rather than silently restoring it later;
+  Harpy also clears the remembered image identity for that card at the same
+  time so stale image memory cannot survive the failed restore;
 - each card therefore distinguishes between its current staged selection and
   its currently selectable segmentation options: the current staged selection
   is either empty or one valid segmentation, while the selectable options may
@@ -289,7 +291,8 @@ Lifecycle rule:
     that has since become blocked by another selected card, Harpy clears the
     card back to `Choose a segmentation mask`, shows a short explanatory note,
     and drops that remembered selection rather than silently restoring it
-    later.
+    later. Harpy also clears the remembered image identity for that card at
+    the same time.
 13. For the selected segmentation in each card, Harpy derives matching image
    candidates in the same coordinate system.
 14. Only selectable matching images should appear in the per-card image combo.
