@@ -109,6 +109,8 @@ Expected outcome:
 
 ### 3. Add Batch Validity Rules
 
+Status: [x] Completed
+
 Goal:
 
 - make multi-card selection safe before introducing richer shared batch logic.
