@@ -444,6 +444,19 @@ For each slice:
 - update only the tests that correspond to the newly introduced behavior;
 - keep the rest of the widget contract stable where possible;
 - run focused widget and controller tests before moving to the next slice.
+- for slice 3 specifically, expect a deliberate rewrite of the most
+  slice-2-shaped widget tests rather than a minimal assertion tweak:
+  - tests that currently expect a segmentation to be auto-selected as soon as
+    a coordinate-system card is shown should be replaced with assertions that
+    the card starts at `Choose a segmentation mask`;
+  - tests that currently expect remembered restoration to immediately yield a
+    selected segmentation should be updated to cover both successful restore
+    and blocked-restore reset-to-placeholder behavior;
+  - tests should explicitly cover cross-card duplicate-segmentation exclusion
+    and in-place visible-card state recomputation after segmentation changes.
+- plan that targeted test replacement up front so the first slice-3 patch does
+  not look unexpectedly noisy just because old slice-2 assumptions are being
+  removed.
 
 Recommended focused test progression:
 
