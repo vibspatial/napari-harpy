@@ -360,6 +360,10 @@ def get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and
 - `unavailable_label_count` and `unavailable_image_count` support the coarse
   slice 3 notes such as `2 segmentations unavailable` and
   `3 images unavailable because they do not satisfy matching requirements`.
+- because the slice 3 card state carries only one `segmentation_note_text`
+  and one `image_note_text`, combine cross-card duplicate warnings and coarse
+  unavailable-count feedback into one short sentence when both apply, rather
+  than treating them as separate competing note slots.
 - during the refactor, the older option-only feature-extraction helpers may
   remain temporarily as thin wrappers over these discovery helpers, but the
   discovery helpers are the intended source of truth and the end-state API the
