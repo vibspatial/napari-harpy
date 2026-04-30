@@ -56,6 +56,21 @@ def _set_user_classes(sdata: SpatialData, class_by_instance: dict[int, int]) -> 
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(values, categories=categories)
 
 
+def _resolved_scope(
+    positions: np.ndarray | list[int] | tuple[int, ...],
+    *,
+    label_name: str = "blobs_labels",
+    n_rows_in_regions: int | None = None,
+) -> classifier_module.ResolvedClassifierScope:
+    table_row_positions = np.asarray(positions, dtype=np.int64)
+    return classifier_module.ResolvedClassifierScope(
+        mode="selected_segmentation_only",
+        regions=(label_name,),
+        table_row_positions=table_row_positions,
+        n_rows_in_regions=int(table_row_positions.size if n_rows_in_regions is None else n_rows_in_regions),
+    )
+
+
 def test_classifier_controller_trains_on_labeled_rows_and_predicts_active_objects(qtbot, sdata_blobs: SpatialData) -> None:
     _set_deterministic_features(sdata_blobs)
     _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
@@ -151,18 +166,18 @@ def test_classifier_controller_drops_stale_results(qtbot, monkeypatch, sdata_blo
         call_log.append(job.job_id)
         if job.job_id == 1:
             time.sleep(0.2)
-            pred_class = np.full(job.active_positions.shape, 1, dtype=np.int64)
+            pred_class = np.full(job.prediction_scope.table_row_positions.shape, 1, dtype=np.int64)
         else:
-            pred_class = np.full(job.active_positions.shape, 2, dtype=np.int64)
+            pred_class = np.full(job.prediction_scope.table_row_positions.shape, 2, dtype=np.int64)
 
         return classifier_module.ClassifierJobResult(
             job_id=job.job_id,
             feature_key=job.feature_key,
             label_name=job.label_name,
             table_name=job.table_name,
-            active_positions=job.active_positions,
+            prediction_scope=job.prediction_scope,
             pred_classes=pred_class,
-            pred_confidences=np.full(job.active_positions.shape, 0.9, dtype=np.float64),
+            pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.9, dtype=np.float64),
             trained_at="2026-04-08T12:00:00+00:00",
             model_params=dict(classifier_module.RANDOM_FOREST_PARAMS),
             eligibility=job.eligibility,
@@ -201,9 +216,9 @@ def test_classifier_controller_bind_is_passive_until_marked_dirty(
             feature_key=job.feature_key,
             label_name=job.label_name,
             table_name=job.table_name,
-            active_positions=job.active_positions,
-            pred_classes=np.full(job.active_positions.shape, 1, dtype=np.int64),
-            pred_confidences=np.full(job.active_positions.shape, 0.9, dtype=np.float64),
+            prediction_scope=job.prediction_scope,
+            pred_classes=np.full(job.prediction_scope.table_row_positions.shape, 1, dtype=np.int64),
+            pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.9, dtype=np.float64),
             trained_at="2026-04-08T12:00:00+00:00",
             model_params=dict(classifier_module.RANDOM_FOREST_PARAMS),
             eligibility=job.eligibility,
@@ -300,7 +315,7 @@ def test_classifier_controller_invalidates_pending_work_for_selected_feature_mat
         feature_key="features_1",
         label_name="blobs_labels",
         table_name="table",
-        active_positions=np.array([0, 1], dtype=np.int64),
+        prediction_scope=_resolved_scope([0, 1]),
         pred_classes=np.array([1, 2], dtype=np.int64),
         pred_confidences=np.array([0.9, 0.8], dtype=np.float64),
         trained_at="2026-04-13T09:00:00+00:00",
@@ -308,7 +323,7 @@ def test_classifier_controller_invalidates_pending_work_for_selected_feature_mat
         eligibility=classifier_module.TrainingEligibility(
             eligible=True,
             reason="Ready to train.",
-            active_row_count=2,
+            prediction_row_count=2,
             labeled_count=2,
             class_labels=(1, 2),
             n_features=2,
@@ -346,9 +361,9 @@ def test_classifier_controller_reset_after_reload_ignores_late_worker_results(
             feature_key=job.feature_key,
             label_name=job.label_name,
             table_name=job.table_name,
-            active_positions=job.active_positions,
-            pred_classes=np.full(job.active_positions.shape, 1, dtype=np.int64),
-            pred_confidences=np.full(job.active_positions.shape, 0.91, dtype=np.float64),
+            prediction_scope=job.prediction_scope,
+            pred_classes=np.full(job.prediction_scope.table_row_positions.shape, 1, dtype=np.int64),
+            pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.91, dtype=np.float64),
             trained_at="2026-04-13T09:00:00+00:00",
             model_params=dict(classifier_module.RANDOM_FOREST_PARAMS),
             eligibility=job.eligibility,
