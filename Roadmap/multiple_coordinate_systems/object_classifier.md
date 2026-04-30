@@ -156,7 +156,7 @@ ClassifierScopeMode = Literal["selected_segmentation_only", "all"]
 class ResolvedClassifierScope:
     mode: ClassifierScopeMode
     regions: tuple[str, ...]
-    row_positions: np.ndarray
+    table_row_positions: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -168,10 +168,10 @@ class ResolvedClassifierScopes:
 - introduce a resolved-scope data model that can hold:
   - requested training scope mode;
   - resolved training regions;
-  - training-row positions;
+  - training table-row positions;
   - requested prediction scope mode;
   - resolved prediction regions;
-  - prediction-row positions;
+  - prediction table-row positions;
 - treat `_prepare_classifier_job(...)` as the main refactor target and factor
   its current responsibilities into helpers such as:
   - `_resolve_scope_regions(...)`
@@ -357,7 +357,7 @@ Scope:
 - support `all` as an explicit mode that resolves prediction rows across all
   eligible table regions;
 - update worker result application so prediction writes target the resolved
-  prediction-row positions, not the old single-region `active_positions`;
+  prediction table-row positions, not the old single-region `active_positions`;
 - update ineligible-state handling so it reasons about prediction-target rows
   explicitly;
 - expand classifier metadata in `table.uns[CLASSIFIER_CONFIG_KEY]` to include:
