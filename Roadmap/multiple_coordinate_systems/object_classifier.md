@@ -263,7 +263,7 @@ Expected outcome:
 
 ### 2. Add Multi-Region Test Builders for Classifier Work
 
-Status: [ ] Planned
+Status: [x] Implemented
 
 Goal:
 
@@ -273,8 +273,8 @@ Scope:
 
 - add a small reusable way to construct a classifier table that spans at least
   two labels regions;
-- keep the data builder narrow and deterministic rather than expanding the
-  global fixture immediately;
+- keep the data builder narrow and deterministic even if it is promoted into
+  shared test infrastructure once reuse is obvious;
 - make it easy to create scenarios where:
   - the selected region has no local labels but another region does;
   - duplicate `instance_key` values appear across regions but not within a
@@ -283,15 +283,20 @@ Scope:
 
 Files:
 
+- `src/napari_harpy/datasets.py`
 - `tests/test_classifier.py`
-- `tests/test_widget.py`
-- optionally `tests/conftest.py` if the helper clearly becomes shared
+- `tests/conftest.py`
+- optionally `tests/test_widget.py` once widget-level multi-region assertions
+  need the same fixture surface
 
 Expected outcome:
 
 - later slices can prove true multi-region behavior instead of reusing
   single-region assumptions;
-- the new fixture surface stays local until reuse justifies promoting it.
+- the dataset helper may be shared once reuse justifies it; in the current
+  implementation that promotion is acceptable because both package-level smoke
+  tests and classifier tests already consume the same `blobs_multi_region()`
+  dataset shape.
 
 ### 3. Switch Default Training to Table-Wide Rows in the Controller
 

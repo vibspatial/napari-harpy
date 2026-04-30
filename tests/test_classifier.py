@@ -41,19 +41,53 @@ class _DeferredWorker(QObject):
         self.finished.emit()
 
 
-def _set_deterministic_features(sdata: SpatialData) -> None:
-    table = sdata["table"]
+def _set_deterministic_features(sdata: SpatialData, *, table_name: str = "table") -> None:
+    table = sdata[table_name]
     instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
     first_feature = (instance_ids > 13).astype(np.float64)
     second_feature = instance_ids.astype(np.float64) / instance_ids.max()
     table.obsm["features_1"] = np.column_stack([first_feature, second_feature])
 
 
-def _set_user_classes(sdata: SpatialData, class_by_instance: dict[int, int]) -> None:
-    table = sdata["table"]
+def _set_user_classes(sdata: SpatialData, class_by_instance: dict[int, int], *, table_name: str = "table") -> None:
+    table = sdata[table_name]
     values = np.array([class_by_instance.get(int(instance_id), 0) for instance_id in table.obs["instance_id"]])
     categories = sorted({0, *values.tolist()})
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(values, categories=categories)
+
+
+def _set_user_classes_by_region(
+    sdata: SpatialData,
+    class_by_region_instance: dict[tuple[str, int], int],
+    *,
+    table_name: str = "table_multi",
+) -> None:
+    table = sdata[table_name]
+    region_values = table.obs["region"].astype("string").to_numpy()
+    instance_values = table.obs["instance_id"].to_numpy(dtype=np.int64)
+    values = np.array(
+        [
+            class_by_region_instance.get((str(region), int(instance_id)), 0)
+            for region, instance_id in zip(region_values, instance_values, strict=True)
+        ],
+        dtype=np.int64,
+    )
+    categories = sorted({0, *values.tolist()})
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(values, categories=categories)
+
+
+def _set_invalid_feature_rows_for_region(
+    sdata: SpatialData,
+    *,
+    region_name: str,
+    table_name: str = "table_multi",
+    feature_key: str = "features_1",
+) -> None:
+    table = sdata[table_name]
+    feature_matrix = np.asarray(table.obsm[feature_key], dtype=np.float64).copy()
+    region_mask = (table.obs["region"].astype("string") == region_name).to_numpy(dtype=bool, copy=False)
+    feature_matrix[region_mask, :] = np.nan
+    table.obsm[feature_key] = feature_matrix
 
 
 def _resolved_scope(
@@ -71,7 +105,9 @@ def _resolved_scope(
     )
 
 
-def test_classifier_controller_trains_on_labeled_rows_and_predicts_active_objects(qtbot, sdata_blobs: SpatialData) -> None:
+def test_classifier_controller_trains_on_labeled_rows_and_predicts_active_objects(
+    qtbot, sdata_blobs: SpatialData
+) -> None:
     _set_deterministic_features(sdata_blobs)
     _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
     table_state_changes: list[str] = []
@@ -103,6 +139,118 @@ def test_classifier_controller_trains_on_labeled_rows_and_predicts_active_object
     assert table.uns[CLASSIFIER_CONFIG_KEY]["class_labels_seen"] == [1, 2]
     assert controller.status_kind == "success"
     assert table_state_changes == ["changed"]
+
+
+def test_multi_region_classifier_fixture_duplicates_instance_ids_only_across_regions(
+    sdata_blobs_multi_region: SpatialData,
+) -> None:
+    table = sdata_blobs_multi_region["table_multi"]
+    first_region_rows = table.obs.loc[table.obs["region"].astype("string") == "blobs_labels"]
+    second_region_rows = table.obs.loc[table.obs["region"].astype("string") == "blobs_labels_2"]
+
+    assert first_region_rows["instance_id"].is_unique
+    assert second_region_rows["instance_id"].is_unique
+    assert set(first_region_rows["instance_id"].tolist()) == set(second_region_rows["instance_id"].tolist())
+
+
+def test_classifier_controller_selected_region_scope_ignores_labels_in_other_regions(
+    sdata_blobs_multi_region: SpatialData,
+) -> None:
+    _set_user_classes_by_region(
+        sdata_blobs_multi_region,
+        {
+            ("blobs_labels_2", 1): 1,
+            ("blobs_labels_2", 2): 1,
+            ("blobs_labels_2", 24): 2,
+            ("blobs_labels_2", 25): 2,
+        },
+    )
+    table = sdata_blobs_multi_region["table_multi"]
+
+    controller = ClassifierController(debounce_interval_ms=0)
+    controller.bind(sdata_blobs_multi_region, "blobs_labels", "table_multi", "features_1")
+
+    job = controller._prepare_classifier_job(1)
+
+    assert job is not None
+    assert job.training_scope.regions == ("blobs_labels",)
+    assert job.training_scope.n_rows_in_regions == table.n_obs // 2
+    assert job.training_scope.n_eligible_rows == table.n_obs // 2
+    assert job.summary.labeled_count == 0
+    assert job.summary.eligible is False
+    assert "Need at least 2 labeled samples" in job.summary.reason
+
+
+def test_classifier_controller_all_training_scope_can_use_labels_from_other_regions(
+    sdata_blobs_multi_region: SpatialData,
+) -> None:
+    _set_user_classes_by_region(
+        sdata_blobs_multi_region,
+        {
+            ("blobs_labels_2", 1): 1,
+            ("blobs_labels_2", 2): 1,
+            ("blobs_labels_2", 24): 2,
+            ("blobs_labels_2", 25): 2,
+        },
+    )
+    table = sdata_blobs_multi_region["table_multi"]
+
+    controller = ClassifierController(debounce_interval_ms=0)
+    controller.bind(
+        sdata_blobs_multi_region,
+        "blobs_labels",
+        "table_multi",
+        "features_1",
+        training_scope="all",
+    )
+
+    job = controller._prepare_classifier_job(1)
+
+    assert job is not None
+    assert job.training_scope.regions == ("blobs_labels", "blobs_labels_2")
+    assert job.training_scope.n_rows_in_regions == table.n_obs
+    assert job.training_scope.n_eligible_rows == table.n_obs
+    assert job.prediction_scope.regions == ("blobs_labels",)
+    assert job.prediction_scope.n_rows_in_regions == table.n_obs // 2
+    assert job.prediction_scope.n_eligible_rows == table.n_obs // 2
+    assert job.summary.labeled_count == 4
+    assert job.summary.eligible is True
+
+
+def test_classifier_controller_all_training_scope_excludes_invalid_rows_from_other_regions(
+    sdata_blobs_multi_region: SpatialData,
+) -> None:
+    _set_user_classes_by_region(
+        sdata_blobs_multi_region,
+        {
+            ("blobs_labels", 1): 1,
+            ("blobs_labels", 2): 1,
+            ("blobs_labels", 24): 2,
+            ("blobs_labels", 25): 2,
+        },
+    )
+    _set_invalid_feature_rows_for_region(sdata_blobs_multi_region, region_name="blobs_labels_2")
+    table = sdata_blobs_multi_region["table_multi"]
+
+    controller = ClassifierController(debounce_interval_ms=0)
+    controller.bind(
+        sdata_blobs_multi_region,
+        "blobs_labels",
+        "table_multi",
+        "features_1",
+        training_scope="all",
+    )
+
+    job = controller._prepare_classifier_job(1)
+
+    assert job is not None
+    assert job.training_scope.regions == ("blobs_labels", "blobs_labels_2")
+    assert job.training_scope.n_rows_in_regions == table.n_obs
+    assert job.training_scope.n_eligible_rows == table.n_obs // 2
+    assert job.training_scope.n_excluded_feature_invalid_rows == table.n_obs // 2
+    assert job.prediction_scope.regions == ("blobs_labels",)
+    assert job.prediction_scope.n_eligible_rows == table.n_obs // 2
+    assert job.summary.eligible is True
 
 
 def test_classifier_controller_resets_predictions_when_only_one_class_is_labeled(
@@ -193,16 +341,16 @@ def test_classifier_controller_drops_stale_results(qtbot, monkeypatch, sdata_blo
     controller.schedule_retrain(immediate=True)
 
     table = sdata_blobs["table"]
-    qtbot.waitUntil(lambda: table.obs[PRED_CLASS_COLUMN].nunique() == 1 and table.obs[PRED_CLASS_COLUMN].iloc[0] == 2, timeout=5000)
+    qtbot.waitUntil(
+        lambda: table.obs[PRED_CLASS_COLUMN].nunique() == 1 and table.obs[PRED_CLASS_COLUMN].iloc[0] == 2, timeout=5000
+    )
 
     assert call_log == [1, 2]
     assert table.obs[PRED_CLASS_COLUMN].eq(2).all()
     assert controller.status_kind == "success"
 
 
-def test_classifier_controller_bind_is_passive_until_marked_dirty(
-    qtbot, monkeypatch, sdata_blobs: SpatialData
-) -> None:
+def test_classifier_controller_bind_is_passive_until_marked_dirty(qtbot, monkeypatch, sdata_blobs: SpatialData) -> None:
     _set_deterministic_features(sdata_blobs)
     _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
 
@@ -416,10 +564,16 @@ def test_classifier_controller_reset_after_reload_ignores_late_worker_results(
     assert worker.quit_called is True
     assert controller.is_training is False
     assert controller.is_dirty is False
-    assert controller.status_message == f"Classifier: model is up to date. Loaded predictions for {table.n_obs} objects from disk."
+    assert (
+        controller.status_message
+        == f"Classifier: model is up to date. Loaded predictions for {table.n_obs} objects from disk."
+    )
 
     worker.emit_returned()
 
     assert table.obs[PRED_CLASS_COLUMN].eq(2).all()
     assert table.obs[PRED_CONFIDENCE_COLUMN].eq(0.77).all()
-    assert controller.status_message == f"Classifier: model is up to date. Loaded predictions for {table.n_obs} objects from disk."
+    assert (
+        controller.status_message
+        == f"Classifier: model is up to date. Loaded predictions for {table.n_obs} objects from disk."
+    )
