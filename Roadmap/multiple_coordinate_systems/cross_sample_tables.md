@@ -622,6 +622,12 @@ Work:
   segmentation, but keep that card non-contributing until it becomes valid;
 - show only selectable images in the per-card combo box, and surface
   unavailable image counts with short inline reasons;
+- when exactly one matching image exists for a selected segmentation, show it
+  as the only selectable image option but keep the card at `No image` until
+  the user explicitly chooses it;
+- when multiple matching images exist, require an explicit user choice;
+- when no matching image exists, keep the card morphology-only-capable rather
+  than silently fabricating an image selection;
 - surface missing-image states with short reasons;
 - for intensity features, show one shared batch channel selector derived from
   the first explicitly selected image rather than independent per-triplet
@@ -637,19 +643,22 @@ Work:
 
 Acceptance:
 
-- users can review all selected triplets before launching work;
-- unavailable segmentations or invalid image matches are blocked before backend
+- [x] users can review all selected triplets before launching work;
+- [x] unavailable segmentations or invalid image matches are blocked before backend
   submission;
-- for intensity extraction, the UI makes it clear that one shared channel
+- [x] image selection remains explicit in batch mode: a single valid matching
+  image may be shown as the only selectable option, but it is not silently
+  auto-selected for the user;
+- [x] for intensity extraction, the UI makes it clear that one shared channel
   selection will be used for the whole batch and blocks incompatible image
   channel schemas before submission;
-- one selected coordinate system produces one visible triplet card and one
+- [x] one selected coordinate system produces one visible triplet card and one
   explicit triplet in the staged batch request;
-- the UI prevents duplicate segmentation selection across cards while allowing
+- [x] the UI prevents duplicate segmentation selection across cards while allowing
   valid image reuse across cards;
-- submission stays blocked until every selected coordinate-system card is in a
+- [x] submission stays blocked until every selected coordinate-system card is in a
   valid state;
-- the UI communicates which regions / triplets will be written.
+- [x] the UI communicates which regions / triplets will be written.
 
 ### 4. Add Classifier Training and Prediction Scopes
 
