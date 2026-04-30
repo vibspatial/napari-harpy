@@ -454,6 +454,22 @@ Scope:
   `summary.eligible` is `False`, so `_apply_ineligible_state(...)` should use
   that resolved training/prediction scope information when writing
   `classifier_config`;
+- preserve the attempted classifier snapshot for worker-error metadata too:
+  the controller already stores `self._active_worker`, but that only captures
+  worker lifecycle, not the original `ClassifierJob` payload;
+  introduce `self._active_job: ClassifierJob | None` for the running attempt so
+  `_on_worker_errored(...)` can still write the attempted `training_scope`,
+  `prediction_scope`, table, feature key, and summary-derived counts even if
+  the run fails before returning predictions;
+- do not rebuild failed-run metadata from the controller's current
+  `self._selected_*` state:
+  by the time an error arrives, the widget may already have rebound to a
+  different segmentation, table, feature matrix, or scope choice;
+  even when stale late errors are guarded by job id, the correct metadata
+  source is still the original failed `ClassifierJob` snapshot, not the
+  current live selection;
+- clear `self._active_job` alongside worker cleanup and job invalidation so it
+  always reflects the currently active classifier attempt only;
 - replace the remaining single-scope classifier metadata contract with an
   explicit multi-scope one;
 - keep the still-useful general metadata fields:
@@ -481,8 +497,14 @@ Scope:
   - `label_name`
   - `n_active_objects`
 - update reload-state comparison so it no longer relies only on one stored
-  `label_name`; staleness should be based on table, feature matrix, and whether
-  the current selected segmentation is covered by the stored prediction scope.
+  `label_name`;
+  staleness should be based on:
+  - whether `feature_key` matches
+  - whether `table_name` matches
+  - whether stored `prediction_scope` matches the controller's current
+    `prediction_scope` exactly
+  - whether the current selected segmentation is covered by stored
+    `prediction_regions`
 
 Files:
 
