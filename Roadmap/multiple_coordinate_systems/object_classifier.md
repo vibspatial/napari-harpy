@@ -449,13 +449,37 @@ Scope:
   prediction table-row positions, not the old single-region `active_positions`;
 - update ineligible-state handling so it reasons about prediction-target rows
   explicitly;
-- expand classifier metadata in `table.uns[CLASSIFIER_CONFIG_KEY]` to include:
+- make ineligible runs persist the full attempted scope metadata too:
+  `_prepare_classifier_job(...)` already returns a `ClassifierJob` even when
+  `summary.eligible` is `False`, so `_apply_ineligible_state(...)` should use
+  that resolved training/prediction scope information when writing
+  `classifier_config`;
+- replace the remaining single-scope classifier metadata contract with an
+  explicit multi-scope one;
+- keep the still-useful general metadata fields:
+  - `model_type`
+  - `feature_key`
+  - `table_name`
+  - `roi_mode`
+  - `trained`
+  - `eligible`
+  - `reason`
+  - `training_timestamp`
+  - `n_labeled_objects`
+  - `n_features`
+  - `class_labels_seen`
+  - `rf_params`
+- add explicit scope metadata:
   - `training_scope`
   - `training_regions`
   - `n_training_rows`
   - `prediction_scope`
   - `prediction_regions`
   - `n_predicted_rows`
+- drop legacy single-scope fields that no longer describe the real write
+  target cleanly:
+  - `label_name`
+  - `n_active_objects`
 - update reload-state comparison so it no longer relies only on one stored
   `label_name`; staleness should be based on table, feature matrix, and whether
   the current selected segmentation is covered by the stored prediction scope.
