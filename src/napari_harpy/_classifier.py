@@ -868,63 +868,36 @@ class ClassifierController:
         *,
         feature_valid_row_mask: np.ndarray | None,
     ) -> ResolvedClassifierScopes:
-        if self._selected_training_scope == "selected_segmentation_only":
-            training_regions: tuple[str, ...] = () if self._selected_label_name is None else (self._selected_label_name,)
-        elif self._selected_training_scope == "all":
-            training_regions = metadata.regions
-        else:  # pragma: no cover - guarded by _normalize_scope_mode
-            raise ValueError(f"Unsupported classifier scope mode: {self._selected_training_scope!r}")
+        def resolve_one_scope(scope_mode: ClassifierScopeMode) -> ResolvedClassifierScope:
+            if scope_mode == "selected_segmentation_only":
+                regions: tuple[str, ...] = () if self._selected_label_name is None else (self._selected_label_name,)
+            elif scope_mode == "all":
+                regions = metadata.regions
+            else:  # pragma: no cover - guarded by _normalize_scope_mode
+                raise ValueError(f"Unsupported classifier scope mode: {scope_mode!r}")
 
-        training_raw_table_row_positions = _resolve_region_row_positions(
-            table.obs,
-            metadata.region_key,
-            training_regions,
-        )
-        if feature_valid_row_mask is None or training_raw_table_row_positions.size == 0:
-            training_table_row_positions = np.array([], dtype=np.int64)
-        else:
-            training_valid_in_scope_mask = feature_valid_row_mask[training_raw_table_row_positions]
-            training_table_row_positions = np.asarray(
-                training_raw_table_row_positions[training_valid_in_scope_mask],
-                dtype=np.int64,
+            raw_table_row_positions = _resolve_region_row_positions(
+                table.obs,
+                metadata.region_key,
+                regions,
             )
-        training_scope = ResolvedClassifierScope(
-            mode=self._selected_training_scope,
-            regions=training_regions,
-            table_row_positions=training_table_row_positions,
-            n_rows_in_regions=int(training_raw_table_row_positions.size),
-        )
+            if feature_valid_row_mask is None or raw_table_row_positions.size == 0:
+                table_row_positions = np.array([], dtype=np.int64)
+            else:
+                valid_in_scope_mask = feature_valid_row_mask[raw_table_row_positions]
+                table_row_positions = np.asarray(raw_table_row_positions[valid_in_scope_mask], dtype=np.int64)
 
-        if self._selected_prediction_scope == "selected_segmentation_only":
-            prediction_regions: tuple[str, ...] = (
-                () if self._selected_label_name is None else (self._selected_label_name,)
+            return ResolvedClassifierScope(
+                mode=scope_mode,
+                regions=regions,
+                table_row_positions=table_row_positions,
+                n_rows_in_regions=int(raw_table_row_positions.size),
             )
-        elif self._selected_prediction_scope == "all":
-            prediction_regions = metadata.regions
-        else:  # pragma: no cover - guarded by _normalize_scope_mode
-            raise ValueError(f"Unsupported classifier scope mode: {self._selected_prediction_scope!r}")
 
-        prediction_raw_table_row_positions = _resolve_region_row_positions(
-            table.obs,
-            metadata.region_key,
-            prediction_regions,
+        return ResolvedClassifierScopes(
+            training=resolve_one_scope(self._selected_training_scope),
+            prediction=resolve_one_scope(self._selected_prediction_scope),
         )
-        if feature_valid_row_mask is None or prediction_raw_table_row_positions.size == 0:
-            prediction_table_row_positions = np.array([], dtype=np.int64)
-        else:
-            prediction_valid_in_scope_mask = feature_valid_row_mask[prediction_raw_table_row_positions]
-            prediction_table_row_positions = np.asarray(
-                prediction_raw_table_row_positions[prediction_valid_in_scope_mask],
-                dtype=np.int64,
-            )
-        prediction_scope = ResolvedClassifierScope(
-            mode=self._selected_prediction_scope,
-            regions=prediction_regions,
-            table_row_positions=prediction_table_row_positions,
-            n_rows_in_regions=int(prediction_raw_table_row_positions.size),
-        )
-
-        return ResolvedClassifierScopes(training=training_scope, prediction=prediction_scope)
 
 
 def _normalize_feature_matrix(feature_matrix: Any, n_obs: int) -> Any:
