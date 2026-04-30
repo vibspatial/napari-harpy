@@ -389,7 +389,7 @@ Expected outcome:
 
 ### 4. Add an Explicit Training-Scope Control to the Widget
 
-Status: [ ] Planned
+Status: [x] Implemented
 
 Goal:
 
