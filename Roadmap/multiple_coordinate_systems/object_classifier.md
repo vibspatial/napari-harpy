@@ -112,12 +112,12 @@ Recommended rule:
 Use one stable pair of user-facing scope values throughout controller, widget,
 tests, and `table.uns[CLASSIFIER_CONFIG_KEY]`:
 
-- `selected_region_only`
+- `selected_segmentation_only`
 - `all`
 
 Interpretation:
 
-- `selected_region_only` resolves to the one `region_key` value for the
+- `selected_segmentation_only` resolves to the one `region_key` value for the
   segmentation currently selected in `ObjectClassificationWidget`;
 - `all` resolves at execution time to the eligible set of table regions for the
   selected table and feature matrix.
@@ -135,11 +135,36 @@ Goal:
 
 - move the controller from one implicit `active_mask` to explicit training and
   prediction scope resolution while preserving today’s behavior.
+- make this primarily a controller-internal refactor of scope resolution,
+  eligibility derivation, and job payload structure rather than a widget-level
+  behavior change.
 
 Scope:
 
-- add controller-level scope types or literals for `selected_region_only` and
+- extend `ClassifierController.bind(...)` to accept:
+  - `training_scope: ClassifierScopeMode = "selected_segmentation_only"`
+  - `prediction_scope: ClassifierScopeMode = "selected_segmentation_only"`
+- add controller-level scope types or literals for `selected_segmentation_only` and
   `all`;
+- introduce explicit resolved-scope dataclasses, for example:
+
+```python
+ClassifierScopeMode = Literal["selected_segmentation_only", "all"]
+
+
+@dataclass(frozen=True)
+class ResolvedClassifierScope:
+    mode: ClassifierScopeMode
+    regions: tuple[str, ...]
+    row_positions: np.ndarray
+
+
+@dataclass(frozen=True)
+class ResolvedClassifierScopes:
+    training: ResolvedClassifierScope
+    prediction: ResolvedClassifierScope
+```
+
 - introduce a resolved-scope data model that can hold:
   - requested training scope mode;
   - resolved training regions;
@@ -147,21 +172,49 @@ Scope:
   - requested prediction scope mode;
   - resolved prediction regions;
   - prediction-row positions;
-- factor row-resolution logic out of `_prepare_classifier_job(...)` into helper
-  functions;
+- treat `_prepare_classifier_job(...)` as the main refactor target and factor
+  its current responsibilities into helpers such as:
+  - `_resolve_scope_regions(...)`
+  - `_resolve_scope_row_positions(...)`
+  - `_resolve_classifier_scopes(...)`
+  - `_get_finite_feature_row_mask(...)`
+  - `_resolve_training_row_positions(...)`
+  - `_resolve_prediction_row_positions(...)`
+- keep the helpers conceptually split between:
+  - resolving which rows are in scope;
+  - deciding which of those rows are training-eligible;
+  - deciding which rows will receive predictions;
 - rename internal `active_positions` / `active_row_count` concepts toward
   prediction-specific names so later slices do not keep using `active` as a
   proxy for both concerns;
+- apply that rename through:
+  - `ClassifierJob`
+  - `ClassifierJobResult`
+  - `TrainingEligibility`
+  - `_apply_ineligible_state(...)`
+  - `_on_worker_returned(...)`
 - keep runtime behavior equivalent to today by defaulting both scopes to
-  `selected_region_only`;
+  `selected_segmentation_only`;
 - add explicit row eligibility helpers for:
   - valid scope membership;
   - finite feature rows for prediction;
   - finite feature rows plus non-zero `user_class` for training.
+- make finite, non-missing feature-row validation explicit in this slice rather
+  than continuing to rely only on matrix-shape checks and downstream
+  scikit-learn failures;
+- do not expand this slice to solve reload metadata semantics yet;
+  `_update_status_from_reloaded_table(...)` may stay mostly single-region until
+  slice 5, when stored classifier metadata becomes richer;
+- widget work in this slice should stay minimal:
+  - keep annotation and selection flows working;
+  - if helpful, temporarily disable `Train Classifier` rather than preserving
+    the old single-region execution path during the refactor.
 
 Files:
 
 - `src/napari_harpy/_classifier.py`
+- optionally `src/napari_harpy/widgets/_object_classification_widget.py` if
+  `Train Classifier` is temporarily disabled in this slice
 - `tests/test_classifier.py`
 
 Expected outcome:
@@ -171,6 +224,9 @@ Expected outcome:
 - if keeping the old train path would slow the refactor, the widget may disable
   `Train Classifier` during this slice rather than preserving the old
   single-region action;
+- the controller already exposes `training_scope` and `prediction_scope`
+  arguments with safe defaults, so later UI slices can wire into that seam
+  without another signature refactor;
 - multi-region tests can assert scope resolution without needing widget changes.
 
 ### 2. Add Multi-Region Test Builders for Classifier Work
@@ -219,7 +275,7 @@ Scope:
 - add a controller selection path for `training_scope`;
 - resolve training rows from all eligible labeled rows in the selected table
   when training scope is `all`;
-- keep prediction scope fixed at `selected_region_only` in this slice;
+- keep prediction scope fixed at `selected_segmentation_only` in this slice;
 - update training eligibility and status reporting so it distinguishes:
   - number of resolved training rows;
   - number of labeled training rows;
@@ -258,7 +314,7 @@ Scope:
   `src/napari_harpy/widgets/_object_classification_widget.py`;
 - default it to `all`;
 - support the two modes only:
-  - `Selected region only`
+  - `Selected segmentation only`
   - `All eligible labeled regions in table`
 - propagate the chosen mode into controller binding;
 - mark the classifier dirty when the training scope changes;
@@ -281,7 +337,7 @@ Files:
 Expected outcome:
 
 - the user can see that training is table-level by default;
-- the user can opt back into selected-region-only training when desired;
+- the user can opt back into selected-segmentation-only training when desired;
 - depending on implementation order, the train button may remain temporarily
   disabled until prediction-scope and metadata behavior are also ready;
 - the widget makes the training set size visible before a run starts.
@@ -297,7 +353,7 @@ Goal:
 Scope:
 
 - add a controller selection path for `prediction_scope`;
-- keep the default as `selected_region_only`;
+- keep the default as `selected_segmentation_only`;
 - support `all` as an explicit mode that resolves prediction rows across all
   eligible table regions;
 - update worker result application so prediction writes target the resolved
@@ -313,7 +369,7 @@ Scope:
   - `n_predicted_rows`
 - update reload-state comparison so it no longer relies only on one stored
   `label_name`; staleness should be based on table, feature matrix, and whether
-  the current selected region is covered by the stored prediction scope.
+  the current selected segmentation is covered by the stored prediction scope.
 
 Files:
 
@@ -324,7 +380,7 @@ Files:
 
 Expected outcome:
 
-- the controller can run selected-region-only or complete-table prediction
+- the controller can run selected-segmentation-only or complete-table prediction
   intentionally;
 - persisted metadata describes what was actually trained and what was actually
   predicted;
@@ -343,9 +399,9 @@ Goal:
 Scope:
 
 - add a `Prediction scope` control to the widget;
-- default it to `Selected region only`;
+- default it to `Selected segmentation only`;
 - expose the two modes only:
-  - `Selected region only`
+  - `Selected segmentation only`
   - `All eligible regions in table`
 - when `all` is selected, show clear warning copy that rows outside the visible
   coordinate system may be updated;
@@ -363,7 +419,7 @@ Files:
 Expected outcome:
 
 - complete-table prediction is opt-in and obvious;
-- selected-region-only prediction remains the safe default;
+- selected-segmentation-only prediction remains the safe default;
 - the widget communicates hidden-row writes before they happen, not only after.
 - this is the natural point to re-enable `Train Classifier` if it was disabled
   during earlier refactor slices.
@@ -380,8 +436,8 @@ Scope:
 
 - add controller coverage for:
   - default training on labeled rows from multiple regions;
-  - selected-region-only training override;
-  - selected-region-only prediction leaving hidden-region predictions unchanged;
+  - selected-segmentation-only training override;
+  - selected-segmentation-only prediction leaving hidden-region predictions unchanged;
   - complete-table prediction updating all eligible regions only when selected;
   - reload status when the stored prediction scope covers multiple regions;
 - add widget coverage for:
@@ -432,7 +488,7 @@ Why this order:
   already the right one.
 - `src/napari_harpy/_classifier_viewer_styling.py` should mostly continue to
   work unchanged, because it already reads `pred_class` rows for the currently
-  selected region only.
+  selected segmentation only.
 - if implementation reveals ambiguous behavior for rows inside the requested
   prediction scope that are feature-invalid, prefer making that rule explicit in
   the controller and tests rather than leaving stale predictions in place
