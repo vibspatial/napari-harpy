@@ -395,17 +395,17 @@ class ClassifierController:
             self._set_status("Classifier: choose an annotation table and feature matrix.", kind="warning")
             return None
 
+        # Early error paths still need region/count context for status and
+        # summary reporting, even before feature-valid row positions can be
+        # resolved from a concrete feature matrix.
         pre_feature_scopes = self._resolve_classifier_scopes(table, metadata, feature_valid_row_mask=None)
-        pre_feature_training_row_count = pre_feature_scopes.training.n_eligible_rows
-        pre_feature_prediction_row_count = pre_feature_scopes.prediction.n_eligible_rows
-        pre_feature_training_region_count = len(pre_feature_scopes.training.regions)
         if self._selected_feature_key is None:
             summary = ClassifierPreparationSummary(
                 eligible=False,
                 reason="Choose a feature matrix before training the classifier.",
-                resolved_training_row_count=pre_feature_training_row_count,
-                resolved_prediction_row_count=pre_feature_prediction_row_count,
-                training_region_count=pre_feature_training_region_count,
+                resolved_training_row_count=pre_feature_scopes.training.n_eligible_rows,
+                resolved_prediction_row_count=pre_feature_scopes.prediction.n_eligible_rows,
+                training_region_count=len(pre_feature_scopes.training.regions),
                 labeled_count=0,
                 class_labels=(),
                 n_features=None,
@@ -429,9 +429,9 @@ class ClassifierController:
             summary = ClassifierPreparationSummary(
                 eligible=False,
                 reason=f"Feature matrix `{self._selected_feature_key}` is not available in `.obsm`.",
-                resolved_training_row_count=pre_feature_training_row_count,
-                resolved_prediction_row_count=pre_feature_prediction_row_count,
-                training_region_count=pre_feature_training_region_count,
+                resolved_training_row_count=pre_feature_scopes.training.n_eligible_rows,
+                resolved_prediction_row_count=pre_feature_scopes.prediction.n_eligible_rows,
+                training_region_count=len(pre_feature_scopes.training.regions),
                 labeled_count=0,
                 class_labels=(),
                 n_features=None,
@@ -452,9 +452,9 @@ class ClassifierController:
             summary = ClassifierPreparationSummary(
                 eligible=False,
                 reason=str(error),
-                resolved_training_row_count=pre_feature_training_row_count,
-                resolved_prediction_row_count=pre_feature_prediction_row_count,
-                training_region_count=pre_feature_training_region_count,
+                resolved_training_row_count=pre_feature_scopes.training.n_eligible_rows,
+                resolved_prediction_row_count=pre_feature_scopes.prediction.n_eligible_rows,
+                training_region_count=len(pre_feature_scopes.training.regions),
                 labeled_count=0,
                 class_labels=(),
                 n_features=None,
