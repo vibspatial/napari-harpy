@@ -260,15 +260,23 @@ class _FeatureExtractionChannelSelectionMemory:
 
 class FeatureExtractionWidget(QWidget):
     """
-    Widget for feature extraction.
+    Batch-aware widget for feature extraction from a shared `SpatialData`.
 
-    The widget discovers selectable labels and images from the shared loaded
-    `SpatialData` object and keeps the selection flow coordinate-system-first:
+    The widget stages one or more explicit
+    `coordinate_system -> segmentation -> image` triplets from the loaded
+    `SpatialData` object:
 
-    - coordinate systems come from the loaded `sdata`
-    - labels come from the selected coordinate system in `sdata.labels`
-    - images come from the selected coordinate system in `sdata.images`
-    - tables are restricted to annotators of the selected labels element
+    - users check one or more coordinate systems and get one triplet card per
+      checked coordinate system;
+    - each card resolves selectable segmentation masks and matching images
+      from shared discovery helpers;
+    - duplicate segmentation selection is prevented across the visible batch,
+      while valid image reuse remains allowed across cards;
+    - shared controls below the cards resolve one batch channel selection, one
+      output table, one feature-matrix key, and the shared feature groups;
+    - the widget keeps a staged batch state and binds an explicit multi-target
+      request into `FeatureExtractionController` only when the full checked
+      batch is currently valid.
     """
 
     def __init__(self, napari_viewer: napari.Viewer | None = None) -> None:
