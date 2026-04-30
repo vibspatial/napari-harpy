@@ -129,7 +129,7 @@ Interpretation:
 
 ### 1. Extract Explicit Scope Resolution in the Classifier Controller
 
-Status: [ ] Planned
+Status: [x] Implemented
 
 Goal:
 
@@ -194,11 +194,12 @@ class ResolvedClassifierScopes:
   - prediction raw in-scope row count;
   - prediction feature-valid table-row positions;
 - treat `_prepare_classifier_job(...)` as the main refactor target and factor
-  its current responsibilities into helpers such as:
-  - `_resolve_scope_regions(...)`
+  its current responsibilities around helpers such as:
   - `_get_finite_feature_row_mask(...)`
-  - `_resolve_scope_row_positions(...)`
   - `_resolve_classifier_scopes(...)`
+  - a small local per-scope resolver inside `_resolve_classifier_scopes(...)`
+    if that keeps training and prediction resolution readable without
+    reintroducing controller-wide helper indirection;
 - keep scope membership and feature-valid row filtering in the same resolution
   path so each resolved scope has one authoritative `table_row_positions`
   result rather than several competing row-position concepts;
@@ -208,10 +209,16 @@ class ResolvedClassifierScopes:
 - rename internal `active_positions` / `active_row_count` concepts toward
   prediction-specific names so later slices do not keep using `active` as a
   proxy for both concerns;
-- apply that rename through:
+- replace `TrainingEligibility` with a broader preparation/result summary type
+  such as `ClassifierPreparationSummary`, and carry that summary directly on
+  `ClassifierJob` and `ClassifierJobResult`;
+- let `_prepare_classifier_job(...)` return `ClassifierJob | None` once the
+  summary is attached to the job, rather than returning a parallel eligibility
+  object;
+- apply the prediction-specific rename through:
   - `ClassifierJob`
   - `ClassifierJobResult`
-  - `TrainingEligibility`
+  - `ClassifierPreparationSummary`
   - `_apply_ineligible_state(...)`
   - `_on_worker_returned(...)`
 - keep runtime behavior equivalent to today by defaulting both scopes to
@@ -220,6 +227,9 @@ class ResolvedClassifierScopes:
   this slice, so `table_row_positions` already excludes rows that are unusable
   for the currently selected feature matrix rather than relying only on
   matrix-shape checks and downstream scikit-learn failures;
+- it is acceptable for the feature-valid mask to be typed explicitly in code,
+  for example with `BoolArray = NDArray[np.bool_]`, to make it clear that scope
+  filtering is driven by a boolean NumPy mask;
 - do not expand this slice to solve reload metadata semantics yet;
   `_update_status_from_reloaded_table(...)` may stay mostly single-region until
   slice 5, when stored classifier metadata becomes richer;
@@ -234,20 +244,22 @@ Files:
 - optionally `src/napari_harpy/widgets/_object_classification_widget.py` if
   `Train Classifier` is temporarily disabled in this slice
 - `tests/test_classifier.py`
+- `tests/test_widget.py`
 
 Expected outcome:
 
 - the controller has a clean seam for later cross-sample behavior;
 - no user-visible classifier-scope behavior changes yet;
-- if keeping the old train path would slow the refactor, the widget may disable
-  `Train Classifier` during this slice rather than preserving the old
-  single-region action;
+- no widget-level scope controls are required yet, and this slice may either
+  keep the existing train path working through safe defaults or temporarily
+  disable `Train Classifier` if that keeps the refactor cleaner;
 - `ResolvedClassifierScope.table_row_positions` becomes the one authoritative
   feature-valid row-position set per resolved scope;
 - the controller already exposes `training_scope` and `prediction_scope`
   arguments with safe defaults, so later UI slices can wire into that seam
   without another signature refactor;
-- multi-region tests can assert scope resolution without needing widget changes.
+- existing single-region controller and widget tests still pass after the
+  refactor, while dedicated multi-region coverage can land in slice 2.
 
 ### 2. Add Multi-Region Test Builders for Classifier Work
 
