@@ -177,18 +177,18 @@ def _format_entry_line(
             return f"{coordinate_system}: {entry.blocking_reason}", coordinate_shortened
 
         label_name, label_shortened = _format_identifier(entry.label_name, shorten=shorten)
-        return f"{coordinate_system}: {label_name} -> {entry.blocking_reason}", coordinate_shortened or label_shortened
+        return (
+            f"{coordinate_system}: {label_name} ({entry.blocking_reason})",
+            coordinate_shortened or label_shortened,
+        )
 
     label_name, label_shortened = _format_identifier(entry.label_name or "unknown segmentation", shorten=shorten)
     if entry.image_name is None:
-        image_text = "no image"
-        image_shortened = False
-    else:
-        image_text, image_shortened = _format_identifier(entry.image_name, shorten=shorten)
+        return f"{coordinate_system}: {label_name} (no image)", coordinate_shortened or label_shortened
 
-    return (
-        f"{coordinate_system}: {label_name} -> {image_text}",
-        coordinate_shortened or label_shortened or image_shortened,
+    image_text, image_shortened = _format_identifier(entry.image_name, shorten=shorten)
+    return f"{coordinate_system}: {label_name} and {image_text}", (
+        coordinate_shortened or label_shortened or image_shortened
     )
 
 

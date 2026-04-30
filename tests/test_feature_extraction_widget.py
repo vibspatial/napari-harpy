@@ -1090,7 +1090,7 @@ def test_feature_extraction_widget_reports_per_card_batch_ready_status_for_valid
 
     status_text = unescape(widget.selection_status.text())
     assert "Batch Ready" in status_text
-    assert "global: blobs_labels -> no image" in status_text
+    assert "global: blobs_labels (no image)" in status_text
     assert widget.selection_status.toolTip() == ""
 
 
@@ -1168,8 +1168,8 @@ def test_feature_extraction_widget_reports_one_line_per_checked_card_in_batch_re
     assert global_label is not None
     status_text = unescape(widget.selection_status.text())
     assert "Batch Ready" in status_text
-    assert f"aligned: {aligned_label.label_name} -> no image" in status_text
-    assert f"global: {global_label.label_name} -> no image" in status_text
+    assert f"aligned: {aligned_label.label_name} (no image)" in status_text
+    assert f"global: {global_label.label_name} (no image)" in status_text
     assert widget.selection_status.toolTip() == ""
 
 
@@ -1194,7 +1194,7 @@ def test_feature_extraction_widget_blocks_when_selected_segmentation_has_no_link
     assert "Batch Incomplete" in widget.selection_status.text()
     assert "No table annotates all currently staged segmentations." in widget.selection_status.text()
     tooltip = unescape(widget.selection_status.toolTip()).replace("&#8203;", "").replace("\u200b", "")
-    assert "global: blobs_multiscale_labels -> no image" in tooltip
+    assert "global: blobs_multiscale_labels (no image)" in tooltip
 
 
 def test_feature_extraction_widget_uses_batch_table_error_as_status_tooltip(
@@ -1222,7 +1222,7 @@ def test_feature_extraction_widget_uses_batch_table_error_as_status_tooltip(
 
     tooltip = unescape(widget.selection_status.toolTip()).replace("&#8203;", "").replace("\u200b", "")
     assert "Table Not Ready" in widget.selection_status.text()
-    assert "global: blobs_labels -> no image" in tooltip
+    assert "global: blobs_labels (no image)" in tooltip
     assert "duplicate values within that region" in tooltip
 
 
