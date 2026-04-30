@@ -583,6 +583,8 @@ Expected outcome:
 
 ### 5. Finalize Batch Binding and Submission Flow
 
+Status: [x] Completed
+
 Goal:
 
 - make staged batch assembly, table flow, and controller binding clean and
