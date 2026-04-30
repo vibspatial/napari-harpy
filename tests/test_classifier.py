@@ -180,7 +180,7 @@ def test_classifier_controller_drops_stale_results(qtbot, monkeypatch, sdata_blo
             pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.9, dtype=np.float64),
             trained_at="2026-04-08T12:00:00+00:00",
             model_params=dict(classifier_module.RANDOM_FOREST_PARAMS),
-            eligibility=job.eligibility,
+            summary=job.summary,
         )
 
     monkeypatch.setattr(classifier_module, "_fit_classifier_job", fake_fit)
@@ -221,7 +221,7 @@ def test_classifier_controller_bind_is_passive_until_marked_dirty(
             pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.9, dtype=np.float64),
             trained_at="2026-04-08T12:00:00+00:00",
             model_params=dict(classifier_module.RANDOM_FOREST_PARAMS),
-            eligibility=job.eligibility,
+            summary=job.summary,
         )
 
     monkeypatch.setattr(classifier_module, "_fit_classifier_job", fake_fit)
@@ -320,10 +320,9 @@ def test_classifier_controller_invalidates_pending_work_for_selected_feature_mat
         pred_confidences=np.array([0.9, 0.8], dtype=np.float64),
         trained_at="2026-04-13T09:00:00+00:00",
         model_params=dict(classifier_module.RANDOM_FOREST_PARAMS),
-        eligibility=classifier_module.TrainingEligibility(
+        summary=classifier_module.ClassifierPreparationSummary(
             eligible=True,
             reason="Ready to train.",
-            prediction_row_count=2,
             labeled_count=2,
             class_labels=(1, 2),
             n_features=2,
@@ -366,7 +365,7 @@ def test_classifier_controller_reset_after_reload_ignores_late_worker_results(
             pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.91, dtype=np.float64),
             trained_at="2026-04-13T09:00:00+00:00",
             model_params=dict(classifier_module.RANDOM_FOREST_PARAMS),
-            eligibility=job.eligibility,
+            summary=job.summary,
         )
         worker = _DeferredWorker(result)
         workers[job.job_id] = worker

@@ -79,12 +79,11 @@ DEFAULT_SCOPE_MODE: ClassifierScopeMode = "selected_segmentation_only"
 
 
 @dataclass(frozen=True)
-class TrainingEligibility:
-    """Describe whether the current bound table can be trained."""
+class ClassifierPreparationSummary:
+    """Describe the outcome of preparing the current classifier run."""
 
     eligible: bool
     reason: str
-    prediction_row_count: int
     labeled_count: int
     class_labels: tuple[int, ...]
     n_features: int | None
@@ -129,7 +128,7 @@ class ClassifierJob:
     predict_features: Any
     train_features: Any
     train_labels: np.ndarray
-    eligibility: TrainingEligibility
+    summary: ClassifierPreparationSummary
 
 
 @dataclass(frozen=True)
@@ -145,7 +144,7 @@ class ClassifierJobResult:
     pred_confidences: np.ndarray
     trained_at: str
     model_params: dict[str, int]
-    eligibility: TrainingEligibility
+    summary: ClassifierPreparationSummary
 
 
 @thread_worker(start_thread=False, ignore_errors=True)
@@ -173,7 +172,7 @@ def _fit_classifier_job(job: ClassifierJob) -> ClassifierJobResult:
         pred_confidences=pred_confidences,
         trained_at=datetime.now(UTC).isoformat(),
         model_params={key: int(value) for key, value in RANDOM_FOREST_PARAMS.items()},
-        eligibility=job.eligibility,
+        summary=job.summary,
     )
 
 
@@ -356,13 +355,13 @@ class ClassifierController:
         if job_id != self._latest_requested_job_id:
             return
 
-        prepared = self._prepare_classifier_job(job_id)
-        if prepared is None:
+        job = self._prepare_classifier_job(job_id)
+        if job is None:
             return
 
-        job, eligibility = prepared
-        if not eligibility.eligible:
-            self._apply_ineligible_state(eligibility, job.prediction_scope)
+        summary = job.summary
+        if not summary.eligible:
+            self._apply_ineligible_state(summary, job.prediction_scope)
             return
 
         worker = self._create_training_worker(job)
@@ -373,95 +372,97 @@ class ClassifierController:
         worker.finished.connect(partial(self._on_worker_finished, job_id))
         self._set_status(
             (
-                f"Classifier: training RandomForest on {eligibility.labeled_count} labeled objects "
-                f"across {len(eligibility.class_labels)} classes."
+                f"Classifier: training RandomForest on {summary.labeled_count} labeled objects "
+                f"across {len(summary.class_labels)} classes."
             ),
             kind="info",
         )
         worker.start()
 
-    def _prepare_classifier_job(self, job_id: int) -> tuple[ClassifierJob, TrainingEligibility] | None:
+    def _prepare_classifier_job(self, job_id: int) -> ClassifierJob | None:
         table = self._get_bound_table()
         metadata = self._selected_table_metadata
         if table is None or metadata is None or self._selected_label_name is None or self._selected_table_name is None:
             self._set_status("Classifier: choose an annotation table and feature matrix.", kind="warning")
             return None
 
+        def build_job(
+            *,
+            feature_key: str,
+            training_scope: ResolvedClassifierScope,
+            prediction_scope: ResolvedClassifierScope,
+            predict_features: Any,
+            train_features: Any,
+            train_labels: np.ndarray,
+            summary: ClassifierPreparationSummary,
+        ) -> ClassifierJob:
+            return ClassifierJob(
+                job_id=job_id,
+                feature_key=feature_key,
+                label_name=self._selected_label_name,
+                table_name=self._selected_table_name,
+                training_scope=training_scope,
+                prediction_scope=prediction_scope,
+                predict_features=predict_features,
+                train_features=train_features,
+                train_labels=train_labels,
+                summary=summary,
+            )
+
         empty_scopes = self._resolve_classifier_scopes(table, metadata, feature_valid_row_mask=None)
         if self._selected_feature_key is None:
-            eligibility = TrainingEligibility(
+            summary = ClassifierPreparationSummary(
                 eligible=False,
                 reason="Choose a feature matrix before training the classifier.",
-                prediction_row_count=0,
                 labeled_count=0,
                 class_labels=(),
                 n_features=None,
             )
-            return (
-                ClassifierJob(
-                    job_id=job_id,
-                    feature_key="",
-                    label_name=self._selected_label_name,
-                    table_name=self._selected_table_name,
-                    training_scope=empty_scopes.training,
-                    prediction_scope=empty_scopes.prediction,
-                    predict_features=np.empty((0, 0), dtype=np.float64),
-                    train_features=np.empty((0, 0), dtype=np.float64),
-                    train_labels=np.array([], dtype=np.int64),
-                    eligibility=eligibility,
-                ),
-                eligibility,
+            return build_job(
+                feature_key="",
+                training_scope=empty_scopes.training,
+                prediction_scope=empty_scopes.prediction,
+                predict_features=np.empty((0, 0), dtype=np.float64),
+                train_features=np.empty((0, 0), dtype=np.float64),
+                train_labels=np.array([], dtype=np.int64),
+                summary=summary,
             )
 
         try:
             feature_matrix = _normalize_feature_matrix(table.obsm[self._selected_feature_key], table.n_obs)
         except KeyError:
-            eligibility = TrainingEligibility(
+            summary = ClassifierPreparationSummary(
                 eligible=False,
                 reason=f"Feature matrix `{self._selected_feature_key}` is not available in `.obsm`.",
-                prediction_row_count=0,
                 labeled_count=0,
                 class_labels=(),
                 n_features=None,
             )
-            return (
-                ClassifierJob(
-                    job_id=job_id,
-                    feature_key=self._selected_feature_key,
-                    label_name=self._selected_label_name,
-                    table_name=self._selected_table_name,
-                    training_scope=empty_scopes.training,
-                    prediction_scope=empty_scopes.prediction,
-                    predict_features=np.empty((0, 0), dtype=np.float64),
-                    train_features=np.empty((0, 0), dtype=np.float64),
-                    train_labels=np.array([], dtype=np.int64),
-                    eligibility=eligibility,
-                ),
-                eligibility,
+            return build_job(
+                feature_key=self._selected_feature_key,
+                training_scope=empty_scopes.training,
+                prediction_scope=empty_scopes.prediction,
+                predict_features=np.empty((0, 0), dtype=np.float64),
+                train_features=np.empty((0, 0), dtype=np.float64),
+                train_labels=np.array([], dtype=np.int64),
+                summary=summary,
             )
         except ValueError as error:
-            eligibility = TrainingEligibility(
+            summary = ClassifierPreparationSummary(
                 eligible=False,
                 reason=str(error),
-                prediction_row_count=0,
                 labeled_count=0,
                 class_labels=(),
                 n_features=None,
             )
-            return (
-                ClassifierJob(
-                    job_id=job_id,
-                    feature_key=self._selected_feature_key,
-                    label_name=self._selected_label_name,
-                    table_name=self._selected_table_name,
-                    training_scope=empty_scopes.training,
-                    prediction_scope=empty_scopes.prediction,
-                    predict_features=np.empty((0, 0), dtype=np.float64),
-                    train_features=np.empty((0, 0), dtype=np.float64),
-                    train_labels=np.array([], dtype=np.int64),
-                    eligibility=eligibility,
-                ),
-                eligibility,
+            return build_job(
+                feature_key=self._selected_feature_key,
+                training_scope=empty_scopes.training,
+                prediction_scope=empty_scopes.prediction,
+                predict_features=np.empty((0, 0), dtype=np.float64),
+                train_features=np.empty((0, 0), dtype=np.float64),
+                train_labels=np.array([], dtype=np.int64),
+                summary=summary,
             )
 
         feature_valid_row_mask = _get_finite_feature_row_mask(feature_matrix)
@@ -473,171 +474,136 @@ class ClassifierController:
         predict_features = _slice_feature_rows(feature_matrix, prediction_scope.table_row_positions)
 
         if prediction_scope.n_rows_in_regions == 0:
-            eligibility = TrainingEligibility(
+            summary = ClassifierPreparationSummary(
                 eligible=False,
                 reason=(
                     f"No table rows for segmentation `{self._selected_label_name}` were found in "
                     f"`{self._selected_table_name}`."
                 ),
-                prediction_row_count=0,
                 labeled_count=0,
                 class_labels=(),
                 n_features=n_features,
             )
-            return (
-                ClassifierJob(
-                    job_id=job_id,
-                    feature_key=self._selected_feature_key,
-                    label_name=self._selected_label_name,
-                    table_name=self._selected_table_name,
-                    training_scope=training_scope,
-                    prediction_scope=prediction_scope,
-                    predict_features=np.empty((0, n_features), dtype=np.float64),
-                    train_features=np.empty((0, n_features), dtype=np.float64),
-                    train_labels=np.array([], dtype=np.int64),
-                    eligibility=eligibility,
-                ),
-                eligibility,
+            return build_job(
+                feature_key=self._selected_feature_key,
+                training_scope=training_scope,
+                prediction_scope=prediction_scope,
+                predict_features=np.empty((0, n_features), dtype=np.float64),
+                train_features=np.empty((0, n_features), dtype=np.float64),
+                train_labels=np.array([], dtype=np.int64),
+                summary=summary,
             )
 
         if prediction_scope.n_eligible_rows == 0:
-            eligibility = TrainingEligibility(
+            summary = ClassifierPreparationSummary(
                 eligible=False,
                 reason=(
                     f"Feature matrix `{self._selected_feature_key}` has no usable rows in the prediction scope: "
                     f"all {prediction_scope.n_rows_in_regions} row(s) have non-finite or missing values."
                 ),
-                prediction_row_count=0,
                 labeled_count=0,
                 class_labels=(),
                 n_features=n_features,
             )
-            return (
-                ClassifierJob(
-                    job_id=job_id,
-                    feature_key=self._selected_feature_key,
-                    label_name=self._selected_label_name,
-                    table_name=self._selected_table_name,
-                    training_scope=training_scope,
-                    prediction_scope=prediction_scope,
-                    predict_features=np.empty((0, n_features), dtype=np.float64),
-                    train_features=np.empty((0, n_features), dtype=np.float64),
-                    train_labels=np.array([], dtype=np.int64),
-                    eligibility=eligibility,
-                ),
-                eligibility,
+            return build_job(
+                feature_key=self._selected_feature_key,
+                training_scope=training_scope,
+                prediction_scope=prediction_scope,
+                predict_features=np.empty((0, n_features), dtype=np.float64),
+                train_features=np.empty((0, n_features), dtype=np.float64),
+                train_labels=np.array([], dtype=np.int64),
+                summary=summary,
             )
 
         if n_features == 0:
-            eligibility = TrainingEligibility(
+            summary = ClassifierPreparationSummary(
                 eligible=False,
                 reason=f"Feature matrix `{self._selected_feature_key}` does not contain any columns.",
-                prediction_row_count=prediction_scope.n_eligible_rows,
                 labeled_count=0,
                 class_labels=(),
                 n_features=0,
             )
-            return (
-                ClassifierJob(
-                    job_id=job_id,
-                    feature_key=self._selected_feature_key,
-                    label_name=self._selected_label_name,
-                    table_name=self._selected_table_name,
-                    training_scope=training_scope,
-                    prediction_scope=prediction_scope,
-                    predict_features=predict_features,
-                    train_features=np.empty((0, 0), dtype=np.float64),
-                    train_labels=np.array([], dtype=np.int64),
-                    eligibility=eligibility,
-                ),
-                eligibility,
+            return build_job(
+                feature_key=self._selected_feature_key,
+                training_scope=training_scope,
+                prediction_scope=prediction_scope,
+                predict_features=predict_features,
+                train_features=np.empty((0, 0), dtype=np.float64),
+                train_labels=np.array([], dtype=np.int64),
+                summary=summary,
             )
 
         if training_scope.n_rows_in_regions > 0 and training_scope.n_eligible_rows == 0:
-            eligibility = TrainingEligibility(
+            summary = ClassifierPreparationSummary(
                 eligible=False,
                 reason=(
                     f"Feature matrix `{self._selected_feature_key}` has no usable rows in the training scope: "
                     f"all {training_scope.n_rows_in_regions} row(s) have non-finite or missing values."
                 ),
-                prediction_row_count=prediction_scope.n_eligible_rows,
                 labeled_count=0,
                 class_labels=(),
                 n_features=n_features,
             )
-            return (
-                ClassifierJob(
-                    job_id=job_id,
-                    feature_key=self._selected_feature_key,
-                    label_name=self._selected_label_name,
-                    table_name=self._selected_table_name,
-                    training_scope=training_scope,
-                    prediction_scope=prediction_scope,
-                    predict_features=predict_features,
-                    train_features=np.empty((0, n_features), dtype=np.float64),
-                    train_labels=np.array([], dtype=np.int64),
-                    eligibility=eligibility,
-                ),
-                eligibility,
+            return build_job(
+                feature_key=self._selected_feature_key,
+                training_scope=training_scope,
+                prediction_scope=prediction_scope,
+                predict_features=predict_features,
+                train_features=np.empty((0, n_features), dtype=np.float64),
+                train_labels=np.array([], dtype=np.int64),
+                summary=summary,
             )
 
         user_class_values = _get_user_class_values(table.obs, len(table.obs))
         training_user_class_values = user_class_values[training_scope.table_row_positions]
         labeled_mask = training_user_class_values != UNLABELED_CLASS
         class_labels = tuple(sorted(int(value) for value in np.unique(training_user_class_values[labeled_mask])))
-        eligibility = TrainingEligibility(
+        summary = ClassifierPreparationSummary(
             eligible=True,
             reason="Ready to train.",
-            prediction_row_count=prediction_scope.n_eligible_rows,
             labeled_count=int(labeled_mask.sum()),
             class_labels=class_labels,
             n_features=n_features,
         )
 
-        if eligibility.labeled_count < MIN_LABELED_SAMPLES:
-            eligibility = TrainingEligibility(
+        if summary.labeled_count < MIN_LABELED_SAMPLES:
+            summary = ClassifierPreparationSummary(
                 eligible=False,
                 reason=(f"Need at least {MIN_LABELED_SAMPLES} labeled samples before training the classifier."),
-                prediction_row_count=eligibility.prediction_row_count,
-                labeled_count=eligibility.labeled_count,
-                class_labels=eligibility.class_labels,
-                n_features=eligibility.n_features,
+                labeled_count=summary.labeled_count,
+                class_labels=summary.class_labels,
+                n_features=summary.n_features,
             )
-        elif len(eligibility.class_labels) < 2:
-            eligibility = TrainingEligibility(
+        elif len(summary.class_labels) < 2:
+            summary = ClassifierPreparationSummary(
                 eligible=False,
                 reason="Need at least two labeled classes before training the classifier.",
-                prediction_row_count=eligibility.prediction_row_count,
-                labeled_count=eligibility.labeled_count,
-                class_labels=eligibility.class_labels,
-                n_features=eligibility.n_features,
+                labeled_count=summary.labeled_count,
+                class_labels=summary.class_labels,
+                n_features=summary.n_features,
             )
 
         labeled_training_positions = training_scope.table_row_positions[labeled_mask]
         train_features = _slice_feature_rows(feature_matrix, labeled_training_positions)
         train_labels = np.asarray(training_user_class_values[labeled_mask], dtype=np.int64)
-        job = ClassifierJob(
-            job_id=job_id,
+        return build_job(
             feature_key=self._selected_feature_key,
-            label_name=self._selected_label_name,
-            table_name=self._selected_table_name,
             training_scope=training_scope,
             prediction_scope=prediction_scope,
             predict_features=predict_features,
             train_features=train_features,
             train_labels=train_labels,
-            eligibility=eligibility,
+            summary=summary,
         )
-        return job, eligibility
 
     def _apply_ineligible_state(
         self,
-        eligibility: TrainingEligibility,
+        summary: ClassifierPreparationSummary,
         prediction_scope: ResolvedClassifierScope | None = None,
     ) -> None:
         table = self._get_bound_table()
         if table is None:
-            self._set_status(f"Classifier: {eligibility.reason}", kind="warning")
+            self._set_status(f"Classifier: {summary.reason}", kind="warning")
             return
 
         self._ensure_prediction_columns(table)
@@ -655,13 +621,14 @@ class ClassifierController:
             )
 
         table.uns[CLASSIFIER_CONFIG_KEY] = self._build_classifier_config(
-            eligibility=eligibility,
+            summary=summary,
             trained=False,
             trained_at=None,
+            prediction_scope=prediction_scope,
         )
         self._notify_table_state_changed()
         self._is_dirty = True
-        self._set_status(f"Classifier: {eligibility.reason}", kind="warning")
+        self._set_status(f"Classifier: {summary.reason}", kind="warning")
 
     def _on_worker_returned(self, job_id: int, result: ClassifierJobResult) -> None:
         if job_id != self._latest_requested_job_id or job_id != self._active_worker_job_id:
@@ -679,14 +646,15 @@ class ClassifierController:
             result.pred_confidences,
         )
         table.uns[CLASSIFIER_CONFIG_KEY] = self._build_classifier_config(
-            eligibility=result.eligibility,
+            summary=result.summary,
             trained=True,
             trained_at=result.trained_at,
+            prediction_scope=result.prediction_scope,
         )
         self._notify_table_state_changed()
         self._is_dirty = False
         self._set_status(
-            f"Classifier: model is up to date. Updated predictions for {result.eligibility.prediction_row_count} objects.",
+            f"Classifier: model is up to date. Updated predictions for {result.prediction_scope.n_eligible_rows} objects.",
             kind="success",
         )
 
@@ -697,16 +665,16 @@ class ClassifierController:
         table = self._get_bound_table()
         if table is not None:
             table.uns[CLASSIFIER_CONFIG_KEY] = self._build_classifier_config(
-                eligibility=TrainingEligibility(
+                summary=ClassifierPreparationSummary(
                     eligible=False,
                     reason=str(error),
-                    prediction_row_count=0,
                     labeled_count=0,
                     class_labels=(),
                     n_features=None,
                 ),
                 trained=False,
                 trained_at=None,
+                prediction_scope=None,
             )
             self._notify_table_state_changed()
         self._is_dirty = True
@@ -771,9 +739,10 @@ class ClassifierController:
     def _build_classifier_config(
         self,
         *,
-        eligibility: TrainingEligibility,
+        summary: ClassifierPreparationSummary,
         trained: bool,
         trained_at: str | None,
+        prediction_scope: ResolvedClassifierScope | None,
     ) -> dict[str, object]:
         return {
             "model_type": "RandomForestClassifier",
@@ -782,13 +751,13 @@ class ClassifierController:
             "label_name": self._selected_label_name,
             "roi_mode": "none",
             "trained": trained,
-            "eligible": eligibility.eligible,
-            "reason": eligibility.reason,
+            "eligible": summary.eligible,
+            "reason": summary.reason,
             "training_timestamp": trained_at,
-            "n_labeled_objects": eligibility.labeled_count,
-            "n_active_objects": eligibility.prediction_row_count,
-            "n_features": eligibility.n_features,
-            "class_labels_seen": list(eligibility.class_labels),
+            "n_labeled_objects": summary.labeled_count,
+            "n_active_objects": 0 if prediction_scope is None else prediction_scope.n_eligible_rows,
+            "n_features": summary.n_features,
+            "class_labels_seen": list(summary.class_labels),
             "rf_params": dict(RANDOM_FOREST_PARAMS),
         }
 

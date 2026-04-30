@@ -844,10 +844,9 @@ def test_widget_invalidates_classifier_when_selected_feature_matrix_is_overwritt
             pred_confidences=np.array([0.9, 0.8], dtype=np.float64),
             trained_at="2026-04-23T09:00:00+00:00",
             model_params=dict(classifier_module.RANDOM_FOREST_PARAMS),
-            eligibility=classifier_module.TrainingEligibility(
+            summary=classifier_module.ClassifierPreparationSummary(
                 eligible=True,
                 reason="Ready to train.",
-                prediction_row_count=2,
                 labeled_count=2,
                 class_labels=(1, 2),
                 n_features=2,
@@ -1604,7 +1603,7 @@ def test_widget_reload_freezes_classifier_worker_and_ignores_late_results(
             pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.91, dtype=np.float64),
             trained_at="2026-04-13T09:00:00+00:00",
             model_params=dict(classifier_module.RANDOM_FOREST_PARAMS),
-            eligibility=job.eligibility,
+            summary=job.summary,
         )
         worker = _DeferredWorker(result)
         workers.append(worker)
@@ -1692,7 +1691,7 @@ def test_widget_retrain_button_recovers_after_worker_finishes(qtbot, monkeypatch
             pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.91, dtype=np.float64),
             trained_at="2026-04-13T09:00:00+00:00",
             model_params=dict(classifier_module.RANDOM_FOREST_PARAMS),
-            eligibility=job.eligibility,
+            summary=job.summary,
         )
         worker = _DeferredWorker(result)
         workers.append(worker)
