@@ -25,7 +25,11 @@ from qtpy.QtWidgets import (
 )
 
 from napari_harpy._app_state import FeatureMatrixWrittenEvent, HarpyAppState, get_or_create_app_state
-from napari_harpy._feature_extraction import FeatureExtractionController, FeatureExtractionTriplet
+from napari_harpy._feature_extraction import (
+    FeatureExtractionBindingState,
+    FeatureExtractionController,
+    FeatureExtractionTriplet,
+)
 from napari_harpy._spatialdata import (
     SpatialDataImageOption,
     SpatialDataLabelsOption,
@@ -2069,15 +2073,29 @@ class FeatureExtractionWidget(QWidget):
             kind=kind,
         )
 
-    def _controller_is_bound_to_staged_batch(self) -> bool:
-        binding_state = self._feature_extraction_controller.binding_state
-        return (
-            binding_state.sdata is self.selected_spatialdata
-            and binding_state.triplets == self._staged_batch_state.triplets
-            and binding_state.table_name == self.selected_table_name
-            and binding_state.feature_names == self.selected_feature_names
-            and binding_state.feature_key == self.selected_feature_key
+    def _expected_controller_binding_state(self) -> FeatureExtractionBindingState:
+        triplets: tuple[FeatureExtractionTriplet, ...] = ()
+        table_name: str | None = None
+
+        if (
+            self._staged_batch_state.is_bindable
+            and self._table_binding_error is None
+            and self.selected_table_name is not None
+        ):
+            triplets = self._staged_batch_state.triplets
+            table_name = self.selected_table_name
+
+        return FeatureExtractionBindingState(
+            sdata=self.selected_spatialdata,
+            triplets=triplets,
+            table_name=table_name,
+            feature_names=self.selected_feature_names,
+            feature_key=self.selected_feature_key,
+            overwrite_feature_key=False,
         )
+
+    def _controller_is_bound_to_staged_batch(self) -> bool:
+        return self._feature_extraction_controller.binding_state == self._expected_controller_binding_state()
 
     def _should_show_controller_feedback(self) -> bool:
         if (
