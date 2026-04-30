@@ -406,13 +406,13 @@ Scope:
   - `All eligible labeled regions in table`
 - propagate the chosen mode into controller binding;
 - mark the classifier dirty when the training scope changes;
-- surface a preflight summary line such as:
-
-```text
-Training: 182 labeled rows across 4 regions
-Prediction: 3,110 rows in selected region
-```
-
+- keep the existing `classifier_feedback` / tooltip model for now rather than
+  introducing a dedicated classifier preflight status card in this slice;
+- if small wording tweaks are needed, keep them limited to the existing
+  feedback card and button tooltips;
+- defer richer classifier preflight messaging and status-card composition until
+  a later UX-focused slice, after training/prediction scope behavior and
+  metadata semantics have settled;
 - keep prediction behavior unchanged in this slice;
 - keep annotation and styling flows unchanged.
 
@@ -428,7 +428,8 @@ Expected outcome:
 - the user can opt back into selected-segmentation-only training when desired;
 - depending on implementation order, the train button may remain temporarily
   disabled until prediction-scope and metadata behavior are also ready;
-- the widget makes the training set size visible before a run starts.
+- the widget wiring stays focused on functional scope selection rather than
+  introducing new presentation structures too early.
 
 ### 5. Add Prediction Scope Support in the Controller and Metadata
 
@@ -548,6 +549,56 @@ Expected outcome:
 - later refactors cannot silently collapse back to one-region classifier
   assumptions.
 
+### 8. Add a Rich Classifier Status Card UX
+
+Status: [ ] Planned
+
+Goal:
+
+- present training-scope and prediction-scope context through a dedicated
+  classifier status-card flow, similar in spirit to the feature extraction
+  widget's spec-builder pattern.
+
+Scope:
+
+- introduce a dedicated widget status area for classifier preflight context,
+  separate from the existing transient `classifier_feedback` card;
+- add a status-card helper module such as
+  `src/napari_harpy/widgets/_object_classification_status_card.py`;
+- keep that helper module presentation-focused:
+  it should build status-card specs from structured controller/widget state,
+  not own Qt widget classes or parse user-facing status strings;
+- add a small structured controller-facing API for current classifier
+  preflight state if the widget still lacks one by this point;
+- render richer preflight lines such as:
+
+```text
+Training: 182 labeled rows across 4 regions
+Prediction: 3,110 rows in selected region
+```
+
+- keep the existing `classifier_feedback` card for transient run-time events
+  such as training started, training failed, model stale, and model up to date;
+- align the resulting UX with the feature extraction widget's separation
+  between selection/preflight status and controller feedback status;
+- add widget tests for the richer card rendering and state transitions.
+
+Files:
+
+- `src/napari_harpy/widgets/_object_classification_widget.py`
+- `src/napari_harpy/widgets/_object_classification_status_card.py`
+- `src/napari_harpy/_classifier.py`
+- `tests/test_widget.py`
+
+Expected outcome:
+
+- classifier scope choices are visible in a stable, readable preflight card
+  before the user clicks `Train Classifier`;
+- transient controller feedback remains separate from persistent preflight
+  context;
+- the classifier widget UX matches the overall status-card style already used
+  elsewhere in the codebase, especially feature extraction.
+
 ## Recommended Order
 
 Recommended landing order:
@@ -559,6 +610,7 @@ Recommended landing order:
 5. slice 5
 6. slice 6
 7. slice 7
+8. slice 8
 
 Why this order:
 
@@ -568,6 +620,8 @@ Why this order:
   table-level while keeping prediction safe;
 - it treats metadata and reload semantics as first-class scope work instead of
   post-merge cleanup.
+- it defers richer classifier UX composition until the scope semantics and
+  metadata contract are stable enough to present cleanly.
 
 ## Notes
 
