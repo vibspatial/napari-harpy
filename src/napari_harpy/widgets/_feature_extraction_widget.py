@@ -1081,6 +1081,22 @@ class FeatureExtractionWidget(QWidget):
         preferred_selection_by_coordinate_system: Mapping[str, _FeatureExtractionCardSelection],
         authoritative_coordinate_systems: set[str],
     ) -> tuple[dict[str, ElementIdentity | None], dict[ElementIdentity, str]]:
+        """Resolve batch-visible label ownership across the checked cards.
+
+        Feature-extraction batch selection is intentionally asymmetric:
+
+        - labels are resolved *globally* across the checked cards, so one
+          concrete segmentation element may belong to at most one visible card
+          at a time;
+        - images are resolved *locally* inside each card after the label is
+          chosen, so the same valid image element may still be reused across
+          several cards when it matches each card's selected segmentation.
+
+        This helper implements only the first half of that rule. It walks the
+        checked cards in a stable order, restores preferred label selections
+        when they are still eligible, and builds a `label -> owner` map that
+        prevents duplicate segmentation selection across the visible batch.
+        """
         checked_coordinate_systems = self._checked_coordinate_system_names()
         authoritative_order = [
             coordinate_system
