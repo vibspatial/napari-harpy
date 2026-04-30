@@ -157,6 +157,15 @@ class ResolvedClassifierScope:
     mode: ClassifierScopeMode
     regions: tuple[str, ...]
     table_row_positions: np.ndarray
+    n_rows_in_regions: int
+
+    @property
+    def n_eligible_rows(self) -> int:
+        return int(self.table_row_positions.size)
+
+    @property
+    def n_excluded_feature_invalid_rows(self) -> int:
+        return self.n_rows_in_regions - int(self.table_row_positions.size)
 
 
 @dataclass(frozen=True)
@@ -165,25 +174,37 @@ class ResolvedClassifierScopes:
     prediction: ResolvedClassifierScope
 ```
 
+- use the following invariant:
+  - `regions` stores the resolved semantic scope requested by the user;
+  - `n_rows_in_regions` stores the total number of table rows whose
+    `region_key` is in `regions`, before feature-validity filtering;
+  - `table_row_positions` stores the in-scope table rows that are feature-valid
+    for the currently selected feature matrix, meaning finite and non-missing,
+    in original table order.
+  - `n_eligible_rows` and `n_excluded_feature_invalid_rows` are derived from
+    `n_rows_in_regions` and `table_row_positions` rather than stored
+    separately.
 - introduce a resolved-scope data model that can hold:
   - requested training scope mode;
   - resolved training regions;
-  - training table-row positions;
+  - training raw in-scope row count;
+  - training feature-valid table-row positions;
   - requested prediction scope mode;
   - resolved prediction regions;
-  - prediction table-row positions;
+  - prediction raw in-scope row count;
+  - prediction feature-valid table-row positions;
 - treat `_prepare_classifier_job(...)` as the main refactor target and factor
   its current responsibilities into helpers such as:
   - `_resolve_scope_regions(...)`
+  - `_get_finite_feature_row_mask(...)`
   - `_resolve_scope_row_positions(...)`
   - `_resolve_classifier_scopes(...)`
-  - `_get_finite_feature_row_mask(...)`
-  - `_resolve_training_row_positions(...)`
-  - `_resolve_prediction_row_positions(...)`
-- keep the helpers conceptually split between:
-  - resolving which rows are in scope;
-  - deciding which of those rows are training-eligible;
-  - deciding which rows will receive predictions;
+- keep scope membership and feature-valid row filtering in the same resolution
+  path so each resolved scope has one authoritative `table_row_positions`
+  result rather than several competing row-position concepts;
+- training-specific labeled-row filtering may still happen later in classifier
+  preparation, but it should build on the already resolved
+  `table_row_positions` set rather than recomputing scope validity elsewhere;
 - rename internal `active_positions` / `active_row_count` concepts toward
   prediction-specific names so later slices do not keep using `active` as a
   proxy for both concerns;
@@ -195,13 +216,10 @@ class ResolvedClassifierScopes:
   - `_on_worker_returned(...)`
 - keep runtime behavior equivalent to today by defaulting both scopes to
   `selected_segmentation_only`;
-- add explicit row eligibility helpers for:
-  - valid scope membership;
-  - finite feature rows for prediction;
-  - finite feature rows plus non-zero `user_class` for training.
-- make finite, non-missing feature-row validation explicit in this slice rather
-  than continuing to rely only on matrix-shape checks and downstream
-  scikit-learn failures;
+- make finite, non-missing feature-row filtering part of scope resolution in
+  this slice, so `table_row_positions` already excludes rows that are unusable
+  for the currently selected feature matrix rather than relying only on
+  matrix-shape checks and downstream scikit-learn failures;
 - do not expand this slice to solve reload metadata semantics yet;
   `_update_status_from_reloaded_table(...)` may stay mostly single-region until
   slice 5, when stored classifier metadata becomes richer;
@@ -224,6 +242,8 @@ Expected outcome:
 - if keeping the old train path would slow the refactor, the widget may disable
   `Train Classifier` during this slice rather than preserving the old
   single-region action;
+- `ResolvedClassifierScope.table_row_positions` becomes the one authoritative
+  feature-valid row-position set per resolved scope;
 - the controller already exposes `training_scope` and `prediction_scope`
   arguments with safe defaults, so later UI slices can wire into that seam
   without another signature refactor;
