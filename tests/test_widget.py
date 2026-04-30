@@ -235,6 +235,7 @@ def test_widget_can_be_instantiated(qtbot) -> None:
     assert widget.selected_segmentation_name is None
     assert widget.selected_table_name is None
     assert widget.selected_feature_key is None
+    assert widget.selected_training_scope == classifier_module.DEFAULT_TRAINING_SCOPE
     assert widget.selected_coordinate_system is None
     assert widget.selected_color_by == "user_class"
     assert all(button.text() != "Rescan Viewer" for button in widget.findChildren(type(widget.retrain_button)))
@@ -249,6 +250,7 @@ def test_widget_can_be_instantiated(qtbot) -> None:
     assert widget.feature_matrix_combo.sizeAdjustPolicy() == (
         QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
     )
+    assert widget.training_scope_combo.currentData() == classifier_module.DEFAULT_TRAINING_SCOPE
 
 
 def test_widget_refreshes_when_shared_sdata_changes(qtbot, sdata_blobs: SpatialData) -> None:
@@ -769,11 +771,67 @@ def test_widget_updates_selected_feature_key_when_feature_matrix_changes(qtbot, 
     widget = HarpyWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
+    widget.training_scope_combo.setCurrentIndex(widget.training_scope_combo.findData("selected_segmentation_only"))
+
+    bind_calls: list[str] = []
+
+    def record_bind(
+        sdata,
+        label_name,
+        table_name,
+        feature_key,
+        *,
+        training_scope=classifier_module.DEFAULT_TRAINING_SCOPE,
+        prediction_scope=classifier_module.DEFAULT_PREDICTION_SCOPE,
+    ) -> bool:
+        del sdata, label_name, table_name, feature_key, prediction_scope
+        bind_calls.append(training_scope)
+        return True
+
+    widget._classifier_controller.bind = record_bind  # type: ignore[method-assign]
 
     widget.feature_matrix_combo.setCurrentIndex(1)
 
     assert widget.selected_feature_key == "features_2"
+    assert bind_calls == ["selected_segmentation_only"]
     assert "feature matrix changed" in widget.classifier_feedback.text()
+
+
+def test_widget_marks_classifier_dirty_when_training_scope_changes(qtbot, monkeypatch, sdata_blobs: SpatialData) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    bind_calls: list[str] = []
+    mark_dirty_reasons: list[str | None] = []
+
+    def record_bind(
+        sdata,
+        label_name,
+        table_name,
+        feature_key,
+        *,
+        training_scope=classifier_module.DEFAULT_TRAINING_SCOPE,
+        prediction_scope=classifier_module.DEFAULT_PREDICTION_SCOPE,
+    ) -> bool:
+        del sdata, label_name, table_name, feature_key, prediction_scope
+        bind_calls.append(training_scope)
+        return True
+
+    def record_mark_dirty(*, reason: str | None = None) -> None:
+        mark_dirty_reasons.append(reason)
+
+    monkeypatch.setattr(widget._classifier_controller, "bind", record_bind)
+    monkeypatch.setattr(widget._classifier_controller, "mark_dirty", record_mark_dirty)
+
+    widget.training_scope_combo.setCurrentIndex(widget.training_scope_combo.findData("selected_segmentation_only"))
+
+    assert widget.selected_training_scope == "selected_segmentation_only"
+    assert bind_calls == ["selected_segmentation_only"]
+    assert mark_dirty_reasons == ["the training scope changed"]
 
 
 def test_widget_refreshes_feature_matrix_selector_when_first_key_is_written(qtbot, sdata_blobs: SpatialData) -> None:

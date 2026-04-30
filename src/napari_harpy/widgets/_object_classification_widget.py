@@ -28,7 +28,11 @@ from napari_harpy._app_state import (
     HarpyAppState,
     get_or_create_app_state,
 )
-from napari_harpy._classifier import ClassifierController
+from napari_harpy._classifier import (
+    DEFAULT_TRAINING_SCOPE,
+    ClassifierController,
+    ClassifierScopeMode,
+)
 from napari_harpy._classifier_viewer_styling import (
     COLOR_BY_OPTIONS,
     COLOR_BY_PRED_CLASS,
@@ -80,6 +84,8 @@ class _DirtyReloadDecision(Enum):
 _APPLY_CLASS_SHORTCUT = "A"
 _REMOVE_CLASS_SHORTCUT = "R"
 _INPUT_CONTROL_STYLESHEET = build_input_control_stylesheet("QComboBox, QSpinBox")
+_TABLE_WIDE_TRAINING_SCOPE_LABEL = "All eligible labeled regions in table"
+_SELECTED_SEGMENTATION_TRAINING_SCOPE_LABEL = "Selected segmentation only"
 _CLASS_EDITOR_STYLESHEET = (
     f"QWidget#class_editor {{background-color: {WIDGET_PANEL_COLOR}; "
     f"border: 1px solid {WIDGET_BORDER_COLOR}; border-radius: 10px;}}"
@@ -140,6 +146,7 @@ class ObjectClassificationWidget(QWidget):
         self._table_binding_error: str | None = None
         self._feature_matrix_keys: list[str] = []
         self._selected_feature_key: str | None = None
+        self._selected_training_scope: ClassifierScopeMode = DEFAULT_TRAINING_SCOPE
         self._logo_path = Path(__file__).resolve().parents[3] / "docs" / "_static" / "logo.png"
 
         layout = QVBoxLayout(self)
@@ -189,6 +196,17 @@ class ObjectClassificationWidget(QWidget):
         self.feature_matrix_combo.setObjectName("feature_matrix_combo")
         self.feature_matrix_combo.currentIndexChanged.connect(self._on_feature_matrix_changed)
         self.feature_matrix_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
+
+        self.training_scope_combo = CompactComboBox()
+        self.training_scope_combo.setObjectName("training_scope_combo")
+        self.training_scope_combo.addItem(_TABLE_WIDE_TRAINING_SCOPE_LABEL, "all")
+        self.training_scope_combo.addItem(
+            _SELECTED_SEGMENTATION_TRAINING_SCOPE_LABEL,
+            "selected_segmentation_only",
+        )
+        self.training_scope_combo.setCurrentIndex(self.training_scope_combo.findData(DEFAULT_TRAINING_SCOPE))
+        self.training_scope_combo.currentIndexChanged.connect(self._on_training_scope_changed)
+        self.training_scope_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
 
         self.color_by_combo = QComboBox()
         self.color_by_combo.setObjectName("color_by_combo")
@@ -303,6 +321,7 @@ class ObjectClassificationWidget(QWidget):
         selector_layout.addRow(self._create_form_label("Segmentation mask"), self.segmentation_combo)
         selector_layout.addRow(self._create_form_label("Table"), self.table_combo)
         selector_layout.addRow(self._create_form_label("Feature matrix"), self.feature_matrix_combo)
+        selector_layout.addRow(self._create_form_label("Training scope"), self.training_scope_combo)
         selector_layout.addRow(self._create_form_label("Color by"), self.color_by_combo)
         selector_layout.addRow(self._create_form_label("User class"), self.class_editor)
 
@@ -382,6 +401,11 @@ class ObjectClassificationWidget(QWidget):
     def selected_feature_key(self) -> str | None:
         """Return the currently selected feature matrix key from `adata.obsm`."""
         return self._selected_feature_key
+
+    @property
+    def selected_training_scope(self) -> ClassifierScopeMode:
+        """Return the current classifier training-scope selection."""
+        return self._selected_training_scope
 
     @property
     def selected_instance_id(self) -> int | None:
@@ -767,11 +791,16 @@ class ObjectClassificationWidget(QWidget):
             self.selected_segmentation_name,
             effective_table_name,
             self.selected_feature_key,
+            training_scope=self.selected_training_scope,
         )
         if classifier_context_changed and effective_table_name is not None:
             self._classifier_controller.mark_dirty(reason="the feature matrix changed")
         self._refresh_layer_styling()
         self._update_selection_status()
+
+    def _on_training_scope_changed(self, index: int) -> None:
+        self._set_selected_training_scope(index)
+        self._bind_current_selection(classifier_dirty_reason="the training scope changed")
 
     def _on_color_by_changed(self, index: int) -> None:
         color_by = self.color_by_combo.itemData(index)
@@ -792,6 +821,14 @@ class ObjectClassificationWidget(QWidget):
             self._selected_feature_key = None
         else:
             self._selected_feature_key = self._feature_matrix_keys[index]
+
+    def _set_selected_training_scope(self, index: int) -> None:
+        training_scope = self.training_scope_combo.itemData(index)
+        if training_scope in ("selected_segmentation_only", "all"):
+            self._selected_training_scope = training_scope
+            return
+
+        self._selected_training_scope = DEFAULT_TRAINING_SCOPE
 
     def _validate_selected_table_binding(self) -> str | None:
         if (
@@ -852,6 +889,7 @@ class ObjectClassificationWidget(QWidget):
             self.selected_segmentation_name,
             effective_table_name,
             self.selected_feature_key,
+            training_scope=self.selected_training_scope,
         )
         if classifier_dirty_reason is not None and classifier_context_changed and effective_table_name is not None:
             self._classifier_controller.mark_dirty(reason=classifier_dirty_reason)
@@ -1184,6 +1222,30 @@ class ObjectClassificationWidget(QWidget):
         self._set_tooltip(self.color_by_combo, tooltip)
 
     def _update_classifier_controls(self) -> None:
+        can_configure_training_scope = (
+            self.selected_spatialdata is not None
+            and self.selected_segmentation_name is not None
+            and self.selected_table_name is not None
+            and self._table_binding_error is None
+            and not self._classifier_controller.is_training
+        )
+        self.training_scope_combo.setEnabled(can_configure_training_scope)
+
+        if self.selected_spatialdata is None or self.selected_segmentation_name is None or self.selected_table_name is None:
+            training_scope_tooltip = "Choose a segmentation and annotation table before configuring classifier training scope."
+        elif self._table_binding_error is not None:
+            training_scope_tooltip = self._table_binding_error
+        elif self._classifier_controller.is_training:
+            training_scope_tooltip = "A classifier training job is currently running."
+        elif self.selected_training_scope == "all":
+            training_scope_tooltip = (
+                "Train on eligible labeled rows from all annotated regions in the selected table."
+            )
+        else:
+            training_scope_tooltip = "Train only on eligible labeled rows from the selected segmentation region."
+
+        self._set_tooltip(self.training_scope_combo, training_scope_tooltip)
+
         can_retrain = self._classifier_controller.can_retrain
         self.retrain_button.setEnabled(can_retrain)
 
