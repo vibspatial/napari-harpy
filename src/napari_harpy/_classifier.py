@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import pandas as pd
+from numpy.typing import NDArray
 from qtpy.QtCore import QTimer
 from sklearn.ensemble import RandomForestClassifier
 
@@ -37,6 +38,8 @@ if TYPE_CHECKING:
     from spatialdata import SpatialData
 
 thread_worker = _resolve_thread_worker()
+
+BoolArray = NDArray[np.bool_]
 
 PRED_CLASS_COLUMN = "pred_class"
 PRED_CLASS_COLORS_KEY = f"{PRED_CLASS_COLUMN}_colors"
@@ -866,7 +869,7 @@ class ClassifierController:
         table: AnnData,
         metadata: SpatialDataTableMetadata,
         *,
-        feature_valid_row_mask: np.ndarray | None,
+        feature_valid_row_mask: BoolArray | None,
     ) -> ResolvedClassifierScopes:
         def resolve_one_scope(scope_mode: ClassifierScopeMode) -> ResolvedClassifierScope:
             if scope_mode == "selected_segmentation_only":
@@ -924,7 +927,7 @@ def _slice_feature_rows(feature_matrix: Any, positions: np.ndarray) -> Any:
     return feature_matrix[positions]
 
 
-def _get_finite_feature_row_mask(feature_matrix: Any) -> np.ndarray:
+def _get_finite_feature_row_mask(feature_matrix: Any) -> BoolArray:
     if issparse(feature_matrix):
         finite_data_mask = np.isfinite(feature_matrix.data)
         if bool(finite_data_mask.all()):
