@@ -727,6 +727,8 @@ Expected outcome:
 
 ### 6. Finalize Status-Card Ownership and Messaging
 
+Status: [x] Completed
+
 Goal:
 
 - make the batch UI communicate staged-batch state clearly without mixing
@@ -748,8 +750,8 @@ Scope:
     checked card, because one checked card corresponds to one intended triplet
     slot in the staged batch;
   - show valid checked cards as concrete triplet summaries such as
-    `coordinate_system: segmentation -> image` or
-    `coordinate_system: segmentation -> no image` for morphology-only targets;
+    `coordinate_system: segmentation and image` or
+    `coordinate_system: segmentation (no image)` for morphology-only targets;
   - keep invalid checked cards visible in that per-card summary with a short
     blocking reason rather than omitting them from the card;
   - for batch-level table blockers, it is acceptable and preferred to collapse
@@ -844,8 +846,8 @@ class _FeatureExtractionStatusCardSpec:
   - shorten long coordinate-system, segmentation, and image names with
     `format_feedback_identifier(...)`;
   - for per-card staged-batch summaries, produce lines such as
-    `global: blobs_labels -> blobs_image`,
-    `global: blobs_labels -> no image`, or
+    `global: blobs_labels and blobs_image`,
+    `global: blobs_labels (no image)`, or
     `aligned: choose an image`;
   - for batch-level table blockers, prefer one compact visible line rather
     than rendering the per-card entry lines at the same time;
