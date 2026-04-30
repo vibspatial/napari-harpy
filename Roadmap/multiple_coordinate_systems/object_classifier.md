@@ -13,6 +13,12 @@ The goal is to avoid landing one large change that rewrites classifier row
 selection, widget controls, status text, metadata persistence, and reload
 semantics all at once.
 
+Unlike the feature-extraction roadmap, this classifier roadmap does not require
+the train/predict action to remain usable at every intermediate step. During
+the refactor, it is acceptable to temporarily disable `Train Classifier` if
+that lets the controller and widget contracts move more quickly and more
+cleanly.
+
 ## Current Codebase Baseline
 
 The current code is already close in a few important ways, but the remaining
@@ -65,14 +71,19 @@ Testing baseline:
 
 ## Guiding Rules
 
-Implement the scope work in slices that keep the widget and controller usable at
-every step.
+Implement the scope work in slices that keep the refactor understandable and
+testable, without forcing classifier training to remain available at every
+intermediate step.
 
 In practice, that means:
 
 - keep annotation interactions sample-local and viewer-local;
 - separate training scope from prediction scope in code before adding complex UI
   around them;
+- allow the widget to temporarily disable `Train Classifier` while classifier
+  scope resolution, metadata, and reload semantics are in flux;
+- prefer an explicitly disabled classifier action over preserving a partially
+  correct or ambiguous training path;
 - do not keep overloading `active_*` names once training rows and prediction
   rows can diverge;
 - make hidden cross-sample writes explicit in the UI before enabling them;
@@ -80,6 +91,21 @@ In practice, that means:
   the controller change;
 - add multi-region test coverage early enough that later slices can build on it
   safely.
+
+## Temporary Refactor Mode
+
+During slices 1 through 5, it is acceptable for the widget to disable
+`Train Classifier` entirely while the classifier pipeline is being reworked.
+
+Recommended rule:
+
+- keep annotation, table selection, feature-matrix selection, and viewer
+  styling working;
+- disable only the train/predict action, with explicit UI copy that classifier
+  scope refactoring is in progress;
+- re-enable the button once both scope controls and persisted metadata semantics
+  are coherent enough to expose one unambiguous user-facing training action
+  again.
 
 ## Recommended Scope Vocabulary
 
@@ -141,7 +167,10 @@ Files:
 Expected outcome:
 
 - the controller has a clean seam for later cross-sample behavior;
-- no user-visible behavior changes yet;
+- no user-visible classifier-scope behavior changes yet;
+- if keeping the old train path would slow the refactor, the widget may disable
+  `Train Classifier` during this slice rather than preserving the old
+  single-region action;
 - multi-region tests can assert scope resolution without needing widget changes.
 
 ### 2. Add Multi-Region Test Builders for Classifier Work
@@ -210,6 +239,8 @@ Expected outcome:
   immediately;
 - prediction writes are still restricted to the selected region, so hidden-row
   writes do not expand yet;
+- the widget may still keep `Train Classifier` disabled until the scope UI and
+  metadata contract catch up;
 - the biggest behavior change lands before UI control proliferation.
 
 ### 4. Add an Explicit Training-Scope Control to the Widget
@@ -251,6 +282,8 @@ Expected outcome:
 
 - the user can see that training is table-level by default;
 - the user can opt back into selected-region-only training when desired;
+- depending on implementation order, the train button may remain temporarily
+  disabled until prediction-scope and metadata behavior are also ready;
 - the widget makes the training set size visible before a run starts.
 
 ### 5. Add Prediction Scope Support in the Controller and Metadata
@@ -296,6 +329,8 @@ Expected outcome:
 - persisted metadata describes what was actually trained and what was actually
   predicted;
 - reload status can represent multi-region predictions correctly.
+- after this slice, the codebase should be in a good position to re-enable
+  `Train Classifier` if the widget wiring is already ready.
 
 ### 6. Add a Prediction-Scope Control and Hidden-Write Warning in the Widget
 
@@ -330,6 +365,8 @@ Expected outcome:
 - complete-table prediction is opt-in and obvious;
 - selected-region-only prediction remains the safe default;
 - the widget communicates hidden-row writes before they happen, not only after.
+- this is the natural point to re-enable `Train Classifier` if it was disabled
+  during earlier refactor slices.
 
 ### 7. Add End-to-End Multi-Region Classifier Coverage
 
