@@ -744,13 +744,25 @@ Scope:
   batch-level table validation, not from active-card-only selection state and
   not from controller readiness alone;
 - `selection_status` should:
-  - report one line per checked card, because one checked card corresponds to
-    one intended triplet slot in the staged batch;
+  - when summarizing staged extraction targets directly, report one line per
+    checked card, because one checked card corresponds to one intended triplet
+    slot in the staged batch;
   - show valid checked cards as concrete triplet summaries such as
     `coordinate_system: segmentation -> image` or
     `coordinate_system: segmentation -> no image` for morphology-only targets;
-  - keep invalid checked cards visible in that summary with a short blocking
-    reason rather than omitting them from the card;
+  - keep invalid checked cards visible in that per-card summary with a short
+    blocking reason rather than omitting them from the card;
+  - for batch-level table blockers, it is acceptable and preferred to collapse
+    `selection_status` to a single visible batch-level line such as
+    `Choose a table that annotates all staged segmentations.`,
+    `No table annotates all currently staged segmentations.`, or
+    `Selected table cannot currently be used for all staged segmentations.`
+    rather than repeating the per-card lines;
+  - treat the following specifically as batch-level table blockers that should
+    use that single-line table state instead of the per-card summary:
+    no eligible table, no selected table yet, and selected-table batch
+    validation failures such as region coverage or region-instance validation
+    errors;
   - summarize overall staged-batch state with titles such as
     `Choose Coordinate Systems`, `Batch Incomplete`, `Table Not Ready`, or
     `Batch Ready`;
@@ -801,11 +813,13 @@ class _FeatureExtractionStatusCardEntry:
         return self.blocking_reason is None
 ```
 
-- this row model should represent semantic staged-batch summary data, not
+- this entry model should represent semantic staged-batch summary data, not
   preformatted visible strings:
-  - one row per checked card, in checked-card order;
-  - valid rows carry the concrete triplet pieces that will be written;
-  - invalid rows keep the same card visible but add a short blocking reason;
+  - one entry per checked card, in checked-card order, for the states where
+    `selection_status` renders per-card staged-batch lines;
+  - valid entries carry the concrete triplet pieces that will be written;
+  - invalid entries keep the same card visible but add a short blocking
+    reason;
   - batch-level table problems remain batch-level card state, not per-row
     blocking reasons;
 - a recommended helper-owned status-card payload shape is:
@@ -829,14 +843,17 @@ class _FeatureExtractionStatusCardSpec:
 - visible-line formatting should:
   - shorten long coordinate-system, segmentation, and image names with
     `format_feedback_identifier(...)`;
-  - produce lines such as
+  - for per-card staged-batch summaries, produce lines such as
     `global: blobs_labels -> blobs_image`,
     `global: blobs_labels -> no image`, or
     `aligned: choose an image`;
+  - for batch-level table blockers, prefer one compact visible line rather
+    than rendering the per-card entry lines at the same time;
   - keep the visible wording compact and stable enough for focused tests;
 - tooltip-line formatting should:
   - use full unshortened names;
-  - preserve one line per checked card;
+  - preserve one line per checked card whenever the staged-batch summary is
+    being shown per card;
   - add table-specific detail only when the batch-level table state needs it;
 - title/kind resolution for `selection_status` should stay centralized in the
   helper so the widget does not reimplement card-state wording inline:
