@@ -309,15 +309,61 @@ Goal:
 
 Scope:
 
-- add a controller selection path for `training_scope`;
+- keep the existing controller selection path for `training_scope`, but change
+  the controller defaults so training and prediction no longer share one
+  default constant;
+- introduce explicit default scope constants such as:
+  - `DEFAULT_TRAINING_SCOPE: ClassifierScopeMode = "all"`
+  - `DEFAULT_PREDICTION_SCOPE: ClassifierScopeMode = "selected_segmentation_only"`
+- use those separate defaults in:
+  - `ClassifierController.__init__(...)`
+  - `ClassifierController.bind(...)`
+  - any controller-level fallback state that still assumes one shared default;
 - resolve training rows from all eligible labeled rows in the selected table
   when training scope is `all`;
 - keep prediction scope fixed at `selected_segmentation_only` in this slice;
+- keep the resolved-scope logic unchanged in spirit:
+  - `training_scope="all"` resolves all feature-valid rows across the table’s
+    annotated regions;
+  - `prediction_scope="selected_segmentation_only"` continues to resolve only
+    the currently selected segmentation region;
 - update training eligibility and status reporting so it distinguishes:
   - number of resolved training rows;
   - number of labeled training rows;
   - number of resolved prediction rows;
   - number of training regions involved;
+- prefer extending `ClassifierPreparationSummary` rather than adding another
+  summary object just for slice 3;
+- add summary fields for the new controller-facing counts, for example:
+  - `resolved_training_row_count`
+  - `resolved_prediction_row_count`
+  - `training_region_count`
+  - keep existing `labeled_count`, `class_labels`, and `n_features`;
+- do not duplicate full `training_scope` / `prediction_scope` objects inside
+  `ClassifierPreparationSummary`;
+  `ClassifierJob` and `ClassifierJobResult` already carry the authoritative
+  scope objects, so the summary should store only the derived reporting counts;
+- derive those new counts directly from the resolved scopes:
+  - `resolved_training_row_count` from `training_scope.n_eligible_rows`
+  - `resolved_prediction_row_count` from `prediction_scope.n_eligible_rows`
+  - `training_region_count` from `len(training_scope.regions)`;
+- use those fields to make preflight status text more precise while keeping
+  success text prediction-focused;
+- recommended status behavior in this slice:
+  - training start / preflight should mention labeled rows, resolved training
+    rows, and participating regions, for example:
+
+```text
+Classifier: training RandomForest on 4 labeled objects across 2 classes from 26 eligible rows in 2 regions.
+```
+
+  - successful completion should still focus on prediction scope writes, for
+    example:
+
+```text
+Classifier: model is up to date. Updated predictions for 13 objects.
+```
+
 - keep the widget button model unchanged for now: one train action still kicks
   off one retrain/predict cycle.
 
@@ -332,6 +378,11 @@ Expected outcome:
   immediately;
 - prediction writes are still restricted to the selected region, so hidden-row
   writes do not expand yet;
+- controller defaults now encode the intended asymmetry directly:
+  training is table-wide by default, prediction stays selected-region-only by
+  default;
+- controller summaries and status text distinguish training-scope size from
+  prediction-scope size, which later UI slices can surface directly;
 - the widget may still keep `Train Classifier` disabled until the scope UI and
   metadata contract catch up;
 - the biggest behavior change lands before UI control proliferation.
