@@ -153,35 +153,7 @@ def test_multi_region_classifier_fixture_duplicates_instance_ids_only_across_reg
     assert set(first_region_rows["instance_id"].tolist()) == set(second_region_rows["instance_id"].tolist())
 
 
-def test_classifier_controller_selected_region_scope_ignores_labels_in_other_regions(
-    sdata_blobs_multi_region: SpatialData,
-) -> None:
-    _set_user_classes_by_region(
-        sdata_blobs_multi_region,
-        {
-            ("blobs_labels_2", 1): 1,
-            ("blobs_labels_2", 2): 1,
-            ("blobs_labels_2", 24): 2,
-            ("blobs_labels_2", 25): 2,
-        },
-    )
-    table = sdata_blobs_multi_region["table_multi"]
-
-    controller = ClassifierController(debounce_interval_ms=0)
-    controller.bind(sdata_blobs_multi_region, "blobs_labels", "table_multi", "features_1")
-
-    job = controller._prepare_classifier_job(1)
-
-    assert job is not None
-    assert job.training_scope.regions == ("blobs_labels",)
-    assert job.training_scope.n_rows_in_regions == table.n_obs // 2
-    assert job.training_scope.n_eligible_rows == table.n_obs // 2
-    assert job.summary.labeled_count == 0
-    assert job.summary.eligible is False
-    assert "Need at least 2 labeled samples" in job.summary.reason
-
-
-def test_classifier_controller_all_training_scope_can_use_labels_from_other_regions(
+def test_classifier_controller_selected_region_only_training_scope_ignores_labels_in_other_regions(
     sdata_blobs_multi_region: SpatialData,
 ) -> None:
     _set_user_classes_by_region(
@@ -201,7 +173,43 @@ def test_classifier_controller_all_training_scope_can_use_labels_from_other_regi
         "blobs_labels",
         "table_multi",
         "features_1",
-        training_scope="all",
+        training_scope="selected_segmentation_only",
+    )
+
+    job = controller._prepare_classifier_job(1)
+
+    assert job is not None
+    assert job.training_scope.regions == ("blobs_labels",)
+    assert job.training_scope.n_rows_in_regions == table.n_obs // 2
+    assert job.training_scope.n_eligible_rows == table.n_obs // 2
+    assert job.summary.resolved_training_row_count == table.n_obs // 2
+    assert job.summary.resolved_prediction_row_count == table.n_obs // 2
+    assert job.summary.training_region_count == 1
+    assert job.summary.labeled_count == 0
+    assert job.summary.eligible is False
+    assert "Need at least 2 labeled samples" in job.summary.reason
+
+
+def test_classifier_controller_defaults_training_scope_to_all_and_can_use_labels_from_other_regions(
+    sdata_blobs_multi_region: SpatialData,
+) -> None:
+    _set_user_classes_by_region(
+        sdata_blobs_multi_region,
+        {
+            ("blobs_labels_2", 1): 1,
+            ("blobs_labels_2", 2): 1,
+            ("blobs_labels_2", 24): 2,
+            ("blobs_labels_2", 25): 2,
+        },
+    )
+    table = sdata_blobs_multi_region["table_multi"]
+
+    controller = ClassifierController(debounce_interval_ms=0)
+    controller.bind(
+        sdata_blobs_multi_region,
+        "blobs_labels",
+        "table_multi",
+        "features_1",
     )
 
     job = controller._prepare_classifier_job(1)
@@ -213,11 +221,14 @@ def test_classifier_controller_all_training_scope_can_use_labels_from_other_regi
     assert job.prediction_scope.regions == ("blobs_labels",)
     assert job.prediction_scope.n_rows_in_regions == table.n_obs // 2
     assert job.prediction_scope.n_eligible_rows == table.n_obs // 2
+    assert job.summary.resolved_training_row_count == table.n_obs
+    assert job.summary.resolved_prediction_row_count == table.n_obs // 2
+    assert job.summary.training_region_count == 2
     assert job.summary.labeled_count == 4
     assert job.summary.eligible is True
 
 
-def test_classifier_controller_all_training_scope_excludes_invalid_rows_from_other_regions(
+def test_classifier_controller_default_table_wide_training_excludes_invalid_rows_from_other_regions(
     sdata_blobs_multi_region: SpatialData,
 ) -> None:
     _set_user_classes_by_region(
@@ -238,7 +249,6 @@ def test_classifier_controller_all_training_scope_excludes_invalid_rows_from_oth
         "blobs_labels",
         "table_multi",
         "features_1",
-        training_scope="all",
     )
 
     job = controller._prepare_classifier_job(1)
@@ -250,6 +260,9 @@ def test_classifier_controller_all_training_scope_excludes_invalid_rows_from_oth
     assert job.training_scope.n_excluded_feature_invalid_rows == table.n_obs // 2
     assert job.prediction_scope.regions == ("blobs_labels",)
     assert job.prediction_scope.n_eligible_rows == table.n_obs // 2
+    assert job.summary.resolved_training_row_count == table.n_obs // 2
+    assert job.summary.resolved_prediction_row_count == table.n_obs // 2
+    assert job.summary.training_region_count == 2
     assert job.summary.eligible is True
 
 
@@ -471,6 +484,9 @@ def test_classifier_controller_invalidates_pending_work_for_selected_feature_mat
         summary=classifier_module.ClassifierPreparationSummary(
             eligible=True,
             reason="Ready to train.",
+            resolved_training_row_count=2,
+            resolved_prediction_row_count=2,
+            training_region_count=1,
             labeled_count=2,
             class_labels=(1, 2),
             n_features=2,

@@ -300,7 +300,7 @@ Expected outcome:
 
 ### 3. Switch Default Training to Table-Wide Rows in the Controller
 
-Status: [ ] Planned
+Status: [x] Implemented
 
 Goal:
 

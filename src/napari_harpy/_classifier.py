@@ -55,38 +55,42 @@ RANDOM_FOREST_PARAMS = {
 }
 
 ClassifierScopeMode = Literal["selected_segmentation_only", "all"]
-DEFAULT_SCOPE_MODE: ClassifierScopeMode = "selected_segmentation_only"
-
-# Slice-1 implementation checklist for
-# `Roadmap/multiple_coordinate_systems/object_classifier.md`:
-#
-# 1. Add `ClassifierScopeMode`, `ResolvedClassifierScope`, and
-#    `ResolvedClassifierScopes`.
-# 2. Extend `ClassifierController.bind(...)` with
-#    `training_scope="selected_segmentation_only"` and
-#    `prediction_scope="selected_segmentation_only"` defaults.
-# 3. Refactor `_prepare_classifier_job(...)` into helper steps that:
-#    - resolve scope regions;
-#    - count raw in-scope rows;
-#    - normalize the selected feature matrix;
-#    - filter scope rows down to feature-valid `table_row_positions`;
-#    - build the final training / prediction scope objects.
-# 4. Keep `ResolvedClassifierScope.table_row_positions` as the one
-#    authoritative feature-valid row-position set per resolved scope.
-# 5. Rename internal `active_*` concepts toward prediction-specific names
-#    without changing runtime behavior yet.
-# 6. Keep persisted classifier metadata and reload semantics backward
-#    compatible for now; the richer scope metadata lands in a later slice.
-# 7. Update tests to preserve today's single-segmentation behavior while
-#    the internal controller model changes.
+DEFAULT_TRAINING_SCOPE: ClassifierScopeMode = "all"
+DEFAULT_PREDICTION_SCOPE: ClassifierScopeMode = "selected_segmentation_only"
 
 
 @dataclass(frozen=True)
 class ClassifierPreparationSummary:
-    """Describe the outcome of preparing the current classifier run."""
+    """Describe the outcome of preparing the current classifier run.
+
+    Attributes
+    ----------
+    eligible
+        Whether the current bound inputs are ready for training.
+    reason
+        User-facing explanation for the current preparation outcome.
+    resolved_training_row_count
+        Number of feature-valid rows in the resolved training scope before
+        filtering down to labeled rows.
+    resolved_prediction_row_count
+        Number of feature-valid rows in the resolved prediction scope.
+    training_region_count
+        Number of resolved regions participating in the training scope.
+    labeled_count
+        Number of resolved training-scope rows that carry a user-assigned
+        class label.
+    class_labels
+        Sorted class ids represented by the labeled training rows.
+    n_features
+        Number of columns in the selected feature matrix, or ``None`` when no
+        valid matrix is available yet.
+    """
 
     eligible: bool
     reason: str
+    resolved_training_row_count: int
+    resolved_prediction_row_count: int
+    training_region_count: int
     labeled_count: int
     class_labels: tuple[int, ...]
     n_features: int | None
@@ -197,8 +201,8 @@ class ClassifierController:
         self._selected_label_name: str | None = None
         self._selected_table_name: str | None = None
         self._selected_feature_key: str | None = None
-        self._selected_training_scope: ClassifierScopeMode = DEFAULT_SCOPE_MODE
-        self._selected_prediction_scope: ClassifierScopeMode = DEFAULT_SCOPE_MODE
+        self._selected_training_scope: ClassifierScopeMode = DEFAULT_TRAINING_SCOPE
+        self._selected_prediction_scope: ClassifierScopeMode = DEFAULT_PREDICTION_SCOPE
         # TODO: clean up. There is overlap between the above class attributes and spatialdatatablemetadata.
         self._selected_table_metadata: SpatialDataTableMetadata | None = None
 
@@ -246,8 +250,8 @@ class ClassifierController:
         label_name: str | None,
         table_name: str | None,
         feature_key: str | None,
-        training_scope: ClassifierScopeMode = DEFAULT_SCOPE_MODE,
-        prediction_scope: ClassifierScopeMode = DEFAULT_SCOPE_MODE,
+        training_scope: ClassifierScopeMode = DEFAULT_TRAINING_SCOPE,
+        prediction_scope: ClassifierScopeMode = DEFAULT_PREDICTION_SCOPE,
     ) -> bool:
         """Bind the controller to the currently selected SpatialData inputs."""
         next_table_metadata = None
@@ -376,7 +380,9 @@ class ClassifierController:
         self._set_status(
             (
                 f"Classifier: training RandomForest on {summary.labeled_count} labeled objects "
-                f"across {len(summary.class_labels)} classes."
+                f"across {len(summary.class_labels)} classes from {summary.resolved_training_row_count} "
+                f"eligible rows in {summary.training_region_count} region(s). "
+                f"Prediction scope contains {summary.resolved_prediction_row_count} row(s)."
             ),
             kind="info",
         )
@@ -389,11 +395,17 @@ class ClassifierController:
             self._set_status("Classifier: choose an annotation table and feature matrix.", kind="warning")
             return None
 
-        empty_scopes = self._resolve_classifier_scopes(table, metadata, feature_valid_row_mask=None)
+        pre_feature_scopes = self._resolve_classifier_scopes(table, metadata, feature_valid_row_mask=None)
+        pre_feature_training_row_count = pre_feature_scopes.training.n_eligible_rows
+        pre_feature_prediction_row_count = pre_feature_scopes.prediction.n_eligible_rows
+        pre_feature_training_region_count = len(pre_feature_scopes.training.regions)
         if self._selected_feature_key is None:
             summary = ClassifierPreparationSummary(
                 eligible=False,
                 reason="Choose a feature matrix before training the classifier.",
+                resolved_training_row_count=pre_feature_training_row_count,
+                resolved_prediction_row_count=pre_feature_prediction_row_count,
+                training_region_count=pre_feature_training_region_count,
                 labeled_count=0,
                 class_labels=(),
                 n_features=None,
@@ -401,8 +413,8 @@ class ClassifierController:
             return ClassifierJob(
                 job_id=job_id,
                 feature_key="",
-                training_scope=empty_scopes.training,
-                prediction_scope=empty_scopes.prediction,
+                training_scope=pre_feature_scopes.training,
+                prediction_scope=pre_feature_scopes.prediction,
                 label_name=self._selected_label_name,
                 table_name=self._selected_table_name,
                 predict_features=np.empty((0, 0), dtype=np.float64),
@@ -417,6 +429,9 @@ class ClassifierController:
             summary = ClassifierPreparationSummary(
                 eligible=False,
                 reason=f"Feature matrix `{self._selected_feature_key}` is not available in `.obsm`.",
+                resolved_training_row_count=pre_feature_training_row_count,
+                resolved_prediction_row_count=pre_feature_prediction_row_count,
+                training_region_count=pre_feature_training_region_count,
                 labeled_count=0,
                 class_labels=(),
                 n_features=None,
@@ -424,8 +439,8 @@ class ClassifierController:
             return ClassifierJob(
                 job_id=job_id,
                 feature_key=self._selected_feature_key,
-                training_scope=empty_scopes.training,
-                prediction_scope=empty_scopes.prediction,
+                training_scope=pre_feature_scopes.training,
+                prediction_scope=pre_feature_scopes.prediction,
                 label_name=self._selected_label_name,
                 table_name=self._selected_table_name,
                 predict_features=np.empty((0, 0), dtype=np.float64),
@@ -437,6 +452,9 @@ class ClassifierController:
             summary = ClassifierPreparationSummary(
                 eligible=False,
                 reason=str(error),
+                resolved_training_row_count=pre_feature_training_row_count,
+                resolved_prediction_row_count=pre_feature_prediction_row_count,
+                training_region_count=pre_feature_training_region_count,
                 labeled_count=0,
                 class_labels=(),
                 n_features=None,
@@ -444,8 +462,8 @@ class ClassifierController:
             return ClassifierJob(
                 job_id=job_id,
                 feature_key=self._selected_feature_key,
-                training_scope=empty_scopes.training,
-                prediction_scope=empty_scopes.prediction,
+                training_scope=pre_feature_scopes.training,
+                prediction_scope=pre_feature_scopes.prediction,
                 label_name=self._selected_label_name,
                 table_name=self._selected_table_name,
                 predict_features=np.empty((0, 0), dtype=np.float64),
@@ -459,6 +477,9 @@ class ClassifierController:
         prediction_scope = scopes.prediction
         training_scope = scopes.training
 
+        resolved_training_row_count = training_scope.n_eligible_rows
+        resolved_prediction_row_count = prediction_scope.n_eligible_rows
+        training_region_count = len(training_scope.regions)
         n_features = int(feature_matrix.shape[1])
         predict_features = _slice_feature_rows(feature_matrix, prediction_scope.table_row_positions)
 
@@ -469,6 +490,9 @@ class ClassifierController:
                     f"No table rows for segmentation `{self._selected_label_name}` were found in "
                     f"`{self._selected_table_name}`."
                 ),
+                resolved_training_row_count=resolved_training_row_count,
+                resolved_prediction_row_count=resolved_prediction_row_count,
+                training_region_count=training_region_count,
                 labeled_count=0,
                 class_labels=(),
                 n_features=n_features,
@@ -493,6 +517,9 @@ class ClassifierController:
                     f"Feature matrix `{self._selected_feature_key}` has no usable rows in the prediction scope: "
                     f"all {prediction_scope.n_rows_in_regions} row(s) have non-finite or missing values."
                 ),
+                resolved_training_row_count=resolved_training_row_count,
+                resolved_prediction_row_count=resolved_prediction_row_count,
+                training_region_count=training_region_count,
                 labeled_count=0,
                 class_labels=(),
                 n_features=n_features,
@@ -514,6 +541,9 @@ class ClassifierController:
             summary = ClassifierPreparationSummary(
                 eligible=False,
                 reason=f"Feature matrix `{self._selected_feature_key}` does not contain any columns.",
+                resolved_training_row_count=resolved_training_row_count,
+                resolved_prediction_row_count=resolved_prediction_row_count,
+                training_region_count=training_region_count,
                 labeled_count=0,
                 class_labels=(),
                 n_features=0,
@@ -538,6 +568,9 @@ class ClassifierController:
                     f"Feature matrix `{self._selected_feature_key}` has no usable rows in the training scope: "
                     f"all {training_scope.n_rows_in_regions} row(s) have non-finite or missing values."
                 ),
+                resolved_training_row_count=resolved_training_row_count,
+                resolved_prediction_row_count=resolved_prediction_row_count,
+                training_region_count=training_region_count,
                 labeled_count=0,
                 class_labels=(),
                 n_features=n_features,
@@ -562,6 +595,9 @@ class ClassifierController:
         summary = ClassifierPreparationSummary(
             eligible=True,
             reason="Ready to train.",
+            resolved_training_row_count=resolved_training_row_count,
+            resolved_prediction_row_count=resolved_prediction_row_count,
+            training_region_count=training_region_count,
             labeled_count=int(labeled_mask.sum()),
             class_labels=class_labels,
             n_features=n_features,
@@ -570,7 +606,15 @@ class ClassifierController:
         if summary.labeled_count < MIN_LABELED_SAMPLES:
             summary = ClassifierPreparationSummary(
                 eligible=False,
-                reason=(f"Need at least {MIN_LABELED_SAMPLES} labeled samples before training the classifier."),
+                reason=(
+                    f"Need at least {MIN_LABELED_SAMPLES} labeled samples before training the classifier. "
+                    f"Resolved {summary.resolved_training_row_count} eligible training row(s) across "
+                    f"{summary.training_region_count} region(s); {summary.labeled_count} row(s) are labeled. "
+                    f"Prediction scope contains {summary.resolved_prediction_row_count} row(s)."
+                ),
+                resolved_training_row_count=summary.resolved_training_row_count,
+                resolved_prediction_row_count=summary.resolved_prediction_row_count,
+                training_region_count=summary.training_region_count,
                 labeled_count=summary.labeled_count,
                 class_labels=summary.class_labels,
                 n_features=summary.n_features,
@@ -578,7 +622,16 @@ class ClassifierController:
         elif len(summary.class_labels) < 2:
             summary = ClassifierPreparationSummary(
                 eligible=False,
-                reason="Need at least two labeled classes before training the classifier.",
+                reason=(
+                    "Need at least two labeled classes before training the classifier. "
+                    f"Resolved {summary.resolved_training_row_count} eligible training row(s) across "
+                    f"{summary.training_region_count} region(s); {summary.labeled_count} row(s) are labeled "
+                    f"across {len(summary.class_labels)} class(es). "
+                    f"Prediction scope contains {summary.resolved_prediction_row_count} row(s)."
+                ),
+                resolved_training_row_count=summary.resolved_training_row_count,
+                resolved_prediction_row_count=summary.resolved_prediction_row_count,
+                training_region_count=summary.training_region_count,
                 labeled_count=summary.labeled_count,
                 class_labels=summary.class_labels,
                 n_features=summary.n_features,
@@ -628,7 +681,6 @@ class ClassifierController:
             summary=summary,
             trained=False,
             trained_at=None,
-            prediction_scope=prediction_scope,
         )
         self._notify_table_state_changed()
         self._is_dirty = True
@@ -653,12 +705,11 @@ class ClassifierController:
             summary=result.summary,
             trained=True,
             trained_at=result.trained_at,
-            prediction_scope=result.prediction_scope,
         )
         self._notify_table_state_changed()
         self._is_dirty = False
         self._set_status(
-            f"Classifier: model is up to date. Updated predictions for {result.prediction_scope.n_eligible_rows} objects.",
+            f"Classifier: model is up to date. Updated predictions for {result.summary.resolved_prediction_row_count} objects.",
             kind="success",
         )
 
@@ -672,13 +723,15 @@ class ClassifierController:
                 summary=ClassifierPreparationSummary(
                     eligible=False,
                     reason=str(error),
+                    resolved_training_row_count=0,
+                    resolved_prediction_row_count=0,
+                    training_region_count=0,
                     labeled_count=0,
                     class_labels=(),
                     n_features=None,
                 ),
                 trained=False,
                 trained_at=None,
-                prediction_scope=None,
             )
             self._notify_table_state_changed()
         self._is_dirty = True
@@ -746,7 +799,6 @@ class ClassifierController:
         summary: ClassifierPreparationSummary,
         trained: bool,
         trained_at: str | None,
-        prediction_scope: ResolvedClassifierScope | None,
     ) -> dict[str, object]:
         return {
             "model_type": "RandomForestClassifier",
@@ -759,7 +811,7 @@ class ClassifierController:
             "reason": summary.reason,
             "training_timestamp": trained_at,
             "n_labeled_objects": summary.labeled_count,
-            "n_active_objects": 0 if prediction_scope is None else prediction_scope.n_eligible_rows,
+            "n_active_objects": summary.resolved_prediction_row_count,
             "n_features": summary.n_features,
             "class_labels_seen": list(summary.class_labels),
             "rf_params": dict(RANDOM_FOREST_PARAMS),
