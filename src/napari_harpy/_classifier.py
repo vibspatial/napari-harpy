@@ -868,59 +868,63 @@ class ClassifierController:
         *,
         feature_valid_row_mask: np.ndarray | None,
     ) -> ResolvedClassifierScopes:
-        return ResolvedClassifierScopes(
-            training=self._resolve_scope_row_positions(
-                table,
-                metadata,
-                scope_mode=self._selected_training_scope,
-                feature_valid_row_mask=feature_valid_row_mask,
-            ),
-            prediction=self._resolve_scope_row_positions(
-                table,
-                metadata,
-                scope_mode=self._selected_prediction_scope,
-                feature_valid_row_mask=feature_valid_row_mask,
-            ),
-        )
+        if self._selected_training_scope == "selected_segmentation_only":
+            training_regions: tuple[str, ...] = () if self._selected_label_name is None else (self._selected_label_name,)
+        elif self._selected_training_scope == "all":
+            training_regions = metadata.regions
+        else:  # pragma: no cover - guarded by _normalize_scope_mode
+            raise ValueError(f"Unsupported classifier scope mode: {self._selected_training_scope!r}")
 
-    def _resolve_scope_row_positions(
-        self,
-        table: AnnData,
-        metadata: SpatialDataTableMetadata,
-        *,
-        scope_mode: ClassifierScopeMode,
-        feature_valid_row_mask: np.ndarray | None,
-    ) -> ResolvedClassifierScope:
-        regions = self._resolve_scope_regions(metadata, scope_mode)
-        raw_table_row_positions = _resolve_region_row_positions(table.obs, metadata.region_key, regions)
-        if feature_valid_row_mask is None or raw_table_row_positions.size == 0:
-            return ResolvedClassifierScope(
-                mode=scope_mode,
-                regions=regions,
-                table_row_positions=np.array([], dtype=np.int64),
-                n_rows_in_regions=int(raw_table_row_positions.size),
+        training_raw_table_row_positions = _resolve_region_row_positions(
+            table.obs,
+            metadata.region_key,
+            training_regions,
+        )
+        if feature_valid_row_mask is None or training_raw_table_row_positions.size == 0:
+            training_table_row_positions = np.array([], dtype=np.int64)
+        else:
+            training_valid_in_scope_mask = feature_valid_row_mask[training_raw_table_row_positions]
+            training_table_row_positions = np.asarray(
+                training_raw_table_row_positions[training_valid_in_scope_mask],
+                dtype=np.int64,
             )
-
-        valid_in_scope_mask = feature_valid_row_mask[raw_table_row_positions]
-        return ResolvedClassifierScope(
-            mode=scope_mode,
-            regions=regions,
-            table_row_positions=np.asarray(raw_table_row_positions[valid_in_scope_mask], dtype=np.int64),
-            n_rows_in_regions=int(raw_table_row_positions.size),
+        training_scope = ResolvedClassifierScope(
+            mode=self._selected_training_scope,
+            regions=training_regions,
+            table_row_positions=training_table_row_positions,
+            n_rows_in_regions=int(training_raw_table_row_positions.size),
         )
 
-    def _resolve_scope_regions(
-        self,
-        metadata: SpatialDataTableMetadata,
-        scope_mode: ClassifierScopeMode,
-    ) -> tuple[str, ...]:
-        if scope_mode == "selected_segmentation_only":
-            if self._selected_label_name is None:
-                return ()
-            return (self._selected_label_name,)
-        if scope_mode == "all":
-            return metadata.regions
-        raise ValueError(f"Unsupported classifier scope mode: {scope_mode!r}")
+        if self._selected_prediction_scope == "selected_segmentation_only":
+            prediction_regions: tuple[str, ...] = (
+                () if self._selected_label_name is None else (self._selected_label_name,)
+            )
+        elif self._selected_prediction_scope == "all":
+            prediction_regions = metadata.regions
+        else:  # pragma: no cover - guarded by _normalize_scope_mode
+            raise ValueError(f"Unsupported classifier scope mode: {self._selected_prediction_scope!r}")
+
+        prediction_raw_table_row_positions = _resolve_region_row_positions(
+            table.obs,
+            metadata.region_key,
+            prediction_regions,
+        )
+        if feature_valid_row_mask is None or prediction_raw_table_row_positions.size == 0:
+            prediction_table_row_positions = np.array([], dtype=np.int64)
+        else:
+            prediction_valid_in_scope_mask = feature_valid_row_mask[prediction_raw_table_row_positions]
+            prediction_table_row_positions = np.asarray(
+                prediction_raw_table_row_positions[prediction_valid_in_scope_mask],
+                dtype=np.int64,
+            )
+        prediction_scope = ResolvedClassifierScope(
+            mode=self._selected_prediction_scope,
+            regions=prediction_regions,
+            table_row_positions=prediction_table_row_positions,
+            n_rows_in_regions=int(prediction_raw_table_row_positions.size),
+        )
+
+        return ResolvedClassifierScopes(training=training_scope, prediction=prediction_scope)
 
 
 def _normalize_feature_matrix(feature_matrix: Any, n_obs: int) -> Any:
