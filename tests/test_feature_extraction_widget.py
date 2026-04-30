@@ -271,6 +271,16 @@ def test_feature_extraction_widget_filters_labels_and_images_by_coordinate_syste
         "get_annotating_table_names",
         lambda sdata, label_name: ["table"],
     )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "validate_table_annotation_coverage",
+        lambda sdata, table_name, label_names: None,
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "validate_table_region_instance_ids",
+        lambda sdata, table_name, *, label_names=None: None,
+    )
 
     widget = FeatureExtractionWidget(viewer)
     qtbot.addWidget(widget)
@@ -371,6 +381,16 @@ def test_feature_extraction_widget_renders_one_card_per_checked_coordinate_syste
         "get_annotating_table_names",
         lambda sdata, label_name: ["table"],
     )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "validate_table_annotation_coverage",
+        lambda sdata, table_name, label_names: None,
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "validate_table_region_instance_ids",
+        lambda sdata, table_name, *, label_names=None: None,
+    )
 
     widget = FeatureExtractionWidget(viewer)
     qtbot.addWidget(widget)
@@ -464,6 +484,16 @@ def test_feature_extraction_widget_restores_explicit_triplet_when_returning_to_c
         feature_extraction_widget_module,
         "get_annotating_table_names",
         lambda sdata, label_name: ["table"],
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "validate_table_annotation_coverage",
+        lambda sdata, table_name, label_names: None,
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "validate_table_region_instance_ids",
+        lambda sdata, table_name, *, label_names=None: None,
     )
 
     widget = FeatureExtractionWidget(viewer)
@@ -1046,7 +1076,7 @@ def test_feature_extraction_widget_channel_selection_is_independent_from_viewer_
     assert feature_widget.selected_extraction_channel_indices == (1, 2)
 
 
-def test_feature_extraction_widget_reports_coarse_batch_ready_status_for_valid_batch(
+def test_feature_extraction_widget_reports_per_card_batch_ready_status_for_valid_batch(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
@@ -1058,8 +1088,88 @@ def test_feature_extraction_widget_reports_coarse_batch_ready_status_for_valid_b
     check_coordinate_system(widget, "global")
     select_segmentation(widget, "global", 0)
 
-    assert "Batch Ready" in widget.selection_status.text()
-    assert "1 extraction target staged." in widget.selection_status.text()
+    status_text = unescape(widget.selection_status.text())
+    assert "Batch Ready" in status_text
+    assert "global: blobs_labels (no image)" in status_text
+    assert widget.selection_status.toolTip() == ""
+
+
+def test_feature_extraction_widget_reports_one_line_per_checked_card_in_batch_ready_status(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_coordinate_system_names_from_sdata",
+        lambda sdata: ["aligned", "global"],
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_spatialdata_feature_extraction_label_discovery_for_coordinate_system_from_sdata",
+        lambda *, sdata, coordinate_system: make_label_discovery(
+            coordinate_system=coordinate_system,
+            options=[
+                SpatialDataLabelsOption(
+                    label_name=f"labels_{coordinate_system}",
+                    display_name=f"labels_{coordinate_system}",
+                    sdata=sdata,
+                    coordinate_systems=(coordinate_system,),
+                )
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata",
+        lambda *, sdata, coordinate_system, label_name: make_image_discovery(
+            coordinate_system=coordinate_system,
+            label_name=label_name,
+            options=[
+                SpatialDataImageOption(
+                    image_name=f"image_{coordinate_system}_{label_name}",
+                    display_name=f"image_{coordinate_system}_{label_name}",
+                    sdata=sdata,
+                    coordinate_systems=(coordinate_system,),
+                )
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_annotating_table_names",
+        lambda sdata, label_name: ["table"],
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "validate_table_annotation_coverage",
+        lambda sdata, table_name, label_names: None,
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "validate_table_region_instance_ids",
+        lambda sdata, table_name, *, label_names=None: None,
+    )
+
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    check_coordinate_system(widget, "aligned")
+    check_coordinate_system(widget, "global")
+    select_segmentation(widget, "aligned", 0)
+    select_segmentation(widget, "global", 0)
+
+    aligned_label = widget._triplet_card_states_by_coordinate_system["aligned"].selected_label_option
+    global_label = widget._triplet_card_states_by_coordinate_system["global"].selected_label_option
+
+    assert aligned_label is not None
+    assert global_label is not None
+    status_text = unescape(widget.selection_status.text())
+    assert "Batch Ready" in status_text
+    assert f"aligned: {aligned_label.label_name} (no image)" in status_text
+    assert f"global: {global_label.label_name} (no image)" in status_text
     assert widget.selection_status.toolTip() == ""
 
 
@@ -1083,6 +1193,8 @@ def test_feature_extraction_widget_blocks_when_selected_segmentation_has_no_link
     assert widget.selected_coordinate_system == "global"
     assert "Batch Incomplete" in widget.selection_status.text()
     assert "No table annotates all currently staged segmentations." in widget.selection_status.text()
+    tooltip = unescape(widget.selection_status.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    assert "global: blobs_multiscale_labels (no image)" in tooltip
 
 
 def test_feature_extraction_widget_uses_batch_table_error_as_status_tooltip(
@@ -1110,6 +1222,7 @@ def test_feature_extraction_widget_uses_batch_table_error_as_status_tooltip(
 
     tooltip = unescape(widget.selection_status.toolTip()).replace("&#8203;", "").replace("\u200b", "")
     assert "Table Not Ready" in widget.selection_status.text()
+    assert "global: blobs_labels (no image)" in tooltip
     assert "duplicate values within that region" in tooltip
 
 
@@ -1264,6 +1377,9 @@ def test_feature_extraction_widget_enables_calculate_for_valid_morphology_batch(
 
     assert widget.calculate_button.isEnabled() is True
     assert widget.calculate_button.toolTip() == ""
+    controller_feedback_text = unescape(widget.controller_feedback.text())
+    assert "Feature Extraction Ready" in controller_feedback_text
+    assert "ready to calculate." in controller_feedback_text.lower()
 
 
 def test_feature_extraction_widget_keeps_calculate_disabled_for_intensity_features_without_image(
@@ -1283,6 +1399,9 @@ def test_feature_extraction_widget_keeps_calculate_disabled_for_intensity_featur
     assert widget.calculate_button.isEnabled() is False
     assert "choose an image for every extraction target" in unescape(widget.calculate_button.toolTip()).lower()
     assert "choose an image" in widget.intensity_features_hint.text()
+    status_text = unescape(widget.selection_status.text())
+    assert "Batch Incomplete" in status_text
+    assert "global: choose an image" in status_text
 
 
 def test_feature_extraction_widget_blocks_when_no_coordinate_system_is_checked(

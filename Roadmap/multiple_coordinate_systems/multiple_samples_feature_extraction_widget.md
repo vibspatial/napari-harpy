@@ -727,6 +727,8 @@ Expected outcome:
 
 ### 6. Finalize Status-Card Ownership and Messaging
 
+Status: [x] Completed
+
 Goal:
 
 - make the batch UI communicate staged-batch state clearly without mixing
@@ -744,13 +746,25 @@ Scope:
   batch-level table validation, not from active-card-only selection state and
   not from controller readiness alone;
 - `selection_status` should:
-  - report one line per checked card, because one checked card corresponds to
-    one intended triplet slot in the staged batch;
+  - when summarizing staged extraction targets directly, report one line per
+    checked card, because one checked card corresponds to one intended triplet
+    slot in the staged batch;
   - show valid checked cards as concrete triplet summaries such as
-    `coordinate_system: segmentation -> image` or
-    `coordinate_system: segmentation -> no image` for morphology-only targets;
-  - keep invalid checked cards visible in that summary with a short blocking
-    reason rather than omitting them from the card;
+    `coordinate_system: segmentation and image` or
+    `coordinate_system: segmentation (no image)` for morphology-only targets;
+  - keep invalid checked cards visible in that per-card summary with a short
+    blocking reason rather than omitting them from the card;
+  - for batch-level table blockers, it is acceptable and preferred to collapse
+    `selection_status` to a single visible batch-level line such as
+    `Choose a table that annotates all staged segmentations.`,
+    `No table annotates all currently staged segmentations.`, or
+    `Selected table cannot currently be used for all staged segmentations.`
+    rather than repeating the per-card lines;
+  - treat the following specifically as batch-level table blockers that should
+    use that single-line table state instead of the per-card summary:
+    no eligible table, no selected table yet, and selected-table batch
+    validation failures such as region coverage or region-instance validation
+    errors;
   - summarize overall staged-batch state with titles such as
     `Choose Coordinate Systems`, `Batch Incomplete`, `Table Not Ready`, or
     `Batch Ready`;
@@ -760,6 +774,10 @@ Scope:
   - report only controller-owned state after binding, such as
     `ready to calculate`, `calculating N extraction targets`, successful write
     completion, or backend failure;
+  - it is acceptable for `controller_feedback` to show `ready to calculate`
+    while `selection_status` simultaneously shows `Batch Ready`; two green
+    cards are acceptable here because they communicate different ownership:
+    staged-batch readiness versus controller-bound execution readiness;
   - not own widget-local validation messages such as missing segmentation,
     invalid checked cards, batch table coverage issues, or shared channel
     compatibility errors;
@@ -771,11 +789,98 @@ Scope:
   request;
 - tighten status-card and tooltip messaging for the new batch flow.
 
+Implementation detail:
+
+- to keep `_feature_extraction_widget.py` from accumulating too much status
+  formatting logic, slice 6 may introduce a helper module such as
+  `_feature_extraction_status_card.py`;
+- that helper module should remain presentation-focused:
+  - it may derive normalized status-card content from widget/controller state;
+  - it should not own widget event wiring, controller binding, or Qt widget
+    mutation directly;
+  - prefer returning plain dataclasses or other immutable payloads that the
+    widget can pass into `set_status_card(...)`;
+- a recommended helper-owned per-card summary shape is:
+
+```python
+@dataclass(frozen=True)
+class _FeatureExtractionStatusCardEntry:
+    coordinate_system: str
+    label_name: str | None
+    image_name: str | None
+    blocking_reason: str | None = None
+
+    @property
+    def is_valid(self) -> bool:
+        return self.blocking_reason is None
+```
+
+- this entry model should represent semantic staged-batch summary data, not
+  preformatted visible strings:
+  - one entry per checked card, in checked-card order, for the states where
+    `selection_status` renders per-card staged-batch lines;
+  - valid entries carry the concrete triplet pieces that will be written;
+  - invalid entries keep the same card visible but add a short blocking
+    reason;
+  - batch-level table problems remain batch-level card state, not per-row
+    blocking reasons;
+- a recommended helper-owned status-card payload shape is:
+
+```python
+@dataclass(frozen=True)
+class _FeatureExtractionStatusCardSpec:
+    title: str
+    lines: tuple[str, ...]
+    kind: StatusCardKind
+    tooltip_message: str | None = None
+```
+
+- `_feature_extraction_status_card.py` should then own:
+  - building `_FeatureExtractionStatusCardEntry` values from the staged batch
+    and per-card widget state;
+  - visible-line formatting for `selection_status`;
+  - tooltip-line formatting for the full unshortened staged batch summary;
+  - title/kind resolution for `selection_status`;
+  - controller-feedback title/body formatting for `controller_feedback`;
+- visible-line formatting should:
+  - shorten long coordinate-system, segmentation, and image names with
+    `format_feedback_identifier(...)`;
+  - for per-card staged-batch summaries, produce lines such as
+    `global: blobs_labels and blobs_image`,
+    `global: blobs_labels (no image)`, or
+    `aligned: choose an image`;
+  - for batch-level table blockers, prefer one compact visible line rather
+    than rendering the per-card entry lines at the same time;
+  - keep the visible wording compact and stable enough for focused tests;
+- tooltip-line formatting should:
+  - use full unshortened names;
+  - preserve one line per checked card whenever the staged-batch summary is
+    being shown per card;
+  - add table-specific detail only when the batch-level table state needs it;
+- title/kind resolution for `selection_status` should stay centralized in the
+  helper so the widget does not reimplement card-state wording inline:
+  - `Choose Coordinate Systems`, `Batch Incomplete`, `Table Not Ready`, and
+    `Batch Ready` remain the primary staged-batch titles;
+  - the helper should choose the title/kind from staged-batch validity plus
+    batch-level table state, not from controller readiness;
+- controller-feedback formatting should also stay centralized in the helper:
+  - strip the leading `Feature extraction:` prefix from controller messages for
+    display;
+  - map controller status kinds to stable titles such as
+    `Feature Extraction`, `Feature Extraction Ready`,
+    `Feature Extraction Warning`, or `Feature Extraction Error`;
+  - return no card spec when `controller_feedback` should stay hidden;
+- the calculate-button blocking tooltip may continue to be wired from widget
+  logic, but slice 6 should keep its top-level wording aligned with the same
+  staged-batch state titles and blocking reasons used by
+  `selection_status`.
+
 Expected outcome:
 
 - users can review the staged triplets before launching work;
-- `selection_status` and `controller_feedback` no longer compete to explain the
-  same condition;
+- `selection_status` and `controller_feedback` no longer compete to explain
+  widget-local validation conditions, even if both are simultaneously positive
+  for a fully ready bound batch;
 - controller lifecycle feedback appears only when a real bindable batch exists;
 - UI messaging reflects the same staged batch request the widget is preparing
   to submit;

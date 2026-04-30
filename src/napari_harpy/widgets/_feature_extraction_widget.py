@@ -42,6 +42,12 @@ from napari_harpy._spatialdata import (
     validate_table_annotation_coverage,
     validate_table_region_instance_ids,
 )
+from napari_harpy.widgets._feature_extraction_status_card import (
+    _FeatureExtractionStatusCardSpec,
+    build_feature_extraction_controller_feedback_card_spec,
+    build_feature_extraction_selection_status_card_spec,
+    build_feature_extraction_status_card_entries,
+)
 from napari_harpy.widgets._shared_styles import (
     ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,
 )
@@ -53,7 +59,6 @@ from napari_harpy.widgets._shared_styles import (
     WIDGET_PANEL_COLOR,
     WIDGET_TEXT_COLOR,
     CompactComboBox,
-    StatusCardKind,
     apply_scroll_content_surface,
     apply_widget_surface,
     build_input_control_stylesheet,
@@ -925,14 +930,16 @@ class FeatureExtractionWidget(QWidget):
             if preferred_selection is None
             else preferred_selection
         )
-        selected_label_identity = preferred_selection.label_identity if selected_label_identity is None else selected_label_identity
+        selected_label_identity = (
+            preferred_selection.label_identity if selected_label_identity is None else selected_label_identity
+        )
         label_discovery = get_spatialdata_feature_extraction_label_discovery_for_coordinate_system_from_sdata(
             sdata=self.selected_spatialdata,
             coordinate_system=coordinate_system,
         )
         eligible_label_options = label_discovery.eligible_label_options
-        selected_label_owner_by_identity = {} if selected_label_owner_by_identity is None else dict(
-            selected_label_owner_by_identity
+        selected_label_owner_by_identity = (
+            {} if selected_label_owner_by_identity is None else dict(selected_label_owner_by_identity)
         )
         selectable_label_options = [
             option
@@ -953,11 +960,7 @@ class FeatureExtractionWidget(QWidget):
             and selected_label_owner_by_identity[preferred_selection.label_identity] != coordinate_system
         ):
             blocked_option = next(
-                (
-                    option
-                    for option in eligible_label_options
-                    if option.identity == preferred_selection.label_identity
-                ),
+                (option for option in eligible_label_options if option.identity == preferred_selection.label_identity),
                 None,
             )
             if blocked_option is not None:
@@ -972,11 +975,7 @@ class FeatureExtractionWidget(QWidget):
                 ]
 
         selected_label_option = next(
-            (
-                option
-                for option in selectable_label_options
-                if option.identity == selected_label_identity
-            ),
+            (option for option in selectable_label_options if option.identity == selected_label_identity),
             None,
         )
         segmentation_note_text = self._build_segmentation_note_text(
@@ -1004,11 +1003,7 @@ class FeatureExtractionWidget(QWidget):
         )
         selectable_image_options = image_discovery.eligible_image_options
         selected_image_option = next(
-            (
-                option
-                for option in selectable_image_options
-                if option.identity == preferred_selection.image_identity
-            ),
+            (option for option in selectable_image_options if option.identity == preferred_selection.image_identity),
             None,
         )
         image_note_text = self._build_image_note_text(
@@ -1044,7 +1039,9 @@ class FeatureExtractionWidget(QWidget):
                 state.selectable_label_options,
                 None if state.selected_label_option is None else state.selected_label_option.identity,
             )
-            widgets.segmentation_combo.setCurrentIndex(-1 if next_segmentation_index is None else next_segmentation_index)
+            widgets.segmentation_combo.setCurrentIndex(
+                -1 if next_segmentation_index is None else next_segmentation_index
+            )
 
         self._set_triplet_card_note_text(widgets.segmentation_note_label, state.segmentation_note_text)
 
@@ -1142,9 +1139,11 @@ class FeatureExtractionWidget(QWidget):
             for coordinate_system in authoritative_coordinate_systems
             if coordinate_system in checked_coordinate_systems
         }
-        selected_label_identity_by_coordinate_system, selected_label_owner_by_identity = self._resolve_visible_label_selections(
-            preferred_selection_by_coordinate_system=preferred_selection_by_coordinate_system,
-            authoritative_coordinate_systems=authoritative_coordinate_systems,
+        selected_label_identity_by_coordinate_system, selected_label_owner_by_identity = (
+            self._resolve_visible_label_selections(
+                preferred_selection_by_coordinate_system=preferred_selection_by_coordinate_system,
+                authoritative_coordinate_systems=authoritative_coordinate_systems,
+            )
         )
         next_states_by_coordinate_system: dict[str, _FeatureExtractionTripletCardState] = {}
         for coordinate_system in checked_coordinate_systems:
@@ -1301,9 +1300,9 @@ class FeatureExtractionWidget(QWidget):
             label_identity=None if selected_label_option is None else selected_label_option.identity,
             image_identity=previous_selection.image_identity,
         )
-        self._remembered_card_selection_by_coordinate_system[coordinate_system] = preferred_selection_by_coordinate_system[
-            coordinate_system
-        ]
+        self._remembered_card_selection_by_coordinate_system[coordinate_system] = (
+            preferred_selection_by_coordinate_system[coordinate_system]
+        )
         # During a live edit, every currently visible card reflects active staged state,
         # so the full checked set is authoritative for duplicate-resolution.
         self._recompute_visible_triplet_card_states(
@@ -1640,8 +1639,7 @@ class FeatureExtractionWidget(QWidget):
             return []
 
         table_names_by_label = [
-            set(get_annotating_table_names(self.selected_spatialdata, label_name))
-            for label_name in label_names
+            set(get_annotating_table_names(self.selected_spatialdata, label_name)) for label_name in label_names
         ]
         if not table_names_by_label:
             return []
@@ -1954,7 +1952,11 @@ class FeatureExtractionWidget(QWidget):
 
         triplets: tuple[FeatureExtractionTriplet, ...] = ()
         table_name: str | None = None
-        if self._staged_batch_state.is_bindable and self._table_binding_error is None and self.selected_table_name is not None:
+        if (
+            self._staged_batch_state.is_bindable
+            and self._table_binding_error is None
+            and self.selected_table_name is not None
+        ):
             triplets = self._staged_batch_state.triplets
             table_name = self.selected_table_name
 
@@ -1973,105 +1975,94 @@ class FeatureExtractionWidget(QWidget):
         self._update_feature_extraction_feedback()
         self._update_calculate_controls()
 
-    def _update_primary_status_card(self) -> None:
-        if self._app_state.sdata is None:
-            self._set_selection_status(
-                "No SpatialData Loaded",
-                [
-                    "Load a SpatialData object through the Harpy Viewer widget, reader, or `Interactive(sdata)`.",
-                    "This form updates automatically from the shared Harpy state.",
-                ],
-                kind="warning",
-            )
-            return
+    def _build_selection_status_entries(self):
+        checked_coordinate_systems = self._staged_batch_state.checked_coordinate_systems
+        label_names_by_coordinate_system: dict[str, str | None] = {}
+        image_names_by_coordinate_system: dict[str, str | None] = {}
+        blocking_reasons_by_coordinate_system: dict[str, str | None] = {}
+        channel_blocking_reason = self._selection_status_channel_blocking_reason()
+        incompatible_coordinate_systems = set(self._batch_channel_state.incompatible_coordinate_systems)
+        requires_image = self._has_intensity_features_selected()
 
-        if not self._staged_batch_state.checked_coordinate_systems:
-            self._set_selection_status(
-                "Choose Coordinate Systems",
-                ["Choose one or more coordinate systems to start building extraction targets."],
-                kind="warning",
+        for coordinate_system in checked_coordinate_systems:
+            state = self._triplet_card_states_by_coordinate_system.get(coordinate_system)
+            selected_label_option = None if state is None else state.selected_label_option
+            selected_image_option = None if state is None else state.selected_image_option
+            label_names_by_coordinate_system[coordinate_system] = (
+                None if selected_label_option is None else selected_label_option.label_name
             )
-            return
-
-        if len(self._staged_batch_state.label_names) != len(self._staged_batch_state.checked_coordinate_systems):
-            self._set_selection_status(
-                "Batch Incomplete",
-                ["Choose a segmentation available in every checked coordinate system."],
-                kind="warning",
+            image_names_by_coordinate_system[coordinate_system] = (
+                None if selected_image_option is None else selected_image_option.image_name
             )
-            return
 
-        if self._staged_batch_state.error_text is not None:
-            self._set_selection_status(
-                "Batch Incomplete",
-                [self._staged_batch_state.error_text],
-                kind="warning",
-            )
-            return
+            blocking_reason: str | None = None
+            if selected_label_option is None:
+                blocking_reason = "choose a segmentation"
+            elif requires_image and selected_image_option is None:
+                blocking_reason = "choose an image"
+            elif requires_image and coordinate_system in incompatible_coordinate_systems:
+                blocking_reason = channel_blocking_reason
 
+            blocking_reasons_by_coordinate_system[coordinate_system] = blocking_reason
+
+        return build_feature_extraction_status_card_entries(
+            checked_coordinate_systems,
+            label_names_by_coordinate_system=label_names_by_coordinate_system,
+            image_names_by_coordinate_system=image_names_by_coordinate_system,
+            blocking_reasons_by_coordinate_system=blocking_reasons_by_coordinate_system,
+        )
+
+    def _selection_status_channel_blocking_reason(self) -> str | None:
+        if self._batch_channel_error is None:
+            return None
+
+        error_text = self._batch_channel_error.lower()
+        has_schema_mismatch = "do not match" in error_text
+        has_duplicate_channel_names = "duplicate channel names" in error_text
+
+        if has_schema_mismatch and has_duplicate_channel_names:
+            return "incompatible channel names"
+        if has_duplicate_channel_names:
+            return "duplicate channel names"
+        if has_schema_mismatch:
+            return "channel names do not match"
+        return "incompatible channel names"
+
+    def _selection_status_table_blocker(self) -> str | None:
         if self.selected_table_name is None:
-            if self._table_names:
-                lines = ["Choose a table that annotates all staged segmentations."]
-            else:
-                lines = ["No table annotates all currently staged segmentations."]
-            self._set_selection_status(
-                "Batch Incomplete",
-                lines,
-                kind="warning",
-            )
-            return
-
+            return "no_eligible" if not self._table_names else "choose_table"
         if self._table_binding_error is not None:
-            self._set_selection_status(
-                "Table Not Ready",
-                ["Selected table cannot currently be used for all staged segmentations."],
-                tooltip_message=self._table_binding_error,
-                kind="warning",
-            )
-            return
+            return "invalid"
+        return None
 
-        staged_target_count = len(self._staged_batch_state.triplets)
-        self._set_selection_status(
-            "Batch Ready",
-            [f"{self._format_count_phrase(staged_target_count, 'extraction target').capitalize()} staged."],
-            kind="success",
-        )
-
-    def _set_selection_status(
+    def _apply_status_card_spec(
         self,
-        title: str,
-        lines: list[str],
-        *,
-        kind: StatusCardKind,
-        tooltip_message: str | None = None,
+        label: QLabel,
+        spec: _FeatureExtractionStatusCardSpec | None,
     ) -> None:
-        set_status_card(
-            self.selection_status,
-            title=title,
-            lines=lines,
-            kind=kind,
-            tooltip_message=tooltip_message,
-        )
-
-    def _set_feature_extraction_feedback(self, message: str, *, kind: StatusCardKind = "info") -> None:
-        if not message:
-            self.controller_feedback.setText("")
-            self.controller_feedback.setVisible(False)
+        if spec is None:
+            label.setText("")
+            label.setToolTip("")
+            label.setVisible(False)
             return
 
-        title_by_kind = {
-            "error": "Feature Extraction Error",
-            "warning": "Feature Extraction Warning",
-            "success": "Feature Extraction Ready",
-            "info": "Feature Extraction",
-        }
-        body = message.removeprefix("Feature extraction: ").strip()
         set_status_card(
-            self.controller_feedback,
-            title=title_by_kind.get(kind, "Feature Extraction"),
-            lines=[body],
-            kind=kind,
+            label,
+            title=spec.title,
+            lines=list(spec.lines),
+            kind=spec.kind,
+            tooltip_message=spec.tooltip_message,
         )
+
+    def _update_primary_status_card(self) -> None:
+        spec = build_feature_extraction_selection_status_card_spec(
+            has_spatialdata=self._app_state.sdata is not None,
+            checked_coordinate_systems=self._staged_batch_state.checked_coordinate_systems,
+            entries=self._build_selection_status_entries(),
+            table_blocker=self._selection_status_table_blocker(),
+            table_tooltip_message=self._table_binding_error,
+        )
+        self._apply_status_card_spec(self.selection_status, spec)
 
     def _expected_controller_binding_state(self) -> FeatureExtractionBindingState:
         triplets: tuple[FeatureExtractionTriplet, ...] = ()
@@ -2098,35 +2089,21 @@ class FeatureExtractionWidget(QWidget):
         return self._feature_extraction_controller.binding_state == self._expected_controller_binding_state()
 
     def _should_show_controller_feedback(self) -> bool:
-        if (
-            not self._staged_batch_state.is_bindable
-            or self.selected_table_name is None
-            or self._table_binding_error is not None
-            or not self._controller_is_bound_to_staged_batch()
-        ):
-            return False
-
-        if self._feature_extraction_controller.is_running:
-            return True
-
-        if self._feature_extraction_controller.status_kind == "error":
-            return True
-
         return (
-            self._feature_extraction_controller.status_kind == "success"
-            and self._feature_extraction_controller.status_message
-            != "Feature extraction: ready to calculate."
+            self._staged_batch_state.is_bindable
+            and self.selected_table_name is not None
+            and self._table_binding_error is None
+            and self._controller_is_bound_to_staged_batch()
+            and bool(self._feature_extraction_controller.status_message)
         )
 
     def _update_feature_extraction_feedback(self) -> None:
-        if not self._should_show_controller_feedback():
-            self._set_feature_extraction_feedback("")
-            return
-
-        self._set_feature_extraction_feedback(
-            self._feature_extraction_controller.status_message,
+        spec = build_feature_extraction_controller_feedback_card_spec(
+            is_visible=self._should_show_controller_feedback(),
+            message=self._feature_extraction_controller.status_message,
             kind=self._feature_extraction_controller.status_kind,
         )
+        self._apply_status_card_spec(self.controller_feedback, spec)
 
     def _get_calculate_button_blocking_reason(self) -> str | None:
         if self.selected_spatialdata is None:
