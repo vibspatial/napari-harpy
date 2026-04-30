@@ -386,29 +386,6 @@ class ClassifierController:
             self._set_status("Classifier: choose an annotation table and feature matrix.", kind="warning")
             return None
 
-        def build_job(
-            *,
-            feature_key: str,
-            training_scope: ResolvedClassifierScope,
-            prediction_scope: ResolvedClassifierScope,
-            predict_features: Any,
-            train_features: Any,
-            train_labels: np.ndarray,
-            summary: ClassifierPreparationSummary,
-        ) -> ClassifierJob:
-            return ClassifierJob(
-                job_id=job_id,
-                feature_key=feature_key,
-                label_name=self._selected_label_name,
-                table_name=self._selected_table_name,
-                training_scope=training_scope,
-                prediction_scope=prediction_scope,
-                predict_features=predict_features,
-                train_features=train_features,
-                train_labels=train_labels,
-                summary=summary,
-            )
-
         empty_scopes = self._resolve_classifier_scopes(table, metadata, feature_valid_row_mask=None)
         if self._selected_feature_key is None:
             summary = ClassifierPreparationSummary(
@@ -418,10 +395,13 @@ class ClassifierController:
                 class_labels=(),
                 n_features=None,
             )
-            return build_job(
+            return ClassifierJob(
+                job_id=job_id,
                 feature_key="",
                 training_scope=empty_scopes.training,
                 prediction_scope=empty_scopes.prediction,
+                label_name=self._selected_label_name,
+                table_name=self._selected_table_name,
                 predict_features=np.empty((0, 0), dtype=np.float64),
                 train_features=np.empty((0, 0), dtype=np.float64),
                 train_labels=np.array([], dtype=np.int64),
@@ -438,10 +418,13 @@ class ClassifierController:
                 class_labels=(),
                 n_features=None,
             )
-            return build_job(
+            return ClassifierJob(
+                job_id=job_id,
                 feature_key=self._selected_feature_key,
                 training_scope=empty_scopes.training,
                 prediction_scope=empty_scopes.prediction,
+                label_name=self._selected_label_name,
+                table_name=self._selected_table_name,
                 predict_features=np.empty((0, 0), dtype=np.float64),
                 train_features=np.empty((0, 0), dtype=np.float64),
                 train_labels=np.array([], dtype=np.int64),
@@ -455,10 +438,13 @@ class ClassifierController:
                 class_labels=(),
                 n_features=None,
             )
-            return build_job(
+            return ClassifierJob(
+                job_id=job_id,
                 feature_key=self._selected_feature_key,
                 training_scope=empty_scopes.training,
                 prediction_scope=empty_scopes.prediction,
+                label_name=self._selected_label_name,
+                table_name=self._selected_table_name,
                 predict_features=np.empty((0, 0), dtype=np.float64),
                 train_features=np.empty((0, 0), dtype=np.float64),
                 train_labels=np.array([], dtype=np.int64),
@@ -484,10 +470,13 @@ class ClassifierController:
                 class_labels=(),
                 n_features=n_features,
             )
-            return build_job(
+            return ClassifierJob(
+                job_id=job_id,
                 feature_key=self._selected_feature_key,
                 training_scope=training_scope,
                 prediction_scope=prediction_scope,
+                label_name=self._selected_label_name,
+                table_name=self._selected_table_name,
                 predict_features=np.empty((0, n_features), dtype=np.float64),
                 train_features=np.empty((0, n_features), dtype=np.float64),
                 train_labels=np.array([], dtype=np.int64),
@@ -505,10 +494,13 @@ class ClassifierController:
                 class_labels=(),
                 n_features=n_features,
             )
-            return build_job(
+            return ClassifierJob(
+                job_id=job_id,
                 feature_key=self._selected_feature_key,
                 training_scope=training_scope,
                 prediction_scope=prediction_scope,
+                label_name=self._selected_label_name,
+                table_name=self._selected_table_name,
                 predict_features=np.empty((0, n_features), dtype=np.float64),
                 train_features=np.empty((0, n_features), dtype=np.float64),
                 train_labels=np.array([], dtype=np.int64),
@@ -523,10 +515,13 @@ class ClassifierController:
                 class_labels=(),
                 n_features=0,
             )
-            return build_job(
+            return ClassifierJob(
+                job_id=job_id,
                 feature_key=self._selected_feature_key,
                 training_scope=training_scope,
                 prediction_scope=prediction_scope,
+                label_name=self._selected_label_name,
+                table_name=self._selected_table_name,
                 predict_features=predict_features,
                 train_features=np.empty((0, 0), dtype=np.float64),
                 train_labels=np.array([], dtype=np.int64),
@@ -544,10 +539,13 @@ class ClassifierController:
                 class_labels=(),
                 n_features=n_features,
             )
-            return build_job(
+            return ClassifierJob(
+                job_id=job_id,
                 feature_key=self._selected_feature_key,
                 training_scope=training_scope,
                 prediction_scope=prediction_scope,
+                label_name=self._selected_label_name,
+                table_name=self._selected_table_name,
                 predict_features=predict_features,
                 train_features=np.empty((0, n_features), dtype=np.float64),
                 train_labels=np.array([], dtype=np.int64),
@@ -586,10 +584,13 @@ class ClassifierController:
         labeled_training_positions = training_scope.table_row_positions[labeled_mask]
         train_features = _slice_feature_rows(feature_matrix, labeled_training_positions)
         train_labels = np.asarray(training_user_class_values[labeled_mask], dtype=np.int64)
-        return build_job(
+        return ClassifierJob(
+            job_id=job_id,
             feature_key=self._selected_feature_key,
             training_scope=training_scope,
             prediction_scope=prediction_scope,
+            label_name=self._selected_label_name,
+            table_name=self._selected_table_name,
             predict_features=predict_features,
             train_features=train_features,
             train_labels=train_labels,
