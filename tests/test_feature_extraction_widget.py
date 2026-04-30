@@ -11,6 +11,7 @@ from spatialdata import SpatialData
 
 import napari_harpy.widgets._feature_extraction_widget as feature_extraction_widget_module
 from napari_harpy._app_state import FeatureMatrixWrittenEvent, get_or_create_app_state
+from napari_harpy._feature_extraction import FeatureExtractionTriplet
 from napari_harpy._spatialdata import (
     SpatialDataFeatureExtractionImageDiscovery,
     SpatialDataFeatureExtractionLabelDiscovery,
@@ -218,7 +219,7 @@ def test_feature_extraction_widget_populates_selector_flow_from_spatialdata(
     assert widget.selected_image_name is None
     assert widget.selected_table_name is None
     assert widget.selected_coordinate_system == "global"
-    assert "Selection Needed" in widget.selection_status.text()
+    assert "Batch Incomplete" in widget.selection_status.text()
     assert widget.selection_status.toolTip() == ""
 
 
@@ -979,13 +980,13 @@ def test_feature_extraction_widget_surfaces_duplicate_channel_names_as_batch_err
 
     qtbot.addWidget(widget)
 
-    bind_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    bind_batch_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
-    def fake_bind(*args, **kwargs):
-        bind_calls.append((args, kwargs))
+    def fake_bind_batch(*args, **kwargs):
+        bind_batch_calls.append((args, kwargs))
         return True
 
-    widget._feature_extraction_controller.bind = fake_bind  # type: ignore[method-assign]
+    widget._feature_extraction_controller.bind_batch = fake_bind_batch  # type: ignore[method-assign]
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "get_image_channel_names_from_sdata",
@@ -1011,18 +1012,10 @@ def test_feature_extraction_widget_surfaces_duplicate_channel_names_as_batch_err
         "One or more selected images expose duplicate channel names. "
         "Rename channels with `sdata.set_channel_names(...)` or choose a different image."
     )
-    assert bind_calls
-    args, kwargs = bind_calls[-1]
-    assert args == (
-        sdata_blobs,
-        "blobs_labels",
-        None,
-        "table",
-        "global",
-        ("mean",),
-        "features",
-    )
-    assert kwargs == {"channels": None, "overwrite_feature_key": False}
+    assert bind_batch_calls
+    args, kwargs = bind_batch_calls[-1]
+    assert args == (sdata_blobs, (), None, ("mean",), "features")
+    assert kwargs == {"overwrite_feature_key": False}
 
 
 def test_feature_extraction_widget_channel_selection_is_independent_from_viewer_overlay_state(
@@ -1053,7 +1046,7 @@ def test_feature_extraction_widget_channel_selection_is_independent_from_viewer_
     assert feature_widget.selected_extraction_channel_indices == (1, 2)
 
 
-def test_feature_extraction_widget_shortens_long_identifiers_in_selection_status(
+def test_feature_extraction_widget_reports_coarse_batch_ready_status_for_valid_batch(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
@@ -1062,42 +1055,12 @@ def test_feature_extraction_widget_shortens_long_identifiers_in_selection_status
 
     qtbot.addWidget(widget)
 
-    long_segmentation_name = "blobs_labels_long_name_blobs_labels_long_name_blobs_labels_long_name"
-    long_image_name = "blobs_image_long_name_blobs_image_long_name_blobs_image_long_name"
-    long_table_name = "table_long_name_table_long_name_table_long_name_table_long_name"
-    long_coordinate_system = "global_coordinate_system_coordinate_system_coordinate_system"
+    check_coordinate_system(widget, "global")
+    select_segmentation(widget, "global", 0)
 
-    widget._selected_label_option = SpatialDataLabelsOption(
-        label_name=long_segmentation_name,
-        display_name=long_segmentation_name,
-        sdata=sdata_blobs,
-        coordinate_systems=(long_coordinate_system,),
-    )
-    widget._selected_image_option = SpatialDataImageOption(
-        image_name=long_image_name,
-        display_name=long_image_name,
-        sdata=sdata_blobs,
-        coordinate_systems=(long_coordinate_system,),
-    )
-    widget._selected_table_name = long_table_name
-    widget._selected_coordinate_system = long_coordinate_system
-    widget._table_binding_error = None
-
-    widget._update_primary_status_card()
-
-    status_text = widget.selection_status.text()
-    status_tooltip = unescape(widget.selection_status.toolTip()).replace("&#8203;", "").replace("\u200b", "")
-
-    assert "Selection Ready" in status_text
-    assert "…" in status_text
-    assert long_segmentation_name not in status_text
-    assert long_image_name not in status_text
-    assert long_table_name not in status_text
-    assert long_coordinate_system not in status_text
-    assert long_segmentation_name in status_tooltip
-    assert long_image_name in status_tooltip
-    assert long_table_name in status_tooltip
-    assert long_coordinate_system in status_tooltip
+    assert "Batch Ready" in widget.selection_status.text()
+    assert "1 extraction target staged." in widget.selection_status.text()
+    assert widget.selection_status.toolTip() == ""
 
 
 def test_feature_extraction_widget_blocks_when_selected_segmentation_has_no_linked_table(
@@ -1118,36 +1081,36 @@ def test_feature_extraction_widget_blocks_when_selected_segmentation_has_no_link
     assert widget.selected_table_name is None
     assert widget.coordinate_system_combo.count() == 1
     assert widget.selected_coordinate_system == "global"
-    assert "No Table Linked" in widget.selection_status.text()
-    assert "creating a new linked table" in widget.selection_status.text()
+    assert "Batch Incomplete" in widget.selection_status.text()
+    assert "No table annotates all currently staged segmentations." in widget.selection_status.text()
 
 
-def test_feature_extraction_widget_uses_table_binding_error_as_status_tooltip(
+def test_feature_extraction_widget_uses_batch_table_error_as_status_tooltip(
     qtbot,
+    monkeypatch,
     sdata_blobs: SpatialData,
 ) -> None:
     viewer = make_viewer_with_shared_sdata(sdata_blobs)
     widget = FeatureExtractionWidget(viewer)
 
     qtbot.addWidget(widget)
-
-    widget._selected_label_option = SpatialDataLabelsOption(
-        label_name="blobs_labels",
-        display_name="blobs_labels",
-        sdata=sdata_blobs,
-        coordinate_systems=("global",),
-    )
-    widget._selected_table_name = "table"
-    widget._selected_coordinate_system = "global"
-    widget._table_binding_error = (
-        "Table `table` annotates segmentation `other_labels`, not `blobs_labels`."
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "validate_table_region_instance_ids",
+        lambda sdata, table_name, *, label_names=None: (_ for _ in ()).throw(
+            ValueError(
+                "Table `table` cannot annotate segmentation region `blobs_labels` because "
+                "`instance_id` contains duplicate values within that region: `1`, `2`."
+            )
+        ),
     )
 
-    widget._update_primary_status_card()
+    check_coordinate_system(widget, "global")
+    select_segmentation(widget, "global", 0)
 
     tooltip = unescape(widget.selection_status.toolTip()).replace("&#8203;", "").replace("\u200b", "")
-    assert "Table Binding Issue" in widget.selection_status.text()
-    assert "annotates segmentation `other_labels`" in tooltip
+    assert "Table Not Ready" in widget.selection_status.text()
+    assert "duplicate values within that region" in tooltip
 
 
 def test_feature_extraction_widget_exposes_grouped_feature_checkboxes(qtbot) -> None:
@@ -1211,31 +1174,36 @@ def test_feature_extraction_widget_rebinds_controller_when_inputs_change(
 
     qtbot.addWidget(widget)
 
-    bind_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    bind_batch_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
-    def fake_bind(*args, **kwargs):
-        bind_calls.append((args, kwargs))
+    def fake_bind_batch(*args, **kwargs):
+        bind_batch_calls.append((args, kwargs))
         return True
 
-    widget._feature_extraction_controller.bind = fake_bind  # type: ignore[method-assign]
+    widget._feature_extraction_controller.bind_batch = fake_bind_batch  # type: ignore[method-assign]
 
     check_coordinate_system(widget, "global")
     select_segmentation(widget, "global", 0)
     widget.findChild(QCheckBox, "feature_checkbox_area").setChecked(True)
     widget.output_key_line_edit.setText("features")
 
-    assert bind_calls
-    args, kwargs = bind_calls[-1]
+    assert bind_batch_calls
+    args, kwargs = bind_batch_calls[-1]
     assert args == (
         sdata_blobs,
-        "blobs_labels",
-        None,
+        (
+            FeatureExtractionTriplet(
+                coordinate_system="global",
+                label_name="blobs_labels",
+                image_name=None,
+                channels=None,
+            ),
+        ),
         "table",
-        "global",
         ("area",),
         "features",
     )
-    assert kwargs == {"channels": None, "overwrite_feature_key": False}
+    assert kwargs == {"overwrite_feature_key": False}
 
 
 def test_feature_extraction_widget_binds_selected_channels_into_controller(
@@ -1247,34 +1215,40 @@ def test_feature_extraction_widget_binds_selected_channels_into_controller(
 
     qtbot.addWidget(widget)
 
-    bind_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    bind_batch_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
-    def fake_bind(*args, **kwargs):
-        bind_calls.append((args, kwargs))
+    def fake_bind_batch(*args, **kwargs):
+        bind_batch_calls.append((args, kwargs))
         return True
 
-    widget._feature_extraction_controller.bind = fake_bind  # type: ignore[method-assign]
+    widget._feature_extraction_controller.bind_batch = fake_bind_batch  # type: ignore[method-assign]
 
     check_coordinate_system(widget, "global")
     select_segmentation(widget, "global", 0)
+    widget.findChild(QCheckBox, "feature_checkbox_mean").setChecked(True)
     widget.image_combo.setCurrentIndex(1)
     widget._batch_channel_checkboxes[1].setChecked(False)
 
-    assert bind_calls
-    args, kwargs = bind_calls[-1]
+    assert bind_batch_calls
+    args, kwargs = bind_batch_calls[-1]
     assert args == (
         sdata_blobs,
-        "blobs_labels",
-        "blobs_image",
+        (
+            FeatureExtractionTriplet(
+                coordinate_system="global",
+                label_name="blobs_labels",
+                image_name="blobs_image",
+                channels=("0", "2"),
+            ),
+        ),
         "table",
-        "global",
-        (),
+        ("mean",),
         "features",
     )
-    assert kwargs == {"channels": ("0", "2"), "overwrite_feature_key": False}
+    assert kwargs == {"overwrite_feature_key": False}
 
 
-def test_feature_extraction_widget_keeps_calculate_disabled_during_slice_two_refactor(
+def test_feature_extraction_widget_enables_calculate_for_valid_morphology_batch(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
@@ -1283,13 +1257,13 @@ def test_feature_extraction_widget_keeps_calculate_disabled_during_slice_two_ref
 
     qtbot.addWidget(widget)
 
-    assert widget.calculate_button.isEnabled() is False
-
+    check_coordinate_system(widget, "global")
+    select_segmentation(widget, "global", 0)
     widget.findChild(QCheckBox, "feature_checkbox_area").setChecked(True)
     widget.output_key_line_edit.setText("features")
 
-    assert widget.calculate_button.isEnabled() is False
-    assert "temporarily disabled" in widget.calculate_button.toolTip()
+    assert widget.calculate_button.isEnabled() is True
+    assert widget.calculate_button.toolTip() == ""
 
 
 def test_feature_extraction_widget_keeps_calculate_disabled_for_intensity_features_without_image(
@@ -1301,11 +1275,13 @@ def test_feature_extraction_widget_keeps_calculate_disabled_for_intensity_featur
 
     qtbot.addWidget(widget)
 
+    check_coordinate_system(widget, "global")
+    select_segmentation(widget, "global", 0)
     widget.findChild(QCheckBox, "feature_checkbox_mean").setChecked(True)
     widget.output_key_line_edit.setText("features")
 
     assert widget.calculate_button.isEnabled() is False
-    assert "temporarily disabled" in widget.calculate_button.toolTip()
+    assert "choose an image for every extraction target" in unescape(widget.calculate_button.toolTip()).lower()
     assert "choose an image" in widget.intensity_features_hint.text()
 
 
@@ -1324,9 +1300,9 @@ def test_feature_extraction_widget_blocks_when_no_coordinate_system_is_checked(
     widget._bind_current_selection()
 
     assert widget.selected_coordinate_system is None
-    assert "Choose Coordinate System" in widget.selection_status.text()
+    assert "Choose Coordinate Systems" in widget.selection_status.text()
     assert widget.calculate_button.isEnabled() is False
-    assert "temporarily disabled" in widget.calculate_button.toolTip()
+    assert "choose one or more coordinate systems" in unescape(widget.calculate_button.toolTip()).lower()
 
 
 def test_feature_extraction_widget_does_not_launch_controller_while_calculation_is_disabled(

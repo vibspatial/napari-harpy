@@ -301,6 +301,37 @@ def test_feature_extraction_controller_bind_batch_is_ready_for_multi_target_requ
     assert controller.can_calculate is True
 
 
+def test_feature_extraction_controller_exposes_binding_state_snapshot(
+    sdata_blobs: SpatialData,
+) -> None:
+    controller = FeatureExtractionController()
+    triplets = (
+        FeatureExtractionTriplet(
+            coordinate_system="global",
+            label_name="blobs_labels",
+            image_name="blobs_image",
+            channels=("0", "2"),
+        ),
+    )
+
+    controller.bind_batch(
+        sdata_blobs,
+        triplets,
+        "table",
+        ["mean"],
+        "feature_matrix_batch",
+    )
+
+    binding_state = controller.binding_state
+
+    assert binding_state.sdata is sdata_blobs
+    assert binding_state.triplets == triplets
+    assert binding_state.table_name == "table"
+    assert binding_state.feature_names == ("mean",)
+    assert binding_state.feature_key == "feature_matrix_batch"
+    assert binding_state.overwrite_feature_key is False
+
+
 def test_feature_extraction_controller_bind_batch_rejects_mixed_channel_selections_for_intensity_features(
     sdata_blobs: SpatialData,
 ) -> None:

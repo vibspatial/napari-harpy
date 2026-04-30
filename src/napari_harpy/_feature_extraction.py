@@ -53,6 +53,18 @@ class FeatureExtractionRequest:
 
 
 @dataclass(frozen=True)
+class FeatureExtractionBindingState:
+    """Read-only snapshot of the controller's currently bound widget state."""
+
+    sdata: SpatialData | None
+    triplets: tuple[FeatureExtractionTriplet, ...]
+    table_name: str | None
+    feature_names: tuple[str, ...]
+    feature_key: str | None
+    overwrite_feature_key: bool = False
+
+
+@dataclass(frozen=True)
 class FeatureExtractionJob:
     """Immutable payload copied on the main thread and consumed by a worker."""
 
@@ -191,6 +203,18 @@ class FeatureExtractionController:
     def is_running(self) -> bool:
         """Return whether a feature-extraction worker is currently active."""
         return self._active_worker is not None
+
+    @property
+    def binding_state(self) -> FeatureExtractionBindingState:
+        """Return the current bound request snapshot for widget-side comparisons."""
+        return FeatureExtractionBindingState(
+            sdata=self._selected_spatialdata,
+            triplets=self._selected_triplets,
+            table_name=self._selected_table_name,
+            feature_names=self._selected_feature_names,
+            feature_key=self._selected_feature_key,
+            overwrite_feature_key=self._overwrite_feature_key,
+        )
 
     @property
     def can_calculate(self) -> bool:
