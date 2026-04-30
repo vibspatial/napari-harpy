@@ -4,13 +4,20 @@ from html import unescape
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from napari.layers import Labels
 from qtpy.QtWidgets import QCheckBox, QComboBox, QScrollArea
 from spatialdata import SpatialData
 
 import napari_harpy.widgets._feature_extraction_widget as feature_extraction_widget_module
 from napari_harpy._app_state import FeatureMatrixWrittenEvent, get_or_create_app_state
-from napari_harpy._spatialdata import SpatialDataImageOption, SpatialDataLabelsOption
+from napari_harpy._feature_extraction import FeatureExtractionTriplet
+from napari_harpy._spatialdata import (
+    SpatialDataFeatureExtractionImageDiscovery,
+    SpatialDataFeatureExtractionLabelDiscovery,
+    SpatialDataImageOption,
+    SpatialDataLabelsOption,
+)
 from napari_harpy.widgets._feature_extraction_widget import FeatureExtractionWidget
 from napari_harpy.widgets._viewer_widget import ViewerWidget
 
@@ -41,6 +48,48 @@ class DummyLayers(list):
 class DummyViewer:
     def __init__(self, layers: list[Labels] | None = None) -> None:
         self.layers = DummyLayers(layers)
+
+
+def get_coordinate_system_checkbox(widget: FeatureExtractionWidget, coordinate_system: str) -> QCheckBox:
+    return widget._coordinate_system_checkboxes[coordinate_system]
+
+
+def check_coordinate_system(widget: FeatureExtractionWidget, coordinate_system: str) -> None:
+    get_coordinate_system_checkbox(widget, coordinate_system).setChecked(True)
+
+
+def select_segmentation(widget: FeatureExtractionWidget, coordinate_system: str, index: int) -> None:
+    widget._triplet_card_widgets_by_coordinate_system[coordinate_system].segmentation_combo.setCurrentIndex(index)
+
+
+def make_label_discovery(
+    *,
+    coordinate_system: str,
+    options: list[SpatialDataLabelsOption],
+    unavailable_label_count: int = 0,
+) -> SpatialDataFeatureExtractionLabelDiscovery:
+    return SpatialDataFeatureExtractionLabelDiscovery(
+        coordinate_system=coordinate_system,
+        eligible_label_options=options,
+        coordinate_system_label_count=len(options) + unavailable_label_count,
+        unavailable_label_count=unavailable_label_count,
+    )
+
+
+def make_image_discovery(
+    *,
+    coordinate_system: str,
+    label_name: str,
+    options: list[SpatialDataImageOption],
+    unavailable_image_count: int = 0,
+) -> SpatialDataFeatureExtractionImageDiscovery:
+    return SpatialDataFeatureExtractionImageDiscovery(
+        coordinate_system=coordinate_system,
+        label_name=label_name,
+        eligible_image_options=options,
+        coordinate_system_image_count=len(options) + unavailable_image_count,
+        unavailable_image_count=unavailable_image_count,
+    )
 
 
 def make_viewer_with_shared_sdata(sdata: SpatialData) -> DummyViewer:
@@ -98,8 +147,14 @@ def test_feature_extraction_widget_seeds_from_shared_sdata_on_construction(
 
     qtbot.addWidget(widget)
 
-    assert widget.segmentation_combo.count() == 2
-    assert widget.selected_segmentation_name == "blobs_labels"
+    assert widget.coordinate_system_combo.count() == 1
+    assert widget.coordinate_system_combo.currentIndex() == -1
+    assert get_coordinate_system_checkbox(widget, "global").isChecked() is False
+    assert widget.selected_coordinate_system is None
+    assert widget.selected_segmentation_name is None
+    assert widget.selected_image_name is None
+    assert not widget._triplet_card_widgets_by_coordinate_system
+    assert "Choose Coordinate Systems" in widget.selection_status.text()
     assert widget.selected_spatialdata is sdata_blobs
 
 
@@ -118,8 +173,14 @@ def test_feature_extraction_widget_refreshes_when_shared_sdata_changes(
 
     app_state.set_sdata(sdata_blobs)
 
-    assert widget.segmentation_combo.count() == 2
-    assert widget.selected_segmentation_name == "blobs_labels"
+    assert widget.coordinate_system_combo.count() == 1
+    assert widget.coordinate_system_combo.currentIndex() == -1
+    assert get_coordinate_system_checkbox(widget, "global").isChecked() is False
+    assert widget.selected_coordinate_system is None
+    assert widget.selected_segmentation_name is None
+    assert widget.selected_image_name is None
+    assert not widget._triplet_card_widgets_by_coordinate_system
+    assert "Choose Coordinate Systems" in widget.selection_status.text()
     assert widget.selected_spatialdata is sdata_blobs
 
 
@@ -132,30 +193,33 @@ def test_feature_extraction_widget_populates_selector_flow_from_spatialdata(
 
     qtbot.addWidget(widget)
 
+    assert widget.coordinate_system_combo.count() == 1
+    assert widget.coordinate_system_combo.currentIndex() == -1
+    assert get_coordinate_system_checkbox(widget, "global").isChecked() is False
+    assert widget.selected_coordinate_system is None
+    assert not widget._triplet_card_widgets_by_coordinate_system
+    assert "Choose Coordinate Systems" in widget.selection_status.text()
+
+    check_coordinate_system(widget, "global")
+
     assert widget.segmentation_combo.count() == 2
     assert [widget.segmentation_combo.itemText(index) for index in range(widget.segmentation_combo.count())] == [
         "blobs_labels",
         "blobs_multiscale_labels",
     ]
-    assert widget.image_combo.count() == 3
-    assert [widget.image_combo.itemText(index) for index in range(widget.image_combo.count())] == [
-        "No image",
-        "blobs_image",
-        "blobs_multiscale_image",
-    ]
-    assert widget.table_combo.count() == 1
-    assert widget.table_combo.itemText(0) == "table"
+    assert widget.segmentation_combo.currentIndex() == -1
+    assert widget.segmentation_combo.placeholderText() == "Choose a segmentation mask"
+    assert widget.image_combo.count() == 1
+    assert [widget.image_combo.itemText(index) for index in range(widget.image_combo.count())] == ["No image"]
+    assert widget.table_combo.count() == 0
     assert widget.coordinate_system_combo.count() == 1
     assert widget.coordinate_system_combo.itemText(0) == "global"
-    assert widget.selected_segmentation_name == "blobs_labels"
+    assert widget.selected_segmentation_name is None
     assert widget.selected_spatialdata is sdata_blobs
     assert widget.selected_image_name is None
-    assert widget.selected_table_name == "table"
+    assert widget.selected_table_name is None
     assert widget.selected_coordinate_system == "global"
-    assert "Selection Ready" in widget.selection_status.text()
-    assert "Segmentation: blobs_labels" in widget.selection_status.text()
-    assert "Table: table" in widget.selection_status.text()
-    assert "Coordinate system: global" in widget.selection_status.text()
+    assert "Batch Incomplete" in widget.selection_status.text()
     assert widget.selection_status.toolTip() == ""
 
 
@@ -173,27 +237,34 @@ def test_feature_extraction_widget_filters_labels_and_images_by_coordinate_syste
     )
     monkeypatch.setattr(
         feature_extraction_widget_module,
-        "get_spatialdata_label_options_for_coordinate_system_from_sdata",
-        lambda *, sdata, coordinate_system: [
-            SpatialDataLabelsOption(
-                label_name=f"labels_{coordinate_system}",
-                display_name=f"labels_{coordinate_system}",
-                sdata=sdata,
-                coordinate_systems=(coordinate_system,),
-            )
-        ],
+        "get_spatialdata_feature_extraction_label_discovery_for_coordinate_system_from_sdata",
+        lambda *, sdata, coordinate_system: make_label_discovery(
+            coordinate_system=coordinate_system,
+            options=[
+                SpatialDataLabelsOption(
+                    label_name=f"labels_{coordinate_system}",
+                    display_name=f"labels_{coordinate_system}",
+                    sdata=sdata,
+                    coordinate_systems=(coordinate_system,),
+                )
+            ],
+        ),
     )
     monkeypatch.setattr(
         feature_extraction_widget_module,
-        "get_spatialdata_image_options_for_coordinate_system_from_sdata",
-        lambda *, sdata, coordinate_system: [
-            SpatialDataImageOption(
-                image_name=f"image_{coordinate_system}",
-                display_name=f"image_{coordinate_system}",
-                sdata=sdata,
-                coordinate_systems=(coordinate_system,),
-            )
-        ],
+        "get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata",
+        lambda *, sdata, coordinate_system, label_name: make_image_discovery(
+            coordinate_system=coordinate_system,
+            label_name=label_name,
+            options=[
+                SpatialDataImageOption(
+                    image_name=f"image_{coordinate_system}_{label_name}",
+                    display_name=f"image_{coordinate_system}_{label_name}",
+                    sdata=sdata,
+                    coordinate_systems=(coordinate_system,),
+                )
+            ],
+        ),
     )
     monkeypatch.setattr(
         feature_extraction_widget_module,
@@ -206,29 +277,475 @@ def test_feature_extraction_widget_filters_labels_and_images_by_coordinate_syste
 
     assert widget.coordinate_system_combo.count() == 2
     assert widget.coordinate_system_combo.itemText(0) == "aligned"
+    assert widget.coordinate_system_combo.currentIndex() == -1
+    assert widget.selected_coordinate_system is None
+    assert widget.selected_segmentation_name is None
+    assert not widget._triplet_card_widgets_by_coordinate_system
+
+    check_coordinate_system(widget, "aligned")
+
     assert widget.selected_coordinate_system == "aligned"
-    assert widget.selected_segmentation_name == "labels_aligned"
+    assert widget.selected_segmentation_name is None
     assert [widget.segmentation_combo.itemText(index) for index in range(widget.segmentation_combo.count())] == [
         "labels_aligned"
     ]
+    assert widget.segmentation_combo.currentIndex() == -1
+    assert [widget.image_combo.itemText(index) for index in range(widget.image_combo.count())] == [
+        "No image"
+    ]
+    select_segmentation(widget, "aligned", 0)
+    assert widget.selected_segmentation_name == "labels_aligned"
     assert [widget.image_combo.itemText(index) for index in range(widget.image_combo.count())] == [
         "No image",
-        "image_aligned",
+        "image_aligned_labels_aligned",
     ]
+    assert widget.selected_image_name is None
     assert widget.table_combo.itemText(0) == "table"
 
-    widget.coordinate_system_combo.setCurrentIndex(1)
+    check_coordinate_system(widget, "global")
 
     assert widget.selected_coordinate_system == "global"
-    assert widget.selected_segmentation_name == "labels_global"
+    assert widget.selected_segmentation_name is None
     assert [widget.segmentation_combo.itemText(index) for index in range(widget.segmentation_combo.count())] == [
         "labels_global"
     ]
+    assert widget.segmentation_combo.currentIndex() == -1
+    assert [widget.image_combo.itemText(index) for index in range(widget.image_combo.count())] == [
+        "No image"
+    ]
+    select_segmentation(widget, "global", 0)
+    assert widget.selected_segmentation_name == "labels_global"
     assert [widget.image_combo.itemText(index) for index in range(widget.image_combo.count())] == [
         "No image",
-        "image_global",
+        "image_global_labels_global",
     ]
+    assert widget.selected_image_name is None
     assert widget.table_combo.itemText(0) == "table"
+
+
+def test_feature_extraction_widget_renders_one_card_per_checked_coordinate_system(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_coordinate_system_names_from_sdata",
+        lambda sdata: ["aligned", "global"],
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_spatialdata_feature_extraction_label_discovery_for_coordinate_system_from_sdata",
+        lambda *, sdata, coordinate_system: make_label_discovery(
+            coordinate_system=coordinate_system,
+            options=[
+                SpatialDataLabelsOption(
+                    label_name=f"labels_{coordinate_system}",
+                    display_name=f"labels_{coordinate_system}",
+                    sdata=sdata,
+                    coordinate_systems=(coordinate_system,),
+                )
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata",
+        lambda *, sdata, coordinate_system, label_name: make_image_discovery(
+            coordinate_system=coordinate_system,
+            label_name=label_name,
+            options=[
+                SpatialDataImageOption(
+                    image_name=f"image_{coordinate_system}_{label_name}",
+                    display_name=f"image_{coordinate_system}_{label_name}",
+                    sdata=sdata,
+                    coordinate_systems=(coordinate_system,),
+                )
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_annotating_table_names",
+        lambda sdata, label_name: ["table"],
+    )
+
+    widget = FeatureExtractionWidget(viewer)
+    qtbot.addWidget(widget)
+
+    assert list(widget._coordinate_system_checkboxes) == ["aligned", "global"]
+    assert get_coordinate_system_checkbox(widget, "aligned").isChecked() is False
+    assert get_coordinate_system_checkbox(widget, "global").isChecked() is False
+    assert list(widget._triplet_card_widgets_by_coordinate_system) == []
+    assert widget.selected_coordinate_system is None
+
+    check_coordinate_system(widget, "aligned")
+    assert list(widget._triplet_card_widgets_by_coordinate_system) == ["aligned"]
+    assert widget.selected_coordinate_system == "aligned"
+
+    check_coordinate_system(widget, "global")
+
+    assert list(widget._triplet_card_widgets_by_coordinate_system) == ["aligned", "global"]
+    assert widget.selected_coordinate_system == "global"
+    assert widget.segmentation_combo is widget._triplet_card_widgets_by_coordinate_system["global"].segmentation_combo
+
+
+def test_feature_extraction_widget_restores_explicit_triplet_when_returning_to_coordinate_system(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+
+    aligned_label_1 = SpatialDataLabelsOption(
+        label_name="labels_aligned_1",
+        display_name="labels_aligned_1",
+        sdata=sdata_blobs,
+        coordinate_systems=("aligned",),
+    )
+    aligned_label_2 = SpatialDataLabelsOption(
+        label_name="labels_aligned_2",
+        display_name="labels_aligned_2",
+        sdata=sdata_blobs,
+        coordinate_systems=("aligned",),
+    )
+    global_label = SpatialDataLabelsOption(
+        label_name="labels_global",
+        display_name="labels_global",
+        sdata=sdata_blobs,
+        coordinate_systems=("global",),
+    )
+    image_by_label = {
+        "labels_aligned_1": SpatialDataImageOption(
+            image_name="image_aligned_1",
+            display_name="image_aligned_1",
+            sdata=sdata_blobs,
+            coordinate_systems=("aligned",),
+        ),
+        "labels_aligned_2": SpatialDataImageOption(
+            image_name="image_aligned_2",
+            display_name="image_aligned_2",
+            sdata=sdata_blobs,
+            coordinate_systems=("aligned",),
+        ),
+        "labels_global": SpatialDataImageOption(
+            image_name="image_global",
+            display_name="image_global",
+            sdata=sdata_blobs,
+            coordinate_systems=("global",),
+        ),
+    }
+
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_coordinate_system_names_from_sdata",
+        lambda sdata: ["aligned", "global"],
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_spatialdata_feature_extraction_label_discovery_for_coordinate_system_from_sdata",
+        lambda *, sdata, coordinate_system: make_label_discovery(
+            coordinate_system=coordinate_system,
+            options=[aligned_label_1, aligned_label_2] if coordinate_system == "aligned" else [global_label],
+        ),
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata",
+        lambda *, sdata, coordinate_system, label_name: make_image_discovery(
+            coordinate_system=coordinate_system,
+            label_name=label_name,
+            options=[image_by_label[label_name]],
+        ),
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_annotating_table_names",
+        lambda sdata, label_name: ["table"],
+    )
+
+    widget = FeatureExtractionWidget(viewer)
+    qtbot.addWidget(widget)
+
+    assert widget.selected_coordinate_system is None
+    check_coordinate_system(widget, "aligned")
+
+    assert widget.selected_coordinate_system == "aligned"
+    assert widget.selected_segmentation_name is None
+    assert widget.selected_image_name is None
+
+    aligned_widgets = widget._triplet_card_widgets_by_coordinate_system["aligned"]
+    aligned_widgets.segmentation_combo.setCurrentIndex(1)
+    aligned_widgets.image_combo.setCurrentIndex(1)
+
+    assert widget.selected_coordinate_system == "aligned"
+    assert widget.selected_segmentation_name == "labels_aligned_2"
+    assert widget.selected_image_name == "image_aligned_2"
+
+    get_coordinate_system_checkbox(widget, "global").setChecked(True)
+
+    assert widget.selected_coordinate_system == "global"
+    assert widget.selected_segmentation_name is None
+    assert widget.selected_image_name is None
+
+    global_widgets = widget._triplet_card_widgets_by_coordinate_system["global"]
+    global_widgets.segmentation_combo.setCurrentIndex(0)
+    global_widgets.image_combo.setCurrentIndex(1)
+
+    assert widget.selected_image_name == "image_global"
+
+    get_coordinate_system_checkbox(widget, "aligned").setChecked(False)
+    assert "aligned" not in widget._triplet_card_widgets_by_coordinate_system
+
+    get_coordinate_system_checkbox(widget, "aligned").setChecked(True)
+
+    assert widget.selected_coordinate_system == "aligned"
+    restored_aligned_widgets = widget._triplet_card_widgets_by_coordinate_system["aligned"]
+    assert restored_aligned_widgets.segmentation_combo.currentText() == "labels_aligned_2"
+    assert restored_aligned_widgets.image_combo.currentText() == "image_aligned_2"
+    assert widget.selected_segmentation_name == "labels_aligned_2"
+    assert widget.selected_image_name == "image_aligned_2"
+
+
+def test_feature_extraction_widget_excludes_duplicate_segmentation_across_visible_cards(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+
+    shared_label = SpatialDataLabelsOption(
+        label_name="shared_labels",
+        display_name="shared_labels",
+        sdata=sdata_blobs,
+        coordinate_systems=("aligned", "global"),
+    )
+    aligned_only_label = SpatialDataLabelsOption(
+        label_name="aligned_only",
+        display_name="aligned_only",
+        sdata=sdata_blobs,
+        coordinate_systems=("aligned",),
+    )
+    global_only_label = SpatialDataLabelsOption(
+        label_name="global_only",
+        display_name="global_only",
+        sdata=sdata_blobs,
+        coordinate_systems=("global",),
+    )
+
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_coordinate_system_names_from_sdata",
+        lambda sdata: ["aligned", "global"],
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_spatialdata_feature_extraction_label_discovery_for_coordinate_system_from_sdata",
+        lambda *, sdata, coordinate_system: make_label_discovery(
+            coordinate_system=coordinate_system,
+            options=[shared_label, aligned_only_label] if coordinate_system == "aligned" else [shared_label, global_only_label],
+        ),
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata",
+        lambda *, sdata, coordinate_system, label_name: make_image_discovery(
+            coordinate_system=coordinate_system,
+            label_name=label_name,
+            options=[],
+        ),
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_annotating_table_names",
+        lambda sdata, label_name: ["table"],
+    )
+
+    widget = FeatureExtractionWidget(viewer)
+    qtbot.addWidget(widget)
+
+    check_coordinate_system(widget, "aligned")
+    check_coordinate_system(widget, "global")
+    select_segmentation(widget, "aligned", 0)
+
+    global_widgets = widget._triplet_card_widgets_by_coordinate_system["global"]
+    assert [global_widgets.segmentation_combo.itemText(index) for index in range(global_widgets.segmentation_combo.count())] == [
+        "global_only"
+    ]
+    assert "shared_labels" in global_widgets.segmentation_note_label.text()
+    assert "aligned" in global_widgets.segmentation_note_label.text()
+
+
+def test_feature_extraction_widget_excludes_later_selected_shared_segmentation_from_earlier_card_options(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+
+    aligned_only_label = SpatialDataLabelsOption(
+        label_name="aligned_only",
+        display_name="aligned_only",
+        sdata=sdata_blobs,
+        coordinate_systems=("aligned",),
+    )
+    shared_label = SpatialDataLabelsOption(
+        label_name="shared_labels",
+        display_name="shared_labels",
+        sdata=sdata_blobs,
+        coordinate_systems=("aligned", "global"),
+    )
+    global_only_label = SpatialDataLabelsOption(
+        label_name="global_only",
+        display_name="global_only",
+        sdata=sdata_blobs,
+        coordinate_systems=("global",),
+    )
+
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_coordinate_system_names_from_sdata",
+        lambda sdata: ["aligned", "global"],
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_spatialdata_feature_extraction_label_discovery_for_coordinate_system_from_sdata",
+        lambda *, sdata, coordinate_system: make_label_discovery(
+            coordinate_system=coordinate_system,
+            options=[aligned_only_label, shared_label] if coordinate_system == "aligned" else [shared_label, global_only_label],
+        ),
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata",
+        lambda *, sdata, coordinate_system, label_name: make_image_discovery(
+            coordinate_system=coordinate_system,
+            label_name=label_name,
+            options=[],
+        ),
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_annotating_table_names",
+        lambda sdata, label_name: ["table"],
+    )
+
+    widget = FeatureExtractionWidget(viewer)
+    qtbot.addWidget(widget)
+
+    check_coordinate_system(widget, "aligned")
+    check_coordinate_system(widget, "global")
+
+    select_segmentation(widget, "aligned", 0)
+    select_segmentation(widget, "global", 0)
+
+    aligned_widgets = widget._triplet_card_widgets_by_coordinate_system["aligned"]
+    assert aligned_widgets.segmentation_combo.currentText() == "aligned_only"
+    assert [aligned_widgets.segmentation_combo.itemText(index) for index in range(aligned_widgets.segmentation_combo.count())] == [
+        "aligned_only"
+    ]
+    assert "shared_labels" in aligned_widgets.segmentation_note_label.text()
+    assert "global" in aligned_widgets.segmentation_note_label.text()
+
+
+def test_feature_extraction_widget_clears_blocked_remembered_segmentation_and_image_on_restore(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+
+    shared_label = SpatialDataLabelsOption(
+        label_name="shared_labels",
+        display_name="shared_labels",
+        sdata=sdata_blobs,
+        coordinate_systems=("aligned", "global"),
+    )
+    aligned_only_label = SpatialDataLabelsOption(
+        label_name="aligned_only",
+        display_name="aligned_only",
+        sdata=sdata_blobs,
+        coordinate_systems=("aligned",),
+    )
+    global_only_label = SpatialDataLabelsOption(
+        label_name="global_only",
+        display_name="global_only",
+        sdata=sdata_blobs,
+        coordinate_systems=("global",),
+    )
+    image_by_selection = {
+        ("aligned", "shared_labels"): SpatialDataImageOption(
+            image_name="image_aligned_shared",
+            display_name="image_aligned_shared",
+            sdata=sdata_blobs,
+            coordinate_systems=("aligned",),
+        ),
+        ("global", "shared_labels"): SpatialDataImageOption(
+            image_name="image_global_shared",
+            display_name="image_global_shared",
+            sdata=sdata_blobs,
+            coordinate_systems=("global",),
+        ),
+    }
+
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_coordinate_system_names_from_sdata",
+        lambda sdata: ["aligned", "global"],
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_spatialdata_feature_extraction_label_discovery_for_coordinate_system_from_sdata",
+        lambda *, sdata, coordinate_system: make_label_discovery(
+            coordinate_system=coordinate_system,
+            options=[shared_label, aligned_only_label] if coordinate_system == "aligned" else [shared_label, global_only_label],
+        ),
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata",
+        lambda *, sdata, coordinate_system, label_name: make_image_discovery(
+            coordinate_system=coordinate_system,
+            label_name=label_name,
+            options=[] if (coordinate_system, label_name) not in image_by_selection else [image_by_selection[(coordinate_system, label_name)]],
+        ),
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_annotating_table_names",
+        lambda sdata, label_name: ["table"],
+    )
+
+    widget = FeatureExtractionWidget(viewer)
+    qtbot.addWidget(widget)
+
+    check_coordinate_system(widget, "aligned")
+    select_segmentation(widget, "aligned", 0)
+    widget._triplet_card_widgets_by_coordinate_system["aligned"].image_combo.setCurrentIndex(1)
+
+    get_coordinate_system_checkbox(widget, "aligned").setChecked(False)
+
+    check_coordinate_system(widget, "global")
+    select_segmentation(widget, "global", 0)
+    widget._triplet_card_widgets_by_coordinate_system["global"].image_combo.setCurrentIndex(1)
+
+    get_coordinate_system_checkbox(widget, "aligned").setChecked(True)
+
+    global_widgets = widget._triplet_card_widgets_by_coordinate_system["global"]
+    assert global_widgets.segmentation_combo.currentText() == "shared_labels"
+    assert global_widgets.image_combo.currentText() == "image_global_shared"
+
+    restored_aligned_widgets = widget._triplet_card_widgets_by_coordinate_system["aligned"]
+    assert restored_aligned_widgets.segmentation_combo.currentIndex() == -1
+    assert restored_aligned_widgets.segmentation_combo.placeholderText() == "Choose a segmentation mask"
+    assert restored_aligned_widgets.image_combo.currentText() == "No image"
+    assert "shared_labels" in restored_aligned_widgets.segmentation_note_label.text()
+    assert "global" in restored_aligned_widgets.segmentation_note_label.text()
+    assert widget.selected_segmentation_name is None
+    assert widget._remembered_card_selection_by_coordinate_system["aligned"].label_identity is None
+    assert widget._remembered_card_selection_by_coordinate_system["aligned"].image_identity is None
 
 
 def test_feature_extraction_widget_hides_channel_selection_without_image(
@@ -256,17 +773,19 @@ def test_feature_extraction_widget_shows_selected_image_channels_and_defaults_to
 
     qtbot.addWidget(widget)
 
+    check_coordinate_system(widget, "global")
+    select_segmentation(widget, "global", 0)
     widget.image_combo.setCurrentIndex(1)
 
     assert widget.selected_image_name == "blobs_image"
-    assert [checkbox.text() for checkbox in widget._image_channel_checkboxes] == ["0", "1", "2"]
+    assert [checkbox.text() for checkbox in widget._batch_channel_checkboxes] == ["0", "1", "2"]
     assert widget.selected_extraction_channel_names == ("0", "1", "2")
     assert widget.selected_extraction_channel_indices == (0, 1, 2)
     assert not widget.channel_selection_label.isHidden()
     assert not widget.channel_selection_container.isHidden()
 
 
-def test_feature_extraction_widget_hides_channel_selection_when_selected_image_has_no_channel_axis(
+def test_feature_extraction_widget_raises_when_selected_image_has_no_channel_axis(
     qtbot,
     monkeypatch,
     sdata_blobs: SpatialData,
@@ -276,18 +795,182 @@ def test_feature_extraction_widget_hides_channel_selection_when_selected_image_h
 
     qtbot.addWidget(widget)
 
-    monkeypatch.setattr(feature_extraction_widget_module, "get_image_channel_names_from_sdata", lambda sdata, image_name: [])
-
+    check_coordinate_system(widget, "global")
+    select_segmentation(widget, "global", 0)
     widget.image_combo.setCurrentIndex(1)
 
-    assert widget.selected_image_name == "blobs_image"
-    assert widget.selected_extraction_channel_names is None
-    assert widget.selected_extraction_channel_indices is None
-    assert widget.channel_selection_label.isHidden()
-    assert widget.channel_selection_container.isHidden()
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_image_channel_names_from_sdata",
+        lambda sdata, image_name: [],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="does not expose channel names, but feature extraction expects images with an explicit channel axis",
+    ):
+        widget._resolve_batch_channel_state()
 
 
-def test_feature_extraction_widget_surfaces_duplicate_channel_names_and_unbinds_invalid_image(
+def test_feature_extraction_widget_keeps_shared_channel_selector_visible_for_incompatible_later_image(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_coordinate_system_names_from_sdata",
+        lambda sdata: ["aligned", "global"],
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_spatialdata_feature_extraction_label_discovery_for_coordinate_system_from_sdata",
+        lambda *, sdata, coordinate_system: make_label_discovery(
+            coordinate_system=coordinate_system,
+            options=[
+                SpatialDataLabelsOption(
+                    label_name=f"labels_{coordinate_system}",
+                    display_name=f"labels_{coordinate_system}",
+                    sdata=sdata,
+                    coordinate_systems=(coordinate_system,),
+                )
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata",
+        lambda *, sdata, coordinate_system, label_name: make_image_discovery(
+            coordinate_system=coordinate_system,
+            label_name=label_name,
+            options=[
+                SpatialDataImageOption(
+                    image_name=f"image_{coordinate_system}",
+                    display_name=f"image_{coordinate_system}",
+                    sdata=sdata,
+                    coordinate_systems=(coordinate_system,),
+                )
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_annotating_table_names",
+        lambda sdata, label_name: ["table"],
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_image_channel_names_from_sdata",
+        lambda sdata, image_name: ["0", "1", "2"] if image_name == "image_aligned" else ["0", "2"],
+    )
+
+    widget = FeatureExtractionWidget(viewer)
+    qtbot.addWidget(widget)
+
+    check_coordinate_system(widget, "aligned")
+    select_segmentation(widget, "aligned", 0)
+    widget._triplet_card_widgets_by_coordinate_system["aligned"].image_combo.setCurrentIndex(1)
+    widget._batch_channel_checkboxes[1].setChecked(False)
+
+    assert widget.selected_extraction_channel_names == ("0", "2")
+
+    check_coordinate_system(widget, "global")
+    select_segmentation(widget, "global", 0)
+    widget._triplet_card_widgets_by_coordinate_system["global"].image_combo.setCurrentIndex(1)
+
+    assert widget.selected_extraction_channel_names == ("0", "2")
+    assert [checkbox.text() for checkbox in widget._batch_channel_checkboxes] == ["0", "1", "2"]
+    assert not widget.channel_selection_label.isHidden()
+    assert not widget.channel_selection_container.isHidden()
+    assert widget.channel_selection_note_label.text() == "Channel names of selected images do not match."
+
+
+def test_feature_extraction_widget_remembers_shared_channel_selection_by_schema(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_coordinate_system_names_from_sdata",
+        lambda sdata: ["aligned", "global"],
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_spatialdata_feature_extraction_label_discovery_for_coordinate_system_from_sdata",
+        lambda *, sdata, coordinate_system: make_label_discovery(
+            coordinate_system=coordinate_system,
+            options=[
+                SpatialDataLabelsOption(
+                    label_name=f"labels_{coordinate_system}",
+                    display_name=f"labels_{coordinate_system}",
+                    sdata=sdata,
+                    coordinate_systems=(coordinate_system,),
+                )
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata",
+        lambda *, sdata, coordinate_system, label_name: make_image_discovery(
+            coordinate_system=coordinate_system,
+            label_name=label_name,
+            options=[
+                SpatialDataImageOption(
+                    image_name=f"image_{coordinate_system}",
+                    display_name=f"image_{coordinate_system}",
+                    sdata=sdata,
+                    coordinate_systems=(coordinate_system,),
+                )
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_annotating_table_names",
+        lambda sdata, label_name: ["table"],
+    )
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_image_channel_names_from_sdata",
+        lambda sdata, image_name: ["0", "1", "2"] if image_name == "image_global" else ["a", "b"],
+    )
+
+    widget = FeatureExtractionWidget(viewer)
+    qtbot.addWidget(widget)
+
+    check_coordinate_system(widget, "global")
+    select_segmentation(widget, "global", 0)
+    widget._triplet_card_widgets_by_coordinate_system["global"].image_combo.setCurrentIndex(1)
+    widget._batch_channel_checkboxes[1].setChecked(False)
+
+    assert widget.selected_extraction_channel_names == ("0", "2")
+
+    get_coordinate_system_checkbox(widget, "global").setChecked(False)
+
+    check_coordinate_system(widget, "aligned")
+    select_segmentation(widget, "aligned", 0)
+    widget._triplet_card_widgets_by_coordinate_system["aligned"].image_combo.setCurrentIndex(1)
+    widget._batch_channel_checkboxes[0].setChecked(False)
+
+    assert widget.selected_extraction_channel_names == ("b",)
+
+    get_coordinate_system_checkbox(widget, "aligned").setChecked(False)
+    get_coordinate_system_checkbox(widget, "global").setChecked(True)
+
+    restored_global_widgets = widget._triplet_card_widgets_by_coordinate_system["global"]
+    select_segmentation(widget, "global", 0)
+    restored_global_widgets.image_combo.setCurrentIndex(1)
+
+    assert widget.selected_extraction_channel_names == ("0", "2")
+
+
+def test_feature_extraction_widget_surfaces_duplicate_channel_names_as_batch_error_for_intensity_features(
     qtbot,
     monkeypatch,
     sdata_blobs: SpatialData,
@@ -297,13 +980,13 @@ def test_feature_extraction_widget_surfaces_duplicate_channel_names_and_unbinds_
 
     qtbot.addWidget(widget)
 
-    bind_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    bind_batch_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
-    def fake_bind(*args, **kwargs):
-        bind_calls.append((args, kwargs))
+    def fake_bind_batch(*args, **kwargs):
+        bind_batch_calls.append((args, kwargs))
         return True
 
-    widget._feature_extraction_controller.bind = fake_bind  # type: ignore[method-assign]
+    widget._feature_extraction_controller.bind_batch = fake_bind_batch  # type: ignore[method-assign]
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "get_image_channel_names_from_sdata",
@@ -317,25 +1000,22 @@ def test_feature_extraction_widget_surfaces_duplicate_channel_names_and_unbinds_
         ),
     )
 
+    check_coordinate_system(widget, "global")
+    select_segmentation(widget, "global", 0)
     widget.image_combo.setCurrentIndex(1)
+    widget.findChild(QCheckBox, "feature_checkbox_mean").setChecked(True)
 
     assert widget.selected_image_name == "blobs_image"
     assert widget.channel_selection_label.isHidden()
     assert widget.channel_selection_container.isHidden()
-    assert "Image Channel Issue" in widget.selection_status.text()
-    assert "sdata.set_channel_names(...)" in widget.selection_status.text()
-    assert bind_calls
-    args, kwargs = bind_calls[-1]
-    assert args == (
-        sdata_blobs,
-        "blobs_labels",
-        None,
-        "table",
-        "global",
-        (),
-        "features",
+    assert widget.intensity_features_hint.text() == (
+        "One or more selected images expose duplicate channel names. "
+        "Rename channels with `sdata.set_channel_names(...)` or choose a different image."
     )
-    assert kwargs == {"channels": None, "overwrite_feature_key": False}
+    assert bind_batch_calls
+    args, kwargs = bind_batch_calls[-1]
+    assert args == (sdata_blobs, (), None, ("mean",), "features")
+    assert kwargs == {"overwrite_feature_key": False}
 
 
 def test_feature_extraction_widget_channel_selection_is_independent_from_viewer_overlay_state(
@@ -349,8 +1029,10 @@ def test_feature_extraction_widget_channel_selection_is_independent_from_viewer_
     qtbot.addWidget(feature_widget)
     qtbot.addWidget(viewer_widget)
 
+    check_coordinate_system(feature_widget, "global")
+    select_segmentation(feature_widget, "global", 0)
     feature_widget.image_combo.setCurrentIndex(1)
-    feature_widget._image_channel_checkboxes[0].setChecked(False)
+    feature_widget._batch_channel_checkboxes[0].setChecked(False)
 
     assert feature_widget.selected_extraction_channel_indices == (1, 2)
 
@@ -364,7 +1046,7 @@ def test_feature_extraction_widget_channel_selection_is_independent_from_viewer_
     assert feature_widget.selected_extraction_channel_indices == (1, 2)
 
 
-def test_feature_extraction_widget_shortens_long_identifiers_in_selection_status(
+def test_feature_extraction_widget_reports_coarse_batch_ready_status_for_valid_batch(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
@@ -373,42 +1055,12 @@ def test_feature_extraction_widget_shortens_long_identifiers_in_selection_status
 
     qtbot.addWidget(widget)
 
-    long_segmentation_name = "blobs_labels_long_name_blobs_labels_long_name_blobs_labels_long_name"
-    long_image_name = "blobs_image_long_name_blobs_image_long_name_blobs_image_long_name"
-    long_table_name = "table_long_name_table_long_name_table_long_name_table_long_name"
-    long_coordinate_system = "global_coordinate_system_coordinate_system_coordinate_system"
+    check_coordinate_system(widget, "global")
+    select_segmentation(widget, "global", 0)
 
-    widget._selected_label_option = SpatialDataLabelsOption(
-        label_name=long_segmentation_name,
-        display_name=long_segmentation_name,
-        sdata=sdata_blobs,
-        coordinate_systems=(long_coordinate_system,),
-    )
-    widget._selected_image_option = SpatialDataImageOption(
-        image_name=long_image_name,
-        display_name=long_image_name,
-        sdata=sdata_blobs,
-        coordinate_systems=(long_coordinate_system,),
-    )
-    widget._selected_table_name = long_table_name
-    widget._selected_coordinate_system = long_coordinate_system
-    widget._table_binding_error = None
-
-    widget._update_primary_status_card()
-
-    status_text = widget.selection_status.text()
-    status_tooltip = unescape(widget.selection_status.toolTip()).replace("&#8203;", "").replace("\u200b", "")
-
-    assert "Selection Ready" in status_text
-    assert "…" in status_text
-    assert long_segmentation_name not in status_text
-    assert long_image_name not in status_text
-    assert long_table_name not in status_text
-    assert long_coordinate_system not in status_text
-    assert long_segmentation_name in status_tooltip
-    assert long_image_name in status_tooltip
-    assert long_table_name in status_tooltip
-    assert long_coordinate_system in status_tooltip
+    assert "Batch Ready" in widget.selection_status.text()
+    assert "1 extraction target staged." in widget.selection_status.text()
+    assert widget.selection_status.toolTip() == ""
 
 
 def test_feature_extraction_widget_blocks_when_selected_segmentation_has_no_linked_table(
@@ -419,6 +1071,7 @@ def test_feature_extraction_widget_blocks_when_selected_segmentation_has_no_link
     widget = FeatureExtractionWidget(viewer)
 
     qtbot.addWidget(widget)
+    check_coordinate_system(widget, "global")
     widget.segmentation_combo.setCurrentIndex(1)
 
     assert widget.selected_segmentation_name == "blobs_multiscale_labels"
@@ -428,36 +1081,36 @@ def test_feature_extraction_widget_blocks_when_selected_segmentation_has_no_link
     assert widget.selected_table_name is None
     assert widget.coordinate_system_combo.count() == 1
     assert widget.selected_coordinate_system == "global"
-    assert "No Table Linked" in widget.selection_status.text()
-    assert "creating a new linked table" in widget.selection_status.text()
+    assert "Batch Incomplete" in widget.selection_status.text()
+    assert "No table annotates all currently staged segmentations." in widget.selection_status.text()
 
 
-def test_feature_extraction_widget_uses_table_binding_error_as_status_tooltip(
+def test_feature_extraction_widget_uses_batch_table_error_as_status_tooltip(
     qtbot,
+    monkeypatch,
     sdata_blobs: SpatialData,
 ) -> None:
     viewer = make_viewer_with_shared_sdata(sdata_blobs)
     widget = FeatureExtractionWidget(viewer)
 
     qtbot.addWidget(widget)
-
-    widget._selected_label_option = SpatialDataLabelsOption(
-        label_name="blobs_labels",
-        display_name="blobs_labels",
-        sdata=sdata_blobs,
-        coordinate_systems=("global",),
-    )
-    widget._selected_table_name = "table"
-    widget._selected_coordinate_system = "global"
-    widget._table_binding_error = (
-        "Table `table` annotates segmentation `other_labels`, not `blobs_labels`."
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "validate_table_region_instance_ids",
+        lambda sdata, table_name, *, label_names=None: (_ for _ in ()).throw(
+            ValueError(
+                "Table `table` cannot annotate segmentation region `blobs_labels` because "
+                "`instance_id` contains duplicate values within that region: `1`, `2`."
+            )
+        ),
     )
 
-    widget._update_primary_status_card()
+    check_coordinate_system(widget, "global")
+    select_segmentation(widget, "global", 0)
 
     tooltip = unescape(widget.selection_status.toolTip()).replace("&#8203;", "").replace("\u200b", "")
-    assert "Table Binding Issue" in widget.selection_status.text()
-    assert "annotates segmentation `other_labels`" in tooltip
+    assert "Table Not Ready" in widget.selection_status.text()
+    assert "duplicate values within that region" in tooltip
 
 
 def test_feature_extraction_widget_exposes_grouped_feature_checkboxes(qtbot) -> None:
@@ -503,6 +1156,8 @@ def test_feature_extraction_widget_hides_intensity_warning_when_image_is_selecte
     widget = FeatureExtractionWidget(viewer)
 
     qtbot.addWidget(widget)
+    check_coordinate_system(widget, "global")
+    select_segmentation(widget, "global", 0)
     widget.image_combo.setCurrentIndex(1)
     widget.findChild(QCheckBox, "feature_checkbox_mean").setChecked(True)
 
@@ -519,29 +1174,36 @@ def test_feature_extraction_widget_rebinds_controller_when_inputs_change(
 
     qtbot.addWidget(widget)
 
-    bind_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    bind_batch_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
-    def fake_bind(*args, **kwargs):
-        bind_calls.append((args, kwargs))
+    def fake_bind_batch(*args, **kwargs):
+        bind_batch_calls.append((args, kwargs))
         return True
 
-    widget._feature_extraction_controller.bind = fake_bind  # type: ignore[method-assign]
+    widget._feature_extraction_controller.bind_batch = fake_bind_batch  # type: ignore[method-assign]
 
+    check_coordinate_system(widget, "global")
+    select_segmentation(widget, "global", 0)
     widget.findChild(QCheckBox, "feature_checkbox_area").setChecked(True)
     widget.output_key_line_edit.setText("features")
 
-    assert bind_calls
-    args, kwargs = bind_calls[-1]
+    assert bind_batch_calls
+    args, kwargs = bind_batch_calls[-1]
     assert args == (
         sdata_blobs,
-        "blobs_labels",
-        None,
+        (
+            FeatureExtractionTriplet(
+                coordinate_system="global",
+                label_name="blobs_labels",
+                image_name=None,
+                channels=None,
+            ),
+        ),
         "table",
-        "global",
         ("area",),
         "features",
     )
-    assert kwargs == {"channels": None, "overwrite_feature_key": False}
+    assert kwargs == {"overwrite_feature_key": False}
 
 
 def test_feature_extraction_widget_binds_selected_channels_into_controller(
@@ -553,32 +1215,40 @@ def test_feature_extraction_widget_binds_selected_channels_into_controller(
 
     qtbot.addWidget(widget)
 
-    bind_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    bind_batch_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
-    def fake_bind(*args, **kwargs):
-        bind_calls.append((args, kwargs))
+    def fake_bind_batch(*args, **kwargs):
+        bind_batch_calls.append((args, kwargs))
         return True
 
-    widget._feature_extraction_controller.bind = fake_bind  # type: ignore[method-assign]
+    widget._feature_extraction_controller.bind_batch = fake_bind_batch  # type: ignore[method-assign]
 
+    check_coordinate_system(widget, "global")
+    select_segmentation(widget, "global", 0)
+    widget.findChild(QCheckBox, "feature_checkbox_mean").setChecked(True)
     widget.image_combo.setCurrentIndex(1)
-    widget._image_channel_checkboxes[1].setChecked(False)
+    widget._batch_channel_checkboxes[1].setChecked(False)
 
-    assert bind_calls
-    args, kwargs = bind_calls[-1]
+    assert bind_batch_calls
+    args, kwargs = bind_batch_calls[-1]
     assert args == (
         sdata_blobs,
-        "blobs_labels",
-        "blobs_image",
+        (
+            FeatureExtractionTriplet(
+                coordinate_system="global",
+                label_name="blobs_labels",
+                image_name="blobs_image",
+                channels=("0", "2"),
+            ),
+        ),
         "table",
-        "global",
-        (),
+        ("mean",),
         "features",
     )
-    assert kwargs == {"channels": ("0", "2"), "overwrite_feature_key": False}
+    assert kwargs == {"overwrite_feature_key": False}
 
 
-def test_feature_extraction_widget_enables_calculate_button_for_runnable_selection(
+def test_feature_extraction_widget_enables_calculate_for_valid_morphology_batch(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
@@ -587,13 +1257,13 @@ def test_feature_extraction_widget_enables_calculate_button_for_runnable_selecti
 
     qtbot.addWidget(widget)
 
-    assert widget.calculate_button.isEnabled() is False
-
+    check_coordinate_system(widget, "global")
+    select_segmentation(widget, "global", 0)
     widget.findChild(QCheckBox, "feature_checkbox_area").setChecked(True)
     widget.output_key_line_edit.setText("features")
 
     assert widget.calculate_button.isEnabled() is True
-    assert "Calculate the selected features" in widget.calculate_button.toolTip()
+    assert widget.calculate_button.toolTip() == ""
 
 
 def test_feature_extraction_widget_keeps_calculate_disabled_for_intensity_features_without_image(
@@ -605,14 +1275,17 @@ def test_feature_extraction_widget_keeps_calculate_disabled_for_intensity_featur
 
     qtbot.addWidget(widget)
 
+    check_coordinate_system(widget, "global")
+    select_segmentation(widget, "global", 0)
     widget.findChild(QCheckBox, "feature_checkbox_mean").setChecked(True)
     widget.output_key_line_edit.setText("features")
 
     assert widget.calculate_button.isEnabled() is False
-    assert "choose an image" in widget.calculate_button.toolTip()
+    assert "choose an image for every extraction target" in unescape(widget.calculate_button.toolTip()).lower()
+    assert "choose an image" in widget.intensity_features_hint.text()
 
 
-def test_feature_extraction_widget_blocks_when_no_coordinate_system_is_selected(
+def test_feature_extraction_widget_blocks_when_no_coordinate_system_is_checked(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
@@ -623,16 +1296,16 @@ def test_feature_extraction_widget_blocks_when_no_coordinate_system_is_selected(
 
     widget.findChild(QCheckBox, "feature_checkbox_area").setChecked(True)
     widget.output_key_line_edit.setText("features")
-    widget._set_selected_coordinate_system(-1)
+    assert get_coordinate_system_checkbox(widget, "global").isChecked() is False
     widget._bind_current_selection()
 
     assert widget.selected_coordinate_system is None
-    assert "Choose Coordinate System" in widget.selection_status.text()
-    assert "choose a coordinate system" in widget.calculate_button.toolTip().lower()
+    assert "Choose Coordinate Systems" in widget.selection_status.text()
     assert widget.calculate_button.isEnabled() is False
+    assert "choose one or more coordinate systems" in unescape(widget.calculate_button.toolTip()).lower()
 
 
-def test_feature_extraction_widget_calculate_button_click_launches_controller(
+def test_feature_extraction_widget_does_not_launch_controller_while_calculation_is_disabled(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
@@ -653,10 +1326,10 @@ def test_feature_extraction_widget_calculate_button_click_launches_controller(
 
     widget.calculate_button.click()
 
-    assert calls == [False]
+    assert calls == []
 
 
-def test_feature_extraction_widget_calculate_without_existing_key_uses_non_overwrite_run(
+def test_feature_extraction_widget_does_not_launch_non_overwrite_run_while_calculation_is_disabled(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
@@ -677,10 +1350,10 @@ def test_feature_extraction_widget_calculate_without_existing_key_uses_non_overw
 
     widget.calculate_button.click()
 
-    assert overwrite_calls == [False]
+    assert overwrite_calls == []
 
 
-def test_feature_extraction_widget_prompts_before_overwriting_existing_feature_key(
+def test_feature_extraction_widget_does_not_prompt_before_overwriting_while_calculation_is_disabled(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
@@ -708,8 +1381,8 @@ def test_feature_extraction_widget_prompts_before_overwriting_existing_feature_k
 
     widget.calculate_button.click()
 
-    assert prompt_calls == [("existing_features", "table")]
-    assert overwrite_calls == [True]
+    assert prompt_calls == []
+    assert overwrite_calls == []
 
 
 def test_feature_extraction_widget_cancelled_overwrite_does_not_launch_calculation(
@@ -806,7 +1479,7 @@ def test_feature_extraction_widget_clears_when_shared_sdata_is_cleared(
 
     qtbot.addWidget(widget)
 
-    assert widget.segmentation_combo.count() == 2
+    assert widget.segmentation_combo.count() == 0
 
     app_state.clear_sdata()
 

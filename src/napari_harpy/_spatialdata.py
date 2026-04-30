@@ -60,6 +60,27 @@ class SpatialDataImageOption:
 
 
 @dataclass(frozen=True)
+class SpatialDataFeatureExtractionLabelDiscovery:
+    """Feature-extraction label discovery summary for one coordinate system."""
+
+    coordinate_system: str
+    eligible_label_options: list[SpatialDataLabelsOption]
+    coordinate_system_label_count: int
+    unavailable_label_count: int
+
+
+@dataclass(frozen=True)
+class SpatialDataFeatureExtractionImageDiscovery:
+    """Feature-extraction image discovery summary for one `(coordinate system, label)` pair."""
+
+    coordinate_system: str
+    label_name: str
+    eligible_image_options: list[SpatialDataImageOption]
+    coordinate_system_image_count: int
+    unavailable_image_count: int
+
+
+@dataclass(frozen=True)
 class SpatialDataTableMetadata:
     """Metadata that links a table to the labels elements it annotates."""
 
@@ -104,31 +125,101 @@ def get_table_metadata(sdata: SpatialData, table_name: str) -> SpatialDataTableM
     )
 
 
+def get_table_annotated_label_names(sdata: SpatialData, table_name: str) -> list[str]:
+    """Return the labels regions a table declares, validated against available labels."""
+    table_metadata = get_table_metadata(sdata, table_name)
+    available_label_names = set(_get_label_names(sdata))
+    annotated_label_names = sorted(set(table_metadata.regions))
+
+    missing_regions = [label_name for label_name in annotated_label_names if label_name not in available_label_names]
+    if missing_regions:
+        missing = _format_name_list(missing_regions)
+        raise ValueError(
+            f"Table `{table_name}` declares segmentation region(s) {missing}, "
+            "but no matching labels element exists in the selected SpatialData object."
+        )
+
+    return annotated_label_names
+
+
+def validate_table_annotation_coverage(
+    sdata: SpatialData,
+    table_name: str,
+    label_names: Sequence[str],
+) -> SpatialDataTableMetadata:
+    """Validate that a table annotates every requested labels region."""
+    table_metadata = get_table_metadata(sdata, table_name)
+    requested_label_names = _normalize_requested_label_names(label_names)
+    available_label_names = set(_get_label_names(sdata))
+
+    invalid_regions = [label_name for label_name in requested_label_names if label_name not in available_label_names]
+    if invalid_regions:
+        invalid = _format_name_list(invalid_regions)
+        raise ValueError(
+            f"Segmentation region(s) {invalid} are not available in the selected SpatialData object."
+        )
+
+    annotated_label_names = set(get_table_annotated_label_names(sdata, table_name))
+    missing_regions = [label_name for label_name in requested_label_names if label_name not in annotated_label_names]
+    if missing_regions:
+        missing = _format_name_list(missing_regions)
+        raise ValueError(f"Table `{table_name}` does not annotate segmentation region(s) {missing}.")
+
+    return table_metadata
+
+
+def validate_table_region_instance_ids(
+    sdata: SpatialData,
+    table_name: str,
+    *,
+    label_names: Sequence[str] | None = None,
+) -> SpatialDataTableMetadata:
+    """Validate per-region `instance_key` uniqueness for one table."""
+    table = get_table(sdata, table_name)
+    table_metadata = get_table_metadata(sdata, table_name)
+    if table_metadata.region_key not in table.obs.columns:
+        raise ValueError(f"Table `{table_metadata.table_name}` is missing required obs column `{table_metadata.region_key}`.")
+
+    if table_metadata.instance_key not in table.obs.columns:
+        raise ValueError(
+            f"Table `{table_metadata.table_name}` is missing required obs column `{table_metadata.instance_key}`."
+        )
+
+    if label_names is None:
+        regions_to_check = get_table_annotated_label_names(sdata, table_name)
+    else:
+        validate_table_annotation_coverage(sdata, table_name, label_names)
+        regions_to_check = _normalize_requested_label_names(label_names)
+
+    for label_name in regions_to_check:
+        duplicate_labels = _get_duplicate_region_instances(table, table_metadata, label_name)
+        if not duplicate_labels:
+            continue
+
+        preview = _format_duplicate_preview(duplicate_labels)
+        raise ValueError(
+            f"Table `{table_name}` cannot annotate segmentation region `{label_name}` because "
+            f"`{table_metadata.instance_key}` contains duplicate values within that region: {preview}."
+        )
+
+    return table_metadata
+
+
 def validate_table_binding(sdata: SpatialData, label_name: str, table_name: str) -> SpatialDataTableMetadata:
     """Validate that a table can be safely bound to a selected labels element."""
     table = get_table(sdata, table_name)
-    table_metadata = get_table_metadata(sdata, table_name)
-
-    if not table_metadata.annotates(label_name):
-        raise ValueError(f"Table `{table_name}` does not annotate segmentation `{label_name}`.")
-
+    table_metadata = validate_table_annotation_coverage(sdata, table_name, [label_name])
     if table_metadata.region_key not in table.obs.columns:
-        raise ValueError(f"Table `{table_name}` is missing required obs column `{table_metadata.region_key}`.")
+        raise ValueError(f"Table `{table_metadata.table_name}` is missing required obs column `{table_metadata.region_key}`.")
 
     if table_metadata.instance_key not in table.obs.columns:
-        raise ValueError(f"Table `{table_name}` is missing required obs column `{table_metadata.instance_key}`.")
+        raise ValueError(
+            f"Table `{table_metadata.table_name}` is missing required obs column `{table_metadata.instance_key}`."
+        )
 
-    region_rows = table.obs.loc[table.obs[table_metadata.region_key] == label_name]
-    if region_rows.empty:
-        return table_metadata
-
-    region_instances = region_rows[table_metadata.instance_key]
-    duplicate_instances = region_instances[region_instances.duplicated(keep=False)]
-    if not duplicate_instances.empty:
-        duplicate_labels = duplicate_instances.astype("string").drop_duplicates().tolist()
-        preview = ", ".join(duplicate_labels[:5])
-        if len(duplicate_labels) > 5:
-            preview += ", ..."
+    duplicate_labels = _get_duplicate_region_instances(table, table_metadata, label_name)
+    if duplicate_labels:
+        preview = _format_duplicate_preview(duplicate_labels)
         raise ValueError(
             f"Table `{table_name}` cannot be bound to segmentation `{label_name}` because `{table_metadata.instance_key}` "
             f"contains duplicate values within that region: {preview}."
@@ -275,6 +366,35 @@ def get_spatialdata_label_options_for_coordinate_system_from_sdata(
         if coordinate_system in _get_element_coordinate_systems(sdata.labels[label_name])
     ]
 
+def get_spatialdata_feature_extraction_label_discovery_for_coordinate_system_from_sdata(
+    *,
+    sdata: SpatialData,
+    coordinate_system: str,
+) -> SpatialDataFeatureExtractionLabelDiscovery:
+    """Return feature-extraction label discovery summary for one coordinate system."""
+    coordinate_system_label_names = [
+        label_name
+        for label_name in _get_label_names(sdata)
+        if coordinate_system in _get_element_coordinate_systems(sdata.labels[label_name])
+    ]
+    eligible_label_options = [
+        SpatialDataLabelsOption(
+            label_name=label_name,
+            display_name=label_name,
+            sdata=sdata,
+            coordinate_systems=_get_element_coordinate_systems(sdata.labels[label_name]),
+        )
+        for label_name in coordinate_system_label_names
+        if _is_feature_extraction_transform_supported(sdata.labels[label_name], coordinate_system)
+    ]
+    coordinate_system_label_count = len(coordinate_system_label_names)
+    return SpatialDataFeatureExtractionLabelDiscovery(
+        coordinate_system=coordinate_system,
+        eligible_label_options=eligible_label_options,
+        coordinate_system_label_count=coordinate_system_label_count,
+        unavailable_label_count=coordinate_system_label_count - len(eligible_label_options),
+    )
+
 
 def get_spatialdata_image_options_for_coordinate_system_from_sdata(
     *,
@@ -292,6 +412,61 @@ def get_spatialdata_image_options_for_coordinate_system_from_sdata(
         for image_name in _get_image_names(sdata)
         if coordinate_system in _get_element_coordinate_systems(sdata.images[image_name])
     ]
+
+def get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata(
+    *,
+    sdata: SpatialData,
+    coordinate_system: str,
+    label_name: str,
+) -> SpatialDataFeatureExtractionImageDiscovery:
+    """Return feature-extraction image discovery summary for one `(coordinate system, label)` pair."""
+    available_label_names = _get_label_names(sdata)
+    if label_name not in available_label_names:
+        raise ValueError(f"Labels element `{label_name}` is not available in the selected SpatialData object.")
+
+    label_element = sdata.labels[label_name]
+    if coordinate_system not in _get_element_coordinate_systems(label_element):
+        raise ValueError(
+            f"Labels element `{label_name}` is not available in coordinate system `{coordinate_system}`."
+        )
+
+    label_shape = _get_spatial_shape(label_element)
+    label_affine = _get_feature_extraction_affine_matrix(label_element, coordinate_system)
+    coordinate_system_image_names = [
+        image_name
+        for image_name in _get_image_names(sdata)
+        if coordinate_system in _get_element_coordinate_systems(sdata.images[image_name])
+    ]
+
+    matches: list[SpatialDataImageOption] = []
+    if label_affine is not None and label_shape:
+        for image_name in coordinate_system_image_names:
+            image_element = sdata.images[image_name]
+            image_shape = _get_spatial_shape(image_element)
+            if image_shape != label_shape:
+                continue
+
+            image_affine = _get_feature_extraction_affine_matrix(image_element, coordinate_system)
+            if image_affine is None or not np.allclose(image_affine, label_affine):
+                continue
+
+            matches.append(
+                SpatialDataImageOption(
+                    image_name=image_name,
+                    display_name=image_name,
+                    sdata=sdata,
+                    coordinate_systems=(coordinate_system,),
+                )
+            )
+
+    coordinate_system_image_count = len(coordinate_system_image_names)
+    return SpatialDataFeatureExtractionImageDiscovery(
+        coordinate_system=coordinate_system,
+        label_name=label_name,
+        eligible_image_options=matches,
+        coordinate_system_image_count=coordinate_system_image_count,
+        unavailable_image_count=coordinate_system_image_count - len(matches),
+    )
 
 
 def _get_table_model_attrs(table: AnnData, table_name: str) -> dict[str, Any]:
@@ -517,6 +692,122 @@ def _get_label_names(sdata: SpatialData) -> list[str]:
 def _get_image_names(sdata: SpatialData) -> list[str]:
     images = getattr(sdata, "images", {})
     return sorted(images.keys())
+
+
+def _normalize_requested_label_names(label_names: Sequence[str]) -> list[str]:
+    return sorted({str(label_name) for label_name in label_names})
+
+
+def _format_name_list(names: Sequence[str]) -> str:
+    return ", ".join(f"`{name}`" for name in names)
+
+
+def _format_duplicate_preview(duplicate_labels: Sequence[Any]) -> str:
+    normalized_labels = [str(label) for label in duplicate_labels[:5]]
+    preview = ", ".join(normalized_labels)
+    if len(duplicate_labels) > 5:
+        preview += ", ..."
+    return preview
+
+
+def _get_duplicate_region_instances(
+    table: AnnData,
+    table_metadata: SpatialDataTableMetadata,
+    label_name: str,
+) -> list[Any]:
+    region_rows = table.obs.loc[table.obs[table_metadata.region_key] == label_name]
+    if region_rows.empty:
+        return []
+
+    region_instances = region_rows[table_metadata.instance_key]
+    duplicate_instances = region_instances[region_instances.duplicated(keep=False)]
+    if duplicate_instances.empty:
+        return []
+
+    return duplicate_instances.drop_duplicates().tolist()
+
+
+def _get_reference_array(element: Any) -> Any:
+    if isinstance(element, DataArray):
+        return element
+
+    try:
+        scale0 = element["scale0"]
+    except Exception:  # noqa: BLE001
+        return element
+
+    try:
+        return next(iter(scale0.values()))
+    except Exception:  # noqa: BLE001
+        return element
+
+
+def _get_spatial_axes(element: Any) -> tuple[str, ...]:
+    axes = set(get_axes_names(_get_reference_array(element)))
+    if "x" not in axes or "y" not in axes:
+        return ()
+
+    return tuple(axis for axis in ("z", "y", "x") if axis in axes)
+
+
+def _get_spatial_shape(element: Any) -> tuple[int, ...]:
+    reference = _get_reference_array(element)
+    axes = get_axes_names(reference)
+    shape = getattr(reference, "shape", None)
+    if shape is None:
+        return ()
+
+    size_by_axis = {
+        axis: int(size)
+        for axis, size in zip(axes, shape, strict=False)
+        if axis in {"z", "y", "x"}
+    }
+    return tuple(size_by_axis[axis] for axis in ("z", "y", "x") if axis in size_by_axis)
+
+
+def _get_feature_extraction_affine_matrix(element: Any, coordinate_system: str) -> np.ndarray | None:
+    spatial_axes = _get_spatial_axes(element)
+    if not spatial_axes:
+        return None
+
+    transform = get_transformation(element, get_all=True).get(coordinate_system)
+    if transform is None:
+        return None
+
+    try:
+        matrix = np.asarray(transform.to_affine_matrix(input_axes=spatial_axes, output_axes=spatial_axes), dtype=float)
+    except Exception:  # noqa: BLE001
+        return None
+
+    if not _is_pure_xy_translation_affine(matrix, spatial_axes):
+        return None
+
+    return matrix
+
+
+def _is_feature_extraction_transform_supported(element: Any, coordinate_system: str) -> bool:
+    return _get_feature_extraction_affine_matrix(element, coordinate_system) is not None
+
+
+def _is_pure_xy_translation_affine(matrix: np.ndarray, spatial_axes: Sequence[str]) -> bool:
+    axis_count = len(spatial_axes)
+    if matrix.shape != (axis_count + 1, axis_count + 1):
+        return False
+
+    linear = matrix[:-1, :-1]
+    if not np.allclose(linear, np.eye(axis_count)):
+        return False
+
+    expected_last_row = np.zeros(axis_count + 1, dtype=float)
+    expected_last_row[-1] = 1.0
+    if not np.allclose(matrix[-1], expected_last_row):
+        return False
+
+    for index, axis in enumerate(spatial_axes):
+        if axis not in {"x", "y"} and not np.allclose(matrix[index, -1], 0.0):
+            return False
+
+    return True
 
 
 def _get_element_coordinate_systems(element: Any) -> tuple[str, ...]:
