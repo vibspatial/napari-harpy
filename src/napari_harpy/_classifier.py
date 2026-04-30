@@ -51,6 +51,29 @@ RANDOM_FOREST_PARAMS = {
     "n_jobs": 1,
 }
 
+# Slice-1 implementation checklist for
+# `Roadmap/multiple_coordinate_systems/object_classifier.md`:
+#
+# 1. Add `ClassifierScopeMode`, `ResolvedClassifierScope`, and
+#    `ResolvedClassifierScopes`.
+# 2. Extend `ClassifierController.bind(...)` with
+#    `training_scope="selected_segmentation_only"` and
+#    `prediction_scope="selected_segmentation_only"` defaults.
+# 3. Refactor `_prepare_classifier_job(...)` into helper steps that:
+#    - resolve scope regions;
+#    - count raw in-scope rows;
+#    - normalize the selected feature matrix;
+#    - filter scope rows down to feature-valid `table_row_positions`;
+#    - build the final training / prediction scope objects.
+# 4. Keep `ResolvedClassifierScope.table_row_positions` as the one
+#    authoritative feature-valid row-position set per resolved scope.
+# 5. Rename internal `active_*` concepts toward prediction-specific names
+#    without changing runtime behavior yet.
+# 6. Keep persisted classifier metadata and reload semantics backward
+#    compatible for now; the richer scope metadata lands in a later slice.
+# 7. Update tests to preserve today's single-segmentation behavior while
+#    the internal controller model changes.
+
 
 @dataclass(frozen=True)
 class TrainingEligibility:
