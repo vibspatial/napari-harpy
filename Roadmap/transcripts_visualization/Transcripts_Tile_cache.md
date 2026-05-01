@@ -172,6 +172,26 @@ level_file: string
 is_exact: bool
 ```
 
+A Parquet row group is a chunk of rows inside one level file such as `levels/level_2.parquet`. It is not a separate file and it is not a single row. `manifest.parquet` is the lookup table that says which tile each row group belongs to, which level file contains it, and how many point rows it stores.
+
+In the simple case, one tile corresponds to one row group, so one tile gives one manifest row. For example:
+
+```text
+level_2.parquet
+  row_group 0 = tile (3, 1), 83 rows
+  row_group 1 = tile (4, 1), 21 rows
+```
+
+The matching `manifest.parquet` rows would be:
+
+```text
+level  tile_x  tile_y  n_points  row_group  level_file       is_exact
+2      3       1       83        0          level_2.parquet  true
+2      4       1       21        1          level_2.parquet  true
+```
+
+If one tile is too dense and must be split across multiple row groups, then `manifest.parquet` contains multiple rows with the same `level`, `tile_x`, and `tile_y`, but different `row_group` values.
+
 Recommended extra column:
 
 ```text
