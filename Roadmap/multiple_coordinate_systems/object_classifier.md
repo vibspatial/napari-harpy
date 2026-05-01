@@ -557,17 +557,46 @@ Scope:
   existing training-scope control does now;
 - enable and disable the prediction-scope combo under the same conditions as
   the training-scope combo;
-- when `all` is selected, show clear warning copy that rows outside the visible
-  coordinate system may be updated;
-- reflect the resolved prediction-row count in the existing status / feedback
-  area before the user clicks `Train Classifier`;
+- add one small inline warning label near the retrain area, separate from the
+  existing `classifier_feedback` card;
+- keep the warning UX lightweight in this slice:
+  - no modal confirmation
+  - no richer slice-8 status-card system yet
+- show the inline warning only when:
+  - `prediction_scope == "all"`
+  - and the requested prediction scope reaches at least one region beyond the
+    selected segmentation
+- hide the inline warning when:
+  - `prediction_scope == "selected_segmentation_only"`
+  - or the selected table effectively resolves only to the current
+    segmentation
+- use warning copy that reflects slice-5 writeback semantics, not only that
+  "more rows get predictions";
+  recommended visible shape:
+  - `Prediction scope covers N row(s) across M region(s).`
+  - `Eligible rows will receive fresh predictions; other in-scope rows with invalid features will be cleared. Some updates may not be visible in the current selection.`
+- add one small controller-facing preflight API so the widget can render that
+  warning and count information before the user clicks `Train Classifier`;
+- do not parse `status_message` in the widget for this;
+- add a lightweight side-effect-free accessor on `ClassifierController`, such
+  as `current_preflight()` or `describe_current_preflight()`, that returns
+  structured scope data for the current selection;
+- have that accessor expose at least:
+  - `training_scope`
+  - `prediction_scope`
+  - optionally `ClassifierPreparationSummary`
+- extract the non-worker, non-feature-slicing parts of
+  `_prepare_classifier_job(...)` so the widget can ask for scope counts and
+  regions without constructing full training arrays on every refresh;
 - update tooltips so the button text still describes one action even when the
   training and prediction scopes differ.
 
 Files:
 
 - `src/napari_harpy/widgets/_object_classification_widget.py`
+- `src/napari_harpy/_classifier.py`
 - `tests/test_widget.py`
+- `tests/test_classifier.py`
 
 Expected outcome:
 
@@ -575,6 +604,8 @@ Expected outcome:
 - selected-segmentation-only prediction remains the safe default;
 - the widget owns an explicit prediction-scope selection and passes it into the
   existing controller binding flow;
+- the widget can render hidden-write warning copy from structured controller
+  preflight data rather than parsing controller status text;
 - the widget communicates hidden-row writes before they happen, not only after.
 - this is the natural point to re-enable `Train Classifier` if it was disabled
   during earlier refactor slices.
