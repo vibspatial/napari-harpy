@@ -447,6 +447,15 @@ Scope:
   eligible table regions;
 - update worker result application so prediction writes target the resolved
   prediction table-row positions, not the old single-region `active_positions`;
+- make prediction writeback semantics explicit for partially eligible scopes:
+  - first clear predictions for all rows covered by the requested
+    `prediction_regions`
+  - then write fresh predictions only for
+    `prediction_scope.table_row_positions`
+  - as a result:
+    - eligible in-scope rows receive fresh predictions
+    - in-scope but feature-invalid rows become unlabeled / `NaN`
+    - out-of-scope rows remain untouched
 - update ineligible-state handling so it reasons about prediction-target rows
   explicitly;
 - make ineligible runs persist the full attempted scope metadata too:
