@@ -543,10 +543,20 @@ Goal:
 Scope:
 
 - add a `Prediction scope` control to the widget;
+- place it directly below `Training scope` in the selector form;
 - default it to `Selected segmentation only`;
 - expose the two modes only:
   - `Selected segmentation only`
   - `All eligible regions in table`
+- store the widget selection as `self._selected_prediction_scope`, defaulting
+  to `DEFAULT_PREDICTION_SCOPE`;
+- thread `prediction_scope=self.selected_prediction_scope` through both
+  classifier `bind(...)` call sites in
+  `_object_classification_widget.py`;
+- mark the classifier stale when prediction scope changes, exactly like the
+  existing training-scope control does now;
+- enable and disable the prediction-scope combo under the same conditions as
+  the training-scope combo;
 - when `all` is selected, show clear warning copy that rows outside the visible
   coordinate system may be updated;
 - reflect the resolved prediction-row count in the existing status / feedback
@@ -557,13 +567,14 @@ Scope:
 Files:
 
 - `src/napari_harpy/widgets/_object_classification_widget.py`
-- `src/napari_harpy/_classifier.py`
 - `tests/test_widget.py`
 
 Expected outcome:
 
 - complete-table prediction is opt-in and obvious;
 - selected-segmentation-only prediction remains the safe default;
+- the widget owns an explicit prediction-scope selection and passes it into the
+  existing controller binding flow;
 - the widget communicates hidden-row writes before they happen, not only after.
 - this is the natural point to re-enable `Train Classifier` if it was disabled
   during earlier refactor slices.
