@@ -200,20 +200,32 @@ tx_parent(l) = tx_leaf // 2^(L - l)
 ty_parent(l) = ty_leaf // 2^(L - l)
 ```
 
-This means the pyramid can be built bottom-up.
+This relationship means the pyramid could be built bottom-up, but the first implementation does not need to do that.
 
-Recommended construction:
+Recommended first implementation:
 
 - `level L`: exact leaf tiles, grouped by finest `tile_id`
-- `level < L`: sampled parent tiles, built from child tiles
+- `level < L`: sampled parent tiles, computed directly from the exact source dataframe at that level
 
-For each parent tile:
+For each coarse tile:
 
-1. gather points from its child tiles
-2. choose a bounded representative sample
-3. store only that sample at the parent level
+1. gather the exact source points whose membership at level `l` falls in that tile
+2. subdivide the tile into a fixed micro-grid
+3. assign a bounded sample budget across the occupied micro-grid cells
+4. choose deterministic representative points within each occupied micro-grid cell
+5. store only that sampled subset at the parent level
 
-The first implementation should prefer a spatially stratified sample over naive random sampling, so zoomed-out views remain spatially even and do not clump.
+For the first implementation, this sample should be spatially stratified rather than a whole-tile random or hash sample, so zoomed-out views remain spatially even and do not clump.
+
+A good first policy is:
+
+- give each occupied micro-grid cell at least one point when the per-tile budget allows;
+- distribute the remaining budget approximately in proportion to cell occupancy;
+- choose representatives within each cell deterministically using a stable content-derived ordering from `transcript_id` when available, and otherwise from `(x, y, gene_id)`.
+
+This direct-from-source approach implies an additional offline pass over the exact table per coarse level, but it avoids compounding sampling artifacts from already sampled parent levels and keeps the writer simpler.
+
+Why not build parent levels recursively from already sampled child levels? That would usually reduce build cost, but it also means sampling error compounds across the pyramid. Once a sparse region or rare structure disappears at one sampled level, coarser levels cannot recover it. For the first implementation, it is safer to spend more offline build time so that each coarse level is an independent summary of the exact source data.
 
 One important caveat is gene filtering:
 
