@@ -433,7 +433,7 @@ Expected outcome:
 
 ### 5. Add Prediction Scope Support in the Controller and Metadata
 
-Status: [ ] Planned
+Status: [x] Implemented
 
 Goal:
 

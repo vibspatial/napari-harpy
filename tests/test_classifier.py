@@ -94,12 +94,14 @@ def _resolved_scope(
     positions: np.ndarray | list[int] | tuple[int, ...],
     *,
     label_name: str = "blobs_labels",
+    mode: classifier_module.ClassifierScopeMode = "selected_segmentation_only",
+    regions: tuple[str, ...] | None = None,
     n_rows_in_regions: int | None = None,
 ) -> classifier_module.ResolvedClassifierScope:
     table_row_positions = np.asarray(positions, dtype=np.int64)
     return classifier_module.ResolvedClassifierScope(
-        mode="selected_segmentation_only",
-        regions=(label_name,),
+        mode=mode,
+        regions=(label_name,) if regions is None else regions,
         table_row_positions=table_row_positions,
         n_rows_in_regions=int(table_row_positions.size if n_rows_in_regions is None else n_rows_in_regions),
     )
@@ -266,6 +268,57 @@ def test_classifier_controller_default_table_wide_training_excludes_invalid_rows
     assert job.summary.eligible is True
 
 
+def test_classifier_controller_prediction_scope_all_clears_invalid_rows_in_scope(
+    qtbot, sdata_blobs_multi_region: SpatialData
+) -> None:
+    _set_user_classes_by_region(
+        sdata_blobs_multi_region,
+        {
+            ("blobs_labels", 1): 1,
+            ("blobs_labels", 2): 1,
+            ("blobs_labels", 24): 2,
+            ("blobs_labels", 25): 2,
+        },
+    )
+    _set_invalid_feature_rows_for_region(sdata_blobs_multi_region, region_name="blobs_labels_2")
+    table = sdata_blobs_multi_region["table_multi"]
+    table.obs[PRED_CLASS_COLUMN] = pd.Categorical(np.full(table.n_obs, 9, dtype=np.int64), categories=[0, 9])
+    table.obs[PRED_CONFIDENCE_COLUMN] = pd.Series(np.full(table.n_obs, 0.55), index=table.obs.index, dtype="float64")
+
+    controller = ClassifierController(debounce_interval_ms=0)
+    controller.bind(
+        sdata_blobs_multi_region,
+        "blobs_labels",
+        "table_multi",
+        "features_1",
+        prediction_scope="all",
+    )
+    controller.schedule_retrain(immediate=True)
+
+    region_values = table.obs["region"].astype("string")
+    valid_rows = region_values == "blobs_labels"
+    invalid_rows = region_values == "blobs_labels_2"
+
+    qtbot.waitUntil(
+        lambda: (
+            CLASSIFIER_CONFIG_KEY in table.uns
+            and table.uns[CLASSIFIER_CONFIG_KEY].get("trained") is True
+            and controller.status_kind == "success"
+        ),
+        timeout=5000,
+    )
+
+    assert table.obs.loc[valid_rows, PRED_CLASS_COLUMN].astype("string").ne("0").all()
+    assert table.obs.loc[valid_rows, PRED_CONFIDENCE_COLUMN].between(0.0, 1.0).all()
+    assert table.obs.loc[invalid_rows, PRED_CLASS_COLUMN].eq(0).all()
+    assert table.obs.loc[invalid_rows, PRED_CONFIDENCE_COLUMN].isna().all()
+    assert table.uns[CLASSIFIER_CONFIG_KEY]["prediction_scope"] == "all"
+    assert table.uns[CLASSIFIER_CONFIG_KEY]["prediction_regions"] == ["blobs_labels", "blobs_labels_2"]
+    assert table.uns[CLASSIFIER_CONFIG_KEY]["n_predicted_rows"] == int(valid_rows.sum())
+    assert table.uns[CLASSIFIER_CONFIG_KEY]["training_scope"] == "all"
+    assert table.uns[CLASSIFIER_CONFIG_KEY]["n_training_rows"] == int(valid_rows.sum())
+
+
 def test_classifier_controller_resets_predictions_when_only_one_class_is_labeled(
     qtbot, sdata_blobs: SpatialData
 ) -> None:
@@ -336,6 +389,7 @@ def test_classifier_controller_drops_stale_results(qtbot, monkeypatch, sdata_blo
             feature_key=job.feature_key,
             label_name=job.label_name,
             table_name=job.table_name,
+            training_scope=job.training_scope,
             prediction_scope=job.prediction_scope,
             pred_classes=pred_class,
             pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.9, dtype=np.float64),
@@ -377,6 +431,7 @@ def test_classifier_controller_bind_is_passive_until_marked_dirty(qtbot, monkeyp
             feature_key=job.feature_key,
             label_name=job.label_name,
             table_name=job.table_name,
+            training_scope=job.training_scope,
             prediction_scope=job.prediction_scope,
             pred_classes=np.full(job.prediction_scope.table_row_positions.shape, 1, dtype=np.int64),
             pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.9, dtype=np.float64),
@@ -435,6 +490,8 @@ def test_classifier_controller_notifies_table_state_change_when_training_errors(
     assert table_state_changes == ["changed"]
     assert sdata_blobs["table"].uns[CLASSIFIER_CONFIG_KEY]["trained"] is False
     assert "boom" in sdata_blobs["table"].uns[CLASSIFIER_CONFIG_KEY]["reason"]
+    assert sdata_blobs["table"].uns[CLASSIFIER_CONFIG_KEY]["training_scope"] == "all"
+    assert sdata_blobs["table"].uns[CLASSIFIER_CONFIG_KEY]["prediction_scope"] == "selected_segmentation_only"
 
 
 def test_classifier_controller_freeze_for_reload_cancels_pending_debounce(
@@ -476,6 +533,7 @@ def test_classifier_controller_invalidates_pending_work_for_selected_feature_mat
         feature_key="features_1",
         label_name="blobs_labels",
         table_name="table",
+        training_scope=_resolved_scope([0, 1]),
         prediction_scope=_resolved_scope([0, 1]),
         pred_classes=np.array([1, 2], dtype=np.int64),
         pred_confidences=np.array([0.9, 0.8], dtype=np.float64),
@@ -524,6 +582,7 @@ def test_classifier_controller_reset_after_reload_ignores_late_worker_results(
             feature_key=job.feature_key,
             label_name=job.label_name,
             table_name=job.table_name,
+            training_scope=job.training_scope,
             prediction_scope=job.prediction_scope,
             pred_classes=np.full(job.prediction_scope.table_row_positions.shape, 1, dtype=np.int64),
             pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.91, dtype=np.float64),
@@ -562,17 +621,21 @@ def test_classifier_controller_reset_after_reload_ignores_late_worker_results(
         "model_type": "RandomForestClassifier",
         "feature_key": "features_1",
         "table_name": "table",
-        "label_name": "blobs_labels",
         "roi_mode": "none",
         "trained": True,
         "eligible": True,
         "reason": "Ready to train.",
         "training_timestamp": "2026-04-13T09:00:00+00:00",
         "n_labeled_objects": 4,
-        "n_active_objects": int(table.n_obs),
         "n_features": 2,
         "class_labels_seen": [1, 2],
         "rf_params": dict(classifier_module.RANDOM_FOREST_PARAMS),
+        "training_scope": "all",
+        "training_regions": ["blobs_labels"],
+        "n_training_rows": int(table.n_obs),
+        "prediction_scope": "selected_segmentation_only",
+        "prediction_regions": ["blobs_labels"],
+        "n_predicted_rows": int(table.n_obs),
     }
 
     controller.reset_after_reload()
@@ -585,11 +648,35 @@ def test_classifier_controller_reset_after_reload_ignores_late_worker_results(
         == f"Classifier: model is up to date. Loaded predictions for {table.n_obs} objects from disk."
     )
 
-    worker.emit_returned()
 
-    assert table.obs[PRED_CLASS_COLUMN].eq(2).all()
-    assert table.obs[PRED_CONFIDENCE_COLUMN].eq(0.77).all()
-    assert (
-        controller.status_message
-        == f"Classifier: model is up to date. Loaded predictions for {table.n_obs} objects from disk."
-    )
+def test_classifier_controller_reset_after_reload_marks_stale_when_prediction_scope_differs(
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs["table"]
+    table.uns[CLASSIFIER_CONFIG_KEY] = {
+        "model_type": "RandomForestClassifier",
+        "feature_key": "features_1",
+        "table_name": "table",
+        "roi_mode": "none",
+        "trained": True,
+        "eligible": True,
+        "reason": "Ready to train.",
+        "training_timestamp": "2026-04-13T09:00:00+00:00",
+        "n_labeled_objects": 4,
+        "n_features": 2,
+        "class_labels_seen": [1, 2],
+        "rf_params": dict(classifier_module.RANDOM_FOREST_PARAMS),
+        "training_scope": "all",
+        "training_regions": ["blobs_labels"],
+        "n_training_rows": int(table.n_obs),
+        "prediction_scope": "all",
+        "prediction_regions": ["blobs_labels"],
+        "n_predicted_rows": int(table.n_obs),
+    }
+
+    controller = ClassifierController(debounce_interval_ms=0)
+    controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
+    controller.reset_after_reload()
+
+    assert controller.is_dirty is True
+    assert "prediction scope `all`" in controller.status_message

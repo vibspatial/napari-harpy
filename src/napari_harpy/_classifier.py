@@ -146,6 +146,7 @@ class ClassifierJobResult:
     feature_key: str
     label_name: str
     table_name: str
+    training_scope: ResolvedClassifierScope
     prediction_scope: ResolvedClassifierScope
     pred_classes: np.ndarray
     pred_confidences: np.ndarray
@@ -174,6 +175,7 @@ def _fit_classifier_job(job: ClassifierJob) -> ClassifierJobResult:
         feature_key=job.feature_key,
         label_name=job.label_name,
         table_name=job.table_name,
+        training_scope=job.training_scope,
         prediction_scope=job.prediction_scope,
         pred_classes=pred_classes,
         pred_confidences=pred_confidences,
@@ -209,6 +211,7 @@ class ClassifierController:
         self._latest_requested_job_id = 0
         self._active_worker_job_id: int | None = None
         self._active_worker: Any | None = None
+        self._active_job: ClassifierJob | None = None
         self._is_dirty = False
 
         self._status_message = "Classifier: choose an annotation table and feature matrix."
@@ -368,11 +371,12 @@ class ClassifierController:
 
         summary = job.summary
         if not summary.eligible:
-            self._apply_ineligible_state(summary, job.prediction_scope)
+            self._apply_ineligible_state(job)
             return
 
         worker = self._create_training_worker(job)
         self._active_worker = worker
+        self._active_job = job
         self._active_worker_job_id = job_id
         worker.returned.connect(partial(self._on_worker_returned, job_id))
         worker.errored.connect(partial(self._on_worker_errored, job_id))
@@ -655,36 +659,28 @@ class ClassifierController:
 
     def _apply_ineligible_state(
         self,
-        summary: ClassifierPreparationSummary,
-        prediction_scope: ResolvedClassifierScope | None = None,
+        job: ClassifierJob,
     ) -> None:
         table = self._get_bound_table()
         if table is None:
-            self._set_status(f"Classifier: {summary.reason}", kind="warning")
+            self._set_status(f"Classifier: {job.summary.reason}", kind="warning")
             return
 
         self._ensure_prediction_columns(table)
-        if prediction_scope is not None and self._selected_table_metadata is not None:
-            prediction_table_row_positions = _resolve_region_row_positions(
-                table.obs,
-                self._selected_table_metadata.region_key,
-                prediction_scope.regions,
-            )
-            self._set_predictions_for_prediction_rows(
-                table,
-                prediction_table_row_positions,
-                np.full(prediction_table_row_positions.shape, UNLABELED_CLASS, dtype=np.int64),
-                np.full(prediction_table_row_positions.shape, np.nan, dtype=np.float64),
-            )
+        self._clear_predictions_for_prediction_regions(table, job.prediction_scope.regions)
 
         table.uns[CLASSIFIER_CONFIG_KEY] = self._build_classifier_config(
-            summary=summary,
+            feature_key=job.feature_key,
+            table_name=job.table_name,
+            training_scope=job.training_scope,
+            prediction_scope=job.prediction_scope,
+            summary=job.summary,
             trained=False,
             trained_at=None,
         )
         self._notify_table_state_changed()
         self._is_dirty = True
-        self._set_status(f"Classifier: {summary.reason}", kind="warning")
+        self._set_status(f"Classifier: {job.summary.reason}", kind="warning")
 
     def _on_worker_returned(self, job_id: int, result: ClassifierJobResult) -> None:
         if job_id != self._latest_requested_job_id or job_id != self._active_worker_job_id:
@@ -695,6 +691,7 @@ class ClassifierController:
             return
 
         self._ensure_prediction_columns(table)
+        self._clear_predictions_for_prediction_regions(table, result.prediction_scope.regions)
         self._set_predictions_for_prediction_rows(
             table,
             result.prediction_scope.table_row_positions,
@@ -702,6 +699,10 @@ class ClassifierController:
             result.pred_confidences,
         )
         table.uns[CLASSIFIER_CONFIG_KEY] = self._build_classifier_config(
+            feature_key=result.feature_key,
+            table_name=result.table_name,
+            training_scope=result.training_scope,
+            prediction_scope=result.prediction_scope,
             summary=result.summary,
             trained=True,
             trained_at=result.trained_at,
@@ -719,16 +720,25 @@ class ClassifierController:
 
         table = self._get_bound_table()
         if table is not None:
+            active_job = self._active_job
             table.uns[CLASSIFIER_CONFIG_KEY] = self._build_classifier_config(
+                feature_key=None if active_job is None else active_job.feature_key,
+                table_name=None if active_job is None else active_job.table_name,
+                training_scope=None if active_job is None else active_job.training_scope,
+                prediction_scope=None if active_job is None else active_job.prediction_scope,
                 summary=ClassifierPreparationSummary(
                     eligible=False,
                     reason=str(error),
-                    resolved_training_row_count=0,
-                    resolved_prediction_row_count=0,
-                    training_region_count=0,
-                    labeled_count=0,
-                    class_labels=(),
-                    n_features=None,
+                    resolved_training_row_count=(
+                        0 if active_job is None else active_job.summary.resolved_training_row_count
+                    ),
+                    resolved_prediction_row_count=(
+                        0 if active_job is None else active_job.summary.resolved_prediction_row_count
+                    ),
+                    training_region_count=0 if active_job is None else active_job.summary.training_region_count,
+                    labeled_count=0 if active_job is None else active_job.summary.labeled_count,
+                    class_labels=() if active_job is None else active_job.summary.class_labels,
+                    n_features=None if active_job is None else active_job.summary.n_features,
                 ),
                 trained=False,
                 trained_at=None,
@@ -742,6 +752,7 @@ class ClassifierController:
             return
 
         self._active_worker = None
+        self._active_job = None
         self._active_worker_job_id = None
         if self._on_state_changed is not None:
             self._on_state_changed()
@@ -762,6 +773,7 @@ class ClassifierController:
         if callable(quit_worker):
             quit_worker()
         self._active_worker = None
+        self._active_job = None
         self._active_worker_job_id = None
 
     def _create_training_worker(self, job: ClassifierJob) -> Any:
@@ -793,28 +805,56 @@ class ClassifierController:
         _set_pred_class_annotation_state(table, pred_class_values)
         table.obs[PRED_CONFIDENCE_COLUMN] = pred_confidence_values
 
+    def _clear_predictions_for_prediction_regions(
+        self,
+        table: AnnData,
+        prediction_regions: tuple[str, ...],
+    ) -> None:
+        if self._selected_table_metadata is None:
+            return
+
+        prediction_table_row_positions = _resolve_region_row_positions(
+            table.obs,
+            self._selected_table_metadata.region_key,
+            prediction_regions,
+        )
+        self._set_predictions_for_prediction_rows(
+            table,
+            prediction_table_row_positions,
+            np.full(prediction_table_row_positions.shape, UNLABELED_CLASS, dtype=np.int64),
+            np.full(prediction_table_row_positions.shape, np.nan, dtype=np.float64),
+        )
+
     def _build_classifier_config(
         self,
         *,
+        feature_key: str | None,
+        table_name: str | None,
+        training_scope: ResolvedClassifierScope | None,
+        prediction_scope: ResolvedClassifierScope | None,
         summary: ClassifierPreparationSummary,
         trained: bool,
         trained_at: str | None,
     ) -> dict[str, object]:
         return {
             "model_type": "RandomForestClassifier",
-            "feature_key": self._selected_feature_key,
-            "table_name": self._selected_table_name,
-            "label_name": self._selected_label_name,
+            "feature_key": feature_key,
+            "table_name": table_name,
             "roi_mode": "none",
             "trained": trained,
             "eligible": summary.eligible,
             "reason": summary.reason,
             "training_timestamp": trained_at,
             "n_labeled_objects": summary.labeled_count,
-            "n_active_objects": summary.resolved_prediction_row_count,
             "n_features": summary.n_features,
             "class_labels_seen": list(summary.class_labels),
             "rf_params": dict(RANDOM_FOREST_PARAMS),
+            "training_scope": None if training_scope is None else training_scope.mode,
+            "training_regions": [] if training_scope is None else list(training_scope.regions),
+            "n_training_rows": summary.resolved_training_row_count,
+            "prediction_scope": None if prediction_scope is None else prediction_scope.mode,
+            "prediction_regions": [] if prediction_scope is None else list(prediction_scope.regions),
+            "n_predicted_rows": summary.resolved_prediction_row_count,
         }
 
     def _set_status(self, message: str, *, kind: str) -> None:
@@ -878,15 +918,17 @@ class ClassifierController:
                 f"loaded predictions target table `{config_table_name}` but `{self._selected_table_name}` is selected"
             )
 
-        config_label_name = config.get("label_name")
-        if (
-            isinstance(config_label_name, str)
-            and self._selected_label_name is not None
-            and config_label_name != self._selected_label_name
-        ):
+        config_prediction_scope = config.get("prediction_scope")
+        if not isinstance(config_prediction_scope, str):
+            mismatches.append("loaded predictions do not describe their prediction scope")
+        elif config_prediction_scope != self._selected_prediction_scope:
             mismatches.append(
-                f"loaded predictions target segmentation `{config_label_name}` but `{self._selected_label_name}` is selected"
+                f"loaded predictions use prediction scope `{config_prediction_scope}` but `{self._selected_prediction_scope}` is selected"
             )
+
+        config_prediction_regions = _normalize_prediction_regions(config.get("prediction_regions"))
+        if self._selected_label_name is not None and self._selected_label_name not in config_prediction_regions:
+            mismatches.append(f"loaded predictions do not cover segmentation `{self._selected_label_name}`")
 
         if mismatches:
             self._is_dirty = True
@@ -895,10 +937,10 @@ class ClassifierController:
 
         trained = config.get("trained")
         if trained is True:
-            active_count = config.get("n_active_objects")
-            if isinstance(active_count, int):
+            predicted_count = config.get("n_predicted_rows")
+            if isinstance(predicted_count, int):
                 self._set_status(
-                    f"Classifier: model is up to date. Loaded predictions for {active_count} objects from disk.",
+                    f"Classifier: model is up to date. Loaded predictions for {predicted_count} objects from disk.",
                     kind="success",
                 )
             else:
@@ -1002,6 +1044,16 @@ def _resolve_region_row_positions(obs: pd.DataFrame, region_key: str, regions: t
     else:
         region_mask = obs[region_key].isin(regions).to_numpy(dtype=bool, copy=False)
     return np.flatnonzero(region_mask)
+
+
+def _normalize_prediction_regions(value: object) -> tuple[str, ...]:
+    if isinstance(value, np.ndarray):
+        if value.ndim != 1:
+            return ()
+        value = value.tolist()
+    if isinstance(value, (list, tuple)) and all(isinstance(region, str) for region in value):
+        return tuple(value)
+    return ()
 
 
 def _normalize_scope_mode(scope_mode: ClassifierScopeMode | str) -> ClassifierScopeMode:

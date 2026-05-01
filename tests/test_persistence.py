@@ -85,7 +85,22 @@ def test_persistence_controller_syncs_table_obs_and_colors_to_backed_store(backe
     backed_sdata_blobs["table"].uns[CLASSIFIER_CONFIG_KEY] = {
         "model_type": "RandomForestClassifier",
         "feature_key": "features_1",
+        "table_name": "table",
+        "roi_mode": "none",
         "trained": True,
+        "eligible": True,
+        "reason": "Ready to train.",
+        "training_timestamp": "2026-04-13T09:00:00+00:00",
+        "n_labeled_objects": 1,
+        "n_features": 4,
+        "class_labels_seen": [2],
+        "rf_params": {"n_estimators": 100, "random_state": 0, "n_jobs": 1},
+        "training_scope": "all",
+        "training_regions": ["blobs_labels"],
+        "n_training_rows": backed_sdata_blobs["table"].n_obs,
+        "prediction_scope": "selected_segmentation_only",
+        "prediction_regions": ["blobs_labels"],
+        "n_predicted_rows": backed_sdata_blobs["table"].n_obs,
     }
 
     table_path = controller.write_table_state()
@@ -103,6 +118,7 @@ def test_persistence_controller_syncs_table_obs_and_colors_to_backed_store(backe
     assert list(reread["table"].uns[USER_CLASS_COLORS_KEY]) == ["#111111", "#222222"]
     assert list(reread["table"].uns[PRED_CLASS_COLORS_KEY]) == ["#111111", "#222222"]
     assert reread["table"].uns[CLASSIFIER_CONFIG_KEY]["feature_key"] == "features_1"
+    assert reread["table"].uns[CLASSIFIER_CONFIG_KEY]["prediction_scope"] == "selected_segmentation_only"
     assert sorted(reread["table"].obsm.keys()) == ["features_1", "features_2"]
 
 
