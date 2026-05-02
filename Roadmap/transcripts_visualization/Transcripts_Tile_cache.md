@@ -96,7 +96,7 @@ def build_transcript_visualization_cache_for_points_element(
     ...
 ```
 
-`max_rows_per_row_group` controls physical Parquet sharding for exact and sampled level files.
+`max_rows_per_row_group` controls physical Parquet sharding for unsampled and sampled level files.
 `coarse_tile_budget` controls how many representative points may be stored in one sampled coarse tile.
 Keep these separate so IO layout tuning and overview-density tuning do not become coupled.
 
@@ -232,6 +232,8 @@ y = y_origin + tile_y * tile_size + y_rel
 ```
 
 The first implementation should not quantize coordinates. Keep `x_rel` and `y_rel` as `float32`; add quantized integer storage only after benchmarking.
+In this visualization cache, "exact" means unsampled/full-membership rather than full-precision coordinate storage.
+The canonical full-precision coordinates remain in `points.parquet`.
 
 ## Tile Grid
 
@@ -273,7 +275,8 @@ tile_y = floor((y - y_origin) / tile_size(level))
 tile_id = f"{level}/{tile_x}/{tile_y}"
 ```
 
-The finest level stores exact points. Coarser levels store sampled representative points.
+The finest level stores one cache row per source point, using tile-local `float32` coordinates for visualization.
+Coarser levels store sampled representative points.
 
 ## Level Count
 
@@ -355,7 +358,7 @@ def encode_gene_partition(partition):
 
 Avoid carrying the original gene string into level files.
 
-### 5. Build Finest Exact Level
+### 5. Build Finest Unsampled Level
 
 For `level = finest_level`:
 
@@ -366,13 +369,16 @@ For `level = finest_level`:
 5. Write one row group per tile, or split a dense tile into shards of at most `max_rows_per_row_group`.
 6. Add one manifest row per written row group with `is_exact = True`.
 
+Here, `is_exact = True` means the row group is unsampled and contains all source rows assigned to that tile or tile shard.
+It does not mean the cache stores full-precision coordinates; those remain in `points.parquet`.
+
 The first implementation can favor correctness over maximum scalability: group tile data with Dask, materialize one tile at a time, and write row groups through pyarrow. If this becomes too slow for very large inputs, optimize the grouping/shuffle path after the schema is proven.
 
 ### 6. Build Coarser Sampled Levels
 
 For each level from `finest_level - 1` down to `0`:
 
-1. Compute tile membership at that level from the exact source dataframe, not from already sampled parent levels.
+1. Compute tile membership at that level from the canonical source dataframe, not from already sampled parent levels.
 2. Within each coarse tile, subdivide the tile into a fixed micro-grid.
 3. Allocate `coarse_tile_budget` across the occupied micro-grid cells.
 4. Within each occupied micro-grid cell, choose deterministic representative points.
@@ -393,7 +399,7 @@ Initial sampling strategy:
 - after sampling, sort the selected rows deterministically before writing so rebuilds do not depend on Dask partition order;
 - cap each sampled coarse tile at `coarse_tile_budget`.
 
-This first implementation deliberately rebuilds each coarse level directly from the exact source dataframe. That means one additional offline pass over the source per coarse level, but it avoids compounding artifacts from sampling already sampled parent levels and keeps the writer easier to reason about.
+This first implementation deliberately rebuilds each coarse level directly from the canonical source dataframe. That means one additional offline pass over the source per coarse level, but it avoids compounding artifacts from sampling already sampled parent levels and keeps the writer easier to reason about.
 
 This is a spatially stratified sampler rather than a whole-tile random or hash sampler. The goal is not statistical purity; the goal is stable overview tiles with visibly even spatial coverage that do not collapse into only the densest hotspots.
 
@@ -426,7 +432,7 @@ The writer should guarantee these invariants because the later napari controller
 - every manifest row's `row_group` exists in that level file;
 - all rows in a row group belong to the manifest row's `level`, `tile_x`, and `tile_y`;
 - `level_0` is the coarsest level;
-- `finest_level = n_levels - 1` is exact;
+- `finest_level = n_levels - 1` is unsampled/full-membership;
 - `metadata.json` stores the global bounds and shared grid parameters for the whole cache;
 - all level files use the same `x_origin` and `y_origin` from `metadata.json`;
 - `tile_size` is derived from `metadata.json` and is constant within each level;
@@ -448,7 +454,7 @@ Test cases:
 2. Writes deterministic `genes.parquet` with stable `gene_id` values and counts.
 3. Writes `metadata.json` with global bounds, origins, and level metadata.
 4. Writes `manifest.parquet` with one row per row group.
-5. Finest level reconstructs exact source coordinates and gene IDs.
+5. Finest level reconstructs source coordinates within `float32` tolerance and gene IDs exactly.
 6. Dense tiles split into multiple row groups when `max_rows_per_row_group` is small.
 7. Coarse levels are spatially stratified within each tile and stay within `coarse_tile_budget`.
 8. Invalid inputs raise clear `ValueError`s for missing columns, bad `n_levels`, bad tile size, bad row-group size, bad coarse tile budget, and bad transcript id column.
@@ -502,7 +508,7 @@ Implement the writer in `src/napari_harpy/_transcript_tiles.py`:
 - input validation;
 - bounds computation;
 - deterministic `gene -> gene_id` mapping and `genes.parquet`;
-- exact finest-level writer;
+- finest unsampled-level writer;
 - multiscale sampled level writer using the spatially stratified per-tile micro-grid sampler;
 - `manifest.parquet`;
 - atomic cache finalization;
@@ -511,7 +517,7 @@ Implement the writer in `src/napari_harpy/_transcript_tiles.py`:
 Recommended tests:
 
 - keep `tests/test_transcript_tiles.py` as the main writer test module;
-- assert exact coordinate reconstruction from finest level row groups;
+- assert coordinate reconstruction from finest level row groups within `float32` tolerance;
 - assert manifest row-group accounting;
 - assert dense-tile row-group sharding;
 - assert deterministic gene mapping;
@@ -520,7 +526,7 @@ Recommended tests:
 
 Recommended benchmark datasets:
 
-- one tiny synthetic fixture for exact correctness;
+- one tiny synthetic fixture for finest-level membership and coordinate reconstruction correctness;
 - one medium synthetic dataset with strongly uneven density;
 - one real transcript dataset large enough to exercise multiple coarse levels.
 
@@ -624,7 +630,7 @@ Phase 1 acceptance criteria:
 
 - opening transcript visualization does not materialize the full source dataframe;
 - zoomed-out views remain under the configured point budget;
-- zoomed-in views switch to the exact finest level;
+- zoomed-in views switch to the unsampled finest level;
 - warm-cache pan and zoom feel responsive in napari;
 - all visible points can be colored by gene consistently across refreshes.
 
@@ -695,7 +701,7 @@ The goal is not a perfect mathematical guarantee that every rare gene remains vi
 
 Extend the coarse-level sampler while keeping the same top-level cache layout:
 
-- continue deriving each coarse level from the exact source dataframe;
+- continue deriving each coarse level from the canonical source dataframe;
 - keep the spatially stratified micro-grid sampling inside each coarse tile;
 - before sampling within the tile, split candidate rows by `gene_id`;
 - allocate `coarse_tile_budget` across genes with a rarity-aware weighting rather than only global abundance-proportional sampling;
@@ -723,7 +729,7 @@ Recommended tests:
 - coarse sampled levels preserve more genes per tile than abundance-only sampling on synthetic skewed inputs;
 - deterministic rebuilds under the same inputs and parameters;
 - `coarse_tile_budget` is never exceeded;
-- exact finest level remains unchanged from Phase 1.
+- unsampled finest level remains unchanged from Phase 1.
 
 #### Phase 2B: napari Integration and Validation
 
@@ -766,7 +772,7 @@ This phase should not be implemented as a metadata-only add-on to the Phase 1 la
 The preferred narrow first step is:
 
 - keep coarse sampled levels tile-grouped initially if needed;
-- make at least the finest exact level gene-aware first;
+- make at least the finest unsampled level gene-aware first;
 - extend the same layout to coarser levels only if benchmarks justify it.
 
 #### Phase 3B: Reader and Runtime Policy
@@ -809,7 +815,7 @@ Recommended controller behavior:
 
 - if all genes are selected, use the all-genes path;
 - if a subset is selected, use the selected-genes path;
-- if the selected exact finest level fits the budget, show exact points even when zoomed out;
+- if the selected unsampled finest level fits the budget, show full-membership points even when zoomed out;
 - otherwise fall back to the best sampled level for that selection.
 
 Recommended tests:
@@ -991,7 +997,7 @@ This does not have to destroy spatial locality if the file is still written in t
 For that reason, the recommended adoption path is conservative:
 
 - keep the first cache format spatial-first;
-- if needed, add `tile_gene_index.parquet` and gene-aware row groups first for the finest exact level only;
+- if needed, add `tile_gene_index.parquet` and gene-aware row groups first for the finest unsampled level only;
 - extend the same layout to coarser sampled levels only if later benchmarks justify the extra fragmentation.
 
 ### Build Strategy From the Source Dask Dataframe
@@ -1014,7 +1020,7 @@ After that, build each level in two conceptual stages:
 1. decide which rows belong to that level;
 2. choose the physical row-group layout for those rows.
 
-For the finest exact level:
+For the finest unsampled level:
 
 1. compute `tile_x`, `tile_y`, `tile_id`, `x_rel`, and `y_rel`;
 2. keep `tile_id`, `tile_x`, `tile_y`, `x_rel`, `y_rel`, `gene_id`, and optional `transcript_id`;
@@ -1026,16 +1032,16 @@ For the finest exact level:
 
 For coarser sampled levels, keep the same sampling strategy as the main plan:
 
-1. derive the level rows from the exact source dataframe;
+1. derive the level rows from the canonical source dataframe;
 2. sample spatially within each coarse tile;
 3. after sampling, compute tile-local coordinates for that level.
 
 At that point there are two reasonable storage options:
 
-- keep coarse sampled levels tile-grouped and make only the finest exact level gene-aware first;
+- keep coarse sampled levels tile-grouped and make only the finest unsampled level gene-aware first;
 - or apply the same `(tile, gene_id)` row-group layout to every level for a uniform reader contract.
 
-The recommended first extension is the narrower one: make the finest exact level gene-aware first, then extend coarse levels only if later profiling shows it is worth the extra complexity.
+The recommended first extension is the narrower one: make the finest unsampled level gene-aware first, then extend coarse levels only if later profiling shows it is worth the extra complexity.
 
 ### Build-Time Knobs
 

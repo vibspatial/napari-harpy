@@ -28,7 +28,7 @@ The writer must:
 
 - start from a `dask.dataframe.DataFrame` with at least `x`, `y`, and `gene`;
 - write a spatial-first multiscale cache;
-- keep the finest level exact;
+- keep the finest level unsampled, with one cache row per source row;
 - build coarser levels by deterministic spatially stratified sampling per tile;
 - finalize atomically so incomplete caches are never exposed as valid.
 
@@ -75,9 +75,13 @@ def build_transcript_visualization_cache_for_points_element(
     ...
 ```
 
-`max_rows_per_row_group` controls physical Parquet sharding for exact and sampled level files.
+`max_rows_per_row_group` controls physical Parquet sharding for unsampled and sampled level files.
 `coarse_tile_budget` controls how many representative points may be stored in one sampled coarse tile.
 Keep these separate so IO layout tuning and overview-density tuning do not become coupled.
+
+All level files store tile-local `x_rel` and `y_rel` coordinates as `float32`.
+In this cache, "exact" means unsampled/full-membership rather than full-precision coordinate storage.
+The canonical full-precision coordinates remain in `points.parquet`.
 
 ## Non-Goals
 
@@ -259,7 +263,7 @@ For a given level, compute:
 
 These helpers should be shared by:
 
-- finest exact level writing
+- finest unsampled level writing
 - coarser sampled level writing
 
 This is also the right place to standardize dtypes for:
@@ -268,9 +272,9 @@ This is also the right place to standardize dtypes for:
 - `x_rel`, `y_rel`
 - `gene_id`
 
-### 7. Finest Exact Level Writer
+### 7. Finest Unsampled Level Writer
 
-Implement the finest exact level before coarser sampled levels.
+Implement the finest unsampled level before coarser sampled levels.
 
 Required behavior:
 
@@ -294,11 +298,11 @@ Recommended simplification for Phase 1A:
 
 ### 8. Coarser Sampled Level Writer
 
-Once the finest exact level works, add coarse levels.
+Once the finest unsampled level works, add coarse levels.
 
 For each level from `finest_level - 1` down to `0`:
 
-1. derive tile membership from the exact source dataframe, not from already sampled parent levels
+1. derive tile membership from the canonical source dataframe, not from already sampled parent levels
 2. subdivide each coarse tile into a fixed micro-grid
 3. allocate `coarse_tile_budget` across occupied micro-grid cells
 4. choose deterministic representative points within each occupied cell
@@ -402,9 +406,9 @@ Recommended test groups:
 - `genes.parquet` has stable deterministic ids and counts
 - `manifest.parquet` exists only after successful build
 
-### Group C: Finest Exact Level Correctness
+### Group C: Finest Unsampled Level Correctness
 
-- finest-level coordinates reconstruct the source coordinates exactly within float tolerance
+- finest-level coordinates reconstruct the source coordinates within `float32` tolerance
 - `gene_id` values match `genes.parquet`
 - dense tiles split into multiple row groups when `max_rows_per_row_group` is small
 - manifest row-group accounting matches the actual Parquet file
@@ -440,7 +444,7 @@ Recommended datasets:
 
 1. tiny synthetic fixture
    Purpose:
-   exact correctness and debugging
+   finest-level membership and coordinate reconstruction correctness
 
 2. medium synthetic skewed fixture
    Purpose:
@@ -468,7 +472,7 @@ If Phase 1A is implemented incrementally, the cleanest checkpoints are:
 1. skeleton module + dataclass + validation
 2. bounds/level config + metadata writer
 3. gene dictionary + `genes.parquet`
-4. finest exact level writer + manifest
+4. finest unsampled level writer + manifest
 5. coarse sampled level writer
 6. atomic finalization
 7. SpatialData helper
