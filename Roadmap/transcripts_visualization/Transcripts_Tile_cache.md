@@ -49,7 +49,8 @@ def build_transcript_visualization_cache(
     transcript_id: str | None = None,
     leaf_tile_size: float = 1024.0,
     n_levels: int | None = None,
-    max_points_per_tile: int = 50_000,
+    max_rows_per_row_group: int = 50_000,
+    coarse_tile_budget: int = 50_000,
 ) -> TranscriptTileCache:
     ...
 ```
@@ -89,10 +90,15 @@ def build_transcript_visualization_cache_for_points_element(
     transcript_id: str | None = None,
     leaf_tile_size: float = 1024.0,
     n_levels: int | None = None,
-    max_points_per_tile: int = 50_000,
+    max_rows_per_row_group: int = 50_000,
+    coarse_tile_budget: int = 50_000,
 ) -> TranscriptTileCache:
     ...
 ```
+
+`max_rows_per_row_group` controls physical Parquet sharding for exact and sampled level files.
+`coarse_tile_budget` controls how many representative points may be stored in one sampled coarse tile.
+Keep these separate so IO layout tuning and overview-density tuning do not become coupled.
 
 This helper should:
 
@@ -293,7 +299,8 @@ Validate:
 - `x` and `y` are numeric;
 - `transcript_id` exists when provided;
 - `leaf_tile_size > 0`;
-- `max_points_per_tile > 0`;
+- `max_rows_per_row_group > 0`;
+- `coarse_tile_budget > 0`;
 - `n_levels is None or n_levels >= 1`.
 
 For the SpatialData helper, additionally validate:
@@ -356,7 +363,7 @@ For `level = finest_level`:
 2. Keep columns: `tile_id`, `tile_x`, `tile_y`, `x_rel`, `y_rel`, `gene_id`, optional `transcript_id`.
 3. Partition or group rows by tile.
 4. Write `levels/level_<finest_level>.parquet` using `pyarrow.parquet.ParquetWriter`.
-5. Write one row group per tile, or split a dense tile into shards of at most `max_points_per_tile`.
+5. Write one row group per tile, or split a dense tile into shards of at most `max_rows_per_row_group`.
 6. Add one manifest row per written row group with `is_exact = True`.
 
 The first implementation can favor correctness over maximum scalability: group tile data with Dask, materialize one tile at a time, and write row groups through pyarrow. If this becomes too slow for very large inputs, optimize the grouping/shuffle path after the schema is proven.
@@ -367,7 +374,7 @@ For each level from `finest_level - 1` down to `0`:
 
 1. Compute tile membership at that level from the exact source dataframe, not from already sampled parent levels.
 2. Within each coarse tile, subdivide the tile into a fixed micro-grid.
-3. Allocate a per-tile sample budget across the occupied micro-grid cells.
+3. Allocate `coarse_tile_budget` across the occupied micro-grid cells.
 4. Within each occupied micro-grid cell, choose deterministic representative points.
 5. Compute tile-local coordinates for that level.
 6. Write one row group per tile or tile shard.
@@ -377,14 +384,14 @@ Initial sampling strategy:
 
 - use a fixed micro-grid inside each coarse tile for the first implementation; keep the grid size as a private implementation constant rather than public API until it is benchmarked, and start with `8 x 8`;
 - compute a deterministic `cell_id` for each row from the micro-grid cell coordinates within the coarse tile;
-- if the number of occupied cells is less than or equal to `max_points_per_tile`, give each occupied cell quota `1`, then distribute the remaining quota approximately in proportion to cell occupancy using a largest-remainder rule with stable tie-break on `cell_id`;
-- if the number of occupied cells is greater than `max_points_per_tile`, assign quota `1` only to the `max_points_per_tile` occupied cells with highest occupancy, with stable tie-break on `cell_id`;
+- if the number of occupied cells is less than or equal to `coarse_tile_budget`, give each occupied cell quota `1`, then distribute the remaining quota approximately in proportion to cell occupancy using a largest-remainder rule with stable tie-break on `cell_id`;
+- if the number of occupied cells is greater than `coarse_tile_budget`, assign quota `1` only to the `coarse_tile_budget` occupied cells with highest occupancy, with stable tie-break on `cell_id`;
 - choose points deterministically within each micro-grid cell using a stable content-derived ordering from `transcript_id` when available;
 - otherwise choose points deterministically by hashing a stable binary encoding of `(x, y, gene_id)`;
 - for that fallback encoding, pack `float64(x)`, `float64(y)`, and `uint32(gene_id)` in canonical little-endian order before hashing with a stable hash function from the standard library;
 - do not use Python's built-in `hash()` anywhere in the sampling path;
 - after sampling, sort the selected rows deterministically before writing so rebuilds do not depend on Dask partition order;
-- cap each tile at `max_points_per_tile`.
+- cap each sampled coarse tile at `coarse_tile_budget`.
 
 This first implementation deliberately rebuilds each coarse level directly from the exact source dataframe. That means one additional offline pass over the source per coarse level, but it avoids compounding artifacts from sampling already sampled parent levels and keeps the writer easier to reason about.
 
@@ -442,9 +449,9 @@ Test cases:
 3. Writes `metadata.json` with global bounds, origins, and level metadata.
 4. Writes `manifest.parquet` with one row per row group.
 5. Finest level reconstructs exact source coordinates and gene IDs.
-6. Dense tiles split into multiple row groups when `max_points_per_tile` is small.
-7. Coarse levels are spatially stratified within each tile and stay within the per-tile budget.
-8. Invalid inputs raise clear `ValueError`s for missing columns, bad `n_levels`, bad tile size, and bad transcript id column.
+6. Dense tiles split into multiple row groups when `max_rows_per_row_group` is small.
+7. Coarse levels are spatially stratified within each tile and stay within `coarse_tile_budget`.
+8. Invalid inputs raise clear `ValueError`s for missing columns, bad `n_levels`, bad tile size, bad row-group size, bad coarse tile budget, and bad transcript id column.
 9. SpatialData helper rejects unbacked `SpatialData`.
 10. SpatialData helper writes to `points/<points_key>/transcripts_vis`.
 11. SpatialData helper builds the cache from the stored points coordinates without inspecting transformations.
@@ -508,7 +515,7 @@ Recommended tests:
 - assert manifest row-group accounting;
 - assert dense-tile row-group sharding;
 - assert deterministic gene mapping;
-- assert coarse-level per-tile sample budgets;
+- assert coarse levels respect `coarse_tile_budget`;
 - assert backed SpatialData output-path behavior.
 
 Recommended benchmark datasets:
@@ -691,7 +698,7 @@ Extend the coarse-level sampler while keeping the same top-level cache layout:
 - continue deriving each coarse level from the exact source dataframe;
 - keep the spatially stratified micro-grid sampling inside each coarse tile;
 - before sampling within the tile, split candidate rows by `gene_id`;
-- allocate the per-tile sample budget across genes with a rarity-aware weighting rather than only global abundance-proportional sampling;
+- allocate `coarse_tile_budget` across genes with a rarity-aware weighting rather than only global abundance-proportional sampling;
 - then sample spatially within each gene allocation using the same micro-grid logic.
 
 The weighting policy should be explicit and benchmarked. A good starting family is:
@@ -715,7 +722,7 @@ Recommended tests:
 
 - coarse sampled levels preserve more genes per tile than abundance-only sampling on synthetic skewed inputs;
 - deterministic rebuilds under the same inputs and parameters;
-- per-tile budget never exceeded;
+- `coarse_tile_budget` is never exceeded;
 - exact finest level remains unchanged from Phase 1.
 
 #### Phase 2B: napari Integration and Validation
@@ -1032,7 +1039,7 @@ The recommended first extension is the narrower one: make the finest exact level
 
 ### Build-Time Knobs
 
-In a gene-aware exact layout, do not reuse `max_points_per_tile` as the shard limit for `(tile, gene)` groups. Keep a separate implementation parameter such as:
+In a gene-aware exact layout, do not reuse `coarse_tile_budget` as the shard limit for `(tile, gene)` groups. Keep a separate implementation parameter such as:
 
 ```python
 max_points_per_gene_shard = 50_000
@@ -1042,7 +1049,7 @@ That parameter controls how many rows can go into one exact row group for a sing
 
 The coarse sampling budget remains a separate concern:
 
-- `max_points_per_tile`: how many representative points may be stored in one coarse sampled tile;
+- `coarse_tile_budget`: how many representative points may be stored in one coarse sampled tile;
 - `max_points_per_gene_shard`: how many rows may be stored in one exact `(tile, gene)` row-group shard.
 
 ### Why This Helps

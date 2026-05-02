@@ -53,7 +53,8 @@ def build_transcript_visualization_cache(
     transcript_id: str | None = None,
     leaf_tile_size: float = 1024.0,
     n_levels: int | None = None,
-    max_points_per_tile: int = 50_000,
+    max_rows_per_row_group: int = 50_000,
+    coarse_tile_budget: int = 50_000,
 ) -> TranscriptTileCache:
     ...
 
@@ -68,10 +69,15 @@ def build_transcript_visualization_cache_for_points_element(
     transcript_id: str | None = None,
     leaf_tile_size: float = 1024.0,
     n_levels: int | None = None,
-    max_points_per_tile: int = 50_000,
+    max_rows_per_row_group: int = 50_000,
+    coarse_tile_budget: int = 50_000,
 ) -> TranscriptTileCache:
     ...
 ```
+
+`max_rows_per_row_group` controls physical Parquet sharding for exact and sampled level files.
+`coarse_tile_budget` controls how many representative points may be stored in one sampled coarse tile.
+Keep these separate so IO layout tuning and overview-density tuning do not become coupled.
 
 ## Non-Goals
 
@@ -141,7 +147,8 @@ Validate for dataframe entry point:
 - `x` and `y` are numeric
 - `transcript_id` exists if requested
 - `leaf_tile_size > 0`
-- `max_points_per_tile > 0`
+- `max_rows_per_row_group > 0`
+- `coarse_tile_budget > 0`
 - `n_levels is None or n_levels >= 1`
 
 Also decide explicit behavior for:
@@ -276,7 +283,7 @@ Required behavior:
 Important constraints:
 
 - use `pyarrow.parquet.ParquetWriter`
-- row-group sharding must respect `max_points_per_tile`
+- row-group sharding must respect `max_rows_per_row_group`
 - all rows in a written row group must belong to exactly one `(level, tile_x, tile_y)`
 
 Recommended simplification for Phase 1A:
@@ -293,7 +300,7 @@ For each level from `finest_level - 1` down to `0`:
 
 1. derive tile membership from the exact source dataframe, not from already sampled parent levels
 2. subdivide each coarse tile into a fixed micro-grid
-3. allocate the per-tile sample budget across occupied micro-grid cells
+3. allocate `coarse_tile_budget` across occupied micro-grid cells
 4. choose deterministic representative points within each occupied cell
 5. annotate sampled rows with tile-local coordinates for that level
 6. write row groups and manifest rows
@@ -302,13 +309,14 @@ Recommended first implementation choices:
 
 - keep the micro-grid size as a private constant and start with `8 x 8`
 - compute a deterministic `cell_id` from the per-tile micro-grid coordinates
-- if occupied cells `<= max_points_per_tile`, assign quota `1` to each occupied cell, then distribute the remaining quota approximately by occupancy using a largest-remainder rule with stable tie-break on `cell_id`
-- if occupied cells `> max_points_per_tile`, assign quota `1` only to the `max_points_per_tile` occupied cells with highest occupancy, with stable tie-break on `cell_id`
+- if occupied cells `<= coarse_tile_budget`, assign quota `1` to each occupied cell, then distribute the remaining quota approximately by occupancy using a largest-remainder rule with stable tie-break on `cell_id`
+- if occupied cells `> coarse_tile_budget`, assign quota `1` only to the `coarse_tile_budget` occupied cells with highest occupancy, with stable tie-break on `cell_id`
 - if `transcript_id` is available, compute a stable per-row ordering key from a canonical encoding of `transcript_id`
 - otherwise, compute a stable per-row ordering key by hashing a stable binary encoding of `(x, y, gene_id)`
 - for the fallback encoding, pack `float64(x)`, `float64(y)`, and `uint32(gene_id)` in canonical little-endian order before hashing with a stable hash function from the standard library
 - never use Python's built-in `hash()` for sampling
 - after selecting rows from each cell, sort the final sampled rows deterministically before writing so rebuilds do not depend on Dask partition order
+- cap each sampled coarse tile at `coarse_tile_budget`
 
 Keep Phase 1A sampling spatial-only. Do not add gene-aware overview sampling yet.
 
@@ -382,7 +390,8 @@ Recommended test groups:
 - missing `x`, `y`, or `gene`
 - invalid `transcript_id`
 - invalid `leaf_tile_size`
-- invalid `max_points_per_tile`
+- invalid `max_rows_per_row_group`
+- invalid `coarse_tile_budget`
 - invalid `n_levels`
 - unbacked SpatialData rejection
 
@@ -397,12 +406,12 @@ Recommended test groups:
 
 - finest-level coordinates reconstruct the source coordinates exactly within float tolerance
 - `gene_id` values match `genes.parquet`
-- dense tiles split into multiple row groups when the limit is small
+- dense tiles split into multiple row groups when `max_rows_per_row_group` is small
 - manifest row-group accounting matches the actual Parquet file
 
 ### Group D: Coarse Sampled Levels
 
-- coarse levels stay within the per-tile sample budget
+- coarse levels stay within `coarse_tile_budget`
 - the number of stored points decreases or stays bounded at coarser levels
 - sampling is deterministic across rebuilds with identical inputs
 
