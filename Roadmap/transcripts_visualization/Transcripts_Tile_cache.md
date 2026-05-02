@@ -446,56 +446,296 @@ Test cases:
 
 For tests, use small pandas dataframes converted to Dask dataframes. Read written Parquet files with `pyarrow.parquet.ParquetFile` so tests can assert row-group counts directly.
 
-## First Implementation Milestones
+## Concrete Phased Implementation Plan
 
-### Milestone 1: Pure dataframe writer
+The agreed delivery plan is product-driven rather than schema-driven:
 
-Implement:
+1. Version 1: ship a spatial-first multiscale cache with no `tile_gene_index.parquet` and make viewing all transcripts snappy in napari.
+2. Version 2: keep the same overall cache shape, but make coarse sampled levels gene-aware enough that rare genes are less likely to disappear in overviews.
+3. Version 3: add true gene-selective loading and a gene-selection UI by introducing `tile_gene_index.parquet` and the storage changes it requires.
+
+The key design choice is that each version must be independently useful:
+
+- Version 1 solves all-transcript navigation and exact leaf tiles.
+- Version 2 improves sampled overview fidelity for gene-colored visualization.
+- Version 3 solves efficient subset selection and exact rare-gene viewing.
+
+### Phase 1: Spatial-First Cache for All Transcripts
+
+This phase targets the current cache layout only:
+
+```text
+<sdata.zarr>/
+  points/
+    <points_key>/
+      points.parquet
+      transcripts_vis/
+        metadata.json
+        manifest.parquet
+        genes.parquet
+        levels/
+          level_0.parquet
+          level_1.parquet
+          ...
+          level_n.parquet
+```
+
+There is no `tile_gene_index.parquet` in this phase.
+
+#### Phase 1A: Offline Writer
+
+Implement the writer in `src/napari_harpy/_transcript_tiles.py`:
 
 - `TranscriptTileCache`;
 - input validation;
 - bounds computation;
-- gene mapping;
+- deterministic `gene -> gene_id` mapping and `genes.parquet`;
 - exact finest-level writer;
-- manifest writer;
-- tests for exact reconstruction and manifest row groups.
+- multiscale sampled level writer using the spatially stratified per-tile micro-grid sampler;
+- `manifest.parquet`;
+- atomic cache finalization;
+- a SpatialData-facing entry point for backed points elements.
 
-This milestone does not need sampled coarser levels yet if `n_levels=1`.
+Recommended tests:
 
-### Milestone 2: Multiscale sampled levels
+- keep `tests/test_transcript_tiles.py` as the main writer test module;
+- assert exact coordinate reconstruction from finest level row groups;
+- assert manifest row-group accounting;
+- assert dense-tile row-group sharding;
+- assert deterministic gene mapping;
+- assert coarse-level per-tile sample budgets;
+- assert backed SpatialData output-path behavior.
 
-Implement:
+Recommended benchmark datasets:
 
-- automatic `n_levels`;
-- coarser level construction;
-- deterministic spatially stratified sampling;
-- per-tile budget tests.
+- one tiny synthetic fixture for exact correctness;
+- one medium synthetic dataset with strongly uneven density;
+- one real transcript dataset large enough to exercise multiple coarse levels.
 
-### Milestone 3: SpatialData entry point
+#### Phase 1B: Reader / Store Abstraction
 
-Implement:
+Add a reader abstraction after the writer format is stable. This should remain independent from Qt and napari so it can be tested in isolation.
 
-- backed-zarr validation;
-- points element lookup;
-- native stored-coordinate contract;
-- output path resolution;
-- tests using a backed SpatialData fixture.
+Recommended module:
 
-### Milestone 4: Reader prototype
+```text
+src/napari_harpy/_transcript_tile_store.py
+```
 
-Add a separate reader class after the writer format is stable:
+Recommended API shape:
 
 ```python
 class TranscriptTileStore:
-    def from_path(path: Path) -> TranscriptTileStore: ...
+    @classmethod
+    def from_path(cls, path: Path) -> TranscriptTileStore: ...
     def tiles_for_bounds(self, bounds, level: int) -> pandas.DataFrame: ...
     def choose_level(self, bounds, budget: int) -> int: ...
-    def read_manifest_rows(self, rows, gene_ids=None) -> pandas.DataFrame: ...
+    def read_manifest_rows(self, rows) -> pandas.DataFrame: ...
+    def decode_coordinates(self, rows, level: int) -> pandas.DataFrame: ...
 ```
 
-This reader is the bridge to the future napari controller, but it should remain independent from Qt and napari.
+Responsibilities:
 
-## Future Extension: Gene-Aware Exact Layout
+- load `metadata.json`, `manifest.parquet`, and `genes.parquet`;
+- compute intersecting tiles for a viewport and level;
+- estimate visible point counts from `manifest.parquet`;
+- choose the finest level that stays under a render budget;
+- read row groups from `levels/level_k.parquet` via `pyarrow`;
+- decode `x_rel` and `y_rel` to absolute coordinates;
+- expose enough metadata to color visible points by gene.
+
+Recommended tests:
+
+- tile intersection for edge-touching bounds;
+- level choice under different budgets and viewport sizes;
+- row-group reads from multiple shards of the same tile;
+- decode roundtrip from `x_rel`, `y_rel` to absolute coordinates;
+- no full-table `.compute()` in the read path.
+
+#### Phase 1C: napari Integration for All Transcripts
+
+Integrate the spatial-first cache into napari-harpy with the goal that all transcripts can be visualized and colored by gene while remaining snappy during pan and zoom.
+
+Recommended runtime pieces:
+
+- `src/napari_harpy/_transcript_tiles_controller.py` for camera-driven loading and cache management;
+- small additions in `src/napari_harpy/_viewer_adapter.py` to manage one Harpy-owned transcript `Points` layer;
+- a minimal UI entry point in `src/napari_harpy/widgets/_viewer_widget.py` to enable transcript visualization for a chosen points element.
+
+Recommended controller behavior:
+
+- own exactly one napari `Points` layer per transcript source;
+- listen to camera pan and zoom changes;
+- debounce refreshes slightly;
+- compute the viewport in transcript coordinates;
+- choose a level from `manifest.parquet` and the render budget;
+- read only the visible row groups for that level;
+- populate the layer with the visible points only;
+- color points by gene using a deterministic `gene_id -> color` mapping derived from `genes.parquet`;
+- keep an in-memory LRU cache of recently decoded tiles or row groups;
+- prefetch a small halo around the current viewport;
+- drop stale reads if the camera changes again before loading finishes.
+
+Recommended UI scope for Phase 1:
+
+- default to showing all genes;
+- show transcript points colored by gene;
+- expose only controls needed to turn transcript visualization on or off and select the points element;
+- do not add subset-selection UI yet.
+
+Phase 1 acceptance criteria:
+
+- opening transcript visualization does not materialize the full source dataframe;
+- zoomed-out views remain under the configured point budget;
+- zoomed-in views switch to the exact finest level;
+- warm-cache pan and zoom feel responsive in napari;
+- all visible points can be colored by gene consistently across refreshes.
+
+### Phase 2: Gene-Aware Overview Sampling
+
+This phase does not add `tile_gene_index.parquet` yet. It improves how coarse sampled levels are built so that gene-colored overview visualizations behave better and rare genes are less likely to disappear at low zoom.
+
+The goal is not a perfect mathematical guarantee that every rare gene remains visible in every coarse tile. That is impossible under a fixed point budget when a tile contains too many genes. The goal is a better default sampled representation for downstream gene-colored viewing.
+
+#### Phase 2A: Writer Changes
+
+Extend the coarse-level sampler while keeping the same top-level cache layout:
+
+- continue deriving each coarse level from the exact source dataframe;
+- keep the spatially stratified micro-grid sampling inside each coarse tile;
+- before sampling within the tile, split candidate rows by `gene_id`;
+- allocate the per-tile sample budget across genes with a rarity-aware weighting rather than only global abundance-proportional sampling;
+- then sample spatially within each gene allocation using the same micro-grid logic.
+
+The weighting policy should be explicit and benchmarked. A good starting family is:
+
+```text
+gene_weight(tile, gene) = f(tile_gene_count) * rarity_boost(global_gene_count)
+```
+
+with:
+
+- `f(n) = sqrt(n)` or `log1p(n)` to prevent dominant genes from taking the whole tile budget;
+- a clipped rarity boost so globally rare genes receive some protection without overwhelming abundant genes.
+
+Recommended writer outputs remain unchanged:
+
+- no new top-level files;
+- same `metadata.json`, `manifest.parquet`, `genes.parquet`, and `levels/`;
+- same row-group layout as Phase 1.
+
+Recommended tests:
+
+- coarse sampled levels preserve more genes per tile than abundance-only sampling on synthetic skewed inputs;
+- deterministic rebuilds under the same inputs and parameters;
+- per-tile budget never exceeded;
+- exact finest level remains unchanged from Phase 1.
+
+#### Phase 2B: napari Integration and Validation
+
+The napari runtime can largely stay the same as in Phase 1 because the file layout is unchanged. The main work here is verification rather than a new UI surface.
+
+Recommended validation tasks:
+
+- compare side-by-side overview rendering on the same dataset with Phase 1 sampling versus gene-aware sampling;
+- verify that gene coloring remains stable across pans, zooms, and level switches;
+- confirm that zooming from coarse sampled levels down to exact levels feels visually consistent;
+- confirm that common and moderately rare genes are less likely to vanish completely in overview levels.
+
+Recommended UI scope for Phase 2:
+
+- keep the same user-visible controls as Phase 1;
+- do not add subset-selection UI yet;
+- if needed, add internal debug hooks or benchmark utilities, but not a public gene-selection control.
+
+Phase 2 acceptance criteria:
+
+- all-transcript visualization remains as responsive as in Phase 1;
+- coarse overviews are visually more faithful when points are colored by gene;
+- exact leaf-tile behavior is unchanged;
+- no schema expansion beyond the existing Version 1 layout.
+
+### Phase 3: Gene-Selective Loading and Subset Selection
+
+This phase adds the storage and UI needed for efficient gene subset selection. It is the first phase that should introduce `tile_gene_index.parquet`.
+
+#### Phase 3A: Storage Extension
+
+Introduce a new schema version for gene-selective loading:
+
+- add `tile_gene_index.parquet`;
+- add the row-group layout changes needed to make that file useful;
+- compute `visible_selected_points(level, selection)` from the new index.
+
+This phase should not be implemented as a metadata-only add-on to the Phase 1 layout. If we want true gene-selective reads, the relevant level files must also be written in a gene-aware row-group layout.
+
+The preferred narrow first step is:
+
+- keep coarse sampled levels tile-grouped initially if needed;
+- make at least the finest exact level gene-aware first;
+- extend the same layout to coarser levels only if benchmarks justify it.
+
+#### Phase 3B: Reader and Runtime Policy
+
+Extend `TranscriptTileStore` so it can:
+
+- load `tile_gene_index.parquet`;
+- resolve which row groups contain selected genes in visible tiles;
+- compute:
+
+```text
+visible_selected_points(level, selection)
+```
+
+from the current viewport, level, and selected-gene set;
+- choose exact finest tiles whenever the selected visible exact data fits the render budget;
+- otherwise choose the finest sampled level whose selected-gene visible count fits the budget.
+
+This phase should formalize two runtime modes:
+
+1. all-genes mode:
+   use the standard visible-point budget from spatial manifest rows.
+2. selected-genes mode:
+   use `visible_selected_points(level, selection)` from `tile_gene_index.parquet`.
+
+#### Phase 3C: UI for Gene Selection
+
+Add user-facing transcript subset selection to napari-harpy.
+
+Recommended UI behavior:
+
+- one transcript control surface for the currently active transcript source;
+- searchable multi-select list of genes using `genes.parquet`;
+- `Select all`, `Clear`, and possibly `Invert` actions;
+- visible status text showing number of selected genes and estimated visible point count;
+- selection changes trigger an asynchronous refresh of the transcript `Points` layer;
+- color mapping remains stable whether all genes or a subset is selected.
+
+Recommended controller behavior:
+
+- if all genes are selected, use the all-genes path;
+- if a subset is selected, use the selected-genes path;
+- if the selected exact finest level fits the budget, show exact points even when zoomed out;
+- otherwise fall back to the best sampled level for that selection.
+
+Recommended tests:
+
+- selected-gene reads only touch row groups referenced by `tile_gene_index.parquet`;
+- tiles without the selected genes are skipped;
+- exact selected-gene views work when the visible exact selected count is under budget;
+- subset toggling preserves stable colors and does not leak stale data from previous selections;
+- performance remains acceptable for both tiny and broad selections.
+
+Phase 3 acceptance criteria:
+
+- gene subset selection is exposed in the UI and feels responsive;
+- exact rare-gene viewing works when the selected visible data is small enough;
+- coarse fallback remains smooth when the selected visible data is still too large;
+- `tile_gene_index.parquet` demonstrably reduces unnecessary IO compared with tile-only filtering.
+
+## Phase 3 Storage Extension: `tile_gene_index.parquet` and Gene-Aware Exact Layout
+
+This section describes the storage extension used in Phase 3. It does not belong to Version 1, and it also comes after Phase 2 gene-aware overview sampling.
 
 The first cache format is intentionally spatial-first: row groups are addressed by `level` and tile, and gene filtering happens after visible tiles are loaded. That is the right default for the first implementation because it keeps the schema and writer simple.
 
@@ -747,10 +987,10 @@ Do not include these in the first writer:
 - applying or resolving `SpatialData` coordinate transformations;
 - Morton ordering inside tiles;
 - coordinate quantization;
-- gene-aware exact row-group layout and `tile_gene_index.parquet`;
+- gene-aware exact row-group layout and `tile_gene_index.parquet` (Phase 3);
 - per-gene offsets inside each tile;
-- gene-aware overview sampling;
-- napari camera/controller integration;
+- gene-aware overview sampling (Phase 2);
+- napari camera/controller integration (Phase 1C and later);
 - remote zarr stores.
 
 These are all useful, but they should come after the on-disk contract is proven and benchmarked.
