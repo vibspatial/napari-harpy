@@ -275,6 +275,11 @@ tile_y = floor((y - y_origin) / tile_size(level))
 tile_id = f"{level}/{tile_x}/{tile_y}"
 ```
 
+Tiles are half-open intervals: `[tile_start, tile_start + tile_size)`.
+Points exactly on an internal tile boundary belong to the tile on the positive x/y side.
+Do not clamp points at `x == x_max` or `y == y_max` into the previous tile; they follow the same floor rule even when that creates a max-edge tile.
+This keeps tile-local coordinates in `[0, tile_size)` instead of allowing `x_rel == tile_size` or `y_rel == tile_size`.
+
 The finest level stores one cache row per source point, using tile-local `float32` coordinates for visualization.
 Coarser levels store sampled representative points.
 
@@ -286,10 +291,14 @@ If `n_levels is None`, choose it from the data extent:
 
 ```text
 extent = max(x_max - x_min, y_max - y_min)
-n_levels = max(1, ceil(log2(extent / leaf_tile_size)) + 1)
+if extent <= leaf_tile_size:
+    n_levels = 1
+else:
+    n_levels = ceil(log2(extent / leaf_tile_size)) + 1
 ```
 
 This makes `level_0` roughly cover the whole dataset in a small number of coarse tiles while `level_n` uses `leaf_tile_size`.
+The explicit `extent <= leaf_tile_size` branch handles zero-extent datasets without evaluating `log2(0)`.
 
 ## Build Algorithm
 
@@ -457,10 +466,12 @@ Test cases:
 5. Finest level reconstructs source coordinates within `float32` tolerance and gene IDs exactly.
 6. Dense tiles split into multiple row groups when `max_rows_per_row_group` is small.
 7. Coarse levels are spatially stratified within each tile and stay within `coarse_tile_budget`.
-8. Invalid inputs raise clear `ValueError`s for missing columns, bad `n_levels`, bad tile size, bad row-group size, bad coarse tile budget, and bad transcript id column.
-9. SpatialData helper rejects unbacked `SpatialData`.
-10. SpatialData helper writes to `points/<points_key>/transcripts_vis`.
-11. SpatialData helper builds the cache from the stored points coordinates without inspecting transformations.
+8. Zero-extent data computes `n_levels = 1`.
+9. Tile-boundary coordinates follow the documented half-open grid convention.
+10. Invalid inputs raise clear `ValueError`s for missing columns, bad `n_levels`, bad tile size, bad row-group size, bad coarse tile budget, and bad transcript id column.
+11. SpatialData helper rejects unbacked `SpatialData`.
+12. SpatialData helper writes to `points/<points_key>/transcripts_vis`.
+13. SpatialData helper builds the cache from the stored points coordinates without inspecting transformations.
 
 For tests, use small pandas dataframes converted to Dask dataframes. Read written Parquet files with `pyarrow.parquet.ParquetFile` so tests can assert row-group counts directly.
 

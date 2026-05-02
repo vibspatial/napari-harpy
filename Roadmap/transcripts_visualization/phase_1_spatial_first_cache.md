@@ -209,14 +209,28 @@ Recommended first implementation:
 
 ```text
 extent = max(x_max - x_min, y_max - y_min)
-n_levels = max(1, ceil(log2(extent / leaf_tile_size)) + 1)
+if extent <= leaf_tile_size:
+    n_levels = 1
+else:
+    n_levels = ceil(log2(extent / leaf_tile_size)) + 1
 ```
 
 - this means:
-  - if the dataset extent is smaller than or comparable to one leaf tile, use `n_levels = 1`;
+  - if the dataset extent is zero, smaller than one leaf tile, or exactly one leaf tile, use `n_levels = 1`;
   - otherwise add coarser levels until `level_0` covers the whole dataset in a small number of tiles
 
 This logic should be unit-tested separately because it drives every later tile calculation.
+Use the same tile assignment formula at every level:
+
+```text
+tile_x = floor((x - x_origin) / tile_size(level))
+tile_y = floor((y - y_origin) / tile_size(level))
+```
+
+Tiles are half-open intervals: `[tile_start, tile_start + tile_size)`.
+Points exactly on an internal tile boundary belong to the tile on the positive x/y side.
+Do not clamp points at `x == x_max` or `y == y_max` into the previous tile; they follow the same floor rule even when that creates a max-edge tile.
+This keeps tile-local coordinates in `[0, tile_size)` instead of allowing `x_rel == tile_size` or `y_rel == tile_size`.
 
 ### 5. Gene Dictionary and `genes.parquet`
 
@@ -397,6 +411,8 @@ Recommended test groups:
 - invalid `max_rows_per_row_group`
 - invalid `coarse_tile_budget`
 - invalid `n_levels`
+- zero-extent data computes `n_levels = 1`
+- tile-boundary coordinates follow the documented half-open grid convention
 - unbacked SpatialData rejection
 
 ### Group B: Cache Layout and Metadata
