@@ -591,6 +591,63 @@ Phase 1 acceptance criteria:
 - warm-cache pan and zoom feel responsive in napari;
 - all visible points can be colored by gene consistently across refreshes.
 
+### Phase 1.5: Naive Gene Subset UI
+
+This phase adds gene subset selection in the UI without changing the Version 1 cache layout and without changing the Phase 1 read path.
+
+The goal is to let users select one or more genes to visualize while keeping implementation risk low. This phase is intentionally not subset-aware loading. It is subset filtering of the currently loaded visible points.
+
+#### Phase 1.5A: Reader and Controller State
+
+Extend the Phase 1 runtime pieces so they can:
+
+- read the gene list from `genes.parquet`;
+- keep `selected_gene_ids` in the transcript controller;
+- keep the existing level choice and row-group loading logic from Phase 1 unchanged;
+- apply `mask = gene_id in selected_gene_ids` after load and before updating the layer.
+
+This means:
+
+- visible row groups are still chosen from `manifest.parquet`;
+- visible rows are still read from `levels/level_k.parquet` exactly as in Phase 1;
+- filtering happens only after the visible data is already in memory.
+
+#### Phase 1.5B: UI Scope
+
+Add a lightweight gene-selection UI in napari-harpy:
+
+- searchable multi-select list populated from `genes.parquet`;
+- `Select all` and `Clear` actions;
+- visible status text showing the number of selected genes;
+- selection changes trigger a refresh of the transcript layer.
+
+The transcript layer still uses the same color mapping by gene as in Phase 1.
+
+#### Phase 1.5C: Limitations
+
+This phase should be documented very explicitly so users and future developers do not confuse it with the final subset-aware solution.
+
+Important limitations:
+
+- IO cost stays basically the same as all-genes mode, because the controller still loads visible row groups before filtering;
+- at coarse sampled levels, selected rare genes may still be absent because they may never have been sampled into that level;
+- if a user toggles on a rare gene at low zoom, they may temporarily see nothing even though the gene exists in the dataset;
+- without `tile_gene_index.parquet`, the selected subset cannot yet drive level choice via `visible_selected_points(level, selection)`.
+
+Recommended tests:
+
+- the gene list shown in the UI matches `genes.parquet`;
+- toggling subsets correctly filters the visible points after load;
+- `Select all` reproduces the Phase 1 all-genes behavior;
+- stable per-gene coloring is preserved when genes are toggled on and off;
+- no changes are made to the Phase 1 storage layout.
+
+Phase 1.5 acceptance criteria:
+
+- users can filter the currently visible transcript layer to one or more genes;
+- the layer updates correctly without requiring a new cache format;
+- the document and UI make it clear that this is post-load filtering, not subset-aware loading.
+
 ### Phase 2: Gene-Aware Overview Sampling
 
 This phase does not add `tile_gene_index.parquet` yet. It improves how coarse sampled levels are built so that gene-colored overview visualizations behave better and rare genes are less likely to disappear at low zoom.
@@ -655,9 +712,9 @@ Phase 2 acceptance criteria:
 - exact leaf-tile behavior is unchanged;
 - no schema expansion beyond the existing Version 1 layout.
 
-### Phase 3: Gene-Selective Loading and Subset Selection
+### Phase 3: Gene-Selective Loading and Advanced Subset Selection
 
-This phase adds the storage and UI needed for efficient gene subset selection. It is the first phase that should introduce `tile_gene_index.parquet`.
+This phase adds the storage and runtime behavior needed for efficient gene subset selection. It is the first phase that should introduce `tile_gene_index.parquet`.
 
 #### Phase 3A: Storage Extension
 
@@ -698,9 +755,9 @@ This phase should formalize two runtime modes:
 2. selected-genes mode:
    use `visible_selected_points(level, selection)` from `tile_gene_index.parquet`.
 
-#### Phase 3C: UI for Gene Selection
+#### Phase 3C: Advanced UI Behavior for Gene Selection
 
-Add user-facing transcript subset selection to napari-harpy.
+Upgrade the Phase 1.5 subset-selection UI so it becomes subset-aware rather than post-load filtering only.
 
 Recommended UI behavior:
 
