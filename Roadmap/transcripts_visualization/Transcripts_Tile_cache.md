@@ -796,6 +796,8 @@ This section describes the storage extension used in Phase 3. It does not belong
 
 The first cache format is intentionally spatial-first: row groups are addressed by `level` and tile, and gene filtering happens after visible tiles are loaded. That is the right default for the first implementation because it keeps the schema and writer simple.
 
+The main purpose of `tile_gene_index.parquet` is to enable gene-aware loading rather than only post-load filtering. `manifest.parquet` tells the reader which row groups belong to visible tiles, but it does not tell the reader which of those row groups contain the selected genes. `tile_gene_index.parquet` adds that lookup layer, so the reader can skip irrelevant tiles and, together with a gene-aware row-group layout in the level files, read only the row groups needed for the selected genes.
+
 If later benchmarks show that rare-gene exact viewing is still too expensive, the next storage extension should be a gene-aware exact layout. The goal is true gene-selective loading: for a selected gene and visible tile set, the reader should be able to read only the relevant row groups instead of loading whole exact tiles and filtering afterwards.
 
 This extension should be treated as a new schema version rather than silently changing the meaning of `manifest.parquet`.
