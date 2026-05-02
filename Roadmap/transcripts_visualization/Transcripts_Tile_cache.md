@@ -576,12 +576,37 @@ Recommended controller behavior:
 - prefetch a small halo around the current viewport;
 - drop stale reads if the camera changes again before loading finishes.
 
+Optional warm-cache design:
+
+- treat the warm cache as an in-memory runtime cache inside the transcript controller, not as another on-disk cache format;
+- cache decoded row-group payloads rather than whole viewports, because nearby camera views overlap heavily at the row-group level;
+- use a cache key such as `(cache_path, level_file, row_group)` or an equivalent `(points_source, level, tile, row_group)` identity;
+- store decoded absolute coordinates together with `gene_id` and optional `transcript_id`, so cache hits avoid repeated Parquet IO and repeated coordinate decoding;
+- size the cache by bytes and optionally by total cached points, with LRU eviction;
+- keep the cached payloads unfiltered in Phase 1.5 so changing selected genes does not force new Parquet reads;
+- treat a one-tile halo around the viewport as the first prefetch policy so small pans are likely to hit warm cached row groups;
+- attach a request-generation id to background loads so stale results can be dropped instead of overwriting a newer camera state.
+
+This warm cache is an implementation detail of the napari controller. The on-disk cache contract remains `metadata.json`, `manifest.parquet`, `genes.parquet`, and `levels/`.
+
 Recommended UI scope for Phase 1:
 
 - default to showing all genes;
 - show transcript points colored by gene;
 - expose only controls needed to turn transcript visualization on or off and select the points element;
 - do not add subset-selection UI yet.
+
+Recommended initial performance targets for Phase 1:
+
+- visible points budget: start with `100_000` as the default target;
+- visible points budget on stronger hardware: allow tuning upward toward `150_000`;
+- visible points stress ceiling: treat `250_000` as an upper benchmark ceiling rather than the first default;
+- finest tile size: start with `leaf_tile_size = 1024.0` in stored coordinate units, not screen pixels;
+- smaller finest tile size: try `512.0` only if dense-region overfetch becomes the dominant bottleneck;
+- warm-cache pan and zoom latency: aim for under `100 ms` median and keep `150 ms` as an acceptable upper bound;
+- cold tile-load latency: aim for under `300 ms` in common cases and keep `500 ms` as an upper bound rather than the desired norm.
+
+These targets assume a 2D transcript viewer with one dynamic napari `Points` layer, relatively small markers, no per-point text, and categorical coloring by gene. If we later add heavier styling, larger symbols, or more expensive per-point metadata, the practical visible-point budget should be reduced accordingly.
 
 Phase 1 acceptance criteria:
 
