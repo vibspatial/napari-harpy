@@ -375,10 +375,15 @@ For each level from `finest_level - 1` down to `0`:
 
 Initial sampling strategy:
 
-- use a fixed micro-grid inside each coarse tile for the first implementation; keep the grid size as a private implementation constant rather than public API until it is benchmarked;
-- give each occupied micro-grid cell at least one representative point when the per-tile budget allows, then distribute the remaining budget approximately in proportion to cell occupancy;
+- use a fixed micro-grid inside each coarse tile for the first implementation; keep the grid size as a private implementation constant rather than public API until it is benchmarked, and start with `8 x 8`;
+- compute a deterministic `cell_id` for each row from the micro-grid cell coordinates within the coarse tile;
+- if the number of occupied cells is less than or equal to `max_points_per_tile`, give each occupied cell quota `1`, then distribute the remaining quota approximately in proportion to cell occupancy using a largest-remainder rule with stable tie-break on `cell_id`;
+- if the number of occupied cells is greater than `max_points_per_tile`, assign quota `1` only to the `max_points_per_tile` occupied cells with highest occupancy, with stable tie-break on `cell_id`;
 - choose points deterministically within each micro-grid cell using a stable content-derived ordering from `transcript_id` when available;
-- otherwise choose points deterministically from a stable content-derived ordering of `(x, y, gene_id)`;
+- otherwise choose points deterministically by hashing a stable binary encoding of `(x, y, gene_id)`;
+- for that fallback encoding, pack `float64(x)`, `float64(y)`, and `uint32(gene_id)` in canonical little-endian order before hashing with a stable hash function from the standard library;
+- do not use Python's built-in `hash()` anywhere in the sampling path;
+- after sampling, sort the selected rows deterministically before writing so rebuilds do not depend on Dask partition order;
 - cap each tile at `max_points_per_tile`.
 
 This first implementation deliberately rebuilds each coarse level directly from the exact source dataframe. That means one additional offline pass over the source per coarse level, but it avoids compounding artifacts from sampling already sampled parent levels and keeps the writer easier to reason about.
