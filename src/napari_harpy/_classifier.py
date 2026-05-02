@@ -424,6 +424,8 @@ class ClassifierController:
             )
 
         try:
+            # Preparation only needs counts and validity masks, so avoid copying
+            # the matrix on every widget refresh/status update.
             feature_matrix = _normalize_feature_matrix(table.obsm[self._selected_feature_key], table.n_obs, copy=False)
         except KeyError:
             return ClassifierPreparationSummary(
@@ -580,7 +582,14 @@ class ClassifierController:
             )
 
         try:
-            feature_matrix = _normalize_feature_matrix(table.obsm[self._selected_feature_key], table.n_obs)
+            # Worker jobs must own an eager snapshot of feature values at launch
+            # time. If `.obsm` later supports lazy arrays, this path should
+            # explicitly materialize them instead of relying on `.copy()`.
+            feature_matrix = _normalize_feature_matrix(
+                table.obsm[self._selected_feature_key],
+                table.n_obs,
+                copy=True,
+            )
         except KeyError:
             summary = ClassifierPreparationSummary(
                 training_scope=summary.training_scope,
@@ -972,6 +981,9 @@ class ClassifierController:
 
 
 def _normalize_feature_matrix(feature_matrix: Any, n_obs: int, *, copy: bool = True) -> Any:
+    # `copy=True` is the current eager-array snapshot path for worker payloads.
+    # Lazy `.obsm` values will need explicit materialization here so classifier
+    # jobs never depend on a live or deferred table-backed feature matrix.
     if issparse(feature_matrix):
         if feature_matrix.ndim != 2:
             raise ValueError("Feature matrices stored in `.obsm` must be 2-dimensional.")
