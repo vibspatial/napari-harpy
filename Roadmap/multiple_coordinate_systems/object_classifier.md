@@ -561,7 +561,7 @@ Scope:
   existing `classifier_feedback` card;
 - keep the warning UX lightweight in this slice:
   - no modal confirmation
-  - no richer slice-8 status-card system yet
+  - no richer slice-9 status-card system yet
 - show the inline warning only when:
   - `prediction_scope == "all"`
   - and the requested prediction scope reaches at least one region beyond the
@@ -578,13 +578,26 @@ Scope:
 - add one small controller-facing preflight API so the widget can render that
   warning and count information before the user clicks `Train Classifier`;
 - do not parse `status_message` in the widget for this;
-- add a lightweight side-effect-free accessor on `ClassifierController`, such
-  as `current_preflight()` or `describe_current_preflight()`, that returns
-  structured scope data for the current selection;
-- have that accessor expose at least:
-  - `training_scope`
-  - `prediction_scope`
-  - optionally `ClassifierPreparationSummary`
+- add a lightweight side-effect-free accessor on `ClassifierController`:
+
+```python
+def describe_current_preflight(self) -> ClassifierPreflight | None:
+    ...
+```
+
+- introduce the supporting snapshot type:
+
+```python
+@dataclass(frozen=True)
+class ClassifierPreflight:
+    training_scope: ResolvedClassifierScope
+    prediction_scope: ResolvedClassifierScope
+    summary: ClassifierPreparationSummary
+```
+
+- return `None` only when the controller is not sufficiently bound to describe
+  the current selection at all; otherwise return a `ClassifierPreflight` even
+  when training is currently ineligible;
 - extract the non-worker, non-feature-slicing parts of
   `_prepare_classifier_job(...)` so the widget can ask for scope counts and
   regions without constructing full training arrays on every refresh;
@@ -610,7 +623,57 @@ Expected outcome:
 - this is the natural point to re-enable `Train Classifier` if it was disabled
   during earlier refactor slices.
 
-### 7. Add End-to-End Multi-Region Classifier Coverage
+### 7. Consolidate Preparation State into a Snapshot Model
+
+Status: [ ] Planned
+
+Goal:
+
+- collapse the split between `ClassifierPreparationSummary` and the separate
+  scope objects into one coherent preparation snapshot.
+
+Scope:
+
+- rename `ClassifierPreparationSummary` to
+  `ClassifierPreparationSnapshot`;
+- add
+  `training_scope: ResolvedClassifierScope` and
+  `prediction_scope: ResolvedClassifierScope`
+  directly to that snapshot type;
+- keep the current scalar preparation fields on the renamed snapshot:
+  - `eligible`
+  - `reason`
+  - `resolved_training_row_count`
+  - `resolved_prediction_row_count`
+  - `training_region_count`
+  - `labeled_count`
+  - `class_labels`
+  - `n_features`
+- change `ClassifierJob` and `ClassifierJobResult` to carry the consolidated
+  snapshot instead of separate `training_scope` / `prediction_scope` fields
+  plus `summary`;
+- update controller status, metadata persistence, error handling, and reload
+  logic to read from that single snapshot object;
+- update the slice-6 preflight API so
+  `describe_current_preflight()` returns the consolidated snapshot directly if
+  that makes the API cleaner after the refactor;
+- migrate affected tests to the new naming and object shape.
+
+Files:
+
+- `src/napari_harpy/_classifier.py`
+- `tests/test_classifier.py`
+- `tests/test_widget.py`
+
+Expected outcome:
+
+- classifier preparation state is described by one object rather than a scope
+  pair plus a separate summary;
+- controller, worker, and widget code have fewer parallel concepts to keep in
+  sync;
+- later classifier UX and metadata work can build on a simpler state model.
+
+### 8. Add End-to-End Multi-Region Classifier Coverage
 
 Status: [ ] Planned
 
@@ -646,7 +709,7 @@ Expected outcome:
 - later refactors cannot silently collapse back to one-region classifier
   assumptions.
 
-### 8. Add a Rich Classifier Status Card UX
+### 9. Add a Rich Classifier Status Card UX
 
 Status: [ ] Planned
 
@@ -708,6 +771,7 @@ Recommended landing order:
 6. slice 6
 7. slice 7
 8. slice 8
+9. slice 9
 
 Why this order:
 
