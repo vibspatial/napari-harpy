@@ -534,7 +534,7 @@ Expected outcome:
 
 ### 6. Add a Prediction-Scope Control and Hidden-Write Warning in the Widget
 
-Status: [ ] Planned
+Status: [x] Implemented
 
 Goal:
 

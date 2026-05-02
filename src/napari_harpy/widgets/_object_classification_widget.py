@@ -29,6 +29,7 @@ from napari_harpy._app_state import (
     get_or_create_app_state,
 )
 from napari_harpy._classifier import (
+    DEFAULT_PREDICTION_SCOPE,
     DEFAULT_TRAINING_SCOPE,
     ClassifierController,
     ClassifierScopeMode,
@@ -85,6 +86,7 @@ _APPLY_CLASS_SHORTCUT = "A"
 _REMOVE_CLASS_SHORTCUT = "R"
 _INPUT_CONTROL_STYLESHEET = build_input_control_stylesheet("QComboBox, QSpinBox")
 _TABLE_WIDE_TRAINING_SCOPE_LABEL = "All eligible labeled regions in table"
+_TABLE_WIDE_PREDICTION_SCOPE_LABEL = "All eligible regions in table"
 _SELECTED_SEGMENTATION_TRAINING_SCOPE_LABEL = "Selected segmentation only"
 _CLASS_EDITOR_STYLESHEET = (
     f"QWidget#class_editor {{background-color: {WIDGET_PANEL_COLOR}; "
@@ -147,6 +149,7 @@ class ObjectClassificationWidget(QWidget):
         self._feature_matrix_keys: list[str] = []
         self._selected_feature_key: str | None = None
         self._selected_training_scope: ClassifierScopeMode = DEFAULT_TRAINING_SCOPE
+        self._selected_prediction_scope: ClassifierScopeMode = DEFAULT_PREDICTION_SCOPE
         self._logo_path = Path(__file__).resolve().parents[3] / "docs" / "_static" / "logo.png"
 
         layout = QVBoxLayout(self)
@@ -207,6 +210,17 @@ class ObjectClassificationWidget(QWidget):
         self.training_scope_combo.setCurrentIndex(self.training_scope_combo.findData(DEFAULT_TRAINING_SCOPE))
         self.training_scope_combo.currentIndexChanged.connect(self._on_training_scope_changed)
         self.training_scope_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
+
+        self.prediction_scope_combo = CompactComboBox()
+        self.prediction_scope_combo.setObjectName("prediction_scope_combo")
+        self.prediction_scope_combo.addItem(
+            _SELECTED_SEGMENTATION_TRAINING_SCOPE_LABEL,
+            "selected_segmentation_only",
+        )
+        self.prediction_scope_combo.addItem(_TABLE_WIDE_PREDICTION_SCOPE_LABEL, "all")
+        self.prediction_scope_combo.setCurrentIndex(self.prediction_scope_combo.findData(DEFAULT_PREDICTION_SCOPE))
+        self.prediction_scope_combo.currentIndexChanged.connect(self._on_prediction_scope_changed)
+        self.prediction_scope_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
 
         self.color_by_combo = QComboBox()
         self.color_by_combo.setObjectName("color_by_combo")
@@ -312,6 +326,11 @@ class ObjectClassificationWidget(QWidget):
         self.classifier_feedback.setWordWrap(True)
         self.classifier_feedback.hide()
 
+        self.prediction_scope_warning = QLabel()
+        self.prediction_scope_warning.setObjectName("prediction_scope_warning")
+        self.prediction_scope_warning.setWordWrap(True)
+        self.prediction_scope_warning.hide()
+
         self.persistence_feedback = QLabel()
         self.persistence_feedback.setObjectName("persistence_feedback")
         self.persistence_feedback.setWordWrap(True)
@@ -322,12 +341,14 @@ class ObjectClassificationWidget(QWidget):
         selector_layout.addRow(self._create_form_label("Table"), self.table_combo)
         selector_layout.addRow(self._create_form_label("Feature matrix"), self.feature_matrix_combo)
         selector_layout.addRow(self._create_form_label("Training scope"), self.training_scope_combo)
+        selector_layout.addRow(self._create_form_label("Prediction scope"), self.prediction_scope_combo)
         selector_layout.addRow(self._create_form_label("Color by"), self.color_by_combo)
         selector_layout.addRow(self._create_form_label("User class"), self.class_editor)
 
         content_layout.addWidget(title)
         content_layout.addLayout(selector_layout)
         content_layout.addWidget(self.retrain_action_row)
+        content_layout.addWidget(self.prediction_scope_warning)
         content_layout.addWidget(self.persistence_action_row)
         content_layout.addWidget(self.selection_status)
         content_layout.addWidget(self.annotation_feedback)
@@ -406,6 +427,11 @@ class ObjectClassificationWidget(QWidget):
     def selected_training_scope(self) -> ClassifierScopeMode:
         """Return the current classifier training-scope selection."""
         return self._selected_training_scope
+
+    @property
+    def selected_prediction_scope(self) -> ClassifierScopeMode:
+        """Return the current classifier prediction-scope selection."""
+        return self._selected_prediction_scope
 
     @property
     def selected_instance_id(self) -> int | None:
@@ -545,6 +571,8 @@ class ObjectClassificationWidget(QWidget):
             self.feature_matrix_combo.setEnabled(False)
             self.feature_matrix_combo.setCurrentIndex(-1)
 
+        self.prediction_scope_warning.setText("")
+        self.prediction_scope_warning.setVisible(False)
         self._set_annotation_feedback("")
         self._set_classifier_feedback("")
         self._set_persistence_feedback("")
@@ -792,6 +820,7 @@ class ObjectClassificationWidget(QWidget):
             effective_table_name,
             self.selected_feature_key,
             training_scope=self.selected_training_scope,
+            prediction_scope=self.selected_prediction_scope,
         )
         if classifier_context_changed and effective_table_name is not None:
             self._classifier_controller.mark_dirty(reason="the feature matrix changed")
@@ -801,6 +830,10 @@ class ObjectClassificationWidget(QWidget):
     def _on_training_scope_changed(self, index: int) -> None:
         self._set_selected_training_scope(index)
         self._bind_current_selection(classifier_dirty_reason="the training scope changed")
+
+    def _on_prediction_scope_changed(self, index: int) -> None:
+        self._set_selected_prediction_scope(index)
+        self._bind_current_selection(classifier_dirty_reason="the prediction scope changed")
 
     def _on_color_by_changed(self, index: int) -> None:
         color_by = self.color_by_combo.itemData(index)
@@ -829,6 +862,14 @@ class ObjectClassificationWidget(QWidget):
             return
 
         self._selected_training_scope = DEFAULT_TRAINING_SCOPE
+
+    def _set_selected_prediction_scope(self, index: int) -> None:
+        prediction_scope = self.prediction_scope_combo.itemData(index)
+        if prediction_scope in ("selected_segmentation_only", "all"):
+            self._selected_prediction_scope = prediction_scope
+            return
+
+        self._selected_prediction_scope = DEFAULT_PREDICTION_SCOPE
 
     def _validate_selected_table_binding(self) -> str | None:
         if (
@@ -890,6 +931,7 @@ class ObjectClassificationWidget(QWidget):
             effective_table_name,
             self.selected_feature_key,
             training_scope=self.selected_training_scope,
+            prediction_scope=self.selected_prediction_scope,
         )
         if classifier_dirty_reason is not None and classifier_context_changed and effective_table_name is not None:
             self._classifier_controller.mark_dirty(reason=classifier_dirty_reason)
@@ -1222,29 +1264,39 @@ class ObjectClassificationWidget(QWidget):
         self._set_tooltip(self.color_by_combo, tooltip)
 
     def _update_classifier_controls(self) -> None:
-        can_configure_training_scope = (
+        can_configure_scope = (
             self.selected_spatialdata is not None
             and self.selected_segmentation_name is not None
             and self.selected_table_name is not None
             and self._table_binding_error is None
             and not self._classifier_controller.is_training
         )
-        self.training_scope_combo.setEnabled(can_configure_training_scope)
+        self.training_scope_combo.setEnabled(can_configure_scope)
+        self.prediction_scope_combo.setEnabled(can_configure_scope)
 
         if self.selected_spatialdata is None or self.selected_segmentation_name is None or self.selected_table_name is None:
             training_scope_tooltip = "Choose a segmentation and annotation table before configuring classifier training scope."
+            prediction_scope_tooltip = (
+                "Choose a segmentation and annotation table before configuring classifier prediction scope."
+            )
         elif self._table_binding_error is not None:
             training_scope_tooltip = self._table_binding_error
+            prediction_scope_tooltip = self._table_binding_error
         elif self._classifier_controller.is_training:
             training_scope_tooltip = "A classifier training job is currently running."
+            prediction_scope_tooltip = "A classifier training job is currently running."
         elif self.selected_training_scope == "all":
             training_scope_tooltip = (
                 "Train on eligible labeled rows from all annotated regions in the selected table."
             )
+            prediction_scope_tooltip = self._prediction_scope_tooltip()
         else:
             training_scope_tooltip = "Train only on eligible labeled rows from the selected segmentation region."
+            prediction_scope_tooltip = self._prediction_scope_tooltip()
 
         self._set_tooltip(self.training_scope_combo, training_scope_tooltip)
+        self._set_tooltip(self.prediction_scope_combo, prediction_scope_tooltip)
+        self._update_prediction_scope_warning()
 
         can_retrain = self._classifier_controller.can_retrain
         self.retrain_button.setEnabled(can_retrain)
@@ -1260,9 +1312,56 @@ class ObjectClassificationWidget(QWidget):
         elif self._classifier_controller.is_dirty:
             tooltip = "The classifier model is stale. Click Train Classifier to refresh predictions."
         else:
-            tooltip = "Train the classifier using the current annotations and feature matrix."
+            tooltip = (
+                "Train the classifier using the current annotations and feature matrix, then write predictions "
+                "for the selected prediction scope."
+            )
 
         self._set_tooltip(self.retrain_button, tooltip)
+
+    def _prediction_scope_tooltip(self) -> str:
+        if self.selected_prediction_scope == "all":
+            return (
+                "Write predictions for all eligible regions in the selected table. In-scope rows with invalid "
+                "features will be cleared."
+            )
+
+        return "Write predictions only for eligible rows from the selected segmentation region."
+
+    def _update_prediction_scope_warning(self) -> None:
+        if self.selected_prediction_scope != "all" or self.selected_segmentation_name is None:
+            self.prediction_scope_warning.setText("")
+            self.prediction_scope_warning.setVisible(False)
+            return
+
+        summary = self._classifier_controller.describe_current_preparation()
+        if summary is None:
+            self.prediction_scope_warning.setText("")
+            self.prediction_scope_warning.setVisible(False)
+            return
+
+        prediction_scope = summary.prediction_scope
+        hidden_regions = tuple(region for region in prediction_scope.regions if region != self.selected_segmentation_name)
+        if not hidden_regions:
+            self.prediction_scope_warning.setText("")
+            self.prediction_scope_warning.setVisible(False)
+            return
+
+        set_status_card(
+            self.prediction_scope_warning,
+            title="Prediction Scope",
+            lines=[
+                (
+                    f"Prediction scope covers {prediction_scope.n_rows_in_regions} row(s) "
+                    f"across {len(prediction_scope.regions)} region(s)."
+                ),
+                (
+                    "Eligible rows will receive fresh predictions; other in-scope rows with invalid features "
+                    "will be cleared. Some updates may not be visible in the current selection."
+                ),
+            ],
+            kind="warning",
+        )
 
     def _write_to_zarr(self) -> None:
         # TODO: consider disabling write while classifier retraining is pending

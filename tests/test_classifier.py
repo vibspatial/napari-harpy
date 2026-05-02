@@ -319,6 +319,44 @@ def test_classifier_controller_prediction_scope_all_clears_invalid_rows_in_scope
     assert table.uns[CLASSIFIER_CONFIG_KEY]["n_training_rows"] == int(valid_rows.sum())
 
 
+def test_classifier_controller_describes_current_preparation_without_building_worker_arrays(
+    monkeypatch, sdata_blobs_multi_region: SpatialData
+) -> None:
+    _set_user_classes_by_region(
+        sdata_blobs_multi_region,
+        {
+            ("blobs_labels", 1): 1,
+            ("blobs_labels", 2): 1,
+            ("blobs_labels_2", 24): 2,
+            ("blobs_labels_2", 25): 2,
+        },
+    )
+
+    def fail_slice_feature_rows(feature_matrix, positions):
+        del feature_matrix, positions
+        raise AssertionError("preparation summary should not construct worker feature arrays")
+
+    monkeypatch.setattr(classifier_module, "_slice_feature_rows", fail_slice_feature_rows)
+
+    controller = ClassifierController(debounce_interval_ms=0)
+    controller.bind(
+        sdata_blobs_multi_region,
+        "blobs_labels",
+        "table_multi",
+        "features_1",
+        prediction_scope="all",
+    )
+
+    summary = controller.describe_current_preparation()
+
+    assert summary is not None
+    assert summary.training_scope.regions == ("blobs_labels", "blobs_labels_2")
+    assert summary.prediction_scope.regions == ("blobs_labels", "blobs_labels_2")
+    assert summary.resolved_prediction_row_count == sdata_blobs_multi_region["table_multi"].n_obs
+    assert summary.labeled_count == 4
+    assert summary.eligible is True
+
+
 def test_classifier_controller_resets_predictions_when_only_one_class_is_labeled(
     qtbot, sdata_blobs: SpatialData
 ) -> None:
@@ -350,8 +388,8 @@ def test_classifier_controller_validates_feature_matrix_shape(qtbot, monkeypatch
     _set_user_classes(sdata_blobs, {1: 1, 24: 2})
     table = sdata_blobs["table"]
 
-    def raise_shape_error(feature_matrix, n_obs):
-        del feature_matrix, n_obs
+    def raise_shape_error(feature_matrix, n_obs, *, copy=True):
+        del feature_matrix, n_obs, copy
         raise ValueError("Feature matrix has 25 rows but the table has 26 observations.")
 
     monkeypatch.setattr(classifier_module, "_normalize_feature_matrix", raise_shape_error)
@@ -389,8 +427,6 @@ def test_classifier_controller_drops_stale_results(qtbot, monkeypatch, sdata_blo
             feature_key=job.feature_key,
             label_name=job.label_name,
             table_name=job.table_name,
-            training_scope=job.training_scope,
-            prediction_scope=job.prediction_scope,
             pred_classes=pred_class,
             pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.9, dtype=np.float64),
             trained_at="2026-04-08T12:00:00+00:00",
@@ -431,8 +467,6 @@ def test_classifier_controller_bind_is_passive_until_marked_dirty(qtbot, monkeyp
             feature_key=job.feature_key,
             label_name=job.label_name,
             table_name=job.table_name,
-            training_scope=job.training_scope,
-            prediction_scope=job.prediction_scope,
             pred_classes=np.full(job.prediction_scope.table_row_positions.shape, 1, dtype=np.int64),
             pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.9, dtype=np.float64),
             trained_at="2026-04-08T12:00:00+00:00",
@@ -533,13 +567,13 @@ def test_classifier_controller_invalidates_pending_work_for_selected_feature_mat
         feature_key="features_1",
         label_name="blobs_labels",
         table_name="table",
-        training_scope=_resolved_scope([0, 1]),
-        prediction_scope=_resolved_scope([0, 1]),
         pred_classes=np.array([1, 2], dtype=np.int64),
         pred_confidences=np.array([0.9, 0.8], dtype=np.float64),
         trained_at="2026-04-13T09:00:00+00:00",
         model_params=dict(classifier_module.RANDOM_FOREST_PARAMS),
         summary=classifier_module.ClassifierPreparationSummary(
+            training_scope=_resolved_scope([0, 1]),
+            prediction_scope=_resolved_scope([0, 1]),
             eligible=True,
             reason="Ready to train.",
             resolved_training_row_count=2,
@@ -582,8 +616,6 @@ def test_classifier_controller_reset_after_reload_ignores_late_worker_results(
             feature_key=job.feature_key,
             label_name=job.label_name,
             table_name=job.table_name,
-            training_scope=job.training_scope,
-            prediction_scope=job.prediction_scope,
             pred_classes=np.full(job.prediction_scope.table_row_positions.shape, 1, dtype=np.int64),
             pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.91, dtype=np.float64),
             trained_at="2026-04-13T09:00:00+00:00",

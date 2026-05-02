@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
@@ -60,43 +60,6 @@ DEFAULT_PREDICTION_SCOPE: ClassifierScopeMode = "selected_segmentation_only"
 
 
 @dataclass(frozen=True)
-class ClassifierPreparationSummary:
-    """Describe the outcome of preparing the current classifier run.
-
-    Attributes
-    ----------
-    eligible
-        Whether the current bound inputs are ready for training.
-    reason
-        User-facing explanation for the current preparation outcome.
-    resolved_training_row_count
-        Number of feature-valid rows in the resolved training scope before
-        filtering down to labeled rows.
-    resolved_prediction_row_count
-        Number of feature-valid rows in the resolved prediction scope.
-    training_region_count
-        Number of resolved regions participating in the training scope.
-    labeled_count
-        Number of resolved training-scope rows that carry a user-assigned
-        class label.
-    class_labels
-        Sorted class ids represented by the labeled training rows.
-    n_features
-        Number of columns in the selected feature matrix, or ``None`` when no
-        valid matrix is available yet.
-    """
-
-    eligible: bool
-    reason: str
-    resolved_training_row_count: int
-    resolved_prediction_row_count: int
-    training_region_count: int
-    labeled_count: int
-    class_labels: tuple[int, ...]
-    n_features: int | None
-
-
-@dataclass(frozen=True)
 class ResolvedClassifierScope:
     """Resolved classifier scope for one training or prediction selection."""
 
@@ -123,6 +86,22 @@ class ResolvedClassifierScopes:
 
 
 @dataclass(frozen=True)
+class ClassifierPreparationSummary:
+    """Describe the current classifier preparation state without worker arrays."""
+
+    training_scope: ResolvedClassifierScope
+    prediction_scope: ResolvedClassifierScope
+    eligible: bool
+    reason: str
+    resolved_training_row_count: int
+    resolved_prediction_row_count: int
+    training_region_count: int
+    labeled_count: int
+    class_labels: tuple[int, ...]
+    n_features: int | None
+
+
+@dataclass(frozen=True)
 class ClassifierJob:
     """Immutable payload copied on the main thread and consumed by a worker."""
 
@@ -130,12 +109,18 @@ class ClassifierJob:
     feature_key: str
     label_name: str
     table_name: str
-    training_scope: ResolvedClassifierScope
-    prediction_scope: ResolvedClassifierScope
     predict_features: Any
     train_features: Any
     train_labels: np.ndarray
     summary: ClassifierPreparationSummary
+
+    @property
+    def training_scope(self) -> ResolvedClassifierScope:
+        return self.summary.training_scope
+
+    @property
+    def prediction_scope(self) -> ResolvedClassifierScope:
+        return self.summary.prediction_scope
 
 
 @dataclass(frozen=True)
@@ -146,13 +131,19 @@ class ClassifierJobResult:
     feature_key: str
     label_name: str
     table_name: str
-    training_scope: ResolvedClassifierScope
-    prediction_scope: ResolvedClassifierScope
     pred_classes: np.ndarray
     pred_confidences: np.ndarray
     trained_at: str
     model_params: dict[str, int]
     summary: ClassifierPreparationSummary
+
+    @property
+    def training_scope(self) -> ResolvedClassifierScope:
+        return self.summary.training_scope
+
+    @property
+    def prediction_scope(self) -> ResolvedClassifierScope:
+        return self.summary.prediction_scope
 
 
 @thread_worker(start_thread=False, ignore_errors=True)
@@ -175,8 +166,6 @@ def _fit_classifier_job(job: ClassifierJob) -> ClassifierJobResult:
         feature_key=job.feature_key,
         label_name=job.label_name,
         table_name=job.table_name,
-        training_scope=job.training_scope,
-        prediction_scope=job.prediction_scope,
         pred_classes=pred_classes,
         pred_confidences=pred_confidences,
         trained_at=datetime.now(UTC).isoformat(),
@@ -358,6 +347,10 @@ class ClassifierController:
         self._is_dirty = False
         self._update_status_from_reloaded_table(table)
 
+    def describe_current_preparation(self) -> ClassifierPreparationSummary | None:
+        """Return a side-effect-free summary of the currently bound classifier state."""
+        return self._prepare_classifier_summary()
+
     def _launch_scheduled_retrain(self) -> None:
         self._launch_retrain_job(self._latest_requested_job_id)
 
@@ -392,11 +385,10 @@ class ClassifierController:
         )
         worker.start()
 
-    def _prepare_classifier_job(self, job_id: int) -> ClassifierJob | None:
+    def _prepare_classifier_summary(self) -> ClassifierPreparationSummary | None:
         table = self._get_bound_table()
         metadata = self._selected_table_metadata
         if table is None or metadata is None or self._selected_label_name is None or self._selected_table_name is None:
-            self._set_status("Classifier: choose an annotation table and feature matrix.", kind="warning")
             return None
 
         # Early error paths still need region/count context for status and
@@ -404,204 +396,85 @@ class ClassifierController:
         # resolved from a concrete feature matrix.
         pre_feature_scopes = self._resolve_classifier_scopes(table, metadata, feature_valid_row_mask=None)
         if self._selected_feature_key is None:
-            summary = ClassifierPreparationSummary(
+            return self._build_preparation_summary(
+                pre_feature_scopes,
                 eligible=False,
                 reason="Choose a feature matrix before training the classifier.",
-                resolved_training_row_count=pre_feature_scopes.training.n_eligible_rows,
-                resolved_prediction_row_count=pre_feature_scopes.prediction.n_eligible_rows,
-                training_region_count=len(pre_feature_scopes.training.regions),
-                labeled_count=0,
-                class_labels=(),
                 n_features=None,
-            )
-            return ClassifierJob(
-                job_id=job_id,
-                feature_key="",
-                training_scope=pre_feature_scopes.training,
-                prediction_scope=pre_feature_scopes.prediction,
-                label_name=self._selected_label_name,
-                table_name=self._selected_table_name,
-                predict_features=np.empty((0, 0), dtype=np.float64),
-                train_features=np.empty((0, 0), dtype=np.float64),
-                train_labels=np.array([], dtype=np.int64),
-                summary=summary,
             )
 
         try:
-            feature_matrix = _normalize_feature_matrix(table.obsm[self._selected_feature_key], table.n_obs)
+            feature_matrix = _normalize_feature_matrix(table.obsm[self._selected_feature_key], table.n_obs, copy=False)
         except KeyError:
-            summary = ClassifierPreparationSummary(
+            return self._build_preparation_summary(
+                pre_feature_scopes,
                 eligible=False,
                 reason=f"Feature matrix `{self._selected_feature_key}` is not available in `.obsm`.",
-                resolved_training_row_count=pre_feature_scopes.training.n_eligible_rows,
-                resolved_prediction_row_count=pre_feature_scopes.prediction.n_eligible_rows,
-                training_region_count=len(pre_feature_scopes.training.regions),
-                labeled_count=0,
-                class_labels=(),
                 n_features=None,
-            )
-            return ClassifierJob(
-                job_id=job_id,
-                feature_key=self._selected_feature_key,
-                training_scope=pre_feature_scopes.training,
-                prediction_scope=pre_feature_scopes.prediction,
-                label_name=self._selected_label_name,
-                table_name=self._selected_table_name,
-                predict_features=np.empty((0, 0), dtype=np.float64),
-                train_features=np.empty((0, 0), dtype=np.float64),
-                train_labels=np.array([], dtype=np.int64),
-                summary=summary,
             )
         except ValueError as error:
-            summary = ClassifierPreparationSummary(
+            return self._build_preparation_summary(
+                pre_feature_scopes,
                 eligible=False,
                 reason=str(error),
-                resolved_training_row_count=pre_feature_scopes.training.n_eligible_rows,
-                resolved_prediction_row_count=pre_feature_scopes.prediction.n_eligible_rows,
-                training_region_count=len(pre_feature_scopes.training.regions),
-                labeled_count=0,
-                class_labels=(),
                 n_features=None,
-            )
-            return ClassifierJob(
-                job_id=job_id,
-                feature_key=self._selected_feature_key,
-                training_scope=pre_feature_scopes.training,
-                prediction_scope=pre_feature_scopes.prediction,
-                label_name=self._selected_label_name,
-                table_name=self._selected_table_name,
-                predict_features=np.empty((0, 0), dtype=np.float64),
-                train_features=np.empty((0, 0), dtype=np.float64),
-                train_labels=np.array([], dtype=np.int64),
-                summary=summary,
             )
 
         feature_valid_row_mask = _get_finite_feature_row_mask(feature_matrix)
         scopes = self._resolve_classifier_scopes(table, metadata, feature_valid_row_mask=feature_valid_row_mask)
         prediction_scope = scopes.prediction
         training_scope = scopes.training
-
-        resolved_training_row_count = training_scope.n_eligible_rows
-        resolved_prediction_row_count = prediction_scope.n_eligible_rows
-        training_region_count = len(training_scope.regions)
         n_features = int(feature_matrix.shape[1])
-        predict_features = _slice_feature_rows(feature_matrix, prediction_scope.table_row_positions)
 
         if prediction_scope.n_rows_in_regions == 0:
-            summary = ClassifierPreparationSummary(
+            return self._build_preparation_summary(
+                scopes,
                 eligible=False,
                 reason=(
                     f"No table rows for segmentation `{self._selected_label_name}` were found in "
                     f"`{self._selected_table_name}`."
                 ),
-                resolved_training_row_count=resolved_training_row_count,
-                resolved_prediction_row_count=resolved_prediction_row_count,
-                training_region_count=training_region_count,
-                labeled_count=0,
-                class_labels=(),
                 n_features=n_features,
-            )
-            return ClassifierJob(
-                job_id=job_id,
-                feature_key=self._selected_feature_key,
-                training_scope=training_scope,
-                prediction_scope=prediction_scope,
-                label_name=self._selected_label_name,
-                table_name=self._selected_table_name,
-                predict_features=np.empty((0, n_features), dtype=np.float64),
-                train_features=np.empty((0, n_features), dtype=np.float64),
-                train_labels=np.array([], dtype=np.int64),
-                summary=summary,
             )
 
         if prediction_scope.n_eligible_rows == 0:
-            summary = ClassifierPreparationSummary(
+            return self._build_preparation_summary(
+                scopes,
                 eligible=False,
                 reason=(
                     f"Feature matrix `{self._selected_feature_key}` has no usable rows in the prediction scope: "
                     f"all {prediction_scope.n_rows_in_regions} row(s) have non-finite or missing values."
                 ),
-                resolved_training_row_count=resolved_training_row_count,
-                resolved_prediction_row_count=resolved_prediction_row_count,
-                training_region_count=training_region_count,
-                labeled_count=0,
-                class_labels=(),
                 n_features=n_features,
-            )
-            return ClassifierJob(
-                job_id=job_id,
-                feature_key=self._selected_feature_key,
-                training_scope=training_scope,
-                prediction_scope=prediction_scope,
-                label_name=self._selected_label_name,
-                table_name=self._selected_table_name,
-                predict_features=np.empty((0, n_features), dtype=np.float64),
-                train_features=np.empty((0, n_features), dtype=np.float64),
-                train_labels=np.array([], dtype=np.int64),
-                summary=summary,
             )
 
         if n_features == 0:
-            summary = ClassifierPreparationSummary(
+            return self._build_preparation_summary(
+                scopes,
                 eligible=False,
                 reason=f"Feature matrix `{self._selected_feature_key}` does not contain any columns.",
-                resolved_training_row_count=resolved_training_row_count,
-                resolved_prediction_row_count=resolved_prediction_row_count,
-                training_region_count=training_region_count,
-                labeled_count=0,
-                class_labels=(),
                 n_features=0,
-            )
-            return ClassifierJob(
-                job_id=job_id,
-                feature_key=self._selected_feature_key,
-                training_scope=training_scope,
-                prediction_scope=prediction_scope,
-                label_name=self._selected_label_name,
-                table_name=self._selected_table_name,
-                predict_features=predict_features,
-                train_features=np.empty((0, 0), dtype=np.float64),
-                train_labels=np.array([], dtype=np.int64),
-                summary=summary,
             )
 
         if training_scope.n_rows_in_regions > 0 and training_scope.n_eligible_rows == 0:
-            summary = ClassifierPreparationSummary(
+            return self._build_preparation_summary(
+                scopes,
                 eligible=False,
                 reason=(
                     f"Feature matrix `{self._selected_feature_key}` has no usable rows in the training scope: "
                     f"all {training_scope.n_rows_in_regions} row(s) have non-finite or missing values."
                 ),
-                resolved_training_row_count=resolved_training_row_count,
-                resolved_prediction_row_count=resolved_prediction_row_count,
-                training_region_count=training_region_count,
-                labeled_count=0,
-                class_labels=(),
                 n_features=n_features,
-            )
-            return ClassifierJob(
-                job_id=job_id,
-                feature_key=self._selected_feature_key,
-                training_scope=training_scope,
-                prediction_scope=prediction_scope,
-                label_name=self._selected_label_name,
-                table_name=self._selected_table_name,
-                predict_features=predict_features,
-                train_features=np.empty((0, n_features), dtype=np.float64),
-                train_labels=np.array([], dtype=np.int64),
-                summary=summary,
             )
 
         user_class_values = _get_user_class_values(table.obs, len(table.obs))
         training_user_class_values = user_class_values[training_scope.table_row_positions]
         labeled_mask = training_user_class_values != UNLABELED_CLASS
         class_labels = tuple(sorted(int(value) for value in np.unique(training_user_class_values[labeled_mask])))
-        summary = ClassifierPreparationSummary(
+        summary = self._build_preparation_summary(
+            scopes,
             eligible=True,
             reason="Ready to train.",
-            resolved_training_row_count=resolved_training_row_count,
-            resolved_prediction_row_count=resolved_prediction_row_count,
-            training_region_count=training_region_count,
             labeled_count=int(labeled_mask.sum()),
             class_labels=class_labels,
             n_features=n_features,
@@ -616,6 +489,8 @@ class ClassifierController:
                     f"{summary.training_region_count} region(s); {summary.labeled_count} row(s) are labeled. "
                     f"Prediction scope contains {summary.resolved_prediction_row_count} row(s)."
                 ),
+                training_scope=summary.training_scope,
+                prediction_scope=summary.prediction_scope,
                 resolved_training_row_count=summary.resolved_training_row_count,
                 resolved_prediction_row_count=summary.resolved_prediction_row_count,
                 training_region_count=summary.training_region_count,
@@ -633,6 +508,8 @@ class ClassifierController:
                     f"across {len(summary.class_labels)} class(es). "
                     f"Prediction scope contains {summary.resolved_prediction_row_count} row(s)."
                 ),
+                training_scope=summary.training_scope,
+                prediction_scope=summary.prediction_scope,
                 resolved_training_row_count=summary.resolved_training_row_count,
                 resolved_prediction_row_count=summary.resolved_prediction_row_count,
                 training_region_count=summary.training_region_count,
@@ -641,20 +518,114 @@ class ClassifierController:
                 n_features=summary.n_features,
             )
 
-        labeled_training_positions = training_scope.table_row_positions[labeled_mask]
+        return summary
+
+    def _prepare_classifier_job(self, job_id: int) -> ClassifierJob | None:
+        table = self._get_bound_table()
+        if table is None or self._selected_label_name is None or self._selected_table_name is None:
+            self._set_status("Classifier: choose an annotation table and feature matrix.", kind="warning")
+            return None
+
+        summary = self._prepare_classifier_summary()
+        if summary is None:
+            self._set_status("Classifier: choose an annotation table and feature matrix.", kind="warning")
+            return None
+
+        feature_key = "" if self._selected_feature_key is None else self._selected_feature_key
+        n_features = 0 if summary.n_features is None else int(summary.n_features)
+        empty_features = np.empty((0, n_features), dtype=np.float64)
+        if not summary.eligible or self._selected_feature_key is None:
+            return ClassifierJob(
+                job_id=job_id,
+                feature_key=feature_key,
+                label_name=self._selected_label_name,
+                table_name=self._selected_table_name,
+                predict_features=empty_features,
+                train_features=empty_features,
+                train_labels=np.array([], dtype=np.int64),
+                summary=summary,
+            )
+
+        try:
+            feature_matrix = _normalize_feature_matrix(table.obsm[self._selected_feature_key], table.n_obs)
+        except KeyError:
+            summary = self._build_preparation_summary(
+                ResolvedClassifierScopes(training=summary.training_scope, prediction=summary.prediction_scope),
+                eligible=False,
+                reason=f"Feature matrix `{self._selected_feature_key}` is not available in `.obsm`.",
+                labeled_count=summary.labeled_count,
+                class_labels=summary.class_labels,
+                n_features=None,
+            )
+            return ClassifierJob(
+                job_id=job_id,
+                feature_key=feature_key,
+                label_name=self._selected_label_name,
+                table_name=self._selected_table_name,
+                predict_features=np.empty((0, 0), dtype=np.float64),
+                train_features=np.empty((0, 0), dtype=np.float64),
+                train_labels=np.array([], dtype=np.int64),
+                summary=summary,
+            )
+        except ValueError as error:
+            summary = self._build_preparation_summary(
+                ResolvedClassifierScopes(training=summary.training_scope, prediction=summary.prediction_scope),
+                eligible=False,
+                reason=str(error),
+                labeled_count=summary.labeled_count,
+                class_labels=summary.class_labels,
+                n_features=None,
+            )
+            return ClassifierJob(
+                job_id=job_id,
+                feature_key=feature_key,
+                label_name=self._selected_label_name,
+                table_name=self._selected_table_name,
+                predict_features=np.empty((0, 0), dtype=np.float64),
+                train_features=np.empty((0, 0), dtype=np.float64),
+                train_labels=np.array([], dtype=np.int64),
+                summary=summary,
+            )
+
+        predict_features = _slice_feature_rows(feature_matrix, summary.prediction_scope.table_row_positions)
+        user_class_values = _get_user_class_values(table.obs, len(table.obs))
+        training_user_class_values = user_class_values[summary.training_scope.table_row_positions]
+        labeled_mask = training_user_class_values != UNLABELED_CLASS
+        labeled_training_positions = summary.training_scope.table_row_positions[labeled_mask]
         train_features = _slice_feature_rows(feature_matrix, labeled_training_positions)
         train_labels = np.asarray(training_user_class_values[labeled_mask], dtype=np.int64)
         return ClassifierJob(
             job_id=job_id,
-            feature_key=self._selected_feature_key,
-            training_scope=training_scope,
-            prediction_scope=prediction_scope,
+            feature_key=feature_key,
             label_name=self._selected_label_name,
             table_name=self._selected_table_name,
             predict_features=predict_features,
             train_features=train_features,
             train_labels=train_labels,
             summary=summary,
+        )
+
+    def _build_preparation_summary(
+        self,
+        scopes: ResolvedClassifierScopes,
+        *,
+        eligible: bool,
+        reason: str,
+        labeled_count: int = 0,
+        class_labels: tuple[int, ...] = (),
+        n_features: int | None = None,
+    ) -> ClassifierPreparationSummary:
+        return ClassifierPreparationSummary(
+            training_scope=scopes.training,
+            prediction_scope=scopes.prediction,
+            eligible=eligible,
+            reason=reason,
+            resolved_training_row_count=scopes.training.n_eligible_rows,
+            resolved_prediction_row_count=scopes.prediction.n_eligible_rows,
+            training_region_count=len(scopes.training.regions),
+            labeled_count=labeled_count,
+            class_labels=class_labels,
+            n_features=n_features,
         )
 
     def _apply_ineligible_state(
@@ -672,8 +643,6 @@ class ClassifierController:
         table.uns[CLASSIFIER_CONFIG_KEY] = self._build_classifier_config(
             feature_key=job.feature_key,
             table_name=job.table_name,
-            training_scope=job.training_scope,
-            prediction_scope=job.prediction_scope,
             summary=job.summary,
             trained=False,
             trained_at=None,
@@ -701,8 +670,6 @@ class ClassifierController:
         table.uns[CLASSIFIER_CONFIG_KEY] = self._build_classifier_config(
             feature_key=result.feature_key,
             table_name=result.table_name,
-            training_scope=result.training_scope,
-            prediction_scope=result.prediction_scope,
             summary=result.summary,
             trained=True,
             trained_at=result.trained_at,
@@ -721,25 +688,25 @@ class ClassifierController:
         table = self._get_bound_table()
         if table is not None:
             active_job = self._active_job
+            if active_job is None:
+                error_summary = ClassifierPreparationSummary(
+                    training_scope=_empty_resolved_classifier_scope(self._selected_training_scope),
+                    prediction_scope=_empty_resolved_classifier_scope(self._selected_prediction_scope),
+                    eligible=False,
+                    reason=str(error),
+                    resolved_training_row_count=0,
+                    resolved_prediction_row_count=0,
+                    training_region_count=0,
+                    labeled_count=0,
+                    class_labels=(),
+                    n_features=None,
+                )
+            else:
+                error_summary = replace(active_job.summary, eligible=False, reason=str(error))
             table.uns[CLASSIFIER_CONFIG_KEY] = self._build_classifier_config(
                 feature_key=None if active_job is None else active_job.feature_key,
                 table_name=None if active_job is None else active_job.table_name,
-                training_scope=None if active_job is None else active_job.training_scope,
-                prediction_scope=None if active_job is None else active_job.prediction_scope,
-                summary=ClassifierPreparationSummary(
-                    eligible=False,
-                    reason=str(error),
-                    resolved_training_row_count=(
-                        0 if active_job is None else active_job.summary.resolved_training_row_count
-                    ),
-                    resolved_prediction_row_count=(
-                        0 if active_job is None else active_job.summary.resolved_prediction_row_count
-                    ),
-                    training_region_count=0 if active_job is None else active_job.summary.training_region_count,
-                    labeled_count=0 if active_job is None else active_job.summary.labeled_count,
-                    class_labels=() if active_job is None else active_job.summary.class_labels,
-                    n_features=None if active_job is None else active_job.summary.n_features,
-                ),
+                summary=error_summary,
                 trained=False,
                 trained_at=None,
             )
@@ -830,8 +797,6 @@ class ClassifierController:
         *,
         feature_key: str | None,
         table_name: str | None,
-        training_scope: ResolvedClassifierScope | None,
-        prediction_scope: ResolvedClassifierScope | None,
         summary: ClassifierPreparationSummary,
         trained: bool,
         trained_at: str | None,
@@ -849,11 +814,11 @@ class ClassifierController:
             "n_features": summary.n_features,
             "class_labels_seen": list(summary.class_labels),
             "rf_params": dict(RANDOM_FOREST_PARAMS),
-            "training_scope": None if training_scope is None else training_scope.mode,
-            "training_regions": [] if training_scope is None else list(training_scope.regions),
+            "training_scope": summary.training_scope.mode,
+            "training_regions": list(summary.training_scope.regions),
             "n_training_rows": summary.resolved_training_row_count,
-            "prediction_scope": None if prediction_scope is None else prediction_scope.mode,
-            "prediction_regions": [] if prediction_scope is None else list(prediction_scope.regions),
+            "prediction_scope": summary.prediction_scope.mode,
+            "prediction_regions": list(summary.prediction_scope.regions),
             "n_predicted_rows": summary.resolved_prediction_row_count,
         }
 
@@ -997,7 +962,7 @@ class ClassifierController:
         )
 
 
-def _normalize_feature_matrix(feature_matrix: Any, n_obs: int) -> Any:
+def _normalize_feature_matrix(feature_matrix: Any, n_obs: int, *, copy: bool = True) -> Any:
     if issparse(feature_matrix):
         if feature_matrix.ndim != 2:
             raise ValueError("Feature matrices stored in `.obsm` must be 2-dimensional.")
@@ -1005,7 +970,7 @@ def _normalize_feature_matrix(feature_matrix: Any, n_obs: int) -> Any:
             raise ValueError(
                 f"Feature matrix has {feature_matrix.shape[0]} rows but the table has {n_obs} observations."
             )
-        return feature_matrix.copy()
+        return feature_matrix.copy() if copy else feature_matrix
 
     array = np.asarray(feature_matrix, dtype=np.float64)
     if array.ndim == 1:
@@ -1014,7 +979,7 @@ def _normalize_feature_matrix(feature_matrix: Any, n_obs: int) -> Any:
         raise ValueError("Feature matrices stored in `.obsm` must be 2-dimensional.")
     if array.shape[0] != n_obs:
         raise ValueError(f"Feature matrix has {array.shape[0]} rows but the table has {n_obs} observations.")
-    return array.copy()
+    return array.copy() if copy else array
 
 
 def _slice_feature_rows(feature_matrix: Any, positions: np.ndarray) -> Any:
@@ -1060,6 +1025,15 @@ def _normalize_scope_mode(scope_mode: ClassifierScopeMode | str) -> ClassifierSc
     if scope_mode in ("selected_segmentation_only", "all"):
         return scope_mode
     raise ValueError(f"Unsupported classifier scope mode: {scope_mode!r}")
+
+
+def _empty_resolved_classifier_scope(mode: ClassifierScopeMode) -> ResolvedClassifierScope:
+    return ResolvedClassifierScope(
+        mode=mode,
+        regions=(),
+        table_row_positions=np.array([], dtype=np.int64),
+        n_rows_in_regions=0,
+    )
 
 
 def _get_user_class_values(obs: pd.DataFrame, n_obs: int) -> np.ndarray:
