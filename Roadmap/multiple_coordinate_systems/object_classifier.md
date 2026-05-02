@@ -561,7 +561,7 @@ Scope:
   existing `classifier_feedback` card;
 - keep the warning UX lightweight in this slice:
   - no modal confirmation
-  - no richer slice-9 status-card system yet
+  - no richer slice-8 status-card system yet
 - show the inline warning only when:
   - `prediction_scope == "all"`
   - and the requested prediction scope reaches at least one region beyond the
@@ -575,32 +575,98 @@ Scope:
   recommended visible shape:
   - `Prediction scope covers N row(s) across M region(s).`
   - `Eligible rows will receive fresh predictions; other in-scope rows with invalid features will be cleared. Some updates may not be visible in the current selection.`
-- add one small controller-facing preflight API so the widget can render that
+- add one small controller-facing preparation API so the widget can render that
   warning and count information before the user clicks `Train Classifier`;
 - do not parse `status_message` in the widget for this;
-- add a lightweight side-effect-free accessor on `ClassifierController`:
-
-```python
-def describe_current_preflight(self) -> ClassifierPreflight | None:
-    ...
-```
-
-- introduce the supporting snapshot type:
+- do not introduce a separate `ClassifierPreflight` dataclass; keep the
+  controller-facing preparation state in `ClassifierPreparationSummary`;
+- do not use `ClassifierJob` as the widget-facing preparation object:
+  `ClassifierJob` is the worker execution payload, and constructing one during
+  ordinary widget refresh would mix status rendering with `job_id` assignment,
+  feature slicing/copying, and train/predict array construction;
+- fold the useful part of the planned preparation-state refactor into this
+  slice by making `ClassifierPreparationSummary` the single structured object
+  that carries both resolved scopes and scalar preparation counts:
 
 ```python
 @dataclass(frozen=True)
-class ClassifierPreflight:
+class ClassifierPreparationSummary:
     training_scope: ResolvedClassifierScope
     prediction_scope: ResolvedClassifierScope
+    eligible: bool
+    reason: str
+    resolved_training_row_count: int
+    resolved_prediction_row_count: int
+    training_region_count: int
+    labeled_count: int
+    class_labels: tuple[int, ...]
+    n_features: int | None
+```
+
+- change `ClassifierJob` and `ClassifierJobResult` to carry this summary as the
+  authoritative preparation object, rather than storing parallel
+  `training_scope` / `prediction_scope` fields beside it;
+- use this target `ClassifierJob` shape, where `training_scope` and
+  `prediction_scope` are convenience properties over the summary rather than
+  independent dataclass fields:
+
+```python
+@dataclass(frozen=True)
+class ClassifierJob:
+    job_id: int
+    feature_key: str
+    label_name: str
+    table_name: str
+    predict_features: Any
+    train_features: Any
+    train_labels: np.ndarray
     summary: ClassifierPreparationSummary
+
+    @property
+    def training_scope(self) -> ResolvedClassifierScope:
+        return self.summary.training_scope
+
+    @property
+    def prediction_scope(self) -> ResolvedClassifierScope:
+        return self.summary.prediction_scope
+```
+
+- treat the properties above as the preferred compatibility surface for existing
+  code and tests; do not reintroduce duplicate stored scope fields on
+  `ClassifierJob`;
+- apply the same rule to `ClassifierJobResult`: store the summary once, and read
+  resolved scopes from `result.summary` instead of persisting a second copy on
+  the result object;
+- keep the intended object roles explicit:
+  - `ClassifierPreparationSummary`: lightweight, side-effect-free description of
+    the current bound classifier state for widgets, status, metadata counts, and
+    worker setup;
+  - `ClassifierJob`: heavier immutable worker payload that wraps the preparation
+    summary plus `job_id`, `train_features`, `predict_features`, and
+    `train_labels`;
+  - `ClassifierJobResult`: worker output that carries predictions/confidences
+    plus the original preparation summary used to produce them;
+- extract the side-effect-free, non-worker, non-feature-slicing preparation work
+  from `_prepare_classifier_job(...)` into a helper such as
+  `_prepare_classifier_summary(...)`;
+- `_prepare_classifier_summary(...)` should resolve scopes, feature-valid row
+  positions, labeled-row counts, class labels, feature counts, and ineligible
+  reasons, but should not construct full training or prediction feature arrays;
+- keep `_prepare_classifier_job(...)` as the worker-payload builder: it should
+  call `_prepare_classifier_summary(...)`, then slice `train_features` and
+  `predict_features` only when a job is actually being launched;
+- add a lightweight side-effect-free accessor on `ClassifierController`:
+
+```python
+def describe_current_preparation(self) -> ClassifierPreparationSummary | None:
+    ...
 ```
 
 - return `None` only when the controller is not sufficiently bound to describe
-  the current selection at all; otherwise return a `ClassifierPreflight` even
-  when training is currently ineligible;
-- extract the non-worker, non-feature-slicing parts of
-  `_prepare_classifier_job(...)` so the widget can ask for scope counts and
-  regions without constructing full training arrays on every refresh;
+  the current selection at all; otherwise return a
+  `ClassifierPreparationSummary` even when training is currently ineligible;
+- update controller status, metadata persistence, error handling, and reload
+  logic to read resolved scope information from the summary where practical;
 - update tooltips so the button text still describes one action even when the
   training and prediction scopes differ.
 
@@ -618,62 +684,15 @@ Expected outcome:
 - the widget owns an explicit prediction-scope selection and passes it into the
   existing controller binding flow;
 - the widget can render hidden-write warning copy from structured controller
-  preflight data rather than parsing controller status text;
+  preparation data rather than parsing controller status text;
 - the widget communicates hidden-row writes before they happen, not only after.
+- classifier preparation state is described by one summary object rather than a
+  scope pair plus a separate summary, so no follow-up preparation-state refactor
+  is needed.
 - this is the natural point to re-enable `Train Classifier` if it was disabled
   during earlier refactor slices.
 
-### 7. Consolidate Preparation State into a Snapshot Model
-
-Status: [ ] Planned
-
-Goal:
-
-- collapse the split between `ClassifierPreparationSummary` and the separate
-  scope objects into one coherent preparation snapshot.
-
-Scope:
-
-- rename `ClassifierPreparationSummary` to
-  `ClassifierPreparationSnapshot`;
-- add
-  `training_scope: ResolvedClassifierScope` and
-  `prediction_scope: ResolvedClassifierScope`
-  directly to that snapshot type;
-- keep the current scalar preparation fields on the renamed snapshot:
-  - `eligible`
-  - `reason`
-  - `resolved_training_row_count`
-  - `resolved_prediction_row_count`
-  - `training_region_count`
-  - `labeled_count`
-  - `class_labels`
-  - `n_features`
-- change `ClassifierJob` and `ClassifierJobResult` to carry the consolidated
-  snapshot instead of separate `training_scope` / `prediction_scope` fields
-  plus `summary`;
-- update controller status, metadata persistence, error handling, and reload
-  logic to read from that single snapshot object;
-- update the slice-6 preflight API so
-  `describe_current_preflight()` returns the consolidated snapshot directly if
-  that makes the API cleaner after the refactor;
-- migrate affected tests to the new naming and object shape.
-
-Files:
-
-- `src/napari_harpy/_classifier.py`
-- `tests/test_classifier.py`
-- `tests/test_widget.py`
-
-Expected outcome:
-
-- classifier preparation state is described by one object rather than a scope
-  pair plus a separate summary;
-- controller, worker, and widget code have fewer parallel concepts to keep in
-  sync;
-- later classifier UX and metadata work can build on a simpler state model.
-
-### 8. Add End-to-End Multi-Region Classifier Coverage
+### 7. Add End-to-End Multi-Region Classifier Coverage
 
 Status: [ ] Planned
 
@@ -709,7 +728,7 @@ Expected outcome:
 - later refactors cannot silently collapse back to one-region classifier
   assumptions.
 
-### 9. Add a Rich Classifier Status Card UX
+### 8. Add a Rich Classifier Status Card UX
 
 Status: [ ] Planned
 
@@ -721,16 +740,16 @@ Goal:
 
 Scope:
 
-- introduce a dedicated widget status area for classifier preflight context,
+- introduce a dedicated widget status area for classifier preparation context,
   separate from the existing transient `classifier_feedback` card;
 - add a status-card helper module such as
   `src/napari_harpy/widgets/_object_classification_status_card.py`;
 - keep that helper module presentation-focused:
   it should build status-card specs from structured controller/widget state,
   not own Qt widget classes or parse user-facing status strings;
-- add a small structured controller-facing API for current classifier
-  preflight state if the widget still lacks one by this point;
-- render richer preflight lines such as:
+- reuse the structured preparation accessor introduced in slice 6 rather than
+  adding another controller-facing preparation model;
+- render richer preparation lines such as:
 
 ```text
 Training: 182 labeled rows across 4 regions
@@ -740,7 +759,7 @@ Prediction: 3,110 rows in selected region
 - keep the existing `classifier_feedback` card for transient run-time events
   such as training started, training failed, model stale, and model up to date;
 - align the resulting UX with the feature extraction widget's separation
-  between selection/preflight status and controller feedback status;
+  between selection/preparation status and controller feedback status;
 - add widget tests for the richer card rendering and state transitions.
 
 Files:
@@ -752,9 +771,9 @@ Files:
 
 Expected outcome:
 
-- classifier scope choices are visible in a stable, readable preflight card
+- classifier scope choices are visible in a stable, readable preparation card
   before the user clicks `Train Classifier`;
-- transient controller feedback remains separate from persistent preflight
+- transient controller feedback remains separate from persistent preparation
   context;
 - the classifier widget UX matches the overall status-card style already used
   elsewhere in the codebase, especially feature extraction.
@@ -771,7 +790,6 @@ Recommended landing order:
 6. slice 6
 7. slice 7
 8. slice 8
-9. slice 9
 
 Why this order:
 
@@ -781,6 +799,9 @@ Why this order:
   table-level while keeping prediction safe;
 - it treats metadata and reload semantics as first-class scope work instead of
   post-merge cleanup.
+- it folds the preparation-summary cleanup into the prediction-scope widget slice,
+  so there is no separate follow-up refactor between the UI warning and final
+  multi-region coverage.
 - it defers richer classifier UX composition until the scope semantics and
   metadata contract are stable enough to present cleanly.
 
