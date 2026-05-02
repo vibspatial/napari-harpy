@@ -586,7 +586,9 @@ Scope:
   feature slicing/copying, and train/predict array construction;
 - fold the useful part of the planned preparation-state refactor into this
   slice by making `ClassifierPreparationSummary` the single structured object
-  that carries both resolved scopes and scalar preparation counts:
+  that carries both resolved scopes and scalar preparation state; derive row
+  and region counts from the resolved scopes rather than storing duplicate
+  count fields:
 
 ```python
 @dataclass(frozen=True)
@@ -595,12 +597,21 @@ class ClassifierPreparationSummary:
     prediction_scope: ResolvedClassifierScope
     eligible: bool
     reason: str
-    resolved_training_row_count: int
-    resolved_prediction_row_count: int
-    training_region_count: int
     labeled_count: int
     class_labels: tuple[int, ...]
     n_features: int | None
+
+    @property
+    def resolved_training_row_count(self) -> int:
+        return self.training_scope.n_eligible_rows
+
+    @property
+    def resolved_prediction_row_count(self) -> int:
+        return self.prediction_scope.n_eligible_rows
+
+    @property
+    def training_region_count(self) -> int:
+        return len(self.training_scope.regions)
 ```
 
 - change `ClassifierJob` and `ClassifierJobResult` to carry this summary as the
