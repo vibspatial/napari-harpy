@@ -172,8 +172,11 @@ Validate for SpatialData entry point:
 - `sdata.is_backed()`
 - `sdata.path is not None`
 - `points_key in sdata.points`
+- selected points element resolves to exactly one on-disk element path
 
-Use a unique points-element path resolver if available rather than assuming the on-disk structure more than necessary.
+Use `sdata.locate_element(...)` or the equivalent SpatialData API to resolve the selected points element path.
+Do not assume the path is always `points/<points_key>`.
+Raise a clear `ValueError` if the element cannot be located or resolves to multiple zarr paths.
 
 ### 3. Output Directory Setup and Staged Finalization
 
@@ -390,8 +393,9 @@ Responsibilities:
 
 - validate backed SpatialData input
 - resolve the points element
+- resolve the points element's unique on-disk path with `sdata.locate_element(...)` or equivalent
 - read the stored points dataframe as-is
-- compute `output_path`
+- compute `output_path = Path(sdata.path) / resolved_points_element_path / "transcripts_vis"`
 - delegate to `build_transcript_visualization_cache(...)`
 
 Phase 1A should keep the cache contract in the stored coordinate space of `points.parquet`.
@@ -440,7 +444,8 @@ Recommended test groups:
 
 ### Group E: SpatialData Entry Point
 
-- cache path resolves under `points/<points_key>/transcripts_vis`
+- cache path resolves under `<resolved_points_element_path>/transcripts_vis`
+- path resolution rejects missing or ambiguous points-element locations
 - stored points coordinates are used directly
 - no transformation logic is applied
 

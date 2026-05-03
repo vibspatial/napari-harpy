@@ -104,8 +104,12 @@ This helper should:
 
 - require `sdata.is_backed()` and `sdata.path is not None`;
 - require `points_key in sdata.points`;
+- resolve the selected points element to exactly one on-disk element path, using `sdata.locate_element(...)` or the equivalent SpatialData API;
 - read the stored points dataframe as-is from the selected points element;
-- call `build_transcript_visualization_cache(...)` with `output_path = Path(sdata.path) / "points" / points_key / "transcripts_vis"`.
+- call `build_transcript_visualization_cache(...)` with `output_path = Path(sdata.path) / resolved_points_element_path / "transcripts_vis"`.
+
+The helper should not assume that the on-disk element path is always `points/<points_key>`.
+It should fail with a clear `ValueError` if the selected points element cannot be located or resolves to multiple zarr paths.
 
 The resulting cache is therefore in the native stored coordinate space of `points.parquet`.
 Future reader or controller code can either use that same coordinate space directly or add explicit coordinate-system handling later.
@@ -319,6 +323,7 @@ For the SpatialData helper, additionally validate:
 
 - the SpatialData object is backed by zarr;
 - the points element exists.
+- the selected points element resolves to exactly one on-disk path.
 
 ### 2. Prepare Output Directory
 
@@ -478,7 +483,7 @@ Test cases:
 9. Tile-boundary coordinates follow the documented half-open grid convention.
 10. Invalid inputs raise clear `ValueError`s for missing columns, bad `n_levels`, bad tile size, bad row-group size, bad coarse tile budget, and bad transcript id column.
 11. SpatialData helper rejects unbacked `SpatialData`.
-12. SpatialData helper writes to `points/<points_key>/transcripts_vis`.
+12. SpatialData helper writes to `<resolved_points_element_path>/transcripts_vis`.
 13. SpatialData helper builds the cache from the stored points coordinates without inspecting transformations.
 
 For tests, use small pandas dataframes converted to Dask dataframes. Read written Parquet files with `pyarrow.parquet.ParquetFile` so tests can assert row-group counts directly.
