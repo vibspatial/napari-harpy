@@ -329,6 +329,22 @@ For each level from `finest_level - 1` down to `0`:
 5. annotate sampled rows with tile-local coordinates for that level
 6. write row groups and manifest rows
 
+The micro-grid is used to make overview sampling spatially even.
+Without it, a deterministic whole-tile sample can be dominated by the densest hotspot in a coarse tile and may erase sparse spatial regions.
+The micro-grid splits each coarse tile into small bins, gives occupied bins some representation when the budget allows, and then gives dense bins more of the remaining budget.
+
+`cell_id` is the stable identifier for one of those micro-grid bins.
+For an `8 x 8` grid, one simple implementation is:
+
+```text
+cell_x = floor((x_rel / tile_size) * 8)
+cell_y = floor((y_rel / tile_size) * 8)
+cell_id = cell_y * 8 + cell_x
+```
+
+Clamp `cell_x` and `cell_y` to `0..7` as a defensive guard against floating-point edge cases.
+Sampling then happens within each `cell_id`, which keeps sparse occupied areas visible while still allowing dense areas to contribute more representatives.
+
 Recommended first implementation choices:
 
 - keep the micro-grid size as a private constant and start with `8 x 8`
