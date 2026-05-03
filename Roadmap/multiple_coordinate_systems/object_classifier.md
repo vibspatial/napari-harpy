@@ -745,33 +745,97 @@ Status: [ ] Planned
 
 Goal:
 
-- present training-scope and prediction-scope context through a dedicated
-  classifier status-card flow, similar in spirit to the feature extraction
+- present object-classification selection status and classifier preparation
+  context through status-card specs, similar in spirit to the feature extraction
   widget's spec-builder pattern.
 
 Scope:
 
+- add `src/napari_harpy/widgets/_object_classification_status_card.py` with a
+  small spec dataclass mirroring the feature extraction helper shape:
+
+```python
+@dataclass(frozen=True)
+class _ObjectClassificationStatusCardSpec:
+    title: str
+    lines: tuple[str, ...]
+    kind: StatusCardKind
+    tooltip_message: str | None = None
+```
+
+- keep the helper module presentation-focused: it should build status-card
+  specs from structured controller/widget state and should not own Qt widget
+  classes;
+- replace the loose `_labels_layer_preparation_message` /
+  `_labels_layer_preparation_error` widget attributes with a structured
+  labels-layer preparation result:
+
+```python
+@dataclass(frozen=True)
+class _LabelsLayerPreparationResult:
+    kind: Literal["none", "loaded", "activated", "error"]
+    label_name: str | None = None
+    coordinate_system: str | None = None
+    error: str | None = None
+```
+
+- make `_prepare_selected_labels_layer()` produce that structured result while
+  keeping the actual layer load/activate/register side effects in the widget;
+- move the existing primary selection-card decision tree out of
+  `_object_classification_widget.py` into a helper builder such as
+  `build_object_classification_selection_status_card_spec(...)`;
+- pass plain widget state into the selection-card builder, including:
+  SpatialData availability, selected coordinate system, selected segmentation,
+  loaded-labels state, the structured labels-layer preparation result, selected
+  table, table-binding errors, missing-table-row messages, selected instance id,
+  instance-key name, and current user class;
+- let the status-card helper format labels-layer preparation messages such as
+  "Loaded segmentation ..." or "Activated segmentation ..." from the structured
+  result rather than storing already formatted message strings in the widget;
 - introduce a dedicated widget status area for classifier preparation context,
-  separate from the existing transient `classifier_feedback` card;
-- add a status-card helper module such as
-  `src/napari_harpy/widgets/_object_classification_status_card.py`;
-- keep that helper module presentation-focused:
-  it should build status-card specs from structured controller/widget state,
-  not own Qt widget classes or parse user-facing status strings;
+  separate from the transient `classifier_feedback` card;
+- add a classifier-preparation builder such as
+  `build_object_classification_classifier_preparation_card_spec(...)`;
 - reuse the structured preparation accessor introduced in slice 6 rather than
   adding another controller-facing preparation model;
+- show the classifier preparation card only once classifier inputs are specific
+  enough to make the card useful: selected segmentation, selected table,
+  selected feature matrix, valid table binding, and an available
+  `ClassifierPreparationSummary`;
+- leave earlier setup blockers to the existing selection card. For example,
+  "choose a segmentation", "no SpatialData loaded", "no linked annotation
+  table", and table-binding errors should stay selection-card responsibilities
+  until classifier preparation is meaningful;
 - render richer preparation lines such as:
 
 ```text
-Training: 182 labeled rows across 4 regions
-Prediction: 3,110 rows in selected region
+Training: 182 labeled rows across 4 regions.
+Prediction: 3,110 eligible rows in selected region.
+Feature matrix: features_1, 12 features.
 ```
 
+- use `success` for eligible classifier preparation;
+- use `warning` when preparation is ineligible and include `summary.reason`;
+- fold the existing table-wide hidden-write warning into the classifier
+  preparation card rather than keeping a separate `prediction_scope_warning`
+  card;
+- when table-wide prediction covers regions beyond the selected segmentation,
+  keep the preparation card in `warning` state and include a line explaining that
+  some prediction updates may not be visible in the current selection;
 - keep the existing `classifier_feedback` card for transient run-time events
   such as training started, training failed, model stale, and model up to date;
+- optionally route `classifier_feedback` through the same helper module with a
+  `build_object_classification_classifier_feedback_card_spec(...)` builder, but
+  keep it conceptually separate from persistent preparation context;
 - align the resulting UX with the feature extraction widget's separation
   between selection/preparation status and controller feedback status;
-- add widget tests for the richer card rendering and state transitions.
+- add widget tests for:
+  - primary selection-card rendering after the helper move;
+  - hidden classifier preparation card while setup blockers are still active;
+  - eligible classifier preparation lines;
+  - ineligible classifier preparation reason;
+  - table-wide hidden-write warning folded into the preparation card;
+  - transient classifier feedback remaining separate from preparation context.
 
 Files:
 
