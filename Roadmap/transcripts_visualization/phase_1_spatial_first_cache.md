@@ -345,6 +345,34 @@ cell_id = cell_y * 8 + cell_x
 Clamp `cell_x` and `cell_y` to `0..7` as a defensive guard against floating-point edge cases.
 Sampling then happens within each `cell_id`, which keeps sparse occupied areas visible while still allowing dense areas to contribute more representatives.
 
+Example quota allocation for one coarse tile:
+
+```text
+coarse_tile_budget = 10
+
+cell_id  occupancy
+0        900
+1        80
+2        20
+3        1
+```
+
+First give each occupied cell quota `1`, using `4` of the `10` slots.
+The remaining `6` slots are distributed in proportion to occupancy.
+The proportional extra quotas are approximately `5.39`, `0.48`, `0.12`, and `0.006`.
+Take the integer floors first, then give the one leftover slot to the largest fractional remainder.
+The final quotas are:
+
+```text
+cell_id  quota
+0        6
+1        2
+2        1
+3        1
+```
+
+If two cells have the same fractional remainder, break ties deterministically by `cell_id`.
+
 Recommended first implementation choices:
 
 - keep the micro-grid size as a private constant and start with `8 x 8`
