@@ -705,7 +705,7 @@ Expected outcome:
 
 ### 7. Add End-to-End Multi-Region Classifier Coverage
 
-Status: [ ] Planned
+Status: [x] Implemented
 
 Goal:
 

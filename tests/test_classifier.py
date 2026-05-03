@@ -319,6 +319,61 @@ def test_classifier_controller_prediction_scope_all_clears_invalid_rows_in_scope
     assert table.uns[CLASSIFIER_CONFIG_KEY]["n_training_rows"] == int(valid_rows.sum())
 
 
+def test_classifier_controller_default_prediction_scope_leaves_hidden_regions_unchanged(
+    monkeypatch, sdata_blobs_multi_region: SpatialData
+) -> None:
+    _set_user_classes_by_region(
+        sdata_blobs_multi_region,
+        {
+            ("blobs_labels", 1): 1,
+            ("blobs_labels", 2): 1,
+            ("blobs_labels", 24): 2,
+            ("blobs_labels", 25): 2,
+        },
+    )
+    table = sdata_blobs_multi_region["table_multi"]
+    table.obs[PRED_CLASS_COLUMN] = pd.Categorical(np.full(table.n_obs, 9, dtype=np.int64), categories=[0, 3, 9])
+    table.obs[PRED_CONFIDENCE_COLUMN] = pd.Series(np.full(table.n_obs, 0.55), index=table.obs.index, dtype="float64")
+    workers: dict[int, _DeferredWorker] = {}
+
+    def fake_create_training_worker(self, job):
+        del self
+        result = classifier_module.ClassifierJobResult(
+            job_id=job.job_id,
+            feature_key=job.feature_key,
+            label_name=job.label_name,
+            table_name=job.table_name,
+            pred_classes=np.full(job.prediction_scope.table_row_positions.shape, 3, dtype=np.int64),
+            pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.88, dtype=np.float64),
+            trained_at="2026-04-13T09:00:00+00:00",
+            model_params=dict(classifier_module.RANDOM_FOREST_PARAMS),
+            summary=job.summary,
+        )
+        worker = _DeferredWorker(result)
+        workers[job.job_id] = worker
+        return worker
+
+    monkeypatch.setattr(ClassifierController, "_create_training_worker", fake_create_training_worker)
+
+    controller = ClassifierController(debounce_interval_ms=0)
+    controller.bind(sdata_blobs_multi_region, "blobs_labels", "table_multi", "features_1")
+    assert controller.retrain_now() is True
+
+    workers[1].emit_returned()
+
+    region_values = table.obs["region"].astype("string")
+    selected_rows = region_values == "blobs_labels"
+    hidden_rows = region_values == "blobs_labels_2"
+
+    assert table.obs.loc[selected_rows, PRED_CLASS_COLUMN].astype("string").eq("3").all()
+    assert table.obs.loc[selected_rows, PRED_CONFIDENCE_COLUMN].eq(0.88).all()
+    assert table.obs.loc[hidden_rows, PRED_CLASS_COLUMN].astype("string").eq("9").all()
+    assert table.obs.loc[hidden_rows, PRED_CONFIDENCE_COLUMN].eq(0.55).all()
+    assert table.uns[CLASSIFIER_CONFIG_KEY]["prediction_scope"] == "selected_segmentation_only"
+    assert table.uns[CLASSIFIER_CONFIG_KEY]["prediction_regions"] == ["blobs_labels"]
+    assert table.uns[CLASSIFIER_CONFIG_KEY]["n_predicted_rows"] == int(selected_rows.sum())
+
+
 def test_classifier_controller_describes_current_preparation_without_building_worker_arrays(
     monkeypatch, sdata_blobs_multi_region: SpatialData
 ) -> None:
@@ -709,3 +764,45 @@ def test_classifier_controller_reset_after_reload_marks_stale_when_prediction_sc
 
     assert controller.is_dirty is True
     assert "prediction scope `all`" in controller.status_message
+
+
+def test_classifier_controller_reset_after_reload_accepts_multi_region_prediction_scope(
+    sdata_blobs_multi_region: SpatialData,
+) -> None:
+    table = sdata_blobs_multi_region["table_multi"]
+    table.uns[CLASSIFIER_CONFIG_KEY] = {
+        "model_type": "RandomForestClassifier",
+        "feature_key": "features_1",
+        "table_name": "table_multi",
+        "roi_mode": "none",
+        "trained": True,
+        "eligible": True,
+        "reason": "Ready to train.",
+        "training_timestamp": "2026-04-13T09:00:00+00:00",
+        "n_labeled_objects": 4,
+        "n_features": 4,
+        "class_labels_seen": [1, 2],
+        "rf_params": dict(classifier_module.RANDOM_FOREST_PARAMS),
+        "training_scope": "all",
+        "training_regions": ["blobs_labels", "blobs_labels_2"],
+        "n_training_rows": int(table.n_obs),
+        "prediction_scope": "all",
+        "prediction_regions": ["blobs_labels", "blobs_labels_2"],
+        "n_predicted_rows": int(table.n_obs),
+    }
+
+    controller = ClassifierController(debounce_interval_ms=0)
+    controller.bind(
+        sdata_blobs_multi_region,
+        "blobs_labels",
+        "table_multi",
+        "features_1",
+        prediction_scope="all",
+    )
+    controller.reset_after_reload()
+
+    assert controller.is_dirty is False
+    assert (
+        controller.status_message
+        == f"Classifier: model is up to date. Loaded predictions for {table.n_obs} objects from disk."
+    )

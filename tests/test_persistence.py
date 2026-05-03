@@ -122,6 +122,60 @@ def test_persistence_controller_syncs_table_obs_and_colors_to_backed_store(backe
     assert sorted(reread["table"].obsm.keys()) == ["features_1", "features_2"]
 
 
+def test_persistence_controller_syncs_multi_region_classifier_config_fields(
+    backed_sdata_blobs_multi_region: SpatialData,
+) -> None:
+    controller = PersistenceController()
+    controller.bind(backed_sdata_blobs_multi_region, "table_multi")
+    table = backed_sdata_blobs_multi_region["table_multi"]
+    index = table.obs.index
+    regions = ["blobs_labels", "blobs_labels_2"]
+    region_values = table.obs["region"].astype("string")
+    pred_values = np.where(region_values == "blobs_labels", 1, 2)
+
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(pred_values, categories=[0, 1, 2])
+    table.obs[PRED_CLASS_COLUMN] = pd.Categorical(pred_values, categories=[0, 1, 2])
+    table.obs[PRED_CONFIDENCE_COLUMN] = pd.Series(np.full(table.n_obs, 0.87), index=index, dtype="float64")
+    table.uns[USER_CLASS_COLORS_KEY] = ["#000000", "#111111", "#222222"]
+    table.uns[PRED_CLASS_COLORS_KEY] = ["#000000", "#111111", "#222222"]
+    table.uns[CLASSIFIER_CONFIG_KEY] = {
+        "model_type": "RandomForestClassifier",
+        "feature_key": "features_1",
+        "table_name": "table_multi",
+        "roi_mode": "none",
+        "trained": True,
+        "eligible": True,
+        "reason": "Ready to train.",
+        "training_timestamp": "2026-04-13T09:00:00+00:00",
+        "n_labeled_objects": int(table.n_obs),
+        "n_features": int(table.obsm["features_1"].shape[1]),
+        "class_labels_seen": [1, 2],
+        "rf_params": {"n_estimators": 100, "random_state": 0, "n_jobs": 1},
+        "training_scope": "all",
+        "training_regions": regions,
+        "n_training_rows": int(table.n_obs),
+        "prediction_scope": "all",
+        "prediction_regions": regions,
+        "n_predicted_rows": int(table.n_obs),
+    }
+
+    table_path = controller.write_table_state()
+    reread = read_zarr(backed_sdata_blobs_multi_region.path)
+    config = reread["table_multi"].uns[CLASSIFIER_CONFIG_KEY]
+
+    assert table_path == "tables/table_multi"
+    assert config["table_name"] == "table_multi"
+    assert config["feature_key"] == "features_1"
+    assert config["training_scope"] == "all"
+    assert list(config["training_regions"]) == regions
+    assert config["n_training_rows"] == table.n_obs
+    assert config["prediction_scope"] == "all"
+    assert list(config["prediction_regions"]) == regions
+    assert config["n_predicted_rows"] == table.n_obs
+    assert reread["table_multi"].obs[PRED_CLASS_COLUMN].tolist().count(1) == int((region_values == "blobs_labels").sum())
+    assert reread["table_multi"].obs[PRED_CLASS_COLUMN].tolist().count(2) == int((region_values == "blobs_labels_2").sum())
+
+
 def _write_disk_snapshot_payload(
     backed_sdata_blobs: SpatialData,
 ) -> tuple[pd.DataFrame, dict[str, np.ndarray], dict[str, object]]:
