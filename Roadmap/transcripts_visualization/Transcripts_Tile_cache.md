@@ -328,9 +328,11 @@ Write into a temporary sibling directory first:
 transcripts_vis.tmp-<uuid>/
 ```
 
-On success, atomically replace the final `transcripts_vis/` directory. This prevents a failed build from leaving a half-valid cache.
+On success, replace the final `transcripts_vis/` directory through a staged swap. This prevents a failed build from leaving a half-valid new cache at the final path.
 
-For the first implementation, if `output_path` already exists, remove or replace it only inside the final atomic swap step. Do not mutate the canonical `points.parquet`.
+For the first implementation, if `output_path` already exists, move it aside only inside the final staged replacement step. Do not mutate the canonical `points.parquet`.
+Directory replacement should not be described as strictly atomic: there can be a brief window where the final path is missing after the old cache is moved aside and before the completed new cache is moved into place.
+The implementation should restore the old cache whenever possible if the replacement fails during that window.
 
 ### 3. Compute Bounds
 
@@ -422,14 +424,20 @@ Write `metadata.json` before `manifest.parquet`.
 
 The manifest is the cache validity anchor: if it is missing, the cache is invalid. Writing it last means readers never see a complete-looking cache before level files, genes, and metadata are present.
 
-### 8. Atomic Finalization
+### 8. Staged Finalization
 
 After all files are written and basic validation passes:
 
-1. remove any existing backup temp directory from this build;
-2. rename existing `output_path` to a temporary old path if present;
+1. remove any stale backup directory from this build if it is safe to do so;
+2. rename existing `output_path` to a unique sibling backup path if present;
 3. rename the completed temporary cache directory to `output_path`;
-4. remove the old cache directory.
+4. remove the old backup cache directory after the new cache is in place.
+
+If any step fails after the old cache has been moved aside, attempt rollback before re-raising:
+
+1. if `output_path` is missing and the backup path exists, rename the backup path back to `output_path`;
+2. leave the completed temporary cache in its temp path for debugging or cleanup;
+3. do not delete the backup unless the new cache is successfully installed.
 
 Use only paths inside the selected points element directory.
 
@@ -522,7 +530,7 @@ Implement the writer in `src/napari_harpy/_transcript_tiles.py`:
 - finest unsampled-level writer;
 - multiscale sampled level writer using the spatially stratified per-tile micro-grid sampler;
 - `manifest.parquet`;
-- atomic cache finalization;
+- staged cache finalization with rollback;
 - a SpatialData-facing entry point for backed points elements.
 
 Recommended tests:

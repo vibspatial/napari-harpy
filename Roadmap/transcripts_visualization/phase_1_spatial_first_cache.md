@@ -30,7 +30,7 @@ The writer must:
 - write a spatial-first multiscale cache;
 - keep the finest level unsampled, with one cache row per source row;
 - build coarser levels by deterministic spatially stratified sampling per tile;
-- finalize atomically so incomplete caches are never exposed as valid.
+- finalize through a staged replacement so incomplete new caches are never exposed as valid.
 
 ## Deliverables
 
@@ -115,7 +115,7 @@ _sample_partition_for_coarse_level
 _write_level_file
 _write_metadata_json
 _write_manifest_parquet
-_finalize_cache_atomically
+_finalize_cache_with_staged_replacement
 ```
 
 The internal function names do not need to match this exactly, but Phase 1A should keep the writer decomposed into testable units instead of one monolithic function.
@@ -175,22 +175,25 @@ Validate for SpatialData entry point:
 
 Use a unique points-element path resolver if available rather than assuming the on-disk structure more than necessary.
 
-### 3. Output Directory Setup and Atomic Finalization
+### 3. Output Directory Setup and Staged Finalization
 
-Before writing data files, implement the temp-directory and atomic-swap path. This should exist early so later integration work does not need to be rewritten.
+Before writing data files, implement the temp-directory and staged replacement path. This should exist early so later integration work does not need to be rewritten.
 
 Recommended behavior:
 
 - write to `transcripts_vis.tmp-<uuid>/`
 - only write into the temp directory during the build
 - write `metadata.json`, `genes.parquet`, level files, then `manifest.parquet`
-- swap into place only once the build is complete
+- move into place only once the build is complete
+- if replacing an existing cache, move the old cache to a sibling backup path first
+- if final replacement fails after moving the old cache aside, restore the old cache whenever possible
 
 Implementation notes:
 
 - keep all temp and replacement paths inside the points-element directory
 - avoid mutating `points.parquet`
 - treat `manifest.parquet` as the final validity anchor
+- do not describe directory replacement as strictly atomic; there may be a brief missing-output window during the staged swap
 
 ### 4. Bounds, Origins, and Level Configuration
 
@@ -441,10 +444,10 @@ Recommended test groups:
 - stored points coordinates are used directly
 - no transformation logic is applied
 
-### Group F: Atomic Finalization
+### Group F: Staged Finalization
 
 - failed writes do not leave a complete-looking cache behind
-- rebuilding over an existing cache replaces it atomically
+- rebuilding over an existing cache either installs the completed new cache or restores the previous valid cache when replacement fails
 
 Testing notes:
 
@@ -490,7 +493,7 @@ If Phase 1A is implemented incrementally, the cleanest checkpoints are:
 3. gene dictionary + `genes.parquet`
 4. finest unsampled level writer + manifest
 5. coarse sampled level writer
-6. atomic finalization
+6. staged finalization with rollback
 7. SpatialData helper
 8. test completion
 9. benchmark pass on synthetic and real data
