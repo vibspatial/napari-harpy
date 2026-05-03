@@ -982,8 +982,9 @@ class ClassifierController:
 
 def _normalize_feature_matrix(feature_matrix: Any, n_obs: int, *, copy: bool = True) -> Any:
     # `copy=True` is the current eager-array snapshot path for worker payloads.
-    # Lazy `.obsm` values will need explicit materialization here so classifier
-    # jobs never depend on a live or deferred table-backed feature matrix.
+    # If `.obsm` later accepts lazy arrays, `.copy()` may only copy shallow
+    # wrapper or graph state; those values will need explicit materialization so
+    # classifier jobs own concrete feature values at launch time.
     if issparse(feature_matrix):
         if feature_matrix.ndim != 2:
             raise ValueError("Feature matrices stored in `.obsm` must be 2-dimensional.")
