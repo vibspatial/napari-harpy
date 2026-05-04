@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 from qtpy.QtCore import QObject, Signal
 from spatialdata import SpatialData
@@ -623,6 +624,70 @@ def test_run_feature_extraction_job_submits_multi_target_request_to_harpy(
         feature_key="feature_matrix_batch",
         triplet_count=2,
     )
+
+
+def test_run_feature_extraction_job_fills_one_feature_matrix_for_multiple_regions(
+    monkeypatch,
+    sdata_blobs_multi_region: SpatialData,
+) -> None:
+    table = sdata_blobs_multi_region["table_multi"]
+    feature_key = "feature_matrix_multi_region"
+
+    def fake_add_feature_matrix(**kwargs):
+        assert kwargs["labels_name"] == ["blobs_labels", "blobs_labels_2"]
+        assert kwargs["table_name"] == "table_multi"
+        assert kwargs["feature_key"] == feature_key
+
+        region_values = table.obs["region"].astype("string").to_numpy()
+        features = np.full((table.n_obs, 1), np.nan, dtype=np.float64)
+        features[region_values == "blobs_labels", 0] = 1.0
+        features[region_values == "blobs_labels_2", 0] = 2.0
+        table.obsm[feature_key] = features
+
+    monkeypatch.setitem(
+        sys.modules,
+        "harpy",
+        SimpleNamespace(tb=SimpleNamespace(add_feature_matrix=fake_add_feature_matrix)),
+    )
+
+    result = _run_feature_extraction_job.__wrapped__(
+        FeatureExtractionJob(
+            job_id=6,
+            sdata=sdata_blobs_multi_region,
+            request=FeatureExtractionRequest(
+                triplets=(
+                    FeatureExtractionTriplet(
+                        coordinate_system="global",
+                        label_name="blobs_labels",
+                        image_name=None,
+                    ),
+                    FeatureExtractionTriplet(
+                        coordinate_system="global_1",
+                        label_name="blobs_labels_2",
+                        image_name=None,
+                    ),
+                ),
+                table_name="table_multi",
+                feature_names=("area",),
+                feature_key=feature_key,
+                overwrite_feature_key=True,
+            ),
+        )
+    )
+
+    features = np.asarray(table.obsm[feature_key], dtype=np.float64)
+    region_values = table.obs["region"].astype("string").to_numpy()
+
+    assert result == FeatureExtractionResult(
+        job_id=6,
+        label_name=None,
+        table_name="table_multi",
+        feature_key=feature_key,
+        triplet_count=2,
+    )
+    assert features.shape == (table.n_obs, 1)
+    assert np.all(features[region_values == "blobs_labels", 0] == 1.0)
+    assert np.all(features[region_values == "blobs_labels_2", 0] == 2.0)
 
 
 def test_feature_extraction_controller_propagates_worker_errors(sdata_blobs: SpatialData) -> None:

@@ -691,23 +691,26 @@ Acceptance:
 
 ### 5. Add Integration Tests
 
+Status: [x] Completed
+
 Files:
 
 - `tests/test_feature_extraction_widget.py`
 - `tests/test_feature_extraction.py`
 - `tests/test_widget.py`
 - `tests/test_classifier.py`
+- `tests/test_spatialdata.py`
 
 Recommended scenarios:
 
-- one table annotates multiple labels regions across coordinate systems;
-- feature extraction fills one `.obsm[feature_key]` matrix for several regions;
-- same `instance_key` value is allowed in different regions;
-- duplicate `instance_key` values within one region are rejected;
-- classifier training uses labeled rows across regions by default;
-- classifier training can be restricted to the selected region only;
-- selected-region-only prediction leaves hidden-region prediction rows unchanged;
-- complete-table prediction updates eligible rows across all regions only when
+- [x] one table annotates multiple labels regions across coordinate systems;
+- [x] feature extraction fills one `.obsm[feature_key]` matrix for several regions;
+- [x] same `instance_key` value is allowed in different regions;
+- [x] duplicate `instance_key` values within one region are rejected;
+- [x] classifier training uses labeled rows across regions by default;
+- [x] classifier training can be restricted to the selected region only;
+- [x] selected-region-only prediction leaves hidden-region prediction rows unchanged;
+- [x] complete-table prediction updates eligible rows across all regions only when
   explicitly selected.
 
 ## Open Questions
