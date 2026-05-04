@@ -766,6 +766,18 @@ class _ObjectClassificationStatusCardSpec:
 - keep the helper module presentation-focused: it should build status-card
   specs from structured controller/widget state and should not own Qt widget
   classes;
+- mirror the feature extraction widget's status-card wiring in
+  `_object_classification_widget.py`:
+  - keep `self.selection_status` as the persistent selection/annotation context
+    card;
+  - replace `self.prediction_scope_warning` with
+    `self.classifier_preparation_status` for persistent classifier preparation
+    context;
+  - keep `self.classifier_feedback` for transient classifier controller
+    feedback;
+  - add an `_apply_status_card_spec(label, spec)` helper that applies
+    `_ObjectClassificationStatusCardSpec | None` to any of those `QLabel`
+    cards, matching the feature extraction pattern;
 - replace the loose `_labels_layer_preparation_message` /
   `_labels_layer_preparation_error` widget attributes with a structured
   labels-layer preparation result:
@@ -824,9 +836,9 @@ Feature matrix: features_1, 12 features.
   some prediction updates may not be visible in the current selection;
 - keep the existing `classifier_feedback` card for transient run-time events
   such as training started, training failed, model stale, and model up to date;
-- optionally route `classifier_feedback` through the same helper module with a
-  `build_object_classification_classifier_feedback_card_spec(...)` builder, but
-  keep it conceptually separate from persistent preparation context;
+- route `classifier_feedback` through the same helper module with a
+  `build_object_classification_classifier_feedback_card_spec(...)` builder, while
+  keeping it conceptually separate from persistent preparation context;
 - align the resulting UX with the feature extraction widget's separation
   between selection/preparation status and controller feedback status;
 - add widget tests for:
