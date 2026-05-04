@@ -773,6 +773,10 @@ class _ObjectClassificationStatusCardSpec:
   - replace `self.prediction_scope_warning` with
     `self.classifier_preparation_status` for persistent classifier preparation
     context;
+  - set the new preparation label's object name to
+    `classifier_preparation_status`;
+  - remove the old `prediction_scope_warning` widget attribute outright rather
+    than keeping a compatibility alias;
   - keep `self.classifier_feedback` for transient classifier controller
     feedback;
   - add an `_apply_status_card_spec(label, spec)` helper that applies
@@ -780,7 +784,8 @@ class _ObjectClassificationStatusCardSpec:
     cards, matching the feature extraction pattern;
 - replace the loose `_labels_layer_preparation_message` /
   `_labels_layer_preparation_error` widget attributes with a structured
-  labels-layer preparation result:
+  labels-layer preparation result defined in
+  `_object_classification_status_card.py`:
 
 ```python
 @dataclass(frozen=True)
@@ -793,6 +798,8 @@ class _LabelsLayerPreparationResult:
 
 - make `_prepare_selected_labels_layer()` produce that structured result while
   keeping the actual layer load/activate/register side effects in the widget;
+- store/pass that result from the widget, but keep result formatting in the
+  status-card helper;
 - move the existing primary selection-card decision tree out of
   `_object_classification_widget.py` into a helper builder such as
   `build_object_classification_selection_status_card_spec(...)`;
