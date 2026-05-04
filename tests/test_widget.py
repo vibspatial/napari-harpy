@@ -235,6 +235,8 @@ def test_widget_can_be_instantiated(qtbot) -> None:
     assert widget.selected_segmentation_name is None
     assert widget.selected_table_name is None
     assert widget.selected_feature_key is None
+    assert widget.selected_training_scope == classifier_module.DEFAULT_TRAINING_SCOPE
+    assert widget.selected_prediction_scope == classifier_module.DEFAULT_PREDICTION_SCOPE
     assert widget.selected_coordinate_system is None
     assert widget.selected_color_by == "user_class"
     assert all(button.text() != "Rescan Viewer" for button in widget.findChildren(type(widget.retrain_button)))
@@ -249,6 +251,8 @@ def test_widget_can_be_instantiated(qtbot) -> None:
     assert widget.feature_matrix_combo.sizeAdjustPolicy() == (
         QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
     )
+    assert widget.training_scope_combo.currentData() == classifier_module.DEFAULT_TRAINING_SCOPE
+    assert widget.prediction_scope_combo.currentData() == classifier_module.DEFAULT_PREDICTION_SCOPE
 
 
 def test_widget_refreshes_when_shared_sdata_changes(qtbot, sdata_blobs: SpatialData) -> None:
@@ -346,7 +350,9 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_bl
     assert "Choose a segmentation mask" in widget.selection_status.text()
     assert widget.validation_status.isHidden()
     assert widget.validation_status.text() == ""
-    assert "choose an annotation table and feature matrix." in widget.classifier_feedback.text()
+    assert widget.classifier_feedback.isHidden()
+    assert widget.classifier_preparation_status.isHidden()
+    assert widget.classifier_preparation_status.objectName() == "classifier_preparation_status"
 
 
 def test_widget_populates_segmentation_choices_from_shared_sdata_without_loaded_layer(
@@ -769,11 +775,179 @@ def test_widget_updates_selected_feature_key_when_feature_matrix_changes(qtbot, 
     widget = HarpyWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
+    widget.training_scope_combo.setCurrentIndex(widget.training_scope_combo.findData("selected_segmentation_only"))
+
+    bind_calls: list[tuple[str, str]] = []
+
+    def record_bind(
+        sdata,
+        label_name,
+        table_name,
+        feature_key,
+        *,
+        training_scope=classifier_module.DEFAULT_TRAINING_SCOPE,
+        prediction_scope=classifier_module.DEFAULT_PREDICTION_SCOPE,
+    ) -> bool:
+        del sdata, label_name, table_name, feature_key
+        bind_calls.append((training_scope, prediction_scope))
+        return True
+
+    widget._classifier_controller.bind = record_bind  # type: ignore[method-assign]
 
     widget.feature_matrix_combo.setCurrentIndex(1)
 
     assert widget.selected_feature_key == "features_2"
+    assert bind_calls == [("selected_segmentation_only", classifier_module.DEFAULT_PREDICTION_SCOPE)]
     assert "feature matrix changed" in widget.classifier_feedback.text()
+
+
+def test_widget_marks_classifier_dirty_when_training_scope_changes(qtbot, monkeypatch, sdata_blobs: SpatialData) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    bind_calls: list[tuple[str, str]] = []
+    mark_dirty_reasons: list[str | None] = []
+
+    def record_bind(
+        sdata,
+        label_name,
+        table_name,
+        feature_key,
+        *,
+        training_scope=classifier_module.DEFAULT_TRAINING_SCOPE,
+        prediction_scope=classifier_module.DEFAULT_PREDICTION_SCOPE,
+    ) -> bool:
+        del sdata, label_name, table_name, feature_key
+        bind_calls.append((training_scope, prediction_scope))
+        return True
+
+    def record_mark_dirty(*, reason: str | None = None) -> None:
+        mark_dirty_reasons.append(reason)
+
+    monkeypatch.setattr(widget._classifier_controller, "bind", record_bind)
+    monkeypatch.setattr(widget._classifier_controller, "mark_dirty", record_mark_dirty)
+
+    widget.training_scope_combo.setCurrentIndex(widget.training_scope_combo.findData("selected_segmentation_only"))
+
+    assert widget.selected_training_scope == "selected_segmentation_only"
+    assert bind_calls == [("selected_segmentation_only", classifier_module.DEFAULT_PREDICTION_SCOPE)]
+    assert mark_dirty_reasons == ["the training scope changed"]
+
+
+def test_widget_marks_classifier_dirty_when_prediction_scope_changes(
+    qtbot, monkeypatch, sdata_blobs: SpatialData
+) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    bind_calls: list[tuple[str, str]] = []
+    mark_dirty_reasons: list[str | None] = []
+
+    def record_bind(
+        sdata,
+        label_name,
+        table_name,
+        feature_key,
+        *,
+        training_scope=classifier_module.DEFAULT_TRAINING_SCOPE,
+        prediction_scope=classifier_module.DEFAULT_PREDICTION_SCOPE,
+    ) -> bool:
+        del sdata, label_name, table_name, feature_key
+        bind_calls.append((training_scope, prediction_scope))
+        return True
+
+    def record_mark_dirty(*, reason: str | None = None) -> None:
+        mark_dirty_reasons.append(reason)
+
+    monkeypatch.setattr(widget._classifier_controller, "bind", record_bind)
+    monkeypatch.setattr(widget._classifier_controller, "mark_dirty", record_mark_dirty)
+
+    widget.prediction_scope_combo.setCurrentIndex(widget.prediction_scope_combo.findData("all"))
+
+    assert widget.selected_prediction_scope == "all"
+    assert bind_calls == [(classifier_module.DEFAULT_TRAINING_SCOPE, "all")]
+    assert mark_dirty_reasons == ["the prediction scope changed"]
+
+
+def test_widget_shows_classifier_preparation_hidden_write_notice_for_table_wide_prediction_scope(
+    qtbot, sdata_blobs_multi_region: SpatialData
+) -> None:
+    table = sdata_blobs_multi_region["table_multi"]
+    region_values = table.obs["region"].astype("string")
+    instance_values = table.obs["instance_id"].to_numpy(dtype=np.int64)
+    class_values = np.zeros(table.n_obs, dtype=np.int64)
+    class_values[(region_values == "blobs_labels").to_numpy() & np.isin(instance_values, [1, 2])] = 1
+    class_values[(region_values == "blobs_labels").to_numpy() & np.isin(instance_values, [24, 25])] = 2
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(class_values, categories=[0, 1, 2])
+    layer = make_blobs_labels_layer(sdata_blobs_multi_region)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+    table_index = widget.table_combo.findData("table_multi")
+    assert table_index >= 0
+    widget.table_combo.setCurrentIndex(table_index)
+
+    widget.prediction_scope_combo.setCurrentIndex(widget.prediction_scope_combo.findData("all"))
+
+    assert not widget.classifier_preparation_status.isHidden()
+    assert f"Prediction rows: {table.n_obs}" in widget.classifier_preparation_status.text()
+    assert "Prediction scope: 2 regions" in widget.classifier_preparation_status.text()
+    assert "Some prediction updates may not be visible in the current selection." in (
+        widget.classifier_preparation_status.text()
+    )
+    assert "color: #047857" in widget.classifier_preparation_status.styleSheet()
+
+
+def test_widget_omits_hidden_write_line_for_effectively_selected_prediction_scope(
+    qtbot, sdata_blobs: SpatialData
+) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    widget.prediction_scope_combo.setCurrentIndex(widget.prediction_scope_combo.findData("all"))
+
+    assert widget.selected_prediction_scope == "all"
+    assert not widget.classifier_preparation_status.isHidden()
+    assert "Prediction rows:" in widget.classifier_preparation_status.text()
+    assert "Some prediction updates may not be visible" not in widget.classifier_preparation_status.text()
+
+
+def test_widget_shows_eligible_classifier_preparation_summary(qtbot, sdata_blobs: SpatialData) -> None:
+    table = sdata_blobs["table"]
+    instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(
+        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
+        categories=[0, 1, 2],
+    )
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    assert not widget.classifier_preparation_status.isHidden()
+    preparation_text = widget.classifier_preparation_status.text()
+    assert "Training labels: 4 rows" in preparation_text
+    assert "Training regions: 1 region" in preparation_text
+    assert f"Prediction rows: {table.n_obs} rows" in preparation_text
+    assert "Prediction scope: selected region" in preparation_text
+    assert "Features: `features_1`, 4 features" in preparation_text
+    assert "Need at least" not in preparation_text
 
 
 def test_widget_refreshes_feature_matrix_selector_when_first_key_is_written(qtbot, sdata_blobs: SpatialData) -> None:
@@ -828,21 +1002,33 @@ def test_widget_invalidates_classifier_when_selected_feature_matrix_is_overwritt
         [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
         categories=[0, 1, 2],
     )
+    training_scope = classifier_module.ResolvedClassifierScope(
+        mode="selected_segmentation_only",
+        regions=("blobs_labels",),
+        table_row_positions=np.array([0, 1], dtype=np.int64),
+        n_rows_in_regions=2,
+    )
+    prediction_scope = classifier_module.ResolvedClassifierScope(
+        mode="selected_segmentation_only",
+        regions=("blobs_labels",),
+        table_row_positions=np.array([0, 1], dtype=np.int64),
+        n_rows_in_regions=2,
+    )
     worker = _DeferredWorker(
         classifier_module.ClassifierJobResult(
             job_id=1,
             feature_key="features_1",
             label_name="blobs_labels",
             table_name="table",
-            active_positions=np.array([0, 1], dtype=np.int64),
             pred_classes=np.array([1, 2], dtype=np.int64),
             pred_confidences=np.array([0.9, 0.8], dtype=np.float64),
             trained_at="2026-04-23T09:00:00+00:00",
             model_params=dict(classifier_module.RANDOM_FOREST_PARAMS),
-            eligibility=classifier_module.TrainingEligibility(
+            summary=classifier_module.ClassifierPreparationSummary(
+                training_scope=training_scope,
+                prediction_scope=prediction_scope,
                 eligible=True,
                 reason="Ready to train.",
-                active_row_count=2,
                 labeled_count=2,
                 class_labels=(1, 2),
                 n_features=2,
@@ -1594,12 +1780,11 @@ def test_widget_reload_freezes_classifier_worker_and_ignores_late_results(
             feature_key=job.feature_key,
             label_name=job.label_name,
             table_name=job.table_name,
-            active_positions=job.active_positions,
-            pred_classes=np.full(job.active_positions.shape, 1, dtype=np.int64),
-            pred_confidences=np.full(job.active_positions.shape, 0.91, dtype=np.float64),
+            pred_classes=np.full(job.prediction_scope.table_row_positions.shape, 1, dtype=np.int64),
+            pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.91, dtype=np.float64),
             trained_at="2026-04-13T09:00:00+00:00",
             model_params=dict(classifier_module.RANDOM_FOREST_PARAMS),
-            eligibility=job.eligibility,
+            summary=job.summary,
         )
         worker = _DeferredWorker(result)
         workers.append(worker)
@@ -1623,17 +1808,21 @@ def test_widget_reload_freezes_classifier_worker_and_ignores_late_results(
         "model_type": "RandomForestClassifier",
         "feature_key": "features_1",
         "table_name": "table",
-        "label_name": "blobs_labels",
         "roi_mode": "none",
         "trained": True,
         "eligible": True,
         "reason": "Ready to train.",
         "training_timestamp": "2026-04-13T09:00:00+00:00",
         "n_labeled_objects": 4,
-        "n_active_objects": int(table.n_obs),
         "n_features": 2,
         "class_labels_seen": [1, 2],
         "rf_params": dict(classifier_module.RANDOM_FOREST_PARAMS),
+        "training_scope": "all",
+        "training_regions": ["blobs_labels"],
+        "n_training_rows": int(table.n_obs),
+        "prediction_scope": "selected_segmentation_only",
+        "prediction_regions": ["blobs_labels"],
+        "n_predicted_rows": int(table.n_obs),
     }
     _write_disk_table_state(backed_sdata_blobs, obs=obs, obsm=obsm, uns=uns)
 
@@ -1682,12 +1871,11 @@ def test_widget_retrain_button_recovers_after_worker_finishes(qtbot, monkeypatch
             feature_key=job.feature_key,
             label_name=job.label_name,
             table_name=job.table_name,
-            active_positions=job.active_positions,
-            pred_classes=np.full(job.active_positions.shape, 1, dtype=np.int64),
-            pred_confidences=np.full(job.active_positions.shape, 0.91, dtype=np.float64),
+            pred_classes=np.full(job.prediction_scope.table_row_positions.shape, 1, dtype=np.int64),
+            pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.91, dtype=np.float64),
             trained_at="2026-04-13T09:00:00+00:00",
             model_params=dict(classifier_module.RANDOM_FOREST_PARAMS),
-            eligibility=job.eligibility,
+            summary=job.summary,
         )
         worker = _DeferredWorker(result)
         workers.append(worker)
@@ -1708,7 +1896,7 @@ def test_widget_retrain_button_recovers_after_worker_finishes(qtbot, monkeypatch
     qtbot.waitUntil(lambda: widget.retrain_button.isEnabled(), timeout=1000)
 
     assert "currently running" not in widget.retrain_button.toolTip()
-    assert "Train the classifier using the current annotations and feature matrix." in widget.retrain_button.toolTip()
+    assert "write predictions for the selected prediction scope" in widget.retrain_button.toolTip()
     assert "model is up to date" in widget.classifier_feedback.text()
 
 

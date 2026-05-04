@@ -28,7 +28,12 @@ from napari_harpy._app_state import (
     HarpyAppState,
     get_or_create_app_state,
 )
-from napari_harpy._classifier import ClassifierController
+from napari_harpy._classifier import (
+    DEFAULT_PREDICTION_SCOPE,
+    DEFAULT_TRAINING_SCOPE,
+    ClassifierController,
+    ClassifierScopeMode,
+)
 from napari_harpy._classifier_viewer_styling import (
     COLOR_BY_OPTIONS,
     COLOR_BY_PRED_CLASS,
@@ -46,6 +51,13 @@ from napari_harpy._spatialdata import (
     get_table_metadata,
     get_table_obsm_keys,
     validate_table_binding,
+)
+from napari_harpy.widgets._object_classification_status_card import (
+    _LabelsLayerPreparationResult,
+    _ObjectClassificationStatusCardSpec,
+    build_object_classification_classifier_feedback_card_spec,
+    build_object_classification_classifier_preparation_card_spec,
+    build_object_classification_selection_status_card_spec,
 )
 from napari_harpy.widgets._shared_styles import (
     ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,
@@ -80,6 +92,9 @@ class _DirtyReloadDecision(Enum):
 _APPLY_CLASS_SHORTCUT = "A"
 _REMOVE_CLASS_SHORTCUT = "R"
 _INPUT_CONTROL_STYLESHEET = build_input_control_stylesheet("QComboBox, QSpinBox")
+_TABLE_WIDE_TRAINING_SCOPE_LABEL = "All eligible labeled regions in table"
+_TABLE_WIDE_PREDICTION_SCOPE_LABEL = "All eligible regions in table"
+_SELECTED_SEGMENTATION_TRAINING_SCOPE_LABEL = "Selected segmentation only"
 _CLASS_EDITOR_STYLESHEET = (
     f"QWidget#class_editor {{background-color: {WIDGET_PANEL_COLOR}; "
     f"border: 1px solid {WIDGET_BORDER_COLOR}; border-radius: 10px;}}"
@@ -133,13 +148,14 @@ class ObjectClassificationWidget(QWidget):
         self._selected_label_option: SpatialDataLabelsOption | None = None
         self._is_preparing_labels_layer = False
         self._is_handling_coordinate_system_change = False
-        self._labels_layer_preparation_message: str | None = None
-        self._labels_layer_preparation_error: str | None = None
+        self._labels_layer_preparation_result = _LabelsLayerPreparationResult(kind="none")
         self._table_names: list[str] = []
         self._selected_table_name: str | None = None
         self._table_binding_error: str | None = None
         self._feature_matrix_keys: list[str] = []
         self._selected_feature_key: str | None = None
+        self._selected_training_scope: ClassifierScopeMode = DEFAULT_TRAINING_SCOPE
+        self._selected_prediction_scope: ClassifierScopeMode = DEFAULT_PREDICTION_SCOPE
         self._logo_path = Path(__file__).resolve().parents[3] / "docs" / "_static" / "logo.png"
 
         layout = QVBoxLayout(self)
@@ -189,6 +205,28 @@ class ObjectClassificationWidget(QWidget):
         self.feature_matrix_combo.setObjectName("feature_matrix_combo")
         self.feature_matrix_combo.currentIndexChanged.connect(self._on_feature_matrix_changed)
         self.feature_matrix_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
+
+        self.training_scope_combo = CompactComboBox()
+        self.training_scope_combo.setObjectName("training_scope_combo")
+        self.training_scope_combo.addItem(_TABLE_WIDE_TRAINING_SCOPE_LABEL, "all")
+        self.training_scope_combo.addItem(
+            _SELECTED_SEGMENTATION_TRAINING_SCOPE_LABEL,
+            "selected_segmentation_only",
+        )
+        self.training_scope_combo.setCurrentIndex(self.training_scope_combo.findData(DEFAULT_TRAINING_SCOPE))
+        self.training_scope_combo.currentIndexChanged.connect(self._on_training_scope_changed)
+        self.training_scope_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
+
+        self.prediction_scope_combo = CompactComboBox()
+        self.prediction_scope_combo.setObjectName("prediction_scope_combo")
+        self.prediction_scope_combo.addItem(
+            _SELECTED_SEGMENTATION_TRAINING_SCOPE_LABEL,
+            "selected_segmentation_only",
+        )
+        self.prediction_scope_combo.addItem(_TABLE_WIDE_PREDICTION_SCOPE_LABEL, "all")
+        self.prediction_scope_combo.setCurrentIndex(self.prediction_scope_combo.findData(DEFAULT_PREDICTION_SCOPE))
+        self.prediction_scope_combo.currentIndexChanged.connect(self._on_prediction_scope_changed)
+        self.prediction_scope_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
 
         self.color_by_combo = QComboBox()
         self.color_by_combo.setObjectName("color_by_combo")
@@ -294,6 +332,11 @@ class ObjectClassificationWidget(QWidget):
         self.classifier_feedback.setWordWrap(True)
         self.classifier_feedback.hide()
 
+        self.classifier_preparation_status = QLabel()
+        self.classifier_preparation_status.setObjectName("classifier_preparation_status")
+        self.classifier_preparation_status.setWordWrap(True)
+        self.classifier_preparation_status.hide()
+
         self.persistence_feedback = QLabel()
         self.persistence_feedback.setObjectName("persistence_feedback")
         self.persistence_feedback.setWordWrap(True)
@@ -303,12 +346,15 @@ class ObjectClassificationWidget(QWidget):
         selector_layout.addRow(self._create_form_label("Segmentation mask"), self.segmentation_combo)
         selector_layout.addRow(self._create_form_label("Table"), self.table_combo)
         selector_layout.addRow(self._create_form_label("Feature matrix"), self.feature_matrix_combo)
+        selector_layout.addRow(self._create_form_label("Training scope"), self.training_scope_combo)
+        selector_layout.addRow(self._create_form_label("Prediction scope"), self.prediction_scope_combo)
         selector_layout.addRow(self._create_form_label("Color by"), self.color_by_combo)
         selector_layout.addRow(self._create_form_label("User class"), self.class_editor)
 
         content_layout.addWidget(title)
         content_layout.addLayout(selector_layout)
         content_layout.addWidget(self.retrain_action_row)
+        content_layout.addWidget(self.classifier_preparation_status)
         content_layout.addWidget(self.persistence_action_row)
         content_layout.addWidget(self.selection_status)
         content_layout.addWidget(self.annotation_feedback)
@@ -384,6 +430,16 @@ class ObjectClassificationWidget(QWidget):
         return self._selected_feature_key
 
     @property
+    def selected_training_scope(self) -> ClassifierScopeMode:
+        """Return the current classifier training-scope selection."""
+        return self._selected_training_scope
+
+    @property
+    def selected_prediction_scope(self) -> ClassifierScopeMode:
+        """Return the current classifier prediction-scope selection."""
+        return self._selected_prediction_scope
+
+    @property
     def selected_instance_id(self) -> int | None:
         """Return the currently picked segmentation instance id."""
         return self._annotation_controller.selected_instance_id
@@ -432,8 +488,7 @@ class ObjectClassificationWidget(QWidget):
             # (e.g. the case where a segmentation mask would be in two coordinate systems).
             # this is consistent with the viewer widget, where we also clear the napari viewer when switching coordinate system.
             self._clear_selected_segmentation()
-            self._labels_layer_preparation_message = None
-            self._labels_layer_preparation_error = None
+            self._labels_layer_preparation_result = _LabelsLayerPreparationResult(kind="none")
             self._bind_current_selection(classifier_dirty_reason="the coordinate system changed")
         finally:
             self._is_handling_coordinate_system_change = False
@@ -493,8 +548,7 @@ class ObjectClassificationWidget(QWidget):
         self._selected_coordinate_system = None
         self._label_options = []
         self._selected_label_option = None
-        self._labels_layer_preparation_message = None
-        self._labels_layer_preparation_error = None
+        self._labels_layer_preparation_result = _LabelsLayerPreparationResult(kind="none")
         self._table_names = []
         self._selected_table_name = None
         self._table_binding_error = None
@@ -521,8 +575,9 @@ class ObjectClassificationWidget(QWidget):
             self.feature_matrix_combo.setEnabled(False)
             self.feature_matrix_combo.setCurrentIndex(-1)
 
+        self._apply_status_card_spec(self.classifier_preparation_status, None)
         self._set_annotation_feedback("")
-        self._set_classifier_feedback("")
+        self._apply_status_card_spec(self.classifier_feedback, None)
         self._set_persistence_feedback("")
 
     def _on_primary_labels_layers_changed(self) -> None:
@@ -533,8 +588,7 @@ class ObjectClassificationWidget(QWidget):
         # clear the current segmentation if *its* live layer disappeared, or
         # rebind only if the selected segmentation was previously missing and
         # has now become available.
-        self._labels_layer_preparation_message = None
-        self._labels_layer_preparation_error = None
+        self._labels_layer_preparation_result = _LabelsLayerPreparationResult(kind="none")
         if self._selected_segmentation_layer_was_removed():
             self._clear_selected_segmentation()
             self._bind_current_selection()
@@ -650,16 +704,15 @@ class ObjectClassificationWidget(QWidget):
 
         return None
 
-    def _prepare_selected_labels_layer(self) -> None:
-        self._labels_layer_preparation_message = None
-        self._labels_layer_preparation_error = None
+    def _prepare_selected_labels_layer(self) -> _LabelsLayerPreparationResult:
+        self._labels_layer_preparation_result = _LabelsLayerPreparationResult(kind="none")
 
         if (
             self.selected_spatialdata is None
             or self.selected_segmentation_name is None
             or self.selected_coordinate_system is None
         ):
-            return
+            return self._labels_layer_preparation_result
 
         self._is_preparing_labels_layer = True
         try:
@@ -679,11 +732,12 @@ class ObjectClassificationWidget(QWidget):
                     )
                 activated = self._app_state.viewer_adapter.activate_layer(existing_layer)
                 if activated:
-                    self._labels_layer_preparation_message = (
-                        f"Activated segmentation `{self.selected_segmentation_name}` in coordinate system "
-                        f"`{self.selected_coordinate_system}`."
+                    self._labels_layer_preparation_result = _LabelsLayerPreparationResult(
+                        kind="activated",
+                        label_name=self.selected_segmentation_name,
+                        coordinate_system=self.selected_coordinate_system,
                     )
-                return
+                return self._labels_layer_preparation_result
 
             try:
                 layer = self._app_state.viewer_adapter.ensure_labels_loaded(
@@ -692,14 +746,16 @@ class ObjectClassificationWidget(QWidget):
                     self.selected_coordinate_system,
                 )
             except ValueError as error:
-                self._labels_layer_preparation_error = str(error)
-                return
+                self._labels_layer_preparation_result = _LabelsLayerPreparationResult(kind="error", error=str(error))
+                return self._labels_layer_preparation_result
 
             self._app_state.viewer_adapter.activate_layer(layer)
-            self._labels_layer_preparation_message = (
-                f"Loaded segmentation `{self.selected_segmentation_name}` in coordinate system "
-                f"`{self.selected_coordinate_system}`."
+            self._labels_layer_preparation_result = _LabelsLayerPreparationResult(
+                kind="loaded",
+                label_name=self.selected_segmentation_name,
+                coordinate_system=self.selected_coordinate_system,
             )
+            return self._labels_layer_preparation_result
         finally:
             self._is_preparing_labels_layer = False
 
@@ -767,11 +823,21 @@ class ObjectClassificationWidget(QWidget):
             self.selected_segmentation_name,
             effective_table_name,
             self.selected_feature_key,
+            training_scope=self.selected_training_scope,
+            prediction_scope=self.selected_prediction_scope,
         )
         if classifier_context_changed and effective_table_name is not None:
             self._classifier_controller.mark_dirty(reason="the feature matrix changed")
         self._refresh_layer_styling()
         self._update_selection_status()
+
+    def _on_training_scope_changed(self, index: int) -> None:
+        self._set_selected_training_scope(index)
+        self._bind_current_selection(classifier_dirty_reason="the training scope changed")
+
+    def _on_prediction_scope_changed(self, index: int) -> None:
+        self._set_selected_prediction_scope(index)
+        self._bind_current_selection(classifier_dirty_reason="the prediction scope changed")
 
     def _on_color_by_changed(self, index: int) -> None:
         color_by = self.color_by_combo.itemData(index)
@@ -792,6 +858,22 @@ class ObjectClassificationWidget(QWidget):
             self._selected_feature_key = None
         else:
             self._selected_feature_key = self._feature_matrix_keys[index]
+
+    def _set_selected_training_scope(self, index: int) -> None:
+        training_scope = self.training_scope_combo.itemData(index)
+        if training_scope in ("selected_segmentation_only", "all"):
+            self._selected_training_scope = training_scope
+            return
+
+        self._selected_training_scope = DEFAULT_TRAINING_SCOPE
+
+    def _set_selected_prediction_scope(self, index: int) -> None:
+        prediction_scope = self.prediction_scope_combo.itemData(index)
+        if prediction_scope in ("selected_segmentation_only", "all"):
+            self._selected_prediction_scope = prediction_scope
+            return
+
+        self._selected_prediction_scope = DEFAULT_PREDICTION_SCOPE
 
     def _validate_selected_table_binding(self) -> str | None:
         if (
@@ -852,6 +934,8 @@ class ObjectClassificationWidget(QWidget):
             self.selected_segmentation_name,
             effective_table_name,
             self.selected_feature_key,
+            training_scope=self.selected_training_scope,
+            prediction_scope=self.selected_prediction_scope,
         )
         if classifier_dirty_reason is not None and classifier_context_changed and effective_table_name is not None:
             self._classifier_controller.mark_dirty(reason=classifier_dirty_reason)
@@ -874,7 +958,7 @@ class ObjectClassificationWidget(QWidget):
 
     def _update_selection_status(self) -> None:
         self._update_validation_status()
-        self._update_primary_status_card()
+        self._update_selection_status_card()
         self._update_annotation_controls()
         self._update_color_by_controls()
         self._update_classifier_controls()
@@ -892,103 +976,21 @@ class ObjectClassificationWidget(QWidget):
         self.validation_status.setText("" if message is None else message)
         self.validation_status.setVisible(message is not None)
 
-    def _update_primary_status_card(self) -> None:
-        labels_layer = self._annotation_controller.labels_layer
-        missing_table_row_message = self._annotation_controller.missing_table_row_message
-        layer_preparation_lines = (
-            [] if self._labels_layer_preparation_message is None else [self._labels_layer_preparation_message]
+    def _update_selection_status_card(self) -> None:
+        spec = build_object_classification_selection_status_card_spec(
+            has_spatialdata=self._app_state.sdata is not None,
+            selected_coordinate_system=self.selected_coordinate_system,
+            selected_segmentation_name=self.selected_segmentation_name,
+            labels_layer_loaded=self._annotation_controller.labels_layer is not None,
+            labels_layer_preparation_result=self._labels_layer_preparation_result,
+            selected_table_name=self.selected_table_name,
+            table_binding_error=self._table_binding_error,
+            missing_table_row_message=self._annotation_controller.missing_table_row_message,
+            selected_instance_id=self.selected_instance_id,
+            instance_key_name=self._selected_instance_key_name(),
+            current_user_class=self._annotation_controller.current_user_class,
         )
-
-        if self._app_state.sdata is None:
-            self._set_selection_status(
-                title="No SpatialData Loaded",
-                lines=[
-                    "Load a SpatialData object through the Harpy Viewer widget, reader, or `Interactive(sdata)`.",
-                    "This form updates automatically from the shared Harpy state.",
-                ],
-                kind="warning",
-            )
-        elif self.selected_coordinate_system is None:
-            self._set_selection_status(
-                title="Selection",
-                lines=["Choose a coordinate system to continue configuring object classification."],
-                kind="info",
-            )
-        elif self.selected_segmentation_name is None:
-            self._set_selection_status(
-                title="Selection",
-                lines=["Choose a segmentation mask in the selected coordinate system to enable object picking."],
-                kind="info",
-            )
-        elif self._labels_layer_preparation_error is not None:
-            self._set_selection_status(
-                title="Layer Load Issue",
-                lines=[self._labels_layer_preparation_error],
-                kind="warning",
-            )
-        elif labels_layer is None:
-            self._set_selection_status(
-                title="Selection",
-                lines=[
-                    "The chosen segmentation is known in SpatialData for the selected coordinate system, "
-                    "but is not currently loaded as a napari Labels layer."
-                ],
-                kind="warning",
-            )
-        elif self.selected_table_name is None:
-            self._set_selection_status(
-                title="Selection Warning",
-                lines=[
-                    *layer_preparation_lines,
-                    f"Bound to {self.selected_segmentation_name}.",
-                    "This segmentation is loaded, but no annotation table is linked to it.",
-                ],
-                kind="warning",
-            )
-        elif self._table_binding_error is not None:
-            self._set_selection_status(
-                title="Selection Warning",
-                lines=[
-                    *layer_preparation_lines,
-                    f"Bound to {self.selected_segmentation_name}.",
-                    self._table_binding_error,
-                ],
-                kind="warning",
-            )
-        elif self.selected_instance_id is None:
-            self._set_selection_status(
-                title="Selection",
-                lines=[
-                    *layer_preparation_lines,
-                    f"Bound to {self.selected_segmentation_name}.",
-                    "Click an object in the viewer.",
-                ],
-                kind="info",
-            )
-        elif missing_table_row_message is not None:
-            self._set_selection_status(
-                title="Selection Warning",
-                lines=[
-                    f"Bound to {self.selected_segmentation_name}.",
-                    missing_table_row_message,
-                ],
-                kind="warning",
-            )
-        else:
-            current_user_class = self._annotation_controller.current_user_class
-            current_class_label = (
-                "unlabeled" if current_user_class in (None, UNLABELED_CLASS) else str(current_user_class)
-            )
-            instance_key_name = self._selected_instance_key_name()
-            self._set_selection_status(
-                title="Selection Ready",
-                lines=[
-                    f"Bound to {self.selected_segmentation_name}.",
-                    f"Current {instance_key_name}: {self.selected_instance_id}.",
-                    f"Current class: {current_class_label}.",
-                ],
-                kind="success",
-            )
+        self._apply_status_card_spec(self.selection_status, spec)
 
     def _update_annotation_controls(self) -> None:
         has_table = self.selected_table_name is not None and self._table_binding_error is None
@@ -1097,28 +1099,39 @@ class ObjectClassificationWidget(QWidget):
             kind=kind,
         )
 
-    def _set_selection_status(self, title: str, lines: list[str], *, kind: StatusCardKind) -> None:
-        set_status_card(self.selection_status, title=title, lines=lines, kind=kind)
-
-    def _set_classifier_feedback(self, message: str, *, kind: StatusCardKind = "info") -> None:
-        if not message:
-            self.classifier_feedback.setText("")
-            self.classifier_feedback.setVisible(False)
+    def _apply_status_card_spec(
+        self,
+        label: QLabel,
+        spec: _ObjectClassificationStatusCardSpec | None,
+    ) -> None:
+        if spec is None:
+            label.setText("")
+            label.setToolTip("")
+            label.setVisible(False)
             return
 
-        title_by_kind = {
-            "error": "Classifier Error",
-            "warning": "Classifier Warning",
-            "success": "Classifier Ready",
-            "info": "Classifier",
-        }
-        body = message.removeprefix("Classifier: ").strip()
         set_status_card(
-            self.classifier_feedback,
-            title=title_by_kind.get(kind, "Classifier"),
-            lines=[body],
-            kind=kind,
+            label,
+            title=spec.title,
+            lines=list(spec.lines),
+            kind=spec.kind,
+            tooltip_message=spec.tooltip_message,
         )
+
+    def _update_classifier_feedback(self) -> None:
+        is_visible = (
+            self.selected_spatialdata is not None
+            and self.selected_segmentation_name is not None
+            and self.selected_table_name is not None
+            and self.selected_feature_key is not None
+            and self._table_binding_error is None
+        )
+        spec = build_object_classification_classifier_feedback_card_spec(
+            is_visible=is_visible,
+            message=self._classifier_controller.status_message,
+            kind=self._classifier_controller.status_kind,
+        )
+        self._apply_status_card_spec(self.classifier_feedback, spec)
 
     def _selected_instance_key_name(self) -> str:
         instance_key_name = self._annotation_controller.selected_instance_key_name
@@ -1184,6 +1197,47 @@ class ObjectClassificationWidget(QWidget):
         self._set_tooltip(self.color_by_combo, tooltip)
 
     def _update_classifier_controls(self) -> None:
+        can_configure_scope = (
+            self.selected_spatialdata is not None
+            and self.selected_segmentation_name is not None
+            and self.selected_table_name is not None
+            and self._table_binding_error is None
+            and not self._classifier_controller.is_training
+        )
+        self.training_scope_combo.setEnabled(can_configure_scope)
+        self.prediction_scope_combo.setEnabled(can_configure_scope)
+
+        if self.selected_spatialdata is None or self.selected_segmentation_name is None or self.selected_table_name is None:
+            training_scope_tooltip = "Choose a segmentation and annotation table before configuring classifier training scope."
+            prediction_scope_tooltip = (
+                "Choose a segmentation and annotation table before configuring classifier prediction scope."
+            )
+        elif self._table_binding_error is not None:
+            training_scope_tooltip = self._table_binding_error
+            prediction_scope_tooltip = self._table_binding_error
+        elif self._classifier_controller.is_training:
+            training_scope_tooltip = "A classifier training job is currently running."
+            prediction_scope_tooltip = "A classifier training job is currently running."
+        elif self.selected_training_scope == "all":
+            training_scope_tooltip = (
+                "Train on eligible labeled rows from all annotated regions in the selected table."
+            )
+            prediction_scope_tooltip = self._prediction_scope_tooltip()
+        else:
+            training_scope_tooltip = "Train only on eligible labeled rows from the selected segmentation region."
+            prediction_scope_tooltip = self._prediction_scope_tooltip()
+
+        self._set_tooltip(self.training_scope_combo, training_scope_tooltip)
+        self._set_tooltip(self.prediction_scope_combo, prediction_scope_tooltip)
+        classifier_preparation_spec = build_object_classification_classifier_preparation_card_spec(
+            selected_segmentation_name=self.selected_segmentation_name,
+            selected_table_name=self.selected_table_name,
+            selected_feature_key=self.selected_feature_key,
+            table_binding_error=self._table_binding_error,
+            summary=self._classifier_controller.describe_current_preparation(),
+        )
+        self._apply_status_card_spec(self.classifier_preparation_status, classifier_preparation_spec)
+
         can_retrain = self._classifier_controller.can_retrain
         self.retrain_button.setEnabled(can_retrain)
 
@@ -1198,9 +1252,21 @@ class ObjectClassificationWidget(QWidget):
         elif self._classifier_controller.is_dirty:
             tooltip = "The classifier model is stale. Click Train Classifier to refresh predictions."
         else:
-            tooltip = "Train the classifier using the current annotations and feature matrix."
+            tooltip = (
+                "Train the classifier using the current annotations and feature matrix, then write predictions "
+                "for the selected prediction scope."
+            )
 
         self._set_tooltip(self.retrain_button, tooltip)
+
+    def _prediction_scope_tooltip(self) -> str:
+        if self.selected_prediction_scope == "all":
+            return (
+                "Write predictions for all eligible regions in the selected table. In-scope rows with invalid "
+                "features will be cleared."
+            )
+
+        return "Write predictions only for eligible rows from the selected segmentation region."
 
     def _write_to_zarr(self) -> None:
         # TODO: consider disabling write while classifier retraining is pending
@@ -1378,7 +1444,7 @@ class ObjectClassificationWidget(QWidget):
     def _on_selected_instance_changed(self, instance_id: int | None) -> None:
         del instance_id
         self._set_annotation_feedback("")
-        self._update_primary_status_card()
+        self._update_selection_status_card()
         self._update_annotation_controls()
 
     def _on_annotation_changed(self) -> None:
@@ -1393,10 +1459,7 @@ class ObjectClassificationWidget(QWidget):
         self._update_persistence_controls()
 
     def _on_classifier_state_changed(self) -> None:
-        self._set_classifier_feedback(
-            self._classifier_controller.status_message,
-            kind=self._classifier_controller.status_kind,
-        )
+        self._update_classifier_feedback()
         self._refresh_layer_styling()
         self._update_classifier_controls()
 

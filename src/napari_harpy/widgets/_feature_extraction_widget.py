@@ -260,15 +260,23 @@ class _FeatureExtractionChannelSelectionMemory:
 
 class FeatureExtractionWidget(QWidget):
     """
-    Widget for feature extraction.
+    Batch-aware widget for feature extraction from a shared `SpatialData`.
 
-    The widget discovers selectable labels and images from the shared loaded
-    `SpatialData` object and keeps the selection flow coordinate-system-first:
+    The widget stages one or more explicit
+    `coordinate_system -> segmentation -> image` triplets from the loaded
+    `SpatialData` object:
 
-    - coordinate systems come from the loaded `sdata`
-    - labels come from the selected coordinate system in `sdata.labels`
-    - images come from the selected coordinate system in `sdata.images`
-    - tables are restricted to annotators of the selected labels element
+    - users check one or more coordinate systems and get one triplet card per
+      checked coordinate system;
+    - each card resolves selectable segmentation masks and matching images
+      from shared discovery helpers;
+    - duplicate segmentation selection is prevented across the visible batch,
+      while valid image reuse remains allowed across cards;
+    - shared controls below the cards resolve one batch channel selection, one
+      output table, one feature-matrix key, and the shared feature groups;
+    - the widget keeps a staged batch state and binds an explicit multi-target
+      request into `FeatureExtractionController` only when the full checked
+      batch is currently valid.
     """
 
     def __init__(self, napari_viewer: napari.Viewer | None = None) -> None:
@@ -1081,6 +1089,22 @@ class FeatureExtractionWidget(QWidget):
         preferred_selection_by_coordinate_system: Mapping[str, _FeatureExtractionCardSelection],
         authoritative_coordinate_systems: set[str],
     ) -> tuple[dict[str, ElementIdentity | None], dict[ElementIdentity, str]]:
+        """Resolve batch-visible label ownership across the checked cards.
+
+        Feature-extraction batch selection is intentionally asymmetric:
+
+        - labels are resolved *globally* across the checked cards, so one
+          concrete segmentation element may belong to at most one visible card
+          at a time;
+        - images are resolved *locally* inside each card after the label is
+          chosen, so the same valid image element may still be reused across
+          several cards when it matches each card's selected segmentation.
+
+        This helper implements only the first half of that rule. It walks the
+        checked cards in a stable order, restores preferred label selections
+        when they are still eligible, and builds a `label -> owner` map that
+        prevents duplicate segmentation selection across the visible batch.
+        """
         checked_coordinate_systems = self._checked_coordinate_system_names()
         authoritative_order = [
             coordinate_system

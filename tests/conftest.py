@@ -12,6 +12,8 @@ import pytest
 from spatialdata import SpatialData, read_zarr
 from spatialdata.datasets import blobs
 
+from napari_harpy.datasets import blobs_multi_region
+
 TEST_HOME = Path(tempfile.mkdtemp(prefix="napari-harpy-test-home-"))
 TEST_CACHE = TEST_HOME / ".cache"
 TEST_CONFIG = TEST_HOME / ".config"
@@ -55,9 +57,24 @@ def sdata_blobs() -> SpatialData:
 
 
 @pytest.fixture
+def sdata_blobs_multi_region() -> SpatialData:
+    """Return an in-memory SpatialData test object with a multi-region classifier table."""
+    return blobs_multi_region()
+
+
+@pytest.fixture
 def backed_sdata_blobs(tmp_path) -> SpatialData:
     """Return a backed SpatialData test object stored in a temporary zarr directory."""
     path = tmp_path / "blobs.zarr"
     sdata = _make_sdata_blobs()
+    sdata.write(path)
+    return read_zarr(path)
+
+
+@pytest.fixture
+def backed_sdata_blobs_multi_region(tmp_path) -> SpatialData:
+    """Return a backed multi-region SpatialData test object stored in a temporary zarr directory."""
+    path = tmp_path / "blobs_multi_region.zarr"
+    sdata = blobs_multi_region()
     sdata.write(path)
     return read_zarr(path)
