@@ -61,9 +61,6 @@ class ClassifierExportBundle:
     model_type: str
     estimator: RandomForestClassifier
     feature_key: str
-    feature_columns: tuple[str, ...]
-    feature_names: tuple[str, ...]
-    n_features: int
     class_labels_seen: tuple[int, ...]
     rf_params: dict[str, object]
     source_classifier_config: dict[str, object]
@@ -73,6 +70,18 @@ class ClassifierExportBundle:
     source_prediction_scope: str
     source_prediction_regions: tuple[str, ...]
     source_feature_metadata: dict[str, object]
+
+    @property
+    def feature_columns(self) -> tuple[str, ...]:
+        return normalize_feature_columns(self.source_feature_metadata)
+
+    @property
+    def feature_names(self) -> tuple[str, ...]:
+        return normalize_feature_names(self.source_feature_metadata)
+
+    @property
+    def n_features(self) -> int:
+        return len(self.feature_columns)
 ```
 
 `ClassifierExportBundle` is the in-memory representation used by napari-harpy.
@@ -115,7 +124,11 @@ table, but neither source should be treated as a live link after export:
   version.
 
 For export, `table.uns["feature_matrices"][feature_key]` should be the source of
-truth for `feature_columns` and `feature_names`. Export should fail if this
+truth for the feature schema. The export bundle should store a copied
+`source_feature_metadata` dict and derive `feature_columns`, `feature_names`, and
+`n_features` from that metadata with properties. Do not store those values as
+separate serialized top-level fields, because that would create another place
+for internally duplicated metadata to drift. Export should fail if feature
 metadata is missing or if `feature_columns` does not match the selected
 `.obsm[feature_key]` column count. A classifier that only knows `n_features` is
 not safe to reuse headlessly, because column identity and order matter.
@@ -130,9 +143,12 @@ class ClassifierModelSnapshot:
     estimator: RandomForestClassifier
     classifier_config: dict[str, object]
     feature_metadata: dict[str, object]
-    feature_columns: tuple[str, ...]
     feature_key: str
     trained_at: str
+
+    @property
+    def feature_columns(self) -> tuple[str, ...]:
+        return normalize_feature_columns(self.feature_metadata)
 ```
 
 The snapshot should be built from the same successful worker result that writes
@@ -205,7 +221,7 @@ Status: [ ] Not started
   - build `source_classifier_config` with `_build_classifier_config(...)`;
   - read `source_feature_metadata` from
     `table.uns["feature_matrices"][feature_key]`;
-  - normalize and validate `feature_columns` from that feature metadata;
+  - normalize and validate `feature_columns` through the snapshot property;
   - set `self._model_snapshot` in `_on_worker_returned(...)`;
   - clear that snapshot whenever the classifier becomes dirty, inputs change,
     training starts, training fails, reload happens, or feature matrices are
