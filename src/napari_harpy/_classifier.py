@@ -828,7 +828,9 @@ class ClassifierController:
         try:
             feature_metadata = _get_feature_metadata(table, result.feature_key)
             feature_columns = normalize_feature_columns(feature_metadata)
-            self._validate_feature_matrix_schema(table, result.feature_key, feature_columns)
+            # Export relies on `.uns["feature_matrices"]` for column order, so
+            # ensure that metadata still matches the live `.obsm` matrix shape.
+            self._validate_current_feature_matrix_matches_columns(table, result.feature_key, feature_columns)
         except ValueError as error:
             self._clear_model_snapshot(str(error))
             return
@@ -873,9 +875,11 @@ class ClassifierController:
                 "Current feature metadata no longer matches the fitted model snapshot. "
                 "Train the classifier again before exporting."
             )
-        self._validate_feature_matrix_schema(table, snapshot.feature_key, snapshot.feature_columns)
+        # Export relies on `.uns["feature_matrices"]` for column order, so
+        # ensure that metadata still matches the live `.obsm` matrix shape.
+        self._validate_current_feature_matrix_matches_columns(table, snapshot.feature_key, snapshot.feature_columns)
 
-    def _validate_feature_matrix_schema(
+    def _validate_current_feature_matrix_matches_columns(
         self,
         table: AnnData,
         feature_key: str,
