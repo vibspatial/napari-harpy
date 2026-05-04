@@ -74,6 +74,25 @@ class ClassifierExportBundle:
     source_feature_metadata: dict[str, object]
 ```
 
+`ClassifierExportBundle` is the in-memory representation used by napari-harpy.
+The on-disk joblib payload should be a plain dict with the same semantic fields,
+for example:
+
+```python
+{
+    "bundle_type": "napari_harpy_classifier",
+    "schema_version": 1,
+    "metadata": {...},
+    "estimator": fitted_random_forest,
+}
+```
+
+`write_classifier_export_bundle(...)` should convert the dataclass to this dict
+payload before calling `joblib.dump(...)`, and `read_classifier_export_bundle(...)`
+should validate the payload before reconstructing `ClassifierExportBundle`. This
+keeps the artifact easier to inspect and migrate than pickling the dataclass
+instance directly, while still using joblib for the fitted scikit-learn model.
+
 The important invariant is:
 
 > The bundle stores the exact fitted estimator and the exact feature schema it
