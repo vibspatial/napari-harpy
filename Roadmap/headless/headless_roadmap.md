@@ -97,6 +97,15 @@ class HeadlessFeatureTarget:
     overwrite_feature_key: bool = False
 ```
 
+`HeadlessFeatureTarget` describes the target dataset wiring for feature
+calculation. It answers: which target table should receive the feature matrix,
+which `.obsm` key should be used, and which target coordinate-system /
+segmentation / image triplets should be passed to `hp.tb.add_feature_matrix(...)`.
+It intentionally does not carry `feature_columns`: the exported classifier
+bundle is the authority on the required feature schema, and the headless apply
+path must compare the feature matrix produced for this target against
+`bundle.feature_columns` before predicting.
+
 This lets a bundle trained on `blobs_labels` be applied to a different dataset
 whose labels element might be named `cells`, with a different coordinate system
 or image name.
