@@ -19,55 +19,34 @@ the refactor, it is acceptable to temporarily disable `Train Classifier` if
 that lets the controller and widget contracts move more quickly and more
 cleanly.
 
-## Current Codebase Baseline
+## Completion Summary
 
-The current code is already close in a few important ways, but the remaining
-classifier work is real and mostly centered in one controller.
+This roadmap is complete. The object-classifier pipeline now separates
+training scope from prediction scope throughout the controller, widget,
+metadata, reload logic, and tests.
 
-What already fits the cross-sample direction:
+What landed:
 
-- `src/napari_harpy/_annotation.py` already writes user labels by
-  `region_key + instance_key`, so interactive annotation is sample-local while
-  still writing into a shared table correctly.
-- `src/napari_harpy/_spatialdata.py` already supports multi-region table
-  metadata and validates duplicate `instance_key` values per region rather than
-  globally.
-- the object-classification widget already binds to one selected segmentation,
-  one selected table, and one selected feature matrix in a way that can remain
-  compatible with a table-global training request.
-
-What is still single-region today:
-
-- `src/napari_harpy/_classifier.py` computes one `active_mask` from
-  `self._selected_label_name` and uses that same row subset for both training
-  and prediction.
-- the worker job payload stores `active_positions`, and success / ineligible
-  paths both write predictions only for those active rows.
-- classifier status and metadata still describe one active region using fields
-  such as `label_name` and `n_active_objects`.
-- reload logic treats stored predictions as stale whenever the currently
-  selected segmentation differs from the one recorded in
-  `classifier_config["label_name"]`.
-- `src/napari_harpy/widgets/_object_classification_widget.py` has no explicit
-  training-scope or prediction-scope controls, and its copy still assumes a
-  single-region training action.
-
-Additional gap to address explicitly:
-
-- the roadmap says classifier-eligible rows should have finite, non-missing
-  feature values, but the current classifier path validates matrix shape only.
-  Scope work is a good moment to make row eligibility explicit instead of
-  leaving NaN / inf handling implicit inside scikit-learn behavior.
-
-Testing baseline:
-
-- `tests/test_classifier.py` and the classifier-focused widget tests in
-  `tests/test_widget.py` currently assume one selected region is both the
-  training set and the prediction target.
-- `tests/conftest.py` still provides a single-region `sdata_blobs` fixture.
-- classifier metadata is also asserted in reload / persistence flows, so
-  `tests/test_persistence.py` will likely need coverage updates even though it
-  is not named in the roadmap item.
+- `src/napari_harpy/_classifier.py` resolves explicit training and prediction
+  scopes with `ResolvedClassifierScope` / `ResolvedClassifierScopes`;
+- training defaults to all eligible labeled regions in the selected table, while
+  prediction defaults to the selected segmentation only;
+- classifier row eligibility now excludes rows with non-finite or missing
+  feature values before training or prediction arrays are prepared;
+- `ClassifierPreparationSummary` is the shared structured preparation object
+  used by jobs, results, metadata counts, controller status, and widget status;
+- classifier metadata records explicit training and prediction scope fields,
+  including resolved regions and row counts, instead of relying on one legacy
+  active-region field;
+- reload-state checks now compare feature key, table name, prediction-scope
+  mode, and prediction-region coverage;
+- `src/napari_harpy/widgets/_object_classification_widget.py` exposes training
+  and prediction scope controls and marks classifier outputs stale when either
+  scope changes;
+- `src/napari_harpy/widgets/_object_classification_status_card.py` owns the
+  selection, classifier-preparation, and classifier-feedback status-card specs;
+- multi-region controller, widget, and persistence coverage verifies the final
+  scope behavior.
 
 ## Guiding Rules
 
