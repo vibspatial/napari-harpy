@@ -234,7 +234,7 @@ class ClassifierController:
         # Reasons for missing export state stay separate so the snapshot type
         # never has to represent both success and failure.
         self._model_snapshot: ClassifierModelSnapshot | None = None
-        self._model_snapshot_unavailable_reason: str | None = None
+        self._model_snapshot_missing_reason: str | None = None
         self._is_dirty = False
 
         self._status_message = "Classifier: choose an annotation table and feature matrix."
@@ -845,11 +845,11 @@ class ClassifierController:
             feature_key=result.feature_key,
             trained_at=result.trained_at,
         )
-        self._model_snapshot_unavailable_reason = None
+        self._model_snapshot_missing_reason = None
 
     def _clear_model_snapshot(self, reason: str | None = None) -> None:
         self._model_snapshot = None
-        self._model_snapshot_unavailable_reason = reason
+        self._model_snapshot_missing_reason = reason
 
     def _validate_export_ready(self) -> None:
         table = self._get_bound_table()
@@ -862,8 +862,8 @@ class ClassifierController:
         if self._is_dirty:
             raise ValueError("The classifier model is stale. Train it again before exporting.")
         if self._model_snapshot is None:
-            if self._model_snapshot_unavailable_reason:
-                raise ValueError(f"Classifier export is unavailable because {self._model_snapshot_unavailable_reason}")
+            if self._model_snapshot_missing_reason:
+                raise ValueError(f"Classifier export is unavailable because {self._model_snapshot_missing_reason}")
             raise ValueError("No fitted classifier model is available to export. Train the classifier first.")
 
         snapshot = self._model_snapshot
