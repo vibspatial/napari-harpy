@@ -33,6 +33,7 @@ from napari_harpy._classifier import (
     PRED_CLASS_COLUMN,
     PRED_CONFIDENCE_COLUMN,
 )
+from napari_harpy._classifier_export import DEFAULT_CLASSIFIER_EXPORT_SUFFIX, read_classifier_export_bundle
 from napari_harpy._spatialdata import SpatialDataLabelsOption
 from napari_harpy.widgets._object_classification_widget import (
     ObjectClassificationWidget as HarpyWidget,
@@ -140,6 +141,26 @@ def _assert_persistence_success_feedback(widget: HarpyWidget, expected_message: 
     assert f"color: {_SUCCESS_FEEDBACK_STYLE['text']}" in stylesheet
     assert f"background-color: {_SUCCESS_FEEDBACK_STYLE['background']}" in stylesheet
     assert f"border: 1px solid {_SUCCESS_FEEDBACK_STYLE['border']}" in stylesheet
+
+
+def _set_feature_metadata(
+    sdata: SpatialData,
+    *,
+    table_name: str = "table",
+    feature_key: str = "features_1",
+) -> None:
+    table = sdata[table_name]
+    n_features = int(table.obsm[feature_key].shape[1])
+    table.uns.setdefault("feature_matrices", {})[feature_key] = {
+        "feature_columns": [f"feature_{index}" for index in range(n_features)],
+        "schema_version": 1,
+        "backend": "numpy",
+        "dtype": str(np.asarray(table.obsm[feature_key]).dtype),
+        "source_label": "blobs_labels",
+        "source_image": None,
+        "coordinate_system": "global",
+        "features": [f"feature_{index}" for index in range(n_features)],
+    }
 
 
 def _patch_coordinate_system_names(monkeypatch, coordinate_systems: list[str]) -> None:
@@ -2038,3 +2059,46 @@ def test_widget_retrain_button_triggers_manual_retraining(qtbot, monkeypatch, sd
     widget.retrain_button.click()
 
     assert retrain_calls == [True]
+
+
+def test_widget_exports_classifier_with_mocked_save_dialog(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs["table"]
+    instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(
+        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
+        categories=[0, 1, 2],
+    )
+    _set_feature_metadata(sdata_blobs)
+
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    assert widget.export_classifier_button.isEnabled() is False
+
+    widget.retrain_button.click()
+    qtbot.waitUntil(lambda: widget.export_classifier_button.isEnabled(), timeout=5000)
+
+    selected_path = tmp_path / "widget-export"
+    monkeypatch.setattr(
+        widget_module.QFileDialog,
+        "getSaveFileName",
+        lambda *args, **kwargs: (str(selected_path), ""),
+    )
+
+    widget.export_classifier_button.click()
+
+    export_path = tmp_path / f"widget-export{DEFAULT_CLASSIFIER_EXPORT_SUFFIX}"
+    loaded = read_classifier_export_bundle(export_path)
+
+    assert export_path.exists()
+    assert loaded.n_features == int(table.obsm["features_1"].shape[1])
+    assert "Classifier Exported" in widget.classifier_feedback.text()
+    assert str(export_path) in widget.classifier_feedback.text()

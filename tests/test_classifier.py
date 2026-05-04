@@ -4,6 +4,7 @@ import time
 
 import numpy as np
 import pandas as pd
+import pytest
 from qtpy.QtCore import QObject, Signal
 from spatialdata import SpatialData
 
@@ -17,6 +18,9 @@ from napari_harpy._classifier import (
     PRED_CONFIDENCE_COLUMN,
     ClassifierController,
 )
+from napari_harpy._classifier_export import read_classifier_export_bundle
+
+_FEATURE_MATRICES_KEY = "feature_matrices"
 
 
 class _DeferredWorker(QObject):
@@ -47,6 +51,27 @@ def _set_deterministic_features(sdata: SpatialData, *, table_name: str = "table"
     first_feature = (instance_ids > 13).astype(np.float64)
     second_feature = instance_ids.astype(np.float64) / instance_ids.max()
     table.obsm["features_1"] = np.column_stack([first_feature, second_feature])
+
+
+def _set_feature_metadata(
+    sdata: SpatialData,
+    *,
+    table_name: str = "table",
+    feature_key: str = "features_1",
+    feature_columns: tuple[str, ...] = ("is_large", "instance_fraction"),
+    features: tuple[str, ...] = ("synthetic_size", "synthetic_position"),
+) -> None:
+    table = sdata[table_name]
+    table.uns.setdefault(_FEATURE_MATRICES_KEY, {})[feature_key] = {
+        "feature_columns": list(feature_columns),
+        "schema_version": 1,
+        "backend": "numpy",
+        "dtype": str(np.asarray(table.obsm[feature_key]).dtype),
+        "source_label": "blobs_labels",
+        "source_image": None,
+        "coordinate_system": "global",
+        "features": list(features),
+    }
 
 
 def _set_user_classes(sdata: SpatialData, class_by_instance: dict[int, int], *, table_name: str = "table") -> None:
@@ -141,6 +166,159 @@ def test_classifier_controller_trains_on_labeled_rows_and_predicts_active_object
     assert table.uns[CLASSIFIER_CONFIG_KEY]["class_labels_seen"] == [1, 2]
     assert controller.status_kind == "success"
     assert table_state_changes == ["changed"]
+
+
+def test_classifier_controller_exports_trained_classifier_bundle(
+    qtbot,
+    tmp_path,
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(sdata_blobs)
+    _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
+
+    controller = ClassifierController(debounce_interval_ms=0)
+    controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
+    controller.retrain_now()
+
+    table = sdata_blobs["table"]
+    qtbot.waitUntil(lambda: controller.can_export_classifier, timeout=5000)
+
+    export_path = tmp_path / "trained.harpy-classifier.joblib"
+    bundle = controller.export_classifier(export_path)
+    loaded = read_classifier_export_bundle(export_path)
+
+    feature_matrix = np.asarray(table.obsm["features_1"], dtype=np.float64)
+    assert export_path.exists()
+    assert bundle.feature_columns == ("is_large", "instance_fraction")
+    assert loaded.feature_columns == ("is_large", "instance_fraction")
+    assert loaded.feature_names == ("synthetic_size", "synthetic_position")
+    assert loaded.n_features == 2
+    assert loaded.class_labels_seen == (1, 2)
+    assert loaded.source_classifier_config == table.uns[CLASSIFIER_CONFIG_KEY]
+    assert loaded.source_feature_metadata == table.uns[_FEATURE_MATRICES_KEY]["features_1"]
+    assert np.array_equal(loaded.estimator.predict(feature_matrix), bundle.estimator.predict(feature_matrix))
+
+
+def test_classifier_controller_refuses_export_when_model_is_dirty(
+    qtbot,
+    tmp_path,
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(sdata_blobs)
+    _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
+
+    controller = ClassifierController(debounce_interval_ms=0)
+    controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
+    controller.retrain_now()
+    qtbot.waitUntil(lambda: controller.can_export_classifier, timeout=5000)
+
+    controller.mark_dirty(reason="the annotations changed")
+
+    assert controller.can_export_classifier is False
+    with pytest.raises(ValueError, match="stale"):
+        controller.export_classifier(tmp_path / "dirty.harpy-classifier.joblib")
+
+
+def test_classifier_controller_refuses_export_while_training(tmp_path, sdata_blobs: SpatialData) -> None:
+    _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(sdata_blobs)
+    _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
+
+    workers: dict[int, _DeferredWorker] = {}
+
+    def fake_create_training_worker(job):
+        result = classifier_module.ClassifierJobResult(
+            job_id=job.job_id,
+            feature_key=job.feature_key,
+            label_name=job.label_name,
+            table_name=job.table_name,
+            pred_classes=np.full(job.prediction_scope.table_row_positions.shape, 1, dtype=np.int64),
+            pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.9, dtype=np.float64),
+            trained_at="2026-04-13T09:00:00+00:00",
+            model_params=dict(classifier_module.RANDOM_FOREST_PARAMS),
+            summary=job.summary,
+        )
+        worker = _DeferredWorker(result)
+        workers[job.job_id] = worker
+        return worker
+
+    controller = ClassifierController(debounce_interval_ms=0)
+    controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
+    controller._create_training_worker = fake_create_training_worker  # type: ignore[method-assign]
+
+    assert controller.retrain_now() is True
+
+    assert workers[1].started is True
+    assert controller.can_export_classifier is False
+    with pytest.raises(ValueError, match="currently running"):
+        controller.export_classifier(tmp_path / "running.harpy-classifier.joblib")
+
+
+def test_classifier_controller_clears_export_snapshot_after_reload(
+    qtbot,
+    tmp_path,
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(sdata_blobs)
+    _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
+
+    controller = ClassifierController(debounce_interval_ms=0)
+    controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
+    controller.retrain_now()
+    qtbot.waitUntil(lambda: controller.can_export_classifier, timeout=5000)
+
+    controller.reset_after_reload()
+
+    assert controller.can_export_classifier is False
+    with pytest.raises(ValueError, match="reloaded from disk"):
+        controller.export_classifier(tmp_path / "reloaded.harpy-classifier.joblib")
+
+
+def test_classifier_controller_refuses_export_after_feature_metadata_drift(
+    qtbot,
+    tmp_path,
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(sdata_blobs)
+    _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
+
+    controller = ClassifierController(debounce_interval_ms=0)
+    controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
+    controller.retrain_now()
+    qtbot.waitUntil(lambda: controller.can_export_classifier, timeout=5000)
+
+    sdata_blobs["table"].uns[_FEATURE_MATRICES_KEY]["features_1"]["feature_columns"] = [
+        "instance_fraction",
+        "is_large",
+    ]
+
+    assert controller.can_export_classifier is False
+    with pytest.raises(ValueError, match="metadata no longer matches"):
+        controller.export_classifier(tmp_path / "drift.harpy-classifier.joblib")
+
+
+def test_classifier_controller_refuses_export_without_feature_metadata(
+    qtbot,
+    tmp_path,
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_deterministic_features(sdata_blobs)
+    _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
+
+    controller = ClassifierController(debounce_interval_ms=0)
+    controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
+    controller.retrain_now()
+
+    table = sdata_blobs["table"]
+    qtbot.waitUntil(lambda: table.uns.get(CLASSIFIER_CONFIG_KEY, {}).get("trained") is True, timeout=5000)
+
+    assert controller.can_export_classifier is False
+    with pytest.raises(ValueError, match="missing Harpy metadata"):
+        controller.export_classifier(tmp_path / "missing-metadata.harpy-classifier.joblib")
 
 
 def test_multi_region_classifier_fixture_duplicates_instance_ids_only_across_regions(

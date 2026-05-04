@@ -238,7 +238,7 @@ or image name.
 
 ## 1. Export the Classifier From the Widget
 
-Status: [ ] Not started
+Status: [x] Implemented
 
 ### Implementation Plan
 

@@ -1,19 +1,29 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from functools import partial
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import pandas as pd
+from harpy.utils._keys import _FEATURE_MATRICES_KEY
 from numpy.typing import NDArray
 from qtpy.QtCore import QTimer
 from sklearn.ensemble import RandomForestClassifier
 
 from napari_harpy._annotation import UNLABELED_CLASS, USER_CLASS_COLUMN
 from napari_harpy._class_palette import set_class_annotation_state
+from napari_harpy._classifier_export import (
+    ClassifierExportBundle,
+    ClassifierModelSnapshot,
+    build_classifier_export_bundle,
+    normalize_feature_columns,
+    write_classifier_export_bundle,
+)
 from napari_harpy._spatialdata import SpatialDataTableMetadata, get_table, get_table_metadata
 
 try:
@@ -153,6 +163,7 @@ class ClassifierJobResult:
     trained_at: str
     model_params: dict[str, int]
     summary: ClassifierPreparationSummary
+    estimator: RandomForestClassifier | None = None
 
     @property
     def training_scope(self) -> ResolvedClassifierScope:
@@ -188,6 +199,7 @@ def _fit_classifier_job(job: ClassifierJob) -> ClassifierJobResult:
         trained_at=datetime.now(UTC).isoformat(),
         model_params={key: int(value) for key, value in RANDOM_FOREST_PARAMS.items()},
         summary=job.summary,
+        estimator=classifier,
     )
 
 
@@ -218,6 +230,8 @@ class ClassifierController:
         self._active_worker_job_id: int | None = None
         self._active_worker: Any | None = None
         self._active_job: ClassifierJob | None = None
+        self._model_snapshot: ClassifierModelSnapshot | None = None
+        self._model_snapshot_unavailable_reason: str | None = None
         self._is_dirty = False
 
         self._status_message = "Classifier: choose an annotation table and feature matrix."
@@ -252,6 +266,24 @@ class ClassifierController:
     def can_retrain(self) -> bool:
         """Return whether the current classifier inputs support a retrain request."""
         return self._get_bound_table() is not None and self._selected_feature_key is not None and not self.is_training
+
+    @property
+    def can_export_classifier(self) -> bool:
+        """Return whether the current fitted classifier snapshot can be exported."""
+        try:
+            self._validate_export_ready()
+        except ValueError:
+            return False
+        return True
+
+    @property
+    def classifier_export_unavailable_reason(self) -> str | None:
+        """Return the current reason classifier export is unavailable, if any."""
+        try:
+            self._validate_export_ready()
+        except ValueError as error:
+            return str(error)
+        return None
 
     def bind(
         self,
@@ -288,6 +320,7 @@ class ClassifierController:
 
         if context_changed:
             self._cancel_pending_and_active_jobs()
+            self._clear_model_snapshot("the classifier selection changed")
 
         table = self._get_bound_table()
         if table is None:
@@ -304,10 +337,12 @@ class ClassifierController:
         """Mark the current classifier outputs as stale after an input change."""
         if self._get_bound_table() is None:
             self._is_dirty = False
+            self._clear_model_snapshot()
             self._set_status("Classifier: choose an annotation table and feature matrix.", kind="warning")
             return
 
         self._is_dirty = True
+        self._clear_model_snapshot("the classifier was marked stale")
         self._update_idle_status(reason=reason)
 
     def retrain_now(self) -> bool:
@@ -327,6 +362,7 @@ class ClassifierController:
         self._debounce_timer.stop()
         self._cancel_active_worker()
         self._is_dirty = True
+        self._clear_model_snapshot("classifier training was started")
 
         if immediate or self._debounce_interval_ms == 0:
             self._launch_retrain_job(self._latest_requested_job_id)
@@ -339,6 +375,7 @@ class ClassifierController:
     def freeze_for_reload(self) -> None:
         """Cancel pending async work so reload cannot apply stale classifier results."""
         self._invalidate_async_jobs()
+        self._clear_model_snapshot("the table is being reloaded")
         self._update_idle_status()
 
     def invalidate_for_feature_matrix_overwrite(self, feature_key: str) -> bool:
@@ -348,12 +385,14 @@ class ClassifierController:
 
         self._invalidate_async_jobs()
         self._is_dirty = True
+        self._clear_model_snapshot(f"feature matrix `{feature_key}` was overwritten")
         self._update_idle_status(reason=f"feature matrix `{feature_key}` was overwritten")
         return True
 
     def reset_after_reload(self) -> None:
         """Recompute classifier state from the reloaded table without retraining."""
         self._invalidate_async_jobs()
+        self._clear_model_snapshot("the table was reloaded from disk")
         table = self._get_bound_table()
         if table is None:
             self._is_dirty = False
@@ -367,6 +406,14 @@ class ClassifierController:
     def describe_current_preparation(self) -> ClassifierPreparationSummary | None:
         """Return a side-effect-free summary of the currently bound classifier state."""
         return self._prepare_classifier_summary()
+
+    def export_classifier(self, path: str | Path) -> ClassifierExportBundle:
+        """Export the current fitted classifier snapshot to a joblib artifact."""
+        self._validate_export_ready()
+        assert self._model_snapshot is not None
+        bundle = build_classifier_export_bundle(self._model_snapshot)
+        write_classifier_export_bundle(path, bundle)
+        return bundle
 
     def _launch_scheduled_retrain(self) -> None:
         self._launch_retrain_job(self._latest_requested_job_id)
@@ -668,6 +715,7 @@ class ClassifierController:
             trained=False,
             trained_at=None,
         )
+        self._clear_model_snapshot("the latest classifier inputs are not trainable")
         self._notify_table_state_changed()
         self._is_dirty = True
         self._set_status(f"Classifier: {job.summary.reason}", kind="warning")
@@ -688,13 +736,15 @@ class ClassifierController:
             result.pred_classes,
             result.pred_confidences,
         )
-        table.uns[CLASSIFIER_CONFIG_KEY] = self._build_classifier_config(
+        classifier_config = self._build_classifier_config(
             feature_key=result.feature_key,
             table_name=result.table_name,
             summary=result.summary,
             trained=True,
             trained_at=result.trained_at,
         )
+        table.uns[CLASSIFIER_CONFIG_KEY] = classifier_config
+        self._store_model_snapshot(table, result, classifier_config)
         self._notify_table_state_changed()
         self._is_dirty = False
         self._set_status(
@@ -730,6 +780,7 @@ class ClassifierController:
             )
             self._notify_table_state_changed()
         self._is_dirty = True
+        self._clear_model_snapshot("classifier training failed")
         self._set_status(f"Classifier: training failed: {error}", kind="error")
 
     def _on_worker_finished(self, job_id: int) -> None:
@@ -763,6 +814,83 @@ class ClassifierController:
 
     def _create_training_worker(self, job: ClassifierJob) -> Any:
         return _run_classifier_job(job)
+
+    def _store_model_snapshot(
+        self,
+        table: AnnData,
+        result: ClassifierJobResult,
+        classifier_config: dict[str, object],
+    ) -> None:
+        if result.estimator is None:
+            self._clear_model_snapshot("the latest training result did not include a fitted estimator")
+            return
+
+        try:
+            feature_metadata = _get_feature_metadata(table, result.feature_key)
+            feature_columns = normalize_feature_columns(feature_metadata)
+            self._validate_feature_matrix_schema(table, result.feature_key, feature_columns)
+        except ValueError as error:
+            self._clear_model_snapshot(str(error))
+            return
+
+        self._model_snapshot = ClassifierModelSnapshot(
+            estimator=result.estimator,
+            classifier_config=deepcopy(classifier_config),
+            feature_metadata=deepcopy(feature_metadata),
+            feature_key=result.feature_key,
+            trained_at=result.trained_at,
+        )
+        self._model_snapshot_unavailable_reason = None
+
+    def _clear_model_snapshot(self, reason: str | None = None) -> None:
+        self._model_snapshot = None
+        self._model_snapshot_unavailable_reason = reason
+
+    def _validate_export_ready(self) -> None:
+        table = self._get_bound_table()
+        if table is None:
+            raise ValueError("Choose an annotation table before exporting a classifier.")
+        if self._selected_feature_key is None:
+            raise ValueError("Choose a feature matrix before exporting a classifier.")
+        if self.is_training:
+            raise ValueError("A classifier training job is currently running.")
+        if self._is_dirty:
+            raise ValueError("The classifier model is stale. Train it again before exporting.")
+        if self._model_snapshot is None:
+            if self._model_snapshot_unavailable_reason:
+                raise ValueError(f"Classifier export is unavailable because {self._model_snapshot_unavailable_reason}")
+            raise ValueError("No fitted classifier model is available to export. Train the classifier first.")
+
+        snapshot = self._model_snapshot
+        if self._selected_feature_key != snapshot.feature_key:
+            raise ValueError(
+                f"The selected feature matrix `{self._selected_feature_key}` does not match the fitted model "
+                f"feature matrix `{snapshot.feature_key}`."
+            )
+        current_feature_columns = normalize_feature_columns(_get_feature_metadata(table, snapshot.feature_key))
+        if current_feature_columns != snapshot.feature_columns:
+            raise ValueError(
+                "Current feature metadata no longer matches the fitted model snapshot. "
+                "Train the classifier again before exporting."
+            )
+        self._validate_feature_matrix_schema(table, snapshot.feature_key, snapshot.feature_columns)
+
+    def _validate_feature_matrix_schema(
+        self,
+        table: AnnData,
+        feature_key: str,
+        feature_columns: tuple[str, ...],
+    ) -> None:
+        try:
+            feature_matrix = _normalize_feature_matrix(table.obsm[feature_key], table.n_obs, copy=False)
+        except KeyError as error:
+            raise ValueError(f"Feature matrix `{feature_key}` is not available in `.obsm`.") from error
+
+        if int(feature_matrix.shape[1]) != len(feature_columns):
+            raise ValueError(
+                f"Feature matrix `{feature_key}` has {int(feature_matrix.shape[1])} column(s), but its metadata "
+                f"describes {len(feature_columns)} feature column(s)."
+            )
 
     def _get_bound_table(self) -> AnnData | None:
         if self._selected_spatialdata is None or self._selected_table_name is None:
@@ -1047,6 +1175,22 @@ def _normalize_scope_mode(scope_mode: ClassifierScopeMode | str) -> ClassifierSc
     if scope_mode in ("selected_segmentation_only", "all"):
         return scope_mode
     raise ValueError(f"Unsupported classifier scope mode: {scope_mode!r}")
+
+
+def _get_feature_metadata(table: AnnData, feature_key: str) -> dict[str, object]:
+    feature_matrices = table.uns.get(_FEATURE_MATRICES_KEY)
+    if not isinstance(feature_matrices, Mapping):
+        raise ValueError(
+            f"Feature matrix `{feature_key}` is missing Harpy metadata in `.uns[{_FEATURE_MATRICES_KEY!r}]`."
+        )
+
+    feature_metadata = feature_matrices.get(feature_key)
+    if not isinstance(feature_metadata, Mapping):
+        raise ValueError(
+            f"Feature matrix `{feature_key}` is missing Harpy metadata in "
+            f"`.uns[{_FEATURE_MATRICES_KEY!r}][{feature_key!r}]`."
+        )
+    return dict(feature_metadata)
 
 
 def _empty_resolved_classifier_scope(mode: ClassifierScopeMode) -> ResolvedClassifierScope:

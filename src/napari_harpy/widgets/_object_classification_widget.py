@@ -10,6 +10,7 @@ from qtpy.QtGui import QKeySequence, QPixmap, QShortcut
 from qtpy.QtWidgets import (
     QComboBox,
     QDialog,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
@@ -34,6 +35,7 @@ from napari_harpy._classifier import (
     ClassifierController,
     ClassifierScopeMode,
 )
+from napari_harpy._classifier_export import DEFAULT_CLASSIFIER_EXPORT_SUFFIX
 from napari_harpy._classifier_viewer_styling import (
     COLOR_BY_OPTIONS,
     COLOR_BY_PRED_CLASS,
@@ -270,6 +272,14 @@ class ObjectClassificationWidget(QWidget):
         self.retrain_button.setMinimumHeight(28)
         self.retrain_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
 
+        self.export_classifier_button = QPushButton("Export Classifier")
+        self.export_classifier_button.setObjectName("export_classifier_button")
+        self.export_classifier_button.clicked.connect(self._export_classifier)
+        self.export_classifier_button.setEnabled(False)
+        self.export_classifier_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.export_classifier_button.setMinimumHeight(28)
+        self.export_classifier_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
+
         self.sync_button = QPushButton("Write")
         self.sync_button.setObjectName("sync_to_zarr_button")
         self.sync_button.clicked.connect(self._write_to_zarr)
@@ -318,6 +328,7 @@ class ObjectClassificationWidget(QWidget):
         class_action_layout.addWidget(self.clear_class_button, 1)
         class_editor_layout.addWidget(self.class_action_row)
         retrain_action_layout.addWidget(self.retrain_button, 1)
+        retrain_action_layout.addWidget(self.export_classifier_button, 1)
         persistence_action_layout.addWidget(self.sync_button, 1)
         persistence_action_layout.addWidget(self.reload_button, 1)
         self._annotation_shortcuts = self._create_annotation_shortcuts()
@@ -1240,6 +1251,8 @@ class ObjectClassificationWidget(QWidget):
 
         can_retrain = self._classifier_controller.can_retrain
         self.retrain_button.setEnabled(can_retrain)
+        can_export = self._classifier_controller.can_export_classifier
+        self.export_classifier_button.setEnabled(can_export)
 
         if self.selected_spatialdata is None or self.selected_table_name is None:
             tooltip = "Choose a segmentation and annotation table to enable classifier training."
@@ -1258,6 +1271,16 @@ class ObjectClassificationWidget(QWidget):
             )
 
         self._set_tooltip(self.retrain_button, tooltip)
+
+        export_unavailable_reason = self._classifier_controller.classifier_export_unavailable_reason
+        if can_export:
+            export_tooltip = "Save the current fitted classifier and its feature schema to a joblib artifact."
+        elif export_unavailable_reason:
+            export_tooltip = export_unavailable_reason
+        else:
+            export_tooltip = "Train a classifier before exporting it."
+
+        self._set_tooltip(self.export_classifier_button, export_tooltip)
 
     def _prediction_scope_tooltip(self) -> str:
         if self.selected_prediction_scope == "all":
@@ -1468,6 +1491,49 @@ class ObjectClassificationWidget(QWidget):
         self._classifier_controller.retrain_now()
         self._update_selection_status()
 
+    def _export_classifier(self) -> None:
+        selected_path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Export Classifier",
+            str(self._default_classifier_export_path()),
+            "Harpy classifier (*.harpy-classifier.joblib);;Joblib files (*.joblib);;All files (*)",
+        )
+        if not selected_path:
+            return
+
+        path = self._normalize_classifier_export_path(Path(selected_path))
+        try:
+            bundle = self._classifier_controller.export_classifier(path)
+        except ValueError as error:
+            self._set_classifier_export_feedback(str(error), error=True)
+            self._update_classifier_controls()
+            return
+
+        self._set_classifier_export_feedback(
+            f"Exported classifier with {bundle.n_features} feature columns to `{path}`.",
+            error=False,
+        )
+        self._update_classifier_controls()
+
+    def _default_classifier_export_path(self) -> Path:
+        table_name = self.selected_table_name or "classifier"
+        feature_key = self.selected_feature_key or "features"
+        stem = f"{_sanitize_export_stem(table_name)}_{_sanitize_export_stem(feature_key)}"
+        return Path.cwd() / f"{stem}{DEFAULT_CLASSIFIER_EXPORT_SUFFIX}"
+
+    def _normalize_classifier_export_path(self, path: Path) -> Path:
+        if str(path).endswith(".joblib"):
+            return path
+        return path.with_name(f"{path.name}{DEFAULT_CLASSIFIER_EXPORT_SUFFIX}")
+
+    def _set_classifier_export_feedback(self, message: str, *, error: bool) -> None:
+        set_status_card(
+            self.classifier_feedback,
+            title="Classifier Export Error" if error else "Classifier Exported",
+            lines=[message],
+            kind="error" if error else "success",
+        )
+
     def _refresh_layer_styling(self) -> None:
         self._viewer_styling_controller.refresh()
 
@@ -1481,3 +1547,11 @@ class ObjectClassificationWidget(QWidget):
             return None if self.selected_spatialdata is None else self.selected_spatialdata.path
 
         return table_store_path
+
+
+def _sanitize_export_stem(value: str) -> str:
+    normalized = "".join(
+        character if character.isascii() and (character.isalnum() or character in ("-", "_")) else "_"
+        for character in value
+    )
+    return normalized.strip("_") or "classifier"
