@@ -577,7 +577,7 @@ class ObjectClassificationWidget(QWidget):
 
         self._apply_status_card_spec(self.classifier_preparation_status, None)
         self._set_annotation_feedback("")
-        self._set_classifier_feedback("")
+        self._apply_status_card_spec(self.classifier_feedback, None)
         self._set_persistence_feedback("")
 
     def _on_primary_labels_layers_changed(self) -> None:
@@ -1118,7 +1118,7 @@ class ObjectClassificationWidget(QWidget):
             tooltip_message=spec.tooltip_message,
         )
 
-    def _set_classifier_feedback(self, message: str, *, kind: StatusCardKind = "info") -> None:
+    def _update_classifier_feedback(self) -> None:
         is_visible = (
             self.selected_spatialdata is not None
             and self.selected_segmentation_name is not None
@@ -1128,8 +1128,8 @@ class ObjectClassificationWidget(QWidget):
         )
         spec = build_object_classification_classifier_feedback_card_spec(
             is_visible=is_visible,
-            message=message,
-            kind=kind,
+            message=self._classifier_controller.status_message,
+            kind=self._classifier_controller.status_kind,
         )
         self._apply_status_card_spec(self.classifier_feedback, spec)
 
@@ -1459,10 +1459,7 @@ class ObjectClassificationWidget(QWidget):
         self._update_persistence_controls()
 
     def _on_classifier_state_changed(self) -> None:
-        self._set_classifier_feedback(
-            self._classifier_controller.status_message,
-            kind=self._classifier_controller.status_kind,
-        )
+        self._update_classifier_feedback()
         self._refresh_layer_styling()
         self._update_classifier_controls()
 
