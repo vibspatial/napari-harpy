@@ -5,7 +5,7 @@ from typing import Literal
 
 from napari_harpy._annotation import UNLABELED_CLASS
 from napari_harpy._classifier import ClassifierPreparationSummary
-from napari_harpy.widgets._shared_styles import StatusCardKind
+from napari_harpy.widgets._shared_styles import StatusCardKind, format_feedback_identifier
 
 _LabelsLayerPreparationKind = Literal["none", "loaded", "activated", "error"]
 
@@ -159,10 +159,13 @@ def build_object_classification_classifier_preparation_card_spec(
         region for region in summary.prediction_scope.regions if region != selected_segmentation_name
     )
     kind: StatusCardKind = "warning" if not summary.eligible else "success"
+    feature_key_text, feature_key_shortened = format_feedback_identifier(selected_feature_key, max_length=32)
     lines = [
-        _format_training_line(summary),
-        _format_prediction_line(summary),
-        _format_feature_matrix_line(selected_feature_key, summary.n_features),
+        f"Training labels: {_format_count(summary.labeled_count, 'row')}",
+        f"Training regions: {_format_count(summary.training_region_count, 'region')}",
+        f"Prediction rows: {_format_count(summary.resolved_prediction_row_count, 'row')}",
+        f"Prediction scope: {_format_prediction_scope(summary)}",
+        _format_feature_matrix_line(feature_key_text, summary.n_features),
     ]
     if not summary.eligible and summary.reason:
         lines.append(summary.reason)
@@ -173,6 +176,7 @@ def build_object_classification_classifier_preparation_card_spec(
         title="Classifier Preparation",
         lines=tuple(lines),
         kind=kind,
+        tooltip_message=f"Feature matrix: {selected_feature_key}" if feature_key_shortened else None,
     )
 
 
@@ -211,27 +215,17 @@ def _format_labels_layer_preparation_line(result: _LabelsLayerPreparationResult)
     return f"{verb} segmentation `{result.label_name}` in coordinate system `{result.coordinate_system}`."
 
 
-def _format_training_line(summary: ClassifierPreparationSummary) -> str:
-    return (
-        f"Training: {_format_count(summary.labeled_count, 'labeled row')} "
-        f"across {_format_count(summary.training_region_count, 'region')}."
-    )
-
-
-def _format_prediction_line(summary: ClassifierPreparationSummary) -> str:
-    prediction_count = _format_count(summary.resolved_prediction_row_count, "eligible row")
+def _format_prediction_scope(summary: ClassifierPreparationSummary) -> str:
     region_count = len(summary.prediction_scope.regions)
     if summary.prediction_scope.mode == "selected_segmentation_only" and region_count <= 1:
-        scope_text = "in selected region"
-    else:
-        scope_text = f"across {_format_count(region_count, 'region')}"
-    return f"Prediction: {prediction_count} {scope_text}."
+        return "selected region"
+    return _format_count(region_count, "region")
 
 
 def _format_feature_matrix_line(feature_key: str, n_features: int | None) -> str:
     if n_features is None:
-        return f"Feature matrix: `{feature_key}`."
-    return f"Feature matrix: `{feature_key}`, {_format_count(n_features, 'feature')}."
+        return f"Features: `{feature_key}`"
+    return f"Features: `{feature_key}`, {_format_count(n_features, 'feature')}"
 
 
 def _format_count(count: int, singular: str, plural: str | None = None) -> str:

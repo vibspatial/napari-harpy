@@ -900,7 +900,8 @@ def test_widget_shows_classifier_preparation_hidden_write_notice_for_table_wide_
     widget.prediction_scope_combo.setCurrentIndex(widget.prediction_scope_combo.findData("all"))
 
     assert not widget.classifier_preparation_status.isHidden()
-    assert f"Prediction: {table.n_obs} eligible rows across 2 regions." in widget.classifier_preparation_status.text()
+    assert f"Prediction rows: {table.n_obs}" in widget.classifier_preparation_status.text()
+    assert "Prediction scope: 2 regions" in widget.classifier_preparation_status.text()
     assert "Some prediction updates may not be visible in the current selection." in (
         widget.classifier_preparation_status.text()
     )
@@ -921,7 +922,7 @@ def test_widget_omits_hidden_write_line_for_effectively_selected_prediction_scop
 
     assert widget.selected_prediction_scope == "all"
     assert not widget.classifier_preparation_status.isHidden()
-    assert "Prediction:" in widget.classifier_preparation_status.text()
+    assert "Prediction rows:" in widget.classifier_preparation_status.text()
     assert "Some prediction updates may not be visible" not in widget.classifier_preparation_status.text()
 
 
@@ -941,9 +942,11 @@ def test_widget_shows_eligible_classifier_preparation_summary(qtbot, sdata_blobs
 
     assert not widget.classifier_preparation_status.isHidden()
     preparation_text = widget.classifier_preparation_status.text()
-    assert "Training: 4 labeled rows across 1 region." in preparation_text
-    assert f"Prediction: {table.n_obs} eligible rows in selected region." in preparation_text
-    assert "Feature matrix: `features_1`, 4 features." in preparation_text
+    assert "Training labels: 4 rows" in preparation_text
+    assert "Training regions: 1 region" in preparation_text
+    assert f"Prediction rows: {table.n_obs} rows" in preparation_text
+    assert "Prediction scope: selected region" in preparation_text
+    assert "Features: `features_1`, 4 features" in preparation_text
     assert "Need at least" not in preparation_text
 
 
