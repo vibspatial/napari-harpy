@@ -741,7 +741,7 @@ Expected outcome:
 
 ### 8. Add a Rich Classifier Status Card UX
 
-Status: [ ] Planned
+Status: [x] Implemented
 
 Goal:
 

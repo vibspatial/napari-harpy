@@ -350,7 +350,9 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_bl
     assert "Choose a segmentation mask" in widget.selection_status.text()
     assert widget.validation_status.isHidden()
     assert widget.validation_status.text() == ""
-    assert "choose an annotation table and feature matrix." in widget.classifier_feedback.text()
+    assert widget.classifier_feedback.isHidden()
+    assert widget.classifier_preparation_status.isHidden()
+    assert widget.classifier_preparation_status.objectName() == "classifier_preparation_status"
 
 
 def test_widget_populates_segmentation_choices_from_shared_sdata_without_loaded_layer(
@@ -875,7 +877,7 @@ def test_widget_marks_classifier_dirty_when_prediction_scope_changes(
     assert mark_dirty_reasons == ["the prediction scope changed"]
 
 
-def test_widget_shows_hidden_write_warning_for_table_wide_prediction_scope(
+def test_widget_shows_classifier_preparation_hidden_write_warning_for_table_wide_prediction_scope(
     qtbot, sdata_blobs_multi_region: SpatialData
 ) -> None:
     layer = make_blobs_labels_layer(sdata_blobs_multi_region)
@@ -891,12 +893,14 @@ def test_widget_shows_hidden_write_warning_for_table_wide_prediction_scope(
     widget.prediction_scope_combo.setCurrentIndex(widget.prediction_scope_combo.findData("all"))
 
     table = sdata_blobs_multi_region["table_multi"]
-    assert not widget.prediction_scope_warning.isHidden()
-    assert f"Prediction scope covers {table.n_obs} row(s) across 2 region(s)." in widget.prediction_scope_warning.text()
-    assert "Some updates may not be visible in the current selection." in widget.prediction_scope_warning.text()
+    assert not widget.classifier_preparation_status.isHidden()
+    assert f"Prediction: {table.n_obs} eligible rows across 2 regions." in widget.classifier_preparation_status.text()
+    assert "Some prediction updates may not be visible in the current selection." in (
+        widget.classifier_preparation_status.text()
+    )
 
 
-def test_widget_hides_hidden_write_warning_for_effectively_selected_prediction_scope(
+def test_widget_omits_hidden_write_line_for_effectively_selected_prediction_scope(
     qtbot, sdata_blobs: SpatialData
 ) -> None:
     layer = make_blobs_labels_layer(sdata_blobs)
@@ -909,7 +913,31 @@ def test_widget_hides_hidden_write_warning_for_effectively_selected_prediction_s
     widget.prediction_scope_combo.setCurrentIndex(widget.prediction_scope_combo.findData("all"))
 
     assert widget.selected_prediction_scope == "all"
-    assert widget.prediction_scope_warning.isHidden()
+    assert not widget.classifier_preparation_status.isHidden()
+    assert "Prediction:" in widget.classifier_preparation_status.text()
+    assert "Some prediction updates may not be visible" not in widget.classifier_preparation_status.text()
+
+
+def test_widget_shows_eligible_classifier_preparation_summary(qtbot, sdata_blobs: SpatialData) -> None:
+    table = sdata_blobs["table"]
+    instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(
+        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
+        categories=[0, 1, 2],
+    )
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    assert not widget.classifier_preparation_status.isHidden()
+    preparation_text = widget.classifier_preparation_status.text()
+    assert "Training: 4 labeled rows across 1 region." in preparation_text
+    assert f"Prediction: {table.n_obs} eligible rows in selected region." in preparation_text
+    assert "Feature matrix: `features_1`, 4 features." in preparation_text
+    assert "Need at least" not in preparation_text
 
 
 def test_widget_refreshes_feature_matrix_selector_when_first_key_is_written(qtbot, sdata_blobs: SpatialData) -> None:
