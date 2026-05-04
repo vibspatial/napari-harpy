@@ -269,30 +269,12 @@ class PersistenceController:
 
     def write_table_state(self) -> str:
         """Write the current table annotation state back to the backed zarr store."""
-        # TODO: We mutate the backed Zarr store directly here via `write_elem(...)`.
-        # If this path is expected to point to an existing store, prefer `mode="r+"`
-        # over `"a"` so we fail fast instead of accidentally creating a new store.
-        # After the writes, we should likely call
-        # `zarr.consolidate_metadata(self.selected_store_path)` so future readers do
-        # not see stale consolidated metadata.
-        # also, we probably want to open the top level zarr group of the spatialdata store.
-        # E.g. do something like this:
-        # root = zarr.open_group(sdata.path, mode="r+", use_consolidated=False)
-        # table_group = root["tables"][target_table_layer]
-        # write_elem(table_group["obsm"], feature_key, matrix)
-
-        # uns_group = table_group["uns"]
-        # if _HARPY_FEATURE_MATRICES_KEY not in uns_group:
-        #    write_elem(uns_group, _HARPY_FEATURE_MATRICES_KEY, {})
-        # write_elem(uns_group[_HARPY_FEATURE_MATRICES_KEY], feature_key, metadata)
-        # zarr.consolidate_metadata(sdata.path)
-
         sdata = self._require_selected_spatialdata()
         table_name = self._require_selected_table_name()
         table = get_table(sdata, table_name)
         table_path = self._resolve_table_path(sdata, table, table_name)
 
-        root = zarr.open_group(self.selected_store_path, mode="a", use_consolidated=False)
+        root = zarr.open_group(sdata.path, mode="r+", use_consolidated=False)
         table_group = root[table_path]
         ad.io.write_elem(table_group, "obs", table.obs)
         if USER_CLASS_COLORS_KEY in table.uns:
