@@ -66,6 +66,7 @@ class ClassifierExportBundle:
     n_features: int
     class_labels_seen: tuple[int, ...]
     rf_params: dict[str, object]
+    source_classifier_config: dict[str, object]
     source_table_name: str
     source_training_scope: str
     source_training_regions: tuple[str, ...]
@@ -98,6 +99,63 @@ The important invariant is:
 > The bundle stores the exact fitted estimator and the exact feature schema it
 > expects. Any headless apply path must verify that the target feature matrix has
 > the same number and order of feature columns before predicting.
+
+### Source Metadata and Drift Prevention
+
+The classifier export should combine two metadata sources from the selected
+table, but neither source should be treated as a live link after export:
+
+- `table.uns["classifier_config"]` is UI/training audit metadata. It records the
+  feature key, table name, class labels, training/prediction scopes, row counts,
+  random-forest params, and training timestamp. It does not currently store
+  `feature_columns`.
+- `table.uns["feature_matrices"][feature_key]` is Harpy feature-schema metadata.
+  It records `features`, `feature_columns`, `source_label`, `source_image`,
+  `coordinate_system`, dtype/backend metadata, and the feature-matrix schema
+  version.
+
+For export, `table.uns["feature_matrices"][feature_key]` should be the source of
+truth for `feature_columns` and `feature_names`. Export should fail if this
+metadata is missing or if `feature_columns` does not match the selected
+`.obsm[feature_key]` column count. A classifier that only knows `n_features` is
+not safe to reuse headlessly, because column identity and order matter.
+
+To avoid metadata drift, do not build the export by casually rereading whatever
+is in `.uns` at save time. Instead, create an in-memory snapshot when training
+succeeds:
+
+```python
+@dataclass(frozen=True)
+class ClassifierModelSnapshot:
+    estimator: RandomForestClassifier
+    classifier_config: dict[str, object]
+    feature_metadata: dict[str, object]
+    feature_columns: tuple[str, ...]
+    feature_key: str
+    trained_at: str
+```
+
+The snapshot should be built from the same successful worker result that writes
+`table.uns["classifier_config"]`, plus the current
+`table.uns["feature_matrices"][feature_key]` entry. Export then uses this
+snapshot as its source of truth.
+
+Before writing an artifact, validate that the current table still matches the
+snapshot:
+
+- selected `feature_key` equals `snapshot.feature_key`;
+- current `.obsm[feature_key]` exists and has `len(snapshot.feature_columns)`
+  columns;
+- current `table.uns["feature_matrices"][feature_key]["feature_columns"]` equals
+  `snapshot.feature_columns`;
+- the controller is not dirty;
+- no training job is active.
+
+If any of these checks fail, export should refuse with a clear stale-model or
+metadata-mismatch message. After reloading a table from zarr we may have
+predictions and `classifier_config`, but we no longer have the fitted estimator
+snapshot; export should remain unavailable until the user trains again in the
+UI. This prevents exporting metadata-only "ghost models".
 
 ### Feature Recipe Versus Target Mapping
 
@@ -137,17 +195,21 @@ Status: [ ] Not started
 
 - add a new module, likely `src/napari_harpy/_classifier_export.py`, containing:
   - `ClassifierExportBundle`;
+  - `ClassifierModelSnapshot`;
   - `build_classifier_export_bundle(...)`;
   - `write_classifier_export_bundle(path, bundle)`;
   - `read_classifier_export_bundle(path)`;
-- store the fitted estimator in the controller after training:
+- store a fitted model snapshot in the controller after training:
   - change `ClassifierJobResult` to carry the fitted estimator, or add a
     dedicated worker result field such as `estimator`;
-  - set `self._trained_classifier` or `self._latest_exportable_classifier` in
-    `_on_worker_returned(...)`;
-  - clear that stored estimator whenever the classifier becomes dirty, inputs
-    change, training starts, training fails, reload happens, or feature matrices
-    are overwritten;
+  - build `source_classifier_config` with `_build_classifier_config(...)`;
+  - read `source_feature_metadata` from
+    `table.uns["feature_matrices"][feature_key]`;
+  - normalize and validate `feature_columns` from that feature metadata;
+  - set `self._model_snapshot` in `_on_worker_returned(...)`;
+  - clear that snapshot whenever the classifier becomes dirty, inputs change,
+    training starts, training fails, reload happens, or feature matrices are
+    overwritten;
 - expose a controller method such as:
 
 ```python
@@ -160,6 +222,7 @@ def export_classifier(self, path: str | Path) -> ClassifierExportBundle:
   - the classifier is dirty/stale;
   - a training job is running;
   - the selected feature matrix metadata is missing or incompatible;
+  - current table metadata no longer matches the stored model snapshot;
 - add an `Export Classifier` button to the Object Classification widget near
   `Train Classifier`;
 - use `QFileDialog.getSaveFileName(...)` with a default extension such as
@@ -177,12 +240,16 @@ def export_classifier(self, path: str | Path) -> ClassifierExportBundle:
 - controller exports after a successful train and the artifact reloads with:
   - a usable estimator;
   - matching feature count;
+  - matching feature columns and feature names from
+    `table.uns["feature_matrices"][feature_key]`;
   - matching class labels;
-  - source training/prediction scope metadata;
-  - source feature-matrix metadata;
+  - `source_classifier_config`;
+  - `source_feature_metadata`;
 - export is disabled or raises when the model is dirty;
 - export is disabled or raises while training is active;
 - export is cleared after feature matrix overwrite or reload;
+- export refuses if current feature metadata has drifted from the stored model
+  snapshot;
 - widget test covers button enabled state and a mocked save dialog path;
 - round-trip artifact can predict the same classes as the in-memory estimator
   on the same feature matrix.
