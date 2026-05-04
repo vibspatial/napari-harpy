@@ -230,6 +230,9 @@ class ClassifierController:
         self._active_worker_job_id: int | None = None
         self._active_worker: Any | None = None
         self._active_job: ClassifierJob | None = None
+        # A snapshot exists only when there is an exportable fitted model.
+        # Reasons for missing export state stay separate so the snapshot type
+        # never has to represent both success and failure.
         self._model_snapshot: ClassifierModelSnapshot | None = None
         self._model_snapshot_unavailable_reason: str | None = None
         self._is_dirty = False
