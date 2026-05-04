@@ -835,11 +835,11 @@ Feature matrix: features_1, 12 features.
 
 - use `success` for eligible classifier preparation;
 - use `warning` when preparation is ineligible and include `summary.reason`;
-- fold the existing table-wide hidden-write warning into the classifier
+- fold the existing table-wide hidden-write notice into the classifier
   preparation card rather than keeping a separate `prediction_scope_warning`
   card;
 - when table-wide prediction covers regions beyond the selected segmentation,
-  keep the preparation card in `warning` state and include a line explaining that
+  keep the preparation card in `success` state and include a line explaining that
   some prediction updates may not be visible in the current selection;
 - keep the existing `classifier_feedback` card for transient run-time events
   such as training started, training failed, model stale, and model up to date;
@@ -853,7 +853,7 @@ Feature matrix: features_1, 12 features.
   - hidden classifier preparation card while setup blockers are still active;
   - eligible classifier preparation lines;
   - ineligible classifier preparation reason;
-  - table-wide hidden-write warning folded into the preparation card;
+  - table-wide hidden-write notice folded into the preparation card;
   - transient classifier feedback remaining separate from preparation context.
 
 Files:

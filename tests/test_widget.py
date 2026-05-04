@@ -877,9 +877,16 @@ def test_widget_marks_classifier_dirty_when_prediction_scope_changes(
     assert mark_dirty_reasons == ["the prediction scope changed"]
 
 
-def test_widget_shows_classifier_preparation_hidden_write_warning_for_table_wide_prediction_scope(
+def test_widget_shows_classifier_preparation_hidden_write_notice_for_table_wide_prediction_scope(
     qtbot, sdata_blobs_multi_region: SpatialData
 ) -> None:
+    table = sdata_blobs_multi_region["table_multi"]
+    region_values = table.obs["region"].astype("string")
+    instance_values = table.obs["instance_id"].to_numpy(dtype=np.int64)
+    class_values = np.zeros(table.n_obs, dtype=np.int64)
+    class_values[(region_values == "blobs_labels").to_numpy() & np.isin(instance_values, [1, 2])] = 1
+    class_values[(region_values == "blobs_labels").to_numpy() & np.isin(instance_values, [24, 25])] = 2
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(class_values, categories=[0, 1, 2])
     layer = make_blobs_labels_layer(sdata_blobs_multi_region)
     viewer = DummyViewer(layers=[layer])
 
@@ -892,12 +899,12 @@ def test_widget_shows_classifier_preparation_hidden_write_warning_for_table_wide
 
     widget.prediction_scope_combo.setCurrentIndex(widget.prediction_scope_combo.findData("all"))
 
-    table = sdata_blobs_multi_region["table_multi"]
     assert not widget.classifier_preparation_status.isHidden()
     assert f"Prediction: {table.n_obs} eligible rows across 2 regions." in widget.classifier_preparation_status.text()
     assert "Some prediction updates may not be visible in the current selection." in (
         widget.classifier_preparation_status.text()
     )
+    assert "color: #047857" in widget.classifier_preparation_status.styleSheet()
 
 
 def test_widget_omits_hidden_write_line_for_effectively_selected_prediction_scope(

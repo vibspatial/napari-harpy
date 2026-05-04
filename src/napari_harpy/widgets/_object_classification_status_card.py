@@ -158,7 +158,7 @@ def build_object_classification_classifier_preparation_card_spec(
     hidden_prediction_regions = tuple(
         region for region in summary.prediction_scope.regions if region != selected_segmentation_name
     )
-    kind: StatusCardKind = "warning" if hidden_prediction_regions or not summary.eligible else "success"
+    kind: StatusCardKind = "warning" if not summary.eligible else "success"
     lines = [
         _format_training_line(summary),
         _format_prediction_line(summary),
