@@ -58,18 +58,45 @@ class ClassifierExportBundle:
     created_at: str
     napari_harpy_version: str | None
     sklearn_version: str | None
-    model_type: str
     estimator: RandomForestClassifier
-    feature_key: str
-    class_labels_seen: tuple[int, ...]
-    rf_params: dict[str, object]
     source_classifier_config: dict[str, object]
-    source_table_name: str
-    source_training_scope: str
-    source_training_regions: tuple[str, ...]
-    source_prediction_scope: str
-    source_prediction_regions: tuple[str, ...]
     source_feature_metadata: dict[str, object]
+
+    @property
+    def model_type(self) -> str:
+        return normalize_required_str(self.source_classifier_config, "model_type")
+
+    @property
+    def feature_key(self) -> str:
+        return normalize_required_str(self.source_classifier_config, "feature_key")
+
+    @property
+    def source_table_name(self) -> str:
+        return normalize_required_str(self.source_classifier_config, "table_name")
+
+    @property
+    def class_labels_seen(self) -> tuple[int, ...]:
+        return normalize_int_tuple(self.source_classifier_config, "class_labels_seen")
+
+    @property
+    def rf_params(self) -> dict[str, object]:
+        return normalize_mapping(self.source_classifier_config, "rf_params")
+
+    @property
+    def source_training_scope(self) -> str:
+        return normalize_required_str(self.source_classifier_config, "training_scope")
+
+    @property
+    def source_training_regions(self) -> tuple[str, ...]:
+        return normalize_str_tuple(self.source_classifier_config, "training_regions")
+
+    @property
+    def source_prediction_scope(self) -> str:
+        return normalize_required_str(self.source_classifier_config, "prediction_scope")
+
+    @property
+    def source_prediction_regions(self) -> tuple[str, ...]:
+        return normalize_str_tuple(self.source_classifier_config, "prediction_regions")
 
     @property
     def feature_columns(self) -> tuple[str, ...]:
@@ -108,6 +135,12 @@ The important invariant is:
 > The bundle stores the exact fitted estimator and the exact feature schema it
 > expects. Any headless apply path must verify that the target feature matrix has
 > the same number and order of feature columns before predicting.
+
+Only export-level values (`schema_version`, `created_at`, package versions, and
+the estimator) plus the two source metadata snapshots should be serialized as
+top-level bundle fields. Values already present in `source_classifier_config` or
+`source_feature_metadata` should be exposed as properties instead of stored
+again.
 
 ### Source Metadata and Drift Prevention
 
