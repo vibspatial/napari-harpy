@@ -90,36 +90,25 @@ def apply_classifier(
     feature_valid_row_mask = _get_finite_feature_row_mask(feature_matrix)
     valid_in_scope_mask = feature_valid_row_mask[raw_prediction_positions]
     prediction_positions = np.asarray(raw_prediction_positions[valid_in_scope_mask], dtype=np.int64)
-    skipped_positions = np.asarray(raw_prediction_positions[~valid_in_scope_mask], dtype=np.int64)
 
-    _clear_predictions_for_row_positions(
-        table,
-        raw_prediction_positions,
-        pred_class_column=resolved_pred_class_column,
-        pred_confidence_column=resolved_pred_confidence_column,
-    )
     if prediction_positions.size:
         predict_features = feature_matrix[prediction_positions]
         pred_classes, pred_confidences = _predict_classifier(bundle, predict_features)
-        _set_predictions_for_prediction_rows(
-            table,
-            prediction_positions,
-            pred_classes,
-            pred_confidences,
-            pred_class_column=resolved_pred_class_column,
-            pred_confidence_column=resolved_pred_confidence_column,
-        )
+    else:
+        pred_classes = np.array([], dtype=np.int64)
+        pred_confidences = np.array([], dtype=np.float64)
 
-    applied_at = datetime.now(UTC).isoformat()
-    result = ClassifierApplyResult(
+    result = _write_classifier_predictions(
+        table,
         table_name=resolved_table_name,
         feature_key=resolved_feature_key,
         prediction_regions=resolved_prediction_regions,
-        n_predicted_rows=int(prediction_positions.size),
-        n_skipped_feature_invalid_rows=int(skipped_positions.size),
+        raw_prediction_table_row_positions=raw_prediction_positions,
+        prediction_table_row_positions=prediction_positions,
+        pred_classes=pred_classes,
+        pred_confidences=pred_confidences,
         pred_class_column=resolved_pred_class_column,
         pred_confidence_column=resolved_pred_confidence_column,
-        applied_at=applied_at,
     )
     table.uns[CLASSIFIER_APPLY_CONFIG_KEY] = _build_classifier_apply_config(
         bundle,
@@ -127,6 +116,49 @@ def apply_classifier(
         classifier_path=classifier_path,
     )
     return result
+
+
+def _write_classifier_predictions(
+    table: AnnData,
+    *,
+    table_name: str,
+    feature_key: str,
+    prediction_regions: tuple[str, ...],
+    raw_prediction_table_row_positions: TableRowPositions,
+    prediction_table_row_positions: TableRowPositions,
+    pred_classes: np.ndarray,
+    pred_confidences: np.ndarray,
+    pred_class_column: str = PRED_CLASS_COLUMN,
+    pred_confidence_column: str = PRED_CONFIDENCE_COLUMN,
+) -> ClassifierApplyResult:
+    _clear_predictions_for_row_positions(
+        table,
+        raw_prediction_table_row_positions,
+        pred_class_column=pred_class_column,
+        pred_confidence_column=pred_confidence_column,
+    )
+    if prediction_table_row_positions.size:
+        _set_predictions_for_prediction_rows(
+            table,
+            prediction_table_row_positions,
+            pred_classes,
+            pred_confidences,
+            pred_class_column=pred_class_column,
+            pred_confidence_column=pred_confidence_column,
+        )
+
+    return ClassifierApplyResult(
+        table_name=table_name,
+        feature_key=feature_key,
+        prediction_regions=prediction_regions,
+        n_predicted_rows=int(prediction_table_row_positions.size),
+        n_skipped_feature_invalid_rows=int(
+            raw_prediction_table_row_positions.size - prediction_table_row_positions.size
+        ),
+        pred_class_column=pred_class_column,
+        pred_confidence_column=pred_confidence_column,
+        applied_at=datetime.now(UTC).isoformat(),
+    )
 
 
 def _validate_feature_matrix_compatible_with_bundle(

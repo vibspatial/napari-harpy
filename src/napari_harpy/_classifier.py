@@ -729,13 +729,7 @@ class ClassifierController:
             return
 
         self._ensure_prediction_columns(table)
-        self._clear_predictions_for_prediction_regions(table, result.prediction_scope.regions)
-        self._set_predictions_for_prediction_rows(
-            table,
-            result.prediction_scope.table_row_positions,
-            result.pred_classes,
-            result.pred_confidences,
-        )
+        apply_result = self._write_classifier_predictions_for_result(table, result)
         classifier_config = self._build_classifier_config(
             feature_key=result.feature_key,
             table_name=result.table_name,
@@ -748,7 +742,7 @@ class ClassifierController:
         self._notify_table_state_changed()
         self._is_dirty = False
         self._set_status(
-            f"Classifier: model is up to date. Updated predictions for {result.summary.resolved_prediction_row_count} objects.",
+            f"Classifier: model is up to date. Updated predictions for {apply_result.n_predicted_rows} objects.",
             kind="success",
         )
 
@@ -905,18 +899,28 @@ class ClassifierController:
     def _ensure_prediction_columns(self, table: AnnData) -> None:
         _classifier_core._ensure_prediction_columns(table)
 
-    def _set_predictions_for_prediction_rows(
+    def _write_classifier_predictions_for_result(
         self,
         table: AnnData,
-        prediction_table_row_positions: TableRowPositions,
-        pred_classes: np.ndarray,
-        pred_confidences: np.ndarray,
-    ) -> None:
-        _classifier_core._set_predictions_for_prediction_rows(
+        result: ClassifierJobResult,
+    ) -> _classifier_core.ClassifierApplyResult:
+        raw_prediction_table_row_positions = result.prediction_scope.table_row_positions
+        if self._selected_table_metadata is not None:
+            raw_prediction_table_row_positions = _resolve_region_row_positions(
+                table.obs,
+                self._selected_table_metadata.region_key,
+                result.prediction_scope.regions,
+            )
+
+        return _classifier_core._write_classifier_predictions(
             table,
-            prediction_table_row_positions,
-            pred_classes,
-            pred_confidences,
+            table_name=result.table_name,
+            feature_key=result.feature_key,
+            prediction_regions=result.prediction_scope.regions,
+            raw_prediction_table_row_positions=raw_prediction_table_row_positions,
+            prediction_table_row_positions=result.prediction_scope.table_row_positions,
+            pred_classes=result.pred_classes,
+            pred_confidences=result.pred_confidences,
         )
 
     def _clear_predictions_for_prediction_regions(
