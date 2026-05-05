@@ -28,7 +28,40 @@ def apply_classifier(
     pred_confidence_column: str = "pred_confidence",
     classifier_path: str | Path | None = None,
 ) -> ClassifierApplyResult:
-    """Apply an exported classifier bundle to an existing compatible feature matrix."""
+    """Apply an exported classifier bundle to an existing feature matrix.
+
+    The target table must already contain a compatible feature matrix in
+    `.obsm`. When `feature_key` is omitted, the source feature key stored in the
+    bundle is used. Predictions are written in place to `table.obs` using
+    `pred_class_column` and `pred_confidence_column`, and apply provenance is
+    recorded in `table.uns["classifier_apply_config"]`.
+
+    Parameters
+    ----------
+    sdata
+        SpatialData object containing the target table.
+    bundle
+        Classifier export bundle returned by `load_classifier(...)` or
+        `ClassifierController.export_classifier(...)`.
+    table_name
+        Name of the target annotation table in `sdata`.
+    feature_key
+        Key in `table.obsm` for the target feature matrix. If omitted, the
+        bundle's source feature key is used.
+    prediction_regions
+        Optional table regions to classify. If omitted, all regions declared in
+        the table metadata are classified.
+    pred_class_column
+        Column in `table.obs` that will receive predicted class labels.
+    pred_confidence_column
+        Column in `table.obs` that will receive prediction confidences.
+    classifier_path
+        Optional artifact path to record in `classifier_apply_config`; this
+        does not affect prediction.
+
+    The returned `ClassifierApplyResult` summarizes the rows that were written
+    and any in-scope rows skipped because of invalid feature values.
+    """
     return _apply_classifier(
         sdata,
         bundle,
@@ -51,7 +84,13 @@ def apply_classifier_from_path(
     pred_class_column: str = "pred_class",
     pred_confidence_column: str = "pred_confidence",
 ) -> ClassifierApplyResult:
-    """Load a classifier artifact from disk and apply it to an existing feature matrix."""
+    """Load a classifier artifact from disk and apply it to an existing feature matrix.
+
+    This is a convenience wrapper around `load_classifier(...)` and
+    `apply_classifier(...)`. The artifact path is passed through as
+    `classifier_path`, so it is recorded in
+    `table.uns["classifier_apply_config"]`.
+    """
     bundle = load_classifier(path)
     return apply_classifier(
         sdata,
