@@ -517,7 +517,7 @@ training-time config. Target/apply facts should stay as top-level fields in
 
 ## 3. Reuse Classifier Core in the Widget Path
 
-Status: [ ] Not started
+Status: [x] Implemented
 
 This cleanup slice should route the interactive classifier's prediction-writing
 path through the same Qt-free core introduced for headless apply.

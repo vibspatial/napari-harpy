@@ -1026,14 +1026,14 @@ def test_widget_invalidates_classifier_when_selected_feature_matrix_is_overwritt
     training_scope = classifier_module.ResolvedClassifierScope(
         mode="selected_segmentation_only",
         regions=("blobs_labels",),
+        raw_table_row_positions=np.array([0, 1], dtype=np.int64),
         table_row_positions=np.array([0, 1], dtype=np.int64),
-        n_rows_in_regions=2,
     )
     prediction_scope = classifier_module.ResolvedClassifierScope(
         mode="selected_segmentation_only",
         regions=("blobs_labels",),
+        raw_table_row_positions=np.array([0, 1], dtype=np.int64),
         table_row_positions=np.array([0, 1], dtype=np.int64),
-        n_rows_in_regions=2,
     )
     worker = _DeferredWorker(
         classifier_module.ClassifierJobResult(

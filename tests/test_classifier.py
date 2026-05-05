@@ -124,11 +124,14 @@ def _resolved_scope(
     n_rows_in_regions: int | None = None,
 ) -> classifier_module.ResolvedClassifierScope:
     table_row_positions = np.asarray(positions, dtype=np.int64)
+    raw_table_row_positions = table_row_positions
+    if n_rows_in_regions is not None and n_rows_in_regions != table_row_positions.size:
+        raw_table_row_positions = np.arange(n_rows_in_regions, dtype=np.int64)
     return classifier_module.ResolvedClassifierScope(
         mode=mode,
         regions=(label_name,) if regions is None else regions,
+        raw_table_row_positions=raw_table_row_positions,
         table_row_positions=table_row_positions,
-        n_rows_in_regions=int(table_row_positions.size if n_rows_in_regions is None else n_rows_in_regions),
     )
 
 

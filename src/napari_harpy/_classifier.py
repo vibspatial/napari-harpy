@@ -72,16 +72,20 @@ class ResolvedClassifierScope:
     """Resolved classifier scope for one training or prediction selection.
 
     ``regions`` is the resolved semantic scope requested by the user, expressed
-    as table region names. ``n_rows_in_regions`` is the raw number of table rows
-    whose region key belongs to those regions, before feature-validity filtering.
+    as table region names. ``raw_table_row_positions`` contains all original
+    table row positions in those regions, before feature-validity filtering.
     ``table_row_positions`` contains the original table row positions that are
     both in those regions and usable for the selected feature matrix.
     """
 
     mode: ClassifierScopeMode
     regions: tuple[str, ...]
+    raw_table_row_positions: TableRowPositions
     table_row_positions: TableRowPositions
-    n_rows_in_regions: int
+
+    @property
+    def n_rows_in_regions(self) -> int:
+        return int(self.raw_table_row_positions.size)
 
     @property
     def n_eligible_rows(self) -> int:
@@ -89,7 +93,7 @@ class ResolvedClassifierScope:
 
     @property
     def n_excluded_feature_invalid_rows(self) -> int:
-        return self.n_rows_in_regions - int(self.table_row_positions.size)
+        return self.n_rows_in_regions - self.n_eligible_rows
 
 
 @dataclass(frozen=True)
@@ -904,20 +908,12 @@ class ClassifierController:
         table: AnnData,
         result: ClassifierJobResult,
     ) -> _classifier_core.ClassifierApplyResult:
-        raw_prediction_table_row_positions = result.prediction_scope.table_row_positions
-        if self._selected_table_metadata is not None:
-            raw_prediction_table_row_positions = _resolve_region_row_positions(
-                table.obs,
-                self._selected_table_metadata.region_key,
-                result.prediction_scope.regions,
-            )
-
         return _classifier_core._write_classifier_predictions(
             table,
             table_name=result.table_name,
             feature_key=result.feature_key,
             prediction_regions=result.prediction_scope.regions,
-            raw_prediction_table_row_positions=raw_prediction_table_row_positions,
+            raw_prediction_table_row_positions=result.prediction_scope.raw_table_row_positions,
             prediction_table_row_positions=result.prediction_scope.table_row_positions,
             pred_classes=result.pred_classes,
             pred_confidences=result.pred_confidences,
@@ -1101,8 +1097,8 @@ class ClassifierController:
             return ResolvedClassifierScope(
                 mode=scope_mode,
                 regions=regions,
+                raw_table_row_positions=raw_table_row_positions,
                 table_row_positions=table_row_positions,
-                n_rows_in_regions=int(raw_table_row_positions.size),
             )
 
         return ResolvedClassifierScopes(
@@ -1121,8 +1117,8 @@ def _empty_resolved_classifier_scope(mode: ClassifierScopeMode) -> ResolvedClass
     return ResolvedClassifierScope(
         mode=mode,
         regions=(),
+        raw_table_row_positions=np.array([], dtype=np.int64),
         table_row_positions=np.array([], dtype=np.int64),
-        n_rows_in_regions=0,
     )
 
 
