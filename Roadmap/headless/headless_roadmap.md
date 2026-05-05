@@ -333,8 +333,8 @@ def apply_classifier(
     table_name: str,
     feature_key: str | None = None,
     prediction_regions: Sequence[str] | None = None,
-    output_pred_class_column: str = "pred_class",
-    output_pred_confidence_column: str = "pred_confidence",
+    pred_class_column: str = "pred_class",
+    pred_confidence_column: str = "pred_confidence",
     classifier_path: str | Path | None = None,
 ) -> ClassifierApplyResult:
     ...
@@ -346,8 +346,8 @@ def apply_classifier_from_path(
     table_name: str,
     feature_key: str | None = None,
     prediction_regions: Sequence[str] | None = None,
-    output_pred_class_column: str = "pred_class",
-    output_pred_confidence_column: str = "pred_confidence",
+    pred_class_column: str = "pred_class",
+    pred_confidence_column: str = "pred_confidence",
 ) -> ClassifierApplyResult:
     bundle = load_classifier(path)
     return apply_classifier(
@@ -356,8 +356,8 @@ def apply_classifier_from_path(
         table_name=table_name,
         feature_key=feature_key,
         prediction_regions=prediction_regions,
-        output_pred_class_column=output_pred_class_column,
-        output_pred_confidence_column=output_pred_confidence_column,
+        pred_class_column=pred_class_column,
+        pred_confidence_column=pred_confidence_column,
         classifier_path=path,
     )
 ```
@@ -397,8 +397,8 @@ table.uns["classifier_apply_config"] = {
     "prediction_regions": list(resolved_prediction_regions),
     "n_predicted_rows": result.n_predicted_rows,
     "n_skipped_feature_invalid_rows": result.n_skipped_feature_invalid_rows,
-    "output_pred_class_column": output_pred_class_column,
-    "output_pred_confidence_column": output_pred_confidence_column,
+    "pred_class_column": pred_class_column,
+    "pred_confidence_column": pred_confidence_column,
 }
 ```
 
@@ -477,14 +477,14 @@ training-time config. Target/apply facts should stay as top-level fields in
        prediction_regions: tuple[str, ...]
        n_predicted_rows: int
        n_skipped_feature_invalid_rows: int
-       output_pred_class_column: str
-       output_pred_confidence_column: str
+       pred_class_column: str
+       pred_confidence_column: str
        applied_at: str
    ```
 
    The result is a receipt for what was written to the table. Prediction arrays
-   should remain in `table.obs[output_pred_class_column]` and
-   `table.obs[output_pred_confidence_column]`, not in the result object.
+   should remain in `table.obs[pred_class_column]` and
+   `table.obs[pred_confidence_column]`, not in the result object.
 
 ### Tests
 
