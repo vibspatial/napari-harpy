@@ -584,6 +584,20 @@ def apply_classifier_with_features(
 
 Implementation rules:
 
+- add a Qt-free feature extraction core before wiring the public headless API:
+  - create `src/napari_harpy/_feature_extraction_core.py`;
+  - move/re-export `FeatureExtractionTriplet` and
+    `FeatureExtractionChannel` there;
+  - move/re-export the Harpy parameter helpers used by
+    `_run_feature_extraction_job(...)`:
+    - `_requires_image`;
+    - `_resolve_harpy_labels_name_parameter`;
+    - `_resolve_harpy_image_name_parameter`;
+    - `_resolve_harpy_channel_parameter`;
+    - `_resolve_harpy_coordinate_system_parameter`;
+  - update `_feature_extraction.py` to import those definitions from the core
+    module, so the widget keeps the same behavior while `headless.py` avoids
+    importing `thread_worker`, napari, or Qt;
 - reuse `FeatureExtractionTriplet` and the same Harpy parameter resolution logic
   used by `_run_feature_extraction_job(...)`;
 - call `hp.tb.add_feature_matrix(...)` with:
