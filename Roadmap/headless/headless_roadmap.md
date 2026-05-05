@@ -579,7 +579,7 @@ def compute_features_for_classifier(
 ) -> HeadlessFeatureTarget:
     ...
 
-def apply_classifier_with_features(
+def apply_classifier_with_feature_extraction(
     sdata: SpatialData,
     bundle: ClassifierExportBundle,
     *,
@@ -591,7 +591,7 @@ def apply_classifier_with_features(
 ) -> ClassifierApplyResult:
     ...
 
-def apply_classifier_with_features_from_path(
+def apply_classifier_with_feature_extraction_from_path(
     sdata: SpatialData,
     path: str | Path,
     *,
@@ -601,7 +601,7 @@ def apply_classifier_with_features_from_path(
     pred_confidence_column: str = "pred_confidence",
 ) -> ClassifierApplyResult:
     bundle = load_classifier(path)
-    return apply_classifier_with_features(
+    return apply_classifier_with_feature_extraction(
         sdata,
         bundle,
         target=target,

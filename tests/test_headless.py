@@ -317,7 +317,7 @@ def test_compute_features_for_classifier_returns_normalized_target(
     assert captured_kwargs["overwrite_feature_key"] is True
 
 
-def test_apply_classifier_with_features_writes_predictions(
+def test_apply_classifier_with_feature_extraction_writes_predictions(
     monkeypatch: pytest.MonkeyPatch,
     sdata_blobs: SpatialData,
 ) -> None:
@@ -326,7 +326,7 @@ def test_apply_classifier_with_features_writes_predictions(
     bundle = _make_classifier_bundle(sdata_blobs)
     _install_fake_feature_extraction(monkeypatch)
 
-    result = headless.apply_classifier_with_features(
+    result = headless.apply_classifier_with_feature_extraction(
         sdata_blobs,
         bundle,
         target=headless.HeadlessFeatureTarget(
@@ -346,7 +346,7 @@ def test_apply_classifier_with_features_writes_predictions(
     assert table.uns[CLASSIFIER_APPLY_CONFIG_KEY]["feature_key"] == "computed_features"
 
 
-def test_apply_classifier_with_features_rejects_incompatible_feature_columns(
+def test_apply_classifier_with_feature_extraction_rejects_incompatible_feature_columns(
     monkeypatch: pytest.MonkeyPatch,
     sdata_blobs: SpatialData,
 ) -> None:
@@ -356,7 +356,7 @@ def test_apply_classifier_with_features_rejects_incompatible_feature_columns(
     _install_fake_feature_extraction(monkeypatch, feature_columns=("instance_fraction", "is_large"))
 
     with pytest.raises(ValueError, match="do not match"):
-        headless.apply_classifier_with_features(
+        headless.apply_classifier_with_feature_extraction(
             sdata_blobs,
             bundle,
             target=headless.HeadlessFeatureTarget(
@@ -411,7 +411,7 @@ def test_apply_classifier_from_path_persists_backed_prediction_state(
     assert config["pred_confidence_column"] == "headless_confidence"
 
 
-def test_apply_classifier_with_features_from_path_persists_backed_feature_and_prediction_state(
+def test_apply_classifier_with_feature_extraction_from_path_persists_backed_feature_and_prediction_state(
     tmp_path: Path,
     backed_sdata_blobs: SpatialData,
 ) -> None:
@@ -419,7 +419,7 @@ def test_apply_classifier_with_features_from_path_persists_backed_feature_and_pr
     classifier_path = tmp_path / "classifier.harpy-classifier.joblib"
     write_classifier_export_bundle(classifier_path, bundle)
 
-    result = headless.apply_classifier_with_features_from_path(
+    result = headless.apply_classifier_with_feature_extraction_from_path(
         backed_sdata_blobs,
         classifier_path,
         target=headless.HeadlessFeatureTarget(

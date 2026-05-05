@@ -173,7 +173,7 @@ def apply_classifier_from_path(
     )
 
 
-def apply_classifier_with_features(
+def apply_classifier_with_feature_extraction(
     sdata: SpatialData,
     bundle: ClassifierExportBundle,
     *,
@@ -183,7 +183,44 @@ def apply_classifier_with_features(
     pred_confidence_column: str = "pred_confidence",
     classifier_path: str | Path | None = None,
 ) -> ClassifierApplyResult:
-    """Compute target features and apply an exported classifier bundle."""
+    """Compute the classifier feature matrix on a target dataset, then apply it.
+
+    This is the headless equivalent of first running Harpy feature extraction
+    for `target` and then calling `apply_classifier(...)` with the computed
+    feature key. The generated feature matrix is written to
+    `table.obsm[target.feature_key]`, and Harpy feature metadata is written to
+    `table.uns["feature_matrices"][target.feature_key]`. The computed feature
+    columns must exactly match the feature schema stored in `bundle`.
+
+    If `sdata` is backed by zarr, Harpy persists the feature matrix and feature
+    metadata during feature extraction, and `apply_classifier(...)` persists
+    the prediction columns and classifier apply metadata.
+
+    Parameters
+    ----------
+    sdata
+        SpatialData object containing the target table, labels, and optional
+        image elements.
+    bundle
+        Classifier export bundle returned by `load_classifier(...)` or
+        `ClassifierController.export_classifier(...)`.
+    target
+        Target table, output feature key, and feature-extraction triplets to
+        use when computing the feature matrix.
+    prediction_regions
+        Optional table regions to classify after feature extraction. If
+        omitted, all regions declared in the table metadata are classified.
+    pred_class_column
+        Column in `table.obs` that will receive predicted class labels.
+    pred_confidence_column
+        Column in `table.obs` that will receive prediction confidences.
+    classifier_path
+        Optional artifact path to record in `classifier_apply_config`; this
+        does not affect feature extraction or prediction.
+
+    The returned `ClassifierApplyResult` summarizes the rows that were written
+    and any in-scope rows skipped because of invalid feature values.
+    """
     resolved_target = compute_features_for_classifier(sdata, bundle, target=target)
     return apply_classifier(
         sdata,
@@ -197,7 +234,7 @@ def apply_classifier_with_features(
     )
 
 
-def apply_classifier_with_features_from_path(
+def apply_classifier_with_feature_extraction_from_path(
     sdata: SpatialData,
     path: str | Path,
     *,
@@ -206,9 +243,36 @@ def apply_classifier_with_features_from_path(
     pred_class_column: str = "pred_class",
     pred_confidence_column: str = "pred_confidence",
 ) -> ClassifierApplyResult:
-    """Load a classifier artifact, compute target features, and apply it."""
+    """Load a classifier artifact, compute target features, and apply it.
+
+    This is a convenience wrapper around `load_classifier(...)` and
+    `apply_classifier_with_feature_extraction(...)`. The artifact path is
+    passed through as `classifier_path`, so it is recorded in
+    `table.uns["classifier_apply_config"]`.
+
+    Parameters
+    ----------
+    sdata
+        SpatialData object containing the target table, labels, and optional
+        image elements.
+    path
+        Path to a trusted `.harpy-classifier.joblib` classifier artifact.
+    target
+        Target table, output feature key, and feature-extraction triplets to
+        use when computing the feature matrix.
+    prediction_regions
+        Optional table regions to classify after feature extraction. If
+        omitted, all regions declared in the table metadata are classified.
+    pred_class_column
+        Column in `table.obs` that will receive predicted class labels.
+    pred_confidence_column
+        Column in `table.obs` that will receive prediction confidences.
+
+    The returned `ClassifierApplyResult` summarizes the rows that were written
+    and any in-scope rows skipped because of invalid feature values.
+    """
     bundle = load_classifier(path)
-    return apply_classifier_with_features(
+    return apply_classifier_with_feature_extraction(
         sdata,
         bundle,
         target=target,
