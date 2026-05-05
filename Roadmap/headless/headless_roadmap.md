@@ -313,7 +313,7 @@ def export_classifier(self, path: str | Path) -> ClassifierExportBundle:
 
 ## 2. Add a Headless Apply API for Existing Feature Matrices
 
-Status: [ ] Not started
+Status: [x] Implemented
 
 This slice should apply an exported classifier to a target table that already
 contains a compatible feature matrix.

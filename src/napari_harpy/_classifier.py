@@ -10,13 +10,22 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import pandas as pd
-from harpy.utils._keys import _FEATURE_MATRICES_KEY
-from numpy.typing import NDArray
 from qtpy.QtCore import QTimer
 from sklearn.ensemble import RandomForestClassifier
 
+import napari_harpy._classifier_core as _classifier_core
 from napari_harpy._annotation import UNLABELED_CLASS, USER_CLASS_COLUMN
-from napari_harpy._class_palette import set_class_annotation_state
+from napari_harpy._classifier_core import (
+    _get_feature_metadata,
+    _get_finite_feature_row_mask,
+    _get_pred_class_values,
+    _get_pred_confidence_values,
+    _normalize_feature_matrix,
+    _normalize_prediction_regions,
+    _resolve_region_row_positions,
+    _set_pred_class_annotation_state,
+    _slice_feature_rows,
+)
 from napari_harpy._classifier_export import (
     ClassifierExportBundle,
     ClassifierModelSnapshot,
@@ -25,13 +34,6 @@ from napari_harpy._classifier_export import (
     write_classifier_export_bundle,
 )
 from napari_harpy._spatialdata import SpatialDataTableMetadata, get_table, get_table_metadata
-
-try:
-    from scipy.sparse import issparse
-except ImportError:  # pragma: no cover - scipy is expected in the plugin env
-
-    def issparse(value: object) -> bool:
-        return False
 
 
 def _resolve_thread_worker() -> Any:
@@ -49,12 +51,11 @@ if TYPE_CHECKING:
 
 thread_worker = _resolve_thread_worker()
 
-BoolArray = NDArray[np.bool_]
-TableRowPositions = NDArray[np.int64]
-
-PRED_CLASS_COLUMN = "pred_class"
-PRED_CLASS_COLORS_KEY = f"{PRED_CLASS_COLUMN}_colors"
-PRED_CONFIDENCE_COLUMN = "pred_confidence"
+BoolArray = _classifier_core.BoolArray
+TableRowPositions = _classifier_core.TableRowPositions
+PRED_CLASS_COLUMN = _classifier_core.PRED_CLASS_COLUMN
+PRED_CLASS_COLORS_KEY = _classifier_core.PRED_CLASS_COLORS_KEY
+PRED_CONFIDENCE_COLUMN = _classifier_core.PRED_CONFIDENCE_COLUMN
 CLASSIFIER_CONFIG_KEY = "classifier_config"
 
 DEFAULT_RETRAIN_DEBOUNCE_MS = 300
@@ -1115,89 +1116,10 @@ class ClassifierController:
         )
 
 
-def _normalize_feature_matrix(feature_matrix: Any, n_obs: int, *, copy: bool = True) -> Any:
-    # `copy=True` is the current eager-array snapshot path for worker payloads.
-    # If `.obsm` later accepts lazy arrays, `.copy()` may only copy shallow
-    # wrapper or graph state; those values will need explicit materialization so
-    # classifier jobs own concrete feature values at launch time.
-    if issparse(feature_matrix):
-        if feature_matrix.ndim != 2:
-            raise ValueError("Feature matrices stored in `.obsm` must be 2-dimensional.")
-        if feature_matrix.shape[0] != n_obs:
-            raise ValueError(
-                f"Feature matrix has {feature_matrix.shape[0]} rows but the table has {n_obs} observations."
-            )
-        return feature_matrix.copy() if copy else feature_matrix
-
-    array = np.asarray(feature_matrix, dtype=np.float64)
-    if array.ndim == 1:
-        array = array.reshape(-1, 1)
-    if array.ndim != 2:
-        raise ValueError("Feature matrices stored in `.obsm` must be 2-dimensional.")
-    if array.shape[0] != n_obs:
-        raise ValueError(f"Feature matrix has {array.shape[0]} rows but the table has {n_obs} observations.")
-    return array.copy() if copy else array
-
-
-def _slice_feature_rows(feature_matrix: Any, positions: TableRowPositions) -> Any:
-    return feature_matrix[positions]
-
-
-def _get_finite_feature_row_mask(feature_matrix: Any) -> BoolArray:
-    if issparse(feature_matrix):
-        finite_data_mask = np.isfinite(feature_matrix.data)
-        if bool(finite_data_mask.all()):
-            return np.ones(feature_matrix.shape[0], dtype=bool)
-
-        invalid_rows = np.unique(feature_matrix.tocoo().row[~finite_data_mask])
-        valid_row_mask = np.ones(feature_matrix.shape[0], dtype=bool)
-        valid_row_mask[invalid_rows] = False
-        return valid_row_mask
-
-    finite_feature_mask = np.isfinite(np.asarray(feature_matrix, dtype=np.float64))
-    return np.asarray(finite_feature_mask.all(axis=1), dtype=bool)
-
-
-def _resolve_region_row_positions(obs: pd.DataFrame, region_key: str, regions: tuple[str, ...]) -> TableRowPositions:
-    if not regions:
-        return np.array([], dtype=np.int64)
-    if len(regions) == 1:
-        region_mask = (obs[region_key] == regions[0]).to_numpy(dtype=bool, copy=False)
-    else:
-        region_mask = obs[region_key].isin(regions).to_numpy(dtype=bool, copy=False)
-    return np.asarray(np.flatnonzero(region_mask), dtype=np.int64)
-
-
-def _normalize_prediction_regions(value: object) -> tuple[str, ...]:
-    if isinstance(value, np.ndarray):
-        if value.ndim != 1:
-            return ()
-        value = value.tolist()
-    if isinstance(value, (list, tuple)) and all(isinstance(region, str) for region in value):
-        return tuple(value)
-    return ()
-
-
 def _normalize_scope_mode(scope_mode: ClassifierScopeMode | str) -> ClassifierScopeMode:
     if scope_mode in ("selected_segmentation_only", "all"):
         return scope_mode
     raise ValueError(f"Unsupported classifier scope mode: {scope_mode!r}")
-
-
-def _get_feature_metadata(table: AnnData, feature_key: str) -> dict[str, object]:
-    feature_matrices = table.uns.get(_FEATURE_MATRICES_KEY)
-    if not isinstance(feature_matrices, Mapping):
-        raise ValueError(
-            f"Feature matrix `{feature_key}` is missing Harpy metadata in `.uns[{_FEATURE_MATRICES_KEY!r}]`."
-        )
-
-    feature_metadata = feature_matrices.get(feature_key)
-    if not isinstance(feature_metadata, Mapping):
-        raise ValueError(
-            f"Feature matrix `{feature_key}` is missing Harpy metadata in "
-            f"`.uns[{_FEATURE_MATRICES_KEY!r}][{feature_key!r}]`."
-        )
-    return dict(feature_metadata)
 
 
 def _empty_resolved_classifier_scope(mode: ClassifierScopeMode) -> ResolvedClassifierScope:
@@ -1215,29 +1137,3 @@ def _get_user_class_values(obs: pd.DataFrame, n_obs: int) -> np.ndarray:
 
     values = pd.to_numeric(obs[USER_CLASS_COLUMN].astype("string"), errors="coerce").fillna(UNLABELED_CLASS)
     return np.asarray(values, dtype=np.int64)
-
-
-def _get_pred_class_values(obs: pd.DataFrame, n_obs: int) -> pd.Series:
-    if PRED_CLASS_COLUMN not in obs:
-        return pd.Series(UNLABELED_CLASS, index=obs.index, dtype="int64", name=PRED_CLASS_COLUMN)
-
-    values = pd.to_numeric(obs[PRED_CLASS_COLUMN].astype("string"), errors="coerce").fillna(UNLABELED_CLASS)
-    return pd.Series(np.asarray(values, dtype=np.int64), index=obs.index, dtype="int64", name=PRED_CLASS_COLUMN)
-
-
-def _set_pred_class_annotation_state(table: AnnData, values: pd.Series) -> None:
-    set_class_annotation_state(
-        table,
-        values,
-        column_name=PRED_CLASS_COLUMN,
-        colors_key=PRED_CLASS_COLORS_KEY,
-        warn_on_palette_overwrite=False,
-    )
-
-
-def _get_pred_confidence_values(obs: pd.DataFrame, n_obs: int) -> pd.Series:
-    if PRED_CONFIDENCE_COLUMN not in obs:
-        return pd.Series(np.full(n_obs, np.nan, dtype=np.float64), index=obs.index, name=PRED_CONFIDENCE_COLUMN)
-
-    values = pd.to_numeric(obs[PRED_CONFIDENCE_COLUMN], errors="coerce").astype("float64")
-    return pd.Series(np.asarray(values, dtype=np.float64), index=obs.index, name=PRED_CONFIDENCE_COLUMN)
