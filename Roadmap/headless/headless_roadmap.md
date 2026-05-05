@@ -498,8 +498,8 @@ training-time config. Target/apply facts should stay as top-level fields in
   bundle, including order;
 - skip/clear rows with non-finite feature values;
 - support multi-region prediction and selected-region prediction;
-- verify that importing `napari_harpy.headless` does not import Qt/widget
-  classifier code;
+- verify that `headless.py` does not directly import `_classifier.py`, widgets,
+  napari, Qt, or `thread_worker`;
 - verify that target-side apply metadata is written separately from the
   source training config.
 
@@ -679,9 +679,6 @@ Keep CLI design for later. The first priority is a tested Python API.
 
 - Should the artifact include class color palettes from `user_class_colors` or
   `pred_class_colors`, or should colors stay table/viewer-local?
-- Should headless apply write into the existing `classifier_config` key, or use
-  a separate key such as `classifier_apply_config` to distinguish training from
-  applying an external model?
 - Should export be allowed when the current model is stale but an older fitted
   estimator still exists? Recommendation: no. Export only when the controller is
   not dirty and the exported artifact represents the visible prediction state.
