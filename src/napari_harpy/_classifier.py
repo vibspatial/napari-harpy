@@ -733,7 +733,16 @@ class ClassifierController:
             return
 
         self._ensure_prediction_columns(table)
-        apply_result = self._write_classifier_predictions_for_result(table, result)
+        apply_result = _classifier_core._write_classifier_predictions(
+            table,
+            table_name=result.table_name,
+            feature_key=result.feature_key,
+            prediction_regions=result.prediction_scope.regions,
+            raw_prediction_table_row_positions=result.prediction_scope.raw_table_row_positions,
+            prediction_table_row_positions=result.prediction_scope.table_row_positions,
+            pred_classes=result.pred_classes,
+            pred_confidences=result.pred_confidences,
+        )
         classifier_config = self._build_classifier_config(
             feature_key=result.feature_key,
             table_name=result.table_name,
@@ -902,22 +911,6 @@ class ClassifierController:
 
     def _ensure_prediction_columns(self, table: AnnData) -> None:
         _classifier_core._ensure_prediction_columns(table)
-
-    def _write_classifier_predictions_for_result(
-        self,
-        table: AnnData,
-        result: ClassifierJobResult,
-    ) -> _classifier_core.ClassifierApplyResult:
-        return _classifier_core._write_classifier_predictions(
-            table,
-            table_name=result.table_name,
-            feature_key=result.feature_key,
-            prediction_regions=result.prediction_scope.regions,
-            raw_prediction_table_row_positions=result.prediction_scope.raw_table_row_positions,
-            prediction_table_row_positions=result.prediction_scope.table_row_positions,
-            pred_classes=result.pred_classes,
-            pred_confidences=result.pred_confidences,
-        )
 
     def _clear_predictions_for_prediction_regions(
         self,
