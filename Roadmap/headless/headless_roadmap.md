@@ -583,8 +583,13 @@ def apply_classifier_with_feature_extraction(
     sdata: SpatialData,
     bundle: ClassifierExportBundle,
     *,
-    target: HeadlessFeatureTarget,
-    prediction_regions: Sequence[str] | None = None,
+    table_name: str,
+    labels_name: str | Sequence[str],
+    feature_key: str | None = None,
+    coordinate_system: str | Sequence[str] | None = None,
+    image_name: str | Sequence[str] | None = None,
+    channels: Sequence[FeatureExtractionChannel] | FeatureExtractionChannel | None = None,
+    overwrite_feature_key: bool = False,
     pred_class_column: str = "pred_class",
     pred_confidence_column: str = "pred_confidence",
     classifier_path: str | Path | None = None,
@@ -595,8 +600,13 @@ def apply_classifier_with_feature_extraction_from_path(
     sdata: SpatialData,
     path: str | Path,
     *,
-    target: HeadlessFeatureTarget,
-    prediction_regions: Sequence[str] | None = None,
+    table_name: str,
+    labels_name: str | Sequence[str],
+    feature_key: str | None = None,
+    coordinate_system: str | Sequence[str] | None = None,
+    image_name: str | Sequence[str] | None = None,
+    channels: Sequence[FeatureExtractionChannel] | FeatureExtractionChannel | None = None,
+    overwrite_feature_key: bool = False,
     pred_class_column: str = "pred_class",
     pred_confidence_column: str = "pred_confidence",
 ) -> ClassifierApplyResult:
@@ -604,8 +614,13 @@ def apply_classifier_with_feature_extraction_from_path(
     return apply_classifier_with_feature_extraction(
         sdata,
         bundle,
-        target=target,
-        prediction_regions=prediction_regions,
+        table_name=table_name,
+        labels_name=labels_name,
+        feature_key=feature_key,
+        coordinate_system=coordinate_system,
+        image_name=image_name,
+        channels=channels,
+        overwrite_feature_key=overwrite_feature_key,
         pred_class_column=pred_class_column,
         pred_confidence_column=pred_confidence_column,
         classifier_path=path,
@@ -615,6 +630,12 @@ def apply_classifier_with_feature_extraction_from_path(
 `compute_features_for_classifier(...)` returns the normalized
 `HeadlessFeatureTarget` that was used for the Harpy call. The feature matrix
 and metadata remain side effects on the target table.
+
+The public `apply_classifier_with_feature_extraction(...)` API builds that
+target from user-facing arguments. `feature_key=None` resolves to
+`bundle.feature_key`; `coordinate_system=None` is inferred only when
+unambiguous; and predictions are applied to the same labels passed as
+`labels_name`.
 
 Implementation rules:
 

@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 from sklearn.ensemble import RandomForestClassifier
 from spatialdata import SpatialData, read_zarr
+from spatialdata.transformations import Identity, set_transformation
 
 from napari_harpy import headless
 from napari_harpy._classifier_core import (
@@ -329,11 +330,10 @@ def test_apply_classifier_with_feature_extraction_writes_predictions(
     result = headless.apply_classifier_with_feature_extraction(
         sdata_blobs,
         bundle,
-        target=headless.HeadlessFeatureTarget(
-            table_name="table",
-            feature_key="computed_features",
-            triplets=(headless.FeatureExtractionTriplet("global", "blobs_labels", None),),
-        ),
+        table_name="table",
+        labels_name="blobs_labels",
+        feature_key="computed_features",
+        coordinate_system="global",
         pred_class_column="with_features_class",
         pred_confidence_column="with_features_confidence",
     )
@@ -359,15 +359,34 @@ def test_apply_classifier_with_feature_extraction_rejects_incompatible_feature_c
         headless.apply_classifier_with_feature_extraction(
             sdata_blobs,
             bundle,
-            target=headless.HeadlessFeatureTarget(
-                table_name="table",
-                feature_key="computed_features",
-                triplets=(headless.FeatureExtractionTriplet("global", "blobs_labels", None),),
-            ),
+            table_name="table",
+            labels_name="blobs_labels",
+            feature_key="computed_features",
+            coordinate_system="global",
         )
 
     assert PRED_CLASS_COLUMN not in sdata_blobs["table"].obs
     assert CLASSIFIER_APPLY_CONFIG_KEY not in sdata_blobs["table"].uns
+
+
+def test_apply_classifier_with_feature_extraction_requires_explicit_ambiguous_coordinate_system(
+    monkeypatch: pytest.MonkeyPatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(sdata_blobs)
+    bundle = _make_classifier_bundle(sdata_blobs)
+    _install_fake_feature_extraction(monkeypatch)
+    set_transformation(sdata_blobs.labels["blobs_labels"], Identity(), to_coordinate_system="also_global")
+
+    with pytest.raises(ValueError, match="Pass `coordinate_system` explicitly"):
+        headless.apply_classifier_with_feature_extraction(
+            sdata_blobs,
+            bundle,
+            table_name="table",
+            labels_name="blobs_labels",
+            feature_key="computed_features",
+        )
 
 
 def test_apply_classifier_from_path_persists_backed_prediction_state(
@@ -422,11 +441,8 @@ def test_apply_classifier_with_feature_extraction_from_path_persists_backed_feat
     result = headless.apply_classifier_with_feature_extraction_from_path(
         backed_sdata_blobs,
         classifier_path,
-        target=headless.HeadlessFeatureTarget(
-            table_name="table",
-            feature_key="area_features",
-            triplets=(headless.FeatureExtractionTriplet("global", "blobs_labels", None),),
-        ),
+        table_name="table",
+        labels_name="blobs_labels",
         pred_class_column="with_features_class",
         pred_confidence_column="with_features_confidence",
     )
