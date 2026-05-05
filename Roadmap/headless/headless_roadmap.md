@@ -616,7 +616,43 @@ Implementation rules:
 - the target mapping is explicit enough that source and target datasets do not
   need identical element names.
 
-## 5. Optional CLI Wrapper
+## 5. Make Package Imports Lazy
+
+Status: [ ] Not started
+
+After the headless Python API is working, make the package import surface lazy
+so importing headless modules does not eagerly pull in napari, Qt, widgets, or
+viewer-facing modules.
+
+This should be a packaging/API hygiene slice, not part of the first classifier
+apply implementation.
+
+### Implementation Plan
+
+- add `lazy_loader` as a dependency;
+- use `lazy_loader` in `src/napari_harpy/__init__.py`;
+- keep `napari_harpy.Interactive` and other existing public attributes
+  available as lazy attributes;
+- avoid importing `_interactive.py`, `_app_state.py`, widgets, napari, or Qt
+  during a plain `import napari_harpy`;
+- verify `import napari_harpy.headless` stays headless-safe once package-level
+  imports are lazy.
+
+### Tests
+
+- importing `napari_harpy` does not import napari or Qt modules;
+- importing `napari_harpy.headless` does not import napari, Qt, widgets, or
+  `_classifier.py`;
+- accessing `napari_harpy.Interactive` still resolves the interactive launcher;
+- existing public imports keep working or have explicit migration notes.
+
+### Acceptance Criteria
+
+- headless users can import the package and headless API without a viewer stack;
+- interactive users can still access the existing napari-facing entry points;
+- lazy imports do not hide import errors once a lazy attribute is actually used.
+
+## 6. Optional CLI Wrapper
 
 Status: [ ] Not started
 
