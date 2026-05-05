@@ -18,12 +18,9 @@ from napari_harpy._annotation import UNLABELED_CLASS, USER_CLASS_COLUMN
 from napari_harpy._classifier_core import (
     _get_feature_metadata,
     _get_finite_feature_row_mask,
-    _get_pred_class_values,
-    _get_pred_confidence_values,
     _normalize_feature_matrix,
     _normalize_prediction_regions,
     _resolve_region_row_positions,
-    _set_pred_class_annotation_state,
 )
 from napari_harpy._classifier_export import (
     ClassifierExportBundle,
@@ -906,10 +903,7 @@ class ClassifierController:
         return get_table(self._selected_spatialdata, self._selected_table_name)
 
     def _ensure_prediction_columns(self, table: AnnData) -> None:
-        pred_class_values = _get_pred_class_values(table.obs)
-        pred_confidence_values = _get_pred_confidence_values(table.obs)
-        _set_pred_class_annotation_state(table, pred_class_values)
-        table.obs[PRED_CONFIDENCE_COLUMN] = pred_confidence_values
+        _classifier_core._ensure_prediction_columns(table)
 
     def _set_predictions_for_prediction_rows(
         self,
@@ -918,12 +912,12 @@ class ClassifierController:
         pred_classes: np.ndarray,
         pred_confidences: np.ndarray,
     ) -> None:
-        pred_class_values = _get_pred_class_values(table.obs)
-        pred_confidence_values = _get_pred_confidence_values(table.obs)
-        pred_class_values.iloc[prediction_table_row_positions] = np.asarray(pred_classes, dtype=np.int64)
-        pred_confidence_values.iloc[prediction_table_row_positions] = np.asarray(pred_confidences, dtype=np.float64)
-        _set_pred_class_annotation_state(table, pred_class_values)
-        table.obs[PRED_CONFIDENCE_COLUMN] = pred_confidence_values
+        _classifier_core._set_predictions_for_prediction_rows(
+            table,
+            prediction_table_row_positions,
+            pred_classes,
+            pred_confidences,
+        )
 
     def _clear_predictions_for_prediction_regions(
         self,
@@ -938,11 +932,9 @@ class ClassifierController:
             self._selected_table_metadata.region_key,
             prediction_regions,
         )
-        self._set_predictions_for_prediction_rows(
+        _classifier_core._clear_predictions_for_row_positions(
             table,
             prediction_table_row_positions,
-            np.full(prediction_table_row_positions.shape, UNLABELED_CLASS, dtype=np.int64),
-            np.full(prediction_table_row_positions.shape, np.nan, dtype=np.float64),
         )
 
     def _build_classifier_config(
