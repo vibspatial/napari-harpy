@@ -335,9 +335,36 @@ def apply_classifier(
     prediction_regions: Sequence[str] | None = None,
     output_pred_class_column: str = "pred_class",
     output_pred_confidence_column: str = "pred_confidence",
+    classifier_path: str | Path | None = None,
 ) -> ClassifierApplyResult:
     ...
+
+def apply_classifier_from_path(
+    sdata: SpatialData,
+    path: str | Path,
+    *,
+    table_name: str,
+    feature_key: str | None = None,
+    prediction_regions: Sequence[str] | None = None,
+    output_pred_class_column: str = "pred_class",
+    output_pred_confidence_column: str = "pred_confidence",
+) -> ClassifierApplyResult:
+    bundle = load_classifier(path)
+    return apply_classifier(
+        sdata,
+        bundle,
+        table_name=table_name,
+        feature_key=feature_key,
+        prediction_regions=prediction_regions,
+        output_pred_class_column=output_pred_class_column,
+        output_pred_confidence_column=output_pred_confidence_column,
+        classifier_path=path,
+    )
 ```
+
+`classifier_path` is provenance-only. The model is applied from
+`bundle.estimator`; the path is used only to record which classifier artifact
+was used in the target table's apply metadata when that path is known.
 
 Default behavior:
 
@@ -349,7 +376,7 @@ Default behavior:
 - write prediction columns to the target table;
 - write a target-side apply config entry, preferably separate from the
   training-time `classifier_config`, documenting:
-  - artifact path or artifact id;
+  - `classifier_path` when provided;
   - bundle schema version;
   - source table/feature/scope metadata;
   - target table/feature/prediction regions;
@@ -409,7 +436,9 @@ Default behavior:
    Add `src/napari_harpy/headless.py` with:
 
    - `load_classifier(path)`, wrapping `read_classifier_export_bundle(path)`;
-   - `apply_classifier(...)`, delegating to `_classifier_core.py`.
+   - `apply_classifier(...)`, delegating to `_classifier_core.py`;
+   - `apply_classifier_from_path(...)`, loading the bundle and forwarding
+     `classifier_path=path` into `apply_classifier(...)`.
 
    The public module should import only headless-safe dependencies and should
    avoid importing `_classifier.py`.
