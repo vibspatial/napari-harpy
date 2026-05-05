@@ -564,6 +564,13 @@ exported classifier.
 ### Proposed API
 
 ```python
+@dataclass(frozen=True)
+class HeadlessFeatureTarget:
+    table_name: str
+    feature_key: str
+    triplets: tuple[FeatureExtractionTriplet, ...]
+    overwrite_feature_key: bool = False
+
 def compute_features_for_classifier(
     sdata: SpatialData,
     bundle: ClassifierExportBundle,
@@ -580,6 +587,28 @@ def apply_classifier_with_features(
     prediction_regions: Sequence[str] | None = None,
 ) -> ClassifierApplyResult:
     ...
+```
+
+Use this result shape for feature calculation:
+
+```python
+@dataclass(frozen=True)
+class HeadlessFeatureExtractionResult:
+    target: HeadlessFeatureTarget
+    change_kind: Literal["created", "updated"]
+    feature_columns: tuple[str, ...]
+
+    @property
+    def table_name(self) -> str:
+        return self.target.table_name
+
+    @property
+    def feature_key(self) -> str:
+        return self.target.feature_key
+
+    @property
+    def triplet_count(self) -> int:
+        return len(self.target.triplets)
 ```
 
 Implementation rules:
@@ -608,10 +637,17 @@ Implementation rules:
   - `overwrite_feature_key=target.overwrite_feature_key`;
 - after feature extraction, verify the target matrix has exactly the expected
   feature schema before applying the model;
-- if Harpy metadata is present, compare `feature_columns` to
-  `bundle.feature_columns`;
-- if Harpy metadata is missing, require at least `matrix.shape[1] == bundle.n_features`,
-  but report that the schema could not be fully verified.
+- require Harpy feature metadata for the computed feature matrix and compare
+  `table.uns["feature_matrices"][target.feature_key]["feature_columns"]`
+  exactly to `bundle.feature_columns`; missing metadata is an error, not a
+  shape-only fallback;
+- when `sdata` is backed by zarr, persist the computed feature state before
+  applying predictions:
+  - write `table.obsm[target.feature_key]`;
+  - write
+    `table.uns["feature_matrices"][target.feature_key]`;
+  - keep this in a Qt-free persistence helper, parallel to the prediction
+    state persistence used by `apply_classifier(...)`.
 
 ### Tests
 
@@ -622,6 +658,9 @@ Implementation rules:
 - incompatible feature columns fail before predictions are written;
 - feature extraction overwrite behavior is explicit and tested;
 - backed SpatialData writes are reloadable.
+- backed SpatialData reloads include both the computed
+  `.obsm[target.feature_key]` matrix and its
+  `.uns["feature_matrices"][target.feature_key]` metadata.
 
 ### Acceptance Criteria
 
