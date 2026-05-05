@@ -585,8 +585,31 @@ def apply_classifier_with_features(
     *,
     target: HeadlessFeatureTarget,
     prediction_regions: Sequence[str] | None = None,
+    pred_class_column: str = "pred_class",
+    pred_confidence_column: str = "pred_confidence",
+    classifier_path: str | Path | None = None,
 ) -> ClassifierApplyResult:
     ...
+
+def apply_classifier_with_features_from_path(
+    sdata: SpatialData,
+    path: str | Path,
+    *,
+    target: HeadlessFeatureTarget,
+    prediction_regions: Sequence[str] | None = None,
+    pred_class_column: str = "pred_class",
+    pred_confidence_column: str = "pred_confidence",
+) -> ClassifierApplyResult:
+    bundle = load_classifier(path)
+    return apply_classifier_with_features(
+        sdata,
+        bundle,
+        target=target,
+        prediction_regions=prediction_regions,
+        pred_class_column=pred_class_column,
+        pred_confidence_column=pred_confidence_column,
+        classifier_path=path,
+    )
 ```
 
 Use this result shape for feature calculation:
