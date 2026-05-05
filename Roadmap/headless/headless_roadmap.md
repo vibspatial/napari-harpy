@@ -647,6 +647,11 @@ Implementation rules:
     - `_resolve_harpy_image_name_parameter`;
     - `_resolve_harpy_channel_parameter`;
     - `_resolve_harpy_coordinate_system_parameter`;
+  - move/re-export the shared validation/normalization helpers needed by both
+    widget and headless feature extraction:
+    - `_normalize_channels`;
+    - `_normalize_triplets`;
+    - `_get_triplet_channel_selection_error`;
   - update `_feature_extraction.py` to import those definitions from the core
     module, so the widget keeps the same behavior while `headless.py` avoids
     importing `thread_worker`, napari, or Qt;
