@@ -24,7 +24,6 @@ from napari_harpy._classifier_core import (
     _normalize_prediction_regions,
     _resolve_region_row_positions,
     _set_pred_class_annotation_state,
-    _slice_feature_rows,
 )
 from napari_harpy._classifier_export import (
     ClassifierExportBundle,
@@ -682,12 +681,12 @@ class ClassifierController:
                 summary=summary,
             )
 
-        predict_features = _slice_feature_rows(feature_matrix, summary.prediction_scope.table_row_positions)
+        predict_features = feature_matrix[summary.prediction_scope.table_row_positions]
         user_class_values = _get_user_class_values(table.obs, len(table.obs))
         training_user_class_values = user_class_values[summary.training_scope.table_row_positions]
         labeled_mask = training_user_class_values != UNLABELED_CLASS
         labeled_training_positions = summary.training_scope.table_row_positions[labeled_mask]
-        train_features = _slice_feature_rows(feature_matrix, labeled_training_positions)
+        train_features = feature_matrix[labeled_training_positions]
         train_labels = np.asarray(training_user_class_values[labeled_mask], dtype=np.int64)
         return ClassifierJob(
             job_id=job_id,

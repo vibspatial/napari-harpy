@@ -99,7 +99,7 @@ def apply_classifier(
         pred_confidence_column=resolved_pred_confidence_column,
     )
     if prediction_positions.size:
-        predict_features = _slice_feature_rows(feature_matrix, prediction_positions)
+        predict_features = feature_matrix[prediction_positions]
         pred_classes, pred_confidences = _predict_classifier(bundle, predict_features)
         _set_predictions_for_prediction_rows(
             table,
@@ -252,10 +252,6 @@ def _normalize_feature_matrix(feature_matrix: Any, n_obs: int, *, copy: bool = T
     if array.shape[0] != n_obs:
         raise ValueError(f"Feature matrix has {array.shape[0]} rows but the table has {n_obs} observations.")
     return array.copy() if copy else array
-
-
-def _slice_feature_rows(feature_matrix: Any, positions: TableRowPositions) -> Any:
-    return feature_matrix[positions]
 
 
 def _get_finite_feature_row_mask(feature_matrix: Any) -> BoolArray:

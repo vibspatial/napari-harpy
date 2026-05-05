@@ -565,11 +565,20 @@ def test_classifier_controller_describes_current_preparation_without_building_wo
         },
     )
 
-    def fail_slice_feature_rows(feature_matrix, positions):
-        del feature_matrix, positions
+    original_normalize_feature_matrix = classifier_module._normalize_feature_matrix
+
+    def fail_worker_feature_snapshot(feature_matrix, n_obs, *, copy):
+        if copy:
+            raise AssertionError("preparation summary should not construct worker feature arrays")
+        return original_normalize_feature_matrix(feature_matrix, n_obs, copy=copy)
+
+    monkeypatch.setattr(classifier_module, "_normalize_feature_matrix", fail_worker_feature_snapshot)
+
+    def fail_training_worker(*args, **kwargs):
+        del args, kwargs
         raise AssertionError("preparation summary should not construct worker feature arrays")
 
-    monkeypatch.setattr(classifier_module, "_slice_feature_rows", fail_slice_feature_rows)
+    monkeypatch.setattr(classifier_module.ClassifierController, "_create_training_worker", fail_training_worker)
 
     controller = ClassifierController(debounce_interval_ms=0)
     controller.bind(
