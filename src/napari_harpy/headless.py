@@ -4,9 +4,11 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from napari_harpy._classifier_core import ClassifierApplyResult
+from napari_harpy._annotation import USER_CLASS_COLORS_KEY
+from napari_harpy._classifier_core import CLASSIFIER_APPLY_CONFIG_KEY, CLASSIFIER_CONFIG_KEY, ClassifierApplyResult
 from napari_harpy._classifier_core import apply_classifier as _apply_classifier
 from napari_harpy._classifier_export import ClassifierExportBundle, read_classifier_export_bundle
+from napari_harpy._persistence_core import write_table_prediction_state
 
 if TYPE_CHECKING:
     from spatialdata import SpatialData
@@ -34,7 +36,8 @@ def apply_classifier(
     `.obsm`. When `feature_key` is omitted, the source feature key stored in the
     bundle is used. Predictions are written in place to `table.obs` using
     `pred_class_column` and `pred_confidence_column`, and apply provenance is
-    recorded in `table.uns["classifier_apply_config"]`.
+    recorded in `table.uns["classifier_apply_config"]`. If `sdata` is backed by
+    zarr, the updated prediction state is written back to disk automatically.
 
     Parameters
     ----------
@@ -62,7 +65,7 @@ def apply_classifier(
     The returned `ClassifierApplyResult` summarizes the rows that were written
     and any in-scope rows skipped because of invalid feature values.
     """
-    return _apply_classifier(
+    result = _apply_classifier(
         sdata,
         bundle,
         table_name=table_name,
@@ -72,6 +75,8 @@ def apply_classifier(
         pred_confidence_column=pred_confidence_column,
         classifier_path=classifier_path,
     )
+    _write_backed_prediction_state_if_needed(sdata, result)
+    return result
 
 
 def apply_classifier_from_path(
@@ -101,4 +106,20 @@ def apply_classifier_from_path(
         pred_class_column=pred_class_column,
         pred_confidence_column=pred_confidence_column,
         classifier_path=path,
+    )
+
+
+def _write_backed_prediction_state_if_needed(sdata: SpatialData, result: ClassifierApplyResult) -> None:
+    if not sdata.is_backed() or sdata.path is None:
+        return
+
+    write_table_prediction_state(
+        sdata,
+        table_name=result.table_name,
+        uns_keys=(
+            USER_CLASS_COLORS_KEY,
+            f"{result.pred_class_column}_colors",
+            CLASSIFIER_CONFIG_KEY,
+            CLASSIFIER_APPLY_CONFIG_KEY,
+        ),
     )

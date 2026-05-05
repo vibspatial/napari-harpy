@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from sklearn.ensemble import RandomForestClassifier
-from spatialdata import SpatialData
+from spatialdata import SpatialData, read_zarr
 
 from napari_harpy import headless
 from napari_harpy._classifier_core import (
@@ -177,6 +177,47 @@ def test_apply_classifier_bundle_can_write_custom_prediction_columns(sdata_blobs
     assert "headless_confidence" in table.obs
     assert table.uns[CLASSIFIER_APPLY_CONFIG_KEY]["classifier_path"] is None
     assert table.uns[CLASSIFIER_APPLY_CONFIG_KEY]["pred_class_column"] == "headless_class"
+
+
+def test_apply_classifier_from_path_persists_backed_prediction_state(
+    tmp_path: Path,
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    _set_deterministic_features(backed_sdata_blobs)
+    _set_feature_metadata(backed_sdata_blobs)
+    bundle = _make_classifier_bundle(backed_sdata_blobs)
+    classifier_path = tmp_path / "classifier.harpy-classifier.joblib"
+    write_classifier_export_bundle(classifier_path, bundle)
+
+    result = headless.apply_classifier_from_path(
+        backed_sdata_blobs,
+        classifier_path,
+        table_name="table",
+        pred_class_column="headless_class",
+        pred_confidence_column="headless_confidence",
+    )
+
+    table = backed_sdata_blobs["table"]
+    reread = read_zarr(backed_sdata_blobs.path)
+    disk_table = reread["table"]
+    config = disk_table.uns[CLASSIFIER_APPLY_CONFIG_KEY]
+
+    assert result.table_name == "table"
+    assert "headless_class" in disk_table.obs
+    assert "headless_confidence" in disk_table.obs
+    assert "headless_class_colors" in disk_table.uns
+    assert disk_table.obs["headless_class"].astype("string").tolist() == table.obs["headless_class"].astype(
+        "string"
+    ).tolist()
+    assert np.allclose(
+        disk_table.obs["headless_confidence"].to_numpy(dtype=np.float64),
+        table.obs["headless_confidence"].to_numpy(dtype=np.float64),
+    )
+    assert config["classifier_path"] == str(classifier_path)
+    assert config["table_name"] == "table"
+    assert config["feature_key"] == "features_1"
+    assert config["pred_class_column"] == "headless_class"
+    assert config["pred_confidence_column"] == "headless_confidence"
 
 
 def test_apply_classifier_rejects_missing_feature_key(sdata_blobs: SpatialData) -> None:

@@ -36,6 +36,7 @@ TableRowPositions = NDArray[np.int64]
 PRED_CLASS_COLUMN = "pred_class"
 PRED_CLASS_COLORS_KEY = f"{PRED_CLASS_COLUMN}_colors"
 PRED_CONFIDENCE_COLUMN = "pred_confidence"
+CLASSIFIER_CONFIG_KEY = "classifier_config"
 CLASSIFIER_APPLY_CONFIG_KEY = "classifier_apply_config"
 
 
