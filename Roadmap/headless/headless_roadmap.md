@@ -335,7 +335,7 @@ def apply_classifier(
     prediction_regions: Sequence[str] | None = None,
     output_pred_class_column: str = "pred_class",
     output_pred_confidence_column: str = "pred_confidence",
-) -> HeadlessClassificationResult:
+) -> ClassifierApplyResult:
     ...
 ```
 
@@ -416,16 +416,24 @@ Default behavior:
 
 5. Return a small result object.
 
-   `HeadlessClassificationResult` should include at least:
+   Define `ClassifierApplyResult` in `_classifier_core.py`:
 
-   - `table_name`;
-   - `feature_key`;
-   - `prediction_regions`;
-   - `n_predicted_rows`;
-   - `n_skipped_feature_invalid_rows`;
-   - `output_pred_class_column`;
-   - `output_pred_confidence_column`;
-   - `applied_at`.
+   ```python
+   @dataclass(frozen=True)
+   class ClassifierApplyResult:
+       table_name: str
+       feature_key: str
+       prediction_regions: tuple[str, ...]
+       n_predicted_rows: int
+       n_skipped_feature_invalid_rows: int
+       output_pred_class_column: str
+       output_pred_confidence_column: str
+       applied_at: str
+   ```
+
+   The result is a receipt for what was written to the table. Prediction arrays
+   should remain in `table.obs[output_pred_class_column]` and
+   `table.obs[output_pred_confidence_column]`, not in the result object.
 
 ### Tests
 
@@ -456,7 +464,45 @@ Default behavior:
 - incompatible feature matrices fail before prediction with actionable error
   messages.
 
-## 3. Add Headless Feature Calculation Before Apply
+## 3. Reuse Classifier Core in the Widget Path
+
+Status: [ ] Not started
+
+This cleanup slice should route the interactive classifier's prediction-writing
+path through the same Qt-free core introduced for headless apply.
+
+This is not required for the first headless apply API to work. It should happen
+after slice 2 is covered by tests, so the core behavior is already pinned down.
+
+### Implementation Plan
+
+- keep `ClassifierJobResult` as the training-worker completion object;
+- do not make `ClassifierJobResult` carry headless apply semantics;
+- move widget prediction-column setup, prediction writing, and invalid-row
+  clearing through `_classifier_core.py`;
+- let the shared write/apply helper return `ClassifierApplyResult`;
+- use `ClassifierApplyResult` counts/regions where helpful for widget status
+  text and config writing;
+- keep `_classifier.py` responsible for `QTimer`, `thread_worker`, dirty state,
+  status messages, callbacks, export snapshot lifecycle, and export UI.
+
+### Tests
+
+- widget retraining still writes the same `pred_class` and `pred_confidence`
+  values as before;
+- stale worker results are still ignored;
+- ineligible classifier states still clear in-scope predictions;
+- export snapshots are still created only after successful training;
+- existing widget and classifier-controller tests remain behaviorally unchanged.
+
+### Acceptance Criteria
+
+- the widget and headless apply paths share prediction-writing behavior;
+- `ClassifierJobResult` remains focused on training completion;
+- `ClassifierApplyResult` represents predictions applied to a table;
+- no new Qt, napari, or worker dependency enters `_classifier_core.py`.
+
+## 4. Add Headless Feature Calculation Before Apply
 
 Status: [ ] Not started
 
@@ -481,7 +527,7 @@ def apply_classifier_with_features(
     *,
     target: HeadlessFeatureTarget,
     prediction_regions: Sequence[str] | None = None,
-) -> HeadlessClassificationResult:
+) -> ClassifierApplyResult:
     ...
 ```
 
@@ -519,7 +565,7 @@ Implementation rules:
 - the target mapping is explicit enough that source and target datasets do not
   need identical element names.
 
-## 4. Optional CLI Wrapper
+## 5. Optional CLI Wrapper
 
 Status: [ ] Not started
 
