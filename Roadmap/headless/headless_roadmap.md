@@ -384,6 +384,28 @@ Default behavior:
   - number of skipped feature-invalid rows;
   - apply timestamp.
 
+Proposed `classifier_apply_config` shape:
+
+```python
+table.uns["classifier_apply_config"] = {
+    "applied": True,
+    "apply_timestamp": applied_at,
+    "classifier_path": str(classifier_path) if classifier_path is not None else None,
+    "source_classifier_config": deepcopy(bundle.source_classifier_config),
+    "target_table_name": table_name,
+    "target_feature_key": resolved_feature_key,
+    "target_prediction_regions": list(resolved_prediction_regions),
+    "n_predicted_rows": result.n_predicted_rows,
+    "n_skipped_feature_invalid_rows": result.n_skipped_feature_invalid_rows,
+    "output_pred_class_column": output_pred_class_column,
+    "output_pred_confidence_column": output_pred_confidence_column,
+}
+```
+
+`source_classifier_config` should remain an exact copy of the exported
+training-time config. Target/apply facts should stay as top-level fields in
+`classifier_apply_config`.
+
 ### Implementation Plan
 
 1. Add a Qt-free classifier core before adding the public API.
