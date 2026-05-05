@@ -906,8 +906,8 @@ class ClassifierController:
         return get_table(self._selected_spatialdata, self._selected_table_name)
 
     def _ensure_prediction_columns(self, table: AnnData) -> None:
-        pred_class_values = _get_pred_class_values(table.obs, len(table.obs))
-        pred_confidence_values = _get_pred_confidence_values(table.obs, len(table.obs))
+        pred_class_values = _get_pred_class_values(table.obs)
+        pred_confidence_values = _get_pred_confidence_values(table.obs)
         _set_pred_class_annotation_state(table, pred_class_values)
         table.obs[PRED_CONFIDENCE_COLUMN] = pred_confidence_values
 
@@ -918,8 +918,8 @@ class ClassifierController:
         pred_classes: np.ndarray,
         pred_confidences: np.ndarray,
     ) -> None:
-        pred_class_values = _get_pred_class_values(table.obs, len(table.obs))
-        pred_confidence_values = _get_pred_confidence_values(table.obs, len(table.obs))
+        pred_class_values = _get_pred_class_values(table.obs)
+        pred_confidence_values = _get_pred_confidence_values(table.obs)
         pred_class_values.iloc[prediction_table_row_positions] = np.asarray(pred_classes, dtype=np.int64)
         pred_confidence_values.iloc[prediction_table_row_positions] = np.asarray(pred_confidences, dtype=np.float64)
         _set_pred_class_annotation_state(table, pred_class_values)

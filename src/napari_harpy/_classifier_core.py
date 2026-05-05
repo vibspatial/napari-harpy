@@ -311,10 +311,9 @@ def _ensure_prediction_columns(
     pred_class_column: str = PRED_CLASS_COLUMN,
     pred_confidence_column: str = PRED_CONFIDENCE_COLUMN,
 ) -> None:
-    pred_class_values = _get_pred_class_values(table.obs, len(table.obs), column_name=pred_class_column)
+    pred_class_values = _get_pred_class_values(table.obs, column_name=pred_class_column)
     pred_confidence_values = _get_pred_confidence_values(
         table.obs,
-        len(table.obs),
         column_name=pred_confidence_column,
     )
     _set_pred_class_annotation_state(table, pred_class_values, column_name=pred_class_column)
@@ -330,10 +329,9 @@ def _set_predictions_for_prediction_rows(
     pred_class_column: str = PRED_CLASS_COLUMN,
     pred_confidence_column: str = PRED_CONFIDENCE_COLUMN,
 ) -> None:
-    pred_class_values = _get_pred_class_values(table.obs, len(table.obs), column_name=pred_class_column)
+    pred_class_values = _get_pred_class_values(table.obs, column_name=pred_class_column)
     pred_confidence_values = _get_pred_confidence_values(
         table.obs,
-        len(table.obs),
         column_name=pred_confidence_column,
     )
     pred_class_values.iloc[prediction_table_row_positions] = np.asarray(pred_classes, dtype=np.int64)
@@ -361,7 +359,6 @@ def _clear_predictions_for_row_positions(
 
 def _get_pred_class_values(
     obs: pd.DataFrame,
-    n_obs: int,
     *,
     column_name: str = PRED_CLASS_COLUMN,
 ) -> pd.Series:
@@ -393,12 +390,11 @@ def _pred_class_colors_key(column_name: str) -> str:
 
 def _get_pred_confidence_values(
     obs: pd.DataFrame,
-    n_obs: int,
     *,
     column_name: str = PRED_CONFIDENCE_COLUMN,
 ) -> pd.Series:
     if column_name not in obs:
-        return pd.Series(np.full(n_obs, np.nan, dtype=np.float64), index=obs.index, name=column_name)
+        return pd.Series(np.full(len(obs), np.nan, dtype=np.float64), index=obs.index, name=column_name)
 
     values = pd.to_numeric(obs[column_name], errors="coerce").astype("float64")
     return pd.Series(np.asarray(values, dtype=np.float64), index=obs.index, name=column_name)
