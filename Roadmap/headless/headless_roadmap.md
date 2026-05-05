@@ -347,7 +347,8 @@ Default behavior:
 - skip rows with non-finite feature values;
 - clear in-scope invalid rows to unlabeled/NaN, matching the widget behavior;
 - write prediction columns to the target table;
-- write a target-side config entry documenting:
+- write a target-side apply config entry, preferably separate from the
+  training-time `classifier_config`, documenting:
   - artifact path or artifact id;
   - bundle schema version;
   - source table/feature/scope metadata;
@@ -356,19 +357,75 @@ Default behavior:
   - number of skipped feature-invalid rows;
   - apply timestamp.
 
-### Required Refactor
+### Implementation Plan
 
-Extract or reuse classifier helpers so the headless path does not need a Qt
-controller:
+1. Add a Qt-free classifier core before adding the public API.
 
-- feature matrix normalization;
-- finite-row mask calculation;
-- prediction-column setup;
-- region row-position resolution;
-- prediction writing;
-- classifier-config building, or a headless-specific config builder.
+   Create one small internal helper module:
+   `src/napari_harpy/_classifier_core.py`.
 
-Avoid importing Qt-only widget/controller code in `headless.py`.
+   This module should contain the reusable classifier mechanics and must not
+   import widgets, napari, Qt, `thread_worker`, or the `ClassifierController`.
+
+2. Move or extract the pure classifier-application helpers from
+   `_classifier.py`.
+
+   The core module should own or reuse:
+
+   - feature matrix normalization;
+   - feature-column compatibility validation;
+   - finite-row mask calculation;
+   - estimator prediction/probability application;
+   - prediction-column setup;
+   - region row-position resolution;
+   - prediction writing and invalid-row clearing;
+   - target-side apply config building.
+
+   `_classifier.py` should remain the interactive adapter around that pure
+   core. It can keep ownership of `QTimer`, `thread_worker`, status strings,
+   dirty state, callbacks, export snapshot lifecycle, and export-button
+   support.
+
+   The existing widget/controller can keep its current behavior initially while
+   the headless path lands. A later cleanup can route more of the widget path
+   through the same core helpers once the headless path is covered by tests.
+
+3. Validate feature compatibility before prediction.
+
+   For this slice, require Harpy feature-matrix metadata on the target table
+   instead of guessing from raw matrix shape:
+
+   - `table.obsm[feature_key]` exists and is two-dimensional;
+   - `table.uns["feature_matrices"][feature_key]["feature_columns"]` exists;
+   - normalized target feature columns exactly match `bundle.feature_columns`,
+     including order;
+   - the estimator input width matches the target matrix width.
+
+   Missing metadata, wrong column count, renamed columns, or reordered columns
+   should fail with a clear error.
+
+4. Implement the public headless module as a thin wrapper.
+
+   Add `src/napari_harpy/headless.py` with:
+
+   - `load_classifier(path)`, wrapping `read_classifier_export_bundle(path)`;
+   - `apply_classifier(...)`, delegating to `_classifier_core.py`.
+
+   The public module should import only headless-safe dependencies and should
+   avoid importing `_classifier.py`.
+
+5. Return a small result object.
+
+   `HeadlessClassificationResult` should include at least:
+
+   - `table_name`;
+   - `feature_key`;
+   - `prediction_regions`;
+   - `n_predicted_rows`;
+   - `n_skipped_feature_invalid_rows`;
+   - `output_pred_class_column`;
+   - `output_pred_confidence_column`;
+   - `applied_at`.
 
 ### Tests
 
@@ -376,18 +433,28 @@ Avoid importing Qt-only widget/controller code in `headless.py`.
   predictions;
 - apply a saved bundle to a second compatible table;
 - reject missing feature key;
+- reject missing Harpy feature-matrix metadata;
 - reject feature matrix with wrong column count;
-- reject feature metadata whose `feature_columns` order does not match the
-  bundle when metadata is present;
+- reject feature metadata whose `feature_columns` do not exactly match the
+  bundle, including order;
 - skip/clear rows with non-finite feature values;
-- support multi-region prediction and selected-region prediction.
+- support multi-region prediction and selected-region prediction;
+- verify that importing `napari_harpy.headless` does not import Qt/widget
+  classifier code;
+- verify that target-side apply metadata is written separately from the
+  source training config.
 
 ### Acceptance Criteria
 
 - a Python script can load a bundle and apply it to an existing feature matrix
   without creating a napari viewer or Qt widget;
+- `headless.py` does not depend on the Qt controller path;
+- `_classifier.py` acts as the interactive adapter for debounce, background
+  workers, status messages, dirty state, and export UI;
 - prediction outputs and metadata are written to the target table consistently
-  with the interactive classifier semantics.
+  with the interactive classifier semantics;
+- incompatible feature matrices fail before prediction with actionable error
+  messages.
 
 ## 3. Add Headless Feature Calculation Before Apply
 
