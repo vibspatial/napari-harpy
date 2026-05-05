@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -101,6 +103,48 @@ def _make_classifier_bundle(
     )
 
 
+def _make_area_classifier_bundle() -> ClassifierExportBundle:
+    classifier = RandomForestClassifier(n_estimators=10, random_state=0, n_jobs=1)
+    classifier.fit(np.array([[0.0], [100.0]], dtype=np.float64), np.array([1, 2], dtype=np.int64))
+    return ClassifierExportBundle(
+        schema_version=CLASSIFIER_EXPORT_SCHEMA_VERSION,
+        created_at="2026-05-05T09:05:00+00:00",
+        napari_harpy_version="0.0.0-test",
+        sklearn_version=None,
+        estimator=classifier,
+        source_classifier_config={
+            "model_type": "RandomForestClassifier",
+            "feature_key": "area_features",
+            "table_name": "source_table",
+            "roi_mode": "none",
+            "trained": True,
+            "eligible": True,
+            "reason": "Ready to train.",
+            "training_timestamp": "2026-05-05T09:00:00+00:00",
+            "n_labeled_objects": 2,
+            "n_features": 1,
+            "class_labels_seen": [1, 2],
+            "rf_params": {"n_estimators": 10, "random_state": 0, "n_jobs": 1},
+            "training_scope": "all",
+            "training_regions": ["source_labels"],
+            "n_training_rows": 2,
+            "prediction_scope": "all",
+            "prediction_regions": ["source_labels"],
+            "n_predicted_rows": 2,
+        },
+        source_feature_metadata={
+            "feature_columns": ["area"],
+            "schema_version": 1,
+            "backend": "numpy",
+            "dtype": "float64",
+            "source_label": "source_labels",
+            "source_image": None,
+            "coordinate_system": "global",
+            "features": ["area"],
+        },
+    )
+
+
 def _table_regions(table) -> tuple[str, ...]:
     regions = table.obs["region"]
     if isinstance(regions.dtype, pd.CategoricalDtype):
@@ -120,6 +164,35 @@ def _set_invalid_feature_rows_for_region(
     region_mask = (table.obs["region"].astype("string") == region_name).to_numpy(dtype=bool, copy=False)
     feature_matrix[region_mask, :] = np.nan
     table.obsm[feature_key] = feature_matrix
+
+
+def _install_fake_feature_extraction(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    feature_columns: tuple[str, ...] = ("is_large", "instance_fraction"),
+) -> dict[str, object]:
+    captured_kwargs: dict[str, object] = {}
+
+    def fake_add_feature_matrix(**kwargs):
+        captured_kwargs.update(kwargs)
+        sdata = kwargs["sdata"]
+        table_name = str(kwargs["table_name"])
+        feature_key = str(kwargs["feature_key"])
+        _set_deterministic_features(sdata, table_name=table_name, feature_key=feature_key)
+        _set_feature_metadata(
+            sdata,
+            table_name=table_name,
+            feature_key=feature_key,
+            feature_columns=feature_columns,
+            features=tuple(str(feature) for feature in kwargs["features"]),
+        )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "harpy",
+        SimpleNamespace(tb=SimpleNamespace(add_feature_matrix=fake_add_feature_matrix)),
+    )
+    return captured_kwargs
 
 
 def test_apply_classifier_from_path_writes_predictions_and_apply_config(
@@ -179,6 +252,124 @@ def test_apply_classifier_bundle_can_write_custom_prediction_columns(sdata_blobs
     assert table.uns[CLASSIFIER_APPLY_CONFIG_KEY]["pred_class_column"] == "headless_class"
 
 
+def test_compute_features_for_classifier_uses_target_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(sdata_blobs)
+    bundle = _make_classifier_bundle(sdata_blobs)
+    captured_kwargs = _install_fake_feature_extraction(monkeypatch)
+
+    resolved_target = headless.compute_features_for_classifier(
+        sdata_blobs,
+        bundle,
+        target=headless.HeadlessFeatureTarget(
+            table_name="table",
+            feature_key="computed_features",
+            triplets=(
+                headless.FeatureExtractionTriplet(
+                    coordinate_system="target_global",
+                    label_name="target_cells",
+                    image_name=None,
+                ),
+            ),
+        ),
+    )
+
+    assert resolved_target.table_name == "table"
+    assert resolved_target.feature_key == "computed_features"
+    assert len(resolved_target.triplets) == 1
+    assert captured_kwargs["labels_name"] == "target_cells"
+    assert captured_kwargs["to_coordinate_system"] == "target_global"
+    assert captured_kwargs["table_name"] == "table"
+    assert captured_kwargs["feature_key"] == "computed_features"
+    assert captured_kwargs["features"] == list(bundle.feature_names)
+    assert captured_kwargs["overwrite_feature_key"] is False
+    assert "computed_features" in sdata_blobs["table"].obsm
+
+
+def test_compute_features_for_classifier_returns_normalized_target(
+    monkeypatch: pytest.MonkeyPatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(sdata_blobs)
+    bundle = _make_classifier_bundle(sdata_blobs)
+    table = sdata_blobs["table"]
+    table.obsm["computed_features"] = np.zeros((table.n_obs, 2), dtype=np.float64)
+    captured_kwargs = _install_fake_feature_extraction(monkeypatch)
+
+    resolved_target = headless.compute_features_for_classifier(
+        sdata_blobs,
+        bundle,
+        target=headless.HeadlessFeatureTarget(
+            table_name=" table ",
+            feature_key=" computed_features ",
+            triplets=(headless.FeatureExtractionTriplet("global", "blobs_labels", None),),
+            overwrite_feature_key=True,
+        ),
+    )
+
+    assert resolved_target.table_name == "table"
+    assert resolved_target.feature_key == "computed_features"
+    assert resolved_target.overwrite_feature_key is True
+    assert captured_kwargs["overwrite_feature_key"] is True
+
+
+def test_apply_classifier_with_features_writes_predictions(
+    monkeypatch: pytest.MonkeyPatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(sdata_blobs)
+    bundle = _make_classifier_bundle(sdata_blobs)
+    _install_fake_feature_extraction(monkeypatch)
+
+    result = headless.apply_classifier_with_features(
+        sdata_blobs,
+        bundle,
+        target=headless.HeadlessFeatureTarget(
+            table_name="table",
+            feature_key="computed_features",
+            triplets=(headless.FeatureExtractionTriplet("global", "blobs_labels", None),),
+        ),
+        pred_class_column="with_features_class",
+        pred_confidence_column="with_features_confidence",
+    )
+
+    table = sdata_blobs["table"]
+    assert result.feature_key == "computed_features"
+    assert result.pred_class_column == "with_features_class"
+    assert "with_features_class" in table.obs
+    assert "with_features_confidence" in table.obs
+    assert table.uns[CLASSIFIER_APPLY_CONFIG_KEY]["feature_key"] == "computed_features"
+
+
+def test_apply_classifier_with_features_rejects_incompatible_feature_columns(
+    monkeypatch: pytest.MonkeyPatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(sdata_blobs)
+    bundle = _make_classifier_bundle(sdata_blobs)
+    _install_fake_feature_extraction(monkeypatch, feature_columns=("instance_fraction", "is_large"))
+
+    with pytest.raises(ValueError, match="do not match"):
+        headless.apply_classifier_with_features(
+            sdata_blobs,
+            bundle,
+            target=headless.HeadlessFeatureTarget(
+                table_name="table",
+                feature_key="computed_features",
+                triplets=(headless.FeatureExtractionTriplet("global", "blobs_labels", None),),
+            ),
+        )
+
+    assert PRED_CLASS_COLUMN not in sdata_blobs["table"].obs
+    assert CLASSIFIER_APPLY_CONFIG_KEY not in sdata_blobs["table"].uns
+
+
 def test_apply_classifier_from_path_persists_backed_prediction_state(
     tmp_path: Path,
     backed_sdata_blobs: SpatialData,
@@ -218,6 +409,41 @@ def test_apply_classifier_from_path_persists_backed_prediction_state(
     assert config["feature_key"] == "features_1"
     assert config["pred_class_column"] == "headless_class"
     assert config["pred_confidence_column"] == "headless_confidence"
+
+
+def test_apply_classifier_with_features_from_path_persists_backed_feature_and_prediction_state(
+    tmp_path: Path,
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    bundle = _make_area_classifier_bundle()
+    classifier_path = tmp_path / "classifier.harpy-classifier.joblib"
+    write_classifier_export_bundle(classifier_path, bundle)
+
+    result = headless.apply_classifier_with_features_from_path(
+        backed_sdata_blobs,
+        classifier_path,
+        target=headless.HeadlessFeatureTarget(
+            table_name="table",
+            feature_key="area_features",
+            triplets=(headless.FeatureExtractionTriplet("global", "blobs_labels", None),),
+        ),
+        pred_class_column="with_features_class",
+        pred_confidence_column="with_features_confidence",
+    )
+
+    reread = read_zarr(backed_sdata_blobs.path)
+    disk_table = reread["table"]
+
+    assert result.feature_key == "area_features"
+    assert "area_features" in disk_table.obsm
+    assert disk_table.obsm["area_features"].shape == backed_sdata_blobs["table"].obsm["area_features"].shape
+    assert list(disk_table.uns[_FEATURE_MATRICES_KEY]["area_features"]["feature_columns"]) == list(
+        bundle.feature_columns
+    )
+    assert "with_features_class" in disk_table.obs
+    assert "with_features_confidence" in disk_table.obs
+    assert disk_table.uns[CLASSIFIER_APPLY_CONFIG_KEY]["classifier_path"] == str(classifier_path)
+    assert disk_table.uns[CLASSIFIER_APPLY_CONFIG_KEY]["feature_key"] == "area_features"
 
 
 def test_apply_classifier_rejects_missing_feature_key(sdata_blobs: SpatialData) -> None:
@@ -335,3 +561,4 @@ def test_headless_module_avoids_direct_interactive_classifier_imports() -> None:
     assert "napari" not in import_modules
     assert "qtpy" not in import_modules
     assert "thread_worker" not in source
+    assert "napari_harpy._feature_extraction" not in import_modules

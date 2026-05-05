@@ -555,7 +555,7 @@ after slice 2 is covered by tests, so the core behavior is already pinned down.
 
 ## 4. Add Headless Feature Calculation Before Apply
 
-Status: [ ] Not started
+Status: [x] Implemented
 
 This slice wires `hp.tb.add_feature_matrix(...)` into the headless pipeline so a
 target dataset can compute the required feature matrix before applying the
@@ -576,7 +576,7 @@ def compute_features_for_classifier(
     bundle: ClassifierExportBundle,
     *,
     target: HeadlessFeatureTarget,
-) -> HeadlessFeatureExtractionResult:
+) -> HeadlessFeatureTarget:
     ...
 
 def apply_classifier_with_features(
@@ -612,27 +612,9 @@ def apply_classifier_with_features_from_path(
     )
 ```
 
-Use this result shape for feature calculation:
-
-```python
-@dataclass(frozen=True)
-class HeadlessFeatureExtractionResult:
-    target: HeadlessFeatureTarget
-    change_kind: Literal["created", "updated"]
-    feature_columns: tuple[str, ...]
-
-    @property
-    def table_name(self) -> str:
-        return self.target.table_name
-
-    @property
-    def feature_key(self) -> str:
-        return self.target.feature_key
-
-    @property
-    def triplet_count(self) -> int:
-        return len(self.target.triplets)
-```
+`compute_features_for_classifier(...)` returns the normalized
+`HeadlessFeatureTarget` that was used for the Harpy call. The feature matrix
+and metadata remain side effects on the target table.
 
 Implementation rules:
 
@@ -669,13 +651,12 @@ Implementation rules:
   `table.uns["feature_matrices"][target.feature_key]["feature_columns"]`
   exactly to `bundle.feature_columns`; missing metadata is an error, not a
   shape-only fallback;
-- when `sdata` is backed by zarr, persist the computed feature state before
-  applying predictions:
-  - write `table.obsm[target.feature_key]`;
-  - write
-    `table.uns["feature_matrices"][target.feature_key]`;
-  - keep this in a Qt-free persistence helper, parallel to the prediction
-    state persistence used by `apply_classifier(...)`.
+- when `sdata` is backed by zarr, rely on `hp.tb.add_feature_matrix(...)` to
+  persist the computed feature matrix and its Harpy metadata:
+  - `table.obsm[target.feature_key]`;
+  - `table.uns["feature_matrices"][target.feature_key]`;
+  - keep the napari-harpy headless persistence helper focused on prediction
+    columns and classifier apply metadata.
 
 ### Tests
 
@@ -685,7 +666,8 @@ Implementation rules:
 - selected target triplets can cover one or multiple table regions;
 - incompatible feature columns fail before predictions are written;
 - feature extraction overwrite behavior is explicit and tested;
-- backed SpatialData writes are reloadable.
+- backed SpatialData feature writes are reloadable through Harpy's
+  `add_feature_matrix(...)` persistence.
 - backed SpatialData reloads include both the computed
   `.obsm[target.feature_key]` matrix and its
   `.uns["feature_matrices"][target.feature_key]` metadata.

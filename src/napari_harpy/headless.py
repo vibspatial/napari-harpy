@@ -1,22 +1,86 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from harpy.utils._keys import _FEATURE_MATRICES_KEY
+
 from napari_harpy._annotation import USER_CLASS_COLORS_KEY
-from napari_harpy._classifier_core import CLASSIFIER_APPLY_CONFIG_KEY, CLASSIFIER_CONFIG_KEY, ClassifierApplyResult
+from napari_harpy._classifier_core import (
+    CLASSIFIER_APPLY_CONFIG_KEY,
+    CLASSIFIER_CONFIG_KEY,
+    ClassifierApplyResult,
+    _validate_feature_matrix_compatible_with_bundle,
+)
 from napari_harpy._classifier_core import apply_classifier as _apply_classifier
-from napari_harpy._classifier_export import ClassifierExportBundle, read_classifier_export_bundle
+from napari_harpy._classifier_export import (
+    ClassifierExportBundle,
+    read_classifier_export_bundle,
+)
+from napari_harpy._feature_extraction_core import (
+    FeatureExtractionTriplet,
+    _get_triplet_channel_selection_error,
+    _normalize_triplets,
+    _resolve_harpy_channel_parameter,
+    _resolve_harpy_coordinate_system_parameter,
+    _resolve_harpy_image_name_parameter,
+    _resolve_harpy_labels_name_parameter,
+)
 from napari_harpy._persistence_core import write_table_prediction_state
+from napari_harpy._spatialdata import get_table
 
 if TYPE_CHECKING:
     from spatialdata import SpatialData
 
 
+@dataclass(frozen=True)
+class HeadlessFeatureTarget:
+    """Target table and element mapping for headless feature calculation."""
+
+    table_name: str
+    feature_key: str
+    triplets: tuple[FeatureExtractionTriplet, ...]
+    overwrite_feature_key: bool = False
+
+
 def load_classifier(path: str | Path) -> ClassifierExportBundle:
     """Load a trusted classifier export bundle from disk."""
     return read_classifier_export_bundle(path)
+
+
+def compute_features_for_classifier(
+    sdata: SpatialData,
+    bundle: ClassifierExportBundle,
+    *,
+    target: HeadlessFeatureTarget,
+) -> HeadlessFeatureTarget:
+    """Compute the feature matrix required by an exported classifier bundle."""
+    resolved_target = _normalize_headless_feature_target(target)
+    feature_names = bundle.feature_names
+    channel_selection_error = _get_triplet_channel_selection_error(resolved_target.triplets, feature_names)
+    if channel_selection_error is not None:
+        raise ValueError(channel_selection_error)
+
+    import harpy as hp
+
+    hp.tb.add_feature_matrix(
+        sdata=sdata,
+        labels_name=_resolve_harpy_labels_name_parameter(resolved_target.triplets),
+        image_name=_resolve_harpy_image_name_parameter(resolved_target.triplets, feature_names),
+        table_name=resolved_target.table_name,
+        feature_key=resolved_target.feature_key,
+        features=list(feature_names),
+        channels=_resolve_harpy_channel_parameter(resolved_target.triplets, feature_names),
+        feature_matrices_key=_FEATURE_MATRICES_KEY,
+        overwrite_feature_key=resolved_target.overwrite_feature_key,
+        to_coordinate_system=_resolve_harpy_coordinate_system_parameter(resolved_target.triplets),
+    )
+
+    table = get_table(sdata, resolved_target.table_name)
+    _validate_feature_matrix_compatible_with_bundle(table, resolved_target.feature_key, bundle)
+    return resolved_target
 
 
 def apply_classifier(
@@ -107,6 +171,74 @@ def apply_classifier_from_path(
         pred_confidence_column=pred_confidence_column,
         classifier_path=path,
     )
+
+
+def apply_classifier_with_features(
+    sdata: SpatialData,
+    bundle: ClassifierExportBundle,
+    *,
+    target: HeadlessFeatureTarget,
+    prediction_regions: Sequence[str] | None = None,
+    pred_class_column: str = "pred_class",
+    pred_confidence_column: str = "pred_confidence",
+    classifier_path: str | Path | None = None,
+) -> ClassifierApplyResult:
+    """Compute target features and apply an exported classifier bundle."""
+    resolved_target = compute_features_for_classifier(sdata, bundle, target=target)
+    return apply_classifier(
+        sdata,
+        bundle,
+        table_name=resolved_target.table_name,
+        feature_key=resolved_target.feature_key,
+        prediction_regions=prediction_regions,
+        pred_class_column=pred_class_column,
+        pred_confidence_column=pred_confidence_column,
+        classifier_path=classifier_path,
+    )
+
+
+def apply_classifier_with_features_from_path(
+    sdata: SpatialData,
+    path: str | Path,
+    *,
+    target: HeadlessFeatureTarget,
+    prediction_regions: Sequence[str] | None = None,
+    pred_class_column: str = "pred_class",
+    pred_confidence_column: str = "pred_confidence",
+) -> ClassifierApplyResult:
+    """Load a classifier artifact, compute target features, and apply it."""
+    bundle = load_classifier(path)
+    return apply_classifier_with_features(
+        sdata,
+        bundle,
+        target=target,
+        prediction_regions=prediction_regions,
+        pred_class_column=pred_class_column,
+        pred_confidence_column=pred_confidence_column,
+        classifier_path=path,
+    )
+
+
+def _normalize_headless_feature_target(target: HeadlessFeatureTarget) -> HeadlessFeatureTarget:
+    normalized_table_name = _normalize_nonempty_str(target.table_name, "target.table_name")
+    normalized_feature_key = _normalize_nonempty_str(target.feature_key, "target.feature_key")
+    normalized_triplets = _normalize_triplets(target.triplets)
+    if not normalized_triplets:
+        raise ValueError("target.triplets must contain at least one feature-extraction triplet.")
+
+    return HeadlessFeatureTarget(
+        table_name=normalized_table_name,
+        feature_key=normalized_feature_key,
+        triplets=normalized_triplets,
+        overwrite_feature_key=bool(target.overwrite_feature_key),
+    )
+
+
+def _normalize_nonempty_str(value: str, name: str) -> str:
+    normalized = str(value).strip()
+    if not normalized:
+        raise ValueError(f"{name} must not be empty.")
+    return normalized
 
 
 def _write_backed_prediction_state_if_needed(sdata: SpatialData, result: ClassifierApplyResult) -> None:
