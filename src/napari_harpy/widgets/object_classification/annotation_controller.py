@@ -7,28 +7,22 @@ from typing import TYPE_CHECKING, Any
 import pandas as pd
 from loguru import logger
 
-from napari_harpy._class_palette import (
-    DEFAULT_UNLABELED_CLASS,
-    DEFAULT_UNLABELED_COLOR,
-    normalize_class_values,
-    set_class_annotation_state,
+from napari_harpy.core.annotation import (
+    UNLABELED_CLASS,
+    USER_CLASS_COLUMN,
+    _set_user_class_annotation_state,
+    _to_user_class_values,
 )
-from napari_harpy._spatialdata import (
+from napari_harpy.core.spatialdata import (
     SpatialDataTableMetadata,
     get_table,
     get_table_metadata,
 )
-from napari_harpy._viewer_adapter import ViewerAdapter
+from napari_harpy.viewer.adapter import ViewerAdapter
 
 if TYPE_CHECKING:
     from anndata import AnnData
     from spatialdata import SpatialData
-
-USER_CLASS_COLUMN = "user_class"
-USER_CLASS_COLORS_KEY = f"{USER_CLASS_COLUMN}_colors"
-UNLABELED_CLASS = DEFAULT_UNLABELED_CLASS
-UNLABELED_COLOR = DEFAULT_UNLABELED_COLOR
-
 
 @dataclass(frozen=True)
 class _SelectionTableState:
@@ -385,22 +379,6 @@ class AnnotationController:
             return
 
         self.ensure_annotation_column(USER_CLASS_COLUMN)
-
-
-def _to_user_class_values(values: pd.Series) -> pd.Series:
-    return normalize_class_values(values, column_name=USER_CLASS_COLUMN, unlabeled_class=UNLABELED_CLASS)
-
-
-def _set_user_class_annotation_state(table: AnnData, values: pd.Series) -> None:
-    set_class_annotation_state(
-        table,
-        values,
-        column_name=USER_CLASS_COLUMN,
-        colors_key=USER_CLASS_COLORS_KEY,
-        warn_on_palette_overwrite=False,
-        unlabeled_class=UNLABELED_CLASS,
-        unlabeled_color=UNLABELED_COLOR,
-    )
 
 
 def _get_positive_selected_label(layer: Any) -> int | None:

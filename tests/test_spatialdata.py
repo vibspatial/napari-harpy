@@ -10,8 +10,8 @@ from spatialdata import SpatialData
 from spatialdata.models import TableModel
 from xarray import DataArray
 
-import napari_harpy._spatialdata as spatialdata_module
-from napari_harpy._spatialdata import (
+import napari_harpy.core.spatialdata as spatialdata_module
+from napari_harpy.core.spatialdata import (
     build_layer_metadata_adata,
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,

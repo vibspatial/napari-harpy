@@ -25,12 +25,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_harpy._app_state import FeatureMatrixWrittenEvent, HarpyAppState, get_or_create_app_state
-from napari_harpy._feature_extraction import (
-    FeatureExtractionBindingState,
-    FeatureExtractionController,
-    FeatureExtractionTriplet,
-)
-from napari_harpy._spatialdata import (
+from napari_harpy.core.spatialdata import (
     SpatialDataImageOption,
     SpatialDataLabelsOption,
     get_annotating_table_names,
@@ -42,19 +37,24 @@ from napari_harpy._spatialdata import (
     validate_table_annotation_coverage,
     validate_table_region_instance_ids,
 )
-from napari_harpy.widgets._feature_extraction_status_card import (
+from napari_harpy.widgets.feature_extraction.controller import (
+    FeatureExtractionBindingState,
+    FeatureExtractionController,
+    FeatureExtractionTriplet,
+)
+from napari_harpy.widgets.feature_extraction.status_card import (
     _FeatureExtractionStatusCardSpec,
     build_feature_extraction_controller_feedback_card_spec,
     build_feature_extraction_selection_status_card_spec,
     build_feature_extraction_status_card_entries,
 )
-from napari_harpy.widgets._shared_styles import (
+from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,
 )
-from napari_harpy.widgets._shared_styles import (
+from napari_harpy.widgets.shared_styles import (
     CHECKBOX_STYLESHEET as _FEATURE_CHECKBOX_STYLESHEET,
 )
-from napari_harpy.widgets._shared_styles import (
+from napari_harpy.widgets.shared_styles import (
     WIDGET_BORDER_COLOR,
     WIDGET_PANEL_COLOR,
     WIDGET_TEXT_COLOR,
@@ -66,10 +66,10 @@ from napari_harpy.widgets._shared_styles import (
     format_tooltip,
     set_status_card,
 )
-from napari_harpy.widgets._shared_styles import (
+from napari_harpy.widgets.shared_styles import (
     WIDGET_MIN_WIDTH as _WIDGET_MIN_WIDTH,
 )
-from napari_harpy.widgets._shared_styles import (
+from napari_harpy.widgets.shared_styles import (
     WIDGET_SURFACE_COLOR as _WIDGET_SURFACE_COLOR,
 )
 
@@ -345,7 +345,7 @@ class FeatureExtractionWidget(QWidget):
             selected_image_option=None,
             image_note_text=None,
         )
-        self._logo_path = Path(__file__).resolve().parents[3] / "docs" / "_static" / "logo.png"
+        self._logo_path = Path(__file__).resolve().parents[4] / "docs" / "_static" / "logo.png"
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)

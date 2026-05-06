@@ -8,16 +8,16 @@ import zarr
 from spatialdata import SpatialData, read_zarr
 from spatialdata.models import TableModel
 
-from napari_harpy._annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
 from napari_harpy._app_state import HarpyAppState
-from napari_harpy._classifier import (
+from napari_harpy._persistence import PersistenceController
+from napari_harpy.core.annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
+from napari_harpy.core.spatialdata import get_table
+from napari_harpy.widgets.object_classification.controller import (
     CLASSIFIER_CONFIG_KEY,
     PRED_CLASS_COLORS_KEY,
     PRED_CLASS_COLUMN,
     PRED_CONFIDENCE_COLUMN,
 )
-from napari_harpy._persistence import PersistenceController
-from napari_harpy._spatialdata import get_table
 
 
 def test_persistence_controller_requires_backed_spatialdata(sdata_blobs: SpatialData) -> None:

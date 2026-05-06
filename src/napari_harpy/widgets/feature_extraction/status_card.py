@@ -4,7 +4,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from napari_harpy.widgets._shared_styles import StatusCardKind, format_feedback_identifier
+from napari_harpy.widgets.shared_styles import StatusCardKind, format_feedback_identifier
 
 _FeatureExtractionTableBlocker = Literal["choose_table", "no_eligible", "invalid"] | None
 

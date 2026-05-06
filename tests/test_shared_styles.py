@@ -1,6 +1,6 @@
 from qtpy.QtWidgets import QSizePolicy
 
-from napari_harpy.widgets._shared_styles import CompactComboBox, build_input_control_stylesheet, format_tooltip
+from napari_harpy.widgets.shared_styles import CompactComboBox, build_input_control_stylesheet, format_tooltip
 
 
 def test_build_input_control_stylesheet_suffixes_each_selector_individually() -> None:

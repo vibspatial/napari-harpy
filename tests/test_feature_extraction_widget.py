@@ -9,17 +9,17 @@ from napari.layers import Labels
 from qtpy.QtWidgets import QCheckBox, QComboBox, QScrollArea
 from spatialdata import SpatialData
 
-import napari_harpy.widgets._feature_extraction_widget as feature_extraction_widget_module
+import napari_harpy.widgets.feature_extraction.widget as feature_extraction_widget_module
 from napari_harpy._app_state import FeatureMatrixWrittenEvent, get_or_create_app_state
-from napari_harpy._feature_extraction import FeatureExtractionTriplet
-from napari_harpy._spatialdata import (
+from napari_harpy.core.spatialdata import (
     SpatialDataFeatureExtractionImageDiscovery,
     SpatialDataFeatureExtractionLabelDiscovery,
     SpatialDataImageOption,
     SpatialDataLabelsOption,
 )
-from napari_harpy.widgets._feature_extraction_widget import FeatureExtractionWidget
-from napari_harpy.widgets._viewer_widget import ViewerWidget
+from napari_harpy.widgets.feature_extraction.controller import FeatureExtractionTriplet
+from napari_harpy.widgets.feature_extraction.widget import FeatureExtractionWidget
+from napari_harpy.widgets.viewer.widget import ViewerWidget
 
 
 class DummyEventEmitter:
@@ -112,6 +112,7 @@ def test_feature_extraction_widget_can_be_instantiated(qtbot) -> None:
     qtbot.addWidget(widget)
 
     assert widget is not None
+    assert widget._logo_path.is_file()
     assert widget.selected_segmentation_name is None
     assert widget.selected_spatialdata is None
     assert widget.selected_image_name is None

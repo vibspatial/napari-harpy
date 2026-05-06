@@ -12,10 +12,10 @@ import pandas as pd
 from harpy.utils._keys import _FEATURE_MATRICES_KEY
 from numpy.typing import NDArray
 
-from napari_harpy._annotation import UNLABELED_CLASS
-from napari_harpy._class_palette import set_class_annotation_state
-from napari_harpy._classifier_export import ClassifierExportBundle, normalize_feature_columns
-from napari_harpy._spatialdata import get_table, get_table_metadata
+from napari_harpy.core.annotation import UNLABELED_CLASS
+from napari_harpy.core.class_palette import set_class_annotation_state
+from napari_harpy.core.classifier_export import ClassifierExportBundle, normalize_feature_columns
+from napari_harpy.core.spatialdata import get_table, get_table_metadata
 
 try:
     from scipy.sparse import issparse

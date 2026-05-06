@@ -11,9 +11,9 @@ from matplotlib.colors import to_rgba
 from napari.layers import Labels
 from napari.utils.colormaps import DirectLabelColormap, label_colormap
 
-from napari_harpy._class_palette import default_categorical_colors, normalize_color_sequence
-from napari_harpy._spatialdata import get_table, get_table_metadata
-from napari_harpy._table_color_source import (
+from napari_harpy.core.class_palette import default_categorical_colors, normalize_color_sequence
+from napari_harpy.core.spatialdata import get_table, get_table_metadata
+from napari_harpy.core.table_color_source import (
     ColorValueKind,
     TableColorSourceSpec,
     has_high_cardinality_string_values,

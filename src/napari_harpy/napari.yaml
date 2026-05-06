@@ -10,13 +10,13 @@ contributions:
       python_name: napari_harpy._reader:get_reader
     - id: napari-harpy.viewer
       title: Open viewer widget
-      python_name: napari_harpy.widgets._viewer_widget:ViewerWidget
+      python_name: napari_harpy.widgets.viewer.widget:ViewerWidget
     - id: napari-harpy.feature_extraction
       title: Open feature extraction widget
-      python_name: napari_harpy.widgets._feature_extraction_widget:FeatureExtractionWidget
+      python_name: napari_harpy.widgets.feature_extraction.widget:FeatureExtractionWidget
     - id: napari-harpy.object_classification
       title: Open object classification widget
-      python_name: napari_harpy.widgets._object_classification_widget:ObjectClassificationWidget
+      python_name: napari_harpy.widgets.object_classification.widget:ObjectClassificationWidget
   widgets:
     - command: napari-harpy.viewer
       display_name: Viewer

@@ -8,17 +8,17 @@ import pytest
 from qtpy.QtCore import QObject, Signal
 from spatialdata import SpatialData
 
-import napari_harpy._classifier as classifier_module
-from napari_harpy._annotation import USER_CLASS_COLUMN
-from napari_harpy._class_palette import default_class_colors
-from napari_harpy._classifier import (
+import napari_harpy.widgets.object_classification.controller as classifier_module
+from napari_harpy.core.annotation import USER_CLASS_COLUMN
+from napari_harpy.core.class_palette import default_class_colors
+from napari_harpy.core.classifier_export import read_classifier_export_bundle
+from napari_harpy.widgets.object_classification.controller import (
     CLASSIFIER_CONFIG_KEY,
     PRED_CLASS_COLORS_KEY,
     PRED_CLASS_COLUMN,
     PRED_CONFIDENCE_COLUMN,
     ClassifierController,
 )
-from napari_harpy._classifier_export import read_classifier_export_bundle
 
 _FEATURE_MATRICES_KEY = "feature_matrices"
 

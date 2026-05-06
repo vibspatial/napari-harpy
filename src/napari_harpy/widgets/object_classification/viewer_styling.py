@@ -9,27 +9,31 @@ import pandas as pd
 from matplotlib import colormaps
 from napari.utils.colormaps import DirectLabelColormap
 
-from napari_harpy._annotation import (
+from napari_harpy.core.annotation import (
     UNLABELED_CLASS,
     UNLABELED_COLOR,
     USER_CLASS_COLORS_KEY,
     USER_CLASS_COLUMN,
 )
-from napari_harpy._class_palette import (
+from napari_harpy.core.class_palette import (
     backfill_missing_class_colors,
     normalize_class_values,
     normalize_color_sequence,
     read_series_class_categories,
     stored_palette_to_lookup,
 )
-from napari_harpy._classifier import PRED_CLASS_COLORS_KEY, PRED_CLASS_COLUMN, PRED_CONFIDENCE_COLUMN
-from napari_harpy._spatialdata import (
+from napari_harpy.core.spatialdata import (
     SpatialDataTableMetadata,
     get_table,
     get_table_metadata,
 )
-from napari_harpy._viewer_adapter import ViewerAdapter
-from napari_harpy._viewer_overlay_styling import _build_labels_features
+from napari_harpy.viewer.adapter import ViewerAdapter
+from napari_harpy.viewer.overlay_styling import _build_labels_features
+from napari_harpy.widgets.object_classification.controller import (
+    PRED_CLASS_COLORS_KEY,
+    PRED_CLASS_COLUMN,
+    PRED_CONFIDENCE_COLUMN,
+)
 
 if TYPE_CHECKING:
     from anndata import AnnData

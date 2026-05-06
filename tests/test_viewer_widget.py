@@ -11,9 +11,9 @@ from qtpy.QtGui import QColor
 from qtpy.QtWidgets import QComboBox
 
 import napari_harpy._app_state as app_state_module
-import napari_harpy.widgets._viewer_widget as viewer_widget_module
-from napari_harpy._table_color_source import TableColorSourceSpec
-from napari_harpy.widgets._viewer_widget import ViewerWidget
+import napari_harpy.widgets.viewer.widget as viewer_widget_module
+from napari_harpy.core.table_color_source import TableColorSourceSpec
+from napari_harpy.widgets.viewer.widget import ViewerWidget
 
 
 class DummyEventEmitter:
@@ -81,6 +81,7 @@ def test_viewer_widget_can_be_instantiated(qtbot) -> None:
     qtbot.addWidget(widget)
 
     assert widget is not None
+    assert widget._logo_path.is_file()
     assert widget.app_state.sdata is None
     assert not widget.empty_state_label.isHidden()
     assert widget.summary_label.text() == "No SpatialData loaded."

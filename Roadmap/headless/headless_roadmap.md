@@ -700,9 +700,139 @@ Implementation rules:
 - the target mapping is explicit enough that source and target datasets do not
   need identical element names.
 
-## 5. Make Package Imports Lazy
+## 5. Reorganize Modules by Domain
 
-Status: [ ] Not started
+Status: [x] Implemented
+
+Before making imports lazy, reorganize the package so the module layout matches
+the dependency boundaries we want:
+
+- Qt-free shared code lives in `core/`;
+- napari viewer integration lives in `viewer/`;
+- widget-specific code lives under the relevant widget domain;
+- public headless APIs stay in `headless.py`;
+- interactive entry points stay separate from the headless path.
+
+This slice should be a mechanical move/refactor. Do not change behavior while
+moving modules.
+
+Target layout:
+
+```text
+napari_harpy/
+  core/
+    annotation.py
+    class_palette.py
+    classifier.py
+    classifier_export.py
+    feature_extraction.py
+    persistence.py
+    spatialdata.py
+    table_color_source.py
+
+  viewer/
+    adapter.py
+    overlay_styling.py
+
+  widgets/
+    shared_styles.py
+    viewer/
+      widget.py
+    feature_extraction/
+      controller.py
+      widget.py
+      status_card.py
+    object_classification/
+      annotation_controller.py
+      controller.py
+      widget.py
+      status_card.py
+      viewer_styling.py
+
+  headless.py
+  datasets.py
+  _interactive.py
+  _reader.py
+```
+
+Current-to-new file map:
+
+- split `_annotation.py`:
+  - shared annotation schema and table helpers -> `core/annotation.py`;
+  - `AnnotationController`, `_SelectionTableState`, and controller-only helpers
+    -> `widgets/object_classification/annotation_controller.py`;
+- `_class_palette.py` -> `core/class_palette.py`;
+- `_classifier_core.py` -> `core/classifier.py`;
+- `_classifier_export.py` -> `core/classifier_export.py`;
+- `_feature_extraction_core.py` -> `core/feature_extraction.py`;
+- `_persistence_core.py` -> `core/persistence.py`;
+- `_spatialdata.py` -> `core/spatialdata.py`;
+- `_table_color_source.py` -> `core/table_color_source.py`;
+- `_viewer_adapter.py` -> `viewer/adapter.py`;
+- `_viewer_overlay_styling.py` -> `viewer/overlay_styling.py`;
+- `_feature_extraction.py` -> `widgets/feature_extraction/controller.py`;
+- `widgets/_feature_extraction_widget.py` -> `widgets/feature_extraction/widget.py`;
+- `widgets/_feature_extraction_status_card.py` ->
+  `widgets/feature_extraction/status_card.py`;
+- `_classifier.py` -> `widgets/object_classification/controller.py`;
+- `_classifier_viewer_styling.py` ->
+  `widgets/object_classification/viewer_styling.py`;
+- `widgets/_object_classification_widget.py` ->
+  `widgets/object_classification/widget.py`;
+- `widgets/_object_classification_status_card.py` ->
+  `widgets/object_classification/status_card.py`;
+- `widgets/_viewer_widget.py` -> `widgets/viewer/widget.py`;
+- `widgets/_shared_styles.py` -> `widgets/shared_styles.py`.
+
+Move `_spatialdata.py` as one module for this slice. To keep
+`core/spatialdata.py` import-time headless-safe, remove the top-level
+`from napari.layers import Labels` import and import `Labels` locally inside
+`_is_pickable_labels_layer(...)`, which is only used by the legacy/reference
+layer-metadata helpers `build_layer_metadata_adata(...)` and
+`refresh_layer_table_metadata(...)`.
+
+Keep `_app_state.py` top-level for this slice unless the implementation needs a
+small follow-up decision. It is interactive application state, not headless core,
+and should not block this mechanical layout cleanup.
+
+Do not keep backward-compatibility shims for the old private module paths. These
+modules are private implementation details, and this refactor should update all
+internal imports and tests to the new paths directly.
+
+### Implementation Plan
+
+- create `core/`, `viewer/`, and widget-domain packages with `__init__.py`
+  files;
+- move files according to the file map above;
+- update imports in source and tests to the new module paths;
+- update `widgets/__init__.py` to re-export the three public widget classes
+  from their new package locations;
+- update `napari.yaml` if it points at any moved widget paths;
+- update tests that intentionally inspect import paths or source imports;
+- keep behavior changes out of this slice.
+
+### Tests
+
+- full test suite remains green after the mechanical move;
+- napari widget entry points still resolve through `napari.yaml`;
+- `widgets.__all__` or equivalent public widget exports still expose:
+  - `ViewerWidget`;
+  - `FeatureExtractionWidget`;
+  - `ObjectClassificationWidget`;
+- headless tests still import only headless-safe core modules and do not pull in
+  widget/controller modules directly.
+
+### Acceptance Criteria
+
+- the package layout clearly separates core, viewer integration, and the three
+  widget domains;
+- all internal imports use the new module paths;
+- no compatibility modules remain at the old private paths;
+- no behavior changes are introduced beyond import-path updates.
+
+## 6. Make Package Imports Lazy
+
+Status: [x] Implemented
 
 After the headless Python API is working, make the package import surface lazy
 so importing headless modules does not eagerly pull in napari, Qt, widgets, or
@@ -714,50 +844,50 @@ apply implementation.
 ### Implementation Plan
 
 - add `lazy_loader` as a dependency;
-- use `lazy_loader` in `src/napari_harpy/__init__.py`;
-- keep `napari_harpy.Interactive` and other existing public attributes
-  available as lazy attributes;
+- follow the `harpy_vitessce` package pattern: each package `__init__.py` that
+  exposes public names should declare those names with `lazy_loader.attach(...)`
+  and keep typing-only imports under `TYPE_CHECKING`;
+- use `lazy_loader` in `src/napari_harpy/__init__.py` for the complete public
+  package surface:
+  - lazy submodules: `core`, `datasets`, `headless`, `viewer`, `widgets`;
+  - lazy attributes from `_interactive`: `Interactive`;
+  - lazy attributes from `_app_state`: `HarpyAppState`,
+    `get_or_create_app_state`;
+- keep `__version__` eager, because it is cheap and needed by classifier export;
+- use `lazy_loader` in `src/napari_harpy/widgets/__init__.py` so importing the
+  widget package does not import any Qt widget implementation:
+  - lazy attributes from `widgets.viewer.widget`: `ViewerWidget`;
+  - lazy attributes from `widgets.feature_extraction.widget`:
+    `FeatureExtractionWidget`;
+  - lazy attributes from `widgets.object_classification.widget`:
+    `ObjectClassificationWidget`;
+- leave empty package initializers such as `core/__init__.py`, `viewer/__init__.py`,
+  and widget-domain `__init__.py` files minimal unless they need an explicit
+  public export surface later;
 - avoid importing `_interactive.py`, `_app_state.py`, widgets, napari, or Qt
   during a plain `import napari_harpy`;
-- verify `import napari_harpy.headless` stays headless-safe once package-level
+- verify `from napari_harpy import headless` stays headless-safe once package-level
   imports are lazy.
 
 ### Tests
 
-- importing `napari_harpy` does not import napari or Qt modules;
-- importing `napari_harpy.headless` does not import napari, Qt, widgets, or
-  `_classifier.py`;
-- accessing `napari_harpy.Interactive` still resolves the interactive launcher;
-- existing public imports keep working or have explicit migration notes.
+- keep tests small and focused on napari-harpy's lazy export wiring rather than
+  retesting `lazy_loader` itself;
+- use subprocess smoke tests so earlier pytest imports cannot pollute
+  `sys.modules`;
+- verify `import napari_harpy` does not eagerly import `napari` or `qtpy`;
+- verify `from napari_harpy import headless` does not eagerly import widgets or
+  Qt;
+- verify representative lazy attributes still resolve:
+  - `from napari_harpy import Interactive`;
+  - `from napari_harpy.widgets import ViewerWidget`.
 
 ### Acceptance Criteria
 
-- headless users can import the package and headless API without a viewer stack;
+- headless users can import the package and headless API without importing or
+  initializing a viewer stack;
 - interactive users can still access the existing napari-facing entry points;
 - lazy imports do not hide import errors once a lazy attribute is actually used.
-
-## 6. Optional CLI Wrapper
-
-Status: [ ] Not started
-
-Once the Python API is stable, add a CLI wrapper. This should be thin and should
-call the same `headless.py` functions.
-
-Possible shape:
-
-```bash
-napari-harpy-classifier apply \
-  --sdata input.zarr \
-  --classifier model.harpy-classifier.joblib \
-  --table table \
-  --feature-key features_classifier \
-  --labels cells \
-  --image image \
-  --coordinate-system global \
-  --write
-```
-
-Keep CLI design for later. The first priority is a tested Python API.
 
 ## Open Questions
 

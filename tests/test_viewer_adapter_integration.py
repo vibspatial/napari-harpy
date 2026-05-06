@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from napari_harpy._viewer_adapter import ViewerAdapter
+from napari_harpy.viewer.adapter import ViewerAdapter
 
 
 def test_viewer_adapter_real_viewer_overlay_load_activate_and_remove(

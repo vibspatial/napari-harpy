@@ -22,29 +22,16 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from napari_harpy._annotation import UNLABELED_CLASS, AnnotationController
 from napari_harpy._app_state import (
     CoordinateSystemChangedEvent,
     FeatureMatrixWrittenEvent,
     HarpyAppState,
     get_or_create_app_state,
 )
-from napari_harpy._classifier import (
-    DEFAULT_PREDICTION_SCOPE,
-    DEFAULT_TRAINING_SCOPE,
-    ClassifierController,
-    ClassifierScopeMode,
-)
-from napari_harpy._classifier_export import DEFAULT_CLASSIFIER_EXPORT_SUFFIX
-from napari_harpy._classifier_viewer_styling import (
-    COLOR_BY_OPTIONS,
-    COLOR_BY_PRED_CLASS,
-    COLOR_BY_PRED_CONFIDENCE,
-    COLOR_BY_USER_CLASS,
-    ViewerStylingController,
-)
 from napari_harpy._persistence import PersistenceController
-from napari_harpy._spatialdata import (
+from napari_harpy.core.annotation import UNLABELED_CLASS
+from napari_harpy.core.classifier_export import DEFAULT_CLASSIFIER_EXPORT_SUFFIX
+from napari_harpy.core.spatialdata import (
     SpatialDataLabelsOption,
     SpatialDataTableMetadata,
     get_annotating_table_names,
@@ -54,17 +41,31 @@ from napari_harpy._spatialdata import (
     get_table_obsm_keys,
     validate_table_binding,
 )
-from napari_harpy.widgets._object_classification_status_card import (
+from napari_harpy.widgets.object_classification.annotation_controller import AnnotationController
+from napari_harpy.widgets.object_classification.controller import (
+    DEFAULT_PREDICTION_SCOPE,
+    DEFAULT_TRAINING_SCOPE,
+    ClassifierController,
+    ClassifierScopeMode,
+)
+from napari_harpy.widgets.object_classification.status_card import (
     _LabelsLayerPreparationResult,
     _ObjectClassificationStatusCardSpec,
     build_object_classification_classifier_feedback_card_spec,
     build_object_classification_classifier_preparation_card_spec,
     build_object_classification_selection_status_card_spec,
 )
-from napari_harpy.widgets._shared_styles import (
+from napari_harpy.widgets.object_classification.viewer_styling import (
+    COLOR_BY_OPTIONS,
+    COLOR_BY_PRED_CLASS,
+    COLOR_BY_PRED_CONFIDENCE,
+    COLOR_BY_USER_CLASS,
+    ViewerStylingController,
+)
+from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,
 )
-from napari_harpy.widgets._shared_styles import (
+from napari_harpy.widgets.shared_styles import (
     WIDGET_BORDER_COLOR,
     WIDGET_PANEL_COLOR,
     CompactComboBox,
@@ -76,7 +77,7 @@ from napari_harpy.widgets._shared_styles import (
     format_tooltip,
     set_status_card,
 )
-from napari_harpy.widgets._shared_styles import (
+from napari_harpy.widgets.shared_styles import (
     WIDGET_MIN_WIDTH as _WIDGET_MIN_WIDTH,
 )
 
@@ -158,7 +159,7 @@ class ObjectClassificationWidget(QWidget):
         self._selected_feature_key: str | None = None
         self._selected_training_scope: ClassifierScopeMode = DEFAULT_TRAINING_SCOPE
         self._selected_prediction_scope: ClassifierScopeMode = DEFAULT_PREDICTION_SCOPE
-        self._logo_path = Path(__file__).resolve().parents[3] / "docs" / "_static" / "logo.png"
+        self._logo_path = Path(__file__).resolve().parents[4] / "docs" / "_static" / "logo.png"
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)

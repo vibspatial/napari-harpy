@@ -9,10 +9,10 @@ from matplotlib.colors import to_rgba
 from napari.layers import Image, Labels
 from napari.utils.colormaps import CyclicLabelColormap, DirectLabelColormap
 
-import napari_harpy._viewer_overlay_styling as overlay_styling_module
+import napari_harpy.viewer.overlay_styling as overlay_styling_module
 from napari_harpy._app_state import get_or_create_app_state
-from napari_harpy._table_color_source import TableColorSourceSpec
-from napari_harpy._viewer_adapter import (
+from napari_harpy.core.table_color_source import TableColorSourceSpec
+from napari_harpy.viewer.adapter import (
     ImageLayerBinding,
     LabelsLayerBinding,
     LayerBindingRegistry,

@@ -13,23 +13,23 @@ import pandas as pd
 from qtpy.QtCore import QTimer
 from sklearn.ensemble import RandomForestClassifier
 
-import napari_harpy._classifier_core as _classifier_core
-from napari_harpy._annotation import UNLABELED_CLASS, USER_CLASS_COLUMN
-from napari_harpy._classifier_core import (
+import napari_harpy.core.classifier as _classifier_core
+from napari_harpy.core.annotation import UNLABELED_CLASS, USER_CLASS_COLUMN
+from napari_harpy.core.classifier import (
     _get_feature_metadata,
     _get_finite_feature_row_mask,
     _normalize_feature_matrix,
     _normalize_prediction_regions,
     _resolve_region_row_positions,
 )
-from napari_harpy._classifier_export import (
+from napari_harpy.core.classifier_export import (
     ClassifierExportBundle,
     ClassifierModelSnapshot,
     build_classifier_export_bundle,
     normalize_feature_columns,
     write_classifier_export_bundle,
 )
-from napari_harpy._spatialdata import SpatialDataTableMetadata, get_table, get_table_metadata
+from napari_harpy.core.spatialdata import SpatialDataTableMetadata, get_table, get_table_metadata
 
 
 def _resolve_thread_worker() -> Any:
