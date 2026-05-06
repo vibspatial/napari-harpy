@@ -317,15 +317,16 @@ Validate without triggering a full dataframe compute where possible:
 
 - `points` is a `dask.dataframe.DataFrame`
 - `output_path` is path-like and represents the final `transcripts_vis/` cache root
+- normalize `output_path` with `Path(output_path)` before returning or using it internally
 - `x`, `y`, and `gene` are strings
 - `x`, `y`, and `gene` columns exist
 - `x` and `y` are numeric according to dataframe metadata
 - `transcript_id is None` or is a string
 - if `transcript_id` is provided, the column exists
 - `leaf_tile_size` is finite and `> 0`
-- `max_rows_per_row_group` is an `int` and `> 0`
-- `coarse_tile_budget` is an `int` and `> 0`
-- `n_levels is None` or is an `int >= 1`
+- `max_rows_per_row_group` is an `int` and `> 0`, but not `bool`
+- `coarse_tile_budget` is an `int` and `> 0`, but not `bool`
+- `n_levels is None` or is an `int >= 1`, but not `bool`
 
 #### Dataframe Data-Quality Validation
 
@@ -334,7 +335,7 @@ Validate with Dask reductions before writing cache files:
 - reject empty dataframes
 - reject non-finite coordinates in `x` or `y`
 - reject missing gene values before string coercion
-- reject empty gene strings before string coercion
+- reject gene values whose string form is empty after stripping whitespace
 - if `transcript_id` is provided:
   - reject missing values
   - reject duplicate values
@@ -344,7 +345,7 @@ Recommended implementation notes:
 - use one or a small number of Dask reductions for these checks
 - prefer clear `ValueError` messages that name the failing column
 - do not silently drop invalid rows
-- coerce `gene` to string only after missing and empty-string gene validation
+- coerce `gene` to string only after missing and stripped-empty gene validation
 - the builder may compute row count during validation because later metadata and empty-input rejection need it anyway
 
 #### Transcript Identity Policy
@@ -356,7 +357,8 @@ If `transcript_id` is provided:
 
 If `transcript_id` is not provided:
 
-- create an internal unique row id for the current build
+- validation records that the internal-row-id fallback policy applies
+- create an internal unique row id later during dataframe preparation or level writing, not during validation
 - the internal id must be unique within that build
 - deterministic coarse-level sampling across rebuilds is only guaranteed when input row order and partitioning are stable
 - do not expose the internal id as a public source transcript identity
