@@ -1061,6 +1061,7 @@ class ViewerWidget(QWidget):
     def _on_app_state_coordinate_system_changed(self, event: CoordinateSystemChangedEvent) -> None:
         """Refresh the combo and cards when the shared coordinate system changes."""
         del event
+        self._clear_action_feedback()
         self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
         self._refresh_coordinate_system_content()
 
