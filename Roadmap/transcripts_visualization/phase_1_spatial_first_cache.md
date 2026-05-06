@@ -1,6 +1,6 @@
 # Phase 1A: Spatial-First Cache Offline Writer
 
-This document turns Phase 1A from [Transcripts_Tile_cache.md](/Users/arne.defauw/VIB/napari_harpy_transcrips/Roadmap/transcripts_visualization/Transcripts_Tile_cache.md) into a concrete implementation plan.
+This document turns Phase 1A from [Transcripts_Tile_cache.md](/Users/arne.defauw/VIB/napari_harpy/Roadmap/transcripts_visualization/Transcripts_Tile_cache.md) into a concrete implementation plan.
 
 Phase 1A is the offline writer only. It does not include the napari runtime, the transcript controller, gene subset UI, `tile_gene_index.parquet`, or gene-aware overview sampling.
 
@@ -300,21 +300,25 @@ Required behavior:
 
 1. annotate rows for `level = finest_level`
 2. keep only the level-file columns
-3. group by tile
-4. write one row group per tile, or split dense tiles into shards
-5. collect one manifest row per written row group
+3. process Dask partitions independently
+4. within each partition, sort or group rows by `(tile_x, tile_y)`
+5. write one row group per partition-local tile group, or split large groups into shards
+6. allow the same `(level, tile_x, tile_y)` to appear in multiple row groups when that tile has rows in multiple input partitions
+7. collect one manifest row per written row group
 
 Important constraints:
 
 - use `pyarrow.parquet.ParquetWriter`
 - row-group sharding must respect `max_rows_per_row_group`
 - all rows in a written row group must belong to exactly one `(level, tile_x, tile_y)`
+- Phase 1A should not require a global Dask shuffle by tile before writing
 
 Recommended simplification for Phase 1A:
 
 - correctness first
-- materialize one tile group at a time if needed
-- accept that the grouping strategy may be optimized later
+- write partition-local tile shards first
+- accept that one tile may produce multiple manifest rows across input partitions
+- optionally compact or merge row groups by tile in a later optimization pass if benchmarks show it is needed
 
 ### 8. Coarser Sampled Level Writer
 
@@ -425,7 +429,10 @@ Once all levels can be written, add the cache metadata writers.
 - `row_group`
 - `level_file`
 - `is_exact`
-- optional `tile_shard`
+- `tile_shard`
+
+For Phase 1A, `tile_shard` should be written even when a tile only has one shard.
+With partition-local writing, multiple row groups may have the same `level`, `tile_x`, and `tile_y`; `tile_shard` gives those row groups a deterministic per-tile shard index.
 
 Write `manifest.parquet` last.
 
@@ -478,6 +485,7 @@ Recommended test groups:
 - finest-level coordinates reconstruct the source coordinates within `float32` tolerance
 - `gene_id` values match `genes.parquet`
 - dense tiles split into multiple row groups when `max_rows_per_row_group` is small
+- partition-local writing can produce multiple manifest rows for the same tile
 - manifest row-group accounting matches the actual Parquet file
 
 ### Group D: Coarse Sampled Levels
