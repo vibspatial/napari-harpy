@@ -162,7 +162,14 @@ The internal function names do not need to match this exactly, but Phase 1A shou
 
 Implement Phase 1A in the order below.
 
-### 1. Define the Core Types and Constants
+### 1. Define the Core Types and Constants — Implemented
+
+Status:
+
+- Implemented in `src/napari_harpy/_transcript_tiles.py`
+- Covered by `tests/test_transcript_tiles.py`
+- Verified with `pytest tests/test_transcript_tiles.py`
+- Verified with `ruff check src/napari_harpy/_transcript_tiles.py tests/test_transcript_tiles.py`
 
 Add:
 
