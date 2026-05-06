@@ -662,6 +662,8 @@ Acceptance:
 
 ### 4. Add Classifier Training and Prediction Scopes
 
+Status: [x] Completed
+
 Files:
 
 - `src/napari_harpy/widgets/_object_classification_widget.py`
@@ -671,23 +673,25 @@ Files:
 
 Work:
 
-- add training-scope and prediction-scope controls;
-- default training to all eligible labeled rows in the selected table;
-- support explicit training on the selected region only;
-- default prediction to the selected region only;
-- support explicit complete-table prediction;
-- record scope metadata and row counts.
+- [x] add training-scope and prediction-scope controls;
+- [x] default training to all eligible labeled rows in the selected table;
+- [x] support explicit training on the selected region only;
+- [x] default prediction to the selected region only;
+- [x] support explicit complete-table prediction;
+- [x] record scope metadata and row counts.
 
 Acceptance:
 
-- training can use labeled rows from multiple regions by default;
-- training can be restricted to the selected region only;
-- selected-region-only prediction updates only selected-region rows;
-- complete-table prediction updates all eligible rows only when explicitly
+- [x] training can use labeled rows from multiple regions by default;
+- [x] training can be restricted to the selected region only;
+- [x] selected-region-only prediction updates only selected-region rows;
+- [x] complete-table prediction updates all eligible rows only when explicitly
   requested;
-- UI text makes the write scope clear before work starts.
+- [x] UI text makes the write scope clear before work starts.
 
 ### 5. Add Integration Tests
+
+Status: [x] Completed
 
 Files:
 
@@ -695,17 +699,18 @@ Files:
 - `tests/test_feature_extraction.py`
 - `tests/test_widget.py`
 - `tests/test_classifier.py`
+- `tests/test_spatialdata.py`
 
 Recommended scenarios:
 
-- one table annotates multiple labels regions across coordinate systems;
-- feature extraction fills one `.obsm[feature_key]` matrix for several regions;
-- same `instance_key` value is allowed in different regions;
-- duplicate `instance_key` values within one region are rejected;
-- classifier training uses labeled rows across regions by default;
-- classifier training can be restricted to the selected region only;
-- selected-region-only prediction leaves hidden-region prediction rows unchanged;
-- complete-table prediction updates eligible rows across all regions only when
+- [x] one table annotates multiple labels regions across coordinate systems;
+- [x] feature extraction fills one `.obsm[feature_key]` matrix for several regions;
+- [x] same `instance_key` value is allowed in different regions;
+- [x] duplicate `instance_key` values within one region are rejected;
+- [x] classifier training uses labeled rows across regions by default;
+- [x] classifier training can be restricted to the selected region only;
+- [x] selected-region-only prediction leaves hidden-region prediction rows unchanged;
+- [x] complete-table prediction updates eligible rows across all regions only when
   explicitly selected.
 
 ## Open Questions

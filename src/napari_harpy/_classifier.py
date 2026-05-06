@@ -1,27 +1,35 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from functools import partial
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import pandas as pd
-from numpy.typing import NDArray
 from qtpy.QtCore import QTimer
 from sklearn.ensemble import RandomForestClassifier
 
+import napari_harpy._classifier_core as _classifier_core
 from napari_harpy._annotation import UNLABELED_CLASS, USER_CLASS_COLUMN
-from napari_harpy._class_palette import set_class_annotation_state
+from napari_harpy._classifier_core import (
+    _get_feature_metadata,
+    _get_finite_feature_row_mask,
+    _normalize_feature_matrix,
+    _normalize_prediction_regions,
+    _resolve_region_row_positions,
+)
+from napari_harpy._classifier_export import (
+    ClassifierExportBundle,
+    ClassifierModelSnapshot,
+    build_classifier_export_bundle,
+    normalize_feature_columns,
+    write_classifier_export_bundle,
+)
 from napari_harpy._spatialdata import SpatialDataTableMetadata, get_table, get_table_metadata
-
-try:
-    from scipy.sparse import issparse
-except ImportError:  # pragma: no cover - scipy is expected in the plugin env
-
-    def issparse(value: object) -> bool:
-        return False
 
 
 def _resolve_thread_worker() -> Any:
@@ -39,13 +47,12 @@ if TYPE_CHECKING:
 
 thread_worker = _resolve_thread_worker()
 
-BoolArray = NDArray[np.bool_]
-TableRowPositions = NDArray[np.int64]
-
-PRED_CLASS_COLUMN = "pred_class"
-PRED_CLASS_COLORS_KEY = f"{PRED_CLASS_COLUMN}_colors"
-PRED_CONFIDENCE_COLUMN = "pred_confidence"
-CLASSIFIER_CONFIG_KEY = "classifier_config"
+BoolArray = _classifier_core.BoolArray
+TableRowPositions = _classifier_core.TableRowPositions
+PRED_CLASS_COLUMN = _classifier_core.PRED_CLASS_COLUMN
+PRED_CLASS_COLORS_KEY = _classifier_core.PRED_CLASS_COLORS_KEY
+PRED_CONFIDENCE_COLUMN = _classifier_core.PRED_CONFIDENCE_COLUMN
+CLASSIFIER_CONFIG_KEY = _classifier_core.CLASSIFIER_CONFIG_KEY
 
 DEFAULT_RETRAIN_DEBOUNCE_MS = 300
 MIN_LABELED_SAMPLES = 2
@@ -65,16 +72,20 @@ class ResolvedClassifierScope:
     """Resolved classifier scope for one training or prediction selection.
 
     ``regions`` is the resolved semantic scope requested by the user, expressed
-    as table region names. ``n_rows_in_regions`` is the raw number of table rows
-    whose region key belongs to those regions, before feature-validity filtering.
+    as table region names. ``raw_table_row_positions`` contains all original
+    table row positions in those regions, before feature-validity filtering.
     ``table_row_positions`` contains the original table row positions that are
     both in those regions and usable for the selected feature matrix.
     """
 
     mode: ClassifierScopeMode
     regions: tuple[str, ...]
+    raw_table_row_positions: TableRowPositions
     table_row_positions: TableRowPositions
-    n_rows_in_regions: int
+
+    @property
+    def n_rows_in_regions(self) -> int:
+        return int(self.raw_table_row_positions.size)
 
     @property
     def n_eligible_rows(self) -> int:
@@ -82,7 +93,7 @@ class ResolvedClassifierScope:
 
     @property
     def n_excluded_feature_invalid_rows(self) -> int:
-        return self.n_rows_in_regions - int(self.table_row_positions.size)
+        return self.n_rows_in_regions - self.n_eligible_rows
 
 
 @dataclass(frozen=True)
@@ -153,6 +164,7 @@ class ClassifierJobResult:
     trained_at: str
     model_params: dict[str, int]
     summary: ClassifierPreparationSummary
+    estimator: RandomForestClassifier | None = None
 
     @property
     def training_scope(self) -> ResolvedClassifierScope:
@@ -188,6 +200,7 @@ def _fit_classifier_job(job: ClassifierJob) -> ClassifierJobResult:
         trained_at=datetime.now(UTC).isoformat(),
         model_params={key: int(value) for key, value in RANDOM_FOREST_PARAMS.items()},
         summary=job.summary,
+        estimator=classifier,
     )
 
 
@@ -218,6 +231,11 @@ class ClassifierController:
         self._active_worker_job_id: int | None = None
         self._active_worker: Any | None = None
         self._active_job: ClassifierJob | None = None
+        # A snapshot exists only when there is an exportable fitted model.
+        # Reasons for missing export state stay separate so the snapshot type
+        # never has to represent both success and failure.
+        self._model_snapshot: ClassifierModelSnapshot | None = None
+        self._model_snapshot_missing_reason: str | None = None
         self._is_dirty = False
 
         self._status_message = "Classifier: choose an annotation table and feature matrix."
@@ -252,6 +270,24 @@ class ClassifierController:
     def can_retrain(self) -> bool:
         """Return whether the current classifier inputs support a retrain request."""
         return self._get_bound_table() is not None and self._selected_feature_key is not None and not self.is_training
+
+    @property
+    def can_export_classifier(self) -> bool:
+        """Return whether the current fitted classifier snapshot can be exported."""
+        try:
+            self._validate_export_ready()
+        except ValueError:
+            return False
+        return True
+
+    @property
+    def classifier_export_unavailable_reason(self) -> str | None:
+        """Return the current reason classifier export is unavailable, if any."""
+        try:
+            self._validate_export_ready()
+        except ValueError as error:
+            return str(error)
+        return None
 
     def bind(
         self,
@@ -288,6 +324,7 @@ class ClassifierController:
 
         if context_changed:
             self._cancel_pending_and_active_jobs()
+            self._clear_model_snapshot("the classifier selection changed")
 
         table = self._get_bound_table()
         if table is None:
@@ -304,10 +341,12 @@ class ClassifierController:
         """Mark the current classifier outputs as stale after an input change."""
         if self._get_bound_table() is None:
             self._is_dirty = False
+            self._clear_model_snapshot()
             self._set_status("Classifier: choose an annotation table and feature matrix.", kind="warning")
             return
 
         self._is_dirty = True
+        self._clear_model_snapshot("the classifier was marked stale")
         self._update_idle_status(reason=reason)
 
     def retrain_now(self) -> bool:
@@ -327,6 +366,7 @@ class ClassifierController:
         self._debounce_timer.stop()
         self._cancel_active_worker()
         self._is_dirty = True
+        self._clear_model_snapshot("classifier training was started")
 
         if immediate or self._debounce_interval_ms == 0:
             self._launch_retrain_job(self._latest_requested_job_id)
@@ -339,6 +379,7 @@ class ClassifierController:
     def freeze_for_reload(self) -> None:
         """Cancel pending async work so reload cannot apply stale classifier results."""
         self._invalidate_async_jobs()
+        self._clear_model_snapshot("the table is being reloaded")
         self._update_idle_status()
 
     def invalidate_for_feature_matrix_overwrite(self, feature_key: str) -> bool:
@@ -348,12 +389,14 @@ class ClassifierController:
 
         self._invalidate_async_jobs()
         self._is_dirty = True
+        self._clear_model_snapshot(f"feature matrix `{feature_key}` was overwritten")
         self._update_idle_status(reason=f"feature matrix `{feature_key}` was overwritten")
         return True
 
     def reset_after_reload(self) -> None:
         """Recompute classifier state from the reloaded table without retraining."""
         self._invalidate_async_jobs()
+        self._clear_model_snapshot("the table was reloaded from disk")
         table = self._get_bound_table()
         if table is None:
             self._is_dirty = False
@@ -367,6 +410,14 @@ class ClassifierController:
     def describe_current_preparation(self) -> ClassifierPreparationSummary | None:
         """Return a side-effect-free summary of the currently bound classifier state."""
         return self._prepare_classifier_summary()
+
+    def export_classifier(self, path: str | Path) -> ClassifierExportBundle:
+        """Export the current fitted classifier snapshot to a joblib artifact."""
+        self._validate_export_ready()
+        assert self._model_snapshot is not None
+        bundle = build_classifier_export_bundle(self._model_snapshot)
+        write_classifier_export_bundle(path, bundle)
+        return bundle
 
     def _launch_scheduled_retrain(self) -> None:
         self._launch_retrain_job(self._latest_requested_job_id)
@@ -631,12 +682,12 @@ class ClassifierController:
                 summary=summary,
             )
 
-        predict_features = _slice_feature_rows(feature_matrix, summary.prediction_scope.table_row_positions)
+        predict_features = feature_matrix[summary.prediction_scope.table_row_positions]
         user_class_values = _get_user_class_values(table.obs, len(table.obs))
         training_user_class_values = user_class_values[summary.training_scope.table_row_positions]
         labeled_mask = training_user_class_values != UNLABELED_CLASS
         labeled_training_positions = summary.training_scope.table_row_positions[labeled_mask]
-        train_features = _slice_feature_rows(feature_matrix, labeled_training_positions)
+        train_features = feature_matrix[labeled_training_positions]
         train_labels = np.asarray(training_user_class_values[labeled_mask], dtype=np.int64)
         return ClassifierJob(
             job_id=job_id,
@@ -668,6 +719,7 @@ class ClassifierController:
             trained=False,
             trained_at=None,
         )
+        self._clear_model_snapshot("the latest classifier inputs are not trainable")
         self._notify_table_state_changed()
         self._is_dirty = True
         self._set_status(f"Classifier: {job.summary.reason}", kind="warning")
@@ -681,24 +733,29 @@ class ClassifierController:
             return
 
         self._ensure_prediction_columns(table)
-        self._clear_predictions_for_prediction_regions(table, result.prediction_scope.regions)
-        self._set_predictions_for_prediction_rows(
+        apply_result = _classifier_core._write_classifier_predictions(
             table,
-            result.prediction_scope.table_row_positions,
-            result.pred_classes,
-            result.pred_confidences,
+            table_name=result.table_name,
+            feature_key=result.feature_key,
+            prediction_regions=result.prediction_scope.regions,
+            raw_prediction_table_row_positions=result.prediction_scope.raw_table_row_positions,
+            prediction_table_row_positions=result.prediction_scope.table_row_positions,
+            pred_classes=result.pred_classes,
+            pred_confidences=result.pred_confidences,
         )
-        table.uns[CLASSIFIER_CONFIG_KEY] = self._build_classifier_config(
+        classifier_config = self._build_classifier_config(
             feature_key=result.feature_key,
             table_name=result.table_name,
             summary=result.summary,
             trained=True,
             trained_at=result.trained_at,
         )
+        table.uns[CLASSIFIER_CONFIG_KEY] = classifier_config
+        self._store_model_snapshot(table, result, classifier_config)
         self._notify_table_state_changed()
         self._is_dirty = False
         self._set_status(
-            f"Classifier: model is up to date. Updated predictions for {result.summary.resolved_prediction_row_count} objects.",
+            f"Classifier: model is up to date. Updated predictions for {apply_result.n_predicted_rows} objects.",
             kind="success",
         )
 
@@ -730,6 +787,7 @@ class ClassifierController:
             )
             self._notify_table_state_changed()
         self._is_dirty = True
+        self._clear_model_snapshot("classifier training failed")
         self._set_status(f"Classifier: training failed: {error}", kind="error")
 
     def _on_worker_finished(self, job_id: int) -> None:
@@ -764,6 +822,87 @@ class ClassifierController:
     def _create_training_worker(self, job: ClassifierJob) -> Any:
         return _run_classifier_job(job)
 
+    def _store_model_snapshot(
+        self,
+        table: AnnData,
+        result: ClassifierJobResult,
+        classifier_config: dict[str, object],
+    ) -> None:
+        if result.estimator is None:
+            self._clear_model_snapshot("the latest training result did not include a fitted estimator")
+            return
+
+        try:
+            feature_metadata = _get_feature_metadata(table, result.feature_key)
+            feature_columns = normalize_feature_columns(feature_metadata)
+            # Export relies on `.uns["feature_matrices"]` for column order, so
+            # ensure that metadata still matches the live `.obsm` matrix shape.
+            self._validate_current_feature_matrix_matches_columns(table, result.feature_key, feature_columns)
+        except ValueError as error:
+            self._clear_model_snapshot(str(error))
+            return
+
+        self._model_snapshot = ClassifierModelSnapshot(
+            estimator=result.estimator,
+            classifier_config=deepcopy(classifier_config),
+            feature_metadata=deepcopy(feature_metadata),
+            feature_key=result.feature_key,
+            trained_at=result.trained_at,
+        )
+        self._model_snapshot_missing_reason = None
+
+    def _clear_model_snapshot(self, reason: str | None = None) -> None:
+        self._model_snapshot = None
+        self._model_snapshot_missing_reason = reason
+
+    def _validate_export_ready(self) -> None:
+        table = self._get_bound_table()
+        if table is None:
+            raise ValueError("Choose an annotation table before exporting a classifier.")
+        if self._selected_feature_key is None:
+            raise ValueError("Choose a feature matrix before exporting a classifier.")
+        if self.is_training:
+            raise ValueError("A classifier training job is currently running.")
+        if self._is_dirty:
+            raise ValueError("The classifier model is stale. Train it again before exporting.")
+        if self._model_snapshot is None:
+            if self._model_snapshot_missing_reason:
+                raise ValueError(f"Classifier export is unavailable because {self._model_snapshot_missing_reason}")
+            raise ValueError("No fitted classifier model is available to export. Train the classifier first.")
+
+        snapshot = self._model_snapshot
+        if self._selected_feature_key != snapshot.feature_key:
+            raise ValueError(
+                f"The selected feature matrix `{self._selected_feature_key}` does not match the fitted model "
+                f"feature matrix `{snapshot.feature_key}`."
+            )
+        current_feature_columns = normalize_feature_columns(_get_feature_metadata(table, snapshot.feature_key))
+        if current_feature_columns != snapshot.feature_columns:
+            raise ValueError(
+                "Current feature metadata no longer matches the fitted model snapshot. "
+                "Train the classifier again before exporting."
+            )
+        # Export relies on `.uns["feature_matrices"]` for column order, so
+        # ensure that metadata still matches the live `.obsm` matrix shape.
+        self._validate_current_feature_matrix_matches_columns(table, snapshot.feature_key, snapshot.feature_columns)
+
+    def _validate_current_feature_matrix_matches_columns(
+        self,
+        table: AnnData,
+        feature_key: str,
+        feature_columns: tuple[str, ...],
+    ) -> None:
+        try:
+            feature_matrix = _normalize_feature_matrix(table.obsm[feature_key], table.n_obs, copy=False)
+        except KeyError as error:
+            raise ValueError(f"Feature matrix `{feature_key}` is not available in `.obsm`.") from error
+
+        if int(feature_matrix.shape[1]) != len(feature_columns):
+            raise ValueError(
+                f"Feature matrix `{feature_key}` has {int(feature_matrix.shape[1])} column(s), but its metadata "
+                f"describes {len(feature_columns)} feature column(s)."
+            )
+
     def _get_bound_table(self) -> AnnData | None:
         if self._selected_spatialdata is None or self._selected_table_name is None:
             return None
@@ -771,24 +910,7 @@ class ClassifierController:
         return get_table(self._selected_spatialdata, self._selected_table_name)
 
     def _ensure_prediction_columns(self, table: AnnData) -> None:
-        pred_class_values = _get_pred_class_values(table.obs, len(table.obs))
-        pred_confidence_values = _get_pred_confidence_values(table.obs, len(table.obs))
-        _set_pred_class_annotation_state(table, pred_class_values)
-        table.obs[PRED_CONFIDENCE_COLUMN] = pred_confidence_values
-
-    def _set_predictions_for_prediction_rows(
-        self,
-        table: AnnData,
-        prediction_table_row_positions: TableRowPositions,
-        pred_classes: np.ndarray,
-        pred_confidences: np.ndarray,
-    ) -> None:
-        pred_class_values = _get_pred_class_values(table.obs, len(table.obs))
-        pred_confidence_values = _get_pred_confidence_values(table.obs, len(table.obs))
-        pred_class_values.iloc[prediction_table_row_positions] = np.asarray(pred_classes, dtype=np.int64)
-        pred_confidence_values.iloc[prediction_table_row_positions] = np.asarray(pred_confidences, dtype=np.float64)
-        _set_pred_class_annotation_state(table, pred_class_values)
-        table.obs[PRED_CONFIDENCE_COLUMN] = pred_confidence_values
+        _classifier_core._ensure_prediction_columns(table)
 
     def _clear_predictions_for_prediction_regions(
         self,
@@ -803,11 +925,9 @@ class ClassifierController:
             self._selected_table_metadata.region_key,
             prediction_regions,
         )
-        self._set_predictions_for_prediction_rows(
+        _classifier_core._clear_predictions_for_row_positions(
             table,
             prediction_table_row_positions,
-            np.full(prediction_table_row_positions.shape, UNLABELED_CLASS, dtype=np.int64),
-            np.full(prediction_table_row_positions.shape, np.nan, dtype=np.float64),
         )
 
     def _build_classifier_config(
@@ -970,77 +1090,14 @@ class ClassifierController:
             return ResolvedClassifierScope(
                 mode=scope_mode,
                 regions=regions,
+                raw_table_row_positions=raw_table_row_positions,
                 table_row_positions=table_row_positions,
-                n_rows_in_regions=int(raw_table_row_positions.size),
             )
 
         return ResolvedClassifierScopes(
             training=resolve_one_scope(self._selected_training_scope),
             prediction=resolve_one_scope(self._selected_prediction_scope),
         )
-
-
-def _normalize_feature_matrix(feature_matrix: Any, n_obs: int, *, copy: bool = True) -> Any:
-    # `copy=True` is the current eager-array snapshot path for worker payloads.
-    # If `.obsm` later accepts lazy arrays, `.copy()` may only copy shallow
-    # wrapper or graph state; those values will need explicit materialization so
-    # classifier jobs own concrete feature values at launch time.
-    if issparse(feature_matrix):
-        if feature_matrix.ndim != 2:
-            raise ValueError("Feature matrices stored in `.obsm` must be 2-dimensional.")
-        if feature_matrix.shape[0] != n_obs:
-            raise ValueError(
-                f"Feature matrix has {feature_matrix.shape[0]} rows but the table has {n_obs} observations."
-            )
-        return feature_matrix.copy() if copy else feature_matrix
-
-    array = np.asarray(feature_matrix, dtype=np.float64)
-    if array.ndim == 1:
-        array = array.reshape(-1, 1)
-    if array.ndim != 2:
-        raise ValueError("Feature matrices stored in `.obsm` must be 2-dimensional.")
-    if array.shape[0] != n_obs:
-        raise ValueError(f"Feature matrix has {array.shape[0]} rows but the table has {n_obs} observations.")
-    return array.copy() if copy else array
-
-
-def _slice_feature_rows(feature_matrix: Any, positions: TableRowPositions) -> Any:
-    return feature_matrix[positions]
-
-
-def _get_finite_feature_row_mask(feature_matrix: Any) -> BoolArray:
-    if issparse(feature_matrix):
-        finite_data_mask = np.isfinite(feature_matrix.data)
-        if bool(finite_data_mask.all()):
-            return np.ones(feature_matrix.shape[0], dtype=bool)
-
-        invalid_rows = np.unique(feature_matrix.tocoo().row[~finite_data_mask])
-        valid_row_mask = np.ones(feature_matrix.shape[0], dtype=bool)
-        valid_row_mask[invalid_rows] = False
-        return valid_row_mask
-
-    finite_feature_mask = np.isfinite(np.asarray(feature_matrix, dtype=np.float64))
-    return np.asarray(finite_feature_mask.all(axis=1), dtype=bool)
-
-
-def _resolve_region_row_positions(obs: pd.DataFrame, region_key: str, regions: tuple[str, ...]) -> TableRowPositions:
-    if not regions:
-        return np.array([], dtype=np.int64)
-    if len(regions) == 1:
-        region_mask = (obs[region_key] == regions[0]).to_numpy(dtype=bool, copy=False)
-    else:
-        region_mask = obs[region_key].isin(regions).to_numpy(dtype=bool, copy=False)
-    return np.asarray(np.flatnonzero(region_mask), dtype=np.int64)
-
-
-def _normalize_prediction_regions(value: object) -> tuple[str, ...]:
-    if isinstance(value, np.ndarray):
-        if value.ndim != 1:
-            return ()
-        value = value.tolist()
-    if isinstance(value, (list, tuple)) and all(isinstance(region, str) for region in value):
-        return tuple(value)
-    return ()
 
 
 def _normalize_scope_mode(scope_mode: ClassifierScopeMode | str) -> ClassifierScopeMode:
@@ -1053,8 +1110,8 @@ def _empty_resolved_classifier_scope(mode: ClassifierScopeMode) -> ResolvedClass
     return ResolvedClassifierScope(
         mode=mode,
         regions=(),
+        raw_table_row_positions=np.array([], dtype=np.int64),
         table_row_positions=np.array([], dtype=np.int64),
-        n_rows_in_regions=0,
     )
 
 
@@ -1064,29 +1121,3 @@ def _get_user_class_values(obs: pd.DataFrame, n_obs: int) -> np.ndarray:
 
     values = pd.to_numeric(obs[USER_CLASS_COLUMN].astype("string"), errors="coerce").fillna(UNLABELED_CLASS)
     return np.asarray(values, dtype=np.int64)
-
-
-def _get_pred_class_values(obs: pd.DataFrame, n_obs: int) -> pd.Series:
-    if PRED_CLASS_COLUMN not in obs:
-        return pd.Series(UNLABELED_CLASS, index=obs.index, dtype="int64", name=PRED_CLASS_COLUMN)
-
-    values = pd.to_numeric(obs[PRED_CLASS_COLUMN].astype("string"), errors="coerce").fillna(UNLABELED_CLASS)
-    return pd.Series(np.asarray(values, dtype=np.int64), index=obs.index, dtype="int64", name=PRED_CLASS_COLUMN)
-
-
-def _set_pred_class_annotation_state(table: AnnData, values: pd.Series) -> None:
-    set_class_annotation_state(
-        table,
-        values,
-        column_name=PRED_CLASS_COLUMN,
-        colors_key=PRED_CLASS_COLORS_KEY,
-        warn_on_palette_overwrite=False,
-    )
-
-
-def _get_pred_confidence_values(obs: pd.DataFrame, n_obs: int) -> pd.Series:
-    if PRED_CONFIDENCE_COLUMN not in obs:
-        return pd.Series(np.full(n_obs, np.nan, dtype=np.float64), index=obs.index, name=PRED_CONFIDENCE_COLUMN)
-
-    values = pd.to_numeric(obs[PRED_CONFIDENCE_COLUMN], errors="coerce").astype("float64")
-    return pd.Series(np.asarray(values, dtype=np.float64), index=obs.index, name=PRED_CONFIDENCE_COLUMN)

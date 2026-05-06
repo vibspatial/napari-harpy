@@ -12,7 +12,8 @@ from spatialdata.models import TableModel
 
 from napari_harpy._annotation import USER_CLASS_COLORS_KEY
 from napari_harpy._app_state import HarpyAppState
-from napari_harpy._classifier import CLASSIFIER_CONFIG_KEY, PRED_CLASS_COLORS_KEY
+from napari_harpy._classifier_core import CLASSIFIER_APPLY_CONFIG_KEY, CLASSIFIER_CONFIG_KEY, PRED_CLASS_COLORS_KEY
+from napari_harpy._persistence_core import resolve_table_path, write_table_prediction_state
 from napari_harpy._spatialdata import get_table, normalize_table_metadata
 
 if TYPE_CHECKING:
@@ -269,38 +270,18 @@ class PersistenceController:
 
     def write_table_state(self) -> str:
         """Write the current table annotation state back to the backed zarr store."""
-        # TODO: We mutate the backed Zarr store directly here via `write_elem(...)`.
-        # If this path is expected to point to an existing store, prefer `mode="r+"`
-        # over `"a"` so we fail fast instead of accidentally creating a new store.
-        # After the writes, we should likely call
-        # `zarr.consolidate_metadata(self.selected_store_path)` so future readers do
-        # not see stale consolidated metadata.
-        # also, we probably want to open the top level zarr group of the spatialdata store.
-        # E.g. do something like this:
-        # root = zarr.open_group(sdata.path, mode="r+", use_consolidated=False)
-        # table_group = root["tables"][target_table_layer]
-        # write_elem(table_group["obsm"], feature_key, matrix)
-
-        # uns_group = table_group["uns"]
-        # if _HARPY_FEATURE_MATRICES_KEY not in uns_group:
-        #    write_elem(uns_group, _HARPY_FEATURE_MATRICES_KEY, {})
-        # write_elem(uns_group[_HARPY_FEATURE_MATRICES_KEY], feature_key, metadata)
-        # zarr.consolidate_metadata(sdata.path)
-
         sdata = self._require_selected_spatialdata()
         table_name = self._require_selected_table_name()
-        table = get_table(sdata, table_name)
-        table_path = self._resolve_table_path(sdata, table, table_name)
-
-        root = zarr.open_group(self.selected_store_path, mode="a", use_consolidated=False)
-        table_group = root[table_path]
-        ad.io.write_elem(table_group, "obs", table.obs)
-        if USER_CLASS_COLORS_KEY in table.uns:
-            ad.io.write_elem(table_group["uns"], USER_CLASS_COLORS_KEY, table.uns[USER_CLASS_COLORS_KEY])
-        if PRED_CLASS_COLORS_KEY in table.uns:
-            ad.io.write_elem(table_group["uns"], PRED_CLASS_COLORS_KEY, table.uns[PRED_CLASS_COLORS_KEY])
-        if CLASSIFIER_CONFIG_KEY in table.uns:
-            ad.io.write_elem(table_group["uns"], CLASSIFIER_CONFIG_KEY, table.uns[CLASSIFIER_CONFIG_KEY])
+        table_path = write_table_prediction_state(
+            sdata,
+            table_name=table_name,
+            uns_keys=(
+                USER_CLASS_COLORS_KEY,
+                PRED_CLASS_COLORS_KEY,
+                CLASSIFIER_CONFIG_KEY,
+                CLASSIFIER_APPLY_CONFIG_KEY,
+            ),
+        )
         self.clear_dirty()
         return table_path
 
@@ -320,16 +301,7 @@ class PersistenceController:
         return self._selected_table_name
 
     def _resolve_table_path(self, sdata: SpatialData, table: AnnData, table_name: str) -> str:
-        table_paths = sdata.locate_element(table)
-        if not table_paths:
-            raise ValueError(f"Could not locate table `{table_name}` inside the backed SpatialData store.")
-
-        if len(table_paths) > 1:
-            raise ValueError(
-                f"Table `{table_name}` resolved to multiple zarr paths: {table_paths}. A unique table path is required."
-            )
-
-        return table_paths[0]
+        return resolve_table_path(sdata, table, table_name)
 
 def _normalize_regions(region: str | list[str] | None) -> tuple[str, ...]:
     if region is None:
