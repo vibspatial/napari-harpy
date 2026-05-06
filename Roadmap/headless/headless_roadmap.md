@@ -832,7 +832,7 @@ internal imports and tests to the new paths directly.
 
 ## 6. Make Package Imports Lazy
 
-Status: [ ] Not started
+Status: [x] Implemented
 
 After the headless Python API is working, make the package import surface lazy
 so importing headless modules does not eagerly pull in napari, Qt, widgets, or
