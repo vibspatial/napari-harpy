@@ -7,13 +7,12 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
-from napari.layers import Labels
 from spatialdata import get_element_annotators, join_spatialelement_table
 from spatialdata.models import TableModel, get_axes_names
 from spatialdata.transformations import get_transformation
 from xarray import DataArray
 
-from napari_harpy._table_color_source import ColorValueKind, TableColorSourceSpec
+from napari_harpy.core.table_color_source import ColorValueKind, TableColorSourceSpec
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -574,12 +573,12 @@ def _layer_indices_align_with_region_view(layer: Any | None, region_view: AnnDat
 def _normalize_layer_metadata_adata(adata: AnnData) -> AnnData:
     from pandas.api.types import CategoricalDtype
 
-    from napari_harpy._annotation import (
+    from napari_harpy.core.annotation import (
         USER_CLASS_COLORS_KEY,
         USER_CLASS_COLUMN,
     )
-    from napari_harpy._class_palette import set_class_annotation_state
-    from napari_harpy._classifier import PRED_CLASS_COLORS_KEY, PRED_CLASS_COLUMN
+    from napari_harpy.core.class_palette import set_class_annotation_state
+    from napari_harpy.core.classifier import PRED_CLASS_COLORS_KEY, PRED_CLASS_COLUMN
 
     color_keys_to_strip = {USER_CLASS_COLORS_KEY, PRED_CLASS_COLORS_KEY}
 
@@ -680,6 +679,8 @@ def _is_string_scalar(value: Any) -> bool:
 
 
 def _is_pickable_labels_layer(layer: Any) -> bool:
+    from napari.layers import Labels
+
     events = getattr(layer, "events", None)
     return isinstance(layer, Labels) and getattr(events, "selected_label", None) is not None
 

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from harpy.utils._keys import _FEATURE_MATRICES_KEY
 
 from napari_harpy._app_state import FeatureMatrixWriteChangeKind, FeatureMatrixWrittenEvent
-from napari_harpy._feature_extraction_core import (
+from napari_harpy.core.feature_extraction import (
     FeatureExtractionChannel,
     FeatureExtractionTriplet,
     _get_triplet_channel_selection_error,
@@ -20,7 +20,7 @@ from napari_harpy._feature_extraction_core import (
     _resolve_harpy_image_name_parameter,
     _resolve_harpy_labels_name_parameter,
 )
-from napari_harpy._spatialdata import get_table
+from napari_harpy.core.spatialdata import get_table
 
 if TYPE_CHECKING:
     from anndata import AnnData

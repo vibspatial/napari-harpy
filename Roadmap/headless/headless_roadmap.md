@@ -702,7 +702,7 @@ Implementation rules:
 
 ## 5. Reorganize Modules by Domain
 
-Status: [ ] Not started
+Status: [x] Implemented
 
 Before making imports lazy, reorganize the package so the module layout matches
 the dependency boundaries we want:
@@ -855,8 +855,8 @@ apply implementation.
 ### Tests
 
 - importing `napari_harpy` does not import napari or Qt modules;
-- importing `napari_harpy.headless` does not import napari, Qt, widgets, or
-  `_classifier.py`;
+- importing `napari_harpy.headless` does not import napari, Qt, widgets, or the
+  object-classification controller;
 - accessing `napari_harpy.Interactive` still resolves the interactive launcher;
 - existing public imports keep working or have explicit migration notes.
 

@@ -9,7 +9,7 @@ from qtpy.QtCore import QObject, Signal
 from spatialdata import SpatialData
 
 from napari_harpy._app_state import FeatureMatrixWrittenEvent
-from napari_harpy._feature_extraction import (
+from napari_harpy.widgets.feature_extraction.controller import (
     FEATURE_EXTRACTION_IDLE_STATUS,
     FeatureExtractionController,
     FeatureExtractionJob,

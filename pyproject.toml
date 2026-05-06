@@ -164,6 +164,10 @@ convention = "numpy"
 
 [tool.ruff.per-file-ignores]
 "docs/*" = ["I"]
+"src/napari_harpy/core/*.py" = ["D"]
+"src/napari_harpy/viewer/*.py" = ["D"]
+"src/napari_harpy/widgets/*.py" = ["D"]
+"src/napari_harpy/widgets/**/*.py" = ["D"]
 "tests/*" = ["D"]
 "**/_tests/*" = ["D"]
 "*/__init__.py" = ["F401"]

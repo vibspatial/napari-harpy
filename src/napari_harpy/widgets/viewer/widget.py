@@ -29,21 +29,21 @@ from spatialdata import read_zarr
 from spatialdata.transformations import get_transformation
 
 from napari_harpy._app_state import CoordinateSystemChangedEvent, HarpyAppState, get_or_create_app_state
-from napari_harpy._spatialdata import (
+from napari_harpy.core.spatialdata import (
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
     get_image_channel_names_from_sdata,
     get_table_color_source_options,
 )
-from napari_harpy._table_color_source import ColorSourceKind, TableColorSourceSpec
-from napari_harpy._viewer_adapter import DEFAULT_OVERLAY_COLORS
-from napari_harpy.widgets._shared_styles import (
+from napari_harpy.core.table_color_source import ColorSourceKind, TableColorSourceSpec
+from napari_harpy.viewer.adapter import DEFAULT_OVERLAY_COLORS
+from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,
 )
-from napari_harpy.widgets._shared_styles import (
+from napari_harpy.widgets.shared_styles import (
     CHECKBOX_STYLESHEET as _CHECKBOX_STYLESHEET,
 )
-from napari_harpy.widgets._shared_styles import (
+from napari_harpy.widgets.shared_styles import (
     WIDGET_ACCENT_BORDER_COLOR,
     WIDGET_ACCENT_SOFT_COLOR,
     WIDGET_BORDER_COLOR,
@@ -63,7 +63,7 @@ from napari_harpy.widgets._shared_styles import (
     format_tooltip,
     set_status_card,
 )
-from napari_harpy.widgets._shared_styles import (
+from napari_harpy.widgets.shared_styles import (
     WIDGET_MIN_WIDTH as _WIDGET_MIN_WIDTH,
 )
 
@@ -899,7 +899,7 @@ class ViewerWidget(QWidget):
         self._image_rows: list[_DisclosureElementWidget] = []
         self._expanded_label_names: set[str] = set()
         self._expanded_image_names: set[str] = set()
-        self._logo_path = Path(__file__).resolve().parents[3] / "docs" / "_static" / "logo.png"
+        self._logo_path = Path(__file__).resolve().parents[4] / "docs" / "_static" / "logo.png"
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)

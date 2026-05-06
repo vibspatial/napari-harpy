@@ -10,11 +10,11 @@ import pandas as pd
 import zarr
 from spatialdata.models import TableModel
 
-from napari_harpy._annotation import USER_CLASS_COLORS_KEY
 from napari_harpy._app_state import HarpyAppState
-from napari_harpy._classifier_core import CLASSIFIER_APPLY_CONFIG_KEY, CLASSIFIER_CONFIG_KEY, PRED_CLASS_COLORS_KEY
-from napari_harpy._persistence_core import resolve_table_path, write_table_prediction_state
-from napari_harpy._spatialdata import get_table, normalize_table_metadata
+from napari_harpy.core.annotation import USER_CLASS_COLORS_KEY
+from napari_harpy.core.classifier import CLASSIFIER_APPLY_CONFIG_KEY, CLASSIFIER_CONFIG_KEY, PRED_CLASS_COLORS_KEY
+from napari_harpy.core.persistence import resolve_table_path, write_table_prediction_state
+from napari_harpy.core.spatialdata import get_table, normalize_table_metadata
 
 if TYPE_CHECKING:
     from anndata import AnnData

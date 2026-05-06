@@ -5,17 +5,17 @@ from types import SimpleNamespace
 
 import napari_harpy._app_state as app_state_module
 import napari_harpy._interactive as interactive_module
-import napari_harpy.widgets._object_classification_widget as object_widget_module
-import napari_harpy.widgets._viewer_widget as viewer_widget_module
+import napari_harpy.widgets.object_classification.widget as object_widget_module
+import napari_harpy.widgets.viewer.widget as viewer_widget_module
 from napari_harpy._app_state import (
     CoordinateSystemChangedEvent,
     FeatureMatrixWrittenEvent,
     HarpyAppState,
     get_or_create_app_state,
 )
-from napari_harpy.widgets._feature_extraction_widget import FeatureExtractionWidget
-from napari_harpy.widgets._object_classification_widget import ObjectClassificationWidget
-from napari_harpy.widgets._viewer_widget import ViewerWidget
+from napari_harpy.widgets.feature_extraction.widget import FeatureExtractionWidget
+from napari_harpy.widgets.object_classification.widget import ObjectClassificationWidget
+from napari_harpy.widgets.viewer.widget import ViewerWidget
 
 
 class DummyEventEmitter:

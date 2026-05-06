@@ -1,0 +1,1 @@
+"""Object classification widget package."""

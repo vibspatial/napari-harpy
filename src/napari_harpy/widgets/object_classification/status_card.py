@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from napari_harpy._annotation import UNLABELED_CLASS
-from napari_harpy._classifier import ClassifierPreparationSummary
-from napari_harpy.widgets._shared_styles import StatusCardKind, format_feedback_identifier
+from napari_harpy.core.annotation import UNLABELED_CLASS
+from napari_harpy.widgets.object_classification.controller import ClassifierPreparationSummary
+from napari_harpy.widgets.shared_styles import StatusCardKind, format_feedback_identifier
 
 _LabelsLayerPreparationKind = Literal["none", "loaded", "activated", "error"]
 

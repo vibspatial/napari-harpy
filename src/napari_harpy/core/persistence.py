@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 import anndata as ad
 import zarr
 
-from napari_harpy._spatialdata import get_table
+from napari_harpy.core.spatialdata import get_table
 
 if TYPE_CHECKING:
     from anndata import AnnData

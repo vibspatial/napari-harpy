@@ -13,12 +13,12 @@ from spatialdata import SpatialData, read_zarr
 from spatialdata.transformations import Identity, set_transformation
 
 from napari_harpy import headless
-from napari_harpy._classifier_core import (
+from napari_harpy.core.classifier import (
     CLASSIFIER_APPLY_CONFIG_KEY,
     PRED_CLASS_COLUMN,
     PRED_CONFIDENCE_COLUMN,
 )
-from napari_harpy._classifier_export import (
+from napari_harpy.core.classifier_export import (
     CLASSIFIER_EXPORT_SCHEMA_VERSION,
     ClassifierExportBundle,
     write_classifier_export_bundle,
@@ -572,9 +572,9 @@ def test_headless_module_avoids_direct_interactive_classifier_imports() -> None:
         elif isinstance(node, ast.ImportFrom) and node.module is not None:
             import_modules.add(node.module)
 
-    assert "napari_harpy._classifier" not in import_modules
+    assert "napari_harpy.widgets.object_classification.controller" not in import_modules
     assert not any(module.startswith("napari_harpy.widgets") for module in import_modules)
     assert "napari" not in import_modules
     assert "qtpy" not in import_modules
     assert "thread_worker" not in source
-    assert "napari_harpy._feature_extraction" not in import_modules
+    assert "napari_harpy.widgets.feature_extraction.controller" not in import_modules

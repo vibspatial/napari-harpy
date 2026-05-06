@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from napari_harpy._class_palette import (
+from napari_harpy.core.class_palette import (
     backfill_missing_class_colors,
     default_class_colors,
     normalize_color_sequence,

@@ -18,27 +18,27 @@ from spatialdata import SpatialData, read_zarr
 from spatialdata.models import TableModel
 from spatialdata.transformations import get_transformation
 
-import napari_harpy._annotation as annotation_module
 import napari_harpy._app_state as app_state_module
-import napari_harpy._class_palette as class_palette_module
-import napari_harpy._classifier as classifier_module
-import napari_harpy.widgets._object_classification_widget as widget_module
-import napari_harpy.widgets._viewer_widget as viewer_widget_module
-from napari_harpy._annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
+import napari_harpy.core.class_palette as class_palette_module
+import napari_harpy.widgets.object_classification.annotation_controller as annotation_module
+import napari_harpy.widgets.object_classification.controller as classifier_module
+import napari_harpy.widgets.object_classification.widget as widget_module
+import napari_harpy.widgets.viewer.widget as viewer_widget_module
 from napari_harpy._app_state import FeatureMatrixWrittenEvent, get_or_create_app_state
-from napari_harpy._class_palette import default_class_colors
-from napari_harpy._classifier import (
+from napari_harpy.core.annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
+from napari_harpy.core.class_palette import default_class_colors
+from napari_harpy.core.classifier_export import DEFAULT_CLASSIFIER_EXPORT_SUFFIX, read_classifier_export_bundle
+from napari_harpy.core.spatialdata import SpatialDataLabelsOption
+from napari_harpy.widgets.object_classification.controller import (
     CLASSIFIER_CONFIG_KEY,
     PRED_CLASS_COLORS_KEY,
     PRED_CLASS_COLUMN,
     PRED_CONFIDENCE_COLUMN,
 )
-from napari_harpy._classifier_export import DEFAULT_CLASSIFIER_EXPORT_SUFFIX, read_classifier_export_bundle
-from napari_harpy._spatialdata import SpatialDataLabelsOption
-from napari_harpy.widgets._object_classification_widget import (
+from napari_harpy.widgets.object_classification.widget import (
     ObjectClassificationWidget as HarpyWidget,
 )
-from napari_harpy.widgets._viewer_widget import ViewerWidget
+from napari_harpy.widgets.viewer.widget import ViewerWidget
 
 
 class DummyEventEmitter:
@@ -253,6 +253,7 @@ def test_widget_can_be_instantiated(qtbot) -> None:
     assert scroll_area is not None
     assert scroll_area.widgetResizable()
     assert widget is not None
+    assert widget._logo_path.is_file()
     assert widget.selected_segmentation_name is None
     assert widget.selected_table_name is None
     assert widget.selected_feature_key is None

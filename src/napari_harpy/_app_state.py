@@ -31,8 +31,8 @@ from weakref import WeakKeyDictionary
 
 from qtpy.QtCore import QObject, Signal
 
-from napari_harpy._spatialdata import get_coordinate_system_names_from_sdata
-from napari_harpy._viewer_adapter import LayerBindingRegistry, ViewerAdapter
+from napari_harpy.core.spatialdata import get_coordinate_system_names_from_sdata
+from napari_harpy.viewer.adapter import LayerBindingRegistry, ViewerAdapter
 
 if TYPE_CHECKING:
     from spatialdata import SpatialData
