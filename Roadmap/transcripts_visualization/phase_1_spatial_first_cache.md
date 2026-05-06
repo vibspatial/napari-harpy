@@ -101,6 +101,7 @@ Do not include these in Phase 1A:
 Keep the public API small and move most logic into internal helpers. A reasonable first structure inside `src/napari_harpy/_transcript_tiles.py` is:
 
 ```text
+TranscriptTileLevel                      # per-level return metadata
 TranscriptTileCache                      # return dataclass
 build_transcript_visualization_cache     # main public writer
 build_transcript_visualization_cache_for_points_element
@@ -129,14 +130,105 @@ Implement Phase 1A in the order below.
 Add:
 
 - `TRANSCRIPT_TILE_CACHE_SCHEMA_VERSION`
+- `TranscriptTileLevel` dataclass
 - `TranscriptTileCache` dataclass
 
-The dataclass should include:
+`TranscriptTileLevel` should include:
 
-- final cache paths
+- `level`
+- `tile_size`
+- `is_exact`
+
+`TranscriptTileCache` should include:
+
+- final cache root path
+- derived cache paths as properties
 - schema version
-- level metadata
+- explicit per-level metadata as `levels: tuple[TranscriptTileLevel, ...]`
 - bounds and origins
+
+Use these exact dataclasses as the Phase 1A return contract:
+
+```python
+from dataclasses import dataclass
+from pathlib import Path
+
+
+@dataclass(frozen=True)
+class TranscriptTileLevel:
+    level: int
+    tile_size: float
+    is_exact: bool
+
+    @property
+    def level_file(self) -> str:
+        return f"levels/level_{self.level}.parquet"
+
+
+@dataclass(frozen=True)
+class TranscriptTileCache:
+    path: Path
+    schema_version: str
+    levels: tuple[TranscriptTileLevel, ...]
+    x_origin: float
+    y_origin: float
+    x_min: float
+    x_max: float
+    y_min: float
+    y_max: float
+
+    @property
+    def metadata_path(self) -> Path:
+        return self.path / "metadata.json"
+
+    @property
+    def manifest_path(self) -> Path:
+        return self.path / "manifest.parquet"
+
+    @property
+    def genes_path(self) -> Path:
+        return self.path / "genes.parquet"
+
+    @property
+    def levels_path(self) -> Path:
+        return self.path / "levels"
+
+    @property
+    def n_levels(self) -> int:
+        return len(self.levels)
+
+    @property
+    def finest_level(self) -> int:
+        exact_levels = [level for level in self.levels if level.is_exact]
+        if len(exact_levels) != 1:
+            raise ValueError("Expected exactly one exact transcript tile level.")
+        return exact_levels[0].level
+
+    @property
+    def leaf_tile_size(self) -> float:
+        exact_levels = [level for level in self.levels if level.is_exact]
+        if len(exact_levels) != 1:
+            raise ValueError("Expected exactly one exact transcript tile level.")
+        return exact_levels[0].tile_size
+```
+
+Do not store `leaf_tile_size`, `n_levels`, or `finest_level` as independent dataclass fields.
+They are derived from `levels`, which avoids a second source of truth in the Python API.
+Likewise, do not store `metadata_path`, `manifest_path`, `genes_path`, or `levels_path` as independent fields.
+They are derived from the single cache root `path`.
+When a caller needs an absolute path to a level file, it can combine `cache.path / level.level_file`.
+
+The builder should create the first version of the per-level metadata from the cache-wide level configuration.
+For level `k`:
+
+```text
+tile_size(k) = leaf_tile_size * 2 ** (finest_level - k)
+is_exact = k == finest_level
+```
+
+Use this formula as the Phase 1A default construction rule, but expose the resulting `TranscriptTileLevel` records so callers and tests do not need to duplicate it.
+Level file paths follow the fixed layout convention `levels/level_<level>.parquet` and are derived from `level`.
+Also write explicit per-level records to `metadata.json`; readers should trust `metadata.json["levels"]` for per-level tile size and exact/sampled status instead of recomputing those values from the formula.
 
 This gives the rest of the module a stable return contract from the start.
 
@@ -206,6 +298,7 @@ Implement one function that computes:
 - `x_origin`, `y_origin`
 - `n_levels`
 - `finest_level`
+- derived `TranscriptTileLevel` records for every level
 
 Recommended first implementation:
 
@@ -226,6 +319,8 @@ else:
   - otherwise add coarser levels until `level_0` covers the whole dataset in a small number of tiles
 
 This logic should be unit-tested separately because it drives every later tile calculation.
+The same function should build the returned level records from `0` through `finest_level`, using the default Phase 1A tile-size formula from Step 1.
+
 Use the same tile assignment formula at every level:
 
 ```text
@@ -414,9 +509,28 @@ Once all levels can be written, add the cache metadata writers.
 - schema version
 - `n_levels`
 - `finest_level`
-- `leaf_tile_size`
 - `x_origin`, `y_origin`
 - `x_min`, `x_max`, `y_min`, `y_max`
+- `levels`
+
+`levels` should be an array of explicit per-level records sorted by ascending `level`.
+Each record should contain:
+
+- `level`
+- `tile_size`
+- `is_exact`
+
+Do not write `level_file` in `metadata.json`; level files follow the fixed layout convention `levels/level_<level>.parquet`.
+Readers should treat `metadata.json["levels"]` as the source of truth for per-level tile size and exact/sampled status.
+Do not write `leaf_tile_size` as a separate metadata field; it is the `tile_size` of the single level where `is_exact = true`.
+The cache-wide `n_levels` and `finest_level` remain useful summary and validation fields, but readers should not need to reconstruct level metadata from them.
+If those summary fields disagree with `levels`, readers should reject the cache rather than trying to choose which value wins.
+For schema version `harpy-transcripts-vis-0.1`, the writer should validate before finalization that:
+
+- `len(levels) == n_levels`
+- level ids are exactly `0..finest_level`
+- exactly one level has `is_exact = true`, and it is `finest_level`
+- the default Phase 1A construction formula produced the recorded `tile_size` values
 
 `manifest.parquet` should be written from the collected row-group metadata and include:
 
@@ -427,9 +541,11 @@ Once all levels can be written, add the cache metadata writers.
 - `tile_y`
 - `n_points`
 - `row_group`
-- `level_file`
 - `is_exact`
 - `tile_shard`
+
+Do not write `level_file` in the manifest.
+Readers derive the level file from the manifest row's `level` using `levels/level_<level>.parquet`.
 
 For Phase 1A, `tile_shard` should be written even when a tile only has one shard.
 With partition-local writing, multiple row groups may have the same `level`, `tile_x`, and `tile_y`; `tile_shard` gives those row groups a deterministic per-tile shard index.
@@ -476,7 +592,7 @@ Recommended test groups:
 ### Group B: Cache Layout and Metadata
 
 - expected directory layout is created
-- `metadata.json` has the expected bounds, origins, and level metadata
+- `metadata.json` has the expected bounds, origins, and explicit `levels` records
 - `genes.parquet` has stable deterministic ids and counts
 - `manifest.parquet` exists only after successful build
 

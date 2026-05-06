@@ -17,3 +17,74 @@ Input edge cases still need explicit behavior. The validation section covers mis
 leaf_tile_size needs a one-line clarification that it is in stored coordinate units, not screen pixels. The cache draft implies data-space units (Transcripts_Tile_cache.md (line 50), Transcripts_Tile_cache.md (line 239)), while the runtime note sometimes talks in “px” terms (visualizing_transcripts.md (line 380)). That is easy to fix, but worth making explicit.
 
 metadata.json is missing cache provenance. Right now it stores geometry, but not enough to tell whether the cache is stale after points.parquet changes (Transcripts_Tile_cache.md (line 128)). At minimum I’d consider storing source row count, source element key/path, chosen column names, and the build parameters.
+
+
+
+
+
+Spec Items To Tighten Before Proceeding
+
+
+TranscriptTileCache contract
+
+phase_1_spatial_first_cache.md (line 127) says “level metadata” but does not list exact dataclass fields. The implementation follows the older full plan, but Phase 1 should explicitly say whether level metadata means only n_levels, finest_level, leaf_tile_size, or whether we need per-level paths/metadata too.
+
+
+
+output_path semantics
+
+Specify that output_path passed to build_transcript_visualization_cache(...) is the final transcripts_vis/ directory, not the points-element directory. Also specify whether returned paths should preserve the input path or be resolved/absolute.
+
+
+
+Manifest path conventions
+
+The roadmap should say whether manifest.level_file stores level_2.parquet, levels/level_2.parquet, or another relative path. That matters for tests and the future reader.
+
+
+
+Exact Parquet dtypes
+
+Step 6 says to standardize dtypes, but the phase doc should list them concretely for tile_x, tile_y, level, row_group, tile_shard, x_rel, y_rel, and gene_id.
+
+
+
+Validation behavior under Dask
+
+The doc already says to reject empty inputs, null genes, and invalid coordinates. It should specify whether validation performs an eager Dask reduction/compute, and whether this should be combined with the bounds computation to avoid duplicate passes.
+
+
+
+Gene missing-value policy
+
+“Reject missing gene values if ambiguous” should become exact: reject None, pandas NA, and NaN before string coercion. Also decide whether empty strings are valid genes.
+
+
+
+tile_id format
+
+Step 6 says compute tile_id, but Phase 1 should explicitly define it, probably f"{level}/{tile_x}/{tile_y}", matching the parent plan.
+
+
+
+Deterministic coarse sampling details
+
+Before implementing coarse levels, specify the exact stable hash/digest algorithm, transcript-id encoding rules, null transcript-id behavior, and tie-break ordering. Also clarify that coarse_tile_budget applies globally per coarse tile, not per Dask partition.
+
+
+
+tile_shard determinism
+
+Since finest-level writing may be partition-local, define how tile_shard is assigned when the same tile appears in multiple partitions. Otherwise rebuilds can be correct but hard to test deterministically.
+
+
+
+Metadata provenance
+
+Current metadata.json stores geometry only. Decide now whether Phase 1A should also store source column names, source row count, build parameters, and/or source points path. If not, explicitly defer stale-cache/provenance detection.
+
+
+
+Dependency update
+
+The phase doc says direct dependencies for dask[dataframe] and pyarrow “if still needed”; pyproject.toml does not currently include them. Since the planned public API and writer require both, this should be made non-optional for Phase 1A.
