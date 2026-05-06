@@ -50,19 +50,19 @@ class HeadlessFeatureTarget:
 
 
 def load_classifier(path: str | Path) -> ClassifierExportBundle:
-    """Load a trusted classifier export bundle from disk."""
+    """Load a trusted classifier artifact from disk."""
     return read_classifier_export_bundle(path)
 
 
 def compute_features_for_classifier(
     sdata: SpatialData,
-    bundle: ClassifierExportBundle,
+    classifier: ClassifierExportBundle,
     *,
     target: HeadlessFeatureTarget,
 ) -> HeadlessFeatureTarget:
-    """Compute the feature matrix required by an exported classifier bundle."""
+    """Compute the feature matrix required by an exported classifier."""
     resolved_target = _normalize_headless_feature_target(target)
-    feature_names = bundle.feature_names
+    feature_names = classifier.feature_names
     channel_selection_error = _get_triplet_channel_selection_error(resolved_target.triplets, feature_names)
     if channel_selection_error is not None:
         raise ValueError(channel_selection_error)
@@ -83,13 +83,13 @@ def compute_features_for_classifier(
     )
 
     table = get_table(sdata, resolved_target.table_name)
-    _validate_feature_matrix_compatible_with_bundle(table, resolved_target.feature_key, bundle)
+    _validate_feature_matrix_compatible_with_bundle(table, resolved_target.feature_key, classifier)
     return resolved_target
 
 
 def apply_classifier(
     sdata: SpatialData,
-    bundle: ClassifierExportBundle,
+    classifier: ClassifierExportBundle,
     *,
     table_name: str,
     feature_key: str | None = None,
@@ -98,11 +98,11 @@ def apply_classifier(
     pred_confidence_column: str = "pred_confidence",
     classifier_path: str | Path | None = None,
 ) -> ClassifierApplyResult:
-    """Apply an exported classifier bundle to an existing feature matrix.
+    """Apply an exported classifier to an existing feature matrix.
 
     The target table must already contain a compatible feature matrix in
     `.obsm`. When `feature_key` is omitted, the source feature key stored in the
-    bundle is used. Predictions are written in place to `table.obs` using
+    classifier is used. Predictions are written in place to `table.obs` using
     `pred_class_column` and `pred_confidence_column`, and apply provenance is
     recorded in `table.uns["classifier_apply_config"]`. If `sdata` is backed by
     zarr, the updated prediction state is written back to disk automatically.
@@ -111,14 +111,14 @@ def apply_classifier(
     ----------
     sdata
         SpatialData object containing the target table.
-    bundle
-        Classifier export bundle returned by `load_classifier(...)` or
+    classifier
+        Exported classifier returned by `load_classifier(...)` or
         `ClassifierController.export_classifier(...)`.
     table_name
         Name of the target annotation table in `sdata`.
     feature_key
         Key in `table.obsm` for the target feature matrix. If omitted, the
-        bundle's source feature key is used.
+        classifier's source feature key is used.
     prediction_regions
         Optional table regions to classify. If omitted, all regions declared in
         the table metadata are classified.
@@ -135,7 +135,7 @@ def apply_classifier(
     """
     result = _apply_classifier(
         sdata,
-        bundle,
+        classifier,
         table_name=table_name,
         feature_key=feature_key,
         prediction_regions=prediction_regions,
@@ -164,10 +164,10 @@ def apply_classifier_from_path(
     `classifier_path`, so it is recorded in
     `table.uns["classifier_apply_config"]`.
     """
-    bundle = load_classifier(path)
+    classifier = load_classifier(path)
     return apply_classifier(
         sdata,
-        bundle,
+        classifier,
         table_name=table_name,
         feature_key=feature_key,
         prediction_regions=prediction_regions,
@@ -179,7 +179,7 @@ def apply_classifier_from_path(
 
 def apply_classifier_with_feature_extraction(
     sdata: SpatialData,
-    bundle: ClassifierExportBundle,
+    classifier: ClassifierExportBundle,
     *,
     table_name: str,
     labels_name: str | Sequence[str],
@@ -199,7 +199,7 @@ def apply_classifier_with_feature_extraction(
     computed feature key. The generated feature matrix is written to
     `table.obsm[feature_key]`, and Harpy feature metadata is written to
     `table.uns["feature_matrices"][feature_key]`. The computed feature columns
-    must exactly match the feature schema stored in `bundle`.
+    must exactly match the feature schema stored in `classifier`.
 
     If `sdata` is backed by zarr, Harpy persists the feature matrix and feature
     metadata during feature extraction, and `apply_classifier(...)` persists
@@ -210,8 +210,8 @@ def apply_classifier_with_feature_extraction(
     sdata
         SpatialData object containing the target table, labels, and optional
         image elements.
-    bundle
-        Classifier export bundle returned by `load_classifier(...)` or
+    classifier
+        Exported classifier returned by `load_classifier(...)` or
         `ClassifierController.export_classifier(...)`.
     table_name
         Name of the target annotation table in `sdata`.
@@ -220,13 +220,13 @@ def apply_classifier_with_feature_extraction(
         These labels become the prediction regions after feature extraction.
     feature_key
         Key in `table.obsm` for the computed feature matrix. If omitted, the
-        source feature key stored in the classifier bundle is used.
+        source feature key stored in the classifier is used.
     coordinate_system
         Coordinate system or systems to use for the selected labels. If omitted,
         the coordinate system is inferred only when unambiguous.
     image_name
         Image element or elements to use for intensity-derived features. This is
-        required when the classifier bundle was trained on intensity features
+        required when the classifier was trained on intensity features
         and ignored for morphology-only classifiers.
     channels
         Optional image channel selection for intensity-derived features. The
@@ -246,7 +246,7 @@ def apply_classifier_with_feature_extraction(
     """
     target = _build_headless_feature_target(
         sdata,
-        bundle,
+        classifier,
         table_name=table_name,
         labels_name=labels_name,
         feature_key=feature_key,
@@ -255,10 +255,10 @@ def apply_classifier_with_feature_extraction(
         channels=channels,
         overwrite_feature_key=overwrite_feature_key,
     )
-    resolved_target = compute_features_for_classifier(sdata, bundle, target=target)
+    resolved_target = compute_features_for_classifier(sdata, classifier, target=target)
     return apply_classifier(
         sdata,
-        bundle,
+        classifier,
         table_name=resolved_target.table_name,
         feature_key=resolved_target.feature_key,
         prediction_regions=tuple(triplet.label_name for triplet in resolved_target.triplets),
@@ -303,13 +303,13 @@ def apply_classifier_with_feature_extraction_from_path(
         These labels become the prediction regions after feature extraction.
     feature_key
         Key in `table.obsm` for the computed feature matrix. If omitted, the
-        source feature key stored in the classifier bundle is used.
+        source feature key stored in the classifier is used.
     coordinate_system
         Coordinate system or systems to use for the selected labels. If omitted,
         the coordinate system is inferred only when unambiguous.
     image_name
         Image element or elements to use for intensity-derived features. This is
-        required when the classifier bundle was trained on intensity features
+        required when the classifier was trained on intensity features
         and ignored for morphology-only classifiers.
     channels
         Optional image channel selection for intensity-derived features. The
@@ -324,10 +324,10 @@ def apply_classifier_with_feature_extraction_from_path(
     The returned `ClassifierApplyResult` summarizes the rows that were written
     and any in-scope rows skipped because of invalid feature values.
     """
-    bundle = load_classifier(path)
+    classifier = load_classifier(path)
     return apply_classifier_with_feature_extraction(
         sdata,
-        bundle,
+        classifier,
         table_name=table_name,
         labels_name=labels_name,
         feature_key=feature_key,
@@ -343,7 +343,7 @@ def apply_classifier_with_feature_extraction_from_path(
 
 def _build_headless_feature_target(
     sdata: SpatialData,
-    bundle: ClassifierExportBundle,
+    classifier: ClassifierExportBundle,
     *,
     table_name: str,
     labels_name: str | Sequence[str],
@@ -357,7 +357,9 @@ def _build_headless_feature_target(
     coordinate_systems = _resolve_coordinate_systems_for_labels(sdata, normalized_labels, coordinate_system)
     image_names = _normalize_optional_parallel_names(image_name, len(normalized_labels), "image_name")
     normalized_channels = _normalize_channels(channels)
-    resolved_feature_key = bundle.feature_key if feature_key is None else _normalize_nonempty_str(feature_key, "feature_key")
+    resolved_feature_key = (
+        classifier.feature_key if feature_key is None else _normalize_nonempty_str(feature_key, "feature_key")
+    )
 
     triplets = tuple(
         FeatureExtractionTriplet(

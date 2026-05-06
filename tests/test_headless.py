@@ -231,14 +231,14 @@ def test_apply_classifier_from_path_writes_predictions_and_apply_config(
     assert config["pred_confidence_column"] == PRED_CONFIDENCE_COLUMN
 
 
-def test_apply_classifier_bundle_can_write_custom_prediction_columns(sdata_blobs: SpatialData) -> None:
+def test_apply_classifier_can_write_custom_prediction_columns(sdata_blobs: SpatialData) -> None:
     _set_deterministic_features(sdata_blobs)
     _set_feature_metadata(sdata_blobs)
-    bundle = _make_classifier_bundle(sdata_blobs)
+    classifier = _make_classifier_bundle(sdata_blobs)
 
     result = headless.apply_classifier(
         sdata_blobs,
-        bundle,
+        classifier=classifier,
         table_name="table",
         pred_class_column="headless_class",
         pred_confidence_column="headless_confidence",
@@ -259,12 +259,12 @@ def test_compute_features_for_classifier_uses_target_mapping(
 ) -> None:
     _set_deterministic_features(sdata_blobs)
     _set_feature_metadata(sdata_blobs)
-    bundle = _make_classifier_bundle(sdata_blobs)
+    classifier = _make_classifier_bundle(sdata_blobs)
     captured_kwargs = _install_fake_feature_extraction(monkeypatch)
 
     resolved_target = headless.compute_features_for_classifier(
         sdata_blobs,
-        bundle,
+        classifier=classifier,
         target=headless.HeadlessFeatureTarget(
             table_name="table",
             feature_key="computed_features",
@@ -285,7 +285,7 @@ def test_compute_features_for_classifier_uses_target_mapping(
     assert captured_kwargs["to_coordinate_system"] == "target_global"
     assert captured_kwargs["table_name"] == "table"
     assert captured_kwargs["feature_key"] == "computed_features"
-    assert captured_kwargs["features"] == list(bundle.feature_names)
+    assert captured_kwargs["features"] == list(classifier.feature_names)
     assert captured_kwargs["overwrite_feature_key"] is False
     assert "computed_features" in sdata_blobs["table"].obsm
 
@@ -324,12 +324,12 @@ def test_apply_classifier_with_feature_extraction_writes_predictions(
 ) -> None:
     _set_deterministic_features(sdata_blobs)
     _set_feature_metadata(sdata_blobs)
-    bundle = _make_classifier_bundle(sdata_blobs)
+    classifier = _make_classifier_bundle(sdata_blobs)
     _install_fake_feature_extraction(monkeypatch)
 
     result = headless.apply_classifier_with_feature_extraction(
         sdata_blobs,
-        bundle,
+        classifier=classifier,
         table_name="table",
         labels_name="blobs_labels",
         feature_key="computed_features",

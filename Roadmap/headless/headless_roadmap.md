@@ -230,7 +230,7 @@ segmentation / image triplets should be passed to `hp.tb.add_feature_matrix(...)
 It intentionally does not carry `feature_columns`: the exported classifier
 bundle is the authority on the required feature schema, and the headless apply
 path must compare the feature matrix produced for this target against
-`bundle.feature_columns` before predicting.
+`classifier.feature_columns` before predicting.
 
 This lets a bundle trained on `blobs_labels` be applied to a different dataset
 whose labels element might be named `cells`, with a different coordinate system
@@ -328,7 +328,7 @@ def load_classifier(path: str | Path) -> ClassifierExportBundle:
 
 def apply_classifier(
     sdata: SpatialData,
-    bundle: ClassifierExportBundle,
+    classifier: ClassifierExportBundle,
     *,
     table_name: str,
     feature_key: str | None = None,
@@ -349,10 +349,10 @@ def apply_classifier_from_path(
     pred_class_column: str = "pred_class",
     pred_confidence_column: str = "pred_confidence",
 ) -> ClassifierApplyResult:
-    bundle = load_classifier(path)
+    classifier = load_classifier(path)
     return apply_classifier(
         sdata,
-        bundle,
+        classifier,
         table_name=table_name,
         feature_key=feature_key,
         prediction_regions=prediction_regions,
@@ -363,12 +363,12 @@ def apply_classifier_from_path(
 ```
 
 `classifier_path` is provenance-only. The model is applied from
-`bundle.estimator`; the path is used only to record which classifier artifact
+`classifier.estimator`; the path is used only to record which classifier artifact
 was used in the target table's apply metadata when that path is known.
 
 Default behavior:
 
-- use `feature_key=bundle.feature_key` unless overridden;
+- use `feature_key=classifier.feature_key` unless overridden;
 - predict for all eligible rows in the chosen table unless
   `prediction_regions` is provided;
 - skip rows with non-finite feature values;
@@ -391,7 +391,7 @@ table.uns["classifier_apply_config"] = {
     "applied": True,
     "apply_timestamp": applied_at,
     "classifier_path": str(classifier_path) if classifier_path is not None else None,
-    "source_classifier_config": deepcopy(bundle.source_classifier_config),
+    "source_classifier_config": deepcopy(classifier.source_classifier_config),
     "table_name": table_name,
     "feature_key": resolved_feature_key,
     "prediction_regions": list(resolved_prediction_regions),
@@ -446,7 +446,7 @@ training-time config. Target/apply facts should stay as top-level fields in
 
    - `table.obsm[feature_key]` exists and is two-dimensional;
    - `table.uns["feature_matrices"][feature_key]["feature_columns"]` exists;
-   - normalized target feature columns exactly match `bundle.feature_columns`,
+   - normalized target feature columns exactly match `classifier.feature_columns`,
      including order;
    - the estimator input width matches the target matrix width.
 
@@ -573,7 +573,7 @@ class HeadlessFeatureTarget:
 
 def compute_features_for_classifier(
     sdata: SpatialData,
-    bundle: ClassifierExportBundle,
+    classifier: ClassifierExportBundle,
     *,
     target: HeadlessFeatureTarget,
 ) -> HeadlessFeatureTarget:
@@ -581,7 +581,7 @@ def compute_features_for_classifier(
 
 def apply_classifier_with_feature_extraction(
     sdata: SpatialData,
-    bundle: ClassifierExportBundle,
+    classifier: ClassifierExportBundle,
     *,
     table_name: str,
     labels_name: str | Sequence[str],
@@ -610,10 +610,10 @@ def apply_classifier_with_feature_extraction_from_path(
     pred_class_column: str = "pred_class",
     pred_confidence_column: str = "pred_confidence",
 ) -> ClassifierApplyResult:
-    bundle = load_classifier(path)
+    classifier = load_classifier(path)
     return apply_classifier_with_feature_extraction(
         sdata,
-        bundle,
+        classifier,
         table_name=table_name,
         labels_name=labels_name,
         feature_key=feature_key,
@@ -633,7 +633,7 @@ and metadata remain side effects on the target table.
 
 The public `apply_classifier_with_feature_extraction(...)` API builds that
 target from user-facing arguments. `feature_key=None` resolves to
-`bundle.feature_key`; `coordinate_system=None` is inferred only when
+`classifier.feature_key`; `coordinate_system=None` is inferred only when
 unambiguous; and predictions are applied to the same labels passed as
 `labels_name`.
 
@@ -663,14 +663,14 @@ Implementation rules:
 - call `hp.tb.add_feature_matrix(...)` with:
   - `table_name=target.table_name`;
   - `feature_key=target.feature_key`;
-  - `features=list(bundle.feature_names)`;
+  - `features=list(classifier.feature_names)`;
   - target triplet labels/images/coordinate systems/channels;
   - `overwrite_feature_key=target.overwrite_feature_key`;
 - after feature extraction, verify the target matrix has exactly the expected
   feature schema before applying the model;
 - require Harpy feature metadata for the computed feature matrix and compare
   `table.uns["feature_matrices"][target.feature_key]["feature_columns"]`
-  exactly to `bundle.feature_columns`; missing metadata is an error, not a
+  exactly to `classifier.feature_columns`; missing metadata is an error, not a
   shape-only fallback;
 - when `sdata` is backed by zarr, rely on `hp.tb.add_feature_matrix(...)` to
   persist the computed feature matrix and its Harpy metadata:
