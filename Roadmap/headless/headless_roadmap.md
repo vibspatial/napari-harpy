@@ -743,6 +743,7 @@ napari_harpy/
       widget.py
       status_card.py
     object_classification/
+      annotation_controller.py
       controller.py
       widget.py
       status_card.py
@@ -756,7 +757,10 @@ napari_harpy/
 
 Current-to-new file map:
 
-- `_annotation.py` -> `core/annotation.py`;
+- split `_annotation.py`:
+  - shared annotation schema and table helpers -> `core/annotation.py`;
+  - `AnnotationController`, `_SelectionTableState`, and controller-only helpers
+    -> `widgets/object_classification/annotation_controller.py`;
 - `_class_palette.py` -> `core/class_palette.py`;
 - `_classifier_core.py` -> `core/classifier.py`;
 - `_classifier_export.py` -> `core/classifier_export.py`;
