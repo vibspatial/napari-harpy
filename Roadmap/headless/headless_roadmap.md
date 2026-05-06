@@ -844,25 +844,48 @@ apply implementation.
 ### Implementation Plan
 
 - add `lazy_loader` as a dependency;
-- use `lazy_loader` in `src/napari_harpy/__init__.py`;
-- keep `napari_harpy.Interactive` and other existing public attributes
-  available as lazy attributes;
+- follow the `harpy_vitessce` package pattern: each package `__init__.py` that
+  exposes public names should declare those names with `lazy_loader.attach(...)`
+  and keep typing-only imports under `TYPE_CHECKING`;
+- use `lazy_loader` in `src/napari_harpy/__init__.py` for the complete public
+  package surface:
+  - lazy submodules: `core`, `datasets`, `headless`, `viewer`, `widgets`;
+  - lazy attributes from `_interactive`: `Interactive`;
+  - lazy attributes from `_app_state`: `HarpyAppState`,
+    `get_or_create_app_state`;
+- keep `__version__` eager, because it is cheap and needed by classifier export;
+- use `lazy_loader` in `src/napari_harpy/widgets/__init__.py` so importing the
+  widget package does not import any Qt widget implementation:
+  - lazy attributes from `widgets.viewer.widget`: `ViewerWidget`;
+  - lazy attributes from `widgets.feature_extraction.widget`:
+    `FeatureExtractionWidget`;
+  - lazy attributes from `widgets.object_classification.widget`:
+    `ObjectClassificationWidget`;
+- leave empty package initializers such as `core/__init__.py`, `viewer/__init__.py`,
+  and widget-domain `__init__.py` files minimal unless they need an explicit
+  public export surface later;
 - avoid importing `_interactive.py`, `_app_state.py`, widgets, napari, or Qt
   during a plain `import napari_harpy`;
-- verify `import napari_harpy.headless` stays headless-safe once package-level
+- verify `from napari_harpy import headless` stays headless-safe once package-level
   imports are lazy.
 
 ### Tests
 
-- importing `napari_harpy` does not import napari or Qt modules;
-- importing `napari_harpy.headless` does not import napari, Qt, widgets, or the
-  object-classification controller;
-- accessing `napari_harpy.Interactive` still resolves the interactive launcher;
-- existing public imports keep working or have explicit migration notes.
+- keep tests small and focused on napari-harpy's lazy export wiring rather than
+  retesting `lazy_loader` itself;
+- use subprocess smoke tests so earlier pytest imports cannot pollute
+  `sys.modules`;
+- verify `import napari_harpy` does not eagerly import `napari` or `qtpy`;
+- verify `from napari_harpy import headless` does not eagerly import widgets or
+  Qt;
+- verify representative lazy attributes still resolve:
+  - `from napari_harpy import Interactive`;
+  - `from napari_harpy.widgets import ViewerWidget`.
 
 ### Acceptance Criteria
 
-- headless users can import the package and headless API without a viewer stack;
+- headless users can import the package and headless API without importing or
+  initializing a viewer stack;
 - interactive users can still access the existing napari-facing entry points;
 - lazy imports do not hide import errors once a lazy attribute is actually used.
 
