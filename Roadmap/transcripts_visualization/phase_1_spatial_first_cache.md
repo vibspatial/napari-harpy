@@ -664,14 +664,15 @@ Readers should use `manifest.parquet` for actual stored point counts.
 For example, if `max_rows_per_row_group = 50_000` and one exact finest-level tile contains `120_000` points, that tile may produce three manifest rows:
 
 ```text
-level  tile_x  tile_y  row_group  tile_shard  n_points  is_exact
-2      3       1       0          0           50000     true
-2      3       1       1          1           50000     true
-2      3       1       2          2           20000     true
+level  tile_x  tile_y  row_group  tile_shard  n_points
+2      3       1       0          0           50000
+2      3       1       1          1           50000
+2      3       1       2          2           20000
 ```
 
 If `coarse_tile_budget = 50_000` and one sampled coarse tile contains `3_000_000` source points, the writer stores at most `50_000` representative points for that coarse tile before row-group sharding is applied.
 The actual stored count is recorded in `manifest.parquet` as `n_points` per row group; if a tile has multiple row groups, sum their `n_points` values to get the tile total.
+Exact/sampled status is not repeated in the manifest; readers derive it from `metadata.json["levels"]`.
 
 Readers must validate `metadata.json` before using the cache.
 If validation fails, treat the cache as invalid and do not attempt partial recovery.
@@ -705,11 +706,12 @@ For schema version `harpy-transcripts-vis-0.1`, the writer should validate befor
 - `tile_y`
 - `n_points`
 - `row_group`
-- `is_exact`
 - `tile_shard`
 
 Do not write `level_file` in the manifest.
 Readers derive the level file from the manifest row's `level` using `levels/level_<level>.parquet`.
+Do not write `is_exact` in the manifest.
+Readers derive exact/sampled status from `metadata.json["levels"]`.
 
 For Phase 1A, `tile_shard` should be written even when a tile only has one shard.
 With partition-local writing, multiple row groups may have the same `level`, `tile_x`, and `tile_y`; `tile_shard` gives those row groups a deterministic per-tile shard index.
