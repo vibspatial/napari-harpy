@@ -40,6 +40,7 @@ classifiers = [
 ]
 
 dependencies = [
+    "dask[dataframe]",
     "harpy-analysis @ git+https://github.com/saeyslab/harpy.git@main",
     "joblib",
     "lazy-loader>=0.4",

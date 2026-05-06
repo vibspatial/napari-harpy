@@ -3,12 +3,19 @@ from __future__ import annotations
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
+import pandas as pd
 import pytest
+from spatialdata import SpatialData, read_zarr
+from spatialdata.datasets import blobs
+from spatialdata.models import PointsModel
+from spatialdata.transformations import Identity
 
 from napari_harpy._transcript_tiles import (
     TRANSCRIPT_TILE_CACHE_SCHEMA_VERSION,
     TranscriptTileCache,
     TranscriptTileLevel,
+    _validate_cache_build_parameters,
+    _validate_points_element,
 )
 
 
@@ -34,6 +41,20 @@ def _example_cache(*, levels: tuple[TranscriptTileLevel, ...] | None = None, **o
     }
     values.update(overrides)
     return TranscriptTileCache(**values)
+
+
+def _backed_blobs_with_points(tmp_path: Path, data: dict[str, object]) -> SpatialData:
+    sdata = blobs(length=16, n_points=1, n_shapes=1)
+    points = PointsModel.parse(
+        pd.DataFrame(data),
+        coordinates={"x": "x", "y": "y"},
+        transformations={"global": Identity()},
+    )
+    sdata.points["blobs_points"] = points
+
+    path = tmp_path / "blobs.zarr"
+    sdata.write(path)
+    return read_zarr(path)
 
 
 def test_transcript_tile_level_records_metadata_and_derived_file() -> None:
@@ -156,3 +177,219 @@ def test_transcript_tile_cache_rejects_unsupported_schema_version() -> None:
 def test_transcript_tile_cache_rejects_invalid_bounds(overrides: dict[str, float], match: str) -> None:
     with pytest.raises(ValueError, match=match):
         _example_cache(**overrides)
+
+
+def test_validate_points_element_accepts_valid_dataframe_and_resolves_metadata(tmp_path: Path) -> None:
+    output_path = tmp_path / "example.zarr" / "points" / "transcripts_vis"
+    sdata = _backed_blobs_with_points(
+        tmp_path,
+        {
+            "x": [0.0, 1.0, 2.0],
+            "y": [3.0, 4.0, 5.0],
+            "gene": ["Actb", "Gapdh", "Malat1"],
+            "transcript_id": ["t0", "t1", "t2"],
+        },
+    )
+
+    validated = _validate_points_element(
+        sdata,
+        "blobs_points",
+        output_path=output_path,
+        transcript_id="transcript_id",
+    )
+
+    assert validated.points is sdata.points["blobs_points"]
+    assert validated.output_path == output_path
+    assert validated.element_path == "points/blobs_points"
+    assert validated.x == "x"
+    assert validated.y == "y"
+    assert validated.gene == "gene"
+    assert validated.transcript_id == "transcript_id"
+    assert validated.uses_internal_row_id is False
+
+
+def test_validate_cache_build_parameters_normalizes_values() -> None:
+    validated = _validate_cache_build_parameters(
+        leaf_tile_size=2048,
+        n_levels=3,
+        max_rows_per_row_group=10,
+        coarse_tile_budget=20,
+    )
+
+    assert validated.leaf_tile_size == 2048.0
+    assert validated.n_levels == 3
+    assert validated.max_rows_per_row_group == 10
+    assert validated.coarse_tile_budget == 20
+
+
+def test_validate_points_element_uses_default_output_path(backed_sdata_blobs: SpatialData) -> None:
+    validated = _validate_points_element(backed_sdata_blobs, "blobs_points", gene="genes")
+
+    assert validated.output_path == Path(backed_sdata_blobs.path) / "points/blobs_points/transcripts_vis"
+
+
+def test_validate_points_element_records_internal_row_id_fallback(backed_sdata_blobs: SpatialData) -> None:
+    validated = _validate_points_element(backed_sdata_blobs, "blobs_points", gene="genes")
+
+    assert validated.transcript_id is None
+    assert validated.uses_internal_row_id is True
+
+
+def test_validate_points_element_rejects_non_pathlike_output_path(backed_sdata_blobs: SpatialData) -> None:
+    with pytest.raises(ValueError, match="output_path"):
+        _validate_points_element(backed_sdata_blobs, "blobs_points", output_path=1)
+
+
+@pytest.mark.parametrize("parameter", ["x", "y", "gene", "transcript_id"])
+def test_validate_points_element_rejects_non_string_column_names(
+    backed_sdata_blobs: SpatialData, parameter: str
+) -> None:
+    kwargs = {"gene": "genes", parameter: 1}
+
+    with pytest.raises(ValueError, match=parameter):
+        _validate_points_element(backed_sdata_blobs, "blobs_points", **kwargs)
+
+
+@pytest.mark.parametrize("column", ["x", "y", "gene", "transcript_id"])
+def test_validate_points_element_rejects_missing_columns(backed_sdata_blobs: SpatialData, column: str) -> None:
+    kwargs = {"gene": "genes"}
+    if column == "x":
+        kwargs["x"] = "missing_x"
+    elif column == "y":
+        kwargs["y"] = "missing_y"
+    elif column == "gene":
+        kwargs["gene"] = "missing_gene"
+    else:
+        kwargs["transcript_id"] = "missing_transcript_id"
+
+    with pytest.raises(ValueError, match=column):
+        _validate_points_element(backed_sdata_blobs, "blobs_points", **kwargs)
+
+
+@pytest.mark.parametrize("column", ["x", "y"])
+def test_validate_points_element_rejects_non_numeric_coordinate_metadata(
+    backed_sdata_blobs: SpatialData, column: str
+) -> None:
+    kwargs = {"gene": "genes", column: "genes"}
+
+    with pytest.raises(ValueError, match="numeric"):
+        _validate_points_element(backed_sdata_blobs, "blobs_points", **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("parameter", "value"),
+    [
+        ("leaf_tile_size", 0.0),
+        ("leaf_tile_size", float("inf")),
+        ("leaf_tile_size", True),
+        ("max_rows_per_row_group", 0),
+        ("max_rows_per_row_group", 1.0),
+        ("max_rows_per_row_group", True),
+        ("coarse_tile_budget", 0),
+        ("coarse_tile_budget", 1.0),
+        ("coarse_tile_budget", True),
+        ("n_levels", 0),
+        ("n_levels", 1.0),
+        ("n_levels", True),
+    ],
+)
+def test_validate_cache_build_parameters_rejects_invalid_parameters(parameter: str, value: object) -> None:
+    with pytest.raises(ValueError, match=parameter):
+        _validate_cache_build_parameters(**{parameter: value})
+
+
+def test_validate_points_element_rejects_empty_dataframes(tmp_path: Path) -> None:
+    sdata = _backed_blobs_with_points(tmp_path, {"x": [], "y": [], "gene": []})
+
+    with pytest.raises(ValueError, match="empty"):
+        _validate_points_element(sdata, "blobs_points")
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("x", float("nan")),
+        ("x", float("inf")),
+        ("y", float("nan")),
+        ("y", float("-inf")),
+    ],
+)
+def test_validate_points_element_rejects_invalid_coordinates(tmp_path: Path, column: str, value: float) -> None:
+    data = {
+        "x": [0.0, 1.0],
+        "y": [2.0, 3.0],
+        "gene": ["Actb", "Gapdh"],
+    }
+    data[column][1] = value
+    sdata = _backed_blobs_with_points(tmp_path, data)
+
+    with pytest.raises(ValueError, match=column):
+        _validate_points_element(sdata, "blobs_points")
+
+
+@pytest.mark.parametrize("gene_value", [None, "", "   "])
+def test_validate_points_element_rejects_invalid_gene_values(tmp_path: Path, gene_value: object) -> None:
+    sdata = _backed_blobs_with_points(
+        tmp_path,
+        {"x": [0.0, 1.0], "y": [2.0, 3.0], "gene": ["Actb", gene_value]},
+    )
+
+    with pytest.raises(ValueError, match="gene"):
+        _validate_points_element(sdata, "blobs_points")
+
+
+@pytest.mark.parametrize(
+    ("transcript_values", "match"),
+    [
+        (["t0", None], "missing transcript_id"),
+        (["t0", "t0"], "unique transcript_id"),
+    ],
+)
+def test_validate_points_element_rejects_invalid_transcript_ids(
+    tmp_path: Path, transcript_values: list[object], match: str
+) -> None:
+    sdata = _backed_blobs_with_points(
+        tmp_path,
+        {
+            "x": [0.0, 1.0],
+            "y": [2.0, 3.0],
+            "gene": ["Actb", "Gapdh"],
+            "transcript_id": transcript_values,
+        },
+    )
+
+    with pytest.raises(ValueError, match=match):
+        _validate_points_element(sdata, "blobs_points", transcript_id="transcript_id")
+
+
+def test_validate_points_element_rejects_unbacked_spatialdata(sdata_blobs: SpatialData) -> None:
+    with pytest.raises(ValueError, match="backed"):
+        _validate_points_element(sdata_blobs, "blobs_points", gene="genes")
+
+
+def test_validate_points_element_rejects_non_string_points_key(backed_sdata_blobs: SpatialData) -> None:
+    with pytest.raises(ValueError, match="points_key"):
+        _validate_points_element(backed_sdata_blobs, 1, gene="genes")
+
+
+def test_validate_points_element_rejects_missing_points_key(backed_sdata_blobs: SpatialData) -> None:
+    with pytest.raises(ValueError, match="not available"):
+        _validate_points_element(backed_sdata_blobs, "missing_points", gene="genes")
+
+
+def test_validate_points_element_rejects_unlocated_points_element(
+    backed_sdata_blobs: SpatialData, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(backed_sdata_blobs, "locate_element", lambda element: [])
+
+    with pytest.raises(ValueError, match="Could not locate"):
+        _validate_points_element(backed_sdata_blobs, "blobs_points", gene="genes")
+
+
+def test_validate_points_element_rejects_ambiguous_points_element(
+    backed_sdata_blobs: SpatialData, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(backed_sdata_blobs, "locate_element", lambda element: ["points/a", "points/b"])
+
+    with pytest.raises(ValueError, match="multiple"):
+        _validate_points_element(backed_sdata_blobs, "blobs_points", gene="genes")

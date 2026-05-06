@@ -1,8 +1,17 @@
 from __future__ import annotations
 
 import math
+import numbers
 from dataclasses import dataclass
+from os import PathLike
 from pathlib import Path
+from typing import Any
+
+import dask
+import dask.dataframe as dd
+import numpy as np
+import pandas as pd
+from pandas.api.types import is_numeric_dtype
 
 TRANSCRIPT_TILE_CACHE_SCHEMA_VERSION = "harpy-transcripts-vis-0.1"
 
@@ -101,6 +110,205 @@ class TranscriptTileCache:
         if len(exact_levels) != 1:
             raise ValueError("Expected exactly one exact transcript tile level.")
         return exact_levels[0].tile_size
+
+
+@dataclass(frozen=True)
+class _ValidatedPointsElement:
+    points: dd.DataFrame
+    element_path: str
+    output_path: Path
+    x: str
+    y: str
+    gene: str
+    transcript_id: str | None
+    uses_internal_row_id: bool
+
+
+@dataclass(frozen=True)
+class _ValidatedCacheBuildParameters:
+    leaf_tile_size: float
+    n_levels: int | None
+    max_rows_per_row_group: int
+    coarse_tile_budget: int
+
+
+def _validate_points_element(
+    sdata: Any,
+    points_key: str,
+    *,
+    output_path: str | PathLike[str] | None = None,
+    x: str = "x",
+    y: str = "y",
+    gene: str = "gene",
+    transcript_id: str | None = None,
+) -> _ValidatedPointsElement:
+    if not hasattr(sdata, "is_backed") or not sdata.is_backed() or getattr(sdata, "path", None) is None:
+        raise ValueError("SpatialData must be backed by a zarr store before building a transcript tile cache.")
+
+    if not isinstance(points_key, str):
+        raise ValueError("`points_key` must be a string.")
+
+    points_collection = getattr(sdata, "points", None)
+    if points_collection is None or points_key not in points_collection:
+        raise ValueError(f"Points element `{points_key}` is not available in the SpatialData object.")
+
+    points = points_collection[points_key]
+    element_paths = sdata.locate_element(points)
+    if not element_paths:
+        raise ValueError(f"Could not locate points element `{points_key}` inside the backed SpatialData store.")
+    if len(element_paths) > 1:
+        raise ValueError(
+            f"Points element `{points_key}` resolved to multiple zarr paths: {element_paths}. "
+            "A unique points element path is required."
+        )
+    element_path = element_paths[0]
+
+    if not isinstance(points, dd.DataFrame):
+        raise ValueError(f"Points element `{points_key}` must resolve to a dask.dataframe.DataFrame.")
+
+    normalized_output_path = (
+        Path(sdata.path) / element_path / "transcripts_vis" if output_path is None else _normalize_output_path(output_path)
+    )
+
+    x = _validate_column_name(x, "x")
+    y = _validate_column_name(y, "y")
+    gene = _validate_column_name(gene, "gene")
+    if transcript_id is not None:
+        transcript_id = _validate_column_name(transcript_id, "transcript_id")
+
+    _validate_required_columns(points, [x, y, gene])
+    if transcript_id is not None:
+        _validate_required_columns(points, [transcript_id])
+
+    _validate_numeric_column(points, x)
+    _validate_numeric_column(points, y)
+
+    row_count, invalid_x, invalid_y, missing_gene, empty_gene, *transcript_checks = dask.compute(
+        points.map_partitions(len, meta=("row_count", "int64")).sum(),
+        points[x].map_partitions(_count_nonfinite_values, meta=("invalid_x", "int64")).sum(),
+        points[y].map_partitions(_count_nonfinite_values, meta=("invalid_y", "int64")).sum(),
+        points[gene].map_partitions(_count_missing_values, meta=("missing_gene", "int64")).sum(),
+        points[gene].map_partitions(_count_stripped_empty_values, meta=("empty_gene", "int64")).sum(),
+        *(
+            (
+                points[transcript_id]
+                .map_partitions(_count_missing_values, meta=("missing_transcript_id", "int64"))
+                .sum(),
+                points[transcript_id].nunique(dropna=True),
+            )
+            if transcript_id is not None
+            else ()
+        ),
+    )
+
+    row_count = int(row_count)
+    if row_count == 0:
+        raise ValueError("`points` must not be empty.")
+    if int(invalid_x) > 0:
+        raise ValueError(f"Column `{x}` contains missing, NaN, or infinite coordinate values.")
+    if int(invalid_y) > 0:
+        raise ValueError(f"Column `{y}` contains missing, NaN, or infinite coordinate values.")
+    if int(missing_gene) > 0:
+        raise ValueError(f"Column `{gene}` contains missing gene values.")
+    if int(empty_gene) > 0:
+        raise ValueError(f"Column `{gene}` contains empty gene labels after stripping whitespace.")
+
+    if transcript_id is not None:
+        missing_transcript_id, unique_transcript_id_count = transcript_checks
+        if int(missing_transcript_id) > 0:
+            raise ValueError(f"Column `{transcript_id}` contains missing transcript_id values.")
+        if int(unique_transcript_id_count) != row_count:
+            raise ValueError(f"Column `{transcript_id}` must contain unique transcript_id values.")
+
+    return _ValidatedPointsElement(
+        points=points,
+        element_path=element_path,
+        output_path=normalized_output_path,
+        x=x,
+        y=y,
+        gene=gene,
+        transcript_id=transcript_id,
+        uses_internal_row_id=transcript_id is None,
+    )
+
+
+def _validate_cache_build_parameters(
+    *,
+    leaf_tile_size: float = 1024.0,
+    n_levels: int | None = None,
+    max_rows_per_row_group: int = 50_000,
+    coarse_tile_budget: int = 50_000,
+) -> _ValidatedCacheBuildParameters:
+    normalized_leaf_tile_size = _validate_positive_finite_number(leaf_tile_size, "leaf_tile_size")
+    normalized_max_rows_per_row_group = _validate_positive_integer(
+        max_rows_per_row_group, "max_rows_per_row_group"
+    )
+    normalized_coarse_tile_budget = _validate_positive_integer(coarse_tile_budget, "coarse_tile_budget")
+    normalized_n_levels = None if n_levels is None else _validate_positive_integer(n_levels, "n_levels")
+
+    return _ValidatedCacheBuildParameters(
+        leaf_tile_size=normalized_leaf_tile_size,
+        n_levels=normalized_n_levels,
+        max_rows_per_row_group=normalized_max_rows_per_row_group,
+        coarse_tile_budget=normalized_coarse_tile_budget,
+    )
+
+
+def _normalize_output_path(output_path: str | PathLike[str]) -> Path:
+    try:
+        return Path(output_path)
+    except TypeError as exc:
+        raise ValueError("`output_path` must be path-like.") from exc
+
+
+def _validate_column_name(column: Any, parameter_name: str) -> str:
+    if not isinstance(column, str):
+        raise ValueError(f"`{parameter_name}` must be a string.")
+    return column
+
+
+def _validate_required_columns(points: dd.DataFrame, columns: list[str]) -> None:
+    missing = [column for column in columns if column not in points.columns]
+    if missing:
+        missing_columns = ", ".join(f"`{column}`" for column in missing)
+        raise ValueError(f"`points` is missing required column(s): {missing_columns}.")
+
+
+def _validate_numeric_column(points: dd.DataFrame, column: str) -> None:
+    if not is_numeric_dtype(points._meta[column].dtype):
+        raise ValueError(f"Column `{column}` must be numeric.")
+
+
+def _validate_positive_finite_number(value: Any, parameter_name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise ValueError(f"`{parameter_name}` must be a finite positive number.")
+    normalized_value = float(value)
+    if not math.isfinite(normalized_value) or normalized_value <= 0:
+        raise ValueError(f"`{parameter_name}` must be a finite positive number.")
+    return normalized_value
+
+
+def _validate_positive_integer(value: Any, parameter_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, numbers.Integral):
+        raise ValueError(f"`{parameter_name}` must be a positive integer and not a boolean.")
+    normalized_value = int(value)
+    if normalized_value <= 0:
+        raise ValueError(f"`{parameter_name}` must be a positive integer.")
+    return normalized_value
+
+
+def _count_nonfinite_values(series: pd.Series) -> int:
+    values = series.to_numpy(dtype="float64", na_value=np.nan)
+    return int((~np.isfinite(values)).sum())
+
+
+def _count_missing_values(series: pd.Series) -> int:
+    return int(series.isna().sum())
+
+
+def _count_stripped_empty_values(series: pd.Series) -> int:
+    non_missing = series.dropna()
+    return int(non_missing.astype(str).str.strip().eq("").sum())
 
 
 __all__ = [

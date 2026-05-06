@@ -26,7 +26,7 @@ Build a working offline writer that converts a transcript-like points table into
 
 The writer must:
 
-- start from a `dask.dataframe.DataFrame` with at least `x`, `y`, and `gene`;
+- start from a backed `SpatialData` points element whose stored points table resolves to a `dask.dataframe.DataFrame` with at least `x`, `y`, and `gene`;
 - write a spatial-first multiscale cache;
 - keep the finest level unsampled, with one cache row per source row;
 - build coarser levels by deterministic spatially stratified sampling per tile;
@@ -40,29 +40,14 @@ Phase 1A should produce:
 - `tests/test_transcript_tiles.py`
 - direct project dependencies for `dask[dataframe]` and `pyarrow` if still needed
 
-The module should expose at least:
+For now, Phase 1A should expose only the backed points-element builder:
 
 ```python
-def build_transcript_visualization_cache(
-    points: dask.dataframe.DataFrame,
-    output_path: Path,
-    *,
-    x: str = "x",
-    y: str = "y",
-    gene: str = "gene",
-    transcript_id: str | None = None,
-    leaf_tile_size: float = 1024.0,
-    n_levels: int | None = None,
-    max_rows_per_row_group: int = 50_000,
-    coarse_tile_budget: int = 50_000,
-) -> TranscriptTileCache:
-    ...
-
-
 def build_transcript_visualization_cache_for_points_element(
     sdata: SpatialData,
     points_key: str,
     *,
+    output_path: str | PathLike[str] | None = None,
     x: str = "x",
     y: str = "y",
     gene: str = "gene",
@@ -75,14 +60,24 @@ def build_transcript_visualization_cache_for_points_element(
     ...
 ```
 
-### Dataframe Builder Construction Contract
+Do not expose a standalone dataframe builder in Phase 1A.
+The implementation may still use internal dataframe helpers after the points element is resolved.
 
-`build_transcript_visualization_cache(...)` is the main dataframe entry point.
-`output_path` is the final cache root directory, usually the `transcripts_vis/` directory beside the source `points.parquet`.
+### Points Element Builder Construction Contract
 
-The dataframe builder accepts `leaf_tile_size` and `n_levels` as construction inputs.
+`build_transcript_visualization_cache_for_points_element(...)` is the main and only public entry point for Phase 1A.
+It validates that `sdata` is backed, resolves `points_key` to exactly one stored points element path, and uses that stored points dataframe as the cache source.
+By default, the final cache root is:
+
+```text
+Path(sdata.path) / resolved_points_element_path / "transcripts_vis"
+```
+
+If an explicit `output_path` is provided, normalize it with `Path(output_path)` and use it as the final cache root.
+
+The points-element builder accepts `leaf_tile_size` and `n_levels` as construction inputs.
 For Phase 1A, it uses them to create a regular level pyramid.
-`leaf_tile_size` is in the stored coordinate units of the input points dataframe, not screen pixels.
+`leaf_tile_size` is in the stored coordinate units of the resolved points dataframe, not screen pixels.
 
 If `n_levels` is provided, validate that it is at least `1`.
 If `n_levels is None`, derive it from the source bounds and `leaf_tile_size` in Step 4.
@@ -145,11 +140,10 @@ Keep the public API small and move most logic into internal helpers. A reasonabl
 ```text
 TranscriptTileLevel                      # per-level return metadata
 TranscriptTileCache                      # return dataclass
-build_transcript_visualization_cache     # main public writer
-build_transcript_visualization_cache_for_points_element
+build_transcript_visualization_cache_for_points_element  # main public writer
 
-_validate_points_input
-_validate_backed_points_element
+_validate_points_element
+_validate_cache_build_parameters
 _compute_bounds_and_level_config
 _build_gene_table
 _encode_gene_partition
@@ -307,28 +301,53 @@ They prevent tests or internal helpers from constructing an invalid cache object
 
 This gives the rest of the module a stable return contract from the start.
 
-### 2. Input Validation
+### 2. Input Validation — Implemented
+
+Status:
+
+- Implemented in `src/napari_harpy/_transcript_tiles.py`
+- Covered by `tests/test_transcript_tiles.py`
+- Verified with `pytest tests/test_transcript_tiles.py`
+- Verified with `ruff check src/napari_harpy/_transcript_tiles.py tests/test_transcript_tiles.py`
+- The points-element validation contract currently lives in the private `_validate_points_element(...)` helper
+- Cache build parameter validation lives in the private `_validate_cache_build_parameters(...)` helper
+- Public writer wiring remains part of Step 10
 
 Implement validation before any output directory is created so later failures are clearer and failed inputs do not leave cache artifacts behind.
 
-#### Dataframe Parameter And Schema Validation
+#### Points Element Parameter And Schema Validation
 
-Validate without triggering a full dataframe compute where possible:
+Validate the public points-element entry point before triggering a full dataframe compute where possible:
 
-- `points` is a `dask.dataframe.DataFrame`
-- `output_path` is path-like and represents the final `transcripts_vis/` cache root
-- normalize `output_path` with `Path(output_path)` before returning or using it internally
+- `sdata.is_backed()`
+- `sdata.path is not None`
+- `points_key` is a string
+- `points_key in sdata.points`
+- selected points element resolves to exactly one on-disk element path
+- resolved points element is a `dask.dataframe.DataFrame`
+- if `output_path` is provided, it is path-like and represents the final `transcripts_vis/` cache root
+- if `output_path` is provided, normalize it with `Path(output_path)` before returning or using it internally
+- if `output_path` is not provided, compute it as `Path(sdata.path) / resolved_points_element_path / "transcripts_vis"`
 - `x`, `y`, and `gene` are strings
 - `x`, `y`, and `gene` columns exist
 - `x` and `y` are numeric according to dataframe metadata
 - `transcript_id is None` or is a string
 - if `transcript_id` is provided, the column exists
+
+Use `sdata.locate_element(...)` or the equivalent SpatialData API to resolve the selected points element path.
+Do not assume the path is always `points/<points_key>`.
+Raise a clear `ValueError` if the element cannot be located or resolves to multiple zarr paths.
+
+#### Cache Build Parameter Validation
+
+Validate cache construction parameters separately from points-element validation:
+
 - `leaf_tile_size` is finite and `> 0`
 - `max_rows_per_row_group` is an `int` and `> 0`, but not `bool`
 - `coarse_tile_budget` is an `int` and `> 0`, but not `bool`
 - `n_levels is None` or is an `int >= 1`, but not `bool`
 
-#### Dataframe Data-Quality Validation
+#### Resolved Points Data-Quality Validation
 
 Validate with Dask reductions before writing cache files:
 
@@ -363,19 +382,6 @@ If `transcript_id` is not provided:
 - deterministic coarse-level sampling across rebuilds is only guaranteed when input row order and partitioning are stable
 - do not expose the internal id as a public source transcript identity
 
-#### SpatialData Entry Point Validation
-
-Validate before delegating to the dataframe writer:
-
-- `sdata.is_backed()`
-- `sdata.path is not None`
-- `points_key in sdata.points`
-- selected points element resolves to exactly one on-disk element path
-
-Use `sdata.locate_element(...)` or the equivalent SpatialData API to resolve the selected points element path.
-Do not assume the path is always `points/<points_key>`.
-Raise a clear `ValueError` if the element cannot be located or resolves to multiple zarr paths.
-
 ### 3. Output Directory Setup and Staged Finalization
 
 Before writing data files, implement the temp-directory and staged replacement path. This should exist early so later integration work does not need to be rewritten.
@@ -406,7 +412,7 @@ Implement one function that computes:
 - `finest_level`
 - derived `TranscriptTileLevel` records for every level
 
-This function implements the level construction described in the Dataframe Builder Construction Contract.
+This function implements the level construction described in the Points Element Builder Construction Contract.
 
 Recommended first implementation:
 
@@ -720,18 +726,17 @@ With partition-local writing, multiple row groups may have the same `level`, `ti
 
 Write `manifest.parquet` last.
 
-### 10. SpatialData Helper
+### 10. Public Points Element Builder
 
-After the dataframe writer is stable, implement the backed SpatialData wrapper.
+Wire the public `build_transcript_visualization_cache_for_points_element(...)` entry point around the internal writer helpers.
 
 Responsibilities:
 
-- validate backed SpatialData input
-- resolve the points element
-- resolve the points element's unique on-disk path with `sdata.locate_element(...)` or equivalent
-- read the stored points dataframe as-is
-- compute `output_path = Path(sdata.path) / resolved_points_element_path / "transcripts_vis"`
-- delegate to `build_transcript_visualization_cache(...)`
+- call `_validate_points_element(...)`
+- call `_validate_cache_build_parameters(...)`
+- use the resolved points dataframe as-is
+- build all level files, `genes.parquet`, `metadata.json`, and `manifest.parquet`
+- return the final `TranscriptTileCache`
 
 Phase 1A should keep the cache contract in the stored coordinate space of `points.parquet`.
 
@@ -837,7 +842,7 @@ If Phase 1A is implemented incrementally, the cleanest checkpoints are:
 4. finest unsampled level writer + manifest
 5. coarse sampled level writer
 6. staged finalization with rollback
-7. SpatialData helper
+7. public points-element builder wiring
 8. test completion
 9. benchmark pass on synthetic and real data
 
@@ -847,8 +852,7 @@ Each checkpoint should leave the branch in a runnable, testable state.
 
 Phase 1A is complete when:
 
-- the offline writer can build the full spatial-first cache from a Dask dataframe;
-- the backed SpatialData helper can build the same cache from a points element;
+- the public points-element builder can build the full spatial-first cache from a backed SpatialData points element;
 - all core writer tests pass;
 - the resulting cache layout matches the roadmap contract;
 - coarse sampled levels exist and respect the configured budget;
