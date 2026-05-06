@@ -700,7 +700,126 @@ Implementation rules:
 - the target mapping is explicit enough that source and target datasets do not
   need identical element names.
 
-## 5. Make Package Imports Lazy
+## 5. Reorganize Modules by Domain
+
+Status: [ ] Not started
+
+Before making imports lazy, reorganize the package so the module layout matches
+the dependency boundaries we want:
+
+- Qt-free shared code lives in `core/`;
+- napari viewer integration lives in `viewer/`;
+- widget-specific code lives under the relevant widget domain;
+- public headless APIs stay in `headless.py`;
+- interactive entry points stay separate from the headless path.
+
+This slice should be a mechanical move/refactor. Do not change behavior while
+moving modules.
+
+Target layout:
+
+```text
+napari_harpy/
+  core/
+    annotation.py
+    class_palette.py
+    classifier.py
+    classifier_export.py
+    feature_extraction.py
+    persistence.py
+    spatialdata.py
+    table_color_source.py
+
+  viewer/
+    adapter.py
+    overlay_styling.py
+
+  widgets/
+    shared_styles.py
+    viewer/
+      widget.py
+    feature_extraction/
+      controller.py
+      widget.py
+      status_card.py
+    object_classification/
+      controller.py
+      widget.py
+      status_card.py
+      viewer_styling.py
+
+  headless.py
+  datasets.py
+  _interactive.py
+  _reader.py
+```
+
+Current-to-new file map:
+
+- `_annotation.py` -> `core/annotation.py`;
+- `_class_palette.py` -> `core/class_palette.py`;
+- `_classifier_core.py` -> `core/classifier.py`;
+- `_classifier_export.py` -> `core/classifier_export.py`;
+- `_feature_extraction_core.py` -> `core/feature_extraction.py`;
+- `_persistence_core.py` -> `core/persistence.py`;
+- `_spatialdata.py` -> `core/spatialdata.py`;
+- `_table_color_source.py` -> `core/table_color_source.py`;
+- `_viewer_adapter.py` -> `viewer/adapter.py`;
+- `_viewer_overlay_styling.py` -> `viewer/overlay_styling.py`;
+- `_feature_extraction.py` -> `widgets/feature_extraction/controller.py`;
+- `widgets/_feature_extraction_widget.py` -> `widgets/feature_extraction/widget.py`;
+- `widgets/_feature_extraction_status_card.py` ->
+  `widgets/feature_extraction/status_card.py`;
+- `_classifier.py` -> `widgets/object_classification/controller.py`;
+- `_classifier_viewer_styling.py` ->
+  `widgets/object_classification/viewer_styling.py`;
+- `widgets/_object_classification_widget.py` ->
+  `widgets/object_classification/widget.py`;
+- `widgets/_object_classification_status_card.py` ->
+  `widgets/object_classification/status_card.py`;
+- `widgets/_viewer_widget.py` -> `widgets/viewer/widget.py`;
+- `widgets/_shared_styles.py` -> `widgets/shared_styles.py`.
+
+Keep `_app_state.py` top-level for this slice unless the implementation needs a
+small follow-up decision. It is interactive application state, not headless core,
+and should not block this mechanical layout cleanup.
+
+Do not keep backward-compatibility shims for the old private module paths. These
+modules are private implementation details, and this refactor should update all
+internal imports and tests to the new paths directly.
+
+### Implementation Plan
+
+- create `core/`, `viewer/`, and widget-domain packages with `__init__.py`
+  files;
+- move files according to the file map above;
+- update imports in source and tests to the new module paths;
+- update `widgets/__init__.py` to re-export the three public widget classes
+  from their new package locations;
+- update `napari.yaml` if it points at any moved widget paths;
+- update tests that intentionally inspect import paths or source imports;
+- keep behavior changes out of this slice.
+
+### Tests
+
+- full test suite remains green after the mechanical move;
+- napari widget entry points still resolve through `napari.yaml`;
+- `widgets.__all__` or equivalent public widget exports still expose:
+  - `ViewerWidget`;
+  - `FeatureExtractionWidget`;
+  - `ObjectClassificationWidget`;
+- headless tests still import only headless-safe core modules and do not pull in
+  widget/controller modules directly.
+
+### Acceptance Criteria
+
+- the package layout clearly separates core, viewer integration, and the three
+  widget domains;
+- all internal imports use the new module paths;
+- no compatibility modules remain at the old private paths;
+- no behavior changes are introduced beyond import-path updates.
+
+## 6. Make Package Imports Lazy
 
 Status: [ ] Not started
 
@@ -736,7 +855,7 @@ apply implementation.
 - interactive users can still access the existing napari-facing entry points;
 - lazy imports do not hide import errors once a lazy attribute is actually used.
 
-## 6. Optional CLI Wrapper
+## 7. Optional CLI Wrapper
 
 Status: [ ] Not started
 
