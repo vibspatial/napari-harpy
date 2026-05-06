@@ -112,6 +112,11 @@ These generated records are then stored explicitly in `TranscriptTileCache.level
 Readers should use those explicit records.
 Level file paths follow the fixed layout convention `levels/level_<level>.parquet` and are derived from `level`.
 
+`transcript_id` is optional.
+If `transcript_id` is provided, Phase 1A validates that it is non-null and unique, and uses it as the stable row identity for deterministic coarse-level sampling.
+If `transcript_id` is not provided, the builder creates an internal unique row id for the current build.
+This id is sufficient to avoid duplicate sampling keys within one build, but deterministic coarse-level sampling across rebuilds is guaranteed only when the input dataframe row order and partitioning are stable.
+
 `max_rows_per_row_group` controls physical Parquet sharding for unsampled and sampled level files.
 `coarse_tile_budget` controls how many representative points may be stored in one sampled coarse tile.
 Keep these separate so IO layout tuning and overview-density tuning do not become coupled.
@@ -312,6 +317,8 @@ Validate for dataframe entry point:
 - `x`, `y`, and `gene` columns exist
 - `x` and `y` are numeric
 - `transcript_id` exists if requested
+- requested `transcript_id` values are non-null
+- requested `transcript_id` values are unique
 - `leaf_tile_size > 0`
 - `max_rows_per_row_group > 0`
 - `coarse_tile_budget > 0`
@@ -439,7 +446,7 @@ At the end of this step, all later level-writing code should work with:
 - `x`
 - `y`
 - `gene_id`
-- optional `transcript_id`
+- row identity for sampling, using validated `transcript_id` when provided or an internal unique row id for this build otherwise
 
 and not carry the original gene string into the level files.
 
@@ -558,9 +565,9 @@ Recommended first implementation choices:
 - compute a deterministic `cell_id` from the per-tile micro-grid coordinates
 - if occupied cells `<= coarse_tile_budget`, assign quota `1` to each occupied cell, then distribute the remaining quota approximately by occupancy using a largest-remainder rule with stable tie-break on `cell_id`
 - if occupied cells `> coarse_tile_budget`, assign quota `1` only to the `coarse_tile_budget` occupied cells with highest occupancy, with stable tie-break on `cell_id`
-- if `transcript_id` is available, compute a stable per-row ordering key from a canonical encoding of `transcript_id`
-- otherwise, compute a stable per-row ordering key by hashing a stable binary encoding of `(x, y, gene_id)`
-- for the fallback encoding, pack `float64(x)`, `float64(y)`, and `uint32(gene_id)` in canonical little-endian order before hashing with a stable hash function from the standard library
+- if `transcript_id` is provided, compute a stable per-row ordering key from a canonical encoding of the validated `transcript_id`
+- otherwise, compute a per-row ordering key from the internal unique row id created for this build
+- internal row ids must be unique within one build, but they only support deterministic coarse-level sampling across rebuilds when input dataframe row order and partitioning are stable
 - never use Python's built-in `hash()` for sampling
 - after selecting rows from each cell, sort the final sampled rows deterministically before writing so rebuilds do not depend on Dask partition order
 - cap each sampled coarse tile at `coarse_tile_budget`
@@ -573,12 +580,13 @@ Recommended concrete deterministic algorithm for one coarse tile:
 2. compute `cell_id` from those cell coordinates
 3. count rows per occupied cell
 4. assign cell quotas with the rules above
-5. compute one stable per-row ordering key
+5. compute one per-row ordering key from validated `transcript_id` or the internal build row id
 6. within each occupied cell, sort rows by that ordering key and keep the first `quota[cell]`
 7. concatenate selected rows from all occupied cells
 8. sort the selected rows deterministically before writing
 
-The key requirement is that repeating the build with the same inputs must produce the same sampled rows even if Dask partition order changes.
+When `transcript_id` is provided and validated, repeating the build with the same inputs must produce the same sampled rows even if Dask partition order changes.
+When `transcript_id` is not provided, deterministic coarse-level sampling across rebuilds is guaranteed only when input dataframe row order and partitioning are stable.
 
 ### 9. `metadata.json` and `manifest.parquet`
 
@@ -681,6 +689,8 @@ Recommended test groups:
 
 - missing `x`, `y`, or `gene`
 - invalid `transcript_id`
+- null `transcript_id` values when requested
+- duplicate `transcript_id` values when requested
 - invalid `leaf_tile_size`
 - invalid `max_rows_per_row_group`
 - invalid `coarse_tile_budget`
