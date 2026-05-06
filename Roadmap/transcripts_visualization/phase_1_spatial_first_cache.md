@@ -309,34 +309,61 @@ This gives the rest of the module a stable return contract from the start.
 
 ### 2. Input Validation
 
-Implement validation first so later failures are clearer.
+Implement validation before any output directory is created so later failures are clearer and failed inputs do not leave cache artifacts behind.
 
-Validate for dataframe entry point:
+#### Dataframe Parameter And Schema Validation
 
-- `points` is a Dask dataframe
+Validate without triggering a full dataframe compute where possible:
+
+- `points` is a `dask.dataframe.DataFrame`
+- `output_path` is path-like and represents the final `transcripts_vis/` cache root
+- `x`, `y`, and `gene` are strings
 - `x`, `y`, and `gene` columns exist
-- `x` and `y` are numeric
-- `transcript_id` exists if requested
-- requested `transcript_id` values are non-null
-- requested `transcript_id` values are unique
-- `leaf_tile_size > 0`
-- `max_rows_per_row_group > 0`
-- `coarse_tile_budget > 0`
-- `n_levels is None or n_levels >= 1`
+- `x` and `y` are numeric according to dataframe metadata
+- `transcript_id is None` or is a string
+- if `transcript_id` is provided, the column exists
+- `leaf_tile_size` is finite and `> 0`
+- `max_rows_per_row_group` is an `int` and `> 0`
+- `coarse_tile_budget` is an `int` and `> 0`
+- `n_levels is None` or is an `int >= 1`
 
-Also decide explicit behavior for:
+#### Dataframe Data-Quality Validation
 
-- empty dataframes
-- null gene values
-- `NaN` / `inf` coordinates
+Validate with Dask reductions before writing cache files:
 
-Recommended first behavior:
+- reject empty dataframes
+- reject non-finite coordinates in `x` or `y`
+- reject missing gene values before string coercion
+- reject empty gene strings before string coercion
+- if `transcript_id` is provided:
+  - reject missing values
+  - reject duplicate values
 
-- reject empty inputs with a clear `ValueError`
-- reject rows with invalid coordinates rather than silently dropping them
-- coerce `gene` to string during gene mapping, but reject missing gene values if they would become ambiguous
+Recommended implementation notes:
 
-Validate for SpatialData entry point:
+- use one or a small number of Dask reductions for these checks
+- prefer clear `ValueError` messages that name the failing column
+- do not silently drop invalid rows
+- coerce `gene` to string only after missing and empty-string gene validation
+- the builder may compute row count during validation because later metadata and empty-input rejection need it anyway
+
+#### Transcript Identity Policy
+
+If `transcript_id` is provided:
+
+- use the validated column as the stable row identity for sampling
+- deterministic coarse-level sampling should not depend on Dask partition order
+
+If `transcript_id` is not provided:
+
+- create an internal unique row id for the current build
+- the internal id must be unique within that build
+- deterministic coarse-level sampling across rebuilds is only guaranteed when input row order and partitioning are stable
+- do not expose the internal id as a public source transcript identity
+
+#### SpatialData Entry Point Validation
+
+Validate before delegating to the dataframe writer:
 
 - `sdata.is_backed()`
 - `sdata.path is not None`
@@ -600,6 +627,7 @@ Once all levels can be written, add the cache metadata writers.
 - `x_origin`, `y_origin`
 - `x_min`, `x_max`, `y_min`, `y_max`
 - `levels`
+- `build_parameters`
 
 `x_origin` and `y_origin` are grid origins, not merely aliases for the minimum bounds.
 For Phase 1A they are written with the same values as `x_min` and `y_min`, but readers must use the explicit origin fields for tile coordinate reconstruction.
@@ -616,6 +644,34 @@ Readers should treat `metadata.json["levels"]` as the source of truth for per-le
 Do not write `leaf_tile_size` as a separate metadata field; it is the `tile_size` of the single level where `is_exact = true`.
 The cache-wide `n_levels` and `finest_level` remain useful summary and validation fields, but readers should not need to reconstruct level metadata from them.
 If those summary fields disagree with `levels`, readers should reject the cache rather than trying to choose which value wins.
+
+`build_parameters` is provenance for how the cache was produced, not a source of truth for interpreting stored tile contents.
+Readers should use `manifest.parquet` for actual stored point counts.
+`build_parameters` should include:
+
+- `max_rows_per_row_group`
+- `coarse_tile_budget`
+- `x`
+- `y`
+- `gene`
+- `transcript_id`
+
+`max_rows_per_row_group` and `coarse_tile_budget` have different meanings:
+
+- `max_rows_per_row_group` is a physical Parquet layout setting. It limits how many point rows may be written into one row group before the writer creates another row group shard.
+- `coarse_tile_budget` is a build-time overview sampling setting. It caps how many representative point rows may be stored for one sampled coarse tile.
+
+For example, if `max_rows_per_row_group = 50_000` and one exact finest-level tile contains `120_000` points, that tile may produce three manifest rows:
+
+```text
+level  tile_x  tile_y  row_group  tile_shard  n_points  is_exact
+2      3       1       0          0           50000     true
+2      3       1       1          1           50000     true
+2      3       1       2          2           20000     true
+```
+
+If `coarse_tile_budget = 50_000` and one sampled coarse tile contains `3_000_000` source points, the writer stores at most `50_000` representative points for that coarse tile before row-group sharding is applied.
+The actual stored count is recorded in `manifest.parquet` as `n_points` per row group; if a tile has multiple row groups, sum their `n_points` values to get the tile total.
 
 Readers must validate `metadata.json` before using the cache.
 If validation fails, treat the cache as invalid and do not attempt partial recovery.
