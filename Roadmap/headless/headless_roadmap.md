@@ -784,6 +784,13 @@ Current-to-new file map:
 - `widgets/_viewer_widget.py` -> `widgets/viewer/widget.py`;
 - `widgets/_shared_styles.py` -> `widgets/shared_styles.py`.
 
+Move `_spatialdata.py` as one module for this slice. To keep
+`core/spatialdata.py` import-time headless-safe, remove the top-level
+`from napari.layers import Labels` import and import `Labels` locally inside
+`_is_pickable_labels_layer(...)`, which is only used by the legacy/reference
+layer-metadata helpers `build_layer_metadata_adata(...)` and
+`refresh_layer_table_metadata(...)`.
+
 Keep `_app_state.py` top-level for this slice unless the implementation needs a
 small follow-up decision. It is interactive application state, not headless core,
 and should not block this mechanical layout cleanup.
