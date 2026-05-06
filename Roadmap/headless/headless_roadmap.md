@@ -889,29 +889,6 @@ apply implementation.
 - interactive users can still access the existing napari-facing entry points;
 - lazy imports do not hide import errors once a lazy attribute is actually used.
 
-## 7. Optional CLI Wrapper
-
-Status: [ ] Not started
-
-Once the Python API is stable, add a CLI wrapper. This should be thin and should
-call the same `headless.py` functions.
-
-Possible shape:
-
-```bash
-napari-harpy-classifier apply \
-  --sdata input.zarr \
-  --classifier model.harpy-classifier.joblib \
-  --table table \
-  --feature-key features_classifier \
-  --labels cells \
-  --image image \
-  --coordinate-system global \
-  --write
-```
-
-Keep CLI design for later. The first priority is a tested Python API.
-
 ## Open Questions
 
 - Should the artifact include class color palettes from `user_class_colors` or
