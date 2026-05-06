@@ -583,11 +583,18 @@ def test_viewer_widget_coordinate_system_switch_prunes_old_harpy_layers(qtbot, m
         element_type="image",
         coordinate_system="local",
     )
+    widget._set_action_feedback(
+        title="Segmentation Loaded",
+        lines=["Loaded segmentation `global_image` in coordinate system `global`."],
+        kind="success",
+    )
 
     with qtbot.waitSignal(widget.app_state.coordinate_system_changed):
         widget.coordinate_system_combo.setCurrentIndex(1)
 
     assert widget.app_state.coordinate_system == "local"
+    assert widget.action_feedback_label.text() == ""
+    assert widget.action_feedback_label.isHidden()
     assert list(viewer.layers) == [local_layer, external_layer]
     assert widget.app_state.viewer_adapter.layer_bindings.get_binding(global_layer) is None
     assert widget.app_state.viewer_adapter.layer_bindings.get_binding(local_layer) is not None
