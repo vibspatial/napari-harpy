@@ -12,7 +12,7 @@ import pytest
 from spatialdata import SpatialData, read_zarr
 from spatialdata.datasets import blobs
 
-from napari_harpy.datasets import blobs_multi_region
+from napari_harpy.datasets import blobs_multi_region, blobs_points_repartitioned
 
 TEST_HOME = Path(tempfile.mkdtemp(prefix="napari-harpy-test-home-"))
 TEST_CACHE = TEST_HOME / ".cache"
@@ -63,6 +63,12 @@ def sdata_blobs_multi_region() -> SpatialData:
 
 
 @pytest.fixture
+def sdata_blobs_points_repartitioned() -> SpatialData:
+    """Return an in-memory SpatialData test object with a repartitioned points element."""
+    return blobs_points_repartitioned()
+
+
+@pytest.fixture
 def backed_sdata_blobs(tmp_path) -> SpatialData:
     """Return a backed SpatialData test object stored in a temporary zarr directory."""
     path = tmp_path / "blobs.zarr"
@@ -76,5 +82,14 @@ def backed_sdata_blobs_multi_region(tmp_path) -> SpatialData:
     """Return a backed multi-region SpatialData test object stored in a temporary zarr directory."""
     path = tmp_path / "blobs_multi_region.zarr"
     sdata = blobs_multi_region()
+    sdata.write(path)
+    return read_zarr(path)
+
+
+@pytest.fixture
+def backed_sdata_blobs_points_repartitioned(tmp_path) -> SpatialData:
+    """Return a backed SpatialData test object with a repartitioned points element."""
+    path = tmp_path / "blobs_points_repartitioned.zarr"
+    sdata = blobs_points_repartitioned()
     sdata.write(path)
     return read_zarr(path)
