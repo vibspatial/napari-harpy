@@ -75,6 +75,43 @@ def build_transcript_visualization_cache_for_points_element(
     ...
 ```
 
+### Dataframe Builder Construction Contract
+
+`build_transcript_visualization_cache(...)` is the main dataframe entry point.
+`output_path` is the final cache root directory, usually the `transcripts_vis/` directory beside the source `points.parquet`.
+
+The dataframe builder accepts `leaf_tile_size` and `n_levels` as construction inputs.
+For Phase 1A, it uses them to create a regular level pyramid.
+`leaf_tile_size` is in the stored coordinate units of the input points dataframe, not screen pixels.
+
+If `n_levels` is provided, validate that it is at least `1`.
+If `n_levels is None`, derive it from the source bounds and `leaf_tile_size` in Step 4.
+After the final `n_levels` value is known:
+
+```text
+finest_level = n_levels - 1
+```
+
+Each level record is created as:
+
+```text
+tile_size = leaf_tile_size * 2 ** (finest_level - level)
+is_exact = level == finest_level
+```
+
+For example, with `leaf_tile_size = 1024` and `n_levels = 3`, the builder creates:
+
+```text
+level  tile_size  is_exact
+0      4096       false
+1      2048       false
+2      1024       true
+```
+
+These generated records are then stored explicitly in `TranscriptTileCache.levels` and in `metadata.json["levels"]`.
+Readers should use those explicit records.
+Level file paths follow the fixed layout convention `levels/level_<level>.parquet` and are derived from `level`.
+
 `max_rows_per_row_group` controls physical Parquet sharding for unsampled and sampled level files.
 `coarse_tile_budget` controls how many representative points may be stored in one sampled coarse tile.
 Keep these separate so IO layout tuning and overview-density tuning do not become coupled.
@@ -150,6 +187,7 @@ Add:
 Use these exact dataclasses as the Phase 1A return contract:
 
 ```python
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -159,6 +197,12 @@ class TranscriptTileLevel:
     level: int
     tile_size: float
     is_exact: bool
+
+    def __post_init__(self) -> None:
+        if self.level < 0:
+            raise ValueError("Transcript tile level must be non-negative.")
+        if not math.isfinite(self.tile_size) or self.tile_size <= 0:
+            raise ValueError("Transcript tile level tile_size must be finite and positive.")
 
     @property
     def level_file(self) -> str:
@@ -176,6 +220,34 @@ class TranscriptTileCache:
     x_max: float
     y_min: float
     y_max: float
+
+    def __post_init__(self) -> None:
+        if self.schema_version != TRANSCRIPT_TILE_CACHE_SCHEMA_VERSION:
+            raise ValueError("Unsupported transcript tile cache schema version.")
+        if not self.levels:
+            raise ValueError("Transcript tile cache must contain at least one level.")
+
+        level_ids = [level.level for level in self.levels]
+        if level_ids != sorted(level_ids):
+            raise ValueError("Transcript tile cache levels must be sorted by ascending level.")
+        if len(set(level_ids)) != len(level_ids):
+            raise ValueError("Transcript tile cache levels must not contain duplicate level ids.")
+        if level_ids != list(range(level_ids[-1] + 1)):
+            raise ValueError("Transcript tile cache levels must be contiguous from 0.")
+
+        exact_levels = [level for level in self.levels if level.is_exact]
+        if len(exact_levels) != 1:
+            raise ValueError("Expected exactly one exact transcript tile level.")
+        if exact_levels[0].level != level_ids[-1]:
+            raise ValueError("The exact transcript tile level must be the finest level.")
+
+        bounds_and_origins = [self.x_origin, self.y_origin, self.x_min, self.x_max, self.y_min, self.y_max]
+        if not all(math.isfinite(value) for value in bounds_and_origins):
+            raise ValueError("Transcript tile cache bounds and origins must be finite.")
+        if self.x_min > self.x_max:
+            raise ValueError("Transcript tile cache requires x_min <= x_max.")
+        if self.y_min > self.y_max:
+            raise ValueError("Transcript tile cache requires y_min <= y_max.")
 
     @property
     def metadata_path(self) -> Path:
@@ -218,17 +290,8 @@ Likewise, do not store `metadata_path`, `manifest_path`, `genes_path`, or `level
 They are derived from the single cache root `path`.
 When a caller needs an absolute path to a level file, it can combine `cache.path / level.level_file`.
 
-The builder should create the first version of the per-level metadata from the cache-wide level configuration.
-For level `k`:
-
-```text
-tile_size(k) = leaf_tile_size * 2 ** (finest_level - k)
-is_exact = k == finest_level
-```
-
-Use this formula as the Phase 1A default construction rule, but expose the resulting `TranscriptTileLevel` records so callers and tests do not need to duplicate it.
-Level file paths follow the fixed layout convention `levels/level_<level>.parquet` and are derived from `level`.
-Also write explicit per-level records to `metadata.json`; readers should trust `metadata.json["levels"]` for per-level tile size and exact/sampled status instead of recomputing those values from the formula.
+Keep these dataclass validations even though the builder and future reader also validate their inputs.
+They prevent tests or internal helpers from constructing an invalid cache object accidentally.
 
 This gives the rest of the module a stable return contract from the start.
 
@@ -300,6 +363,8 @@ Implement one function that computes:
 - `finest_level`
 - derived `TranscriptTileLevel` records for every level
 
+This function implements the level construction described in the Dataframe Builder Construction Contract.
+
 Recommended first implementation:
 
 - use `x_origin = x_min`
@@ -318,8 +383,16 @@ else:
   - if the dataset extent is zero, smaller than one leaf tile, or exactly one leaf tile, use `n_levels = 1`;
   - otherwise add coarser levels until `level_0` covers the whole dataset in a small number of tiles
 
+For Phase 1A, `x_origin` and `y_origin` intentionally equal `x_min` and `y_min`.
+Still store origins separately because origins define the tile grid, while bounds define the data extent.
+Future schema versions may use stable grid origins that differ from the data bounds.
+Readers must use `x_origin` and `y_origin` for tile assignment and coordinate reconstruction rather than inferring origins from `x_min` and `y_min`.
+
+After computing bounds and origins, validate that all values are finite, `x_min <= x_max`, and `y_min <= y_max`.
+The builder should reject invalid bounds before constructing `TranscriptTileCache` or writing `metadata.json`.
+
 This logic should be unit-tested separately because it drives every later tile calculation.
-The same function should build the returned level records from `0` through `finest_level`, using the default Phase 1A tile-size formula from Step 1.
+The same function should build the returned level records from `0` through `finest_level`.
 
 Use the same tile assignment formula at every level:
 
@@ -513,6 +586,9 @@ Once all levels can be written, add the cache metadata writers.
 - `x_min`, `x_max`, `y_min`, `y_max`
 - `levels`
 
+`x_origin` and `y_origin` are grid origins, not merely aliases for the minimum bounds.
+For Phase 1A they are written with the same values as `x_min` and `y_min`, but readers must use the explicit origin fields for tile coordinate reconstruction.
+
 `levels` should be an array of explicit per-level records sorted by ascending `level`.
 Each record should contain:
 
@@ -525,6 +601,23 @@ Readers should treat `metadata.json["levels"]` as the source of truth for per-le
 Do not write `leaf_tile_size` as a separate metadata field; it is the `tile_size` of the single level where `is_exact = true`.
 The cache-wide `n_levels` and `finest_level` remain useful summary and validation fields, but readers should not need to reconstruct level metadata from them.
 If those summary fields disagree with `levels`, readers should reject the cache rather than trying to choose which value wins.
+
+Readers must validate `metadata.json` before using the cache.
+If validation fails, treat the cache as invalid and do not attempt partial recovery.
+
+For Phase 1A, reject metadata when:
+
+- `schema_version` is missing or unsupported
+- `levels` is missing, empty, unsorted, or contains duplicate level ids
+- `n_levels != len(levels)`
+- `finest_level` is not present in `levels`
+- level ids are not exactly `0..finest_level`
+- there is not exactly one `is_exact = true` level
+- the exact level is not `finest_level`
+- any `tile_size <= 0`
+- required bounds or origins are missing or non-finite
+- `x_min > x_max` or `y_min > y_max`
+
 For schema version `harpy-transcripts-vis-0.1`, the writer should validate before finalization that:
 
 - `len(levels) == n_levels`
