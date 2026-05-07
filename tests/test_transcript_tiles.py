@@ -597,6 +597,35 @@ def test_write_genes_parquet_writes_expected_schema(tmp_path: Path) -> None:
     }
 
 
+def test_build_and_write_gene_table_from_blobs_points(backed_sdata_blobs: SpatialData, tmp_path: Path) -> None:
+    points_element = _validate_points_element(
+        sdata=backed_sdata_blobs,
+        points_name="blobs_points",
+        x="x",
+        y="y",
+        gene="genes",
+        transcript_id=None,
+        output_path=tmp_path / "transcripts_vis",
+    )
+
+    gene_table = _build_gene_table(points_element)
+
+    genes_path = points_element.output_path / "genes.parquet"
+    _write_genes_parquet(gene_table, genes_path)
+
+    table = pq.read_table(genes_path)
+    assert genes_path.exists()
+    assert table.schema.field("gene_id").type == pa.uint32()
+    assert table.schema.field("gene").type == pa.string()
+    assert table.schema.field("n_transcripts").type == pa.uint64()
+    assert table.to_pydict() == {
+        "gene_id": gene_table["gene_id"].astype(int).tolist(),
+        "gene": gene_table["gene"].astype(str).tolist(),
+        "n_transcripts": gene_table["n_transcripts"].astype(int).tolist(),
+    }
+    assert int(gene_table["n_transcripts"].sum()) == int(points_element.points.shape[0].compute())
+
+
 def test_prepare_gene_encoded_points_derives_working_dataframe_without_mutating_source(tmp_path: Path) -> None:
     points_element = _validated_points_element_from_data(
         {
