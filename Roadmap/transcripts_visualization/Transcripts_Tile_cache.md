@@ -177,8 +177,7 @@ tile_x: uint32
 tile_y: uint32
 n_points: int64
 row_group: int32
-level_file: string
-is_exact: bool
+tile_shard: int32
 ```
 
 A Parquet row group is a chunk of rows inside one level file such as `levels/level_2.parquet`. It is not a separate file and it is not a single row. `manifest.parquet` is the lookup table that says which tile each row group belongs to, which level file contains it, and how many point rows it stores.
@@ -194,24 +193,20 @@ level_2.parquet
 The matching `manifest.parquet` rows would be:
 
 ```text
-level  tile_x  tile_y  n_points  row_group  level_file       is_exact
-2      3       1       83        0          level_2.parquet  true
-2      4       1       21        1          level_2.parquet  true
+level  tile_x  tile_y  n_points  row_group  tile_shard
+2      3       1       83        0          0
+2      4       1       21        1          0
 ```
 
 If one tile is too dense and must be split across multiple row groups, then `manifest.parquet` contains multiple rows with the same `level`, `tile_x`, and `tile_y`, but different `row_group` values.
-
-Recommended extra column:
-
-```text
-tile_shard: int32
-```
 
 `tile_shard` is `0` for ordinary tiles. If a dense tile is split into several row groups, shard indices are `0..k`. The reader can still address data by `row_group`, but `tile_shard` makes the manifest easier to inspect and test.
 
 Manifest rows are row-group lookup entries, not a place for repeated cache-level metadata.
 For the first implementation, tile geometry is reconstructed from `level`, `tile_x`, `tile_y`,
 and the cache-wide metadata in `metadata.json`.
+The physical level file is derived from `level` as `levels/level_<level>.parquet`.
+Exact/sampled status is derived from `metadata.json["levels"]`, not repeated in the manifest.
 
 ### `levels/level_k.parquet`
 
@@ -387,10 +382,11 @@ For `level = finest_level`:
 3. Partition or group rows by tile.
 4. Write `levels/level_<finest_level>.parquet` using `pyarrow.parquet.ParquetWriter`.
 5. Write one row group per tile, or split a dense tile into shards of at most `max_rows_per_row_group`.
-6. Add one manifest row per written row group with `is_exact = True`.
+6. Collect one manifest row-group metadata entry per written row group.
 
 Here, `is_exact = True` means the row group is unsampled and contains all source rows assigned to that tile or tile shard.
 It does not mean the cache stores full-precision coordinates; those remain in `points.parquet`.
+Do not repeat `is_exact` in each manifest row; readers derive it from `metadata.json["levels"]`.
 
 The first implementation can favor correctness over maximum scalability: group tile data with Dask, materialize one tile at a time, and write row groups through pyarrow. If this becomes too slow for very large inputs, optimize the grouping/shuffle path after the schema is proven.
 
@@ -405,7 +401,7 @@ For each level from `finest_level - 1` down to `0`:
 5. Allocate `coarse_tile_budget` across the occupied micro-grid cells.
 6. Within each occupied micro-grid cell, choose deterministic representative points.
 7. Write one row group per tile or tile shard.
-8. Add manifest rows with `is_exact = False`.
+8. Collect manifest row-group metadata entries for the sampled row groups.
 
 For a row from the previously constructed finer level, reconstruct absolute coordinates before current-level annotation:
 
@@ -464,7 +460,7 @@ Use only paths inside the selected points element directory.
 
 The writer should guarantee these invariants because the later napari controller will rely on them:
 
-- every manifest row points to an existing `level_file`;
+- every manifest row's derived level file exists;
 - every manifest row's `row_group` exists in that level file;
 - all rows in a row group belong to the manifest row's `level`, `tile_x`, and `tile_y`;
 - `level_0` is the coarsest level;
@@ -927,9 +923,7 @@ tile_x: uint32
 tile_y: uint32
 gene_id: uint32
 row_group: int32
-level_file: string
 n_points: int64
-is_exact: bool
 gene_shard: int32
 ```
 
@@ -994,21 +988,21 @@ while `x_rel`, `y_rel`, and optional `transcript_id` vary from row to row.
 The matching rows in `manifest.parquet` could look like:
 
 ```text
-level  tile_x  tile_y  row_group  level_file       n_points  is_exact
-2      3       1       0          level_2.parquet  83        true
-2      3       1       1          level_2.parquet  50000     true
-2      3       1       2          level_2.parquet  12400     true
-2      4       1       3          level_2.parquet  21        true
+level  tile_x  tile_y  row_group  tile_shard  n_points
+2      3       1       0          0           83
+2      3       1       1          1           50000
+2      3       1       2          2           12400
+2      4       1       3          0           21
 ```
 
 The matching rows in `tile_gene_index.parquet` could look like:
 
 ```text
-level  tile_x  tile_y  gene_id  row_group  level_file       n_points  gene_shard
-2      3       1       17       0          level_2.parquet  83        0
-2      3       1       23       1          level_2.parquet  50000     0
-2      3       1       23       2          level_2.parquet  12400     1
-2      4       1       17       3          level_2.parquet  21        0
+level  tile_x  tile_y  gene_id  row_group  n_points  gene_shard
+2      3       1       17       0          83        0
+2      3       1       23       1          50000     0
+2      3       1       23       2          12400     1
+2      4       1       17       3          21        0
 ```
 
 These two metadata tables are describing the same physical row groups from different perspectives:

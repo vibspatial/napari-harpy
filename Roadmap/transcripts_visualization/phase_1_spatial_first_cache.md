@@ -724,6 +724,24 @@ The public behavior of these private helpers should be:
 
 Implement the finest unsampled level before coarser sampled levels.
 
+Add a reusable level-file writer that Slice 7 first uses for the finest unsampled level and Slice 8 later reuses for sampled coarser levels:
+
+```text
+_write_level_file(
+    level_rows: dd.DataFrame,
+    cache: TranscriptTileCache,
+    level: int,
+    build_path: Path,
+    max_rows_per_row_group: int,
+) -> list[dict]
+```
+
+For Slice 7, call it with rows annotated by:
+
+```text
+_annotate_tiles_for_level(gene_encoded_points, cache, level=cache.finest_level)
+```
+
 Required behavior:
 
 1. annotate rows for `level = finest_level`
@@ -737,9 +755,14 @@ Required behavior:
 Important constraints:
 
 - use `pyarrow.parquet.ParquetWriter`
+- write exactly one physical level file at `build_path / "levels" / f"level_{level}.parquet"`
+- create `build_path / "levels"` with `parents=True`
+- process partitions sequentially when writing to one `ParquetWriter`; do not write to the same writer concurrently
 - row-group sharding must respect `max_rows_per_row_group`
 - all rows in a written row group must belong to exactly one `(level, tile_x, tile_y)`
 - Phase 1A should not require a global Dask shuffle by tile before writing
+- do not sample rows in Slice 7
+- do not write `manifest.parquet` in Slice 7; return row-group metadata for Slice 9
 
 Recommended simplification for Phase 1A:
 
@@ -747,6 +770,37 @@ Recommended simplification for Phase 1A:
 - write partition-local tile shards first
 - accept that one tile may produce multiple manifest rows across input partitions
 - optionally compact or merge row groups by tile in a later optimization pass if benchmarks show it is needed
+
+The level file should contain these columns, in this order:
+
+- `tile_id`
+- `tile_x`
+- `tile_y`
+- `x_rel`
+- `y_rel`
+- `gene_id`
+- `transcript_id`, only when present
+- any private internal row id column once Slice 8 adds it
+
+Use the dtypes standardized in Slice 6.
+
+The returned row-group metadata dicts should contain:
+
+- `level`
+- `tile_id`
+- `tile_x`
+- `tile_y`
+- `n_points`
+- `row_group`
+- `tile_shard`
+
+`row_group` is the zero-based physical row group index in the level Parquet file.
+`tile_shard` is the zero-based shard index for a given `(level, tile_x, tile_y)`.
+With partition-local writing, the same tile may appear in multiple row groups; increment `tile_shard` for that tile every time another row group is written for it.
+
+Do not include `schema_version` in the row-group metadata returned by `_write_level_file(...)`; Slice 9 can add it while writing `manifest.parquet`.
+Do not include `level_file`; readers derive it from `level` as `levels/level_<level>.parquet`.
+Do not include `is_exact`; readers derive exact/sampled status from `metadata.json["levels"]`.
 
 ### 8. Coarser Sampled Level Writer
 
