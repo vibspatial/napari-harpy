@@ -633,25 +633,83 @@ The gene-encoded working dataframe should:
 
 Before writing any levels, implement reusable level-annotation helpers.
 
-For a given level, compute:
+For a given level, compute tile membership and tile-local coordinates from the gene-encoded working dataframe.
+Use the explicit `TranscriptTileLevel.tile_size` stored in `TranscriptTileCache.levels`; do not recompute tile size from `leaf_tile_size` inside the annotation helper.
 
-- `tile_size(level)`
+For a point at a given level:
+
+```python
+tile_size = cache.levels[level].tile_size
+
+tile_x = floor((x - cache.x_origin) / tile_size)
+tile_y = floor((y - cache.y_origin) / tile_size)
+
+x_rel = x - cache.x_origin - tile_x * tile_size
+y_rel = y - cache.y_origin - tile_y * tile_size
+
+tile_id = f"{level}/{tile_x}/{tile_y}"
+```
+
+Keep the half-open tile convention from Slice 4:
+
+- tiles represent `[tile_start, tile_start + tile_size)`
+- points exactly on an internal tile boundary belong to the positive-side tile
+- do not clamp points at `x == x_max` or `y == y_max` into the previous tile
+- this keeps boundary-point `x_rel` and `y_rel` at or near `0` in the next tile, instead of producing `tile_size` in the previous tile
+
+The annotated dataframe should contain:
+
 - `tile_x`
 - `tile_y`
 - `tile_id`
 - `x_rel`
 - `y_rel`
+- `gene_id`
+
+and should preserve row identity columns needed by later writers:
+
+- `transcript_id` when the source provided one
+- any private internal row id column once Slice 8 adds it
 
 These helpers should be shared by:
 
 - finest unsampled level writing
 - coarser sampled level writing
 
-This is also the right place to standardize dtypes for:
+Standardize level-file dtypes here:
 
-- `tile_x`, `tile_y`
-- `x_rel`, `y_rel`
-- `gene_id`
+- `tile_id`: string
+- `tile_x`: `uint32`
+- `tile_y`: `uint32`
+- `x_rel`: `float32`
+- `y_rel`: `float32`
+- `gene_id`: `uint32`
+- `transcript_id`: original dtype when present
+
+Because Phase 1A sets `x_origin = x_min` and `y_origin = y_min`, tile indices for validated source points should be non-negative.
+If any computed `tile_x` or `tile_y` exceeds the maximum value representable by `uint32`, raise `ValueError`.
+
+`x_rel` and `y_rel` use `float32` because this is a visualization cache.
+The finest level remains exact in row membership, but not in full coordinate precision.
+The canonical full-precision coordinates remain in `points.parquet`.
+
+Recommended helper split:
+
+```text
+_annotate_tiles_for_level(points: dd.DataFrame, cache: TranscriptTileCache, level: int) -> dd.DataFrame
+_annotate_tile_partition(...)
+_tile_annotated_points_meta(...)
+```
+
+The public behavior of these private helpers should be:
+
+- validate that `level` exists in `cache.levels`
+- preserve input partitioning and avoid a global shuffle
+- annotate each partition independently
+- not write files
+- not sample rows
+- not sort rows globally
+- return a dataframe ready for Slice 7 and Slice 8 writers
 
 ### 7. Finest Unsampled Level Writer
 
