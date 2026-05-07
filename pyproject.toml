@@ -48,6 +48,7 @@ dependencies = [
     "napari[all]>=0.4.18",
     "napari-spatialdata>=0.2.6",
     "pandas<3.0",
+    "pyarrow",
 ]
 
 # TODO: change to dependency-groups once pip has support https://github.com/pypa/pip/issues/12963

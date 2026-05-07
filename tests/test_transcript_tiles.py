@@ -5,22 +5,28 @@ from pathlib import Path
 
 import dask.dataframe as dd
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from spatialdata import SpatialData, read_zarr
 from spatialdata.datasets import blobs
 from spatialdata.models import PointsModel
 from spatialdata.transformations import Identity
 
+import napari_harpy._transcript_tiles as transcript_tiles
 from napari_harpy._transcript_tiles import (
     TRANSCRIPT_TILE_CACHE_SCHEMA_VERSION,
     TranscriptTileCache,
     TranscriptTileCacheBuildParameters,
     TranscriptTileLevel,
+    _build_gene_table,
     _compute_transcript_tile_cache_metadata,
     _finalize_cache_with_staged_replacement,
     _prepare_cache_output_directory,
+    _prepare_gene_encoded_points,
     _validate_points_element,
     _ValidatedPointsElement,
+    _write_genes_parquet,
 )
 
 
@@ -86,16 +92,20 @@ def _validated_points_element_from_data(
     *,
     output_path: Path,
     npartitions: int = 1,
+    x: str = "x",
+    y: str = "y",
+    gene: str = "gene",
+    transcript_id: str | None = None,
 ) -> _ValidatedPointsElement:
     points = dd.from_pandas(pd.DataFrame(data), npartitions=npartitions)
     return _ValidatedPointsElement(
         points=points,
         element_path="points/blobs_points",
         output_path=output_path,
-        x="x",
-        y="y",
-        gene="gene",
-        transcript_id=None,
+        x=x,
+        y=y,
+        gene=gene,
+        transcript_id=transcript_id,
     )
 
 
@@ -526,6 +536,123 @@ def test_compute_transcript_tile_cache_metadata_rejects_nonfinite_bounds(tmp_pat
         _compute_transcript_tile_cache_metadata(points_element, leaf_tile_size=1024.0, n_levels=None)
 
 
+def test_build_gene_table_normalizes_sorts_and_counts_genes(tmp_path: Path) -> None:
+    points_element = _validated_points_element_from_data(
+        {
+            "x": [0.0, 1.0, 2.0, 3.0, 4.0],
+            "y": [5.0, 6.0, 7.0, 8.0, 9.0],
+            "gene": ["Gapdh", " Actb ", "Actb", "actb", "Gapdh"],
+        },
+        output_path=tmp_path / "transcripts_vis",
+        npartitions=2,
+    )
+
+    gene_table = _build_gene_table(points_element)
+
+    expected = pd.DataFrame(
+        {
+            "gene_id": pd.Series([0, 1, 2], dtype="uint32"),
+            "gene": pd.Series(["Actb", "Gapdh", "actb"], dtype="string"),
+            "n_transcripts": pd.Series([2, 2, 1], dtype="uint64"),
+        }
+    )
+    pd.testing.assert_frame_equal(gene_table, expected)
+
+
+def test_build_gene_table_rejects_too_many_genes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    points_element = _validated_points_element_from_data(
+        {
+            "x": [0.0, 1.0, 2.0],
+            "y": [3.0, 4.0, 5.0],
+            "gene": ["Actb", "Gapdh", "Malat1"],
+        },
+        output_path=tmp_path / "transcripts_vis",
+    )
+    monkeypatch.setattr(transcript_tiles, "_MAX_N_UINT32_GENE_IDS", 2)
+
+    with pytest.raises(ValueError, match="unique genes"):
+        _build_gene_table(points_element)
+
+
+def test_write_genes_parquet_writes_expected_schema(tmp_path: Path) -> None:
+    gene_table = pd.DataFrame(
+        {
+            "gene_id": pd.Series([0, 1], dtype="uint32"),
+            "gene": pd.Series(["Actb", "Gapdh"], dtype="string"),
+            "n_transcripts": pd.Series([2, 1], dtype="uint64"),
+        }
+    )
+    genes_path = tmp_path / "build" / "genes.parquet"
+
+    _write_genes_parquet(gene_table, genes_path)
+
+    table = pq.read_table(genes_path)
+    assert table.schema.field("gene_id").type == pa.uint32()
+    assert table.schema.field("gene").type == pa.string()
+    assert table.schema.field("n_transcripts").type == pa.uint64()
+    assert table.to_pydict() == {
+        "gene_id": [0, 1],
+        "gene": ["Actb", "Gapdh"],
+        "n_transcripts": [2, 1],
+    }
+
+
+def test_prepare_gene_encoded_points_derives_working_dataframe_without_mutating_source(tmp_path: Path) -> None:
+    points_element = _validated_points_element_from_data(
+        {
+            "center_x": [0.0, 1.0, 2.0],
+            "center_y": [3.0, 4.0, 5.0],
+            "feature": ["Gapdh", " Actb ", "Actb"],
+        },
+        output_path=tmp_path / "transcripts_vis",
+        x="center_x",
+        y="center_y",
+        gene="feature",
+        npartitions=2,
+    )
+    gene_table = _build_gene_table(points_element)
+
+    encoded_points = _prepare_gene_encoded_points(points_element, gene_table)
+
+    encoded = encoded_points.compute()
+    expected = pd.DataFrame(
+        {
+            "x": [0.0, 1.0, 2.0],
+            "y": [3.0, 4.0, 5.0],
+            "gene_id": pd.Series([1, 0, 0], dtype="uint32"),
+        }
+    )
+    pd.testing.assert_frame_equal(encoded.reset_index(drop=True), expected)
+    assert list(points_element.points.columns) == ["center_x", "center_y", "feature"]
+    assert "feature" in points_element.points.compute().columns
+
+
+def test_prepare_gene_encoded_points_keeps_transcript_id_when_provided(tmp_path: Path) -> None:
+    points_element = _validated_points_element_from_data(
+        {
+            "x": [0.0, 1.0],
+            "y": [2.0, 3.0],
+            "gene": ["Actb", "Gapdh"],
+            "tx": ["t0", "t1"],
+        },
+        output_path=tmp_path / "transcripts_vis",
+        transcript_id="tx",
+    )
+    gene_table = _build_gene_table(points_element)
+
+    encoded = _prepare_gene_encoded_points(points_element, gene_table).compute()
+
+    expected = pd.DataFrame(
+        {
+            "x": [0.0, 1.0],
+            "y": [2.0, 3.0],
+            "gene_id": pd.Series([0, 1], dtype="uint32"),
+            "transcript_id": ["t0", "t1"],
+        }
+    )
+    pd.testing.assert_frame_equal(encoded.reset_index(drop=True), expected)
+
+
 def test_validate_points_element_uses_default_output_path(backed_sdata_blobs: SpatialData) -> None:
     validated = _validate_points_element(backed_sdata_blobs, "blobs_points", gene="genes")
 
@@ -678,12 +805,12 @@ def test_validate_points_element_rejects_unbacked_spatialdata(sdata_blobs: Spati
         _validate_points_element(sdata_blobs, "blobs_points", gene="genes")
 
 
-def test_validate_points_element_rejects_non_string_points_key(backed_sdata_blobs: SpatialData) -> None:
-    with pytest.raises(ValueError, match="points_key"):
+def test_validate_points_element_rejects_non_string_points_name(backed_sdata_blobs: SpatialData) -> None:
+    with pytest.raises(ValueError, match="points_name"):
         _validate_points_element(backed_sdata_blobs, 1, gene="genes")
 
 
-def test_validate_points_element_rejects_missing_points_key(backed_sdata_blobs: SpatialData) -> None:
+def test_validate_points_element_rejects_missing_points_name(backed_sdata_blobs: SpatialData) -> None:
     with pytest.raises(ValueError, match="not available"):
         _validate_points_element(backed_sdata_blobs, "missing_points", gene="genes")
 

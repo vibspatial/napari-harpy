@@ -11,7 +11,7 @@ Build a working offline writer that converts a transcript-like points table into
 ```text
 <sdata.zarr>/
   points/
-    <points_key>/
+    <points_name>/
       points.parquet
       transcripts_vis/
         metadata.json
@@ -45,7 +45,7 @@ For now, Phase 1A should expose only the backed points-element builder:
 ```python
 def build_transcript_visualization_cache_for_points_element(
     sdata: SpatialData,
-    points_key: str,
+    points_name: str,
     *,
     output_path: str | PathLike[str] | None = None,
     x: str = "x",
@@ -66,7 +66,7 @@ The implementation may still use internal dataframe helpers after the points ele
 ### Points Element Builder Construction Contract
 
 `build_transcript_visualization_cache_for_points_element(...)` is the main and only public entry point for Phase 1A.
-It validates that `sdata` is backed, resolves `points_key` to exactly one stored points element path, and uses that stored points dataframe as the cache source.
+It validates that `sdata` is backed, resolves `points_name` to exactly one stored points element path, and uses that stored points dataframe as the cache source.
 By default, the final cache root is:
 
 ```text
@@ -364,8 +364,8 @@ Validate the public points-element entry point before triggering a full datafram
 
 - `sdata.is_backed()`
 - `sdata.path is not None`
-- `points_key` is a string
-- `points_key in sdata.points`
+- `points_name` is a string
+- `points_name in sdata.points`
 - selected points element resolves to exactly one on-disk element path
 - resolved points element is a `dask.dataframe.DataFrame`
 - if `output_path` is provided, it is path-like and represents the final `transcripts_vis/` cache root
@@ -378,7 +378,7 @@ Validate the public points-element entry point before triggering a full datafram
 - if `transcript_id` is provided, the column exists
 
 Use `sdata.locate_element(...)` or the equivalent SpatialData API to resolve the selected points element path.
-Do not assume the path is always `points/<points_key>`.
+Do not assume the path is always `points/<points_name>`.
 Raise a clear `ValueError` if the element cannot be located or resolves to multiple zarr paths.
 
 #### Cache Build Parameter Validation
@@ -551,7 +551,15 @@ This keeps tile-local coordinates in `[0, tile_size)` instead of allowing `x_rel
 Slice 4 only computes bounds, origins, and level records.
 Do not implement reusable tile annotation helpers here; those belong to Slice 6.
 
-### 5. Gene Dictionary and `genes.parquet`
+### 5. Gene Dictionary and `genes.parquet` — Completed
+
+Status:
+
+- Completed
+- Implemented in `src/napari_harpy/_transcript_tiles.py`
+- Covered by `tests/test_transcript_tiles.py`
+- Verified with `pytest tests/test_transcript_tiles.py`
+- Verified with `ruff check src/napari_harpy/_transcript_tiles.py tests/test_transcript_tiles.py`
 
 Implement deterministic gene mapping next.
 
@@ -570,14 +578,12 @@ Do not lowercase, case-fold, or otherwise canonicalize gene labels in Phase 1A.
 
 The resulting table should contain:
 
-- `schema_version`
 - `gene_id`
 - `gene`
 - `n_transcripts`
 
 Use these dtypes:
 
-- `schema_version`: string
 - `gene_id`: `uint32`
 - `gene`: string
 - `n_transcripts`: `uint64`

@@ -13,9 +13,21 @@ import dask
 import dask.dataframe as dd
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 from pandas.api.types import is_numeric_dtype
 
 TRANSCRIPT_TILE_CACHE_SCHEMA_VERSION = "harpy-transcripts-vis-0.1"
+_GENE_ID_DTYPE = np.dtype("uint32")
+_N_TRANSCRIPTS_DTYPE = np.dtype("uint64")
+_MAX_N_UINT32_GENE_IDS = int(np.iinfo(_GENE_ID_DTYPE).max) + 1
+_GENE_TABLE_SCHEMA = pa.schema(
+    [
+        ("gene_id", pa.uint32()),
+        ("gene", pa.string()),
+        ("n_transcripts", pa.uint64()),
+    ]
+)
 
 
 @dataclass(frozen=True)
@@ -163,7 +175,7 @@ class _ValidatedPointsElement:
 
 def _validate_points_element(
     sdata: Any,
-    points_key: str,
+    points_name: str,
     *,
     output_path: str | PathLike[str] | None = None,
     x: str = "x",
@@ -174,26 +186,26 @@ def _validate_points_element(
     if not hasattr(sdata, "is_backed") or not sdata.is_backed() or getattr(sdata, "path", None) is None:
         raise ValueError("SpatialData must be backed by a zarr store before building a transcript tile cache.")
 
-    if not isinstance(points_key, str):
-        raise ValueError("`points_key` must be a string.")
+    if not isinstance(points_name, str):
+        raise ValueError("`points_name` must be a string.")
 
     points_collection = getattr(sdata, "points", None)
-    if points_collection is None or points_key not in points_collection:
-        raise ValueError(f"Points element `{points_key}` is not available in the SpatialData object.")
+    if points_collection is None or points_name not in points_collection:
+        raise ValueError(f"Points element `{points_name}` is not available in the SpatialData object.")
 
-    points = points_collection[points_key]
+    points = points_collection[points_name]
     element_paths = sdata.locate_element(points)
     if not element_paths:
-        raise ValueError(f"Could not locate points element `{points_key}` inside the backed SpatialData store.")
+        raise ValueError(f"Could not locate points element `{points_name}` inside the backed SpatialData store.")
     if len(element_paths) > 1:
         raise ValueError(
-            f"Points element `{points_key}` resolved to multiple zarr paths: {element_paths}. "
+            f"Points element `{points_name}` resolved to multiple zarr paths: {element_paths}. "
             "A unique points element path is required."
         )
     element_path = element_paths[0]
 
     if not isinstance(points, dd.DataFrame):
-        raise ValueError(f"Points element `{points_key}` must resolve to a dask.dataframe.DataFrame.")
+        raise ValueError(f"Points element `{points_name}` must resolve to a dask.dataframe.DataFrame.")
 
     normalized_output_path = (
         Path(sdata.path) / element_path / "transcripts_vis" if output_path is None else _normalize_output_path(output_path)
@@ -349,6 +361,95 @@ def _compute_transcript_tile_cache_metadata(
     )
 
 
+def _build_gene_table(points_element: _ValidatedPointsElement) -> pd.DataFrame:
+    normalized_genes = points_element.points[points_element.gene].map_partitions(
+        _normalize_gene_values,
+        meta=(points_element.gene, "string"),
+    )
+    gene_counts = normalized_genes.value_counts(sort=False).compute()
+    gene_counts = gene_counts.groupby(level=0).sum().sort_index()
+
+    n_genes = len(gene_counts)
+    if n_genes > _MAX_N_UINT32_GENE_IDS:
+        raise ValueError("Number of unique genes exceeds the maximum representable uint32 gene_id value.")
+
+    return pd.DataFrame(
+        {
+            "gene_id": np.arange(n_genes, dtype=_GENE_ID_DTYPE),
+            "gene": pd.Series(gene_counts.index.to_numpy(dtype=object), dtype="string"),
+            "n_transcripts": gene_counts.to_numpy(dtype=_N_TRANSCRIPTS_DTYPE),
+        }
+    )
+
+
+def _write_genes_parquet(gene_table: pd.DataFrame, genes_path: str | PathLike[str]) -> None:
+    genes_path = Path(genes_path)
+    genes_path.parent.mkdir(parents=True, exist_ok=True)
+    table = pa.Table.from_pandas(gene_table, schema=_GENE_TABLE_SCHEMA, preserve_index=False)
+    pq.write_table(table, genes_path)
+
+
+def _prepare_gene_encoded_points(
+    points_element: _ValidatedPointsElement,
+    gene_table: pd.DataFrame,
+) -> dd.DataFrame:
+    gene_to_id = {
+        str(gene): int(gene_id)
+        for gene, gene_id in zip(gene_table["gene"], gene_table["gene_id"], strict=True)
+    }
+    meta = _gene_encoded_points_meta(points_element)
+
+    return points_element.points.map_partitions(
+        _encode_gene_partition,
+        x=points_element.x,
+        y=points_element.y,
+        gene=points_element.gene,
+        transcript_id=points_element.transcript_id,
+        gene_to_id=gene_to_id,
+        meta=meta,
+    )
+
+
+def _encode_gene_partition(
+    partition: pd.DataFrame,
+    *,
+    x: str,
+    y: str,
+    gene: str,
+    transcript_id: str | None,
+    gene_to_id: dict[str, int],
+) -> pd.DataFrame:
+    gene_ids = _normalize_gene_values(partition[gene]).map(gene_to_id)
+    if gene_ids.isna().any():
+        raise ValueError("Encountered a gene label that is missing from the gene dictionary.")
+
+    encoded = pd.DataFrame(
+        {
+            "x": partition[x].to_numpy(),
+            "y": partition[y].to_numpy(),
+            "gene_id": gene_ids.to_numpy(dtype=_GENE_ID_DTYPE),
+        },
+        index=partition.index,
+    )
+    if transcript_id is not None:
+        encoded["transcript_id"] = partition[transcript_id].to_numpy()
+
+    return encoded
+
+
+def _gene_encoded_points_meta(points_element: _ValidatedPointsElement) -> pd.DataFrame:
+    meta = pd.DataFrame(
+        {
+            "x": pd.Series(dtype=points_element.points._meta[points_element.x].dtype),
+            "y": pd.Series(dtype=points_element.points._meta[points_element.y].dtype),
+            "gene_id": pd.Series(dtype=_GENE_ID_DTYPE),
+        }
+    )
+    if points_element.transcript_id is not None:
+        meta["transcript_id"] = pd.Series(dtype=points_element.points._meta[points_element.transcript_id].dtype)
+    return meta
+
+
 def _finalize_cache_with_staged_replacement(build_path: str | PathLike[str], output_path: str | PathLike[str]) -> Path:
     build_path = Path(build_path)
     output_path = Path(output_path)
@@ -400,6 +501,10 @@ def _normalize_output_path(output_path: str | PathLike[str]) -> Path:
         return Path(output_path)
     except TypeError as exc:
         raise ValueError("`output_path` must be path-like.") from exc
+
+
+def _normalize_gene_values(series: pd.Series) -> pd.Series:
+    return series.astype(str).str.strip().astype("string")
 
 
 def _validate_column_name(column: Any, parameter_name: str) -> str:

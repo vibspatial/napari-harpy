@@ -13,7 +13,7 @@ For a points element inside a SpatialData zarr store, write the cache beside the
 ```text
 <sdata.zarr>/
   points/
-    <points_key>/
+    <points_name>/
       points.parquet
       transcripts_vis/
         metadata.json
@@ -82,7 +82,7 @@ Add a thin SpatialData-facing helper after the dataframe builder is stable:
 ```python
 def build_transcript_visualization_cache_for_points_element(
     sdata: SpatialData,
-    points_key: str,
+    points_name: str,
     *,
     x: str = "x",
     y: str = "y",
@@ -103,12 +103,12 @@ Keep these separate so IO layout tuning and overview-density tuning do not becom
 This helper should:
 
 - require `sdata.is_backed()` and `sdata.path is not None`;
-- require `points_key in sdata.points`;
+- require `points_name in sdata.points`;
 - resolve the selected points element to exactly one on-disk element path, using `sdata.locate_element(...)` or the equivalent SpatialData API;
 - read the stored points dataframe as-is from the selected points element;
 - call `build_transcript_visualization_cache(...)` with `output_path = Path(sdata.path) / resolved_points_element_path / "transcripts_vis"`.
 
-The helper should not assume that the on-disk element path is always `points/<points_key>`.
+The helper should not assume that the on-disk element path is always `points/<points_name>`.
 It should fail with a clear `ValueError` if the selected points element cannot be located or resolves to multiple zarr paths.
 
 The resulting cache is therefore in the native stored coordinate space of `points.parquet`.
@@ -509,7 +509,7 @@ This phase targets the current cache layout only:
 ```text
 <sdata.zarr>/
   points/
-    <points_key>/
+    <points_name>/
       points.parquet
       transcripts_vis/
         metadata.json
