@@ -53,8 +53,8 @@ class TranscriptTileLevel:
             raise ValueError("Transcript tile level tile_size must be finite and positive.")
 
     @property
-    def level_file(self) -> str:
-        return f"levels/level_{self.level}.parquet"
+    def level_dir(self) -> str:
+        return f"levels/level_{self.level}"
 
 
 @dataclass(frozen=True)

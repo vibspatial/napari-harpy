@@ -110,13 +110,13 @@ def _validated_points_element_from_data(
     )
 
 
-def test_transcript_tile_level_records_metadata_and_derived_file() -> None:
+def test_transcript_tile_level_records_metadata_and_derived_directory() -> None:
     level = TranscriptTileLevel(level=2, tile_size=1024.0, is_exact=True)
 
     assert level.level == 2
     assert level.tile_size == 1024.0
     assert level.is_exact is True
-    assert level.level_file == "levels/level_2.parquet"
+    assert level.level_dir == "levels/level_2"
 
 
 @pytest.mark.parametrize("kwargs", [{"level": -1}, {"tile_size": 0.0}, {"tile_size": -1.0}, {"tile_size": float("inf")}])
