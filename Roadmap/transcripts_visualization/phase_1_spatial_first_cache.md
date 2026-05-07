@@ -384,22 +384,26 @@ If `transcript_id` is not provided:
 
 ### 3. Output Directory Setup and Staged Finalization
 
-Before writing data files, implement the temp-directory and staged replacement path. This should exist early so later integration work does not need to be rewritten.
+Before writing data files, implement the cache output path helpers. This should exist early so later integration work does not need to be rewritten.
 
 Recommended behavior:
 
-- write to `transcripts_vis.tmp-<uuid>/`
-- only write into the temp directory during the build
+- add a small helper such as `_prepare_cache_output_directory(output_path) -> Path`
+- if `output_path` does not exist, create it and write the new cache there directly
+- if `output_path` exists and contains `manifest.parquet`, treat it as an existing valid cache and write the new cache to a unique sibling temp directory such as `transcripts_vis.tmp-<uuid>/`
+- if `output_path` exists but does not contain `manifest.parquet`, treat it as stale or incomplete output, remove it, recreate `output_path`, and write there directly
 - write `metadata.json`, `genes.parquet`, level files, then `manifest.parquet`
-- move into place only once the build is complete
-- if replacing an existing cache, move the old cache to a sibling backup path first
+- add a finalization helper such as `_finalize_cache_with_staged_replacement(build_path, output_path)`
+- if `build_path == output_path`, finalization only needs to verify that `manifest.parquet` exists
+- if `build_path != output_path`, replace the existing cache by moving the old cache to a sibling backup path first, then moving the completed temp directory into place
 - if final replacement fails after moving the old cache aside, restore the old cache whenever possible
 
 Implementation notes:
 
-- keep all temp and replacement paths inside the points-element directory
+- keep temp and replacement paths inside the points-element directory
 - avoid mutating `points.parquet`
 - treat `manifest.parquet` as the final validity anchor
+- write `manifest.parquet` last so incomplete direct writes do not look valid
 - do not describe directory replacement as strictly atomic; there may be a brief missing-output window during the staged swap
 
 ### 4. Bounds, Origins, and Level Configuration
