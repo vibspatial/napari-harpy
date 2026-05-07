@@ -398,13 +398,21 @@ The first implementation can favor correctness over maximum scalability: group t
 
 For each level from `finest_level - 1` down to `0`:
 
-1. Compute tile membership at that level from the canonical source dataframe, not from already sampled parent levels.
-2. Within each coarse tile, subdivide the tile into a fixed micro-grid.
-3. Allocate `coarse_tile_budget` across the occupied micro-grid cells.
-4. Within each occupied micro-grid cell, choose deterministic representative points.
-5. Compute tile-local coordinates for that level.
-6. Write one row group per tile or tile shard.
-7. Add manifest rows with `is_exact = False`.
+1. Take candidate rows from the previously constructed finer level, starting from the finest unsampled level.
+2. Reconstruct absolute coordinates from the finer level's `tile_x`, `tile_y`, `x_rel`, and `y_rel`.
+3. Compute tile membership and tile-local coordinates for the current coarser level.
+4. Within each current-level coarse tile, subdivide the tile into a fixed micro-grid.
+5. Allocate `coarse_tile_budget` across the occupied micro-grid cells.
+6. Within each occupied micro-grid cell, choose deterministic representative points.
+7. Write one row group per tile or tile shard.
+8. Add manifest rows with `is_exact = False`.
+
+For a row from the previously constructed finer level, reconstruct absolute coordinates before current-level annotation:
+
+```python
+x = x_origin + finer_tile_x * finer_tile_size + finer_x_rel
+y = y_origin + finer_tile_y * finer_tile_size + finer_y_rel
+```
 
 Initial sampling strategy:
 
@@ -412,18 +420,20 @@ Initial sampling strategy:
 - compute a deterministic `cell_id` for each row from the micro-grid cell coordinates within the coarse tile;
 - if the number of occupied cells is less than or equal to `coarse_tile_budget`, give each occupied cell quota `1`, then distribute the remaining quota approximately in proportion to cell occupancy using a largest-remainder rule with stable tie-break on `cell_id`;
 - if the number of occupied cells is greater than `coarse_tile_budget`, assign quota `1` only to the `coarse_tile_budget` occupied cells with highest occupancy, with stable tie-break on `cell_id`;
-- choose points deterministically within each micro-grid cell using a stable content-derived ordering from `transcript_id` when available;
-- otherwise choose points deterministically by hashing a stable binary encoding of `(x, y, gene_id)`;
-- for that fallback encoding, pack `float64(x)`, `float64(y)`, and `uint32(gene_id)` in canonical little-endian order before hashing with a stable hash function from the standard library;
+- choose points deterministically within each micro-grid cell using a stable ordering from `transcript_id` when available;
+- otherwise choose points deterministically from the internal build row id propagated through sampled finer levels;
 - do not use Python's built-in `hash()` anywhere in the sampling path;
 - after sampling, sort the selected rows deterministically before writing so rebuilds do not depend on Dask partition order;
 - cap each sampled coarse tile at `coarse_tile_budget`.
 
-This first implementation deliberately rebuilds each coarse level directly from the canonical source dataframe. That means one additional offline pass over the source per coarse level, but it avoids compounding artifacts from sampling already sampled parent levels and keeps the writer easier to reason about.
+This first implementation deliberately builds the sampled pyramid in the `finer -> coarser` direction instead of rebuilding each coarse level from the canonical source dataframe.
+That keeps the writer cheaper and simpler because every coarser level starts from an already reduced candidate set.
+The tradeoff is that information loss compounds: once a point or sparse spatial region disappears from a sampled finer level, coarser levels cannot recover it.
+That tradeoff is acceptable for the first spatial-first visualization cache.
 
 This is a spatially stratified sampler rather than a whole-tile random or hash sampler. The goal is not statistical purity; the goal is stable overview tiles with visibly even spatial coverage that do not collapse into only the densest hotspots.
 
-Why not build parent levels from already sampled child levels? That recursive approach would usually be faster because it avoids rereading the exact source table for every coarse level. The tradeoff is that information loss compounds: once a point or sparse spatial region disappears from a sampled child level, coarser levels cannot recover it. Rebuilding each coarse level from the exact source makes every level an independent summary of the real data at that tile geometry and budget, which is a better default for the first implementation.
+Future quality improvements can revisit canonical-source-per-level sampling if benchmarks or visual QA show that compounded sampling loss is a real problem.
 
 ### 7. Write Manifest
 
@@ -729,7 +739,7 @@ The goal is not a perfect mathematical guarantee that every rare gene remains vi
 
 Extend the coarse-level sampler while keeping the same top-level cache layout:
 
-- continue deriving each coarse level from the canonical source dataframe;
+- consider deriving each coarse level from the canonical source dataframe if Phase 1A `finer -> coarser` sampling loses too much rare-gene signal;
 - keep the spatially stratified micro-grid sampling inside each coarse tile;
 - before sampling within the tile, split candidate rows by `gene_id`;
 - allocate `coarse_tile_budget` across genes with a rarity-aware weighting rather than only global abundance-proportional sampling;
@@ -1060,9 +1070,11 @@ For the finest unsampled level:
 
 For coarser sampled levels, keep the same sampling strategy as the main plan:
 
-1. derive the level rows from the canonical source dataframe;
-2. sample spatially within each coarse tile;
-3. after sampling, compute tile-local coordinates for that level.
+1. take candidate rows from the previously constructed finer level;
+2. reconstruct absolute coordinates from the finer level's tile-local coordinates;
+3. annotate those candidates for the current coarser level;
+4. sample spatially within each current-level coarse tile;
+5. write sampled rows with current-level tile-local coordinates.
 
 At that point there are two reasonable storage options:
 

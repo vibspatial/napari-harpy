@@ -708,7 +708,6 @@ Recommended helper split:
 ```text
 _annotate_tiles_for_level(points: dd.DataFrame, cache: TranscriptTileCache, level: int) -> dd.DataFrame
 _annotate_tile_partition(...)
-_tile_annotated_points_meta(...)
 ```
 
 The public behavior of these private helpers should be:
@@ -755,12 +754,50 @@ Once the finest unsampled level works, add coarse levels.
 
 For each level from `finest_level - 1` down to `0`:
 
-1. derive tile membership from the canonical source dataframe, not from already sampled parent levels
-2. subdivide each coarse tile into a fixed micro-grid
-3. allocate `coarse_tile_budget` across occupied micro-grid cells
-4. choose deterministic representative points within each occupied cell
-5. annotate sampled rows with tile-local coordinates for that level
-6. write row groups and manifest rows
+1. take candidate rows from the previously constructed finer level, starting from the finest unsampled level
+2. reconstruct absolute coordinates from the finer level's `tile_x`, `tile_y`, `x_rel`, and `y_rel`
+3. annotate those candidate rows for the current coarser level
+4. subdivide each current-level coarse tile into a fixed micro-grid
+5. allocate `coarse_tile_budget` across occupied micro-grid cells
+6. choose deterministic representative points within each occupied cell
+7. write the current coarser level's row groups and manifest rows
+
+For a row from the previously constructed finer level, reconstruct absolute coordinates before current-level annotation:
+
+```python
+x = cache.x_origin + finer_tile_x * finer_tile_size + finer_x_rel
+y = cache.y_origin + finer_tile_y * finer_tile_size + finer_y_rel
+```
+
+Then call the Slice 6 annotation helper for the current coarser level.
+This keeps the tile-coordinate code shared by finest and coarse-level writing.
+
+Add a dedicated reconstruction helper in Slice 8, for example:
+
+```text
+_reconstruct_absolute_coordinates_from_level(
+    level_rows: dd.DataFrame,
+    cache: TranscriptTileCache,
+    level: int,
+) -> dd.DataFrame
+```
+
+This helper should:
+
+- validate that `level` exists in `cache.levels`
+- read the finer level's explicit `tile_size` from `cache.levels`
+- require `tile_x`, `tile_y`, `x_rel`, `y_rel`, and `gene_id`
+- reconstruct absolute coordinates into the internal `x` and `y` columns expected by `_annotate_tiles_for_level(...)`
+- preserve `gene_id`
+- preserve row identity columns such as `transcript_id` or the private internal row id
+- drop the finer level's `tile_id`, `tile_x`, `tile_y`, `x_rel`, and `y_rel` columns before current-level annotation
+
+Phase 1A intentionally builds the sampled pyramid in the `finer -> coarser` direction rather than re-reading the canonical source dataframe for every coarse level.
+This is computationally simpler and cheaper because each next level works from an already reduced candidate set.
+The tradeoff is that sampling loss compounds: once a row or sparse spatial region is absent from a finer level, coarser levels cannot recover it.
+That tradeoff is acceptable for the first spatial-first visualization cache.
+
+Future quality improvements can revisit canonical-source-per-level sampling if benchmarks or visual QA show that compounded sampling loss is a real problem.
 
 The micro-grid is used to make overview sampling spatially even.
 Without it, a deterministic whole-tile sample can be dominated by the densest hotspot in a coarse tile and may erase sparse spatial regions.
@@ -813,7 +850,7 @@ Recommended first implementation choices:
 - if occupied cells `<= coarse_tile_budget`, assign quota `1` to each occupied cell, then distribute the remaining quota approximately by occupancy using a largest-remainder rule with stable tie-break on `cell_id`
 - if occupied cells `> coarse_tile_budget`, assign quota `1` only to the `coarse_tile_budget` occupied cells with highest occupancy, with stable tie-break on `cell_id`
 - if `transcript_id` is provided, compute a stable per-row ordering key from a canonical encoding of the validated `transcript_id`
-- otherwise, compute a per-row ordering key from the internal unique row id created for this build
+- otherwise, compute a per-row ordering key from the internal unique row id created at the finest level and propagated through sampled finer levels
 - internal row ids must be unique within one build, but they only support deterministic coarse-level sampling across rebuilds when input dataframe row order and partitioning are stable
 - a practical deterministic internal row id implementation is to compute partition lengths, derive cumulative partition offsets, and assign `uint64` row ids within each partition as `partition_offset + row_position`
 - never use Python's built-in `hash()` for sampling
@@ -828,7 +865,7 @@ Recommended concrete deterministic algorithm for one coarse tile:
 2. compute `cell_id` from those cell coordinates
 3. count rows per occupied cell
 4. assign cell quotas with the rules above
-5. compute one per-row ordering key from validated `transcript_id` or the internal build row id
+5. compute one per-row ordering key from validated `transcript_id` or the propagated internal build row id
 6. within each occupied cell, sort rows by that ordering key and keep the first `quota[cell]`
 7. concatenate selected rows from all occupied cells
 8. sort the selected rows deterministically before writing

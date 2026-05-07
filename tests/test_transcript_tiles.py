@@ -19,6 +19,7 @@ from napari_harpy._transcript_tiles import (
     TranscriptTileCache,
     TranscriptTileCacheBuildParameters,
     TranscriptTileLevel,
+    _annotate_tiles_for_level,
     _build_gene_table,
     _compute_transcript_tile_cache_metadata,
     _finalize_cache_with_staged_replacement,
@@ -682,6 +683,131 @@ def test_prepare_gene_encoded_points_keeps_transcript_id_when_provided(tmp_path:
     pd.testing.assert_frame_equal(encoded.reset_index(drop=True), expected)
 
 
+def test_prepare_gene_encoded_points_rejects_reserved_gene_id_source_column(tmp_path: Path) -> None:
+    points_element = _validated_points_element_from_data(
+        {
+            "x": [0.0, 1.0],
+            "y": [2.0, 3.0],
+            "gene": ["Actb", "Gapdh"],
+            "gene_id": [10, 20],
+        },
+        output_path=tmp_path / "transcripts_vis",
+    )
+    gene_table = _build_gene_table(points_element)
+
+    with pytest.raises(ValueError, match="reserved.*gene_id"):
+        _prepare_gene_encoded_points(points_element, gene_table)
+
+
+def test_annotate_tiles_for_level_computes_tile_columns_and_dtypes() -> None:
+    points = dd.from_pandas(
+        pd.DataFrame(
+            {
+                "x": [0.0, 99.5, 100.0, 200.0],
+                "y": [10.0, 109.5, 110.0, 210.0],
+                "gene_id": pd.Series([1, 2, 3, 4], dtype="uint32"),
+                "transcript_id": ["t0", "t1", "t2", "t3"],
+            }
+        ),
+        npartitions=2,
+    )
+    cache = _example_cache(
+        levels=(
+            TranscriptTileLevel(level=0, tile_size=200.0, is_exact=False),
+            TranscriptTileLevel(level=1, tile_size=100.0, is_exact=True),
+        ),
+        x_origin=0.0,
+        y_origin=10.0,
+        x_min=0.0,
+        x_max=200.0,
+        y_min=10.0,
+        y_max=210.0,
+    )
+
+    annotated_points = _annotate_tiles_for_level(points, cache, level=1)
+
+    annotated = annotated_points.compute()
+    expected = pd.DataFrame(
+        {
+            "tile_id": pd.Series(["1/0/0", "1/0/0", "1/1/1", "1/2/2"], dtype="string"),
+            "tile_x": pd.Series([0, 0, 1, 2], dtype="uint32"),
+            "tile_y": pd.Series([0, 0, 1, 2], dtype="uint32"),
+            "x_rel": pd.Series([0.0, 99.5, 0.0, 0.0], dtype="float32"),
+            "y_rel": pd.Series([0.0, 99.5, 0.0, 0.0], dtype="float32"),
+            "gene_id": pd.Series([1, 2, 3, 4], dtype="uint32"),
+            "transcript_id": ["t0", "t1", "t2", "t3"],
+        }
+    )
+    pd.testing.assert_frame_equal(annotated.reset_index(drop=True), expected)
+    assert annotated_points.npartitions == points.npartitions
+
+
+def test_annotate_tiles_for_level_uses_explicit_level_tile_size() -> None:
+    points = dd.from_pandas(
+        pd.DataFrame(
+            {
+                "x": [49.0],
+                "y": [0.0],
+                "gene_id": pd.Series([1], dtype="uint32"),
+            }
+        ),
+        npartitions=1,
+    )
+    cache = _example_cache(
+        levels=(
+            TranscriptTileLevel(level=0, tile_size=25.0, is_exact=False),
+            TranscriptTileLevel(level=1, tile_size=10.0, is_exact=True),
+        ),
+        x_origin=0.0,
+        y_origin=0.0,
+        x_min=0.0,
+        x_max=49.0,
+        y_min=0.0,
+        y_max=0.0,
+    )
+
+    annotated = _annotate_tiles_for_level(points, cache, level=0).compute()
+
+    assert annotated.loc[0, "tile_x"] == 1
+    assert annotated.loc[0, "x_rel"] == pytest.approx(24.0)
+    assert annotated.loc[0, "tile_id"] == "0/1/0"
+
+
+def test_annotate_tiles_for_level_rejects_missing_level() -> None:
+    points = dd.from_pandas(
+        pd.DataFrame({"x": [0.0], "y": [0.0], "gene_id": pd.Series([1], dtype="uint32")}),
+        npartitions=1,
+    )
+
+    with pytest.raises(ValueError, match="level"):
+        _annotate_tiles_for_level(points, _example_cache(), level=99)
+
+
+def test_annotate_tiles_for_level_rejects_uint32_tile_index_overflow() -> None:
+    points = dd.from_pandas(
+        pd.DataFrame(
+            {
+                "x": [4_294_967_296.0],
+                "y": [0.0],
+                "gene_id": pd.Series([1], dtype="uint32"),
+            }
+        ),
+        npartitions=1,
+    )
+    cache = _example_cache(
+        levels=(TranscriptTileLevel(level=0, tile_size=1.0, is_exact=True),),
+        x_origin=0.0,
+        y_origin=0.0,
+        x_min=0.0,
+        x_max=4_294_967_296.0,
+        y_min=0.0,
+        y_max=0.0,
+    )
+
+    with pytest.raises(ValueError, match="uint32"):
+        _annotate_tiles_for_level(points, cache, level=0).compute()
+
+
 def test_validate_points_element_uses_default_output_path(backed_sdata_blobs: SpatialData) -> None:
     validated = _validate_points_element(backed_sdata_blobs, "blobs_points", gene="genes")
 
@@ -724,6 +850,21 @@ def test_validate_points_element_rejects_missing_columns(backed_sdata_blobs: Spa
 
     with pytest.raises(ValueError, match=column):
         _validate_points_element(backed_sdata_blobs, "blobs_points", **kwargs)
+
+
+def test_validate_points_element_rejects_reserved_gene_id_source_column(tmp_path: Path) -> None:
+    sdata = _backed_blobs_with_points(
+        tmp_path,
+        {
+            "x": [0.0, 1.0],
+            "y": [2.0, 3.0],
+            "gene": ["Actb", "Gapdh"],
+            "gene_id": [10, 20],
+        },
+    )
+
+    with pytest.raises(ValueError, match="reserved.*gene_id"):
+        _validate_points_element(sdata, "blobs_points")
 
 
 @pytest.mark.parametrize("column", ["x", "y"])

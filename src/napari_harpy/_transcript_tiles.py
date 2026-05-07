@@ -18,12 +18,20 @@ import pyarrow.parquet as pq
 from pandas.api.types import is_numeric_dtype
 
 TRANSCRIPT_TILE_CACHE_SCHEMA_VERSION = "harpy-transcripts-vis-0.1"
+_INTERNAL_X_COLUMN = "x"
+_INTERNAL_Y_COLUMN = "y"
+_GENE_ID_COLUMN = "gene_id"
+_TRANSCRIPT_ID_COLUMN = "transcript_id"
+_RESERVED_SOURCE_COLUMNS = frozenset({_GENE_ID_COLUMN})
 _GENE_ID_DTYPE = np.dtype("uint32")
 _N_TRANSCRIPTS_DTYPE = np.dtype("uint64")
+_TILE_INDEX_DTYPE = np.dtype("uint32")
+_RELATIVE_COORDINATE_DTYPE = np.dtype("float32")
 _MAX_N_UINT32_GENE_IDS = int(np.iinfo(_GENE_ID_DTYPE).max) + 1
+_MAX_UINT32_TILE_INDEX = int(np.iinfo(_TILE_INDEX_DTYPE).max)
 _GENE_TABLE_SCHEMA = pa.schema(
     [
-        ("gene_id", pa.uint32()),
+        (_GENE_ID_COLUMN, pa.uint32()),
         ("gene", pa.string()),
         ("n_transcripts", pa.uint64()),
     ]
@@ -208,7 +216,9 @@ def _validate_points_element(
         raise ValueError(f"Points element `{points_name}` must resolve to a dask.dataframe.DataFrame.")
 
     normalized_output_path = (
-        Path(sdata.path) / element_path / "transcripts_vis" if output_path is None else _normalize_output_path(output_path)
+        Path(sdata.path) / element_path / "transcripts_vis"
+        if output_path is None
+        else _normalize_output_path(output_path)
     )
 
     x = _validate_column_name(x, "x")
@@ -220,6 +230,7 @@ def _validate_points_element(
     _validate_required_columns(points, [x, y, gene])
     if transcript_id is not None:
         _validate_required_columns(points, [transcript_id])
+    _validate_no_reserved_source_columns(points)
 
     _validate_numeric_column(points, x)
     _validate_numeric_column(points, y)
@@ -270,6 +281,7 @@ def _validate_points_element(
         gene=gene,
         transcript_id=transcript_id,
     )
+
 
 def _prepare_cache_output_directory(output_path: str | PathLike[str]) -> Path:
     output_path = Path(output_path)
@@ -375,7 +387,7 @@ def _build_gene_table(points_element: _ValidatedPointsElement) -> pd.DataFrame:
 
     return pd.DataFrame(
         {
-            "gene_id": np.arange(n_genes, dtype=_GENE_ID_DTYPE),
+            _GENE_ID_COLUMN: np.arange(n_genes, dtype=_GENE_ID_DTYPE),
             "gene": pd.Series(gene_counts.index.to_numpy(dtype=object), dtype="string"),
             "n_transcripts": gene_counts.to_numpy(dtype=_N_TRANSCRIPTS_DTYPE),
         }
@@ -393,9 +405,15 @@ def _prepare_gene_encoded_points(
     points_element: _ValidatedPointsElement,
     gene_table: pd.DataFrame,
 ) -> dd.DataFrame:
+    """Return the internal working dataframe with normalized coordinates and `gene_id`.
+
+    The returned dataframe drops the original gene string, renames the selected
+    coordinate columns to the internal `x`/`y` names, adds `gene_id`, and carries
+    through the optional validated transcript id for later sampling/writing.
+    """
+    _validate_no_reserved_source_columns(points_element.points)
     gene_to_id = {
-        str(gene): int(gene_id)
-        for gene, gene_id in zip(gene_table["gene"], gene_table["gene_id"], strict=True)
+        str(gene): int(gene_id) for gene, gene_id in zip(gene_table["gene"], gene_table[_GENE_ID_COLUMN], strict=True)
     }
     meta = _gene_encoded_points_meta(points_element)
 
@@ -425,14 +443,14 @@ def _encode_gene_partition(
 
     encoded = pd.DataFrame(
         {
-            "x": partition[x].to_numpy(),
-            "y": partition[y].to_numpy(),
-            "gene_id": gene_ids.to_numpy(dtype=_GENE_ID_DTYPE),
+            _INTERNAL_X_COLUMN: partition[x].to_numpy(),
+            _INTERNAL_Y_COLUMN: partition[y].to_numpy(),
+            _GENE_ID_COLUMN: gene_ids.to_numpy(dtype=_GENE_ID_DTYPE),
         },
         index=partition.index,
     )
     if transcript_id is not None:
-        encoded["transcript_id"] = partition[transcript_id].to_numpy()
+        encoded[_TRANSCRIPT_ID_COLUMN] = partition[transcript_id].to_numpy()
 
     return encoded
 
@@ -440,14 +458,88 @@ def _encode_gene_partition(
 def _gene_encoded_points_meta(points_element: _ValidatedPointsElement) -> pd.DataFrame:
     meta = pd.DataFrame(
         {
-            "x": pd.Series(dtype=points_element.points._meta[points_element.x].dtype),
-            "y": pd.Series(dtype=points_element.points._meta[points_element.y].dtype),
-            "gene_id": pd.Series(dtype=_GENE_ID_DTYPE),
+            _INTERNAL_X_COLUMN: pd.Series(dtype=points_element.points._meta[points_element.x].dtype),
+            _INTERNAL_Y_COLUMN: pd.Series(dtype=points_element.points._meta[points_element.y].dtype),
+            _GENE_ID_COLUMN: pd.Series(dtype=_GENE_ID_DTYPE),
         }
     )
     if points_element.transcript_id is not None:
-        meta["transcript_id"] = pd.Series(dtype=points_element.points._meta[points_element.transcript_id].dtype)
+        meta[_TRANSCRIPT_ID_COLUMN] = pd.Series(dtype=points_element.points._meta[points_element.transcript_id].dtype)
     return meta
+
+
+def _annotate_tiles_for_level(points: dd.DataFrame, cache: TranscriptTileCache, level: int) -> dd.DataFrame:
+    """Annotate working rows with tile membership and tile-local coordinates.
+
+    `points` must already use the internal `x`/`y` coordinate columns and contain
+    `gene_id`. Row identity columns are preserved for later sampling/writing.
+    """
+    _validate_required_columns(points, [_INTERNAL_X_COLUMN, _INTERNAL_Y_COLUMN, _GENE_ID_COLUMN])
+    level_record = _get_transcript_tile_level(cache, level)
+    meta = pd.DataFrame(
+        {
+            "tile_id": pd.Series(dtype="string"),
+            "tile_x": pd.Series(dtype=_TILE_INDEX_DTYPE),
+            "tile_y": pd.Series(dtype=_TILE_INDEX_DTYPE),
+            "x_rel": pd.Series(dtype=_RELATIVE_COORDINATE_DTYPE),
+            "y_rel": pd.Series(dtype=_RELATIVE_COORDINATE_DTYPE),
+            _GENE_ID_COLUMN: pd.Series(dtype=_GENE_ID_DTYPE),
+        }
+    )
+    for column in _row_identity_columns(points._meta):
+        meta[column] = pd.Series(dtype=points._meta[column].dtype)
+
+    return points.map_partitions(
+        _annotate_tile_partition,
+        level=level_record.level,
+        tile_size=level_record.tile_size,
+        x_origin=cache.x_origin,
+        y_origin=cache.y_origin,
+        meta=meta,
+    )
+
+
+def _annotate_tile_partition(
+    partition: pd.DataFrame,
+    *,
+    level: int,
+    tile_size: float,
+    x_origin: float,
+    y_origin: float,
+) -> pd.DataFrame:
+    x_values = partition[_INTERNAL_X_COLUMN].to_numpy(dtype="float64", na_value=np.nan)
+    y_values = partition[_INTERNAL_Y_COLUMN].to_numpy(dtype="float64", na_value=np.nan)
+    tile_x_float = np.floor((x_values - x_origin) / tile_size)
+    tile_y_float = np.floor((y_values - y_origin) / tile_size)
+    _validate_tile_indices(tile_x_float, "tile_x")
+    _validate_tile_indices(tile_y_float, "tile_y")
+
+    tile_x = tile_x_float.astype(_TILE_INDEX_DTYPE)
+    tile_y = tile_y_float.astype(_TILE_INDEX_DTYPE)
+    x_rel = x_values - x_origin - tile_x.astype("float64") * tile_size
+    y_rel = y_values - y_origin - tile_y.astype("float64") * tile_size
+    tile_id = pd.Series(
+        [f"{level}/{int(x_index)}/{int(y_index)}" for x_index, y_index in zip(tile_x, tile_y, strict=True)],
+        dtype="string",
+        index=partition.index,
+    )
+
+    annotated = pd.DataFrame(
+        {
+            "tile_id": tile_id,
+            "tile_x": tile_x,
+            "tile_y": tile_y,
+            "x_rel": x_rel.astype(_RELATIVE_COORDINATE_DTYPE),
+            "y_rel": y_rel.astype(_RELATIVE_COORDINATE_DTYPE),
+            _GENE_ID_COLUMN: partition[_GENE_ID_COLUMN].to_numpy(dtype=_GENE_ID_DTYPE),
+        },
+        index=partition.index,
+    )
+
+    for column in _row_identity_columns(partition):
+        annotated[column] = partition[column].to_numpy()
+
+    return annotated
 
 
 def _finalize_cache_with_staged_replacement(build_path: str | PathLike[str], output_path: str | PathLike[str]) -> Path:
@@ -505,6 +597,39 @@ def _normalize_output_path(output_path: str | PathLike[str]) -> Path:
 
 def _normalize_gene_values(series: pd.Series) -> pd.Series:
     return series.astype(str).str.strip().astype("string")
+
+
+def _validate_no_reserved_source_columns(points: dd.DataFrame) -> None:
+    reserved_columns = sorted(column for column in _RESERVED_SOURCE_COLUMNS if column in points.columns)
+    if reserved_columns:
+        formatted_columns = ", ".join(f"`{column}`" for column in reserved_columns)
+        raise ValueError(
+            "`points` contains reserved transcript tile cache internal column(s): "
+            f"{formatted_columns}. Rename these source columns before building the cache."
+        )
+
+
+def _get_transcript_tile_level(cache: TranscriptTileCache, level: int) -> TranscriptTileLevel:
+    if isinstance(level, bool) or not isinstance(level, numbers.Integral):
+        raise ValueError("Transcript tile annotation level must be an integer.")
+    normalized_level = int(level)
+    for level_record in cache.levels:
+        if level_record.level == normalized_level:
+            return level_record
+    raise ValueError(f"Transcript tile annotation level `{normalized_level}` is not available in the cache.")
+
+
+def _validate_tile_indices(tile_indices: np.ndarray, column: str) -> None:
+    if not np.isfinite(tile_indices).all():
+        raise ValueError(f"Computed `{column}` values must be finite.")
+    if (tile_indices < 0).any():
+        raise ValueError(f"Computed `{column}` values must be non-negative.")
+    if (tile_indices > _MAX_UINT32_TILE_INDEX).any():
+        raise ValueError(f"Computed `{column}` values exceed the maximum representable uint32 value.")
+
+
+def _row_identity_columns(points: pd.DataFrame) -> list[str]:
+    return [column for column in points.columns if column not in {_INTERNAL_X_COLUMN, _INTERNAL_Y_COLUMN, _GENE_ID_COLUMN}]
 
 
 def _validate_column_name(column: Any, parameter_name: str) -> str:
