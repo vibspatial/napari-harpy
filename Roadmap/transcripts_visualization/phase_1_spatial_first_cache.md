@@ -18,10 +18,19 @@ Build a working offline writer that converts a transcript-like points table into
         manifest.parquet
         genes.parquet
         levels/
-          level_0.parquet
-          level_1.parquet
+          level_0/
+            part-00000.parquet
+            part-00001.parquet
+            ...
+          level_1/
+            part-00000.parquet
+            part-00001.parquet
+            ...
           ...
-          level_n.parquet
+          level_n/
+            part-00000.parquet
+            part-00001.parquet
+            ...
 ```
 
 The writer must:
@@ -105,18 +114,19 @@ level  tile_size  is_exact
 
 These generated records are then stored explicitly in `TranscriptTileCache.levels` and in `metadata.json["levels"]`.
 Readers should use those explicit records.
-Level file paths follow the fixed layout convention `levels/level_<level>.parquet` and are derived from `level`.
+Level directories follow the fixed layout convention `levels/level_<level>/` and are derived from `level`.
+Individual Parquet part-file paths are written to `manifest.parquet` because each level is a Parquet dataset directory, not one physical Parquet file.
 
 `transcript_id` is optional.
 If `transcript_id` is provided, Phase 1A validates that it is non-null and unique, and uses it as the stable row identity for deterministic coarse-level sampling.
 If `transcript_id` is not provided, the builder creates an internal unique row id for the current build.
 This id is sufficient to avoid duplicate sampling keys within one build, but deterministic coarse-level sampling across rebuilds is guaranteed only when the input dataframe row order and partitioning are stable.
 
-`max_rows_per_row_group` controls physical Parquet sharding for unsampled and sampled level files.
+`max_rows_per_row_group` controls physical Parquet row-group sharding inside unsampled and sampled level part files.
 `coarse_tile_budget` controls how many representative points may be stored in one sampled coarse tile.
 Keep these separate so IO layout tuning and overview-density tuning do not become coupled.
 
-All level files store tile-local `x_rel` and `y_rel` coordinates as `float32`.
+All level part files store tile-local `x_rel` and `y_rel` coordinates as `float32`.
 In this cache, "exact" means unsampled/full-membership rather than full-precision coordinate storage.
 The canonical full-precision coordinates remain in `points.parquet`.
 
@@ -148,7 +158,7 @@ _build_gene_table
 _encode_gene_partition
 _annotate_partition_for_level
 _sample_partition_for_coarse_level
-_write_level_file
+_write_level_dataset
 _write_metadata_json
 _write_manifest_parquet
 _finalize_cache_with_staged_replacement
@@ -160,7 +170,7 @@ The internal function names do not need to match this exactly, but Phase 1A shou
 
 Implement Phase 1A in the order below.
 
-### 1. Define the Core Types and Constants — Implemented
+### 1. Define the Core Types and Constants — Mostly Implemented
 
 Status:
 
@@ -168,6 +178,7 @@ Status:
 - Covered by `tests/test_transcript_tiles.py`
 - Verified with `pytest tests/test_transcript_tiles.py`
 - Verified with `ruff check src/napari_harpy/_transcript_tiles.py tests/test_transcript_tiles.py`
+- The level-dataset layout supersedes the earlier single-file `level_file` property; update the implementation to expose `level_dir` before or during Slice 7
 
 Add:
 
@@ -222,8 +233,8 @@ class TranscriptTileLevel:
             raise ValueError("Transcript tile level tile_size must be finite and positive.")
 
     @property
-    def level_file(self) -> str:
-        return f"levels/level_{self.level}.parquet"
+    def level_dir(self) -> str:
+        return f"levels/level_{self.level}"
 
 
 @dataclass(frozen=True)
@@ -337,7 +348,8 @@ Do not promote build provenance fields such as `max_rows_per_row_group` and `coa
 Store them only in the optional nested `build_parameters` object.
 Likewise, do not store `metadata_path`, `manifest_path`, `genes_path`, or `levels_path` as independent fields.
 They are derived from the single cache root `path`.
-When a caller needs an absolute path to a level file, it can combine `cache.path / level.level_file`.
+When a caller needs an absolute path to a level directory, it can combine `cache.path / level.level_dir`.
+Concrete Parquet part-file paths are recorded in `manifest.parquet` because they depend on the partition-local writer.
 
 Keep these dataclass validations even though the builder and future reader also validate their inputs.
 They prevent tests or internal helpers from constructing an invalid cache object accidentally.
@@ -447,7 +459,7 @@ Recommended behavior:
 - if `output_path` exists and is a directory containing both `metadata.json` and `manifest.parquet`, treat it as an existing valid cache and write the new cache to a unique sibling temp directory such as `transcripts_vis.tmp-<uuid>/`
 - if `output_path` exists but is not a directory, raise `ValueError`
 - if `output_path` exists as a directory but does not contain both `metadata.json` and `manifest.parquet`, raise `ValueError` instead of deleting it
-- write `metadata.json`, `genes.parquet`, level files, then `manifest.parquet`
+- write `metadata.json`, `genes.parquet`, level directories/part files, then `manifest.parquet`
 - add a finalization helper such as `_finalize_cache_with_staged_replacement(build_path, output_path)`
 - before any finalization path mutates `output_path`, verify that `build_path / "manifest.parquet"` exists
 - if `build_path == output_path`, finalization only needs to verify that `manifest.parquet` exists
@@ -600,7 +612,7 @@ At the end of this step, all later level-writing code should work with:
 - `gene_id`
 - row identity for sampling, using the validated `transcript_id` column when provided or a private internal row id for this build otherwise
 
-and not carry the original gene string into the level files.
+and not carry the original gene string into the level part files.
 
 Recommended helper split:
 
@@ -724,10 +736,10 @@ The public behavior of these private helpers should be:
 
 Implement the finest unsampled level before coarser sampled levels.
 
-Add a reusable level-file writer that Slice 7 first uses for the finest unsampled level and Slice 8 later reuses for sampled coarser levels:
+Add a reusable level-dataset writer that Slice 7 first uses for the finest unsampled level and Slice 8 later reuses for sampled coarser levels:
 
 ```text
-_write_level_file(
+_write_level_dataset(
     level_rows: dd.DataFrame,
     cache: TranscriptTileCache,
     level: int,
@@ -745,19 +757,23 @@ _annotate_tiles_for_level(gene_encoded_points, cache, level=cache.finest_level)
 Required behavior:
 
 1. annotate rows for `level = finest_level`
-2. keep only the level-file columns
+2. keep only the level part-file columns
 3. process Dask partitions independently
 4. within each partition, sort or group rows by `(tile_x, tile_y)`
-5. write one row group per partition-local tile group, or split large groups into shards
-6. allow the same `(level, tile_x, tile_y)` to appear in multiple row groups when that tile has rows in multiple input partitions
-7. collect one manifest row per written row group
+5. write one Parquet part file per non-empty Dask partition under `build_path / "levels" / f"level_{level}"`
+6. write one row group per partition-local tile group inside that part file, or split large groups into row-group shards
+7. allow the same `(level, tile_x, tile_y)` to appear in multiple part files when that tile has rows in multiple input partitions
+8. collect one manifest row per written row group
 
 Important constraints:
 
-- use `pyarrow.parquet.ParquetWriter`
-- write exactly one physical level file at `build_path / "levels" / f"level_{level}.parquet"`
-- create `build_path / "levels"` with `parents=True`
-- process partitions sequentially when writing to one `ParquetWriter`; do not write to the same writer concurrently
+- use `pyarrow.parquet.ParquetWriter` inside each partition task so tile row-group boundaries remain under Harpy's control
+- write level rows as a Parquet dataset directory such as `build_path / "levels" / f"level_{level}" / "part-00000.parquet"`
+- create `build_path / "levels" / f"level_{level}"` with `parents=True`
+- use Dask task orchestration for partition writes; do not call `compute()` once per partition in a Python loop
+- trigger the partition-local writes with one Dask compute for the level
+- do not use plain `dd.to_parquet(...)` for level part files unless it can preserve the invariant that every row group contains exactly one tile shard
+- each partition task owns one `ParquetWriter` and one output part file; never share a writer across concurrent tasks
 - row-group sharding must respect `max_rows_per_row_group`
 - all rows in a written row group must belong to exactly one `(level, tile_x, tile_y)`
 - Phase 1A should not require a global Dask shuffle by tile before writing
@@ -767,11 +783,18 @@ Important constraints:
 Recommended simplification for Phase 1A:
 
 - correctness first
-- write partition-local tile shards first
-- accept that one tile may produce multiple manifest rows across input partitions
-- optionally compact or merge row groups by tile in a later optimization pass if benchmarks show it is needed
+- write partition-local tile shards directly to final level part files
+- accept that one tile may produce multiple manifest rows across input partitions and part files
+- optionally compact or merge part files by tile in a later optimization pass if benchmarks show it is needed
 
-The level file should contain these columns, in this order:
+Recommended part-file naming:
+
+- use stable names derived from the Dask partition number, such as `part-00000.parquet`
+- use Dask's partition metadata, for example `partition_info["number"]`, rather than computing partition numbers manually
+- return paths relative to the cache root, such as `levels/level_2/part-00000.parquet`
+- skip empty input partitions rather than writing empty part files
+
+The level part files should contain these columns, in this order:
 
 - `tile_id`
 - `tile_x`
@@ -787,6 +810,7 @@ Use the dtypes standardized in Slice 6.
 The returned row-group metadata dicts should contain:
 
 - `level`
+- `level_file`
 - `tile_id`
 - `tile_x`
 - `tile_y`
@@ -794,12 +818,28 @@ The returned row-group metadata dicts should contain:
 - `row_group`
 - `tile_shard`
 
-`row_group` is the zero-based physical row group index in the level Parquet file.
-`tile_shard` is the zero-based shard index for a given `(level, tile_x, tile_y)`.
-With partition-local writing, the same tile may appear in multiple row groups; increment `tile_shard` for that tile every time another row group is written for it.
+These returned dicts are the Slice 7 contribution to the later `manifest.parquet`.
+After Slice 9 adds `schema_version`, the compact manifest schema is:
 
-Do not include `schema_version` in the row-group metadata returned by `_write_level_file(...)`; Slice 9 can add it while writing `manifest.parquet`.
-Do not include `level_file`; readers derive it from `level` as `levels/level_<level>.parquet`.
+```text
+manifest.parquet
+  schema_version
+  level
+  level_file
+  tile_id
+  tile_x
+  tile_y
+  n_points
+  row_group
+  tile_shard
+```
+
+`level_file` is the relative path from the cache root to the Parquet part file containing the row group, for example `levels/level_2/part-00000.parquet`.
+`row_group` is the zero-based physical row group index within that Parquet part file.
+`tile_shard` is the zero-based shard index for a given `(level, tile_x, tile_y)`.
+With partition-local writing, the same tile may appear in multiple part files and row groups; after collecting partition-local metadata, assign `tile_shard` deterministically for each tile by sorting that tile's manifest rows by `level_file` and `row_group`.
+
+Do not include `schema_version` in the row-group metadata returned by `_write_level_dataset(...)`; Slice 9 can add it while writing `manifest.parquet`.
 Do not include `is_exact`; readers derive exact/sampled status from `metadata.json["levels"]`.
 
 ### 8. Coarser Sampled Level Writer
@@ -951,7 +991,8 @@ Each record should contain:
 - `tile_size`
 - `is_exact`
 
-Do not write `level_file` in `metadata.json`; level files follow the fixed layout convention `levels/level_<level>.parquet`.
+Do not write `level_file` in `metadata.json`; level directories follow the fixed layout convention `levels/level_<level>/`.
+Concrete Parquet part-file paths are row-group lookup data and belong in `manifest.parquet`.
 Readers should treat `metadata.json["levels"]` as the source of truth for per-level tile size and exact/sampled status.
 Do not write `leaf_tile_size` as a separate metadata field; it is the `tile_size` of the single level where `is_exact = true`.
 The cache-wide `n_levels` and `finest_level` remain useful summary and validation fields, but readers should not need to reconstruct level metadata from them.
@@ -975,13 +1016,13 @@ When writing `metadata.json`, serialize `cache.build_parameters` to `metadata.js
 - `max_rows_per_row_group` is a physical Parquet layout setting. It limits how many point rows may be written into one row group before the writer creates another row group shard.
 - `coarse_tile_budget` is a build-time overview sampling setting. It caps how many representative point rows may be stored for one sampled coarse tile.
 
-For example, if `max_rows_per_row_group = 50_000` and one exact finest-level tile contains `120_000` points, that tile may produce three manifest rows:
+For example, if `max_rows_per_row_group = 50_000` and one exact finest-level tile contains `120_000` points in one partition, that tile may produce three manifest rows:
 
 ```text
-level  tile_x  tile_y  row_group  tile_shard  n_points
-2      3       1       0          0           50000
-2      3       1       1          1           50000
-2      3       1       2          2           20000
+level  level_file                         tile_x  tile_y  row_group  tile_shard  n_points
+2      levels/level_2/part-00000.parquet  3       1       0          0           50000
+2      levels/level_2/part-00000.parquet  3       1       1          1           50000
+2      levels/level_2/part-00000.parquet  3       1       2          2           20000
 ```
 
 If `coarse_tile_budget = 50_000` and one sampled coarse tile contains `3_000_000` source points, the writer stores at most `50_000` representative points for that coarse tile before row-group sharding is applied.
@@ -1015,6 +1056,7 @@ For schema version `harpy-transcripts-vis-0.1`, the writer should validate befor
 
 - `schema_version`
 - `level`
+- `level_file`
 - `tile_id`
 - `tile_x`
 - `tile_y`
@@ -1022,13 +1064,14 @@ For schema version `harpy-transcripts-vis-0.1`, the writer should validate befor
 - `row_group`
 - `tile_shard`
 
-Do not write `level_file` in the manifest.
-Readers derive the level file from the manifest row's `level` using `levels/level_<level>.parquet`.
+`level_file` must be a relative path from the cache root to the Parquet part file containing the row group.
+Readers use `level_file` and `row_group` together to locate a tile shard.
+Readers should reject manifest rows whose `level_file` is absolute, escapes the cache root, or does not live under the expected level directory `levels/level_<level>/`.
 Do not write `is_exact` in the manifest.
 Readers derive exact/sampled status from `metadata.json["levels"]`.
 
 For Phase 1A, `tile_shard` should be written even when a tile only has one shard.
-With partition-local writing, multiple row groups may have the same `level`, `tile_x`, and `tile_y`; `tile_shard` gives those row groups a deterministic per-tile shard index.
+With partition-local writing, multiple row groups may have the same `level`, `tile_x`, and `tile_y` across multiple `level_file` values; `tile_shard` gives those row groups a deterministic per-tile shard index.
 
 Write `manifest.parquet` last.
 
@@ -1041,7 +1084,7 @@ Responsibilities:
 - call `_validate_points_element(...)`
 - pass the public cache build parameters into `_compute_transcript_tile_cache_metadata(...)`, where they are validated before bounds are computed
 - use the resolved points dataframe as-is
-- build all level files, `genes.parquet`, `metadata.json`, and `manifest.parquet`
+- build all level directories/part files, `genes.parquet`, `metadata.json`, and `manifest.parquet`
 - return the final `TranscriptTileCache`
 
 Phase 1A should keep the cache contract in the stored coordinate space of `points.parquet`.
@@ -1083,7 +1126,7 @@ Recommended test groups:
 - `gene_id` values match `genes.parquet`
 - dense tiles split into multiple row groups when `max_rows_per_row_group` is small
 - partition-local writing can produce multiple manifest rows for the same tile
-- manifest row-group accounting matches the actual Parquet file
+- manifest row-group accounting matches the actual Parquet part files
 
 ### Group D: Coarse Sampled Levels
 
@@ -1132,7 +1175,7 @@ Recommended benchmark outputs:
 - total build time
 - per-level write time
 - total disk size
-- per-level file sizes
+- per-level directory sizes
 - manifest row count
 - number of row groups in the finest level
 
