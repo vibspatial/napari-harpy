@@ -432,11 +432,27 @@ Implement one function that computes:
 - derived `TranscriptTileLevel` records for every level
 
 This function implements the level construction described in the Points Element Builder Construction Contract.
+It should take the validated points element and validated cache build parameters, for example:
+
+```python
+def _compute_bounds_and_level_config(
+    points_element: _ValidatedPointsElement,
+    build_parameters: _ValidatedCacheBuildParameters,
+) -> TranscriptTileCache:
+    ...
+```
+
+The helper should return a `TranscriptTileCache` directly.
+It should compute the bounds, derive `n_levels` when needed, construct the `TranscriptTileLevel` records, and then construct the cache metadata object with `path=points_element.output_path`.
+Do not put the level-derivation formula inside `TranscriptTileCache`; keep that dataclass as a validated metadata container.
 
 Recommended first implementation:
 
+- compute `x_min`, `x_max`, `y_min`, and `y_max` with one Dask compute call
+- normalize computed bounds and origins to Python `float`
 - use `x_origin = x_min`
 - use `y_origin = y_min`
+- if explicit `n_levels` is provided, use it as-is after validation; do not auto-expand it based on dataset extent
 - if `n_levels is None`, derive it from the max extent and `leaf_tile_size` using:
 
 ```text
@@ -458,6 +474,7 @@ Readers must use `x_origin` and `y_origin` for tile assignment and coordinate re
 
 After computing bounds and origins, validate that all values are finite, `x_min <= x_max`, and `y_min <= y_max`.
 The builder should reject invalid bounds before constructing `TranscriptTileCache` or writing `metadata.json`.
+If any derived level tile size is non-finite or not positive, reject it through the existing `TranscriptTileLevel` validation.
 
 This logic should be unit-tested separately because it drives every later tile calculation.
 The same function should build the returned level records from `0` through `finest_level`.
@@ -473,6 +490,9 @@ Tiles are half-open intervals: `[tile_start, tile_start + tile_size)`.
 Points exactly on an internal tile boundary belong to the tile on the positive x/y side.
 Do not clamp points at `x == x_max` or `y == y_max` into the previous tile; they follow the same floor rule even when that creates a max-edge tile.
 This keeps tile-local coordinates in `[0, tile_size)` instead of allowing `x_rel == tile_size` or `y_rel == tile_size`.
+
+Slice 4 only computes bounds, origins, and level records.
+Do not implement reusable tile annotation helpers here; those belong to Slice 6.
 
 ### 5. Gene Dictionary and `genes.parquet`
 
