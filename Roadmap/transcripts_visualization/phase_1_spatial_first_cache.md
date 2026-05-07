@@ -373,6 +373,7 @@ Validate the public points-element entry point before triggering a full datafram
 - if `output_path` is not provided, compute it as `Path(sdata.path) / resolved_points_element_path / "transcripts_vis"`
 - `x`, `y`, and `gene` are strings
 - `x`, `y`, and `gene` columns exist
+- source dataframe columns do not include reserved internal cache columns, initially `gene_id`
 - `x` and `y` are numeric according to dataframe metadata
 - `transcript_id is None` or is a string
 - if `transcript_id` is provided, the column exists
@@ -625,11 +626,20 @@ The gene-encoded working dataframe should:
 
 - retain the selected coordinate columns under the internal names used by later helpers, initially `x` and `y`
 - include `gene_id` as `uint32`
+- treat `gene_id` as a reserved internal column name and raise `ValueError` if the source dataframe already contains it before encoding
 - include the validated `transcript_id` column when one was provided
 - otherwise preserve enough row order information for Slice 8 to create a private internal row id
 - omit the original gene string column from the data passed to level-file writers
 
-### 6. Tile Annotation Utilities
+### 6. Tile Annotation Utilities — Completed
+
+Status:
+
+- Completed
+- Implemented in `src/napari_harpy/_transcript_tiles.py`
+- Covered by `tests/test_transcript_tiles.py`
+- Verified with `pytest tests/test_transcript_tiles.py`
+- Verified with `ruff check src/napari_harpy/_transcript_tiles.py tests/test_transcript_tiles.py`
 
 Before writing any levels, implement reusable level-annotation helpers.
 
