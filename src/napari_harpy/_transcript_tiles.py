@@ -38,6 +38,33 @@ class TranscriptTileLevel:
 
 
 @dataclass(frozen=True)
+class TranscriptTileCacheBuildParameters:
+    """Build-time provenance for one transcript visualization cache."""
+
+    max_rows_per_row_group: int
+    coarse_tile_budget: int
+    x: str
+    y: str
+    gene: str
+    transcript_id: str | None
+
+    def __post_init__(self) -> None:
+        for name, value in [
+            ("max_rows_per_row_group", self.max_rows_per_row_group),
+            ("coarse_tile_budget", self.coarse_tile_budget),
+        ]:
+            if isinstance(value, bool) or not isinstance(value, numbers.Integral) or value <= 0:
+                raise ValueError(f"Transcript tile cache build parameter `{name}` must be a positive integer.")
+
+        for name, value in [("x", self.x), ("y", self.y), ("gene", self.gene)]:
+            if not isinstance(value, str):
+                raise ValueError(f"Transcript tile cache build parameter `{name}` must be a string.")
+
+        if self.transcript_id is not None and not isinstance(self.transcript_id, str):
+            raise ValueError("Transcript tile cache build parameter `transcript_id` must be a string or None.")
+
+
+@dataclass(frozen=True)
 class TranscriptTileCache:
     """Metadata and root path for a built transcript visualization cache."""
 
@@ -50,6 +77,7 @@ class TranscriptTileCache:
     x_max: float
     y_min: float
     y_max: float
+    build_parameters: TranscriptTileCacheBuildParameters | None = None
 
     def __post_init__(self) -> None:
         if self.schema_version != TRANSCRIPT_TILE_CACHE_SCHEMA_VERSION:
@@ -78,6 +106,10 @@ class TranscriptTileCache:
             raise ValueError("Transcript tile cache requires x_min <= x_max.")
         if self.y_min > self.y_max:
             raise ValueError("Transcript tile cache requires y_min <= y_max.")
+        if self.build_parameters is not None and not isinstance(
+            self.build_parameters, TranscriptTileCacheBuildParameters
+        ):
+            raise ValueError("Transcript tile cache build_parameters must be a TranscriptTileCacheBuildParameters.")
 
     @property
     def metadata_path(self) -> Path:
@@ -123,15 +155,10 @@ class _ValidatedPointsElement:
     y: str
     gene: str
     transcript_id: str | None
-    uses_internal_row_id: bool
 
-
-@dataclass(frozen=True)
-class _ValidatedCacheBuildParameters:
-    leaf_tile_size: float
-    n_levels: int | None
-    max_rows_per_row_group: int
-    coarse_tile_budget: int
+    @property
+    def uses_internal_row_id(self) -> bool:
+        return self.transcript_id is None
 
 
 def _validate_points_element(
@@ -230,31 +257,7 @@ def _validate_points_element(
         y=y,
         gene=gene,
         transcript_id=transcript_id,
-        uses_internal_row_id=transcript_id is None,
     )
-
-
-def _validate_cache_build_parameters(
-    *,
-    leaf_tile_size: float = 1024.0,
-    n_levels: int | None = None,
-    max_rows_per_row_group: int = 50_000,
-    coarse_tile_budget: int = 50_000,
-) -> _ValidatedCacheBuildParameters:
-    normalized_leaf_tile_size = _validate_positive_finite_number(leaf_tile_size, "leaf_tile_size")
-    normalized_max_rows_per_row_group = _validate_positive_integer(
-        max_rows_per_row_group, "max_rows_per_row_group"
-    )
-    normalized_coarse_tile_budget = _validate_positive_integer(coarse_tile_budget, "coarse_tile_budget")
-    normalized_n_levels = None if n_levels is None else _validate_positive_integer(n_levels, "n_levels")
-
-    return _ValidatedCacheBuildParameters(
-        leaf_tile_size=normalized_leaf_tile_size,
-        n_levels=normalized_n_levels,
-        max_rows_per_row_group=normalized_max_rows_per_row_group,
-        coarse_tile_budget=normalized_coarse_tile_budget,
-    )
-
 
 def _prepare_cache_output_directory(output_path: str | PathLike[str]) -> Path:
     output_path = Path(output_path)
@@ -276,6 +279,74 @@ def _prepare_cache_output_directory(output_path: str | PathLike[str]) -> Path:
     build_path = _unique_sibling_path(output_path, "tmp")
     build_path.mkdir()
     return build_path
+
+
+def _compute_transcript_tile_cache_metadata(
+    points_element: _ValidatedPointsElement,
+    *,
+    leaf_tile_size: float = 1024.0,
+    n_levels: int | None = None,
+    max_rows_per_row_group: int = 50_000,
+    coarse_tile_budget: int = 50_000,
+) -> TranscriptTileCache:
+    leaf_tile_size = _validate_positive_finite_number(leaf_tile_size, "leaf_tile_size")
+    max_rows_per_row_group = _validate_positive_integer(max_rows_per_row_group, "max_rows_per_row_group")
+    coarse_tile_budget = _validate_positive_integer(coarse_tile_budget, "coarse_tile_budget")
+    n_levels = None if n_levels is None else _validate_positive_integer(n_levels, "n_levels")
+
+    points = points_element.points
+    x = points_element.x
+    y = points_element.y
+
+    x_min, x_max, y_min, y_max = dask.compute(points[x].min(), points[x].max(), points[y].min(), points[y].max())
+    x_min = float(x_min)
+    x_max = float(x_max)
+    y_min = float(y_min)
+    y_max = float(y_max)
+    x_origin = x_min
+    y_origin = y_min
+
+    bounds_and_origins = [x_origin, y_origin, x_min, x_max, y_min, y_max]
+    if not all(math.isfinite(value) for value in bounds_and_origins):
+        raise ValueError("Transcript tile cache bounds and origins must be finite.")
+    if x_min > x_max:
+        raise ValueError("Transcript tile cache requires x_min <= x_max.")
+    if y_min > y_max:
+        raise ValueError("Transcript tile cache requires y_min <= y_max.")
+
+    if n_levels is None:
+        extent = max(x_max - x_min, y_max - y_min)
+        n_levels = 1 if extent <= leaf_tile_size else math.ceil(math.log2(extent / leaf_tile_size)) + 1
+
+    finest_level = n_levels - 1
+    levels = tuple(
+        TranscriptTileLevel(
+            level=level,
+            tile_size=leaf_tile_size * 2 ** (finest_level - level),
+            is_exact=level == finest_level,
+        )
+        for level in range(n_levels)
+    )
+
+    return TranscriptTileCache(
+        path=points_element.output_path,
+        schema_version=TRANSCRIPT_TILE_CACHE_SCHEMA_VERSION,
+        levels=levels,
+        x_origin=x_origin,
+        y_origin=y_origin,
+        x_min=x_min,
+        x_max=x_max,
+        y_min=y_min,
+        y_max=y_max,
+        build_parameters=TranscriptTileCacheBuildParameters(
+            max_rows_per_row_group=max_rows_per_row_group,
+            coarse_tile_budget=coarse_tile_budget,
+            x=points_element.x,
+            y=points_element.y,
+            gene=points_element.gene,
+            transcript_id=points_element.transcript_id,
+        ),
+    )
 
 
 def _finalize_cache_with_staged_replacement(build_path: str | PathLike[str], output_path: str | PathLike[str]) -> Path:
@@ -384,5 +455,6 @@ def _count_stripped_empty_values(series: pd.Series) -> int:
 __all__ = [
     "TRANSCRIPT_TILE_CACHE_SCHEMA_VERSION",
     "TranscriptTileCache",
+    "TranscriptTileCacheBuildParameters",
     "TranscriptTileLevel",
 ]

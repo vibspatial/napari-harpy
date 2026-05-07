@@ -143,8 +143,7 @@ TranscriptTileCache                      # return dataclass
 build_transcript_visualization_cache_for_points_element  # main public writer
 
 _validate_points_element
-_validate_cache_build_parameters
-_compute_bounds_and_level_config
+_compute_transcript_tile_cache_metadata
 _build_gene_table
 _encode_gene_partition
 _annotate_partition_for_level
@@ -174,6 +173,7 @@ Add:
 
 - `TRANSCRIPT_TILE_CACHE_SCHEMA_VERSION`
 - `TranscriptTileLevel` dataclass
+- `TranscriptTileCacheBuildParameters` dataclass
 - `TranscriptTileCache` dataclass
 
 `TranscriptTileLevel` should include:
@@ -189,11 +189,22 @@ Add:
 - schema version
 - explicit per-level metadata as `levels: tuple[TranscriptTileLevel, ...]`
 - bounds and origins
+- optional nested build provenance as `build_parameters: TranscriptTileCacheBuildParameters | None = None`
+
+`TranscriptTileCacheBuildParameters` should include:
+
+- `max_rows_per_row_group`
+- `coarse_tile_budget`
+- `x`
+- `y`
+- `gene`
+- `transcript_id`
 
 Use these exact dataclasses as the Phase 1A return contract:
 
 ```python
 import math
+import numbers
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -216,6 +227,31 @@ class TranscriptTileLevel:
 
 
 @dataclass(frozen=True)
+class TranscriptTileCacheBuildParameters:
+    max_rows_per_row_group: int
+    coarse_tile_budget: int
+    x: str
+    y: str
+    gene: str
+    transcript_id: str | None
+
+    def __post_init__(self) -> None:
+        for name, value in [
+            ("max_rows_per_row_group", self.max_rows_per_row_group),
+            ("coarse_tile_budget", self.coarse_tile_budget),
+        ]:
+            if isinstance(value, bool) or not isinstance(value, numbers.Integral) or value <= 0:
+                raise ValueError(f"Transcript tile cache build parameter `{name}` must be a positive integer.")
+
+        for name, value in [("x", self.x), ("y", self.y), ("gene", self.gene)]:
+            if not isinstance(value, str):
+                raise ValueError(f"Transcript tile cache build parameter `{name}` must be a string.")
+
+        if self.transcript_id is not None and not isinstance(self.transcript_id, str):
+            raise ValueError("Transcript tile cache build parameter `transcript_id` must be a string or None.")
+
+
+@dataclass(frozen=True)
 class TranscriptTileCache:
     path: Path
     schema_version: str
@@ -226,6 +262,7 @@ class TranscriptTileCache:
     x_max: float
     y_min: float
     y_max: float
+    build_parameters: TranscriptTileCacheBuildParameters | None = None
 
     def __post_init__(self) -> None:
         if self.schema_version != TRANSCRIPT_TILE_CACHE_SCHEMA_VERSION:
@@ -254,6 +291,10 @@ class TranscriptTileCache:
             raise ValueError("Transcript tile cache requires x_min <= x_max.")
         if self.y_min > self.y_max:
             raise ValueError("Transcript tile cache requires y_min <= y_max.")
+        if self.build_parameters is not None and not isinstance(
+            self.build_parameters, TranscriptTileCacheBuildParameters
+        ):
+            raise ValueError("Transcript tile cache build_parameters must be a TranscriptTileCacheBuildParameters.")
 
     @property
     def metadata_path(self) -> Path:
@@ -292,6 +333,8 @@ class TranscriptTileCache:
 
 Do not store `leaf_tile_size`, `n_levels`, or `finest_level` as independent dataclass fields.
 They are derived from `levels`, which avoids a second source of truth in the Python API.
+Do not promote build provenance fields such as `max_rows_per_row_group` and `coarse_tile_budget` to top-level `TranscriptTileCache` fields.
+Store them only in the optional nested `build_parameters` object.
 Likewise, do not store `metadata_path`, `manifest_path`, `genes_path`, or `levels_path` as independent fields.
 They are derived from the single cache root `path`.
 When a caller needs an absolute path to a level file, it can combine `cache.path / level.level_file`.
@@ -310,7 +353,7 @@ Status:
 - Verified with `pytest tests/test_transcript_tiles.py`
 - Verified with `ruff check src/napari_harpy/_transcript_tiles.py tests/test_transcript_tiles.py`
 - The points-element validation contract currently lives in the private `_validate_points_element(...)` helper
-- Cache build parameter validation lives in the private `_validate_cache_build_parameters(...)` helper
+- Cache build parameter validation currently lives at the start of `_compute_transcript_tile_cache_metadata(...)`
 - Public writer wiring remains part of Step 10
 
 Implement validation before any output directory is created so later failures are clearer and failed inputs do not leave cache artifacts behind.
@@ -421,7 +464,15 @@ Implementation notes:
 - incomplete direct writes must not leave `manifest.parquet` behind, so they do not look like complete caches
 - do not describe directory replacement as strictly atomic; there may be a brief missing-output window during the staged swap
 
-### 4. Bounds, Origins, and Level Configuration
+### 4. Bounds, Origins, and Level Configuration — Completed
+
+Status:
+
+- Completed
+- Implemented in `src/napari_harpy/_transcript_tiles.py`
+- Covered by `tests/test_transcript_tiles.py`
+- Verified with `pytest tests/test_transcript_tiles.py`
+- Verified with `ruff check src/napari_harpy/_transcript_tiles.py tests/test_transcript_tiles.py`
 
 Implement one function that computes:
 
@@ -432,18 +483,24 @@ Implement one function that computes:
 - derived `TranscriptTileLevel` records for every level
 
 This function implements the level construction described in the Points Element Builder Construction Contract.
-It should take the validated points element and validated cache build parameters, for example:
+It should take the validated points element and the public cache build parameters explicitly, for example:
 
 ```python
-def _compute_bounds_and_level_config(
+def _compute_transcript_tile_cache_metadata(
     points_element: _ValidatedPointsElement,
-    build_parameters: _ValidatedCacheBuildParameters,
+    *,
+    leaf_tile_size: float = 1024.0,
+    n_levels: int | None = None,
+    max_rows_per_row_group: int = 50_000,
+    coarse_tile_budget: int = 50_000,
 ) -> TranscriptTileCache:
     ...
 ```
 
 The helper should return a `TranscriptTileCache` directly.
 It should compute the bounds, derive `n_levels` when needed, construct the `TranscriptTileLevel` records, and then construct the cache metadata object with `path=points_element.output_path`.
+It should validate and normalize the scalar cache build parameters at the start of the helper, before computing dataframe bounds.
+It should also populate `cache.build_parameters` with a `TranscriptTileCacheBuildParameters` object derived from the validated points element and normalized cache build parameters.
 Do not put the level-derivation formula inside `TranscriptTileCache`; keep that dataclass as a validated metadata container.
 
 Recommended first implementation:
@@ -694,6 +751,8 @@ If those summary fields disagree with `levels`, readers should reject the cache 
 
 `build_parameters` is provenance for how the cache was produced, not a source of truth for interpreting stored tile contents.
 Readers should use `manifest.parquet` for actual stored point counts.
+In Python, this provenance is represented by `TranscriptTileCache.build_parameters`.
+When writing `metadata.json`, serialize `cache.build_parameters` to `metadata.json["build_parameters"]`.
 `build_parameters` should include:
 
 - `max_rows_per_row_group`
@@ -772,7 +831,7 @@ Wire the public `build_transcript_visualization_cache_for_points_element(...)` e
 Responsibilities:
 
 - call `_validate_points_element(...)`
-- call `_validate_cache_build_parameters(...)`
+- pass the public cache build parameters into `_compute_transcript_tile_cache_metadata(...)`, where they are validated before bounds are computed
 - use the resolved points dataframe as-is
 - build all level files, `genes.parquet`, `metadata.json`, and `manifest.parquet`
 - return the final `TranscriptTileCache`

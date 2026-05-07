@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
+import dask.dataframe as dd
 import pandas as pd
 import pytest
 from spatialdata import SpatialData, read_zarr
@@ -13,11 +14,13 @@ from spatialdata.transformations import Identity
 from napari_harpy._transcript_tiles import (
     TRANSCRIPT_TILE_CACHE_SCHEMA_VERSION,
     TranscriptTileCache,
+    TranscriptTileCacheBuildParameters,
     TranscriptTileLevel,
+    _compute_transcript_tile_cache_metadata,
     _finalize_cache_with_staged_replacement,
     _prepare_cache_output_directory,
-    _validate_cache_build_parameters,
     _validate_points_element,
+    _ValidatedPointsElement,
 )
 
 
@@ -27,6 +30,19 @@ def _example_levels() -> tuple[TranscriptTileLevel, ...]:
         TranscriptTileLevel(level=1, tile_size=2048.0, is_exact=False),
         TranscriptTileLevel(level=2, tile_size=1024.0, is_exact=True),
     )
+
+
+def _example_build_parameters(**overrides: object) -> TranscriptTileCacheBuildParameters:
+    values = {
+        "max_rows_per_row_group": 50_000,
+        "coarse_tile_budget": 50_000,
+        "x": "x",
+        "y": "y",
+        "gene": "gene",
+        "transcript_id": None,
+    }
+    values.update(overrides)
+    return TranscriptTileCacheBuildParameters(**values)
 
 
 def _example_cache(*, levels: tuple[TranscriptTileLevel, ...] | None = None, **overrides: object) -> TranscriptTileCache:
@@ -65,6 +81,24 @@ def _write_cache_marker_files(path: Path, *, marker: str = "cache") -> None:
     (path / "manifest.parquet").write_text(f"{marker}\n")
 
 
+def _validated_points_element_from_data(
+    data: dict[str, object],
+    *,
+    output_path: Path,
+    npartitions: int = 1,
+) -> _ValidatedPointsElement:
+    points = dd.from_pandas(pd.DataFrame(data), npartitions=npartitions)
+    return _ValidatedPointsElement(
+        points=points,
+        element_path="points/blobs_points",
+        output_path=output_path,
+        x="x",
+        y="y",
+        gene="gene",
+        transcript_id=None,
+    )
+
+
 def test_transcript_tile_level_records_metadata_and_derived_file() -> None:
     level = TranscriptTileLevel(level=2, tile_size=1024.0, is_exact=True)
 
@@ -81,6 +115,44 @@ def test_transcript_tile_level_rejects_invalid_values(kwargs: dict[str, object])
 
     with pytest.raises(ValueError):
         TranscriptTileLevel(**values)
+
+
+def test_transcript_tile_cache_build_parameters_records_provenance() -> None:
+    build_parameters = TranscriptTileCacheBuildParameters(
+        max_rows_per_row_group=10,
+        coarse_tile_budget=20,
+        x="center_x",
+        y="center_y",
+        gene="feature",
+        transcript_id="tx_id",
+    )
+
+    assert build_parameters.max_rows_per_row_group == 10
+    assert build_parameters.coarse_tile_budget == 20
+    assert build_parameters.x == "center_x"
+    assert build_parameters.y == "center_y"
+    assert build_parameters.gene == "feature"
+    assert build_parameters.transcript_id == "tx_id"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ({"max_rows_per_row_group": 0}, "max_rows_per_row_group"),
+        ({"max_rows_per_row_group": True}, "max_rows_per_row_group"),
+        ({"coarse_tile_budget": 0}, "coarse_tile_budget"),
+        ({"coarse_tile_budget": 1.0}, "coarse_tile_budget"),
+        ({"x": 1}, "x"),
+        ({"y": 1}, "y"),
+        ({"gene": 1}, "gene"),
+        ({"transcript_id": 1}, "transcript_id"),
+    ],
+)
+def test_transcript_tile_cache_build_parameters_rejects_invalid_values(
+    overrides: dict[str, object], match: str
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        _example_build_parameters(**overrides)
 
 
 def test_transcript_tile_cache_records_metadata_and_derived_properties() -> None:
@@ -104,6 +176,15 @@ def test_transcript_tile_cache_records_metadata_and_derived_properties() -> None
     assert cache.x_max == 2058.0
     assert cache.y_min == 20.0
     assert cache.y_max == 2068.0
+    assert cache.build_parameters is None
+
+
+def test_transcript_tile_cache_accepts_build_parameters() -> None:
+    build_parameters = _example_build_parameters()
+
+    cache = _example_cache(build_parameters=build_parameters)
+
+    assert cache.build_parameters == build_parameters
 
 
 def test_transcript_tile_cache_is_immutable() -> None:
@@ -180,9 +261,10 @@ def test_transcript_tile_cache_rejects_unsupported_schema_version() -> None:
         ({"y_origin": float("inf")}, "finite"),
         ({"x_min": 2.0, "x_max": 1.0}, "x_min <= x_max"),
         ({"y_min": 2.0, "y_max": 1.0}, "y_min <= y_max"),
+        ({"build_parameters": object()}, "build_parameters"),
     ],
 )
-def test_transcript_tile_cache_rejects_invalid_bounds(overrides: dict[str, float], match: str) -> None:
+def test_transcript_tile_cache_rejects_invalid_metadata(overrides: dict[str, object], match: str) -> None:
     with pytest.raises(ValueError, match=match):
         _example_cache(**overrides)
 
@@ -214,20 +296,6 @@ def test_validate_points_element_accepts_valid_dataframe_and_resolves_metadata(t
     assert validated.gene == "gene"
     assert validated.transcript_id == "transcript_id"
     assert validated.uses_internal_row_id is False
-
-
-def test_validate_cache_build_parameters_normalizes_values() -> None:
-    validated = _validate_cache_build_parameters(
-        leaf_tile_size=2048,
-        n_levels=3,
-        max_rows_per_row_group=10,
-        coarse_tile_budget=20,
-    )
-
-    assert validated.leaf_tile_size == 2048.0
-    assert validated.n_levels == 3
-    assert validated.max_rows_per_row_group == 10
-    assert validated.coarse_tile_budget == 20
 
 
 def test_prepare_cache_output_directory_creates_missing_output_with_parents(tmp_path: Path) -> None:
@@ -336,6 +404,128 @@ def test_finalize_cache_with_staged_replacement_restores_old_cache_on_install_fa
     assert not list(tmp_path.glob("transcripts_vis.backup-*"))
 
 
+def test_compute_transcript_tile_cache_metadata_returns_cache_metadata(tmp_path: Path) -> None:
+    output_path = tmp_path / "transcripts_vis"
+    points_element = _validated_points_element_from_data(
+        {
+            "x": [10.0, 2058.0],
+            "y": [20.0, 2068.0],
+            "gene": ["Actb", "Gapdh"],
+        },
+        output_path=output_path,
+        npartitions=2,
+    )
+    cache = _compute_transcript_tile_cache_metadata(
+        points_element,
+        leaf_tile_size=1024.0,
+        n_levels=3,
+        max_rows_per_row_group=10,
+        coarse_tile_budget=20,
+    )
+
+    assert cache.path == output_path
+    assert cache.schema_version == TRANSCRIPT_TILE_CACHE_SCHEMA_VERSION
+    assert cache.x_min == 10.0
+    assert cache.x_max == 2058.0
+    assert cache.y_min == 20.0
+    assert cache.y_max == 2068.0
+    assert cache.x_origin == 10.0
+    assert cache.y_origin == 20.0
+    assert cache.levels == _example_levels()
+    assert cache.build_parameters == TranscriptTileCacheBuildParameters(
+        max_rows_per_row_group=10,
+        coarse_tile_budget=20,
+        x="x",
+        y="y",
+        gene="gene",
+        transcript_id=None,
+    )
+
+
+@pytest.mark.parametrize(
+    ("x_values", "y_values"),
+    [
+        ([5.0, 5.0], [7.0, 7.0]),
+        ([10.0, 1034.0], [2.0, 2.0]),
+    ],
+)
+def test_compute_transcript_tile_cache_metadata_derives_one_level_for_small_or_equal_extent(
+    tmp_path: Path, x_values: list[float], y_values: list[float]
+) -> None:
+    points_element = _validated_points_element_from_data(
+        {"x": x_values, "y": y_values, "gene": ["Actb", "Gapdh"]},
+        output_path=tmp_path / "transcripts_vis",
+    )
+    cache = _compute_transcript_tile_cache_metadata(points_element, leaf_tile_size=1024.0, n_levels=None)
+
+    assert cache.levels == (TranscriptTileLevel(level=0, tile_size=1024.0, is_exact=True),)
+    assert cache.n_levels == 1
+    assert cache.finest_level == 0
+
+
+def test_compute_transcript_tile_cache_metadata_derives_multiscale_levels_from_extent(tmp_path: Path) -> None:
+    points_element = _validated_points_element_from_data(
+        {
+            "x": [0.0, 4097.0],
+            "y": [100.0, 200.0],
+            "gene": ["Actb", "Gapdh"],
+        },
+        output_path=tmp_path / "transcripts_vis",
+    )
+    cache = _compute_transcript_tile_cache_metadata(points_element, leaf_tile_size=1024.0, n_levels=None)
+
+    assert cache.levels == (
+        TranscriptTileLevel(level=0, tile_size=8192.0, is_exact=False),
+        TranscriptTileLevel(level=1, tile_size=4096.0, is_exact=False),
+        TranscriptTileLevel(level=2, tile_size=2048.0, is_exact=False),
+        TranscriptTileLevel(level=3, tile_size=1024.0, is_exact=True),
+    )
+
+
+def test_compute_transcript_tile_cache_metadata_uses_explicit_n_levels_as_is(tmp_path: Path) -> None:
+    points_element = _validated_points_element_from_data(
+        {
+            "x": [0.0, 1_000_000.0],
+            "y": [0.0, 1_000_000.0],
+            "gene": ["Actb", "Gapdh"],
+        },
+        output_path=tmp_path / "transcripts_vis",
+    )
+    cache = _compute_transcript_tile_cache_metadata(points_element, leaf_tile_size=10.0, n_levels=1)
+
+    assert cache.levels == (TranscriptTileLevel(level=0, tile_size=10.0, is_exact=True),)
+
+
+def test_compute_transcript_tile_cache_metadata_uses_negative_origins(tmp_path: Path) -> None:
+    points_element = _validated_points_element_from_data(
+        {
+            "x": [-10.5, 20.0],
+            "y": [-5.25, 15.0],
+            "gene": ["Actb", "Gapdh"],
+        },
+        output_path=tmp_path / "transcripts_vis",
+    )
+    cache = _compute_transcript_tile_cache_metadata(points_element, leaf_tile_size=1024.0, n_levels=None)
+
+    assert cache.x_min == -10.5
+    assert cache.x_origin == -10.5
+    assert cache.y_min == -5.25
+    assert cache.y_origin == -5.25
+
+
+def test_compute_transcript_tile_cache_metadata_rejects_nonfinite_bounds(tmp_path: Path) -> None:
+    points_element = _validated_points_element_from_data(
+        {
+            "x": [0.0, float("inf")],
+            "y": [0.0, 1.0],
+            "gene": ["Actb", "Gapdh"],
+        },
+        output_path=tmp_path / "transcripts_vis",
+    )
+    with pytest.raises(ValueError, match="finite"):
+        _compute_transcript_tile_cache_metadata(points_element, leaf_tile_size=1024.0, n_levels=None)
+
+
 def test_validate_points_element_uses_default_output_path(backed_sdata_blobs: SpatialData) -> None:
     validated = _validate_points_element(backed_sdata_blobs, "blobs_points", gene="genes")
 
@@ -407,9 +597,16 @@ def test_validate_points_element_rejects_non_numeric_coordinate_metadata(
         ("n_levels", True),
     ],
 )
-def test_validate_cache_build_parameters_rejects_invalid_parameters(parameter: str, value: object) -> None:
+def test_compute_transcript_tile_cache_metadata_rejects_invalid_build_parameters(
+    tmp_path: Path, parameter: str, value: object
+) -> None:
+    points_element = _validated_points_element_from_data(
+        {"x": [0.0, 1.0], "y": [2.0, 3.0], "gene": ["Actb", "Gapdh"]},
+        output_path=tmp_path / "transcripts_vis",
+    )
+
     with pytest.raises(ValueError, match=parameter):
-        _validate_cache_build_parameters(**{parameter: value})
+        _compute_transcript_tile_cache_metadata(points_element, **{parameter: value})
 
 
 def test_validate_points_element_rejects_empty_dataframes(tmp_path: Path) -> None:
