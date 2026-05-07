@@ -382,10 +382,11 @@ If `transcript_id` is not provided:
 - deterministic coarse-level sampling across rebuilds is only guaranteed when input row order and partitioning are stable
 - do not expose the internal id as a public source transcript identity
 
-### 3. Output Directory Setup and Staged Finalization
+### 3. Output Directory Setup and Staged Finalization — Completed
 
 Status:
 
+- Completed
 - Implemented in `src/napari_harpy/_transcript_tiles.py`
 - Covered by `tests/test_transcript_tiles.py`
 - Verified with `pytest tests/test_transcript_tiles.py`
