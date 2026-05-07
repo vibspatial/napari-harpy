@@ -389,21 +389,28 @@ Before writing data files, implement the cache output path helpers. This should 
 Recommended behavior:
 
 - add a small helper such as `_prepare_cache_output_directory(output_path) -> Path`
-- if `output_path` does not exist, create it and write the new cache there directly
-- if `output_path` exists and contains `manifest.parquet`, treat it as an existing valid cache and write the new cache to a unique sibling temp directory such as `transcripts_vis.tmp-<uuid>/`
-- if `output_path` exists but does not contain `manifest.parquet`, treat it as stale or incomplete output, remove it, recreate `output_path`, and write there directly
+- helpers accept any explicit `output_path`; do not require explicit output paths to live under the resolved points-element directory
+- use sibling temporary and backup paths next to `output_path`
+- if `output_path` does not exist, create it with `parents=True` and write the new cache there directly
+- if `output_path` exists and is a directory containing both `metadata.json` and `manifest.parquet`, treat it as an existing valid cache and write the new cache to a unique sibling temp directory such as `transcripts_vis.tmp-<uuid>/`
+- if `output_path` exists but is not a directory, raise `ValueError`
+- if `output_path` exists as a directory but does not contain both `metadata.json` and `manifest.parquet`, raise `ValueError` instead of deleting it
 - write `metadata.json`, `genes.parquet`, level files, then `manifest.parquet`
 - add a finalization helper such as `_finalize_cache_with_staged_replacement(build_path, output_path)`
+- before any finalization path mutates `output_path`, verify that `build_path / "manifest.parquet"` exists
 - if `build_path == output_path`, finalization only needs to verify that `manifest.parquet` exists
-- if `build_path != output_path`, replace the existing cache by moving the old cache to a sibling backup path first, then moving the completed temp directory into place
+- if `build_path != output_path`, replace the existing cache by moving the old cache to a unique sibling backup path such as `transcripts_vis.backup-<uuid>/`, then moving the completed temp directory into place
+- after successful replacement, remove the old backup cache directory
 - if final replacement fails after moving the old cache aside, restore the old cache whenever possible
+- on replacement failure, leave the completed temporary cache in its temp path for debugging or manual cleanup and do not delete the backup unless the new cache was successfully installed
 
 Implementation notes:
 
-- keep temp and replacement paths inside the points-element directory
+- for the default output path, temp and replacement paths are siblings inside the points-element directory
+- for an explicit output path, temp and replacement paths are siblings of that explicit path
 - avoid mutating `points.parquet`
-- treat `manifest.parquet` as the final validity anchor
-- write `manifest.parquet` last so incomplete direct writes do not look valid
+- write `manifest.parquet` last; its presence marks that all required cache files were written successfully
+- incomplete direct writes must not leave `manifest.parquet` behind, so they do not look like complete caches
 - do not describe directory replacement as strictly atomic; there may be a brief missing-output window during the staged swap
 
 ### 4. Bounds, Origins, and Level Configuration
