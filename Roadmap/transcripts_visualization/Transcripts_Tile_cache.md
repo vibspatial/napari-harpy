@@ -156,10 +156,9 @@ Do not repeat these values on every manifest row.
 One row per gene:
 
 ```text
-schema_version: string
 gene_id: uint32
 gene: string
-n_transcripts: int64
+n_transcripts: uint64
 ```
 
 Sort genes lexicographically for deterministic `gene_id` assignment in the first implementation.
@@ -174,8 +173,8 @@ Required columns:
 schema_version: string
 level: int16
 tile_id: string
-tile_x: int64
-tile_y: int64
+tile_x: uint32
+tile_y: uint32
 n_points: int64
 row_group: int32
 level_file: string
@@ -220,8 +219,8 @@ Each level file stores tile-local point rows:
 
 ```text
 tile_id: string
-tile_x: int64
-tile_y: int64
+tile_x: uint32
+tile_y: uint32
 x_rel: float32
 y_rel: float32
 gene_id: uint32
@@ -238,6 +237,8 @@ y = y_origin + tile_y * tile_size + y_rel
 The first implementation should not quantize coordinates. Keep `x_rel` and `y_rel` as `float32`; add quantized integer storage only after benchmarking.
 In this visualization cache, "exact" means unsampled/full-membership rather than full-precision coordinate storage.
 The canonical full-precision coordinates remain in `points.parquet`.
+Because the first implementation sets `x_origin = x_min` and `y_origin = y_min`, tile indices are stored as `uint32`.
+If a computed tile index exceeds the maximum representable `uint32` value, cache writing should fail with a clear `ValueError`.
 
 ## Tile Grid
 
@@ -371,6 +372,9 @@ def encode_gene_partition(partition):
     partition["gene_id"] = partition[gene].astype(str).map(gene_to_id).astype("uint32")
     return partition
 ```
+
+Treat `gene_id` as a reserved internal cache column name.
+If the source dataframe already contains `gene_id` before encoding, fail with a clear `ValueError` instead of overwriting it.
 
 Avoid carrying the original gene string into level files.
 
@@ -909,8 +913,8 @@ Recommended columns:
 schema_version: string
 level: int16
 tile_id: string
-tile_x: int64
-tile_y: int64
+tile_x: uint32
+tile_y: uint32
 gene_id: uint32
 row_group: int32
 level_file: string
@@ -929,8 +933,8 @@ The physical row format in `levels/level_k.parquet` can stay almost the same:
 
 ```text
 tile_id: string
-tile_x: int64
-tile_y: int64
+tile_x: uint32
+tile_y: uint32
 x_rel: float32
 y_rel: float32
 gene_id: uint32
