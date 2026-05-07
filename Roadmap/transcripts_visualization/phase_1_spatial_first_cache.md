@@ -558,10 +558,15 @@ Implement deterministic gene mapping next.
 Required behavior:
 
 - compute gene counts with Dask
-- normalize genes to strings
-- sort genes lexicographically
+- normalize genes to strings after missing and stripped-empty gene validation
+- strip surrounding whitespace during normalization
+- sort normalized gene labels lexicographically, case-sensitive, ascending
 - assign `gene_id: uint32`
 - write `genes.parquet`
+
+Use the normalized gene string as the identity for counts and ids.
+For example, `" Actb "` and `"Actb"` should map to the same normalized gene `"Actb"`.
+Do not lowercase, case-fold, or otherwise canonicalize gene labels in Phase 1A.
 
 The resulting table should contain:
 
@@ -570,6 +575,15 @@ The resulting table should contain:
 - `gene`
 - `n_transcripts`
 
+Use these dtypes:
+
+- `schema_version`: string
+- `gene_id`: `uint32`
+- `gene`: string
+- `n_transcripts`: `uint64`
+
+If the number of unique normalized genes exceeds the maximum value representable by `uint32`, raise `ValueError`.
+
 Then add the partition-wise `gene_id` encoding step to the working dataframe.
 
 At the end of this step, all later level-writing code should work with:
@@ -577,9 +591,37 @@ At the end of this step, all later level-writing code should work with:
 - `x`
 - `y`
 - `gene_id`
-- row identity for sampling, using validated `transcript_id` when provided or an internal unique row id for this build otherwise
+- row identity for sampling, using the validated `transcript_id` column when provided or a private internal row id for this build otherwise
 
 and not carry the original gene string into the level files.
+
+Recommended helper split:
+
+```text
+_build_gene_table(points_element: _ValidatedPointsElement) -> pd.DataFrame
+_write_genes_parquet(gene_table: pd.DataFrame, genes_path: Path) -> None
+_encode_gene_partition(...)
+_prepare_gene_encoded_points(...) -> dd.DataFrame
+```
+
+The exact helper names do not need to match, but keep these responsibilities separate:
+
+- build the deterministic gene table from the validated points dataframe
+- write `genes.parquet` with `pyarrow`
+- encode `gene_id` partition-wise
+- prepare the working dataframe used by later level writers
+
+Write `genes.parquet` to the current build path, not blindly to `cache.genes_path`.
+When rebuilding an existing cache, the current build path may be a sibling temp directory such as `transcripts_vis.tmp-<uuid>/`.
+The caller can pass `build_path / "genes.parquet"` to the writer helper.
+
+The gene-encoded working dataframe should:
+
+- retain the selected coordinate columns under the internal names used by later helpers, initially `x` and `y`
+- include `gene_id` as `uint32`
+- include the validated `transcript_id` column when one was provided
+- otherwise preserve enough row order information for Slice 8 to create a private internal row id
+- omit the original gene string column from the data passed to level-file writers
 
 ### 6. Tile Annotation Utilities
 
@@ -699,6 +741,7 @@ Recommended first implementation choices:
 - if `transcript_id` is provided, compute a stable per-row ordering key from a canonical encoding of the validated `transcript_id`
 - otherwise, compute a per-row ordering key from the internal unique row id created for this build
 - internal row ids must be unique within one build, but they only support deterministic coarse-level sampling across rebuilds when input dataframe row order and partitioning are stable
+- a practical deterministic internal row id implementation is to compute partition lengths, derive cumulative partition offsets, and assign `uint64` row ids within each partition as `partition_offset + row_position`
 - never use Python's built-in `hash()` for sampling
 - after selecting rows from each cell, sort the final sampled rows deterministically before writing so rebuilds do not depend on Dask partition order
 - cap each sampled coarse tile at `coarse_tile_budget`
