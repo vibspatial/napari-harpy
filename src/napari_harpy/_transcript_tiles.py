@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 import numbers
+import shutil
+import uuid
 from dataclasses import dataclass
 from os import PathLike
 from pathlib import Path
@@ -252,6 +254,74 @@ def _validate_cache_build_parameters(
         max_rows_per_row_group=normalized_max_rows_per_row_group,
         coarse_tile_budget=normalized_coarse_tile_budget,
     )
+
+
+def _prepare_cache_output_directory(output_path: str | PathLike[str]) -> Path:
+    output_path = Path(output_path)
+    if not output_path.exists():
+        output_path.mkdir(parents=True)
+        return output_path
+
+    if not output_path.is_dir():
+        raise ValueError("Transcript tile cache output path exists but is not a directory.")
+
+    metadata_path = output_path / "metadata.json"
+    manifest_path = output_path / "manifest.parquet"
+    if not metadata_path.is_file() or not manifest_path.is_file():
+        raise ValueError(
+            "Transcript tile cache output path already exists but does not contain both "
+            "`metadata.json` and `manifest.parquet`."
+        )
+
+    build_path = _unique_sibling_path(output_path, "tmp")
+    build_path.mkdir()
+    return build_path
+
+
+def _finalize_cache_with_staged_replacement(build_path: str | PathLike[str], output_path: str | PathLike[str]) -> Path:
+    build_path = Path(build_path)
+    output_path = Path(output_path)
+
+    if not (build_path / "manifest.parquet").is_file():
+        raise ValueError("Built transcript tile cache is missing `manifest.parquet`.")
+
+    if build_path == output_path:
+        return output_path
+
+    if output_path.exists():
+        if not output_path.is_dir():
+            raise ValueError("Transcript tile cache output path exists but is not a directory.")
+        if not (output_path / "metadata.json").is_file() or not (output_path / "manifest.parquet").is_file():
+            raise ValueError(
+                "Transcript tile cache output path already exists but does not contain both "
+                "`metadata.json` and `manifest.parquet`."
+            )
+
+    backup_path: Path | None = None
+    try:
+        if output_path.exists():
+            backup_path = _unique_sibling_path(output_path, "backup")
+            output_path.rename(backup_path)
+        build_path.rename(output_path)
+    except Exception:
+        if backup_path is not None and backup_path.exists() and not output_path.exists():
+            try:
+                backup_path.rename(output_path)
+            except OSError:
+                pass
+        raise
+
+    if backup_path is not None and backup_path.exists():
+        shutil.rmtree(backup_path)
+
+    return output_path
+
+
+def _unique_sibling_path(path: Path, label: str) -> Path:
+    while True:
+        candidate = path.with_name(f"{path.name}.{label}-{uuid.uuid4().hex}")
+        if not candidate.exists():
+            return candidate
 
 
 def _normalize_output_path(output_path: str | PathLike[str]) -> Path:

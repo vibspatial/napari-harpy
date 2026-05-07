@@ -14,6 +14,8 @@ from napari_harpy._transcript_tiles import (
     TRANSCRIPT_TILE_CACHE_SCHEMA_VERSION,
     TranscriptTileCache,
     TranscriptTileLevel,
+    _finalize_cache_with_staged_replacement,
+    _prepare_cache_output_directory,
     _validate_cache_build_parameters,
     _validate_points_element,
 )
@@ -55,6 +57,12 @@ def _backed_blobs_with_points(tmp_path: Path, data: dict[str, object]) -> Spatia
     path = tmp_path / "blobs.zarr"
     sdata.write(path)
     return read_zarr(path)
+
+
+def _write_cache_marker_files(path: Path, *, marker: str = "cache") -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "metadata.json").write_text(f'{{"marker": "{marker}"}}\n')
+    (path / "manifest.parquet").write_text(f"{marker}\n")
 
 
 def test_transcript_tile_level_records_metadata_and_derived_file() -> None:
@@ -220,6 +228,112 @@ def test_validate_cache_build_parameters_normalizes_values() -> None:
     assert validated.n_levels == 3
     assert validated.max_rows_per_row_group == 10
     assert validated.coarse_tile_budget == 20
+
+
+def test_prepare_cache_output_directory_creates_missing_output_with_parents(tmp_path: Path) -> None:
+    output_path = tmp_path / "nested" / "points" / "transcripts_vis"
+
+    build_path = _prepare_cache_output_directory(output_path)
+
+    assert build_path == output_path
+    assert output_path.is_dir()
+
+
+def test_prepare_cache_output_directory_uses_sibling_temp_for_existing_cache(tmp_path: Path) -> None:
+    output_path = tmp_path / "transcripts_vis"
+    _write_cache_marker_files(output_path, marker="old")
+
+    build_path = _prepare_cache_output_directory(output_path)
+
+    assert build_path != output_path
+    assert build_path.parent == output_path.parent
+    assert build_path.name.startswith("transcripts_vis.tmp-")
+    assert build_path.is_dir()
+    assert (output_path / "metadata.json").read_text() == '{"marker": "old"}\n'
+
+
+def test_prepare_cache_output_directory_rejects_existing_file(tmp_path: Path) -> None:
+    output_path = tmp_path / "transcripts_vis"
+    output_path.write_text("not a directory\n")
+
+    with pytest.raises(ValueError, match="not a directory"):
+        _prepare_cache_output_directory(output_path)
+
+
+@pytest.mark.parametrize("files", [(), ("metadata.json",), ("manifest.parquet",)])
+def test_prepare_cache_output_directory_rejects_incomplete_existing_directory(
+    tmp_path: Path, files: tuple[str, ...]
+) -> None:
+    output_path = tmp_path / "transcripts_vis"
+    output_path.mkdir()
+    for file in files:
+        (output_path / file).write_text("partial\n")
+
+    with pytest.raises(ValueError, match="metadata.json.*manifest.parquet"):
+        _prepare_cache_output_directory(output_path)
+
+
+def test_finalize_cache_with_staged_replacement_accepts_direct_completed_output(tmp_path: Path) -> None:
+    output_path = tmp_path / "transcripts_vis"
+    output_path.mkdir()
+    (output_path / "manifest.parquet").write_text("done\n")
+
+    finalized_path = _finalize_cache_with_staged_replacement(output_path, output_path)
+
+    assert finalized_path == output_path
+    assert (output_path / "manifest.parquet").read_text() == "done\n"
+
+
+def test_finalize_cache_with_staged_replacement_rejects_missing_build_manifest(tmp_path: Path) -> None:
+    output_path = tmp_path / "transcripts_vis"
+    build_path = tmp_path / "transcripts_vis.tmp-build"
+    _write_cache_marker_files(output_path, marker="old")
+    build_path.mkdir()
+
+    with pytest.raises(ValueError, match="manifest.parquet"):
+        _finalize_cache_with_staged_replacement(build_path, output_path)
+
+    assert (output_path / "metadata.json").read_text() == '{"marker": "old"}\n'
+    assert build_path.exists()
+
+
+def test_finalize_cache_with_staged_replacement_swaps_temp_cache_and_removes_backup(tmp_path: Path) -> None:
+    output_path = tmp_path / "transcripts_vis"
+    build_path = tmp_path / "transcripts_vis.tmp-build"
+    _write_cache_marker_files(output_path, marker="old")
+    _write_cache_marker_files(build_path, marker="new")
+
+    finalized_path = _finalize_cache_with_staged_replacement(build_path, output_path)
+
+    assert finalized_path == output_path
+    assert not build_path.exists()
+    assert (output_path / "metadata.json").read_text() == '{"marker": "new"}\n'
+    assert not list(tmp_path.glob("transcripts_vis.backup-*"))
+
+
+def test_finalize_cache_with_staged_replacement_restores_old_cache_on_install_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output_path = tmp_path / "transcripts_vis"
+    build_path = tmp_path / "transcripts_vis.tmp-build"
+    _write_cache_marker_files(output_path, marker="old")
+    _write_cache_marker_files(build_path, marker="new")
+    original_rename = Path.rename
+
+    def fail_build_install(self: Path, target: str | Path) -> Path:
+        target_path = Path(target)
+        if self == build_path and target_path == output_path:
+            raise OSError("simulated install failure")
+        return original_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", fail_build_install)
+
+    with pytest.raises(OSError, match="simulated install failure"):
+        _finalize_cache_with_staged_replacement(build_path, output_path)
+
+    assert build_path.exists()
+    assert (output_path / "metadata.json").read_text() == '{"marker": "old"}\n'
+    assert not list(tmp_path.glob("transcripts_vis.backup-*"))
 
 
 def test_validate_points_element_uses_default_output_path(backed_sdata_blobs: SpatialData) -> None:

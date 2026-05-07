@@ -384,6 +384,13 @@ If `transcript_id` is not provided:
 
 ### 3. Output Directory Setup and Staged Finalization
 
+Status:
+
+- Implemented in `src/napari_harpy/_transcript_tiles.py`
+- Covered by `tests/test_transcript_tiles.py`
+- Verified with `pytest tests/test_transcript_tiles.py`
+- Verified with `ruff check src/napari_harpy/_transcript_tiles.py tests/test_transcript_tiles.py`
+
 Before writing data files, implement the cache output path helpers. This should exist early so later integration work does not need to be rewritten.
 
 Recommended behavior:
