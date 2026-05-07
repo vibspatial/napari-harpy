@@ -28,6 +28,7 @@ from napari_harpy._transcript_tiles import (
     _validate_points_element,
     _ValidatedPointsElement,
     _write_genes_parquet,
+    _write_level_dataset,
 )
 
 
@@ -806,6 +807,151 @@ def test_annotate_tiles_for_level_rejects_uint32_tile_index_overflow() -> None:
 
     with pytest.raises(ValueError, match="uint32"):
         _annotate_tiles_for_level(points, cache, level=0).compute()
+
+
+def test_write_level_dataset_writes_partition_local_part_files_and_metadata(tmp_path: Path) -> None:
+    level_rows = dd.from_pandas(
+        pd.DataFrame(
+            {
+                "tile_id": pd.Series(["0/0/0", "0/1/0", "0/0/0", "0/1/0"], dtype="string"),
+                "tile_x": pd.Series([0, 1, 0, 1], dtype="uint32"),
+                "tile_y": pd.Series([0, 0, 0, 0], dtype="uint32"),
+                "x_rel": pd.Series([0.0, 10.0, 1.0, 11.0], dtype="float32"),
+                "y_rel": pd.Series([2.0, 3.0, 4.0, 5.0], dtype="float32"),
+                "gene_id": pd.Series([0, 1, 2, 3], dtype="uint32"),
+                "transcript_id": ["t0", "t1", "t2", "t3"],
+            }
+        ),
+        npartitions=2,
+    )
+    cache = _example_cache(
+        levels=(TranscriptTileLevel(level=0, tile_size=100.0, is_exact=True),),
+        path=tmp_path / "transcripts_vis",
+        x_origin=0.0,
+        y_origin=0.0,
+        x_min=0.0,
+        x_max=100.0,
+        y_min=0.0,
+        y_max=100.0,
+    )
+    build_path = tmp_path / "build"
+
+    metadata = _write_level_dataset(level_rows, cache, level=0, build_path=build_path, max_rows_per_row_group=10)
+
+    manifest_rows = pd.DataFrame(metadata)
+    assert "schema_version" not in manifest_rows.columns
+    assert manifest_rows[["level_file", "tile_x", "tile_y", "row_group", "tile_shard", "n_points"]].to_dict(
+        "records"
+    ) == [
+        {
+            "level_file": "levels/level_0/part-00000.parquet",
+            "tile_x": 0,
+            "tile_y": 0,
+            "row_group": 0,
+            "tile_shard": 0,
+            "n_points": 1,
+        },
+        {
+            "level_file": "levels/level_0/part-00000.parquet",
+            "tile_x": 1,
+            "tile_y": 0,
+            "row_group": 1,
+            "tile_shard": 0,
+            "n_points": 1,
+        },
+        {
+            "level_file": "levels/level_0/part-00001.parquet",
+            "tile_x": 0,
+            "tile_y": 0,
+            "row_group": 0,
+            "tile_shard": 1,
+            "n_points": 1,
+        },
+        {
+            "level_file": "levels/level_0/part-00001.parquet",
+            "tile_x": 1,
+            "tile_y": 0,
+            "row_group": 1,
+            "tile_shard": 1,
+            "n_points": 1,
+        },
+    ]
+
+    for level_file in ["levels/level_0/part-00000.parquet", "levels/level_0/part-00001.parquet"]:
+        part_file = build_path / level_file
+        parquet_file = pq.ParquetFile(part_file)
+        assert part_file.is_file()
+        assert parquet_file.num_row_groups == 2
+        assert parquet_file.schema_arrow.names == [
+            "tile_id",
+            "tile_x",
+            "tile_y",
+            "x_rel",
+            "y_rel",
+            "gene_id",
+            "transcript_id",
+        ]
+        for row_group in range(parquet_file.num_row_groups):
+            rows = parquet_file.read_row_group(row_group).to_pandas()
+            assert rows["tile_x"].nunique() == 1
+            assert rows["tile_y"].nunique() == 1
+
+
+def test_write_level_dataset_splits_dense_tiles_into_row_groups(tmp_path: Path) -> None:
+    level_rows = dd.from_pandas(
+        pd.DataFrame(
+            {
+                "tile_id": pd.Series(["0/0/0"] * 5, dtype="string"),
+                "tile_x": pd.Series([0] * 5, dtype="uint32"),
+                "tile_y": pd.Series([0] * 5, dtype="uint32"),
+                "x_rel": pd.Series([0.0, 1.0, 2.0, 3.0, 4.0], dtype="float32"),
+                "y_rel": pd.Series([5.0, 6.0, 7.0, 8.0, 9.0], dtype="float32"),
+                "gene_id": pd.Series([0, 1, 2, 3, 4], dtype="uint32"),
+            }
+        ),
+        npartitions=1,
+    )
+    cache = _example_cache(
+        levels=(TranscriptTileLevel(level=0, tile_size=100.0, is_exact=True),),
+        path=tmp_path / "transcripts_vis",
+        x_origin=0.0,
+        y_origin=0.0,
+        x_min=0.0,
+        x_max=100.0,
+        y_min=0.0,
+        y_max=100.0,
+    )
+    build_path = tmp_path / "build"
+
+    metadata = _write_level_dataset(level_rows, cache, level=0, build_path=build_path, max_rows_per_row_group=2)
+
+    manifest_rows = pd.DataFrame(metadata)
+    assert manifest_rows[["row_group", "tile_shard", "n_points"]].to_dict("records") == [
+        {"row_group": 0, "tile_shard": 0, "n_points": 2},
+        {"row_group": 1, "tile_shard": 1, "n_points": 2},
+        {"row_group": 2, "tile_shard": 2, "n_points": 1},
+    ]
+    parquet_file = pq.ParquetFile(build_path / "levels/level_0/part-00000.parquet")
+    assert parquet_file.num_row_groups == 3
+    assert [parquet_file.metadata.row_group(index).num_rows for index in range(3)] == [2, 2, 1]
+
+
+def test_write_level_dataset_rejects_missing_level_columns(tmp_path: Path) -> None:
+    level_rows = dd.from_pandas(
+        pd.DataFrame(
+            {
+                "tile_id": pd.Series(["0/0/0"], dtype="string"),
+                "tile_x": pd.Series([0], dtype="uint32"),
+                "tile_y": pd.Series([0], dtype="uint32"),
+                "x_rel": pd.Series([0.0], dtype="float32"),
+                "y_rel": pd.Series([0.0], dtype="float32"),
+            }
+        ),
+        npartitions=1,
+    )
+
+    with pytest.raises(ValueError, match="gene_id"):
+        _write_level_dataset(level_rows, _example_cache(), level=0, build_path=tmp_path / "build", max_rows_per_row_group=10)
 
 
 def test_validate_points_element_uses_default_output_path(backed_sdata_blobs: SpatialData) -> None:

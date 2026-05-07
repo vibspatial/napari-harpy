@@ -734,6 +734,14 @@ The public behavior of these private helpers should be:
 
 ### 7. Finest Unsampled Level Writer
 
+Status:
+
+- Completed
+- Implemented in `src/napari_harpy/_transcript_tiles.py`
+- Covered by `tests/test_transcript_tiles.py`
+- Verified with `pytest tests/test_transcript_tiles.py`
+- Verified with `ruff check src/napari_harpy/_transcript_tiles.py tests/test_transcript_tiles.py`
+
 Implement the finest unsampled level before coarser sampled levels.
 
 Add a reusable level-dataset writer that Slice 7 first uses for the finest unsampled level and Slice 8 later reuses for sampled coarser levels:

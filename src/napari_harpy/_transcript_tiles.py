@@ -22,11 +22,15 @@ _INTERNAL_X_COLUMN = "x"
 _INTERNAL_Y_COLUMN = "y"
 _GENE_ID_COLUMN = "gene_id"
 _TRANSCRIPT_ID_COLUMN = "transcript_id"
+_LEVEL_BASE_COLUMNS = ("tile_id", "tile_x", "tile_y", "x_rel", "y_rel", _GENE_ID_COLUMN)
+_LEVEL_METADATA_COLUMNS = ("level", "level_file", "tile_id", "tile_x", "tile_y", "n_points", "row_group", "tile_shard")
 _RESERVED_SOURCE_COLUMNS = frozenset({_GENE_ID_COLUMN})
 _GENE_ID_DTYPE = np.dtype("uint32")
 _N_TRANSCRIPTS_DTYPE = np.dtype("uint64")
 _TILE_INDEX_DTYPE = np.dtype("uint32")
 _RELATIVE_COORDINATE_DTYPE = np.dtype("float32")
+_ROW_GROUP_DTYPE = np.dtype("int32")
+_TILE_SHARD_PLACEHOLDER = 0
 _MAX_N_UINT32_GENE_IDS = int(np.iinfo(_GENE_ID_DTYPE).max) + 1
 _MAX_UINT32_TILE_INDEX = int(np.iinfo(_TILE_INDEX_DTYPE).max)
 _GENE_TABLE_SCHEMA = pa.schema(
@@ -540,6 +544,168 @@ def _annotate_tile_partition(
         annotated[column] = partition[column].to_numpy()
 
     return annotated
+
+
+def _write_level_dataset(
+    level_rows: dd.DataFrame,
+    cache: TranscriptTileCache,
+    level: int,
+    build_path: str | PathLike[str],
+    max_rows_per_row_group: int,
+) -> list[dict[str, object]]:
+    """Write one tile level as partition-local Parquet part files.
+
+    Each physical Parquet row group written by this helper contains rows from
+    exactly one tile. If a partition-local tile has more rows than
+    `max_rows_per_row_group`, that tile is split into multiple row-group
+    shards. If rows for the same tile are present in multiple Dask partitions,
+    each partition writes its own part file and row group shard for that tile;
+    `_assign_tile_shards` later numbers those shards deterministically across
+    the collected metadata.
+
+    The returned rows are manifest candidates. Slice 9 adds `schema_version`
+    before writing the final manifest.
+    """
+    level_record = _get_transcript_tile_level(cache, level)
+    max_rows_per_row_group = _validate_positive_integer(max_rows_per_row_group, "max_rows_per_row_group")
+    _validate_required_columns(level_rows, list(_LEVEL_BASE_COLUMNS))
+
+    build_path = Path(build_path)
+    level_dir = build_path / level_record.level_dir
+    level_dir.mkdir(parents=True, exist_ok=True)
+    level_columns = _level_file_columns(level_rows._meta)
+
+    metadata_rows = level_rows.map_partitions(
+        _write_level_partition,
+        level=level_record.level,
+        level_dir=level_record.level_dir,
+        build_path=str(build_path),
+        level_columns=level_columns,
+        max_rows_per_row_group=max_rows_per_row_group,
+        meta=_level_row_group_metadata_meta(),
+    ).compute()
+
+    if metadata_rows.empty:
+        return []
+
+    # Example: tile (3, 1) may appear in part-00000 row group 0 and
+    # part-00002 row group 1. Number those physical chunks as tile_shard
+    # 0 and 1 in deterministic part-file order.
+    metadata_rows = _assign_tile_shards(metadata_rows)
+    return metadata_rows.to_dict("records")
+
+
+def _write_level_partition(
+    partition: pd.DataFrame,
+    *,
+    level: int,
+    level_dir: str,
+    build_path: str,
+    level_columns: tuple[str, ...],
+    max_rows_per_row_group: int,
+    partition_info: dict[str, Any] | None = None,
+) -> pd.DataFrame:
+    if partition.empty:
+        return _level_row_group_metadata_meta()
+    if partition_info is None:
+        raise ValueError("Dask partition information is required to write transcript tile level part files.")
+
+    partition_number = int(partition_info["number"])
+    level_file = f"{level_dir}/part-{partition_number:05d}.parquet"
+    part_file = Path(build_path) / level_file
+    part_file.parent.mkdir(parents=True, exist_ok=True)
+
+    ordered = _coerce_level_rows(partition.loc[:, list(level_columns)]).sort_values(
+        ["tile_x", "tile_y", "tile_id"],
+        kind="mergesort",
+    )
+
+    row_group = 0
+    metadata_rows: list[dict[str, object]] = []
+    writer: pq.ParquetWriter | None = None
+    try:
+        for _, tile_rows in ordered.groupby(["tile_x", "tile_y", "tile_id"], sort=False):
+            for start in range(0, len(tile_rows), max_rows_per_row_group):
+                shard_rows = tile_rows.iloc[start : start + max_rows_per_row_group]
+                table = pa.Table.from_pandas(shard_rows, preserve_index=False)
+                if writer is None:
+                    writer = pq.ParquetWriter(part_file, table.schema)
+                writer.write_table(table, row_group_size=len(shard_rows))
+                metadata_rows.append(
+                    {
+                        "level": int(level),
+                        "level_file": level_file,
+                        "tile_id": str(shard_rows["tile_id"].iloc[0]),
+                        "tile_x": int(shard_rows["tile_x"].iloc[0]),
+                        "tile_y": int(shard_rows["tile_y"].iloc[0]),
+                        "n_points": int(len(shard_rows)),
+                        "row_group": int(row_group),
+                        "tile_shard": _TILE_SHARD_PLACEHOLDER,
+                    }
+                )
+                row_group += 1
+    finally:
+        if writer is not None:
+            writer.close()
+
+    return _coerce_level_row_group_metadata(pd.DataFrame(metadata_rows))
+
+
+def _level_file_columns(meta: pd.DataFrame) -> tuple[str, ...]:
+    skipped_extra_columns = set(_LEVEL_BASE_COLUMNS) | {_INTERNAL_X_COLUMN, _INTERNAL_Y_COLUMN}
+    extra_columns = [column for column in meta.columns if column not in skipped_extra_columns]
+    return (*_LEVEL_BASE_COLUMNS, *extra_columns)
+
+
+def _coerce_level_rows(rows: pd.DataFrame) -> pd.DataFrame:
+    coerced = rows.copy()
+    coerced["tile_id"] = coerced["tile_id"].astype("string")
+    coerced["tile_x"] = coerced["tile_x"].to_numpy(dtype=_TILE_INDEX_DTYPE)
+    coerced["tile_y"] = coerced["tile_y"].to_numpy(dtype=_TILE_INDEX_DTYPE)
+    coerced["x_rel"] = coerced["x_rel"].to_numpy(dtype=_RELATIVE_COORDINATE_DTYPE)
+    coerced["y_rel"] = coerced["y_rel"].to_numpy(dtype=_RELATIVE_COORDINATE_DTYPE)
+    coerced[_GENE_ID_COLUMN] = coerced[_GENE_ID_COLUMN].to_numpy(dtype=_GENE_ID_DTYPE)
+    return coerced
+
+
+def _assign_tile_shards(metadata_rows: pd.DataFrame) -> pd.DataFrame:
+    metadata_rows = _coerce_level_row_group_metadata(metadata_rows)
+    metadata_rows = metadata_rows.sort_values(["level_file", "row_group"], kind="mergesort").reset_index(drop=True)
+    metadata_rows["tile_shard"] = (
+        metadata_rows.groupby(["level", "tile_x", "tile_y"], sort=False).cumcount().to_numpy(dtype=_ROW_GROUP_DTYPE)
+    )
+    return _coerce_level_row_group_metadata(metadata_rows)
+
+
+def _level_row_group_metadata_meta() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "level": pd.Series(dtype="int16"),
+            "level_file": pd.Series(dtype="string"),
+            "tile_id": pd.Series(dtype="string"),
+            "tile_x": pd.Series(dtype=_TILE_INDEX_DTYPE),
+            "tile_y": pd.Series(dtype=_TILE_INDEX_DTYPE),
+            "n_points": pd.Series(dtype="int64"),
+            "row_group": pd.Series(dtype=_ROW_GROUP_DTYPE),
+            "tile_shard": pd.Series(dtype=_ROW_GROUP_DTYPE),
+        }
+    )
+
+
+def _coerce_level_row_group_metadata(metadata_rows: pd.DataFrame) -> pd.DataFrame:
+    if metadata_rows.empty:
+        return _level_row_group_metadata_meta()
+
+    coerced = metadata_rows.loc[:, list(_LEVEL_METADATA_COLUMNS)].copy()
+    coerced["level"] = coerced["level"].astype("int16")
+    coerced["level_file"] = coerced["level_file"].astype("string")
+    coerced["tile_id"] = coerced["tile_id"].astype("string")
+    coerced["tile_x"] = coerced["tile_x"].to_numpy(dtype=_TILE_INDEX_DTYPE)
+    coerced["tile_y"] = coerced["tile_y"].to_numpy(dtype=_TILE_INDEX_DTYPE)
+    coerced["n_points"] = coerced["n_points"].astype("int64")
+    coerced["row_group"] = coerced["row_group"].to_numpy(dtype=_ROW_GROUP_DTYPE)
+    coerced["tile_shard"] = coerced["tile_shard"].to_numpy(dtype=_ROW_GROUP_DTYPE)
+    return coerced
 
 
 def _finalize_cache_with_staged_replacement(build_path: str | PathLike[str], output_path: str | PathLike[str]) -> Path:
