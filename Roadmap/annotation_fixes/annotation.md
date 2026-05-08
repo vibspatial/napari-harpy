@@ -281,6 +281,19 @@ Relevant classifier-side table mutations are:
 Prediction-column changes affect labels-layer styling. Metadata-only changes
 affect persistence/export state but do not require recoloring.
 
+A prediction change is also a table-state change, but not every table-state
+change is a prediction change. Keep both notifications because they drive
+different downstream work:
+
+| Callback | Meaning | Widget work |
+| --- | --- | --- |
+| `on_table_state_changed` | Classifier-owned table state changed, including metadata/config changes | Mark persistence dirty and update persistence/export controls |
+| `on_prediction_state_changed` | Visual prediction columns changed or were cleared | Refresh labels-layer styling |
+
+For example, a failed training run can update `table.uns[CLASSIFIER_CONFIG_KEY]`
+without changing `pred_class` or `pred_confidence`. That should mark persistence
+dirty, but it should not force a labels-layer refresh.
+
 Current broad notification points already exist:
 
 - `_apply_ineligible_state(...)` clears predictions and writes classifier config
@@ -302,10 +315,15 @@ def _on_classifier_state_changed(self) -> None:
     self._update_classifier_controls()
 
 def _on_classifier_table_state_changed(self) -> None:
+    # A prediction change is also a table-state change, but not every
+    # table-state change affects labels-layer styling. This callback is for
+    # persistence/export state.
     self._mark_persistence_dirty()
     self._update_persistence_controls()
 
 def _on_classifier_prediction_state_changed(self) -> None:
+    # Prediction changes are the classifier-owned table changes that affect
+    # labels-layer coloring/features.
     self._refresh_layer_styling()
 ```
 
@@ -319,6 +337,52 @@ Then the classifier controller should call:
 This preserves prediction recoloring because prediction writes still emit a
 styling callback. It removes redundant styling refreshes from
 stale/scheduled/training status updates and from metadata-only failure updates.
+
+### Implementation Details
+
+Add a third optional controller callback:
+
+```python
+ClassifierController(
+    ...,
+    on_state_changed=self._on_classifier_state_changed,
+    on_table_state_changed=self._on_classifier_table_state_changed,
+    on_prediction_state_changed=self._on_classifier_prediction_state_changed,
+)
+```
+
+Add a small helper so prediction-output paths cannot forget one of the two
+notifications:
+
+```python
+def _notify_prediction_table_state_changed(self) -> None:
+    self._notify_table_state_changed()
+    if self._on_prediction_state_changed is not None:
+        self._on_prediction_state_changed()
+```
+
+Use this helper only for high-level classifier output changes:
+
+- `_apply_ineligible_state(...)`, after predictions are cleared and classifier
+  config is written
+- `_on_worker_returned(...)`, after predictions are written, classifier config is
+  written, and the model snapshot is stored
+
+Keep using `_notify_table_state_changed()` without prediction notification for
+metadata-only changes:
+
+- `_on_worker_errored(...)`, after failure config is written
+
+Do not emit prediction-state callbacks from passive setup or selection paths:
+
+- `bind(...)` calls `_ensure_prediction_columns(table)` so existing tables have
+  normalized prediction columns, but binding already has an explicit full layer
+  refresh in the widget.
+- `reset_after_reload(...)` also normalizes prediction columns, but reload
+  already rebinds and refreshes the layer before resetting classifier status.
+
+This keeps Phase 2A focused on retrain/apply results, not passive controller
+normalization.
 
 ### Expected Annotation Flow
 
@@ -362,11 +426,15 @@ Add or update tests for:
 - `mark_dirty(...)` updates classifier feedback/controls without refreshing
   labels-layer styling
 - scheduled debounce status updates do not refresh labels-layer styling
+- worker-finished control refresh updates retrain/export controls without
+  refreshing labels-layer styling
 - successful classifier prediction writes still refresh labels-layer styling
 - ineligible classifier runs that clear predictions still refresh labels-layer
   styling
 - metadata-only classifier failure updates mark persistence dirty without
   refreshing labels-layer styling
+- `bind(...)` and `reset_after_reload(...)` do not emit prediction-state
+  callbacks just because they normalize missing prediction columns
 - prediction color modes still update after `pred_class` or `pred_confidence`
   changes
 
