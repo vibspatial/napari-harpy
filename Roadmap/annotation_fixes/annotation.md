@@ -459,6 +459,34 @@ This builds on Phase 2A. Once status-only classifier callbacks no longer refresh
 the labels layer, the toggle can focus on training policy: "I am annotating
 quickly" versus "I want predictions updated after each click".
 
+### User-Facing Behavior
+
+There are two separate actions:
+
+- Annotation: update `user_class` and immediately refresh user-class styling.
+- Training: update `pred_class`/`pred_confidence` from the current annotations.
+
+Phase 2B lets the user choose whether annotation automatically schedules the
+training action.
+
+When auto training is enabled, the current behavior remains:
+
+1. User applies or clears one `user_class`.
+2. The widget marks persistence dirty.
+3. The classifier is marked stale.
+4. User-class styling refreshes.
+5. A debounced classifier retrain is scheduled.
+
+When auto training is disabled:
+
+1. User applies or clears one `user_class`.
+2. The widget marks persistence dirty.
+3. The classifier is marked stale.
+4. User-class styling refreshes.
+5. No classifier retrain is scheduled.
+6. Existing predictions remain visible but stale until the user clicks
+   `Train Classifier`.
+
 ### Proposed UI
 
 Add a checkbox near the classifier controls:
@@ -468,6 +496,15 @@ Add a checkbox near the classifier controls:
 ```
 
 Default: checked, preserving existing behavior.
+
+Suggested placement:
+
+- Add the checkbox to `retrain_action_row`, before `Train Classifier`.
+- Keep `Train Classifier` as the manual path.
+- Keep `Export Classifier` unchanged.
+
+The checkbox is a preference for future annotation edits, so it can remain
+enabled even when no table or feature matrix is selected.
 
 When unchecked:
 
@@ -482,48 +519,110 @@ When unchecked:
 - `src/napari_harpy/widgets/object_classification/widget.py`
 - `tests/test_widget.py`
 
-### Implementation Notes
+### State Model
 
-- Store widget state as something like:
+Store the preference on the widget:
 
 ```python
 self._auto_train_enabled = True
 ```
 
+The checkbox is the source of truth for user interaction, and the widget state
+should mirror it through a small slot such as:
+
+```python
+def _on_auto_train_toggled(self, checked: bool) -> None:
+    self._auto_train_enabled = bool(checked)
+    self._update_classifier_controls()
+```
+
+The setting is not persisted to zarr in this phase. A new widget starts with
+auto training enabled.
+
+### Implementation Notes
+
+- Import and create a `QCheckBox`.
 - Add a `QCheckBox` with object name:
 
 ```text
 auto_train_checkbox
 ```
 
+- Set it checked by default:
+
+```python
+self.auto_train_checkbox.setChecked(True)
+```
+
 - In `_on_annotation_changed()`:
 
 ```python
+self._mark_persistence_dirty()
 self._classifier_controller.mark_dirty(reason="the annotations changed")
+self._refresh_layer_styling()
 if self._auto_train_enabled:
     self._classifier_controller.schedule_retrain()
+self._update_selection_status()
 ```
 
 - Keep `mark_dirty()` outside the checkbox condition so classifier status and
   export availability remain honest.
+- Keep `_refresh_layer_styling()` outside the checkbox condition. Annotation
+  coloring is independent from classifier training.
 - With Phase 2A in place, `mark_dirty()` should update classifier
   feedback/controls but must not refresh labels-layer styling through the
   classifier status callback.
-- Update tooltip/status text to make the manual path clear when auto training
-  is disabled.
+- Update the checkbox tooltip when toggled:
+  - checked: "Automatically train the classifier after each annotation."
+  - unchecked: "Keep predictions stale while annotating; click Train Classifier
+    to update predictions."
+- The existing classifier stale status is sufficient. Do not add a second
+  warning card just because auto training is disabled.
+
+### Cancellation Policy
+
+The checkbox controls whether future annotation edits call `schedule_retrain()`.
+
+Phase 2B should not add new cancellation behavior:
+
+- Unchecking does not cancel an active classifier worker.
+- Unchecking does not need to cancel a debounce that was already scheduled while
+  auto training was enabled.
+- Clicking `Train Classifier` still runs the manual retrain path even when auto
+  training is unchecked.
+
+If pending-job cancellation becomes important, handle it later with the Phase 4
+timer lifecycle work rather than mixing it into the training-policy toggle.
+
+### Edge Cases
+
+- If auto training is disabled and the user is viewing `pred_class` or
+  `pred_confidence`, annotation can still refresh the layer using the selected
+  color source, but predictions remain stale because no classifier run happens.
+- If auto training is disabled and no feature matrix is selected, annotations
+  still work and classifier status should remain honest about the missing
+  feature matrix/manual training availability.
+- Re-enabling auto training does not immediately train. It only affects
+  subsequent annotation edits.
 
 ### Tests
 
 Add tests for:
 
-- default state preserves current auto-retrain behavior
+- the checkbox exists, is named `auto_train_checkbox`, and is checked by default
+- default checked state preserves current auto-retrain behavior
 - unchecking the checkbox prevents `schedule_retrain()` from being called after
   annotation
 - unchecking the checkbox still calls `mark_dirty()`
-- unchecking the checkbox does not refresh labels-layer styling through
-  classifier status callbacks
+- unchecking the checkbox still refreshes annotation styling through
+  `_on_annotation_changed()`
+- unchecking the checkbox still marks persistence dirty after annotation
+- re-checking the checkbox makes subsequent annotations schedule retraining
+  again
 - clicking `Train Classifier` still invokes manual retraining when auto training
   is disabled
+- toggling the checkbox by itself does not mark classifier or persistence state
+  dirty
 
 ### Acceptance Criteria
 
