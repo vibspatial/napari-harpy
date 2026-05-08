@@ -39,6 +39,8 @@ if TYPE_CHECKING:
     from anndata import AnnData
     from spatialdata import SpatialData
 
+    from napari_harpy.widgets.object_classification.annotation_controller import UserClassAnnotationChange
+
 COLOR_BY_USER_CLASS = USER_CLASS_COLUMN
 COLOR_BY_PRED_CLASS = PRED_CLASS_COLUMN
 COLOR_BY_PRED_CONFIDENCE = PRED_CONFIDENCE_COLUMN
@@ -119,7 +121,13 @@ class ViewerStylingController:
         self.refresh_layer_features(feature_rows=feature_rows)
 
     def refresh_layer_colors(self, *, feature_rows: pd.DataFrame | None = None) -> None:
-        """Apply the current `color_by` mode to the bound labels layer."""
+        """Apply the current `color_by` mode to the bound labels layer.
+
+        Direct annotation happy paths should use row-scoped refresh helpers
+        instead. Prediction color repainting should reach this full refresh path
+        when the classifier actually writes predictions, via
+        `ObjectClassificationWidget._on_classifier_prediction_state_changed()`.
+        """
         if self._labels_layer is None:
             return
 
@@ -182,6 +190,90 @@ class ViewerStylingController:
         self._labels_layer.features = _build_labels_features(
             feature_rows,
             instance_key=instance_key,
+        )
+
+    def refresh_user_class_annotation(self, change: UserClassAnnotationChange) -> bool:
+        """Refresh one user-class annotation in labels colors and features.
+
+        Returns ``True`` when the row-scoped update was fully applied. Returns
+        ``False`` when the caller should fall back to a normal full refresh.
+        """
+        if self._labels_layer is None or self._color_by != COLOR_BY_USER_CLASS:
+            return False
+        if change.class_id < UNLABELED_CLASS:
+            return False
+
+        # `set_user_class_for_rows(...)` has already added any new category and
+        # synced `USER_CLASS_COLORS_KEY`, so newly introduced classes can use the
+        # strict palette lookup below without full-column normalization.
+        color_dict = self._build_user_class_annotation_color_dict(change)
+        feature_rows = self._build_user_class_annotation_features(change)
+        if color_dict is None or feature_rows is None:
+            return False
+
+        self._labels_layer.colormap = DirectLabelColormap(color_dict=color_dict, background_value=0)
+        self._labels_layer.features = feature_rows
+        refresh = getattr(self._labels_layer, "refresh", None)
+        if callable(refresh):
+            refresh()
+
+        return True
+
+    def _build_user_class_annotation_color_dict(
+        self,
+        change: UserClassAnnotationChange,
+    ) -> dict[int | None, Any] | None:
+        colormap = getattr(self._labels_layer, "colormap", None)
+        if not isinstance(colormap, DirectLabelColormap):
+            return None
+
+        class_color_lookup = self._get_valid_user_class_color_lookup()
+        if class_color_lookup is None:
+            return None
+
+        color_dict = dict(colormap.color_dict)
+        instance_id = int(change.instance_id)
+        class_id = int(change.class_id)
+        if class_id == UNLABELED_CLASS:
+            color_dict.pop(instance_id, None)
+            return color_dict
+
+        class_color = class_color_lookup.get(class_id)
+        if class_color is None:
+            return None
+
+        color_dict[instance_id] = class_color
+        return color_dict
+
+    def _build_user_class_annotation_features(
+        self,
+        change: UserClassAnnotationChange,
+    ) -> pd.DataFrame | None:
+        features = getattr(self._labels_layer, "features", None)
+        if not isinstance(features, pd.DataFrame) or features.empty:
+            return None
+        if "index" not in features or USER_CLASS_COLUMN not in features:
+            return None
+
+        feature_index = pd.to_numeric(features["index"], errors="coerce")
+        matching_rows = feature_index == int(change.instance_id)
+        if int(matching_rows.sum()) != 1:
+            return None
+
+        updated_features = features.copy()
+        updated_features.loc[matching_rows, USER_CLASS_COLUMN] = int(change.class_id)
+        return updated_features
+
+    def _get_valid_user_class_color_lookup(self) -> dict[int, str] | None:
+        table = self._get_bound_table()
+        if table is None or USER_CLASS_COLUMN not in table.obs:
+            return None
+
+        return _valid_categorical_class_color_lookup(
+            table.obs[USER_CLASS_COLUMN],
+            table.uns.get(USER_CLASS_COLORS_KEY),
+            unlabeled_class=UNLABELED_CLASS,
+            unlabeled_color=UNLABELED_COLOR,
         )
 
     def _get_bound_table(self) -> AnnData | None:

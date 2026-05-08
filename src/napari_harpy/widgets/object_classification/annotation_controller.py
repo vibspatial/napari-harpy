@@ -25,6 +25,15 @@ if TYPE_CHECKING:
     from anndata import AnnData
     from spatialdata import SpatialData
 
+
+@dataclass(frozen=True)
+class UserClassAnnotationChange:
+    """Describe one row-scoped user-class annotation edit."""
+
+    instance_id: int
+    class_id: int
+
+
 @dataclass(frozen=True)
 class _SelectionTableState:
     """Current selection state relative to the bound annotation table."""
@@ -79,7 +88,7 @@ class AnnotationController:
         self,
         viewer_adapter: ViewerAdapter,
         on_selected_instance_changed: Callable[[int | None], None] | None = None,
-        on_annotation_changed: Callable[[], None] | None = None,
+        on_annotation_changed: Callable[[UserClassAnnotationChange], None] | None = None,
     ) -> None:
         self._viewer_adapter = viewer_adapter
         self._on_selected_instance_changed = on_selected_instance_changed
@@ -312,7 +321,12 @@ class AnnotationController:
 
         set_user_class_for_rows(state.table, matching_rows, int(class_id))
         if self._on_annotation_changed is not None:
-            self._on_annotation_changed()
+            self._on_annotation_changed(
+                UserClassAnnotationChange(
+                    instance_id=int(state.instance_id),
+                    class_id=int(class_id),
+                )
+            )
         return None
 
     def _get_bound_table(self) -> AnnData | None:

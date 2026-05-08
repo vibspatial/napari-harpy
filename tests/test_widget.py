@@ -1494,6 +1494,96 @@ def test_widget_recolors_layer_from_user_class_annotations(qtbot, sdata_blobs: S
     assert layer.features.set_index("index").loc[5, USER_CLASS_COLUMN] == 4
 
 
+def test_widget_user_class_annotation_uses_row_scoped_viewer_refresh(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    def fail_full_feature_rows() -> pd.DataFrame:
+        raise AssertionError("user_class annotation should not rebuild all feature rows")
+
+    monkeypatch.setattr(widget._viewer_styling_controller, "_get_region_feature_rows", fail_full_feature_rows)
+
+    layer.selected_label = 5
+    widget.class_spinbox.setValue(4)
+    widget.apply_class_button.click()
+
+    assert isinstance(layer.colormap, DirectLabelColormap)
+    assert set(layer.colormap.color_dict) == {None, 0, 5}
+    assert layer.features.set_index("index").loc[5, USER_CLASS_COLUMN] == 4
+
+
+def test_widget_user_class_annotation_falls_back_to_full_refresh_when_row_scoped_refresh_fails(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+    row_scoped_calls = []
+    full_refresh_calls = []
+
+    def record_row_scoped_refresh(change) -> bool:
+        row_scoped_calls.append(change)
+        return False
+
+    def record_full_refresh() -> None:
+        full_refresh_calls.append("refresh")
+
+    monkeypatch.setattr(widget._viewer_styling_controller, "refresh_user_class_annotation", record_row_scoped_refresh)
+    monkeypatch.setattr(widget._viewer_styling_controller, "refresh", record_full_refresh)
+
+    layer.selected_label = 5
+    widget.class_spinbox.setValue(4)
+    widget.apply_class_button.click()
+
+    assert len(row_scoped_calls) == 1
+    assert row_scoped_calls[0].instance_id == 5
+    assert row_scoped_calls[0].class_id == 4
+    assert full_refresh_calls == ["refresh"]
+
+
+def test_widget_user_class_annotation_uses_full_refresh_in_prediction_color_mode(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+    widget.color_by_combo.setCurrentIndex(widget.color_by_combo.findData("pred_class"))
+    row_scoped_calls = []
+    full_refresh_calls = []
+
+    def record_row_scoped_refresh(change) -> bool:
+        row_scoped_calls.append(change)
+        return True
+
+    def record_full_refresh() -> None:
+        full_refresh_calls.append("refresh")
+
+    monkeypatch.setattr(widget._viewer_styling_controller, "refresh_user_class_annotation", record_row_scoped_refresh)
+    monkeypatch.setattr(widget._viewer_styling_controller, "refresh", record_full_refresh)
+
+    layer.selected_label = 5
+    widget.class_spinbox.setValue(4)
+    widget.apply_class_button.click()
+
+    assert row_scoped_calls == []
+    assert full_refresh_calls == ["refresh"]
+
+
 def test_widget_auto_train_toggle_controls_annotation_retraining(
     qtbot, monkeypatch, backed_sdata_blobs: SpatialData
 ) -> None:
@@ -1505,6 +1595,7 @@ def test_widget_auto_train_toggle_controls_annotation_retraining(
     schedule_calls: list[str] = []
     mark_dirty_reasons: list[str | None] = []
     refresh_calls: list[str] = []
+    row_scoped_refresh_calls = []
 
     def record_schedule_retrain(*args, **kwargs) -> bool:
         del args, kwargs
@@ -1514,8 +1605,13 @@ def test_widget_auto_train_toggle_controls_annotation_retraining(
     def record_mark_dirty(*, reason: str | None = None) -> None:
         mark_dirty_reasons.append(reason)
 
+    def record_row_scoped_refresh(change) -> bool:
+        row_scoped_refresh_calls.append(change)
+        return True
+
     monkeypatch.setattr(widget._classifier_controller, "schedule_retrain", record_schedule_retrain)
     monkeypatch.setattr(widget._classifier_controller, "mark_dirty", record_mark_dirty)
+    monkeypatch.setattr(widget._viewer_styling_controller, "refresh_user_class_annotation", record_row_scoped_refresh)
     monkeypatch.setattr(widget, "_refresh_layer_styling", lambda: refresh_calls.append("refresh"))
 
     assert widget.auto_train_checkbox.isChecked() is False
@@ -1534,7 +1630,8 @@ def test_widget_auto_train_toggle_controls_annotation_retraining(
 
     assert schedule_calls == []
     assert mark_dirty_reasons == ["the annotations changed"]
-    assert refresh_calls == ["refresh"]
+    assert [(call.instance_id, call.class_id) for call in row_scoped_refresh_calls] == [(5, 3)]
+    assert refresh_calls == []
     assert widget._persistence_controller.is_dirty is True
 
     widget.auto_train_checkbox.setChecked(True)
@@ -1544,7 +1641,8 @@ def test_widget_auto_train_toggle_controls_annotation_retraining(
 
     assert schedule_calls == ["schedule"]
     assert mark_dirty_reasons == ["the annotations changed", "the annotations changed"]
-    assert refresh_calls == ["refresh", "refresh"]
+    assert [(call.instance_id, call.class_id) for call in row_scoped_refresh_calls] == [(5, 3), (6, 4)]
+    assert refresh_calls == []
 
 
 def test_widget_does_not_log_warning_when_existing_user_class_colors_are_overwritten(

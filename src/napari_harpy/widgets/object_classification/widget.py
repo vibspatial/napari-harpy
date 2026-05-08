@@ -42,7 +42,10 @@ from napari_harpy.core.spatialdata import (
     get_table_obsm_keys,
     validate_table_binding,
 )
-from napari_harpy.widgets.object_classification.annotation_controller import AnnotationController
+from napari_harpy.widgets.object_classification.annotation_controller import (
+    AnnotationController,
+    UserClassAnnotationChange,
+)
 from napari_harpy.widgets.object_classification.controller import (
     DEFAULT_PREDICTION_SCOPE,
     DEFAULT_TRAINING_SCOPE,
@@ -1498,10 +1501,10 @@ class ObjectClassificationWidget(QWidget):
         self._update_selection_status_card()
         self._update_annotation_controls()
 
-    def _on_annotation_changed(self) -> None:
+    def _on_annotation_changed(self, change: UserClassAnnotationChange) -> None:
         self._mark_persistence_dirty()
         self._classifier_controller.mark_dirty(reason="the annotations changed")
-        self._refresh_layer_styling()
+        self._refresh_after_user_class_annotation(change)
         if self._auto_train_enabled:
             self._classifier_controller.schedule_retrain()
         self._update_selection_status()
@@ -1576,6 +1579,16 @@ class ObjectClassificationWidget(QWidget):
 
     def _refresh_layer_styling(self) -> None:
         self._viewer_styling_controller.refresh()
+
+    def _refresh_after_user_class_annotation(self, change: UserClassAnnotationChange) -> None:
+        if self._viewer_styling_controller.color_by != COLOR_BY_USER_CLASS:
+            self._refresh_layer_styling()
+            return
+
+        if self._viewer_styling_controller.refresh_user_class_annotation(change):
+            return
+
+        self._refresh_layer_styling()
 
     def _update_auto_train_tooltip(self) -> None:
         if self._auto_train_enabled:

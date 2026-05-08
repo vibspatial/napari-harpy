@@ -14,6 +14,7 @@ from napari_harpy.core.annotation import (
     USER_CLASS_COLORS_KEY,
     USER_CLASS_COLUMN,
 )
+from napari_harpy.widgets.object_classification.annotation_controller import UserClassAnnotationChange
 from napari_harpy.widgets.object_classification.controller import (
     PRED_CLASS_COLUMN,
     PRED_CONFIDENCE_COLUMN,
@@ -201,3 +202,69 @@ def test_pred_class_coloring_keeps_explicit_entries_for_unlabeled_predictions(sd
     assert isinstance(layer.colormap, DirectLabelColormap)
     assert set(layer.colormap.color_dict) == {None, 0, 1, 5, 6}
     assert not np.allclose(layer.colormap.color_dict[1], layer.colormap.color_dict[0])
+
+
+def test_row_scoped_user_class_annotation_updates_colormap_and_features(
+    monkeypatch: pytest.MonkeyPatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_user_classes(sdata_blobs, {5: 4}, categories=[0, 4])
+    layer = _FakeLabelsLayer()
+    controller = _make_controller(sdata_blobs, layer)
+    feature_rows = _feature_rows({1: 0, 5: 4, 6: 0})
+    controller.refresh_layer_colors(feature_rows=feature_rows)
+    controller.refresh_layer_features(feature_rows=feature_rows)
+
+    def fail_full_feature_rows() -> pd.DataFrame:
+        raise AssertionError("row-scoped annotation refresh must not rebuild all feature rows")
+
+    monkeypatch.setattr(controller, "_get_region_feature_rows", fail_full_feature_rows)
+
+    handled = controller.refresh_user_class_annotation(UserClassAnnotationChange(instance_id=6, class_id=4))
+
+    assert handled is True
+    assert isinstance(layer.colormap, DirectLabelColormap)
+    assert set(layer.colormap.color_dict) == {None, 0, 5, 6}
+    assert layer.features.set_index("index").loc[6, USER_CLASS_COLUMN] == 4
+    assert layer.features.set_index("index").loc[1, USER_CLASS_COLUMN] == 0
+
+
+def test_row_scoped_user_class_annotation_clear_removes_sparse_color_entry(
+    monkeypatch: pytest.MonkeyPatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_user_classes(sdata_blobs, {5: 4}, categories=[0, 4])
+    layer = _FakeLabelsLayer()
+    controller = _make_controller(sdata_blobs, layer)
+    feature_rows = _feature_rows({1: 0, 5: 4, 6: 0})
+    controller.refresh_layer_colors(feature_rows=feature_rows)
+    controller.refresh_layer_features(feature_rows=feature_rows)
+
+    def fail_full_feature_rows() -> pd.DataFrame:
+        raise AssertionError("row-scoped annotation refresh must not rebuild all feature rows")
+
+    monkeypatch.setattr(controller, "_get_region_feature_rows", fail_full_feature_rows)
+
+    handled = controller.refresh_user_class_annotation(UserClassAnnotationChange(instance_id=5, class_id=0))
+
+    assert handled is True
+    assert isinstance(layer.colormap, DirectLabelColormap)
+    assert set(layer.colormap.color_dict) == {None, 0}
+    assert layer.features.set_index("index").loc[5, USER_CLASS_COLUMN] == 0
+
+
+def test_row_scoped_user_class_annotation_returns_false_for_missing_feature_row(sdata_blobs: SpatialData) -> None:
+    _set_user_classes(sdata_blobs, {5: 4}, categories=[0, 4])
+    layer = _FakeLabelsLayer()
+    controller = _make_controller(sdata_blobs, layer)
+    feature_rows = _feature_rows({1: 0, 5: 4, 6: 0})
+    controller.refresh_layer_colors(feature_rows=feature_rows)
+    controller.refresh_layer_features(feature_rows=feature_rows)
+    original_color_keys = set(layer.colormap.color_dict)
+    original_features = layer.features.copy()
+
+    handled = controller.refresh_user_class_annotation(UserClassAnnotationChange(instance_id=99, class_id=4))
+
+    assert handled is False
+    assert set(layer.colormap.color_dict) == original_color_keys
+    pd.testing.assert_frame_equal(layer.features, original_features)
