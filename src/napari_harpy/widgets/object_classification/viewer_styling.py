@@ -111,15 +111,21 @@ class ViewerStylingController:
 
     def refresh(self) -> None:
         """Refresh labels-layer colors and features from the current table state."""
-        self.refresh_layer_colors()
-        self.refresh_layer_features()
-
-    def refresh_layer_colors(self) -> None:
-        """Apply the current `color_by` mode to the bound labels layer."""
         if self._labels_layer is None:
             return
 
         feature_rows = self._get_region_feature_rows()
+        self.refresh_layer_colors(feature_rows=feature_rows)
+        self.refresh_layer_features(feature_rows=feature_rows)
+
+    def refresh_layer_colors(self, *, feature_rows: pd.DataFrame | None = None) -> None:
+        """Apply the current `color_by` mode to the bound labels layer."""
+        if self._labels_layer is None:
+            return
+
+        if feature_rows is None:
+            feature_rows = self._get_region_feature_rows()
+
         color_dict = _base_labels_color_dict(UNLABELED_COLOR)
         instance_ids = feature_rows.index.to_numpy(dtype=np.int64, copy=False)
 
@@ -148,8 +154,11 @@ class ViewerStylingController:
             )
             unlabeled_color = class_color_lookup.get(UNLABELED_CLASS, UNLABELED_COLOR)
             color_dict = _base_labels_color_dict(unlabeled_color)
-            for instance_id in instance_ids:
-                class_id = int(class_by_instance.at[instance_id])
+            if self._color_by == COLOR_BY_USER_CLASS:
+                class_by_instance = class_by_instance[class_by_instance != UNLABELED_CLASS]
+
+            for instance_id, class_id_value in class_by_instance.items():
+                class_id = int(class_id_value)
                 if self._color_by == COLOR_BY_USER_CLASS and class_id == UNLABELED_CLASS:
                     continue
                 color_dict[int(instance_id)] = class_color_lookup.get(class_id, unlabeled_color)
@@ -159,16 +168,19 @@ class ViewerStylingController:
         if callable(refresh):
             refresh()
 
-    def refresh_layer_features(self) -> None:
+    def refresh_layer_features(self, *, feature_rows: pd.DataFrame | None = None) -> None:
         """Expose current label and prediction values as napari layer features."""
         if self._labels_layer is None:
             return
+
+        if feature_rows is None:
+            feature_rows = self._get_region_feature_rows()
 
         instance_key = "instance_id"  # defensive fallback for the no metadata case.
         if self._selected_table_metadata is not None:
             instance_key = self._selected_table_metadata.instance_key
         self._labels_layer.features = _build_labels_features(
-            self._get_region_feature_rows(),
+            feature_rows,
             instance_key=instance_key,
         )
 
@@ -261,6 +273,61 @@ class ViewerStylingController:
         """
         table = self._get_bound_table()
 
+        if table is not None and category_column == USER_CLASS_COLUMN and category_column in table.obs:
+            fast_lookup = _valid_categorical_class_color_lookup(
+                table.obs[category_column],
+                table.uns.get(colors_key),
+                unlabeled_class=unlabeled_class,
+                unlabeled_color=unlabeled_color,
+            )
+            if fast_lookup is not None:
+                categories = set(fast_lookup)
+                if extra_class_values is not None:
+                    # Happy path: `feature_rows` already contains clean integer class ids,
+                    # so we can include them without the expensive `normalize_class_values(...)`
+                    # scan over the full table column again.
+                    extra_class_ids = _read_class_values_without_normalizing(
+                        extra_class_values,
+                        unlabeled_class=unlabeled_class,
+                    )
+                    if extra_class_ids is None:
+                        # Defensive fallback for unexpected dirty feature values. This preserves
+                        # robust class-value normalization instead of trusting a corrupt fast path.
+                        return self._get_class_color_lookup_from_normalized_values(
+                            category_column=category_column,
+                            colors_key=colors_key,
+                            unlabeled_class=unlabeled_class,
+                            unlabeled_color=unlabeled_color,
+                            extra_class_values=extra_class_values,
+                        )
+                    categories.update(extra_class_ids)
+
+                return backfill_missing_class_colors(
+                    fast_lookup,
+                    sorted(categories),
+                    unlabeled_class=unlabeled_class,
+                    unlabeled_color=unlabeled_color,
+                )
+
+        return self._get_class_color_lookup_from_normalized_values(
+            category_column=category_column,
+            colors_key=colors_key,
+            unlabeled_class=unlabeled_class,
+            unlabeled_color=unlabeled_color,
+            extra_class_values=extra_class_values,
+        )
+
+    def _get_class_color_lookup_from_normalized_values(
+        self,
+        *,
+        category_column: str,
+        colors_key: str,
+        unlabeled_class: int = UNLABELED_CLASS,
+        unlabeled_color: str = UNLABELED_COLOR,
+        extra_class_values: pd.Series | None = None,
+    ) -> dict[int, str]:
+        table = self._get_bound_table()
+
         categories = {unlabeled_class}
         # Include every class id currently present in the bound table column, not just the active region.
         if table is not None and category_column in table.obs:
@@ -320,6 +387,67 @@ def _to_numeric_values(values: pd.Series, column_name: str) -> pd.Series:
     numeric_values = pd.to_numeric(values, errors="coerce").astype("float64")
     numeric_values.name = column_name
     return numeric_values
+
+
+def _valid_categorical_class_color_lookup(
+    values: pd.Series,
+    stored_colors: Any,
+    *,
+    unlabeled_class: int,
+    unlabeled_color: str,
+) -> dict[int, str] | None:
+    categories = _read_valid_categorical_class_categories(values, unlabeled_class=unlabeled_class)
+    existing_colors = normalize_color_sequence(stored_colors)
+    if categories is None or existing_colors is None or len(existing_colors) != len(categories):
+        return None
+
+    return stored_palette_to_lookup(
+        categories,
+        existing_colors,
+        unlabeled_class=unlabeled_class,
+        unlabeled_color=unlabeled_color,
+    )
+
+
+def _read_valid_categorical_class_categories(values: pd.Series, *, unlabeled_class: int) -> list[int] | None:
+    if not isinstance(values.dtype, pd.CategoricalDtype):
+        return None
+
+    categories: list[int] = []
+    for category in values.cat.categories:
+        if isinstance(category, (bool, np.bool_)) or not isinstance(category, (int, np.integer)):
+            return None
+        class_id = int(category)
+        if class_id < unlabeled_class or category != class_id:
+            return None
+        categories.append(class_id)
+
+    if categories != sorted(categories):
+        return None
+    if len(categories) != len(set(categories)):
+        return None
+    if unlabeled_class not in categories:
+        return None
+    if bool((values.cat.codes.to_numpy(copy=False) < 0).any()):
+        return None
+
+    return categories
+
+
+def _read_class_values_without_normalizing(values: pd.Series, *, unlabeled_class: int) -> set[int] | None:
+    categories: set[int] = set()
+    for value in values.to_numpy(copy=False):
+        if pd.isna(value):
+            return None
+        try:
+            class_id = int(value)
+        except (TypeError, ValueError):
+            return None
+        if class_id < unlabeled_class or value != class_id:
+            return None
+        categories.add(class_id)
+
+    return categories
 
 
 def _base_labels_color_dict(default_color: Any) -> dict[int | None, Any]:
