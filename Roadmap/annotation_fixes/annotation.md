@@ -220,83 +220,6 @@ Manual QA should not require writing to zarr.
 - Existing prediction and confidence coloring tests still pass.
 - Phase 1 remains independently revertible without affecting later phases.
 
-## Phase 2: Manual/Automatic Classifier Training Toggle
-
-### Goal
-
-Add a checkbox that lets users disable automatic classifier retraining after
-each annotation.
-
-This separates "I am annotating quickly" from "I want predictions updated after
-each click".
-
-### Proposed UI
-
-Add a checkbox near the classifier controls:
-
-```text
-[x] Auto train
-```
-
-Default: checked, preserving existing behavior.
-
-When unchecked:
-
-- annotation edits still mark persistence dirty
-- annotation edits still mark classifier outputs dirty/stale
-- annotation edits still refresh annotation coloring
-- annotation edits do not call `schedule_retrain()`
-- the existing `Train Classifier` button remains the manual path
-
-### Files
-
-- `src/napari_harpy/widgets/object_classification/widget.py`
-- `tests/test_widget.py`
-
-### Implementation Notes
-
-- Store widget state as something like:
-
-```python
-self._auto_train_enabled = True
-```
-
-- Add a `QCheckBox` with object name:
-
-```text
-auto_train_checkbox
-```
-
-- In `_on_annotation_changed()`:
-
-```python
-self._classifier_controller.mark_dirty(reason="the annotations changed")
-if self._auto_train_enabled:
-    self._classifier_controller.schedule_retrain()
-```
-
-- Keep `mark_dirty()` outside the checkbox condition so classifier status and
-  export availability remain honest.
-- Update tooltip/status text to make the manual path clear when auto training
-  is disabled.
-
-### Tests
-
-Add tests for:
-
-- default state preserves current auto-retrain behavior
-- unchecking the checkbox prevents `schedule_retrain()` from being called after
-  annotation
-- unchecking the checkbox still calls `mark_dirty()`
-- clicking `Train Classifier` still invokes manual retraining when auto training
-  is disabled
-
-### Acceptance Criteria
-
-- Users can annotate repeatedly without triggering classifier work on each edit.
-- The classifier state clearly indicates stale predictions.
-- Manual training remains available and unchanged.
-
 ## Phase 2A: Split Classifier Status From Prediction Table Refresh
 
 ### Goal
@@ -399,7 +322,7 @@ stale/scheduled/training status updates and from metadata-only failure updates.
 
 ### Expected Annotation Flow
 
-With auto training enabled:
+Current auto-training path:
 
 1. User applies or clears one `user_class`.
 2. The annotation path updates user-class styling once.
@@ -409,7 +332,7 @@ With auto training enabled:
    callback marks persistence dirty and the prediction-state callback refreshes
    prediction styling once.
 
-With auto training disabled:
+After Phase 2B, with auto training disabled:
 
 1. User applies or clears one `user_class`.
 2. The annotation path updates user-class styling once.
@@ -456,6 +379,91 @@ Add or update tests for:
 - Classifier feedback and retrain/export controls stay accurate.
 - The change is independently revertible from the auto-training checkbox and
   row-scoped table-edit work.
+
+## Phase 2B: Manual/Automatic Classifier Training Toggle
+
+### Goal
+
+Add a checkbox that lets users disable automatic classifier retraining after
+each annotation.
+
+This builds on Phase 2A. Once status-only classifier callbacks no longer refresh
+the labels layer, the toggle can focus on training policy: "I am annotating
+quickly" versus "I want predictions updated after each click".
+
+### Proposed UI
+
+Add a checkbox near the classifier controls:
+
+```text
+[x] Auto train
+```
+
+Default: checked, preserving existing behavior.
+
+When unchecked:
+
+- annotation edits still mark persistence dirty
+- annotation edits still mark classifier outputs dirty/stale
+- annotation edits still refresh annotation coloring
+- annotation edits do not call `schedule_retrain()`
+- the existing `Train Classifier` button remains the manual path
+
+### Files
+
+- `src/napari_harpy/widgets/object_classification/widget.py`
+- `tests/test_widget.py`
+
+### Implementation Notes
+
+- Store widget state as something like:
+
+```python
+self._auto_train_enabled = True
+```
+
+- Add a `QCheckBox` with object name:
+
+```text
+auto_train_checkbox
+```
+
+- In `_on_annotation_changed()`:
+
+```python
+self._classifier_controller.mark_dirty(reason="the annotations changed")
+if self._auto_train_enabled:
+    self._classifier_controller.schedule_retrain()
+```
+
+- Keep `mark_dirty()` outside the checkbox condition so classifier status and
+  export availability remain honest.
+- With Phase 2A in place, `mark_dirty()` should update classifier
+  feedback/controls but must not refresh labels-layer styling through the
+  classifier status callback.
+- Update tooltip/status text to make the manual path clear when auto training
+  is disabled.
+
+### Tests
+
+Add tests for:
+
+- default state preserves current auto-retrain behavior
+- unchecking the checkbox prevents `schedule_retrain()` from being called after
+  annotation
+- unchecking the checkbox still calls `mark_dirty()`
+- unchecking the checkbox does not refresh labels-layer styling through
+  classifier status callbacks
+- clicking `Train Classifier` still invokes manual retraining when auto training
+  is disabled
+
+### Acceptance Criteria
+
+- Users can annotate repeatedly without triggering classifier work on each edit.
+- The classifier state clearly indicates stale predictions.
+- Manual training remains available and unchanged.
+- Phase 2B remains a small policy change because Phase 2A already separated
+  classifier status from prediction styling.
 
 ## Phase 3: Row-Scoped `user_class` Table Edits
 
@@ -600,9 +608,9 @@ Add or adjust tests so that:
 
 ### Goal
 
-Measure the remaining annotation cost after Phases 1-4, including Phase 2A.
-Only pursue incremental layer updates if those measurements show they are still
-needed.
+Measure the remaining annotation cost after Phases 1-4, including Phase 2A and
+Phase 2B. Only pursue incremental layer updates if those measurements show they
+are still needed.
 
 This phase would update a single row in `layer.features` and a single entry in
 an existing `DirectLabelColormap` after a user-class edit.
@@ -647,7 +655,7 @@ table: table_global_ROI1
 
 ### Acceptance Criteria Before Starting
 
-- Phases 1-4, including Phase 2A, have landed.
+- Phases 1-4, including Phase 2A and Phase 2B, have landed.
 - Benchmarks still show annotation lag dominated by `layer.features` refresh or
   colormap assignment.
 - We have a small, documented napari-compatible API surface for refreshing a
@@ -656,14 +664,14 @@ table: table_global_ROI1
 ## Suggested Landing Order
 
 1. Phase 1: Sparse `user_class` colormap.
-2. Phase 2: Auto-training checkbox.
-3. Phase 2A: Split classifier status from prediction-table refresh.
+2. Phase 2A: Split classifier status from prediction-table refresh.
+3. Phase 2B: Auto-training checkbox.
 4. Phase 4: Classifier timer lifecycle.
 5. Phase 3: Row-scoped `user_class` edits.
 6. Phase 5: benchmark, then only add incremental layer updates if still needed.
 
-The timer fix can land before Phase 2, Phase 2A, or Phase 3 if tests expose the
-stale callback race earlier.
+The timer fix can land before Phase 2A, Phase 2B, or Phase 3 if tests expose
+the stale callback race earlier.
 
 ## Verification Matrix
 
