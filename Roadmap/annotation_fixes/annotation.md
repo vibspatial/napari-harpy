@@ -1489,11 +1489,92 @@ Add or adjust tests so that:
 - Debounced classifier behavior is unchanged while the widget is alive.
 - Worker cancellation/reload behavior remains unchanged.
 
-## Phase 9: Final Benchmark And Optional Deeper Layer Updates
+## Phase 9: Optional Cache Selected-Region Rows/Features Between Full Refreshes
 
 ### Goal
 
-Measure the remaining annotation cost after Phases 1-8, including Phase 2A and
+Reduce the remaining full-refresh cost by caching the selected-region table rows
+and/or normalized `feature_rows` while the selected segmentation/table binding is
+unchanged.
+
+This is optional because the direct annotation happy path should already avoid
+`_get_region_feature_rows()`. The cache would target broader UI events that
+still require full styling refreshes, such as color-mode changes or repeated
+status-driven refreshes.
+
+### Current Problem
+
+After the row-scoped annotation phases, direct annotation is no longer dominated
+by selected-region feature preparation. However, a full refresh still spends most
+of its time in:
+
+```python
+feature_rows = self._get_region_feature_rows()
+```
+
+Recent local measurements against
+`sdata_xenium_full_data_core.zarr` showed:
+
+```text
+ViewerStylingController.refresh()  ~0.41s
+_get_region_feature_rows()         ~0.34s
+```
+
+So if full refreshes still happen frequently in real UI use, selected-region
+feature caching may be the next low-risk optimization to evaluate.
+
+### Proposed Behavior
+
+Add a small private cache inside `ViewerStylingController` for the current
+selection context:
+
+- selected `SpatialData` object identity
+- selected labels element
+- selected coordinate system
+- selected table name
+- table metadata keys used for region/instance lookup
+
+When the cache is valid, `refresh()` can reuse cached `feature_rows` instead of
+rebuilding them from `table.obs`.
+
+### Invalidation Rules
+
+Invalidate the cache whenever correctness could be affected:
+
+- segmentation, table, coordinate system, or `SpatialData` binding changes
+- classifier writes or clears `pred_class` / `pred_confidence`
+- direct annotation changes `user_class`, unless the cache row is updated
+  row-scoped at the same time
+- table reload or external table mutation events
+- metadata changes that affect region/instance lookup
+
+The first implementation should prefer conservative invalidation over clever
+partial repair. A stale cache would be worse than a slightly slower full
+refresh.
+
+### Maintainability Guardrails
+
+- Keep the cache private to `ViewerStylingController`.
+- Do not cache across different labels/table bindings.
+- Do not rely on implicit object mutation detection alone; table mutations are
+  in-place, so event sources should explicitly invalidate or update the cache.
+- Keep the existing uncached `_get_region_feature_rows()` path as the fallback.
+- Add tests for both cache hits and invalidation.
+
+### Acceptance Criteria
+
+- Full refreshes reuse cached selected-region features only when the binding and
+  table state are known to be current.
+- Direct annotation still uses row-scoped refreshes in the happy path.
+- Classifier prediction writes still show fresh `pred_class` and
+  `pred_confidence`.
+- Selection/binding/table changes cannot show stale hover/properties values.
+
+## Phase 10: Final Benchmark And Optional Deeper Layer Updates
+
+### Goal
+
+Measure the remaining annotation cost after Phases 1-9, including Phase 2A and
 Phase 2B. Only pursue incremental layer updates if those measurements show they
 are still needed.
 
@@ -1542,7 +1623,7 @@ table: table_global_ROI1
 
 ### Acceptance Criteria Before Starting
 
-- Phases 1-8, including Phase 2A and Phase 2B, have landed.
+- Phases 1-9, including Phase 2A and Phase 2B, have landed.
 - Benchmarks still show annotation lag dominated by `layer.features` refresh or
   colormap assignment.
 - We have a small, documented napari-compatible API surface for refreshing a
@@ -1559,7 +1640,8 @@ table: table_global_ROI1
 7. Phase 7: Refresh prediction styling only when predictions change.
 8. Phase 5: Avoid repeated classifier preparation summaries.
 9. Phase 8: Classifier timer lifecycle.
-10. Phase 9: benchmark, then only add deeper private layer updates if still needed.
+10. Phase 9: Optional selected-region row/feature cache.
+11. Phase 10: benchmark, then only add deeper private layer updates if still needed.
 
 Phase 5 is independent and can be deferred until after Phase 6 or Phase 7 because the
 remaining visible annotation lag is now dominated by viewer refresh work.
