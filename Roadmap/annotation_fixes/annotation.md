@@ -607,7 +607,7 @@ Phase 2B should not add new cancellation behavior:
 - Clicking `Train Classifier` still runs the manual retrain path even when auto
   training is unchecked.
 
-If pending-job cancellation becomes important, handle it later with the Phase 6
+If pending-job cancellation becomes important, handle it later with the Phase 7
 timer lifecycle work rather than mixing it into the training-policy toggle.
 
 ### Edge Cases
@@ -1053,7 +1053,156 @@ Add or update tests for:
 - The change stays independent from row-scoped table edits and viewer-styling
   refresh optimizations.
 
-## Phase 6: Classifier Debounce Timer Lifecycle
+## Phase 6: User-Class Color-Only Annotation Refresh
+
+### Goal
+
+Avoid calling `_get_region_feature_rows()` during the common annotation path when
+`color_by == "user_class"` and the only viewer-visible change needed immediately
+is the labels-layer color update.
+
+Phase 4 still performs a full public styling refresh and therefore still builds
+one selected-region feature table per annotation. Phase 6 adds a narrower
+annotation-specific path that refreshes `user_class` colors without rebuilding
+`layer.features`.
+
+### Current Problem
+
+Even after Phase 4, this call remains in the full refresh path:
+
+```python
+feature_rows = self._get_region_feature_rows()
+```
+
+On the measured Xenium table, `_get_region_feature_rows()` costs roughly
+`~0.34s` because it filters the selected labels region, normalizes
+`user_class`, `pred_class`, and `pred_confidence`, and builds a fresh dataframe
+for all selected-region label ids.
+
+For a simple user annotation with auto training disabled and
+`color_by == "user_class"`, the immediate visual update only needs:
+
+```text
+instance id -> nonzero user_class
+```
+
+It does not need normalized prediction columns, prediction confidence, or a full
+`layer.features` rebuild.
+
+### Proposed Behavior
+
+Add a user-class color-only refresh path that is used only for annotation edits
+when the viewer is currently colored by `user_class`.
+
+Suggested shape:
+
+```python
+def refresh_user_class_colors_only(self) -> None:
+    ...
+```
+
+or an equivalently explicit private/public method name on
+`ViewerStylingController`.
+
+The method should:
+
+- read the bound table and selected table metadata
+- filter `table.obs` to the selected labels element
+- keep only the selected instance key and `USER_CLASS_COLUMN`
+- coerce valid positive instance ids to `int64`
+- preserve current duplicate semantics with
+  `drop_duplicates(subset=[instance_key], keep="last")`
+- read `user_class` directly from the valid categorical column
+- keep only rows where `user_class != UNLABELED_CLASS`
+- build and assign the sparse `DirectLabelColormap`
+
+Conceptually:
+
+```python
+class_by_instance = self._get_region_user_class_by_instance()
+labeled_class_by_instance = class_by_instance[class_by_instance != UNLABELED_CLASS]
+```
+
+This path should reuse the Phase 4 valid-categorical color lookup fast path. If
+the `user_class` column or palette is invalid, fall back to the full refresh
+path instead of trying to repair state inside the color-only method.
+
+### Where It Is Used
+
+In the annotation changed path:
+
+```python
+if self._viewer_styling.color_by == COLOR_BY_USER_CLASS:
+    self._viewer_styling.refresh_user_class_colors_only()
+else:
+    self._viewer_styling.refresh()
+```
+
+The exact call site should preserve current behavior for:
+
+- `color_by == "pred_class"`
+- `color_by == "pred_confidence"`
+- classifier prediction updates
+- selection changes
+- table/feature/scope changes
+- initial binding and full reloads
+
+Those paths should continue to use the full refresh path.
+
+### Tradeoff
+
+This phase intentionally does not update `layer.features` after every annotation
+edit. That means hover/properties data derived from `layer.features` may show the
+previous `user_class` value until the next full refresh.
+
+This is acceptable only if:
+
+- labels-layer colors update immediately and correctly
+- full refreshes still happen on selection/binding/color-mode/classifier changes
+- the stale feature-row window is documented and considered less important than
+  annotation responsiveness
+
+If stale hover/properties are not acceptable in practice, do not broaden this
+phase into private napari mutation. Instead, leave this phase unimplemented and
+revisit row-scoped `layer.features` updates in the final benchmark phase.
+
+### Non-Goals
+
+- Do not mutate one row inside `layer.features` in this phase.
+- Do not mutate napari private colormap internals.
+- Do not change prediction coloring or prediction feature refresh behavior.
+- Do not skip full refreshes for selection, binding, color-mode, classifier, or
+  table-structure changes.
+
+### Files
+
+- `src/napari_harpy/widgets/object_classification/viewer_styling.py`
+- `src/napari_harpy/widgets/object_classification/widget.py`
+- `tests/test_widget.py`
+- Add a focused viewer-styling test file if that keeps tests clearer.
+
+### Tests
+
+Add or update tests for:
+
+- annotation with `color_by == "user_class"` uses the color-only refresh path
+- annotation with `color_by == "pred_class"` still uses the full refresh path
+- color-only refresh does not call `_get_region_feature_rows()`
+- color-only refresh preserves duplicate instance-id semantics
+- invalid/missing `user_class` state falls back to full refresh
+- color-only refresh updates the sparse colormap and leaves `layer.features`
+  unchanged
+
+### Acceptance Criteria
+
+- The common `user_class` annotation path no longer calls
+  `_get_region_feature_rows()`.
+- Visual labels-layer coloring remains correct after adding/removing an
+  annotation.
+- Prediction coloring, classifier updates, and full viewer refreshes remain
+  equivalent to the previous behavior.
+
+## Phase 7: Classifier Debounce Timer Lifecycle
 
 ### Goal
 
@@ -1116,11 +1265,11 @@ Add or adjust tests so that:
 - Debounced classifier behavior is unchanged while the widget is alive.
 - Worker cancellation/reload behavior remains unchanged.
 
-## Phase 7: Final Benchmark And Optional Incremental Layer Feature/Color Updates
+## Phase 8: Final Benchmark And Optional Incremental Layer Feature/Color Updates
 
 ### Goal
 
-Measure the remaining annotation cost after Phases 1-6, including Phase 2A and
+Measure the remaining annotation cost after Phases 1-7, including Phase 2A and
 Phase 2B. Only pursue incremental layer updates if those measurements show they
 are still needed.
 
@@ -1167,7 +1316,7 @@ table: table_global_ROI1
 
 ### Acceptance Criteria Before Starting
 
-- Phases 1-6, including Phase 2A and Phase 2B, have landed.
+- Phases 1-7, including Phase 2A and Phase 2B, have landed.
 - Benchmarks still show annotation lag dominated by `layer.features` refresh or
   colormap assignment.
 - We have a small, documented napari-compatible API surface for refreshing a
@@ -1181,11 +1330,12 @@ table: table_global_ROI1
 4. Phase 3: Row-scoped `user_class` edits.
 5. Phase 4: Faster `user_class` viewer styling refresh.
 6. Phase 5: Avoid repeated classifier preparation summaries.
-7. Phase 6: Classifier timer lifecycle.
-8. Phase 7: benchmark, then only add incremental layer updates if still needed.
+7. Phase 6: User-class color-only annotation refresh.
+8. Phase 7: Classifier timer lifecycle.
+9. Phase 8: benchmark, then only add incremental layer updates if still needed.
 
-The timer fix can land before Phase 2A, Phase 2B, Phase 3, Phase 4, or Phase 5
-if tests expose the stale callback race earlier.
+The timer fix can land before Phase 2A, Phase 2B, Phase 3, Phase 4, Phase 5, or
+Phase 6 if tests expose the stale callback race earlier.
 
 ## Verification Matrix
 
