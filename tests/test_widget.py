@@ -1455,9 +1455,10 @@ def test_widget_recolors_layer_from_user_class_annotations(qtbot, sdata_blobs: S
 
     assert isinstance(layer.colormap, DirectLabelColormap)
     assert np.allclose(layer.colormap.color_dict[0], np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32))
+    assert set(layer.colormap.color_dict) == {None, 0, 5}
     assert layer.colormap.color_dict[5][3] > 0
-    assert layer.colormap.color_dict[6][3] > 0
-    assert not np.allclose(layer.colormap.color_dict[5], layer.colormap.color_dict[6])
+    assert layer.colormap.map(6)[3] > 0
+    assert not np.allclose(layer.colormap.color_dict[5], layer.colormap.map(6))
     assert "instance_id" in layer.features.columns
     assert USER_CLASS_COLUMN in layer.features.columns
     assert layer.features.set_index("index").loc[5, "instance_id"] == 5
@@ -1988,7 +1989,7 @@ def test_widget_colors_predictions_using_pred_class_palette_in_pred_class_mode(q
     table.uns[USER_CLASS_COLORS_KEY] = ["#80808099", "#ff0000", "#00ff00"]
     table.uns[PRED_CLASS_COLORS_KEY] = ["#80808099", "#0000ff", "#ffff00"]
 
-    assert not np.allclose(layer.colormap.color_dict[1], layer.colormap.color_dict[5])
+    assert not np.allclose(layer.colormap.color_dict[1], layer.colormap.map(5))
 
     widget.color_by_combo.setCurrentIndex(widget.color_by_combo.findData("pred_class"))
 

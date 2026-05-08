@@ -120,10 +120,7 @@ class ViewerStylingController:
             return
 
         feature_rows = self._get_region_feature_rows()
-        color_dict: dict[int | None, Any] = {
-            None: UNLABELED_COLOR,
-            0: "transparent",
-        }
+        color_dict = _base_labels_color_dict(UNLABELED_COLOR)
         instance_ids = feature_rows.index.to_numpy(dtype=np.int64, copy=False)
 
         if self._color_by == COLOR_BY_PRED_CONFIDENCE:
@@ -150,10 +147,12 @@ class ViewerStylingController:
                 unlabeled_color=UNLABELED_COLOR,
             )
             unlabeled_color = class_color_lookup.get(UNLABELED_CLASS, UNLABELED_COLOR)
-            color_dict[None] = unlabeled_color
+            color_dict = _base_labels_color_dict(unlabeled_color)
             for instance_id in instance_ids:
                 class_id = int(class_by_instance.at[instance_id])
-                color_dict[instance_id] = class_color_lookup.get(class_id, unlabeled_color)
+                if self._color_by == COLOR_BY_USER_CLASS and class_id == UNLABELED_CLASS:
+                    continue
+                color_dict[int(instance_id)] = class_color_lookup.get(class_id, unlabeled_color)
 
         self._labels_layer.colormap = DirectLabelColormap(color_dict=color_dict, background_value=0)
         refresh = getattr(self._labels_layer, "refresh", None)
@@ -315,3 +314,7 @@ def _to_numeric_values(values: pd.Series, column_name: str) -> pd.Series:
     numeric_values = pd.to_numeric(values, errors="coerce").astype("float64")
     numeric_values.name = column_name
     return numeric_values
+
+
+def _base_labels_color_dict(default_color: Any) -> dict[int | None, Any]:
+    return {None: default_color, 0: "transparent"}
