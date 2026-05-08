@@ -193,6 +193,12 @@ class ViewerStylingController:
         return region_rows.set_index(metadata.instance_key)
 
     def _get_region_feature_rows(self) -> pd.DataFrame:
+        """Return normalized labels features for the selected segmentation region.
+
+        The returned rows are indexed by label/instance id and include
+        `user_class`, `pred_class`, and `pred_confidence`. This is scoped to the
+        currently selected labels element, not necessarily the complete table.
+        """
         region_rows = self._get_region_rows_by_instance()
         feature_rows = pd.DataFrame(index=region_rows.index.astype("int64", copy=False))
         feature_rows.index.name = "index"
