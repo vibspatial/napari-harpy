@@ -3,7 +3,7 @@
 ## Context
 
 Annotating `cell_labels_global_ROI1` in
-`/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium_full_redo.zarr` feels laggy
+`/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium_full_data_core.zarr` feels laggy
 because the current object-classification path performs multiple broad updates
 after every add/remove annotation.
 
@@ -297,6 +297,166 @@ Add tests for:
 - The classifier state clearly indicates stale predictions.
 - Manual training remains available and unchanged.
 
+## Phase 2A: Split Classifier Status From Prediction Table Refresh
+
+### Goal
+
+Avoid refreshing the labels layer for classifier status-only changes, while
+still refreshing prediction coloring whenever classifier outputs actually change.
+
+This phase clarifies the overloaded phrase "classifier changed". A classifier
+status change is not the same thing as a prediction table change.
+
+### Current Problem
+
+`ClassifierController._set_status(...)` calls the widget's classifier-state
+callback for every status transition:
+
+- model became stale
+- training was scheduled
+- training started
+- training failed
+- training finished
+- inputs are not trainable
+
+The widget currently handles that callback by updating feedback, refreshing the
+labels layer, and updating classifier controls. That means status-only events
+such as "model is stale" or "training is scheduled" rebuild label colors and
+features even though `table.obs["pred_class"]` and
+`table.obs["pred_confidence"]` did not change.
+
+### Event Model
+
+Treat these as separate event types:
+
+| Event | Meaning | Labels-layer refresh? |
+| --- | --- | --- |
+| User annotation changed | `user_class` changed for the selected object | Yes, for annotation coloring/features |
+| Classifier status changed | text/button state changed, but prediction columns did not | No |
+| Classifier prediction table changed | `pred_class`/`pred_confidence` were written or cleared | Yes |
+| Binding/reload/color mode changed | the layer/table/color source changed | Yes |
+
+So yes: when retraining produces new predictions, we should recolor prediction
+views. The key is that the recolor should be tied to the prediction-table update,
+not to every classifier status message.
+
+### How We Know Prediction/Table State Changed
+
+Do not infer table changes from classifier status text. The classifier
+controller is the only code path that writes classifier outputs in the widget,
+so it should emit explicit callbacks immediately after those writes.
+
+Relevant classifier-side table mutations are:
+
+- prediction columns changed:
+  - `table.obs["pred_class"]`
+  - `table.obs["pred_confidence"]`
+- classifier metadata changed:
+  - `table.uns[CLASSIFIER_CONFIG_KEY]`
+  - fitted/exportable model snapshot state
+
+Prediction-column changes affect labels-layer styling. Metadata-only changes
+affect persistence/export state but do not require recoloring.
+
+Current broad notification points already exist:
+
+- `_apply_ineligible_state(...)` clears predictions and writes classifier config
+- `_on_worker_returned(...)` writes predictions and classifier config
+- `_on_worker_errored(...)` writes failure config, but does not write new
+  predictions
+
+Phase 2A should make this distinction explicit instead of treating every
+classifier table mutation as a styling event.
+
+### Proposed Behavior
+
+Use separate widget callbacks for status, persistence-relevant table changes,
+and prediction-column changes:
+
+```python
+def _on_classifier_state_changed(self) -> None:
+    self._update_classifier_feedback()
+    self._update_classifier_controls()
+
+def _on_classifier_table_state_changed(self) -> None:
+    self._mark_persistence_dirty()
+    self._update_persistence_controls()
+
+def _on_classifier_prediction_state_changed(self) -> None:
+    self._refresh_layer_styling()
+```
+
+Then the classifier controller should call:
+
+- status callback after status-only changes
+- table-state callback after any classifier metadata or prediction-table write
+- prediction-state callback only after `pred_class` or `pred_confidence` were
+  written or cleared
+
+This preserves prediction recoloring because prediction writes still emit a
+styling callback. It removes redundant styling refreshes from
+stale/scheduled/training status updates and from metadata-only failure updates.
+
+### Expected Annotation Flow
+
+With auto training enabled:
+
+1. User applies or clears one `user_class`.
+2. The annotation path updates user-class styling once.
+3. The classifier is marked stale.
+4. The stale/scheduled status updates refresh only classifier feedback/controls.
+5. If the debounce later retrains and writes predictions, the table-state
+   callback marks persistence dirty and the prediction-state callback refreshes
+   prediction styling once.
+
+With auto training disabled:
+
+1. User applies or clears one `user_class`.
+2. The annotation path updates user-class styling once.
+3. The classifier is marked stale.
+4. No retrain is scheduled, so no prediction-table refresh happens until the
+   user clicks `Train Classifier`.
+
+### Files
+
+- `src/napari_harpy/widgets/object_classification/widget.py`
+- `tests/test_widget.py`
+- `tests/test_classifier.py` if controller callback behavior needs a focused
+  test
+
+### Non-Goals
+
+- Do not suppress classifier status messages.
+- Do not skip prediction recoloring after predictions are written.
+- Do not change model training behavior.
+- Do not add incremental single-row layer updates in this phase.
+- Do not change the `ViewerStylingController` refresh implementation yet.
+
+### Tests
+
+Add or update tests for:
+
+- `mark_dirty(...)` updates classifier feedback/controls without refreshing
+  labels-layer styling
+- scheduled debounce status updates do not refresh labels-layer styling
+- successful classifier prediction writes still refresh labels-layer styling
+- ineligible classifier runs that clear predictions still refresh labels-layer
+  styling
+- metadata-only classifier failure updates mark persistence dirty without
+  refreshing labels-layer styling
+- prediction color modes still update after `pred_class` or `pred_confidence`
+  changes
+
+### Acceptance Criteria
+
+- Annotation no longer triggers labels-layer refreshes from classifier
+  status-only events.
+- Prediction coloring still updates when classifier predictions are written or
+  cleared.
+- Classifier feedback and retrain/export controls stay accurate.
+- The change is independently revertible from the auto-training checkbox and
+  row-scoped table-edit work.
+
 ## Phase 3: Row-Scoped `user_class` Table Edits
 
 ### Goal
@@ -440,8 +600,9 @@ Add or adjust tests so that:
 
 ### Goal
 
-Measure the remaining annotation cost after Phases 1-4. Only pursue incremental
-layer updates if those measurements show they are still needed.
+Measure the remaining annotation cost after Phases 1-4, including Phase 2A.
+Only pursue incremental layer updates if those measurements show they are still
+needed.
 
 This phase would update a single row in `layer.features` and a single entry in
 an existing `DirectLabelColormap` after a user-class edit.
@@ -479,14 +640,14 @@ source .venv/bin/activate
 Measure against:
 
 ```text
-/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium_full_redo.zarr
+/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium_full_data_core.zarr
 labels: cell_labels_global_ROI1
 table: table_global_ROI1
 ```
 
 ### Acceptance Criteria Before Starting
 
-- Phases 1-4 have landed.
+- Phases 1-4, including Phase 2A, have landed.
 - Benchmarks still show annotation lag dominated by `layer.features` refresh or
   colormap assignment.
 - We have a small, documented napari-compatible API surface for refreshing a
@@ -496,12 +657,13 @@ table: table_global_ROI1
 
 1. Phase 1: Sparse `user_class` colormap.
 2. Phase 2: Auto-training checkbox.
-3. Phase 4: Classifier timer lifecycle.
-4. Phase 3: Row-scoped `user_class` edits.
-5. Phase 5: benchmark, then only add incremental layer updates if still needed.
+3. Phase 2A: Split classifier status from prediction-table refresh.
+4. Phase 4: Classifier timer lifecycle.
+5. Phase 3: Row-scoped `user_class` edits.
+6. Phase 5: benchmark, then only add incremental layer updates if still needed.
 
-The timer fix can land before Phase 2 or Phase 3 if tests expose the stale
-callback race earlier.
+The timer fix can land before Phase 2, Phase 2A, or Phase 3 if tests expose the
+stale callback race earlier.
 
 ## Verification Matrix
 
