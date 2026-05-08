@@ -1887,6 +1887,7 @@ def test_widget_retrain_button_recovers_after_worker_finishes(qtbot, monkeypatch
     qtbot.addWidget(widget)
     select_segmentation(widget)
     workers: list[_DeferredWorker] = []
+    refresh_calls: list[str] = []
 
     def fake_create_training_worker(job):
         result = classifier_module.ClassifierJobResult(
@@ -1905,6 +1906,7 @@ def test_widget_retrain_button_recovers_after_worker_finishes(qtbot, monkeypatch
         return worker
 
     monkeypatch.setattr(widget._classifier_controller, "_create_training_worker", fake_create_training_worker)
+    monkeypatch.setattr(widget, "_refresh_layer_styling", lambda: refresh_calls.append("refresh"))
 
     widget.retrain_button.click()
 
@@ -1912,15 +1914,41 @@ def test_widget_retrain_button_recovers_after_worker_finishes(qtbot, monkeypatch
     assert widget._classifier_controller.is_training is True
     assert widget.retrain_button.isEnabled() is False
     assert "currently running" in widget.retrain_button.toolTip()
+    assert refresh_calls == []
 
     workers[0].emit_returned()
 
     qtbot.waitUntil(lambda: widget._classifier_controller.is_training is False, timeout=1000)
     qtbot.waitUntil(lambda: widget.retrain_button.isEnabled(), timeout=1000)
 
+    assert refresh_calls == ["refresh"]
     assert "currently running" not in widget.retrain_button.toolTip()
     assert "write predictions for the selected prediction scope" in widget.retrain_button.toolTip()
     assert "model is up to date" in widget.classifier_feedback.text()
+
+
+def test_widget_classifier_status_changes_do_not_refresh_layer_styling(
+    qtbot, monkeypatch, sdata_blobs: SpatialData
+) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+    refresh_calls: list[str] = []
+
+    monkeypatch.setattr(widget, "_refresh_layer_styling", lambda: refresh_calls.append("refresh"))
+
+    widget._classifier_controller.mark_dirty(reason="the annotations changed")
+
+    assert refresh_calls == []
+    assert "annotations changed" in widget.classifier_feedback.text()
+
+    widget._classifier_controller.schedule_retrain()
+    widget._classifier_controller._debounce_timer.stop()
+
+    assert refresh_calls == []
+    assert "scheduled" in widget.classifier_feedback.text()
 
 
 def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs: SpatialData) -> None:

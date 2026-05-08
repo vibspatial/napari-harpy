@@ -140,6 +140,7 @@ class ObjectClassificationWidget(QWidget):
         self._classifier_controller = ClassifierController(
             on_state_changed=self._on_classifier_state_changed,
             on_table_state_changed=self._on_classifier_table_state_changed,
+            on_prediction_state_changed=self._on_classifier_prediction_state_changed,
         )
         self._viewer_styling_controller = ViewerStylingController(
             self._app_state.viewer_adapter,
@@ -1479,12 +1480,19 @@ class ObjectClassificationWidget(QWidget):
         self._update_selection_status()
 
     def _on_classifier_table_state_changed(self) -> None:
+        # A prediction change is also a table-state change, but not every
+        # table-state change affects labels-layer styling. This callback is for
+        # persistence/export state.
         self._mark_persistence_dirty()
         self._update_persistence_controls()
 
+    def _on_classifier_prediction_state_changed(self) -> None:
+        # Prediction changes are the classifier-owned table changes that affect
+        # labels-layer coloring/features.
+        self._refresh_layer_styling()
+
     def _on_classifier_state_changed(self) -> None:
         self._update_classifier_feedback()
-        self._refresh_layer_styling()
         self._update_classifier_controls()
 
     def _retrain_classifier(self) -> None:
