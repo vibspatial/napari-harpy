@@ -1,0 +1,1290 @@
+# Phase 1A: Spatial-First Cache Offline Writer
+
+This document turns Phase 1A from [Transcripts_Tile_cache.md](/Users/arne.defauw/VIB/napari_harpy/Roadmap/transcripts_visualization/Transcripts_Tile_cache.md) into a concrete implementation plan.
+
+Phase 1A is the offline writer only. It does not include the napari runtime, the transcript controller, gene subset UI, `tile_gene_index.parquet`, or gene-aware overview sampling.
+
+## Goal
+
+Build a working offline writer that converts a transcript-like points table into the first Harpy transcript visualization cache:
+
+```text
+<sdata.zarr>/
+  points/
+    <points_name>/
+      points.parquet
+      transcripts_vis/
+        metadata.json
+        manifest.parquet
+        genes.parquet
+        levels/
+          level_0/
+            part-00000.parquet
+            part-00001.parquet
+            ...
+          level_1/
+            part-00000.parquet
+            part-00001.parquet
+            ...
+          ...
+          level_n/
+            part-00000.parquet
+            part-00001.parquet
+            ...
+```
+
+The writer must:
+
+- start from a backed `SpatialData` points element whose stored points table resolves to a `dask.dataframe.DataFrame` with at least `x`, `y`, and `gene`;
+- write a spatial-first multiscale cache;
+- keep the finest level unsampled, with one cache row per source row;
+- build coarser levels by deterministic spatially stratified sampling per tile;
+- finalize through a staged replacement so incomplete new caches are never exposed as valid.
+
+## Deliverables
+
+Phase 1A should produce:
+
+- `src/napari_harpy/_transcript_tiles.py`
+- `tests/test_transcript_tiles.py`
+- direct project dependencies for `dask[dataframe]` and `pyarrow` if still needed
+
+For now, Phase 1A should expose only the backed points-element builder:
+
+```python
+def build_transcript_visualization_cache_for_points_element(
+    sdata: SpatialData,
+    points_name: str,
+    *,
+    output_path: str | PathLike[str] | None = None,
+    x: str = "x",
+    y: str = "y",
+    gene: str = "gene",
+    transcript_id: str | None = None,
+    leaf_tile_size: float = 1024.0,
+    n_levels: int | None = None,
+    max_rows_per_row_group: int = 50_000,
+    coarse_tile_budget: int = 50_000,
+) -> TranscriptTileCache:
+    ...
+```
+
+Do not expose a standalone dataframe builder in Phase 1A.
+The implementation may still use internal dataframe helpers after the points element is resolved.
+
+### Points Element Builder Construction Contract
+
+`build_transcript_visualization_cache_for_points_element(...)` is the main and only public entry point for Phase 1A.
+It validates that `sdata` is backed, resolves `points_name` to exactly one stored points element path, and uses that stored points dataframe as the cache source.
+By default, the final cache root is:
+
+```text
+Path(sdata.path) / resolved_points_element_path / "transcripts_vis"
+```
+
+If an explicit `output_path` is provided, normalize it with `Path(output_path)` and use it as the final cache root.
+
+The points-element builder accepts `leaf_tile_size` and `n_levels` as construction inputs.
+For Phase 1A, it uses them to create a regular level pyramid.
+`leaf_tile_size` is in the stored coordinate units of the resolved points dataframe, not screen pixels.
+
+If `n_levels` is provided, validate that it is at least `1`.
+If `n_levels is None`, derive it from the source bounds and `leaf_tile_size` in Step 4.
+After the final `n_levels` value is known:
+
+```text
+finest_level = n_levels - 1
+```
+
+Each level record is created as:
+
+```text
+tile_size = leaf_tile_size * 2 ** (finest_level - level)
+is_exact = level == finest_level
+```
+
+For example, with `leaf_tile_size = 1024` and `n_levels = 3`, the builder creates:
+
+```text
+level  tile_size  is_exact
+0      4096       false
+1      2048       false
+2      1024       true
+```
+
+These generated records are then stored explicitly in `TranscriptTileCache.levels` and in `metadata.json["levels"]`.
+Readers should use those explicit records.
+Level directories follow the fixed layout convention `levels/level_<level>/` and are derived from `level`.
+Individual Parquet part-file paths are written to `manifest.parquet` because each level is a Parquet dataset directory, not one physical Parquet file.
+
+`transcript_id` is optional.
+If `transcript_id` is provided, Phase 1A validates that it is non-null and unique, and uses it as the stable row identity for deterministic coarse-level sampling.
+If `transcript_id` is not provided, the builder creates an internal unique row id for the current build.
+This id is sufficient to avoid duplicate sampling keys within one build, but deterministic coarse-level sampling across rebuilds is guaranteed only when the input dataframe row order and partitioning are stable.
+
+`max_rows_per_row_group` controls physical Parquet row-group sharding inside unsampled and sampled level part files.
+`coarse_tile_budget` controls how many representative points may be stored in one sampled coarse tile.
+Keep these separate so IO layout tuning and overview-density tuning do not become coupled.
+
+All level part files store tile-local `x_rel` and `y_rel` coordinates as `float32`.
+In this cache, "exact" means unsampled/full-membership rather than full-precision coordinate storage.
+The canonical full-precision coordinates remain in `points.parquet`.
+
+## Non-Goals
+
+Do not include these in Phase 1A:
+
+- napari UI or camera integration
+- transcript runtime reader/controller
+- warm cache implementation
+- gene subset selection
+- `tile_gene_index.parquet`
+- gene-aware overview sampling
+- coordinate transform resolution beyond stored points coordinates
+- Morton ordering or coordinate quantization
+
+## Proposed Module Shape
+
+Keep the public API small and move most logic into internal helpers. A reasonable first structure inside `src/napari_harpy/_transcript_tiles.py` is:
+
+```text
+TranscriptTileLevel                      # per-level return metadata
+TranscriptTileCache                      # return dataclass
+build_transcript_visualization_cache_for_points_element  # main public writer
+
+_validate_points_element
+_compute_transcript_tile_cache_metadata
+_build_gene_table
+_encode_gene_partition
+_annotate_partition_for_level
+_sample_partition_for_coarse_level
+_write_level_dataset
+_write_metadata_json
+_write_manifest_parquet
+_finalize_cache_with_staged_replacement
+```
+
+The internal function names do not need to match this exactly, but Phase 1A should keep the writer decomposed into testable units instead of one monolithic function.
+
+## Recommended Implementation Order
+
+Implement Phase 1A in the order below.
+
+### 1. Define the Core Types and Constants — Mostly Implemented
+
+Status:
+
+- Implemented in `src/napari_harpy/_transcript_tiles.py`
+- Covered by `tests/test_transcript_tiles.py`
+- Verified with `pytest tests/test_transcript_tiles.py`
+- Verified with `ruff check src/napari_harpy/_transcript_tiles.py tests/test_transcript_tiles.py`
+- The level-dataset layout supersedes the earlier single-file `level_file` property; update the implementation to expose `level_dir` before or during Slice 7
+
+Add:
+
+- `TRANSCRIPT_TILE_CACHE_SCHEMA_VERSION`
+- `TranscriptTileLevel` dataclass
+- `TranscriptTileCacheBuildParameters` dataclass
+- `TranscriptTileCache` dataclass
+
+`TranscriptTileLevel` should include:
+
+- `level`
+- `tile_size`
+- `is_exact`
+
+`TranscriptTileCache` should include:
+
+- final cache root path
+- derived cache paths as properties
+- schema version
+- explicit per-level metadata as `levels: tuple[TranscriptTileLevel, ...]`
+- bounds and origins
+- optional nested build provenance as `build_parameters: TranscriptTileCacheBuildParameters | None = None`
+
+`TranscriptTileCacheBuildParameters` should include:
+
+- `max_rows_per_row_group`
+- `coarse_tile_budget`
+- `x`
+- `y`
+- `gene`
+- `transcript_id`
+
+Use these exact dataclasses as the Phase 1A return contract:
+
+```python
+import math
+import numbers
+from dataclasses import dataclass
+from pathlib import Path
+
+
+@dataclass(frozen=True)
+class TranscriptTileLevel:
+    level: int
+    tile_size: float
+    is_exact: bool
+
+    def __post_init__(self) -> None:
+        if self.level < 0:
+            raise ValueError("Transcript tile level must be non-negative.")
+        if not math.isfinite(self.tile_size) or self.tile_size <= 0:
+            raise ValueError("Transcript tile level tile_size must be finite and positive.")
+
+    @property
+    def level_dir(self) -> str:
+        return f"levels/level_{self.level}"
+
+
+@dataclass(frozen=True)
+class TranscriptTileCacheBuildParameters:
+    max_rows_per_row_group: int
+    coarse_tile_budget: int
+    x: str
+    y: str
+    gene: str
+    transcript_id: str | None
+
+    def __post_init__(self) -> None:
+        for name, value in [
+            ("max_rows_per_row_group", self.max_rows_per_row_group),
+            ("coarse_tile_budget", self.coarse_tile_budget),
+        ]:
+            if isinstance(value, bool) or not isinstance(value, numbers.Integral) or value <= 0:
+                raise ValueError(f"Transcript tile cache build parameter `{name}` must be a positive integer.")
+
+        for name, value in [("x", self.x), ("y", self.y), ("gene", self.gene)]:
+            if not isinstance(value, str):
+                raise ValueError(f"Transcript tile cache build parameter `{name}` must be a string.")
+
+        if self.transcript_id is not None and not isinstance(self.transcript_id, str):
+            raise ValueError("Transcript tile cache build parameter `transcript_id` must be a string or None.")
+
+
+@dataclass(frozen=True)
+class TranscriptTileCache:
+    path: Path
+    schema_version: str
+    levels: tuple[TranscriptTileLevel, ...]
+    x_origin: float
+    y_origin: float
+    x_min: float
+    x_max: float
+    y_min: float
+    y_max: float
+    build_parameters: TranscriptTileCacheBuildParameters | None = None
+
+    def __post_init__(self) -> None:
+        if self.schema_version != TRANSCRIPT_TILE_CACHE_SCHEMA_VERSION:
+            raise ValueError("Unsupported transcript tile cache schema version.")
+        if not self.levels:
+            raise ValueError("Transcript tile cache must contain at least one level.")
+
+        level_ids = [level.level for level in self.levels]
+        if level_ids != sorted(level_ids):
+            raise ValueError("Transcript tile cache levels must be sorted by ascending level.")
+        if len(set(level_ids)) != len(level_ids):
+            raise ValueError("Transcript tile cache levels must not contain duplicate level ids.")
+        if level_ids != list(range(level_ids[-1] + 1)):
+            raise ValueError("Transcript tile cache levels must be contiguous from 0.")
+
+        exact_levels = [level for level in self.levels if level.is_exact]
+        if len(exact_levels) != 1:
+            raise ValueError("Expected exactly one exact transcript tile level.")
+        if exact_levels[0].level != level_ids[-1]:
+            raise ValueError("The exact transcript tile level must be the finest level.")
+
+        bounds_and_origins = [self.x_origin, self.y_origin, self.x_min, self.x_max, self.y_min, self.y_max]
+        if not all(math.isfinite(value) for value in bounds_and_origins):
+            raise ValueError("Transcript tile cache bounds and origins must be finite.")
+        if self.x_min > self.x_max:
+            raise ValueError("Transcript tile cache requires x_min <= x_max.")
+        if self.y_min > self.y_max:
+            raise ValueError("Transcript tile cache requires y_min <= y_max.")
+        if self.build_parameters is not None and not isinstance(
+            self.build_parameters, TranscriptTileCacheBuildParameters
+        ):
+            raise ValueError("Transcript tile cache build_parameters must be a TranscriptTileCacheBuildParameters.")
+
+    @property
+    def metadata_path(self) -> Path:
+        return self.path / "metadata.json"
+
+    @property
+    def manifest_path(self) -> Path:
+        return self.path / "manifest.parquet"
+
+    @property
+    def genes_path(self) -> Path:
+        return self.path / "genes.parquet"
+
+    @property
+    def levels_path(self) -> Path:
+        return self.path / "levels"
+
+    @property
+    def n_levels(self) -> int:
+        return len(self.levels)
+
+    @property
+    def finest_level(self) -> int:
+        exact_levels = [level for level in self.levels if level.is_exact]
+        if len(exact_levels) != 1:
+            raise ValueError("Expected exactly one exact transcript tile level.")
+        return exact_levels[0].level
+
+    @property
+    def leaf_tile_size(self) -> float:
+        exact_levels = [level for level in self.levels if level.is_exact]
+        if len(exact_levels) != 1:
+            raise ValueError("Expected exactly one exact transcript tile level.")
+        return exact_levels[0].tile_size
+```
+
+Do not store `leaf_tile_size`, `n_levels`, or `finest_level` as independent dataclass fields.
+They are derived from `levels`, which avoids a second source of truth in the Python API.
+Do not promote build provenance fields such as `max_rows_per_row_group` and `coarse_tile_budget` to top-level `TranscriptTileCache` fields.
+Store them only in the optional nested `build_parameters` object.
+Likewise, do not store `metadata_path`, `manifest_path`, `genes_path`, or `levels_path` as independent fields.
+They are derived from the single cache root `path`.
+When a caller needs an absolute path to a level directory, it can combine `cache.path / level.level_dir`.
+Concrete Parquet part-file paths are recorded in `manifest.parquet` because they depend on the partition-local writer.
+
+Keep these dataclass validations even though the builder and future reader also validate their inputs.
+They prevent tests or internal helpers from constructing an invalid cache object accidentally.
+
+This gives the rest of the module a stable return contract from the start.
+
+### 2. Input Validation — Implemented
+
+Status:
+
+- Implemented in `src/napari_harpy/_transcript_tiles.py`
+- Covered by `tests/test_transcript_tiles.py`
+- Verified with `pytest tests/test_transcript_tiles.py`
+- Verified with `ruff check src/napari_harpy/_transcript_tiles.py tests/test_transcript_tiles.py`
+- The points-element validation contract currently lives in the private `_validate_points_element(...)` helper
+- Cache build parameter validation currently lives at the start of `_compute_transcript_tile_cache_metadata(...)`
+- Public writer wiring remains part of Step 11
+
+Implement validation before any output directory is created so later failures are clearer and failed inputs do not leave cache artifacts behind.
+
+#### Points Element Parameter And Schema Validation
+
+Validate the public points-element entry point before triggering a full dataframe compute where possible:
+
+- `sdata.is_backed()`
+- `sdata.path is not None`
+- `points_name` is a string
+- `points_name in sdata.points`
+- selected points element resolves to exactly one on-disk element path
+- resolved points element is a `dask.dataframe.DataFrame`
+- if `output_path` is provided, it is path-like and represents the final `transcripts_vis/` cache root
+- if `output_path` is provided, normalize it with `Path(output_path)` before returning or using it internally
+- if `output_path` is not provided, compute it as `Path(sdata.path) / resolved_points_element_path / "transcripts_vis"`
+- `x`, `y`, and `gene` are strings
+- `x`, `y`, and `gene` columns exist
+- source dataframe columns do not include reserved internal cache columns, initially `gene_id`
+- `x` and `y` are numeric according to dataframe metadata
+- `transcript_id is None` or is a string
+- if `transcript_id` is provided, the column exists
+
+Use `sdata.locate_element(...)` or the equivalent SpatialData API to resolve the selected points element path.
+Do not assume the path is always `points/<points_name>`.
+Raise a clear `ValueError` if the element cannot be located or resolves to multiple zarr paths.
+
+#### Cache Build Parameter Validation
+
+Validate cache construction parameters separately from points-element validation:
+
+- `leaf_tile_size` is finite and `> 0`
+- `max_rows_per_row_group` is an `int` and `> 0`, but not `bool`
+- `coarse_tile_budget` is an `int` and `> 0`, but not `bool`
+- `n_levels is None` or is an `int >= 1`, but not `bool`
+
+#### Resolved Points Data-Quality Validation
+
+Validate with Dask reductions before writing cache files:
+
+- reject empty dataframes
+- reject non-finite coordinates in `x` or `y`
+- reject missing gene values before string coercion
+- reject gene values whose string form is empty after stripping whitespace
+- if `transcript_id` is provided:
+  - reject missing values
+  - reject duplicate values
+
+Recommended implementation notes:
+
+- use one or a small number of Dask reductions for these checks
+- prefer clear `ValueError` messages that name the failing column
+- do not silently drop invalid rows
+- coerce `gene` to string only after missing and stripped-empty gene validation
+- the builder may compute row count during validation because later metadata and empty-input rejection need it anyway
+
+#### Transcript Identity Policy
+
+If `transcript_id` is provided:
+
+- use the validated column as the stable row identity for sampling
+- deterministic coarse-level sampling should not depend on Dask partition order
+
+If `transcript_id` is not provided:
+
+- validation records that the internal-row-id fallback policy applies
+- create an internal unique row id later during dataframe preparation or level writing, not during validation
+- the internal id must be unique within that build
+- deterministic coarse-level sampling across rebuilds is only guaranteed when input row order and partitioning are stable
+- do not expose the internal id as a public source transcript identity
+
+### 3. Output Directory Setup and Staged Finalization — Completed
+
+Status:
+
+- Completed
+- Implemented in `src/napari_harpy/_transcript_tiles.py`
+- Covered by `tests/test_transcript_tiles.py`
+- Verified with `pytest tests/test_transcript_tiles.py`
+- Verified with `ruff check src/napari_harpy/_transcript_tiles.py tests/test_transcript_tiles.py`
+
+Before writing data files, implement the cache output path helpers. This should exist early so later integration work does not need to be rewritten.
+
+Recommended behavior:
+
+- add a small helper such as `_prepare_cache_output_directory(output_path) -> Path`
+- helpers accept any explicit `output_path`; do not require explicit output paths to live under the resolved points-element directory
+- use sibling temporary and backup paths next to `output_path`
+- if `output_path` does not exist, create it with `parents=True` and write the new cache there directly
+- if `output_path` exists and is a directory containing both `metadata.json` and `manifest.parquet`, treat it as an existing valid cache and write the new cache to a unique sibling temp directory such as `transcripts_vis.tmp-<uuid>/`
+- if `output_path` exists but is not a directory, raise `ValueError`
+- if `output_path` exists as a directory but does not contain both `metadata.json` and `manifest.parquet`, raise `ValueError` instead of deleting it
+- write `metadata.json`, `genes.parquet`, level directories/part files, then `manifest.parquet`
+- add a finalization helper such as `_finalize_cache_with_staged_replacement(build_path, output_path)`
+- before any finalization path mutates `output_path`, verify that `build_path / "manifest.parquet"` exists
+- if `build_path == output_path`, finalization only needs to verify that `manifest.parquet` exists
+- if `build_path != output_path`, replace the existing cache by moving the old cache to a unique sibling backup path such as `transcripts_vis.backup-<uuid>/`, then moving the completed temp directory into place
+- after successful replacement, remove the old backup cache directory
+- if final replacement fails after moving the old cache aside, restore the old cache whenever possible
+- on replacement failure, leave the completed temporary cache in its temp path for debugging or manual cleanup and do not delete the backup unless the new cache was successfully installed
+
+Implementation notes:
+
+- for the default output path, temp and replacement paths are siblings inside the points-element directory
+- for an explicit output path, temp and replacement paths are siblings of that explicit path
+- avoid mutating `points.parquet`
+- write `manifest.parquet` last; its presence marks that all required cache files were written successfully
+- incomplete direct writes must not leave `manifest.parquet` behind, so they do not look like complete caches
+- do not describe directory replacement as strictly atomic; there may be a brief missing-output window during the staged swap
+
+### 4. Bounds, Origins, and Level Configuration — Completed
+
+Status:
+
+- Completed
+- Implemented in `src/napari_harpy/_transcript_tiles.py`
+- Covered by `tests/test_transcript_tiles.py`
+- Verified with `pytest tests/test_transcript_tiles.py`
+- Verified with `ruff check src/napari_harpy/_transcript_tiles.py tests/test_transcript_tiles.py`
+
+Implement one function that computes:
+
+- `x_min`, `x_max`, `y_min`, `y_max`
+- `x_origin`, `y_origin`
+- `n_levels`
+- `finest_level`
+- derived `TranscriptTileLevel` records for every level
+
+This function implements the level construction described in the Points Element Builder Construction Contract.
+It should take the validated points element and the public cache build parameters explicitly, for example:
+
+```python
+def _compute_transcript_tile_cache_metadata(
+    points_element: _ValidatedPointsElement,
+    *,
+    leaf_tile_size: float = 1024.0,
+    n_levels: int | None = None,
+    max_rows_per_row_group: int = 50_000,
+    coarse_tile_budget: int = 50_000,
+) -> TranscriptTileCache:
+    ...
+```
+
+The helper should return a `TranscriptTileCache` directly.
+It should compute the bounds, derive `n_levels` when needed, construct the `TranscriptTileLevel` records, and then construct the cache metadata object with `path=points_element.output_path`.
+It should validate and normalize the scalar cache build parameters at the start of the helper, before computing dataframe bounds.
+It should also populate `cache.build_parameters` with a `TranscriptTileCacheBuildParameters` object derived from the validated points element and normalized cache build parameters.
+Do not put the level-derivation formula inside `TranscriptTileCache`; keep that dataclass as a validated metadata container.
+
+Recommended first implementation:
+
+- compute `x_min`, `x_max`, `y_min`, and `y_max` with one Dask compute call
+- normalize computed bounds and origins to Python `float`
+- use `x_origin = x_min`
+- use `y_origin = y_min`
+- if explicit `n_levels` is provided, use it as-is after validation; do not auto-expand it based on dataset extent
+- if `n_levels is None`, derive it from the max extent and `leaf_tile_size` using:
+
+```text
+extent = max(x_max - x_min, y_max - y_min)
+if extent <= leaf_tile_size:
+    n_levels = 1
+else:
+    n_levels = ceil(log2(extent / leaf_tile_size)) + 1
+```
+
+- this means:
+  - if the dataset extent is zero, smaller than one leaf tile, or exactly one leaf tile, use `n_levels = 1`;
+  - otherwise add coarser levels until `level_0` covers the whole dataset in a small number of tiles
+
+For Phase 1A, `x_origin` and `y_origin` intentionally equal `x_min` and `y_min`.
+Still store origins separately because origins define the tile grid, while bounds define the data extent.
+Future schema versions may use stable grid origins that differ from the data bounds.
+Readers must use `x_origin` and `y_origin` for tile assignment and coordinate reconstruction rather than inferring origins from `x_min` and `y_min`.
+
+After computing bounds and origins, validate that all values are finite, `x_min <= x_max`, and `y_min <= y_max`.
+The builder should reject invalid bounds before constructing `TranscriptTileCache` or writing `metadata.json`.
+If any derived level tile size is non-finite or not positive, reject it through the existing `TranscriptTileLevel` validation.
+
+This logic should be unit-tested separately because it drives every later tile calculation.
+The same function should build the returned level records from `0` through `finest_level`.
+
+Use the same tile assignment formula at every level:
+
+```text
+tile_x = floor((x - x_origin) / tile_size(level))
+tile_y = floor((y - y_origin) / tile_size(level))
+```
+
+Tiles are half-open intervals: `[tile_start, tile_start + tile_size)`.
+Points exactly on an internal tile boundary belong to the tile on the positive x/y side.
+Do not clamp points at `x == x_max` or `y == y_max` into the previous tile; they follow the same floor rule even when that creates a max-edge tile.
+This keeps tile-local coordinates in `[0, tile_size)` instead of allowing `x_rel == tile_size` or `y_rel == tile_size`.
+
+Slice 4 only computes bounds, origins, and level records.
+Do not implement reusable tile annotation helpers here; those belong to Slice 6.
+
+### 5. Gene Dictionary and `genes.parquet` — Completed
+
+Status:
+
+- Completed
+- Implemented in `src/napari_harpy/_transcript_tiles.py`
+- Covered by `tests/test_transcript_tiles.py`
+- Verified with `pytest tests/test_transcript_tiles.py`
+- Verified with `ruff check src/napari_harpy/_transcript_tiles.py tests/test_transcript_tiles.py`
+
+Implement deterministic gene mapping next.
+
+Required behavior:
+
+- compute gene counts with Dask
+- normalize genes to strings after missing and stripped-empty gene validation
+- strip surrounding whitespace during normalization
+- sort normalized gene labels lexicographically, case-sensitive, ascending
+- assign `gene_id: uint32`
+- write `genes.parquet`
+
+Use the normalized gene string as the identity for counts and ids.
+For example, `" Actb "` and `"Actb"` should map to the same normalized gene `"Actb"`.
+Do not lowercase, case-fold, or otherwise canonicalize gene labels in Phase 1A.
+
+The resulting table should contain:
+
+- `gene_id`
+- `gene`
+- `n_transcripts`
+
+Use these dtypes:
+
+- `gene_id`: `uint32`
+- `gene`: string
+- `n_transcripts`: `uint64`
+
+If the number of unique normalized genes exceeds the maximum value representable by `uint32`, raise `ValueError`.
+
+Then add the partition-wise `gene_id` encoding step to the working dataframe.
+
+At the end of this step, all later level-writing code should work with:
+
+- `x`
+- `y`
+- `gene_id`
+- row identity for sampling, using the validated `transcript_id` column when provided or a private internal row id for this build otherwise
+
+and not carry the original gene string into the level part files.
+
+Recommended helper split:
+
+```text
+_build_gene_table(points_element: _ValidatedPointsElement) -> pd.DataFrame
+_write_genes_parquet(gene_table: pd.DataFrame, genes_path: Path) -> None
+_encode_gene_partition(...)
+_prepare_gene_encoded_points(...) -> dd.DataFrame
+```
+
+The exact helper names do not need to match, but keep these responsibilities separate:
+
+- build the deterministic gene table from the validated points dataframe
+- write `genes.parquet` with `pyarrow`
+- encode `gene_id` partition-wise
+- prepare the working dataframe used by later level writers
+
+Write `genes.parquet` to the current build path, not blindly to `cache.genes_path`.
+When rebuilding an existing cache, the current build path may be a sibling temp directory such as `transcripts_vis.tmp-<uuid>/`.
+The caller can pass `build_path / "genes.parquet"` to the writer helper.
+
+The gene-encoded working dataframe should:
+
+- retain the selected coordinate columns under the internal names used by later helpers, initially `x` and `y`
+- include `gene_id` as `uint32`
+- treat `gene_id` as a reserved internal column name and raise `ValueError` if the source dataframe already contains it before encoding
+- include the validated `transcript_id` column when one was provided
+- otherwise preserve enough row order information for Slice 8 to create a private internal row id
+- omit the original gene string column from the data passed to level-file writers
+
+### 6. Tile Annotation Utilities — Completed
+
+Status:
+
+- Completed
+- Implemented in `src/napari_harpy/_transcript_tiles.py`
+- Covered by `tests/test_transcript_tiles.py`
+- Verified with `pytest tests/test_transcript_tiles.py`
+- Verified with `ruff check src/napari_harpy/_transcript_tiles.py tests/test_transcript_tiles.py`
+
+Before writing any levels, implement reusable level-annotation helpers.
+
+For a given level, compute tile membership and tile-local coordinates from the gene-encoded working dataframe.
+Use the explicit `TranscriptTileLevel.tile_size` stored in `TranscriptTileCache.levels`; do not recompute tile size from `leaf_tile_size` inside the annotation helper.
+
+For a point at a given level:
+
+```python
+tile_size = cache.levels[level].tile_size
+
+tile_x = floor((x - cache.x_origin) / tile_size)
+tile_y = floor((y - cache.y_origin) / tile_size)
+
+x_rel = x - cache.x_origin - tile_x * tile_size
+y_rel = y - cache.y_origin - tile_y * tile_size
+
+tile_id = f"{level}/{tile_x}/{tile_y}"
+```
+
+Keep the half-open tile convention from Slice 4:
+
+- tiles represent `[tile_start, tile_start + tile_size)`
+- points exactly on an internal tile boundary belong to the positive-side tile
+- do not clamp points at `x == x_max` or `y == y_max` into the previous tile
+- this keeps boundary-point `x_rel` and `y_rel` at or near `0` in the next tile, instead of producing `tile_size` in the previous tile
+
+The annotated dataframe should contain:
+
+- `tile_x`
+- `tile_y`
+- `tile_id`
+- `x_rel`
+- `y_rel`
+- `gene_id`
+
+and should preserve row identity columns needed by later writers:
+
+- `transcript_id` when the source provided one
+- any private internal row id column once Slice 8 adds it
+
+These helpers should be shared by:
+
+- finest unsampled level writing
+- coarser sampled level writing
+
+Standardize level-file dtypes here:
+
+- `tile_id`: string
+- `tile_x`: `uint32`
+- `tile_y`: `uint32`
+- `x_rel`: `float32`
+- `y_rel`: `float32`
+- `gene_id`: `uint32`
+- `transcript_id`: original dtype when present
+
+Because Phase 1A sets `x_origin = x_min` and `y_origin = y_min`, tile indices for validated source points should be non-negative.
+If any computed `tile_x` or `tile_y` exceeds the maximum value representable by `uint32`, raise `ValueError`.
+
+`x_rel` and `y_rel` use `float32` because this is a visualization cache.
+The finest level remains exact in row membership, but not in full coordinate precision.
+The canonical full-precision coordinates remain in `points.parquet`.
+
+Recommended helper split:
+
+```text
+_annotate_tiles_for_level(points: dd.DataFrame, cache: TranscriptTileCache, level: int) -> dd.DataFrame
+_annotate_tile_partition(...)
+```
+
+The public behavior of these private helpers should be:
+
+- validate that `level` exists in `cache.levels`
+- preserve input partitioning and avoid a global shuffle
+- annotate each partition independently
+- not write files
+- not sample rows
+- not sort rows globally
+- return a dataframe ready for Slice 7 and Slice 8 writers
+
+### 7. Finest Unsampled Level Writer
+
+Status:
+
+- Completed
+- Implemented in `src/napari_harpy/_transcript_tiles.py`
+- Covered by `tests/test_transcript_tiles.py`
+- Verified with `pytest tests/test_transcript_tiles.py`
+- Verified with `ruff check src/napari_harpy/_transcript_tiles.py tests/test_transcript_tiles.py`
+
+Implement the finest unsampled level before coarser sampled levels.
+
+Add a reusable level-dataset writer that Slice 7 first uses for the finest unsampled level and Slice 8 later reuses for sampled coarser levels:
+
+```text
+_write_level_dataset(
+    level_rows: dd.DataFrame,
+    cache: TranscriptTileCache,
+    level: int,
+    build_path: Path,
+    max_rows_per_row_group: int,
+) -> pd.DataFrame
+```
+
+For Slice 7, call it with rows annotated by:
+
+```text
+_annotate_tiles_for_level(gene_encoded_points, cache, level=cache.finest_level)
+```
+
+Required behavior:
+
+1. annotate rows for `level = finest_level`
+2. keep only the level part-file columns
+3. process Dask partitions independently
+4. within each partition, sort or group rows by `(tile_x, tile_y)`
+5. write one Parquet part file per non-empty Dask partition under `build_path / "levels" / f"level_{level}"`
+6. write one row group per partition-local tile group inside that part file, or split large groups into row-group shards
+7. allow the same `(level, tile_x, tile_y)` to appear in multiple part files when that tile has rows in multiple input partitions
+8. collect one manifest row per written row group
+
+Important constraints:
+
+- use `pyarrow.parquet.ParquetWriter` inside each partition task so tile row-group boundaries remain under Harpy's control
+- write level rows as a Parquet dataset directory such as `build_path / "levels" / f"level_{level}" / "part-00000.parquet"`
+- create `build_path / "levels" / f"level_{level}"` with `parents=True`
+- use Dask task orchestration for partition writes; do not call `compute()` once per partition in a Python loop
+- trigger the partition-local writes with one Dask compute for the level
+- do not use plain `dd.to_parquet(...)` for level part files unless it can preserve the invariant that every row group contains exactly one tile shard
+- each partition task owns one `ParquetWriter` and one output part file; never share a writer across concurrent tasks
+- row-group sharding must respect `max_rows_per_row_group`
+- all rows in a written row group must belong to exactly one `(level, tile_x, tile_y)`
+- Phase 1A should not require a global Dask shuffle by tile before writing
+- do not sample rows in Slice 7
+- do not write `manifest.parquet` in Slice 7; return row-group metadata for Slice 9
+
+Recommended simplification for Phase 1A:
+
+- correctness first
+- write partition-local tile shards directly to final level part files
+- accept that one tile may produce multiple manifest rows across input partitions and part files
+- optionally compact or merge part files by tile in a later optimization pass if benchmarks show it is needed
+
+Recommended part-file naming:
+
+- use stable names derived from the Dask partition number, such as `part-00000.parquet`
+- use Dask's partition metadata, for example `partition_info["number"]`, rather than computing partition numbers manually
+- return paths relative to the cache root, such as `levels/level_2/part-00000.parquet`
+- skip empty input partitions rather than writing empty part files
+
+The level part files should contain these columns, in this order:
+
+- `tile_id`
+- `tile_x`
+- `tile_y`
+- `x_rel`
+- `y_rel`
+- `gene_id`
+- `transcript_id`, only when present
+- any private internal row id column once Slice 8 adds it
+
+Use the dtypes standardized in Slice 6.
+
+The returned row-group metadata dataframe should contain:
+
+- `level`
+- `level_file`
+- `tile_id`
+- `tile_x`
+- `tile_y`
+- `n_points`
+- `row_group`
+- `tile_shard`
+
+These returned rows are the Slice 7 contribution to the later `manifest.parquet`.
+After Slice 9 adds `schema_version`, the compact manifest schema is:
+
+```text
+manifest.parquet
+  schema_version
+  level
+  level_file
+  tile_id
+  tile_x
+  tile_y
+  n_points
+  row_group
+  tile_shard
+```
+
+`level_file` is the relative path from the cache root to the Parquet part file containing the row group, for example `levels/level_2/part-00000.parquet`.
+`row_group` is the zero-based physical row group index within that Parquet part file.
+`tile_shard` is the zero-based shard index for a given `(level, tile_x, tile_y)`.
+With partition-local writing, the same tile may appear in multiple part files and row groups; after collecting partition-local metadata, assign `tile_shard` deterministically for each tile by sorting that tile's manifest rows by `level_file` and `row_group`.
+
+Do not include `schema_version` in the row-group metadata returned by `_write_level_dataset(...)`; Slice 9 can add it while writing `manifest.parquet`.
+Do not include `is_exact`; readers derive exact/sampled status from `metadata.json["levels"]`.
+
+### 8. Coarser Sampled Level Writer
+
+Once the finest unsampled level works, add coarse levels.
+
+In this slice, "candidate rows" and "sampled rows" mean cache point rows: one row per transcript point carried forward from the finer level.
+They do not mean Parquet row groups.
+Parquet row groups are physical storage chunks written later by `_write_level_dataset(...)`, after point-row sampling is complete.
+
+For each level from `finest_level - 1` down to `0`:
+
+1. take candidate point rows from the previously constructed finer level, starting from the finest unsampled level
+2. reconstruct absolute coordinates from the finer level's `tile_x`, `tile_y`, `x_rel`, and `y_rel`
+3. annotate those candidate point rows for the current coarser level
+4. for each current-level coarse tile, compute a deterministic pseudo-random sampling key from stable row identity
+5. order candidate point rows by that sampling key, with stable row identity as a tie-breaker
+6. keep the first `coarse_tile_budget` point rows for that tile
+7. write the selected point rows to Parquet row groups with `_write_level_dataset(...)`
+
+Do not use micro-grid bins in Slice 8.
+For the first implementation, use naive deterministic per-tile sampling:
+
+```text
+For each coarse tile:
+  compute a deterministic pseudo-random sampling key from stable row identity
+  order candidate point rows by sampling key and stable identity
+  keep first coarse_tile_budget point rows
+```
+
+Required guarantees:
+
+- deterministic sampling
+- at most `coarse_tile_budget` point rows per sampled coarse tile
+- no gene-aware behavior yet
+- no attempt to preserve sparse spatial regions inside a coarse tile yet
+- clearly documented limitation: dense hotspots may dominate coarse overviews
+
+The sampling key is computed for each candidate point row, not for a Parquet row group.
+For example, if one coarse tile has 2,000,000 candidate transcript rows and `coarse_tile_budget = 50_000`, the sampler keeps 50,000 point rows.
+Only after this selection does `_write_level_dataset(...)` split those selected point rows into Parquet row groups according to `max_rows_per_row_group`.
+
+For a row from the previously constructed finer level, reconstruct absolute coordinates before current-level annotation:
+
+```python
+x = cache.x_origin + finer_tile_x * finer_tile_size + finer_x_rel
+y = cache.y_origin + finer_tile_y * finer_tile_size + finer_y_rel
+```
+
+Then call the Slice 6 annotation helper for the current coarser level.
+This keeps the tile-coordinate code shared by finest and coarse-level writing.
+
+Add a dedicated reconstruction helper in Slice 8, for example:
+
+```text
+_reconstruct_absolute_coordinates_from_level(
+    level_rows: dd.DataFrame,
+    cache: TranscriptTileCache,
+    level: int,
+) -> dd.DataFrame
+```
+
+This helper should:
+
+- validate that `level` exists in `cache.levels`
+- read the finer level's explicit `tile_size` from `cache.levels`
+- require `tile_x`, `tile_y`, `x_rel`, `y_rel`, and `gene_id`
+- reconstruct absolute coordinates into the internal `x` and `y` columns expected by `_annotate_tiles_for_level(...)`
+- preserve `gene_id`
+- preserve row identity columns such as `transcript_id` or the private internal row id
+- drop the finer level's `tile_id`, `tile_x`, `tile_y`, `x_rel`, and `y_rel` columns before current-level annotation
+
+Phase 1A intentionally builds the sampled pyramid in the `finer -> coarser` direction rather than re-reading the canonical source dataframe for every coarse level.
+This is computationally simpler and cheaper because each next level works from an already reduced candidate set.
+The tradeoff is that sampling loss compounds: once a row or sparse spatial region is absent from a finer level, coarser levels cannot recover it.
+That tradeoff is acceptable for the first spatial-first visualization cache.
+
+Future quality improvements can revisit canonical-source-per-level sampling if benchmarks or visual QA show that compounded sampling loss is a real problem.
+
+Stable row identity should be:
+
+- the validated `transcript_id` column when provided
+- otherwise a private internal build row id created before coarse sampling and propagated through sampled levels
+
+Stable row identity is not itself the sampling order.
+It is the input to a deterministic pseudo-random sampling key.
+This avoids biasing sampled overviews toward the source dataframe order, which may already be spatially sorted.
+
+Recommended sampling key:
+
+```text
+sampling_key = stable_hash(level, tile_x, tile_y, stable_row_identity)
+```
+
+Then sort within each coarse tile by:
+
+```text
+sampling_key, stable_row_identity
+```
+
+Never use Python's built-in `hash()` for this key because it is intentionally randomized between processes.
+Use a stable implementation such as `hashlib.blake2b(...)`, `pandas.util.hash_pandas_object(...)`, or another deterministic `uint64` hash.
+
+The internal row id must be unique within one build.
+It only supports deterministic coarse-level sampling across rebuilds when input dataframe row order and partitioning are stable.
+A practical deterministic internal row id implementation is to compute partition lengths, derive cumulative partition offsets, and assign `uint64` row ids within each partition as `partition_offset + row_position`.
+
+Recommended helper split:
+
+- `_ensure_sampling_row_identity(...)`
+- `_reconstruct_absolute_coordinates_from_level(...)`
+- `_sample_coarse_level_naively(...)`
+
+The exact helper names do not need to match, but keep row identity, coordinate reconstruction, and per-tile sampling responsibilities separate.
+
+Recommended concrete deterministic algorithm for one coarser level:
+
+1. reconstruct absolute `x` and `y` from the previously constructed finer level
+2. annotate rows for the current coarser level with `_annotate_tiles_for_level(...)`
+3. compute a stable pseudo-random `sampling_key` from `level`, `tile_x`, `tile_y`, and stable row identity
+4. sort candidate point rows within each coarse tile by `sampling_key`, then stable row identity
+5. keep the first `coarse_tile_budget` point rows per coarse tile
+6. sort the selected point rows deterministically before writing
+7. write sampled point rows with `_write_level_dataset(...)`
+
+Implementation note:
+
+- To guarantee the `coarse_tile_budget` cap globally, sampling must consider all candidate point rows for the same coarse tile, even when that tile appears in multiple Dask partitions.
+- A simple implementation may use a Dask groupby or shuffle by current-level tile for correctness.
+- A more IO-friendly implementation can first perform partition-local deterministic pre-trimming to `coarse_tile_budget` per tile, then perform a second global deterministic trim to `coarse_tile_budget` per tile before writing.
+
+When `transcript_id` is provided and validated, repeating the build with the same inputs must produce the same sampled rows even if Dask partition order changes.
+When `transcript_id` is not provided, deterministic coarse-level sampling across rebuilds is guaranteed only when input dataframe row order and partitioning are stable.
+
+Keep Phase 1A sampling spatial-only. Do not add gene-aware overview sampling yet.
+
+### 9. `metadata.json` and `manifest.parquet`
+
+Once all levels can be written, add the cache metadata writers.
+
+`metadata.json` should be written once with:
+
+- schema version
+- `n_levels`
+- `finest_level`
+- `x_origin`, `y_origin`
+- `x_min`, `x_max`, `y_min`, `y_max`
+- `levels`
+- `build_parameters`
+
+`x_origin` and `y_origin` are grid origins, not merely aliases for the minimum bounds.
+For Phase 1A they are written with the same values as `x_min` and `y_min`, but readers must use the explicit origin fields for tile coordinate reconstruction.
+
+`levels` should be an array of explicit per-level records sorted by ascending `level`.
+Each record should contain:
+
+- `level`
+- `tile_size`
+- `is_exact`
+
+Do not write `level_file` in `metadata.json`; level directories follow the fixed layout convention `levels/level_<level>/`.
+Concrete Parquet part-file paths are row-group lookup data and belong in `manifest.parquet`.
+Readers should treat `metadata.json["levels"]` as the source of truth for per-level tile size and exact/sampled status.
+Do not write `leaf_tile_size` as a separate metadata field; it is the `tile_size` of the single level where `is_exact = true`.
+The cache-wide `n_levels` and `finest_level` remain useful summary and validation fields, but readers should not need to reconstruct level metadata from them.
+If those summary fields disagree with `levels`, readers should reject the cache rather than trying to choose which value wins.
+
+`build_parameters` is provenance for how the cache was produced, not a source of truth for interpreting stored tile contents.
+Readers should use `manifest.parquet` for actual stored point counts.
+In Python, this provenance is represented by `TranscriptTileCache.build_parameters`.
+When writing `metadata.json`, serialize `cache.build_parameters` to `metadata.json["build_parameters"]`.
+`build_parameters` should include:
+
+- `max_rows_per_row_group`
+- `coarse_tile_budget`
+- `x`
+- `y`
+- `gene`
+- `transcript_id`
+
+`max_rows_per_row_group` and `coarse_tile_budget` have different meanings:
+
+- `max_rows_per_row_group` is a physical Parquet layout setting. It limits how many point rows may be written into one row group before the writer creates another row group shard.
+- `coarse_tile_budget` is a build-time overview sampling setting. It caps how many representative point rows may be stored for one sampled coarse tile.
+
+For example, if `max_rows_per_row_group = 50_000` and one exact finest-level tile contains `120_000` points in one partition, that tile may produce three manifest rows:
+
+```text
+level  level_file                         tile_x  tile_y  row_group  tile_shard  n_points
+2      levels/level_2/part-00000.parquet  3       1       0          0           50000
+2      levels/level_2/part-00000.parquet  3       1       1          1           50000
+2      levels/level_2/part-00000.parquet  3       1       2          2           20000
+```
+
+If `coarse_tile_budget = 50_000` and one sampled coarse tile contains `3_000_000` source points, the writer stores at most `50_000` representative points for that coarse tile before row-group sharding is applied.
+The actual stored count is recorded in `manifest.parquet` as `n_points` per row group; if a tile has multiple row groups, sum their `n_points` values to get the tile total.
+Exact/sampled status is not repeated in the manifest; readers derive it from `metadata.json["levels"]`.
+
+Readers must validate `metadata.json` before using the cache.
+If validation fails, treat the cache as invalid and do not attempt partial recovery.
+
+For Phase 1A, reject metadata when:
+
+- `schema_version` is missing or unsupported
+- `levels` is missing, empty, unsorted, or contains duplicate level ids
+- `n_levels != len(levels)`
+- `finest_level` is not present in `levels`
+- level ids are not exactly `0..finest_level`
+- there is not exactly one `is_exact = true` level
+- the exact level is not `finest_level`
+- any `tile_size <= 0`
+- required bounds or origins are missing or non-finite
+- `x_min > x_max` or `y_min > y_max`
+
+For schema version `harpy-transcripts-vis-0.1`, the writer should validate before finalization that:
+
+- `len(levels) == n_levels`
+- level ids are exactly `0..finest_level`
+- exactly one level has `is_exact = true`, and it is `finest_level`
+- the default Phase 1A construction formula produced the recorded `tile_size` values
+
+`manifest.parquet` should be written from the collected row-group metadata and include:
+
+- `schema_version`
+- `level`
+- `level_file`
+- `tile_id`
+- `tile_x`
+- `tile_y`
+- `n_points`
+- `row_group`
+- `tile_shard`
+
+`level_file` must be a relative path from the cache root to the Parquet part file containing the row group.
+Readers use `level_file` and `row_group` together to locate a tile shard.
+Readers should reject manifest rows whose `level_file` is absolute, escapes the cache root, or does not live under the expected level directory `levels/level_<level>/`.
+Do not write `is_exact` in the manifest.
+Readers derive exact/sampled status from `metadata.json["levels"]`.
+
+For Phase 1A, `tile_shard` should be written even when a tile only has one shard.
+With partition-local writing, multiple row groups may have the same `level`, `tile_x`, and `tile_y` across multiple `level_file` values; `tile_shard` gives those row groups a deterministic per-tile shard index.
+
+Write `manifest.parquet` last.
+
+### 10. Deferred Micro-grid Sampling Quality
+
+This slice is intentionally deferred until after the naive deterministic coarse-level writer is working.
+Do not implement micro-grid sampling in the first Slice 8 implementation.
+
+The micro-grid idea is a future sampling-quality improvement for coarse overview levels.
+It is used to make overview sampling spatially even.
+Without it, a deterministic whole-tile sample can be dominated by the densest hotspot in a coarse tile and may erase sparse spatial regions.
+The micro-grid splits each coarse tile into small bins, gives occupied bins some representation when the budget allows, and then gives dense bins more of the remaining budget.
+
+`cell_id` is the stable identifier for one of those micro-grid bins.
+For an `8 x 8` grid, one simple implementation is:
+
+```text
+cell_x = floor((x_rel / tile_size) * 8)
+cell_y = floor((y_rel / tile_size) * 8)
+cell_id = cell_y * 8 + cell_x
+```
+
+Clamp `cell_x` and `cell_y` to `0..7` as a defensive guard against floating-point edge cases.
+Sampling then happens within each `cell_id`, which keeps sparse occupied areas visible while still allowing dense areas to contribute more representatives.
+
+Example quota allocation for one coarse tile:
+
+```text
+coarse_tile_budget = 10
+
+cell_id  occupancy
+0        900
+1        80
+2        20
+3        1
+```
+
+First give each occupied cell quota `1`, using `4` of the `10` slots.
+The remaining `6` slots are distributed in proportion to occupancy.
+The proportional extra quotas are approximately `5.39`, `0.48`, `0.12`, and `0.006`.
+Take the integer floors first, then give the one leftover slot to the largest fractional remainder.
+The final quotas are:
+
+```text
+cell_id  quota
+0        6
+1        2
+2        1
+3        1
+```
+
+If two cells have the same fractional remainder, break ties deterministically by `cell_id`.
+
+Future implementation choices:
+
+- keep the micro-grid size as a private constant and start with `8 x 8`
+- compute a deterministic `cell_id` from the per-tile micro-grid coordinates
+- if occupied cells `<= coarse_tile_budget`, assign quota `1` to each occupied cell, then distribute the remaining quota approximately by occupancy using a largest-remainder rule with stable tie-break on `cell_id`
+- if occupied cells `> coarse_tile_budget`, assign quota `1` only to the `coarse_tile_budget` occupied cells with highest occupancy, with stable tie-break on `cell_id`
+- compute one per-row ordering key from validated `transcript_id` or the propagated internal build row id
+- within each occupied cell, sort rows by that ordering key and keep the first `quota[cell]`
+- concatenate selected rows from all occupied cells
+- sort the selected rows deterministically before writing
+- cap each sampled coarse tile at `coarse_tile_budget`
+
+This slice is still spatial-only.
+Do not add gene-aware overview sampling here; that belongs to the later gene-aware overview phase.
+
+### 11. Public Points Element Builder
+
+Wire the public `build_transcript_visualization_cache_for_points_element(...)` entry point around the internal writer helpers.
+
+Responsibilities:
+
+- call `_validate_points_element(...)`
+- pass the public cache build parameters into `_compute_transcript_tile_cache_metadata(...)`, where they are validated before bounds are computed
+- use the resolved points dataframe as-is
+- build all level directories/part files, `genes.parquet`, `metadata.json`, and `manifest.parquet`
+- return the final `TranscriptTileCache`
+
+Phase 1A should keep the cache contract in the stored coordinate space of `points.parquet`.
+
+## Testing Plan
+
+Keep all main writer tests in:
+
+```text
+tests/test_transcript_tiles.py
+```
+
+Recommended test groups:
+
+### Group A: Input Validation
+
+- missing `x`, `y`, or `gene`
+- invalid `transcript_id`
+- null `transcript_id` values when requested
+- duplicate `transcript_id` values when requested
+- invalid `leaf_tile_size`
+- invalid `max_rows_per_row_group`
+- invalid `coarse_tile_budget`
+- invalid `n_levels`
+- zero-extent data computes `n_levels = 1`
+- tile-boundary coordinates follow the documented half-open grid convention
+- unbacked SpatialData rejection
+
+### Group B: Cache Layout and Metadata
+
+- expected directory layout is created
+- `metadata.json` has the expected bounds, origins, and explicit `levels` records
+- `genes.parquet` has stable deterministic ids and counts
+- `manifest.parquet` exists only after successful build
+
+### Group C: Finest Unsampled Level Correctness
+
+- finest-level coordinates reconstruct the source coordinates within `float32` tolerance
+- `gene_id` values match `genes.parquet`
+- dense tiles split into multiple row groups when `max_rows_per_row_group` is small
+- partition-local writing can produce multiple manifest rows for the same tile
+- manifest row-group accounting matches the actual Parquet part files
+
+### Group D: Coarse Sampled Levels
+
+- coarse levels stay within `coarse_tile_budget`
+- the number of stored points decreases or stays bounded at coarser levels
+- sampling is deterministic across rebuilds with identical inputs
+
+### Group E: SpatialData Entry Point
+
+- cache path resolves under `<resolved_points_element_path>/transcripts_vis`
+- path resolution rejects missing or ambiguous points-element locations
+- stored points coordinates are used directly
+- no transformation logic is applied
+
+### Group F: Staged Finalization
+
+- failed writes do not leave a complete-looking cache behind
+- rebuilding over an existing cache either installs the completed new cache or restores the previous valid cache when replacement fails
+
+Testing notes:
+
+- use small pandas fixtures converted to Dask dataframes
+- inspect row groups with `pyarrow.parquet.ParquetFile`
+- prefer direct file assertions over indirectly testing through later readers
+
+## Benchmark Plan
+
+Phase 1A should include at least lightweight benchmark scripts or notebooks, even if they are not part of automated tests.
+
+Recommended datasets:
+
+1. tiny synthetic fixture
+   Purpose:
+   finest-level membership and coordinate reconstruction correctness
+
+2. medium synthetic skewed fixture
+   Purpose:
+   stress uneven tile density and coarse-level sampling
+
+3. one real transcript dataset with multiple meaningful levels
+   Purpose:
+   sanity-check write time, disk footprint, and level counts on real data
+
+Recommended benchmark outputs:
+
+- total build time
+- per-level write time
+- total disk size
+- per-level directory sizes
+- manifest row count
+- number of row groups in the finest level
+
+Phase 1A does not yet need interactive napari benchmarks. Those belong to later phases.
+
+## Suggested Work Packages
+
+If Phase 1A is implemented incrementally, the cleanest checkpoints are:
+
+1. skeleton module + dataclass + validation
+2. bounds/level config + metadata writer
+3. gene dictionary + `genes.parquet`
+4. finest unsampled level writer + manifest
+5. coarse sampled level writer
+6. staged finalization with rollback
+7. public points-element builder wiring
+8. test completion
+9. benchmark pass on synthetic and real data
+
+Each checkpoint should leave the branch in a runnable, testable state.
+
+## Phase 1A Exit Criteria
+
+Phase 1A is complete when:
+
+- the public points-element builder can build the full spatial-first cache from a backed SpatialData points element;
+- all core writer tests pass;
+- the resulting cache layout matches the roadmap contract;
+- coarse sampled levels exist and respect the configured budget;
+- the implementation is stable enough that the next phase can build a runtime reader on top of it without revisiting the on-disk format.

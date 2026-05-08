@@ -213,10 +213,12 @@ class ClassifierController:
         debounce_interval_ms: int = DEFAULT_RETRAIN_DEBOUNCE_MS,
         on_state_changed: Callable[[], None] | None = None,
         on_table_state_changed: Callable[[], None] | None = None,
+        on_prediction_state_changed: Callable[[], None] | None = None,
     ) -> None:
         self._debounce_interval_ms = max(0, int(debounce_interval_ms))
         self._on_state_changed = on_state_changed
         self._on_table_state_changed = on_table_state_changed
+        self._on_prediction_state_changed = on_prediction_state_changed
 
         self._selected_spatialdata: SpatialData | None = None
         self._selected_label_name: str | None = None
@@ -269,7 +271,11 @@ class ClassifierController:
     @property
     def can_retrain(self) -> bool:
         """Return whether the current classifier inputs support a retrain request."""
-        return self._get_bound_table() is not None and self._selected_feature_key is not None and not self.is_training
+        if self.is_training:
+            return False
+
+        summary = self._prepare_classifier_summary()
+        return summary is not None and summary.eligible
 
     @property
     def can_export_classifier(self) -> bool:
@@ -720,7 +726,7 @@ class ClassifierController:
             trained_at=None,
         )
         self._clear_model_snapshot("the latest classifier inputs are not trainable")
-        self._notify_table_state_changed()
+        self._notify_prediction_table_state_changed()
         self._is_dirty = True
         self._set_status(f"Classifier: {job.summary.reason}", kind="warning")
 
@@ -752,7 +758,7 @@ class ClassifierController:
         )
         table.uns[CLASSIFIER_CONFIG_KEY] = classifier_config
         self._store_model_snapshot(table, result, classifier_config)
-        self._notify_table_state_changed()
+        self._notify_prediction_table_state_changed()
         self._is_dirty = False
         self._set_status(
             f"Classifier: model is up to date. Updated predictions for {apply_result.n_predicted_rows} objects.",
@@ -969,6 +975,11 @@ class ClassifierController:
     def _notify_table_state_changed(self) -> None:
         if self._on_table_state_changed is not None:
             self._on_table_state_changed()
+
+    def _notify_prediction_table_state_changed(self) -> None:
+        self._notify_table_state_changed()
+        if self._on_prediction_state_changed is not None:
+            self._on_prediction_state_changed()
 
     def _update_idle_status(self, *, reason: str | None = None) -> None:
         if self._get_bound_table() is None:

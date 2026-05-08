@@ -141,10 +141,12 @@ def test_classifier_controller_trains_on_labeled_rows_and_predicts_active_object
     _set_deterministic_features(sdata_blobs)
     _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
     table_state_changes: list[str] = []
+    prediction_state_changes: list[str] = []
 
     controller = ClassifierController(
         debounce_interval_ms=0,
         on_table_state_changed=lambda: table_state_changes.append("changed"),
+        on_prediction_state_changed=lambda: prediction_state_changes.append("changed"),
     )
     controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
     controller.schedule_retrain(immediate=True)
@@ -169,6 +171,7 @@ def test_classifier_controller_trains_on_labeled_rows_and_predicts_active_object
     assert table.uns[CLASSIFIER_CONFIG_KEY]["class_labels_seen"] == [1, 2]
     assert controller.status_kind == "success"
     assert table_state_changes == ["changed"]
+    assert prediction_state_changes == ["changed"]
 
 
 def test_classifier_controller_exports_trained_classifier_bundle(
@@ -602,16 +605,34 @@ def test_classifier_controller_describes_current_preparation_without_building_wo
     assert summary.eligible is True
 
 
+def test_classifier_controller_can_retrain_requires_trainable_preparation(sdata_blobs: SpatialData) -> None:
+    _set_deterministic_features(sdata_blobs)
+    controller = ClassifierController(debounce_interval_ms=0)
+    controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
+
+    assert controller.can_retrain is False
+
+    _set_user_classes(sdata_blobs, {1: 1, 2: 1})
+
+    assert controller.can_retrain is False
+
+    _set_user_classes(sdata_blobs, {1: 1, 24: 2})
+
+    assert controller.can_retrain is True
+
+
 def test_classifier_controller_resets_predictions_when_only_one_class_is_labeled(
     qtbot, sdata_blobs: SpatialData
 ) -> None:
     _set_deterministic_features(sdata_blobs)
     _set_user_classes(sdata_blobs, {1: 1, 2: 1})
     table_state_changes: list[str] = []
+    prediction_state_changes: list[str] = []
 
     controller = ClassifierController(
         debounce_interval_ms=0,
         on_table_state_changed=lambda: table_state_changes.append("changed"),
+        on_prediction_state_changed=lambda: prediction_state_changes.append("changed"),
     )
     controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
     controller.schedule_retrain(immediate=True)
@@ -626,6 +647,7 @@ def test_classifier_controller_resets_predictions_when_only_one_class_is_labeled
     assert "two labeled classes" in table.uns[CLASSIFIER_CONFIG_KEY]["reason"]
     assert controller.status_kind == "warning"
     assert table_state_changes == ["changed"]
+    assert prediction_state_changes == ["changed"]
 
 
 def test_classifier_controller_validates_feature_matrix_shape(qtbot, monkeypatch, sdata_blobs: SpatialData) -> None:
@@ -704,6 +726,7 @@ def test_classifier_controller_bind_is_passive_until_marked_dirty(qtbot, monkeyp
 
     call_log: list[int] = []
     table_state_changes: list[str] = []
+    prediction_state_changes: list[str] = []
 
     def fake_fit(job):
         call_log.append(job.job_id)
@@ -724,6 +747,7 @@ def test_classifier_controller_bind_is_passive_until_marked_dirty(qtbot, monkeyp
     controller = ClassifierController(
         debounce_interval_ms=0,
         on_table_state_changed=lambda: table_state_changes.append("changed"),
+        on_prediction_state_changed=lambda: prediction_state_changes.append("changed"),
     )
     context_changed = controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
 
@@ -732,6 +756,7 @@ def test_classifier_controller_bind_is_passive_until_marked_dirty(qtbot, monkeyp
     assert controller.status_message == "Classifier: model is up to date."
     assert call_log == []
     assert table_state_changes == []
+    assert prediction_state_changes == []
 
     controller.mark_dirty(reason="the feature matrix changed")
 
@@ -742,6 +767,7 @@ def test_classifier_controller_bind_is_passive_until_marked_dirty(qtbot, monkeyp
     qtbot.waitUntil(lambda: call_log == [1], timeout=5000)
     assert controller.is_dirty is False
     assert table_state_changes == ["changed"]
+    assert prediction_state_changes == ["changed"]
 
 
 def test_classifier_controller_notifies_table_state_change_when_training_errors(
@@ -750,6 +776,7 @@ def test_classifier_controller_notifies_table_state_change_when_training_errors(
     _set_deterministic_features(sdata_blobs)
     _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
     table_state_changes: list[str] = []
+    prediction_state_changes: list[str] = []
 
     def raise_fit_error(job):
         del job
@@ -760,6 +787,7 @@ def test_classifier_controller_notifies_table_state_change_when_training_errors(
     controller = ClassifierController(
         debounce_interval_ms=0,
         on_table_state_changed=lambda: table_state_changes.append("changed"),
+        on_prediction_state_changed=lambda: prediction_state_changes.append("changed"),
     )
     controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
     controller.schedule_retrain(immediate=True)
@@ -767,6 +795,7 @@ def test_classifier_controller_notifies_table_state_change_when_training_errors(
     qtbot.waitUntil(lambda: controller.status_kind == "error", timeout=5000)
 
     assert table_state_changes == ["changed"]
+    assert prediction_state_changes == []
     assert sdata_blobs["table"].uns[CLASSIFIER_CONFIG_KEY]["trained"] is False
     assert "boom" in sdata_blobs["table"].uns[CLASSIFIER_CONFIG_KEY]["reason"]
     assert sdata_blobs["table"].uns[CLASSIFIER_CONFIG_KEY]["training_scope"] == "all"
@@ -850,6 +879,7 @@ def test_classifier_controller_reset_after_reload_ignores_late_worker_results(
     _set_deterministic_features(sdata_blobs)
     _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
     workers: dict[int, _DeferredWorker] = {}
+    prediction_state_changes: list[str] = []
 
     def fake_create_training_worker(self, job):
         del self
@@ -872,6 +902,7 @@ def test_classifier_controller_reset_after_reload_ignores_late_worker_results(
 
     controller = ClassifierController(
         debounce_interval_ms=0,
+        on_prediction_state_changed=lambda: prediction_state_changes.append("changed"),
     )
     controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
     controller.retrain_now()
@@ -921,6 +952,7 @@ def test_classifier_controller_reset_after_reload_ignores_late_worker_results(
         controller.status_message
         == f"Classifier: model is up to date. Loaded predictions for {table.n_obs} objects from disk."
     )
+    assert prediction_state_changes == []
 
 
 def test_classifier_controller_reset_after_reload_marks_stale_when_prediction_scope_differs(

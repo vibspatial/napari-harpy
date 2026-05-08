@@ -5,8 +5,10 @@ import sys
 import textwrap
 from importlib.resources import files
 
+from spatialdata import read_zarr
+
 import napari_harpy
-from napari_harpy.datasets import blobs_multi_region
+from napari_harpy.datasets import blobs_multi_region, blobs_points_repartitioned
 
 
 def _run_import_smoke_test(code: str) -> None:
@@ -86,3 +88,29 @@ def test_blobs_multi_region_builds_a_multi_region_table() -> None:
     assert table.n_obs == sdata["table"].n_obs * 2
     assert tuple(table.obs["region"].cat.categories) == ("blobs_labels", "blobs_labels_2")
     assert table.obsm["features_1"].shape == (table.n_obs, 4)
+
+
+def test_blobs_points_repartitioned_adds_repartitioned_points_element() -> None:
+    sdata = blobs_points_repartitioned(n_points=20, npartitions=4)
+    points = sdata["blobs_points_repartitioned"]
+
+    assert "blobs_points_repartitioned" in sdata.points
+    assert points.npartitions == 4
+    assert {"x", "y", "genes", "instance_id"}.issubset(points.columns)
+    assert points.attrs["spatialdata_attrs"]["feature_key"] == "genes"
+    assert points.attrs["spatialdata_attrs"]["instance_key"] == "instance_id"
+    assert sdata.locate_element(points) == ["points/blobs_points_repartitioned"]
+
+
+def test_blobs_points_repartitioned_can_be_written_and_read(tmp_path) -> None:
+    path = tmp_path / "blobs_points_repartitioned.zarr"
+    sdata = blobs_points_repartitioned(n_points=20, npartitions=4)
+
+    sdata.write(path)
+    reread = read_zarr(path)
+
+    assert "blobs_points_repartitioned" in reread.points
+    assert reread.points["blobs_points_repartitioned"].npartitions == 4
+    assert reread.locate_element(reread.points["blobs_points_repartitioned"]) == [
+        "points/blobs_points_repartitioned"
+    ]

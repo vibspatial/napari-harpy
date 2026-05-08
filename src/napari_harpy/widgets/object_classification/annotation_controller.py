@@ -12,6 +12,7 @@ from napari_harpy.core.annotation import (
     USER_CLASS_COLUMN,
     _set_user_class_annotation_state,
     _to_user_class_values,
+    set_user_class_for_rows,
 )
 from napari_harpy.core.spatialdata import (
     SpatialDataTableMetadata,
@@ -23,6 +24,15 @@ from napari_harpy.viewer.adapter import ViewerAdapter
 if TYPE_CHECKING:
     from anndata import AnnData
     from spatialdata import SpatialData
+
+
+@dataclass(frozen=True)
+class UserClassAnnotationChange:
+    """Describe one row-scoped user-class annotation edit."""
+
+    instance_id: int
+    class_id: int
+
 
 @dataclass(frozen=True)
 class _SelectionTableState:
@@ -78,7 +88,7 @@ class AnnotationController:
         self,
         viewer_adapter: ViewerAdapter,
         on_selected_instance_changed: Callable[[int | None], None] | None = None,
-        on_annotation_changed: Callable[[], None] | None = None,
+        on_annotation_changed: Callable[[UserClassAnnotationChange], None] | None = None,
     ) -> None:
         self._viewer_adapter = viewer_adapter
         self._on_selected_instance_changed = on_selected_instance_changed
@@ -278,8 +288,8 @@ class AnnotationController:
 
         The current selection must be fully bound to a segmentation, annotation
         table, and picked instance id. If the selected label has a matching row
-        in the table, this normalizes the `user_class` column, updates the
-        matching observation, and triggers the annotation-changed callback.
+        in the table, this updates the matching observation and triggers the
+        annotation-changed callback.
 
         If the picked label is present in the segmentation mask but absent from
         the annotation table, no table state is changed. Instead, a warning is
@@ -309,13 +319,14 @@ class AnnotationController:
             logger.warning(message)
             return message
 
-        self.ensure_annotation_column(USER_CLASS_COLUMN)
-
-        user_class_values = _to_user_class_values(state.table.obs[USER_CLASS_COLUMN])
-        user_class_values.loc[matching_rows] = int(class_id)
-        _set_user_class_annotation_state(state.table, user_class_values)
+        set_user_class_for_rows(state.table, matching_rows, int(class_id))
         if self._on_annotation_changed is not None:
-            self._on_annotation_changed()
+            self._on_annotation_changed(
+                UserClassAnnotationChange(
+                    instance_id=int(state.instance_id),
+                    class_id=int(class_id),
+                )
+            )
         return None
 
     def _get_bound_table(self) -> AnnData | None:

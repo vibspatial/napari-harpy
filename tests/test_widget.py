@@ -13,7 +13,7 @@ from matplotlib.colors import to_rgba
 from napari.layers import Image, Labels
 from napari.utils.colormaps import DirectLabelColormap
 from qtpy.QtCore import QObject, Signal
-from qtpy.QtWidgets import QComboBox, QScrollArea
+from qtpy.QtWidgets import QCheckBox, QComboBox, QScrollArea
 from spatialdata import SpatialData, read_zarr
 from spatialdata.models import TableModel
 from spatialdata.transformations import get_transformation
@@ -261,6 +261,12 @@ def test_widget_can_be_instantiated(qtbot) -> None:
     assert widget.selected_prediction_scope == classifier_module.DEFAULT_PREDICTION_SCOPE
     assert widget.selected_coordinate_system is None
     assert widget.selected_color_by == "user_class"
+    assert widget.auto_train_checkbox.objectName() == "auto_train_checkbox"
+    assert widget.findChild(QCheckBox, "auto_train_checkbox") is widget.auto_train_checkbox
+    assert widget.auto_train_checkbox.text() == "Auto train"
+    assert widget.auto_train_checkbox.isChecked() is False
+    assert "QCheckBox" in widget.auto_train_checkbox.styleSheet()
+    assert widget._auto_train_enabled is False
     assert all(button.text() != "Rescan Viewer" for button in widget.findChildren(type(widget.retrain_button)))
     assert "No SpatialData Loaded" in widget.selection_status.text()
     assert widget.coordinate_system_combo.sizeAdjustPolicy() == (
@@ -972,6 +978,29 @@ def test_widget_shows_eligible_classifier_preparation_summary(qtbot, sdata_blobs
     assert "Need at least" not in preparation_text
 
 
+def test_widget_disables_retrain_button_when_preparation_is_not_trainable(
+    qtbot, sdata_blobs: SpatialData
+) -> None:
+    table = sdata_blobs["table"]
+    instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(
+        [1 if int(instance_id) in {1, 2} else 0 for instance_id in instance_ids],
+        categories=[0, 1],
+    )
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    tooltip = unescape(widget.retrain_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+
+    assert not widget.retrain_button.isEnabled()
+    assert "Need at least two labeled classes" in widget.classifier_preparation_status.text()
+    assert "Need at least two labeled classes" in tooltip
+
+
 def test_widget_refreshes_feature_matrix_selector_when_first_key_is_written(qtbot, sdata_blobs: SpatialData) -> None:
     table = sdata_blobs["table"]
     for key in list(table.obsm.keys()):
@@ -1455,13 +1484,260 @@ def test_widget_recolors_layer_from_user_class_annotations(qtbot, sdata_blobs: S
 
     assert isinstance(layer.colormap, DirectLabelColormap)
     assert np.allclose(layer.colormap.color_dict[0], np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32))
+    assert set(layer.colormap.color_dict) == {None, 0, 5}
     assert layer.colormap.color_dict[5][3] > 0
-    assert layer.colormap.color_dict[6][3] > 0
-    assert not np.allclose(layer.colormap.color_dict[5], layer.colormap.color_dict[6])
+    assert layer.colormap.map(6)[3] > 0
+    assert not np.allclose(layer.colormap.color_dict[5], layer.colormap.map(6))
     assert "instance_id" in layer.features.columns
     assert USER_CLASS_COLUMN in layer.features.columns
     assert layer.features.set_index("index").loc[5, "instance_id"] == 5
     assert layer.features.set_index("index").loc[5, USER_CLASS_COLUMN] == 4
+
+
+def test_widget_user_class_annotation_uses_row_scoped_viewer_refresh(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    def fail_full_feature_rows() -> pd.DataFrame:
+        raise AssertionError("user_class annotation should not rebuild all feature rows")
+
+    monkeypatch.setattr(widget._viewer_styling_controller, "_get_region_feature_rows", fail_full_feature_rows)
+
+    layer.selected_label = 5
+    widget.class_spinbox.setValue(4)
+    widget.apply_class_button.click()
+
+    assert isinstance(layer.colormap, DirectLabelColormap)
+    assert set(layer.colormap.color_dict) == {None, 0, 5}
+    assert layer.features.set_index("index").loc[5, USER_CLASS_COLUMN] == 4
+
+
+def test_widget_user_class_annotation_falls_back_to_full_refresh_when_row_scoped_refresh_fails(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+    row_scoped_calls = []
+    full_refresh_calls = []
+
+    def record_row_scoped_refresh(change) -> bool:
+        row_scoped_calls.append(change)
+        return False
+
+    def record_full_refresh() -> None:
+        full_refresh_calls.append("refresh")
+
+    monkeypatch.setattr(
+        widget._viewer_styling_controller,
+        "refresh_user_class_colormap_and_feature",
+        record_row_scoped_refresh,
+    )
+    monkeypatch.setattr(widget._viewer_styling_controller, "refresh", record_full_refresh)
+
+    layer.selected_label = 5
+    widget.class_spinbox.setValue(4)
+    widget.apply_class_button.click()
+
+    assert len(row_scoped_calls) == 1
+    assert row_scoped_calls[0].instance_id == 5
+    assert row_scoped_calls[0].class_id == 4
+    assert full_refresh_calls == ["refresh"]
+
+
+def test_widget_user_class_annotation_updates_feature_only_in_prediction_color_modes(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    def run_annotation_in_color_mode(color_by: str) -> None:
+        layer = make_blobs_labels_layer(sdata_blobs)
+        viewer = DummyViewer(layers=[layer])
+        widget = HarpyWidget(viewer)
+        qtbot.addWidget(widget)
+        select_segmentation(widget)
+        widget.color_by_combo.setCurrentIndex(widget.color_by_combo.findData(color_by))
+        color_refresh_calls = []
+        feature_refresh_calls = []
+        full_refresh_calls = []
+
+        def record_color_refresh(change) -> bool:
+            color_refresh_calls.append(change)
+            return True
+
+        def record_feature_refresh(change) -> bool:
+            feature_refresh_calls.append(change)
+            return True
+
+        def record_full_refresh() -> None:
+            full_refresh_calls.append("refresh")
+
+        monkeypatch.setattr(
+            widget._viewer_styling_controller,
+            "refresh_user_class_colormap_and_feature",
+            record_color_refresh,
+        )
+        monkeypatch.setattr(widget._viewer_styling_controller, "refresh_user_class_feature", record_feature_refresh)
+        monkeypatch.setattr(widget._viewer_styling_controller, "refresh", record_full_refresh)
+
+        layer.selected_label = 5
+        widget.class_spinbox.setValue(4)
+        widget.apply_class_button.click()
+
+        assert color_refresh_calls == []
+        assert [(call.instance_id, call.class_id) for call in feature_refresh_calls] == [(5, 4)]
+        assert full_refresh_calls == []
+
+    run_annotation_in_color_mode("pred_class")
+    run_annotation_in_color_mode("pred_confidence")
+
+
+def test_widget_user_class_annotation_falls_back_to_full_refresh_when_prediction_feature_refresh_fails(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+    widget.color_by_combo.setCurrentIndex(widget.color_by_combo.findData("pred_class"))
+    feature_refresh_calls = []
+    full_refresh_calls = []
+
+    def record_feature_refresh(change) -> bool:
+        feature_refresh_calls.append(change)
+        return False
+
+    def record_full_refresh() -> None:
+        full_refresh_calls.append("refresh")
+
+    monkeypatch.setattr(widget._viewer_styling_controller, "refresh_user_class_feature", record_feature_refresh)
+    monkeypatch.setattr(widget._viewer_styling_controller, "refresh", record_full_refresh)
+
+    layer.selected_label = 5
+    widget.class_spinbox.setValue(4)
+    widget.apply_class_button.click()
+
+    assert len(feature_refresh_calls) == 1
+    assert feature_refresh_calls[0].instance_id == 5
+    assert feature_refresh_calls[0].class_id == 4
+    assert full_refresh_calls == ["refresh"]
+
+
+def test_widget_auto_train_prediction_color_mode_keeps_immediate_refresh_feature_only(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+    widget.color_by_combo.setCurrentIndex(widget.color_by_combo.findData("pred_class"))
+    schedule_calls: list[str] = []
+    feature_refresh_calls = []
+    full_refresh_calls: list[str] = []
+
+    def record_schedule_retrain(*args, **kwargs) -> bool:
+        del args, kwargs
+        schedule_calls.append("schedule")
+        return False
+
+    def record_feature_refresh(change) -> bool:
+        feature_refresh_calls.append(change)
+        return True
+
+    monkeypatch.setattr(widget._classifier_controller, "schedule_retrain", record_schedule_retrain)
+    monkeypatch.setattr(widget._viewer_styling_controller, "refresh_user_class_feature", record_feature_refresh)
+    monkeypatch.setattr(widget._viewer_styling_controller, "refresh", lambda: full_refresh_calls.append("refresh"))
+
+    widget.auto_train_checkbox.setChecked(True)
+    layer.selected_label = 5
+    widget.class_spinbox.setValue(4)
+    widget.apply_class_button.click()
+
+    assert schedule_calls == ["schedule"]
+    assert [(call.instance_id, call.class_id) for call in feature_refresh_calls] == [(5, 4)]
+    assert full_refresh_calls == []
+
+
+def test_widget_auto_train_toggle_controls_annotation_retraining(
+    qtbot, monkeypatch, backed_sdata_blobs: SpatialData
+) -> None:
+    layer = make_blobs_labels_layer(backed_sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+    schedule_calls: list[str] = []
+    mark_dirty_reasons: list[str | None] = []
+    refresh_calls: list[str] = []
+    row_scoped_refresh_calls = []
+
+    def record_schedule_retrain(*args, **kwargs) -> bool:
+        del args, kwargs
+        schedule_calls.append("schedule")
+        return False
+
+    def record_mark_dirty(*, reason: str | None = None) -> None:
+        mark_dirty_reasons.append(reason)
+
+    def record_row_scoped_refresh(change) -> bool:
+        row_scoped_refresh_calls.append(change)
+        return True
+
+    monkeypatch.setattr(widget._classifier_controller, "schedule_retrain", record_schedule_retrain)
+    monkeypatch.setattr(widget._classifier_controller, "mark_dirty", record_mark_dirty)
+    monkeypatch.setattr(
+        widget._viewer_styling_controller,
+        "refresh_user_class_colormap_and_feature",
+        record_row_scoped_refresh,
+    )
+    monkeypatch.setattr(widget, "_refresh_layer_styling", lambda: refresh_calls.append("refresh"))
+
+    assert widget.auto_train_checkbox.isChecked() is False
+    assert widget._auto_train_enabled is False
+
+    widget.auto_train_checkbox.setChecked(True)
+    widget.auto_train_checkbox.setChecked(False)
+
+    assert schedule_calls == []
+    assert mark_dirty_reasons == []
+    assert widget._persistence_controller.is_dirty is False
+
+    layer.selected_label = 5
+    widget.class_spinbox.setValue(3)
+    widget.apply_class_button.click()
+
+    assert schedule_calls == []
+    assert mark_dirty_reasons == ["the annotations changed"]
+    assert [(call.instance_id, call.class_id) for call in row_scoped_refresh_calls] == [(5, 3)]
+    assert refresh_calls == []
+    assert widget._persistence_controller.is_dirty is True
+
+    widget.auto_train_checkbox.setChecked(True)
+    layer.selected_label = 6
+    widget.class_spinbox.setValue(4)
+    widget.apply_class_button.click()
+
+    assert schedule_calls == ["schedule"]
+    assert mark_dirty_reasons == ["the annotations changed", "the annotations changed"]
+    assert [(call.instance_id, call.class_id) for call in row_scoped_refresh_calls] == [(5, 3), (6, 4)]
+    assert refresh_calls == []
 
 
 def test_widget_does_not_log_warning_when_existing_user_class_colors_are_overwritten(
@@ -1886,6 +2162,7 @@ def test_widget_retrain_button_recovers_after_worker_finishes(qtbot, monkeypatch
     qtbot.addWidget(widget)
     select_segmentation(widget)
     workers: list[_DeferredWorker] = []
+    refresh_calls: list[str] = []
 
     def fake_create_training_worker(job):
         result = classifier_module.ClassifierJobResult(
@@ -1904,6 +2181,7 @@ def test_widget_retrain_button_recovers_after_worker_finishes(qtbot, monkeypatch
         return worker
 
     monkeypatch.setattr(widget._classifier_controller, "_create_training_worker", fake_create_training_worker)
+    monkeypatch.setattr(widget, "_refresh_layer_styling", lambda: refresh_calls.append("refresh"))
 
     widget.retrain_button.click()
 
@@ -1911,15 +2189,41 @@ def test_widget_retrain_button_recovers_after_worker_finishes(qtbot, monkeypatch
     assert widget._classifier_controller.is_training is True
     assert widget.retrain_button.isEnabled() is False
     assert "currently running" in widget.retrain_button.toolTip()
+    assert refresh_calls == []
 
     workers[0].emit_returned()
 
     qtbot.waitUntil(lambda: widget._classifier_controller.is_training is False, timeout=1000)
     qtbot.waitUntil(lambda: widget.retrain_button.isEnabled(), timeout=1000)
 
+    assert refresh_calls == ["refresh"]
     assert "currently running" not in widget.retrain_button.toolTip()
     assert "write predictions for the selected prediction scope" in widget.retrain_button.toolTip()
     assert "model is up to date" in widget.classifier_feedback.text()
+
+
+def test_widget_classifier_status_changes_do_not_refresh_layer_styling(
+    qtbot, monkeypatch, sdata_blobs: SpatialData
+) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+    refresh_calls: list[str] = []
+
+    monkeypatch.setattr(widget, "_refresh_layer_styling", lambda: refresh_calls.append("refresh"))
+
+    widget._classifier_controller.mark_dirty(reason="the annotations changed")
+
+    assert refresh_calls == []
+    assert "annotations changed" in widget.classifier_feedback.text()
+
+    widget._classifier_controller.schedule_retrain()
+    widget._classifier_controller._debounce_timer.stop()
+
+    assert refresh_calls == []
+    assert "scheduled" in widget.classifier_feedback.text()
 
 
 def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs: SpatialData) -> None:
@@ -1937,6 +2241,7 @@ def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs:
     widget = HarpyWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
+    widget.auto_train_checkbox.setChecked(True)
 
     layer.selected_label = 1
     widget.class_spinbox.setValue(1)
@@ -1974,6 +2279,7 @@ def test_widget_colors_predictions_using_pred_class_palette_in_pred_class_mode(q
     widget = HarpyWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
+    widget.auto_train_checkbox.setChecked(True)
 
     layer.selected_label = 1
     widget.class_spinbox.setValue(1)
@@ -1988,7 +2294,7 @@ def test_widget_colors_predictions_using_pred_class_palette_in_pred_class_mode(q
     table.uns[USER_CLASS_COLORS_KEY] = ["#80808099", "#ff0000", "#00ff00"]
     table.uns[PRED_CLASS_COLORS_KEY] = ["#80808099", "#0000ff", "#ffff00"]
 
-    assert not np.allclose(layer.colormap.color_dict[1], layer.colormap.color_dict[5])
+    assert not np.allclose(layer.colormap.color_dict[1], layer.colormap.map(5))
 
     widget.color_by_combo.setCurrentIndex(widget.color_by_combo.findData("pred_class"))
 
@@ -2043,6 +2349,12 @@ def test_widget_exposes_label_metadata_in_napari_status_bar(qtbot, sdata_blobs: 
 
 
 def test_widget_retrain_button_triggers_manual_retraining(qtbot, monkeypatch, sdata_blobs: SpatialData) -> None:
+    table = sdata_blobs["table"]
+    instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(
+        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
+        categories=[0, 1, 2],
+    )
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
     widget = HarpyWidget(viewer)
@@ -2056,6 +2368,9 @@ def test_widget_retrain_button_triggers_manual_retraining(qtbot, monkeypatch, sd
         return True
 
     monkeypatch.setattr(widget._classifier_controller, "retrain_now", fake_retrain_now)
+
+    assert widget.auto_train_checkbox.isChecked() is False
+    assert widget.retrain_button.isEnabled()
 
     widget.retrain_button.click()
 

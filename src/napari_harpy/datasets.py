@@ -7,7 +7,7 @@ import numpy as np
 if TYPE_CHECKING:
     from spatialdata import SpatialData
 
-__all__ = ["blobs_multi_region"]
+__all__ = ["blobs_multi_region", "blobs_points_repartitioned"]
 
 
 def _attach_dummy_feature_matrices(sdata: SpatialData) -> SpatialData:
@@ -66,4 +66,29 @@ def blobs_multi_region() -> SpatialData:
     )
 
     sdata.tables["table_multi"] = multi_region_table
+    return sdata
+
+
+def blobs_points_repartitioned(
+    *,
+    n_points: int = 1_000,
+    npartitions: int = 4,
+    points_key: str = "blobs_points_repartitioned",
+) -> SpatialData:
+    """Return a blobs dataset with an extra repartitioned points element.
+
+    The added points element is useful for transcript-cache development because it keeps the standard
+    blobs point columns (`x`, `y`, `genes`, `instance_id`) while making partition-local tile shards easy to test.
+    """
+    from spatialdata.datasets import blobs
+
+    if npartitions < 1:
+        raise ValueError("`npartitions` must be at least 1.")
+
+    sdata = blobs(n_points=n_points)
+    source_points = sdata["blobs_points"]
+    repartitioned_points = source_points.repartition(npartitions=npartitions)
+    repartitioned_points.attrs.update(source_points.attrs)
+
+    sdata[points_key] = repartitioned_points
     return sdata

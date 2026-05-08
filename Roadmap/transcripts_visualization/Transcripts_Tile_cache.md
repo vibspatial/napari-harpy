@@ -13,7 +13,7 @@ For a points element inside a SpatialData zarr store, write the cache beside the
 ```text
 <sdata.zarr>/
   points/
-    <points_key>/
+    <points_name>/
       points.parquet
       transcripts_vis/
         metadata.json
@@ -49,7 +49,8 @@ def build_transcript_visualization_cache(
     transcript_id: str | None = None,
     leaf_tile_size: float = 1024.0,
     n_levels: int | None = None,
-    max_points_per_tile: int = 50_000,
+    max_rows_per_row_group: int = 50_000,
+    coarse_tile_budget: int = 50_000,
 ) -> TranscriptTileCache:
     ...
 ```
@@ -81,7 +82,7 @@ Add a thin SpatialData-facing helper after the dataframe builder is stable:
 ```python
 def build_transcript_visualization_cache_for_points_element(
     sdata: SpatialData,
-    points_key: str,
+    points_name: str,
     *,
     x: str = "x",
     y: str = "y",
@@ -89,17 +90,26 @@ def build_transcript_visualization_cache_for_points_element(
     transcript_id: str | None = None,
     leaf_tile_size: float = 1024.0,
     n_levels: int | None = None,
-    max_points_per_tile: int = 50_000,
+    max_rows_per_row_group: int = 50_000,
+    coarse_tile_budget: int = 50_000,
 ) -> TranscriptTileCache:
     ...
 ```
 
+`max_rows_per_row_group` controls physical Parquet sharding for unsampled and sampled level files.
+`coarse_tile_budget` controls how many representative points may be stored in one sampled coarse tile.
+Keep these separate so IO layout tuning and overview-density tuning do not become coupled.
+
 This helper should:
 
 - require `sdata.is_backed()` and `sdata.path is not None`;
-- require `points_key in sdata.points`;
+- require `points_name in sdata.points`;
+- resolve the selected points element to exactly one on-disk element path, using `sdata.locate_element(...)` or the equivalent SpatialData API;
 - read the stored points dataframe as-is from the selected points element;
-- call `build_transcript_visualization_cache(...)` with `output_path = Path(sdata.path) / "points" / points_key / "transcripts_vis"`.
+- call `build_transcript_visualization_cache(...)` with `output_path = Path(sdata.path) / resolved_points_element_path / "transcripts_vis"`.
+
+The helper should not assume that the on-disk element path is always `points/<points_name>`.
+It should fail with a clear `ValueError` if the selected points element cannot be located or resolves to multiple zarr paths.
 
 The resulting cache is therefore in the native stored coordinate space of `points.parquet`.
 Future reader or controller code can either use that same coordinate space directly or add explicit coordinate-system handling later.
@@ -146,10 +156,9 @@ Do not repeat these values on every manifest row.
 One row per gene:
 
 ```text
-schema_version: string
 gene_id: uint32
 gene: string
-n_transcripts: int64
+n_transcripts: uint64
 ```
 
 Sort genes lexicographically for deterministic `gene_id` assignment in the first implementation.
@@ -164,25 +173,40 @@ Required columns:
 schema_version: string
 level: int16
 tile_id: string
-tile_x: int64
-tile_y: int64
+tile_x: uint32
+tile_y: uint32
 n_points: int64
 row_group: int32
-level_file: string
-is_exact: bool
-```
-
-Recommended extra column:
-
-```text
 tile_shard: int32
 ```
+
+A Parquet row group is a chunk of rows inside one level file such as `levels/level_2.parquet`. It is not a separate file and it is not a single row. `manifest.parquet` is the lookup table that says which tile each row group belongs to, which level file contains it, and how many point rows it stores.
+
+In the simple case, one tile corresponds to one row group, so one tile gives one manifest row. For example:
+
+```text
+level_2.parquet
+  row_group 0 = tile (3, 1), 83 rows
+  row_group 1 = tile (4, 1), 21 rows
+```
+
+The matching `manifest.parquet` rows would be:
+
+```text
+level  tile_x  tile_y  n_points  row_group  tile_shard
+2      3       1       83        0          0
+2      4       1       21        1          0
+```
+
+If one tile is too dense and must be split across multiple row groups, then `manifest.parquet` contains multiple rows with the same `level`, `tile_x`, and `tile_y`, but different `row_group` values.
 
 `tile_shard` is `0` for ordinary tiles. If a dense tile is split into several row groups, shard indices are `0..k`. The reader can still address data by `row_group`, but `tile_shard` makes the manifest easier to inspect and test.
 
 Manifest rows are row-group lookup entries, not a place for repeated cache-level metadata.
 For the first implementation, tile geometry is reconstructed from `level`, `tile_x`, `tile_y`,
 and the cache-wide metadata in `metadata.json`.
+The physical level file is derived from `level` as `levels/level_<level>.parquet`.
+Exact/sampled status is derived from `metadata.json["levels"]`, not repeated in the manifest.
 
 ### `levels/level_k.parquet`
 
@@ -190,8 +214,8 @@ Each level file stores tile-local point rows:
 
 ```text
 tile_id: string
-tile_x: int64
-tile_y: int64
+tile_x: uint32
+tile_y: uint32
 x_rel: float32
 y_rel: float32
 gene_id: uint32
@@ -206,6 +230,10 @@ y = y_origin + tile_y * tile_size + y_rel
 ```
 
 The first implementation should not quantize coordinates. Keep `x_rel` and `y_rel` as `float32`; add quantized integer storage only after benchmarking.
+In this visualization cache, "exact" means unsampled/full-membership rather than full-precision coordinate storage.
+The canonical full-precision coordinates remain in `points.parquet`.
+Because the first implementation sets `x_origin = x_min` and `y_origin = y_min`, tile indices are stored as `uint32`.
+If a computed tile index exceeds the maximum representable `uint32` value, cache writing should fail with a clear `ValueError`.
 
 ## Tile Grid
 
@@ -247,7 +275,13 @@ tile_y = floor((y - y_origin) / tile_size(level))
 tile_id = f"{level}/{tile_x}/{tile_y}"
 ```
 
-The finest level stores exact points. Coarser levels store sampled representative points.
+Tiles are half-open intervals: `[tile_start, tile_start + tile_size)`.
+Points exactly on an internal tile boundary belong to the tile on the positive x/y side.
+Do not clamp points at `x == x_max` or `y == y_max` into the previous tile; they follow the same floor rule even when that creates a max-edge tile.
+This keeps tile-local coordinates in `[0, tile_size)` instead of allowing `x_rel == tile_size` or `y_rel == tile_size`.
+
+The finest level stores one cache row per source point, using tile-local `float32` coordinates for visualization.
+Coarser levels store sampled representative points.
 
 ## Level Count
 
@@ -257,10 +291,14 @@ If `n_levels is None`, choose it from the data extent:
 
 ```text
 extent = max(x_max - x_min, y_max - y_min)
-n_levels = max(1, ceil(log2(extent / leaf_tile_size)) + 1)
+if extent <= leaf_tile_size:
+    n_levels = 1
+else:
+    n_levels = ceil(log2(extent / leaf_tile_size)) + 1
 ```
 
 This makes `level_0` roughly cover the whole dataset in a small number of coarse tiles while `level_n` uses `leaf_tile_size`.
+The explicit `extent <= leaf_tile_size` branch handles zero-extent datasets without evaluating `log2(0)`.
 
 ## Build Algorithm
 
@@ -273,13 +311,15 @@ Validate:
 - `x` and `y` are numeric;
 - `transcript_id` exists when provided;
 - `leaf_tile_size > 0`;
-- `max_points_per_tile > 0`;
+- `max_rows_per_row_group > 0`;
+- `coarse_tile_budget > 0`;
 - `n_levels is None or n_levels >= 1`.
 
 For the SpatialData helper, additionally validate:
 
 - the SpatialData object is backed by zarr;
 - the points element exists.
+- the selected points element resolves to exactly one on-disk path.
 
 ### 2. Prepare Output Directory
 
@@ -289,9 +329,11 @@ Write into a temporary sibling directory first:
 transcripts_vis.tmp-<uuid>/
 ```
 
-On success, atomically replace the final `transcripts_vis/` directory. This prevents a failed build from leaving a half-valid cache.
+On success, replace the final `transcripts_vis/` directory through a staged swap. This prevents a failed build from leaving a half-valid new cache at the final path.
 
-For the first implementation, if `output_path` already exists, remove or replace it only inside the final atomic swap step. Do not mutate the canonical `points.parquet`.
+For the first implementation, if `output_path` already exists, move it aside only inside the final staged replacement step. Do not mutate the canonical `points.parquet`.
+Directory replacement should not be described as strictly atomic: there can be a brief window where the final path is missing after the old cache is moved aside and before the completed new cache is moved into place.
+The implementation should restore the old cache whenever possible if the replacement fails during that window.
 
 ### 3. Compute Bounds
 
@@ -326,9 +368,12 @@ def encode_gene_partition(partition):
     return partition
 ```
 
+Treat `gene_id` as a reserved internal cache column name.
+If the source dataframe already contains `gene_id` before encoding, fail with a clear `ValueError` instead of overwriting it.
+
 Avoid carrying the original gene string into level files.
 
-### 5. Build Finest Exact Level
+### 5. Build Finest Unsampled Level
 
 For `level = finest_level`:
 
@@ -336,8 +381,12 @@ For `level = finest_level`:
 2. Keep columns: `tile_id`, `tile_x`, `tile_y`, `x_rel`, `y_rel`, `gene_id`, optional `transcript_id`.
 3. Partition or group rows by tile.
 4. Write `levels/level_<finest_level>.parquet` using `pyarrow.parquet.ParquetWriter`.
-5. Write one row group per tile, or split a dense tile into shards of at most `max_points_per_tile`.
-6. Add one manifest row per written row group with `is_exact = True`.
+5. Write one row group per tile, or split a dense tile into shards of at most `max_rows_per_row_group`.
+6. Collect one manifest row-group metadata entry per written row group.
+
+Here, `is_exact = True` means the row group is unsampled and contains all source rows assigned to that tile or tile shard.
+It does not mean the cache stores full-precision coordinates; those remain in `points.parquet`.
+Do not repeat `is_exact` in each manifest row; readers derive it from `metadata.json["levels"]`.
 
 The first implementation can favor correctness over maximum scalability: group tile data with Dask, materialize one tile at a time, and write row groups through pyarrow. If this becomes too slow for very large inputs, optimize the grouping/shuffle path after the schema is proven.
 
@@ -345,19 +394,42 @@ The first implementation can favor correctness over maximum scalability: group t
 
 For each level from `finest_level - 1` down to `0`:
 
-1. Compute tile membership at that level from the exact source dataframe, not from already sampled parent levels.
-2. Within each tile, choose at most `max_points_per_tile` representative points.
-3. Compute tile-local coordinates for that level.
-4. Write one row group per tile or tile shard.
-5. Add manifest rows with `is_exact = False`.
+1. Take candidate rows from the previously constructed finer level, starting from the finest unsampled level.
+2. Reconstruct absolute coordinates from the finer level's `tile_x`, `tile_y`, `x_rel`, and `y_rel`.
+3. Compute tile membership and tile-local coordinates for the current coarser level.
+4. Within each current-level coarse tile, subdivide the tile into a fixed micro-grid.
+5. Allocate `coarse_tile_budget` across the occupied micro-grid cells.
+6. Within each occupied micro-grid cell, choose deterministic representative points.
+7. Write one row group per tile or tile shard.
+8. Collect manifest row-group metadata entries for the sampled row groups.
+
+For a row from the previously constructed finer level, reconstruct absolute coordinates before current-level annotation:
+
+```python
+x = x_origin + finer_tile_x * finer_tile_size + finer_x_rel
+y = y_origin + finer_tile_y * finer_tile_size + finer_y_rel
+```
 
 Initial sampling strategy:
 
-- deterministic hash sampling by transcript row identity when `transcript_id` is available;
-- otherwise deterministic hash sampling from `(x, y, gene_id)`;
-- cap each tile at `max_points_per_tile`.
+- use a fixed micro-grid inside each coarse tile for the first implementation; keep the grid size as a private implementation constant rather than public API until it is benchmarked, and start with `8 x 8`;
+- compute a deterministic `cell_id` for each row from the micro-grid cell coordinates within the coarse tile;
+- if the number of occupied cells is less than or equal to `coarse_tile_budget`, give each occupied cell quota `1`, then distribute the remaining quota approximately in proportion to cell occupancy using a largest-remainder rule with stable tie-break on `cell_id`;
+- if the number of occupied cells is greater than `coarse_tile_budget`, assign quota `1` only to the `coarse_tile_budget` occupied cells with highest occupancy, with stable tie-break on `cell_id`;
+- choose points deterministically within each micro-grid cell using a stable ordering from `transcript_id` when available;
+- otherwise choose points deterministically from the internal build row id propagated through sampled finer levels;
+- do not use Python's built-in `hash()` anywhere in the sampling path;
+- after sampling, sort the selected rows deterministically before writing so rebuilds do not depend on Dask partition order;
+- cap each sampled coarse tile at `coarse_tile_budget`.
 
-This is simpler than a full spatially stratified sampler and gives stable cache rebuilds. Once the reader path exists, add spatial stratification if overview points visibly clump.
+This first implementation deliberately builds the sampled pyramid in the `finer -> coarser` direction instead of rebuilding each coarse level from the canonical source dataframe.
+That keeps the writer cheaper and simpler because every coarser level starts from an already reduced candidate set.
+The tradeoff is that information loss compounds: once a point or sparse spatial region disappears from a sampled finer level, coarser levels cannot recover it.
+That tradeoff is acceptable for the first spatial-first visualization cache.
+
+This is a spatially stratified sampler rather than a whole-tile random or hash sampler. The goal is not statistical purity; the goal is stable overview tiles with visibly even spatial coverage that do not collapse into only the densest hotspots.
+
+Future quality improvements can revisit canonical-source-per-level sampling if benchmarks or visual QA show that compounded sampling loss is a real problem.
 
 ### 7. Write Manifest
 
@@ -367,14 +439,20 @@ Write `metadata.json` before `manifest.parquet`.
 
 The manifest is the cache validity anchor: if it is missing, the cache is invalid. Writing it last means readers never see a complete-looking cache before level files, genes, and metadata are present.
 
-### 8. Atomic Finalization
+### 8. Staged Finalization
 
 After all files are written and basic validation passes:
 
-1. remove any existing backup temp directory from this build;
-2. rename existing `output_path` to a temporary old path if present;
+1. remove any stale backup directory from this build if it is safe to do so;
+2. rename existing `output_path` to a unique sibling backup path if present;
 3. rename the completed temporary cache directory to `output_path`;
-4. remove the old cache directory.
+4. remove the old backup cache directory after the new cache is in place.
+
+If any step fails after the old cache has been moved aside, attempt rollback before re-raising:
+
+1. if `output_path` is missing and the backup path exists, rename the backup path back to `output_path`;
+2. leave the completed temporary cache in its temp path for debugging or cleanup;
+3. do not delete the backup unless the new cache is successfully installed.
 
 Use only paths inside the selected points element directory.
 
@@ -382,11 +460,11 @@ Use only paths inside the selected points element directory.
 
 The writer should guarantee these invariants because the later napari controller will rely on them:
 
-- every manifest row points to an existing `level_file`;
+- every manifest row's derived level file exists;
 - every manifest row's `row_group` exists in that level file;
 - all rows in a row group belong to the manifest row's `level`, `tile_x`, and `tile_y`;
 - `level_0` is the coarsest level;
-- `finest_level = n_levels - 1` is exact;
+- `finest_level = n_levels - 1` is unsampled/full-membership;
 - `metadata.json` stores the global bounds and shared grid parameters for the whole cache;
 - all level files use the same `x_origin` and `y_origin` from `metadata.json`;
 - `tile_size` is derived from `metadata.json` and is constant within each level;
@@ -408,64 +486,635 @@ Test cases:
 2. Writes deterministic `genes.parquet` with stable `gene_id` values and counts.
 3. Writes `metadata.json` with global bounds, origins, and level metadata.
 4. Writes `manifest.parquet` with one row per row group.
-5. Finest level reconstructs exact source coordinates and gene IDs.
-6. Dense tiles split into multiple row groups when `max_points_per_tile` is small.
-7. Coarse levels are sampled and stay within the per-tile budget.
-8. Invalid inputs raise clear `ValueError`s for missing columns, bad `n_levels`, bad tile size, and bad transcript id column.
-9. SpatialData helper rejects unbacked `SpatialData`.
-10. SpatialData helper writes to `points/<points_key>/transcripts_vis`.
-11. SpatialData helper builds the cache from the stored points coordinates without inspecting transformations.
+5. Finest level reconstructs source coordinates within `float32` tolerance and gene IDs exactly.
+6. Dense tiles split into multiple row groups when `max_rows_per_row_group` is small.
+7. Coarse levels are spatially stratified within each tile and stay within `coarse_tile_budget`.
+8. Zero-extent data computes `n_levels = 1`.
+9. Tile-boundary coordinates follow the documented half-open grid convention.
+10. Invalid inputs raise clear `ValueError`s for missing columns, bad `n_levels`, bad tile size, bad row-group size, bad coarse tile budget, and bad transcript id column.
+11. SpatialData helper rejects unbacked `SpatialData`.
+12. SpatialData helper writes to `<resolved_points_element_path>/transcripts_vis`.
+13. SpatialData helper builds the cache from the stored points coordinates without inspecting transformations.
 
 For tests, use small pandas dataframes converted to Dask dataframes. Read written Parquet files with `pyarrow.parquet.ParquetFile` so tests can assert row-group counts directly.
 
-## First Implementation Milestones
+## Concrete Phased Implementation Plan
 
-### Milestone 1: Pure dataframe writer
+The agreed delivery plan is product-driven rather than schema-driven:
 
-Implement:
+1. Version 1: ship a spatial-first multiscale cache with no `tile_gene_index.parquet` and make viewing all transcripts snappy in napari.
+2. Version 2: keep the same overall cache shape, but make coarse sampled levels gene-aware enough that rare genes are less likely to disappear in overviews.
+3. Version 3: add true gene-selective loading and a gene-selection UI by introducing `tile_gene_index.parquet` and the storage changes it requires.
+
+The key design choice is that each version must be independently useful:
+
+- Version 1 solves all-transcript navigation and exact leaf tiles.
+- Version 2 improves sampled overview fidelity for gene-colored visualization.
+- Version 3 solves efficient subset selection and exact rare-gene viewing.
+
+### Phase 1: Spatial-First Cache for All Transcripts
+
+This phase targets the current cache layout only:
+
+```text
+<sdata.zarr>/
+  points/
+    <points_name>/
+      points.parquet
+      transcripts_vis/
+        metadata.json
+        manifest.parquet
+        genes.parquet
+        levels/
+          level_0.parquet
+          level_1.parquet
+          ...
+          level_n.parquet
+```
+
+There is no `tile_gene_index.parquet` in this phase.
+
+#### Phase 1A: Offline Writer
+
+Implement the writer in `src/napari_harpy/_transcript_tiles.py`:
 
 - `TranscriptTileCache`;
 - input validation;
 - bounds computation;
-- gene mapping;
-- exact finest-level writer;
-- manifest writer;
-- tests for exact reconstruction and manifest row groups.
+- deterministic `gene -> gene_id` mapping and `genes.parquet`;
+- finest unsampled-level writer;
+- multiscale sampled level writer using the spatially stratified per-tile micro-grid sampler;
+- `manifest.parquet`;
+- staged cache finalization with rollback;
+- a SpatialData-facing entry point for backed points elements.
 
-This milestone does not need sampled coarser levels yet if `n_levels=1`.
+Recommended tests:
 
-### Milestone 2: Multiscale sampled levels
+- keep `tests/test_transcript_tiles.py` as the main writer test module;
+- assert coordinate reconstruction from finest level row groups within `float32` tolerance;
+- assert manifest row-group accounting;
+- assert dense-tile row-group sharding;
+- assert deterministic gene mapping;
+- assert coarse levels respect `coarse_tile_budget`;
+- assert backed SpatialData output-path behavior.
 
-Implement:
+Recommended benchmark datasets:
 
-- automatic `n_levels`;
-- coarser level construction;
-- deterministic sampling;
-- per-tile budget tests.
+- one tiny synthetic fixture for finest-level membership and coordinate reconstruction correctness;
+- one medium synthetic dataset with strongly uneven density;
+- one real transcript dataset large enough to exercise multiple coarse levels.
 
-### Milestone 3: SpatialData entry point
+#### Phase 1B: Reader / Store Abstraction
 
-Implement:
+Add a reader abstraction after the writer format is stable. This should remain independent from Qt and napari so it can be tested in isolation.
 
-- backed-zarr validation;
-- points element lookup;
-- native stored-coordinate contract;
-- output path resolution;
-- tests using a backed SpatialData fixture.
+Recommended module:
 
-### Milestone 4: Reader prototype
+```text
+src/napari_harpy/_transcript_tile_store.py
+```
 
-Add a separate reader class after the writer format is stable:
+Recommended API shape:
 
 ```python
 class TranscriptTileStore:
-    def from_path(path: Path) -> TranscriptTileStore: ...
+    @classmethod
+    def from_path(cls, path: Path) -> TranscriptTileStore: ...
     def tiles_for_bounds(self, bounds, level: int) -> pandas.DataFrame: ...
     def choose_level(self, bounds, budget: int) -> int: ...
-    def read_manifest_rows(self, rows, gene_ids=None) -> pandas.DataFrame: ...
+    def read_manifest_rows(self, rows) -> pandas.DataFrame: ...
+    def decode_coordinates(self, rows, level: int) -> pandas.DataFrame: ...
 ```
 
-This reader is the bridge to the future napari controller, but it should remain independent from Qt and napari.
+Responsibilities:
+
+- load `metadata.json`, `manifest.parquet`, and `genes.parquet`;
+- compute intersecting tiles for a viewport and level;
+- estimate visible point counts from `manifest.parquet`;
+- choose the finest level that stays under a render budget;
+- read row groups from `levels/level_k.parquet` via `pyarrow`;
+- decode `x_rel` and `y_rel` to absolute coordinates;
+- expose enough metadata to color visible points by gene.
+
+Recommended tests:
+
+- tile intersection for edge-touching bounds;
+- level choice under different budgets and viewport sizes;
+- row-group reads from multiple shards of the same tile;
+- decode roundtrip from `x_rel`, `y_rel` to absolute coordinates;
+- no full-table `.compute()` in the read path.
+
+#### Phase 1C: napari Integration for All Transcripts
+
+Integrate the spatial-first cache into napari-harpy with the goal that all transcripts can be visualized and colored by gene while remaining snappy during pan and zoom.
+
+Recommended runtime pieces:
+
+- `src/napari_harpy/_transcript_tiles_controller.py` for camera-driven loading and cache management;
+- small additions in `src/napari_harpy/_viewer_adapter.py` to manage one Harpy-owned transcript `Points` layer;
+- a minimal UI entry point in `src/napari_harpy/widgets/_viewer_widget.py` to enable transcript visualization for a chosen points element.
+
+Recommended controller behavior:
+
+- own exactly one napari `Points` layer per transcript source;
+- listen to camera pan and zoom changes;
+- debounce refreshes slightly;
+- compute the viewport in transcript coordinates;
+- choose a level from `manifest.parquet` and the render budget;
+- read only the visible row groups for that level;
+- populate the layer with the visible points only;
+- color points by gene using a deterministic `gene_id -> color` mapping derived from `genes.parquet`;
+- keep an in-memory LRU cache of recently decoded tiles or row groups;
+- prefetch a small halo around the current viewport;
+- drop stale reads if the camera changes again before loading finishes.
+
+Optional warm-cache design:
+
+- treat the warm cache as an in-memory runtime cache inside the transcript controller, not as another on-disk cache format;
+- cache decoded row-group payloads rather than whole viewports, because nearby camera views overlap heavily at the row-group level;
+- use a cache key such as `(cache_path, level_file, row_group)` or an equivalent `(points_source, level, tile, row_group)` identity;
+- store decoded absolute coordinates together with `gene_id` and optional `transcript_id`, so cache hits avoid repeated Parquet IO and repeated coordinate decoding;
+- size the cache by bytes and optionally by total cached points, with LRU eviction;
+- keep the cached payloads unfiltered in Phase 1.5 so changing selected genes does not force new Parquet reads;
+- treat a one-tile halo around the viewport as the first prefetch policy so small pans are likely to hit warm cached row groups;
+- attach a request-generation id to background loads so stale results can be dropped instead of overwriting a newer camera state.
+
+This warm cache is an implementation detail of the napari controller. The on-disk cache contract remains `metadata.json`, `manifest.parquet`, `genes.parquet`, and `levels/`.
+
+Recommended UI scope for Phase 1:
+
+- default to showing all genes;
+- show transcript points colored by gene;
+- expose only controls needed to turn transcript visualization on or off and select the points element;
+- do not add subset-selection UI yet.
+
+Recommended initial performance targets for Phase 1:
+
+- visible points budget: start with `100_000` as the default target;
+- visible points budget on stronger hardware: allow tuning upward toward `150_000`;
+- visible points stress ceiling: treat `250_000` as an upper benchmark ceiling rather than the first default;
+- finest tile size: start with `leaf_tile_size = 1024.0` in stored coordinate units, not screen pixels;
+- smaller finest tile size: try `512.0` only if dense-region overfetch becomes the dominant bottleneck;
+- warm-cache pan and zoom latency: aim for under `100 ms` median and keep `150 ms` as an acceptable upper bound;
+- cold tile-load latency: aim for under `300 ms` in common cases and keep `500 ms` as an upper bound rather than the desired norm.
+
+These targets assume a 2D transcript viewer with one dynamic napari `Points` layer, relatively small markers, no per-point text, and categorical coloring by gene. If we later add heavier styling, larger symbols, or more expensive per-point metadata, the practical visible-point budget should be reduced accordingly.
+
+Phase 1 acceptance criteria:
+
+- opening transcript visualization does not materialize the full source dataframe;
+- zoomed-out views remain under the configured point budget;
+- zoomed-in views switch to the unsampled finest level;
+- warm-cache pan and zoom feel responsive in napari;
+- all visible points can be colored by gene consistently across refreshes.
+
+### Phase 1.5: Naive Gene Subset UI
+
+This phase adds gene subset selection in the UI without changing the Version 1 cache layout and without changing the Phase 1 read path.
+
+The goal is to let users select one or more genes to visualize while keeping implementation risk low. This phase is intentionally not subset-aware loading. It is subset filtering of the currently loaded visible points.
+
+#### Phase 1.5A: Reader and Controller State
+
+Extend the Phase 1 runtime pieces so they can:
+
+- read the gene list from `genes.parquet`;
+- keep `selected_gene_ids` in the transcript controller;
+- keep the existing level choice and row-group loading logic from Phase 1 unchanged;
+- apply `mask = gene_id in selected_gene_ids` after load and before updating the layer.
+
+This means:
+
+- visible row groups are still chosen from `manifest.parquet`;
+- visible rows are still read from `levels/level_k.parquet` exactly as in Phase 1;
+- filtering happens only after the visible data is already in memory.
+
+#### Phase 1.5B: UI Scope
+
+Add a lightweight gene-selection UI in napari-harpy:
+
+- searchable multi-select list populated from `genes.parquet`;
+- `Select all` and `Clear` actions;
+- visible status text showing the number of selected genes;
+- selection changes trigger a refresh of the transcript layer.
+
+The transcript layer still uses the same color mapping by gene as in Phase 1.
+
+#### Phase 1.5C: Limitations
+
+This phase should be documented very explicitly so users and future developers do not confuse it with the final subset-aware solution.
+
+Important limitations:
+
+- IO cost stays basically the same as all-genes mode, because the controller still loads visible row groups before filtering;
+- at coarse sampled levels, selected rare genes may still be absent because they may never have been sampled into that level;
+- if a user toggles on a rare gene at low zoom, they may temporarily see nothing even though the gene exists in the dataset;
+- without `tile_gene_index.parquet`, the selected subset cannot yet drive level choice via `visible_selected_points(level, selection)`.
+
+Recommended tests:
+
+- the gene list shown in the UI matches `genes.parquet`;
+- toggling subsets correctly filters the visible points after load;
+- `Select all` reproduces the Phase 1 all-genes behavior;
+- stable per-gene coloring is preserved when genes are toggled on and off;
+- no changes are made to the Phase 1 storage layout.
+
+Phase 1.5 acceptance criteria:
+
+- users can filter the currently visible transcript layer to one or more genes;
+- the layer updates correctly without requiring a new cache format;
+- the document and UI make it clear that this is post-load filtering, not subset-aware loading.
+
+### Phase 2: Gene-Aware Overview Sampling
+
+This phase does not add `tile_gene_index.parquet` yet. It improves how coarse sampled levels are built so that gene-colored overview visualizations behave better and rare genes are less likely to disappear at low zoom.
+
+The goal is not a perfect mathematical guarantee that every rare gene remains visible in every coarse tile. That is impossible under a fixed point budget when a tile contains too many genes. The goal is a better default sampled representation for downstream gene-colored viewing.
+
+#### Phase 2A: Writer Changes
+
+Extend the coarse-level sampler while keeping the same top-level cache layout:
+
+- consider deriving each coarse level from the canonical source dataframe if Phase 1A `finer -> coarser` sampling loses too much rare-gene signal;
+- keep the spatially stratified micro-grid sampling inside each coarse tile;
+- before sampling within the tile, split candidate rows by `gene_id`;
+- allocate `coarse_tile_budget` across genes with a rarity-aware weighting rather than only global abundance-proportional sampling;
+- then sample spatially within each gene allocation using the same micro-grid logic.
+
+The weighting policy should be explicit and benchmarked. A good starting family is:
+
+```text
+gene_weight(tile, gene) = f(tile_gene_count) * rarity_boost(global_gene_count)
+```
+
+with:
+
+- `f(n) = sqrt(n)` or `log1p(n)` to prevent dominant genes from taking the whole tile budget;
+- a clipped rarity boost so globally rare genes receive some protection without overwhelming abundant genes.
+
+Recommended writer outputs remain unchanged:
+
+- no new top-level files;
+- same `metadata.json`, `manifest.parquet`, `genes.parquet`, and `levels/`;
+- same row-group layout as Phase 1.
+
+Recommended tests:
+
+- coarse sampled levels preserve more genes per tile than abundance-only sampling on synthetic skewed inputs;
+- deterministic rebuilds under the same inputs and parameters;
+- `coarse_tile_budget` is never exceeded;
+- unsampled finest level remains unchanged from Phase 1.
+
+#### Phase 2B: napari Integration and Validation
+
+The napari runtime can largely stay the same as in Phase 1 because the file layout is unchanged. The main work here is verification rather than a new UI surface.
+
+Recommended validation tasks:
+
+- compare side-by-side overview rendering on the same dataset with Phase 1 sampling versus gene-aware sampling;
+- verify that gene coloring remains stable across pans, zooms, and level switches;
+- confirm that zooming from coarse sampled levels down to exact levels feels visually consistent;
+- confirm that common and moderately rare genes are less likely to vanish completely in overview levels.
+
+Recommended UI scope for Phase 2:
+
+- keep the same user-visible controls as Phase 1;
+- do not add subset-selection UI yet;
+- if needed, add internal debug hooks or benchmark utilities, but not a public gene-selection control.
+
+Phase 2 acceptance criteria:
+
+- all-transcript visualization remains as responsive as in Phase 1;
+- coarse overviews are visually more faithful when points are colored by gene;
+- exact leaf-tile behavior is unchanged;
+- no schema expansion beyond the existing Version 1 layout.
+
+### Phase 3: Gene-Selective Loading and Advanced Subset Selection
+
+This phase adds the storage and runtime behavior needed for efficient gene subset selection. It is the first phase that should introduce `tile_gene_index.parquet`.
+
+#### Phase 3A: Storage Extension
+
+Introduce a new schema version for gene-selective loading:
+
+- add `tile_gene_index.parquet`;
+- add the row-group layout changes needed to make that file useful;
+- compute `visible_selected_points(level, selection)` from the new index.
+
+This phase should not be implemented as a metadata-only add-on to the Phase 1 layout. If we want true gene-selective reads, the relevant level files must also be written in a gene-aware row-group layout.
+
+The preferred narrow first step is:
+
+- keep coarse sampled levels tile-grouped initially if needed;
+- make at least the finest unsampled level gene-aware first;
+- extend the same layout to coarser levels only if benchmarks justify it.
+
+#### Phase 3B: Reader and Runtime Policy
+
+Extend `TranscriptTileStore` so it can:
+
+- load `tile_gene_index.parquet`;
+- resolve which row groups contain selected genes in visible tiles;
+- compute:
+
+```text
+visible_selected_points(level, selection)
+```
+
+from the current viewport, level, and selected-gene set;
+- choose exact finest tiles whenever the selected visible exact data fits the render budget;
+- otherwise choose the finest sampled level whose selected-gene visible count fits the budget.
+
+This phase should formalize two runtime modes:
+
+1. all-genes mode:
+   use the standard visible-point budget from spatial manifest rows.
+2. selected-genes mode:
+   use `visible_selected_points(level, selection)` from `tile_gene_index.parquet`.
+
+#### Phase 3C: Advanced UI Behavior for Gene Selection
+
+Upgrade the Phase 1.5 subset-selection UI so it becomes subset-aware rather than post-load filtering only.
+
+Recommended UI behavior:
+
+- one transcript control surface for the currently active transcript source;
+- searchable multi-select list of genes using `genes.parquet`;
+- `Select all`, `Clear`, and possibly `Invert` actions;
+- visible status text showing number of selected genes and estimated visible point count;
+- selection changes trigger an asynchronous refresh of the transcript `Points` layer;
+- color mapping remains stable whether all genes or a subset is selected.
+
+Recommended controller behavior:
+
+- if all genes are selected, use the all-genes path;
+- if a subset is selected, use the selected-genes path;
+- if the selected unsampled finest level fits the budget, show full-membership points even when zoomed out;
+- otherwise fall back to the best sampled level for that selection.
+
+Recommended tests:
+
+- selected-gene reads only touch row groups referenced by `tile_gene_index.parquet`;
+- tiles without the selected genes are skipped;
+- exact selected-gene views work when the visible exact selected count is under budget;
+- subset toggling preserves stable colors and does not leak stale data from previous selections;
+- performance remains acceptable for both tiny and broad selections.
+
+Phase 3 acceptance criteria:
+
+- gene subset selection is exposed in the UI and feels responsive;
+- exact rare-gene viewing works when the selected visible data is small enough;
+- coarse fallback remains smooth when the selected visible data is still too large;
+- `tile_gene_index.parquet` demonstrably reduces unnecessary IO compared with tile-only filtering.
+
+## Phase 3 Storage Extension: `tile_gene_index.parquet` and Gene-Aware Exact Layout
+
+This section describes the storage extension used in Phase 3. It does not belong to Version 1, and it also comes after Phase 2 gene-aware overview sampling.
+
+The first cache format is intentionally spatial-first: row groups are addressed by `level` and tile, and gene filtering happens after visible tiles are loaded. That is the right default for the first implementation because it keeps the schema and writer simple.
+
+The main purpose of `tile_gene_index.parquet` is to enable gene-aware loading rather than only post-load filtering. `manifest.parquet` tells the reader which row groups belong to visible tiles, but it does not tell the reader which of those row groups contain the selected genes. `tile_gene_index.parquet` adds that lookup layer, so the reader can skip irrelevant tiles and, together with a gene-aware row-group layout in the level files, read only the row groups needed for the selected genes.
+
+If later benchmarks show that rare-gene exact viewing is still too expensive, the next storage extension should be a gene-aware exact layout. The goal is true gene-selective loading: for a selected gene and visible tile set, the reader should be able to read only the relevant row groups instead of loading whole exact tiles and filtering afterwards.
+
+This extension should be treated as a new schema version rather than silently changing the meaning of `manifest.parquet`.
+
+### High-Level Idea
+
+Instead of organizing exact row groups only by tile:
+
+```text
+(level, tile_x, tile_y) -> row_group
+```
+
+organize them by tile and gene:
+
+```text
+(level, tile_x, tile_y, gene_id) -> row_group(s)
+```
+
+That means the exact level file is no longer written as one row group per tile. It is written as one or more row groups for each non-empty `(tile, gene_id)` group, or later as one or more row groups for a small gene block inside a tile if row-group counts become too large.
+
+### Additional On-Disk File
+
+Add one more sparse lookup table beside the existing files:
+
+```text
+transcripts_vis/
+  metadata.json
+  manifest.parquet
+  genes.parquet
+  tile_gene_index.parquet
+  levels/
+    level_0.parquet
+    ...
+    level_n.parquet
+```
+
+`tile_gene_index.parquet` should be sparse: write one row only for non-empty `(level, tile_x, tile_y, gene_id, gene_shard)` combinations.
+
+Recommended columns:
+
+```text
+schema_version: string
+level: int16
+tile_id: string
+tile_x: uint32
+tile_y: uint32
+gene_id: uint32
+row_group: int32
+n_points: int64
+gene_shard: int32
+```
+
+`gene_shard` is `0` for ordinary groups. If one `(tile, gene_id)` group is too large for one row group, split it into shards `0..k`.
+
+The existing `manifest.parquet` can remain row-group-oriented and spatially readable. The new `tile_gene_index.parquet` is the gene lookup layer that maps selected genes to exact row groups.
+
+### Level File Semantics
+
+The physical row format in `levels/level_k.parquet` can stay almost the same:
+
+```text
+tile_id: string
+tile_x: uint32
+tile_y: uint32
+x_rel: float32
+y_rel: float32
+gene_id: uint32
+transcript_id: optional original dtype
+```
+
+What changes is the grouping rule used while writing row groups:
+
+- first implementation: group by tile;
+- gene-aware exact extension: group by `(tile_x, tile_y, gene_id)`.
+
+For `tile_gene_index.parquet` to enable true gene-selective reads rather than only tile skipping, the relevant level file must therefore be physically written with row groups aligned to `(tile_x, tile_y, gene_id)` or an equivalent gene-aware shard layout.
+
+The reader then uses `tile_gene_index.parquet` to discover exactly which row groups to read for the selected genes.
+
+### Tiny Example
+
+A Parquet row group is a chunk of rows inside one Parquet file. It is not a separate file and it is not a single row. In the gene-aware exact layout, one row group can correspond to one `(tile, gene)` shard.
+
+For example, suppose `levels/level_2.parquet` physically contains these row groups:
+
+```text
+row_group 0 = tile (3, 1), gene_id 17, 83 rows
+row_group 1 = tile (3, 1), gene_id 23, 50000 rows
+row_group 2 = tile (3, 1), gene_id 23, 12400 rows
+row_group 3 = tile (4, 1), gene_id 17, 21 rows
+```
+
+Then one concrete row group, such as `row_group 0`, contains ordinary point rows like:
+
+```text
+tile_x  tile_y  x_rel   y_rel   gene_id  transcript_id
+3       1       228.1   876.4   17       tx_0001
+3       1       231.7   880.2   17       tx_0002
+3       1       245.0   910.6   17       tx_0003
+...
+```
+
+All rows in that row group share the same:
+
+- `tile_x = 3`
+- `tile_y = 1`
+- `gene_id = 17`
+
+while `x_rel`, `y_rel`, and optional `transcript_id` vary from row to row.
+
+The matching rows in `manifest.parquet` could look like:
+
+```text
+level  tile_x  tile_y  row_group  tile_shard  n_points
+2      3       1       0          0           83
+2      3       1       1          1           50000
+2      3       1       2          2           12400
+2      4       1       3          0           21
+```
+
+The matching rows in `tile_gene_index.parquet` could look like:
+
+```text
+level  tile_x  tile_y  gene_id  row_group  n_points  gene_shard
+2      3       1       17       0          83        0
+2      3       1       23       1          50000     0
+2      3       1       23       2          12400     1
+2      4       1       17       3          21        0
+```
+
+These two metadata tables are describing the same physical row groups from different perspectives:
+
+- `manifest.parquet` is the spatial catalog of row groups for each tile;
+- `tile_gene_index.parquet` is the spatial-plus-gene catalog of row groups for each `(tile, gene)` combination.
+
+That is why `n_points` is the same in both tables for a given row group: both rows refer to the same block of rows inside `level_2.parquet`.
+
+### Tradeoff of a Gene-Aware Layout
+
+A gene-aware row-group layout is not automatically the best general representation of the cache. It is better for one query pattern:
+
+- read only selected genes from visible tiles;
+
+but it can be worse for another:
+
+- read all points, or many genes, from visible tiles.
+
+If row groups are split by `(tile, gene_id)`, whole-tile reads become more fragmented. A reader that wants broad selections may need to read many row groups for one tile instead of one tile-sized row group. That can increase row-group counts, metadata size, and per-read overhead.
+
+This does not have to destroy spatial locality if the file is still written in tile-major order so that all `(tile, gene)` row groups for one tile remain adjacent inside the level file. Even then, the tradeoff is still real: the layout is optimizing for gene-selective reads, not for the simplest possible tile reads.
+
+For that reason, the recommended adoption path is conservative:
+
+- keep the first cache format spatial-first;
+- if needed, add `tile_gene_index.parquet` and gene-aware row groups first for the finest unsampled level only;
+- extend the same layout to coarser sampled levels only if later benchmarks justify the extra fragmentation.
+
+### Build Strategy From the Source Dask Dataframe
+
+Start from the same source contract:
+
+```text
+dask.dataframe.DataFrame with at least x, y, and gene
+```
+
+The first preprocessing steps stay the same:
+
+1. validate inputs;
+2. compute global bounds and grid metadata;
+3. build and write `genes.parquet`;
+4. add deterministic integer `gene_id` to the working dataframe.
+
+After that, build each level in two conceptual stages:
+
+1. decide which rows belong to that level;
+2. choose the physical row-group layout for those rows.
+
+For the finest unsampled level:
+
+1. compute `tile_x`, `tile_y`, `tile_id`, `x_rel`, and `y_rel`;
+2. keep `tile_id`, `tile_x`, `tile_y`, `x_rel`, `y_rel`, `gene_id`, and optional `transcript_id`;
+3. repartition or group rows by `(tile_x, tile_y, gene_id)`;
+4. within each group, sort rows deterministically if stable intra-group ordering is desired;
+5. write one row group per group, or several row groups when the group exceeds a chosen shard limit;
+6. add one row to `manifest.parquet` per written row group;
+7. add one row to `tile_gene_index.parquet` per written `(tile, gene, shard)` row group.
+
+For coarser sampled levels, keep the same sampling strategy as the main plan:
+
+1. take candidate rows from the previously constructed finer level;
+2. reconstruct absolute coordinates from the finer level's tile-local coordinates;
+3. annotate those candidates for the current coarser level;
+4. sample spatially within each current-level coarse tile;
+5. write sampled rows with current-level tile-local coordinates.
+
+At that point there are two reasonable storage options:
+
+- keep coarse sampled levels tile-grouped and make only the finest unsampled level gene-aware first;
+- or apply the same `(tile, gene_id)` row-group layout to every level for a uniform reader contract.
+
+The recommended first extension is the narrower one: make the finest unsampled level gene-aware first, then extend coarse levels only if later profiling shows it is worth the extra complexity.
+
+### Build-Time Knobs
+
+In a gene-aware exact layout, do not reuse `coarse_tile_budget` as the shard limit for `(tile, gene)` groups. Keep a separate implementation parameter such as:
+
+```python
+max_points_per_gene_shard = 50_000
+```
+
+That parameter controls how many rows can go into one exact row group for a single `(tile, gene_id)` group.
+
+The coarse sampling budget remains a separate concern:
+
+- `coarse_tile_budget`: how many representative points may be stored in one coarse sampled tile;
+- `max_points_per_gene_shard`: how many rows may be stored in one exact `(tile, gene)` row-group shard.
+
+### Why This Helps
+
+With the current spatial-first layout, a rare-gene exact view still has to:
+
+1. compute visible exact tiles;
+2. read each visible exact tile row group;
+3. filter by `gene_id` after load.
+
+With a gene-aware exact layout, the reader can instead:
+
+1. compute visible exact tiles;
+2. query `tile_gene_index.parquet` for matching `(level, tile, gene_id)` rows;
+3. skip visible tiles that do not contain the selected gene;
+4. read only the referenced row groups;
+5. reconstruct absolute coordinates from `x_rel` and `y_rel`.
+
+This is the key feature needed for true gene-selective exact loading.
+
+### Important Caveat
+
+A gene-aware row-group layout is not the same thing as gene-aware overview sampling.
+
+It improves how exact or sampled rows are read from disk once they have been written, but it does not by itself guarantee that rare genes remain visible in zoomed-out sampled levels. Preserving rare genes in overview levels is a separate sampling-policy question.
 
 ## Deliberately Deferred
 
@@ -474,9 +1123,10 @@ Do not include these in the first writer:
 - applying or resolving `SpatialData` coordinate transformations;
 - Morton ordering inside tiles;
 - coordinate quantization;
+- gene-aware exact row-group layout and `tile_gene_index.parquet` (Phase 3);
 - per-gene offsets inside each tile;
-- gene-aware overview sampling;
-- napari camera/controller integration;
+- gene-aware overview sampling (Phase 2);
+- napari camera/controller integration (Phase 1C and later);
 - remote zarr stores.
 
 These are all useful, but they should come after the on-disk contract is proven and benchmarked.

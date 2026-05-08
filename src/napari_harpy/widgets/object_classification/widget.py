@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from qtpy.QtCore import QSignalBlocker, Qt
 from qtpy.QtGui import QKeySequence, QPixmap, QShortcut
 from qtpy.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -41,7 +42,10 @@ from napari_harpy.core.spatialdata import (
     get_table_obsm_keys,
     validate_table_binding,
 )
-from napari_harpy.widgets.object_classification.annotation_controller import AnnotationController
+from napari_harpy.widgets.object_classification.annotation_controller import (
+    AnnotationController,
+    UserClassAnnotationChange,
+)
 from napari_harpy.widgets.object_classification.controller import (
     DEFAULT_PREDICTION_SCOPE,
     DEFAULT_TRAINING_SCOPE,
@@ -64,6 +68,9 @@ from napari_harpy.widgets.object_classification.viewer_styling import (
 )
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,
+)
+from napari_harpy.widgets.shared_styles import (
+    CHECKBOX_STYLESHEET as _CHECKBOX_STYLESHEET,
 )
 from napari_harpy.widgets.shared_styles import (
     WIDGET_BORDER_COLOR,
@@ -140,6 +147,7 @@ class ObjectClassificationWidget(QWidget):
         self._classifier_controller = ClassifierController(
             on_state_changed=self._on_classifier_state_changed,
             on_table_state_changed=self._on_classifier_table_state_changed,
+            on_prediction_state_changed=self._on_classifier_prediction_state_changed,
         )
         self._viewer_styling_controller = ViewerStylingController(
             self._app_state.viewer_adapter,
@@ -159,6 +167,7 @@ class ObjectClassificationWidget(QWidget):
         self._selected_feature_key: str | None = None
         self._selected_training_scope: ClassifierScopeMode = DEFAULT_TRAINING_SCOPE
         self._selected_prediction_scope: ClassifierScopeMode = DEFAULT_PREDICTION_SCOPE
+        self._auto_train_enabled = False
         self._logo_path = Path(__file__).resolve().parents[4] / "docs" / "_static" / "logo.png"
 
         layout = QVBoxLayout(self)
@@ -265,6 +274,14 @@ class ObjectClassificationWidget(QWidget):
         persistence_action_layout = QHBoxLayout(self.persistence_action_row)
         persistence_action_layout.setContentsMargins(0, 0, 0, 0)
         persistence_action_layout.setSpacing(8)
+        self.auto_train_checkbox = QCheckBox("Auto train")
+        self.auto_train_checkbox.setObjectName("auto_train_checkbox")
+        self.auto_train_checkbox.setChecked(False)
+        self.auto_train_checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.auto_train_checkbox.setStyleSheet(_CHECKBOX_STYLESHEET)
+        self.auto_train_checkbox.toggled.connect(self._on_auto_train_toggled)
+        self._update_auto_train_tooltip()
+
         self.retrain_button = QPushButton("Train Classifier")
         self.retrain_button.setObjectName("retrain_button")
         self.retrain_button.clicked.connect(self._retrain_classifier)
@@ -328,6 +345,7 @@ class ObjectClassificationWidget(QWidget):
         class_action_layout.addWidget(self.apply_class_button, 1)
         class_action_layout.addWidget(self.clear_class_button, 1)
         class_editor_layout.addWidget(self.class_action_row)
+        retrain_action_layout.addWidget(self.auto_train_checkbox)
         retrain_action_layout.addWidget(self.retrain_button, 1)
         retrain_action_layout.addWidget(self.export_classifier_button, 1)
         persistence_action_layout.addWidget(self.sync_button, 1)
@@ -851,6 +869,11 @@ class ObjectClassificationWidget(QWidget):
         self._set_selected_prediction_scope(index)
         self._bind_current_selection(classifier_dirty_reason="the prediction scope changed")
 
+    def _on_auto_train_toggled(self, checked: bool) -> None:
+        self._auto_train_enabled = bool(checked)
+        self._update_auto_train_tooltip()
+        self._update_classifier_controls()
+
     def _on_color_by_changed(self, index: int) -> None:
         color_by = self.color_by_combo.itemData(index)
         if not isinstance(color_by, str):
@@ -1241,16 +1264,21 @@ class ObjectClassificationWidget(QWidget):
 
         self._set_tooltip(self.training_scope_combo, training_scope_tooltip)
         self._set_tooltip(self.prediction_scope_combo, prediction_scope_tooltip)
+        classifier_preparation_summary = self._classifier_controller.describe_current_preparation()
         classifier_preparation_spec = build_object_classification_classifier_preparation_card_spec(
             selected_segmentation_name=self.selected_segmentation_name,
             selected_table_name=self.selected_table_name,
             selected_feature_key=self.selected_feature_key,
             table_binding_error=self._table_binding_error,
-            summary=self._classifier_controller.describe_current_preparation(),
+            summary=classifier_preparation_summary,
         )
         self._apply_status_card_spec(self.classifier_preparation_status, classifier_preparation_spec)
 
-        can_retrain = self._classifier_controller.can_retrain
+        can_retrain = (
+            classifier_preparation_summary is not None
+            and classifier_preparation_summary.eligible
+            and not self._classifier_controller.is_training
+        )
         self.retrain_button.setEnabled(can_retrain)
         can_export = self._classifier_controller.can_export_classifier
         self.export_classifier_button.setEnabled(can_export)
@@ -1263,6 +1291,8 @@ class ObjectClassificationWidget(QWidget):
             tooltip = "Choose a feature matrix before training the classifier."
         elif self._classifier_controller.is_training:
             tooltip = "A classifier training job is currently running."
+        elif classifier_preparation_summary is not None and not classifier_preparation_summary.eligible:
+            tooltip = classifier_preparation_summary.reason
         elif self._classifier_controller.is_dirty:
             tooltip = "The classifier model is stale. Click Train Classifier to refresh predictions."
         else:
@@ -1471,23 +1501,35 @@ class ObjectClassificationWidget(QWidget):
         self._update_selection_status_card()
         self._update_annotation_controls()
 
-    def _on_annotation_changed(self) -> None:
+    def _on_annotation_changed(self, change: UserClassAnnotationChange) -> None:
         self._mark_persistence_dirty()
         self._classifier_controller.mark_dirty(reason="the annotations changed")
-        self._refresh_layer_styling()
-        self._classifier_controller.schedule_retrain()
+        self._refresh_after_user_class_annotation(change)
+        if self._auto_train_enabled:
+            self._classifier_controller.schedule_retrain()
         self._update_selection_status()
 
     def _on_classifier_table_state_changed(self) -> None:
+        # A prediction change is also a table-state change, but not every
+        # table-state change affects labels-layer styling. This callback is for
+        # persistence/export state.
         self._mark_persistence_dirty()
         self._update_persistence_controls()
 
+    def _on_classifier_prediction_state_changed(self) -> None:
+        # Prediction changes are the classifier-owned table changes that affect
+        # labels-layer coloring/features.
+        self._refresh_layer_styling()
+
     def _on_classifier_state_changed(self) -> None:
         self._update_classifier_feedback()
-        self._refresh_layer_styling()
         self._update_classifier_controls()
 
     def _retrain_classifier(self) -> None:
+        if not self._classifier_controller.can_retrain:
+            self._update_classifier_controls()
+            return
+
         self._classifier_controller.mark_dirty(reason="the user requested classifier training")
         self._classifier_controller.retrain_now()
         self._update_selection_status()
@@ -1537,6 +1579,39 @@ class ObjectClassificationWidget(QWidget):
 
     def _refresh_layer_styling(self) -> None:
         self._viewer_styling_controller.refresh()
+
+    def _refresh_after_user_class_annotation(self, change: UserClassAnnotationChange) -> None:
+        """Refresh labels after one annotation, preferring row-scoped updates.
+
+        To keep annotation responsive, try the narrowest safe viewer update
+        before falling back to a full layer refresh:
+
+        - `user_class` coloring: update the edited label color and feature row
+        - prediction coloring: update only the edited `user_class` feature row
+        - other modes or unsafe layer state: perform a full refresh
+        """
+        color_by = self._viewer_styling_controller.color_by
+        if color_by == COLOR_BY_USER_CLASS:
+            if self._viewer_styling_controller.refresh_user_class_colormap_and_feature(change):
+                return
+            self._refresh_layer_styling()
+            return
+
+        if color_by in (COLOR_BY_PRED_CLASS, COLOR_BY_PRED_CONFIDENCE):
+            if self._viewer_styling_controller.refresh_user_class_feature(change):
+                return
+            self._refresh_layer_styling()
+            return
+
+        self._refresh_layer_styling()
+
+    def _update_auto_train_tooltip(self) -> None:
+        if self._auto_train_enabled:
+            tooltip = "Automatically train the classifier after each annotation."
+        else:
+            tooltip = "Keep predictions stale while annotating; click Train Classifier to update predictions."
+
+        self._set_tooltip(self.auto_train_checkbox, tooltip)
 
     def _mark_persistence_dirty(self) -> None:
         self._persistence_controller.mark_dirty()

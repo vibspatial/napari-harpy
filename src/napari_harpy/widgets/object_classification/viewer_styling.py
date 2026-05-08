@@ -39,6 +39,8 @@ if TYPE_CHECKING:
     from anndata import AnnData
     from spatialdata import SpatialData
 
+    from napari_harpy.widgets.object_classification.annotation_controller import UserClassAnnotationChange
+
 COLOR_BY_USER_CLASS = USER_CLASS_COLUMN
 COLOR_BY_PRED_CLASS = PRED_CLASS_COLUMN
 COLOR_BY_PRED_CONFIDENCE = PRED_CONFIDENCE_COLUMN
@@ -111,19 +113,28 @@ class ViewerStylingController:
 
     def refresh(self) -> None:
         """Refresh labels-layer colors and features from the current table state."""
-        self.refresh_layer_colors()
-        self.refresh_layer_features()
-
-    def refresh_layer_colors(self) -> None:
-        """Apply the current `color_by` mode to the bound labels layer."""
         if self._labels_layer is None:
             return
 
         feature_rows = self._get_region_feature_rows()
-        color_dict: dict[int | None, Any] = {
-            None: UNLABELED_COLOR,
-            0: "transparent",
-        }
+        self.refresh_layer_colors(feature_rows=feature_rows)
+        self.refresh_layer_features(feature_rows=feature_rows)
+
+    def refresh_layer_colors(self, *, feature_rows: pd.DataFrame | None = None) -> None:
+        """Apply the current `color_by` mode to the bound labels layer.
+
+        Direct annotation happy paths should use row-scoped refresh helpers
+        instead. Prediction color repainting should reach this full refresh path
+        when the classifier actually writes predictions, via
+        `ObjectClassificationWidget._on_classifier_prediction_state_changed()`.
+        """
+        if self._labels_layer is None:
+            return
+
+        if feature_rows is None:
+            feature_rows = self._get_region_feature_rows()
+
+        color_dict = _base_labels_color_dict(UNLABELED_COLOR)
         instance_ids = feature_rows.index.to_numpy(dtype=np.int64, copy=False)
 
         if self._color_by == COLOR_BY_PRED_CONFIDENCE:
@@ -150,27 +161,138 @@ class ViewerStylingController:
                 unlabeled_color=UNLABELED_COLOR,
             )
             unlabeled_color = class_color_lookup.get(UNLABELED_CLASS, UNLABELED_COLOR)
-            color_dict[None] = unlabeled_color
-            for instance_id in instance_ids:
-                class_id = int(class_by_instance.at[instance_id])
-                color_dict[instance_id] = class_color_lookup.get(class_id, unlabeled_color)
+            color_dict = _base_labels_color_dict(unlabeled_color)
+            if self._color_by == COLOR_BY_USER_CLASS:
+                class_by_instance = class_by_instance[class_by_instance != UNLABELED_CLASS]
+
+            for instance_id, class_id_value in class_by_instance.items():
+                class_id = int(class_id_value)
+                if self._color_by == COLOR_BY_USER_CLASS and class_id == UNLABELED_CLASS:
+                    continue
+                color_dict[int(instance_id)] = class_color_lookup.get(class_id, unlabeled_color)
 
         self._labels_layer.colormap = DirectLabelColormap(color_dict=color_dict, background_value=0)
         refresh = getattr(self._labels_layer, "refresh", None)
         if callable(refresh):
             refresh()
 
-    def refresh_layer_features(self) -> None:
+    def refresh_layer_features(self, *, feature_rows: pd.DataFrame | None = None) -> None:
         """Expose current label and prediction values as napari layer features."""
         if self._labels_layer is None:
             return
+
+        if feature_rows is None:
+            feature_rows = self._get_region_feature_rows()
 
         instance_key = "instance_id"  # defensive fallback for the no metadata case.
         if self._selected_table_metadata is not None:
             instance_key = self._selected_table_metadata.instance_key
         self._labels_layer.features = _build_labels_features(
-            self._get_region_feature_rows(),
+            feature_rows,
             instance_key=instance_key,
+        )
+
+    def refresh_user_class_colormap_and_feature(self, change: UserClassAnnotationChange) -> bool:
+        """Refresh one user-class annotation in labels colors and features.
+
+        Returns ``True`` when the row-scoped update was fully applied. Returns
+        ``False`` when the caller should fall back to a normal full refresh.
+        """
+        if self._labels_layer is None or self._color_by != COLOR_BY_USER_CLASS:
+            return False
+        if change.class_id < UNLABELED_CLASS:
+            return False
+
+        # `set_user_class_for_rows(...)` has already added any new category and
+        # synced `USER_CLASS_COLORS_KEY`, so newly introduced classes can use the
+        # strict palette lookup below without full-column normalization.
+        color_dict = self._build_user_class_annotation_color_dict(change)
+        feature_rows = self._build_user_class_annotation_features(change)
+        if color_dict is None or feature_rows is None:
+            return False
+
+        self._labels_layer.colormap = DirectLabelColormap(color_dict=color_dict, background_value=0)
+        self._labels_layer.features = feature_rows
+        refresh = getattr(self._labels_layer, "refresh", None)
+        if callable(refresh):
+            refresh()
+
+        return True
+
+    def refresh_user_class_feature(self, change: UserClassAnnotationChange) -> bool:
+        """Refresh one user-class feature value without repainting label colors.
+
+        This is the direct-annotation fast path for prediction color modes:
+        annotation changes `user_class`, while `pred_class`/`pred_confidence`
+        colors are refreshed only when the classifier writes predictions.
+        """
+        if self._labels_layer is None:
+            return False
+        if change.class_id < UNLABELED_CLASS:
+            return False
+
+        feature_rows = self._build_user_class_annotation_features(change)
+        if feature_rows is None:
+            return False
+
+        self._labels_layer.features = feature_rows
+        return True
+
+    def _build_user_class_annotation_color_dict(
+        self,
+        change: UserClassAnnotationChange,
+    ) -> dict[int | None, Any] | None:
+        colormap = getattr(self._labels_layer, "colormap", None)
+        if not isinstance(colormap, DirectLabelColormap):
+            return None
+
+        class_color_lookup = self._get_valid_user_class_color_lookup()
+        if class_color_lookup is None:
+            return None
+
+        color_dict = dict(colormap.color_dict)
+        instance_id = int(change.instance_id)
+        class_id = int(change.class_id)
+        if class_id == UNLABELED_CLASS:
+            color_dict.pop(instance_id, None)
+            return color_dict
+
+        class_color = class_color_lookup.get(class_id)
+        if class_color is None:
+            return None
+
+        color_dict[instance_id] = class_color
+        return color_dict
+
+    def _build_user_class_annotation_features(
+        self,
+        change: UserClassAnnotationChange,
+    ) -> pd.DataFrame | None:
+        features = getattr(self._labels_layer, "features", None)
+        if not isinstance(features, pd.DataFrame) or features.empty:
+            return None
+        if "index" not in features or USER_CLASS_COLUMN not in features:
+            return None
+
+        feature_index = pd.to_numeric(features["index"], errors="coerce")
+        matching_rows = feature_index == int(change.instance_id)
+        if int(matching_rows.sum()) != 1:
+            return None
+
+        updated_features = features.copy()
+        updated_features.loc[matching_rows, USER_CLASS_COLUMN] = int(change.class_id)
+        return updated_features
+
+    def _get_valid_user_class_color_lookup(self) -> dict[int, str] | None:
+        table = self._get_bound_table()
+        if table is None or USER_CLASS_COLUMN not in table.obs:
+            return None
+
+        return _valid_categorical_class_color_lookup(
+            table.obs[USER_CLASS_COLUMN],
+            table.uns.get(USER_CLASS_COLORS_KEY),
+            unlabeled_class=UNLABELED_CLASS,
+            unlabeled_color=UNLABELED_COLOR,
         )
 
     def _get_bound_table(self) -> AnnData | None:
@@ -194,6 +316,12 @@ class ViewerStylingController:
         return region_rows.set_index(metadata.instance_key)
 
     def _get_region_feature_rows(self) -> pd.DataFrame:
+        """Return normalized labels features for the selected segmentation region.
+
+        The returned rows are indexed by label/instance id and include
+        `user_class`, `pred_class`, and `pred_confidence`. This is scoped to the
+        currently selected labels element, not necessarily the complete table.
+        """
         region_rows = self._get_region_rows_by_instance()
         feature_rows = pd.DataFrame(index=region_rows.index.astype("int64", copy=False))
         feature_rows.index.name = "index"
@@ -256,6 +384,61 @@ class ViewerStylingController:
         """
         table = self._get_bound_table()
 
+        if table is not None and category_column == USER_CLASS_COLUMN and category_column in table.obs:
+            fast_lookup = _valid_categorical_class_color_lookup(
+                table.obs[category_column],
+                table.uns.get(colors_key),
+                unlabeled_class=unlabeled_class,
+                unlabeled_color=unlabeled_color,
+            )
+            if fast_lookup is not None:
+                categories = set(fast_lookup)
+                if extra_class_values is not None:
+                    # Happy path: `feature_rows` already contains clean integer class ids,
+                    # so we can include them without the expensive `normalize_class_values(...)`
+                    # scan over the full table column again.
+                    extra_class_ids = _read_class_values_without_normalizing(
+                        extra_class_values,
+                        unlabeled_class=unlabeled_class,
+                    )
+                    if extra_class_ids is None:
+                        # Defensive fallback for unexpected dirty feature values. This preserves
+                        # robust class-value normalization instead of trusting a corrupt fast path.
+                        return self._get_class_color_lookup_from_normalized_values(
+                            category_column=category_column,
+                            colors_key=colors_key,
+                            unlabeled_class=unlabeled_class,
+                            unlabeled_color=unlabeled_color,
+                            extra_class_values=extra_class_values,
+                        )
+                    categories.update(extra_class_ids)
+
+                return backfill_missing_class_colors(
+                    fast_lookup,
+                    sorted(categories),
+                    unlabeled_class=unlabeled_class,
+                    unlabeled_color=unlabeled_color,
+                )
+
+        return self._get_class_color_lookup_from_normalized_values(
+            category_column=category_column,
+            colors_key=colors_key,
+            unlabeled_class=unlabeled_class,
+            unlabeled_color=unlabeled_color,
+            extra_class_values=extra_class_values,
+        )
+
+    def _get_class_color_lookup_from_normalized_values(
+        self,
+        *,
+        category_column: str,
+        colors_key: str,
+        unlabeled_class: int = UNLABELED_CLASS,
+        unlabeled_color: str = UNLABELED_COLOR,
+        extra_class_values: pd.Series | None = None,
+    ) -> dict[int, str]:
+        table = self._get_bound_table()
+
         categories = {unlabeled_class}
         # Include every class id currently present in the bound table column, not just the active region.
         if table is not None and category_column in table.obs:
@@ -315,3 +498,68 @@ def _to_numeric_values(values: pd.Series, column_name: str) -> pd.Series:
     numeric_values = pd.to_numeric(values, errors="coerce").astype("float64")
     numeric_values.name = column_name
     return numeric_values
+
+
+def _valid_categorical_class_color_lookup(
+    values: pd.Series,
+    stored_colors: Any,
+    *,
+    unlabeled_class: int,
+    unlabeled_color: str,
+) -> dict[int, str] | None:
+    categories = _read_valid_categorical_class_categories(values, unlabeled_class=unlabeled_class)
+    existing_colors = normalize_color_sequence(stored_colors)
+    if categories is None or existing_colors is None or len(existing_colors) != len(categories):
+        return None
+
+    return stored_palette_to_lookup(
+        categories,
+        existing_colors,
+        unlabeled_class=unlabeled_class,
+        unlabeled_color=unlabeled_color,
+    )
+
+
+def _read_valid_categorical_class_categories(values: pd.Series, *, unlabeled_class: int) -> list[int] | None:
+    if not isinstance(values.dtype, pd.CategoricalDtype):
+        return None
+
+    categories: list[int] = []
+    for category in values.cat.categories:
+        if isinstance(category, (bool, np.bool_)) or not isinstance(category, (int, np.integer)):
+            return None
+        class_id = int(category)
+        if class_id < unlabeled_class or category != class_id:
+            return None
+        categories.append(class_id)
+
+    if categories != sorted(categories):
+        return None
+    if len(categories) != len(set(categories)):
+        return None
+    if unlabeled_class not in categories:
+        return None
+    if bool((values.cat.codes.to_numpy(copy=False) < 0).any()):
+        return None
+
+    return categories
+
+
+def _read_class_values_without_normalizing(values: pd.Series, *, unlabeled_class: int) -> set[int] | None:
+    categories: set[int] = set()
+    for value in values.to_numpy(copy=False):
+        if pd.isna(value):
+            return None
+        try:
+            class_id = int(value)
+        except (TypeError, ValueError):
+            return None
+        if class_id < unlabeled_class or value != class_id:
+            return None
+        categories.add(class_id)
+
+    return categories
+
+
+def _base_labels_color_dict(default_color: Any) -> dict[int | None, Any]:
+    return {None: default_color, 0: "transparent"}
