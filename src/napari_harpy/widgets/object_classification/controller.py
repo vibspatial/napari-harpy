@@ -271,7 +271,11 @@ class ClassifierController:
     @property
     def can_retrain(self) -> bool:
         """Return whether the current classifier inputs support a retrain request."""
-        return self._get_bound_table() is not None and self._selected_feature_key is not None and not self.is_training
+        if self.is_training:
+            return False
+
+        summary = self._prepare_classifier_summary()
+        return summary is not None and summary.eligible
 
     @property
     def can_export_classifier(self) -> bool:

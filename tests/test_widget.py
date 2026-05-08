@@ -978,6 +978,29 @@ def test_widget_shows_eligible_classifier_preparation_summary(qtbot, sdata_blobs
     assert "Need at least" not in preparation_text
 
 
+def test_widget_disables_retrain_button_when_preparation_is_not_trainable(
+    qtbot, sdata_blobs: SpatialData
+) -> None:
+    table = sdata_blobs["table"]
+    instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(
+        [1 if int(instance_id) in {1, 2} else 0 for instance_id in instance_ids],
+        categories=[0, 1],
+    )
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    tooltip = unescape(widget.retrain_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+
+    assert not widget.retrain_button.isEnabled()
+    assert "Need at least two labeled classes" in widget.classifier_preparation_status.text()
+    assert "Need at least two labeled classes" in tooltip
+
+
 def test_widget_refreshes_feature_matrix_selector_when_first_key_is_written(qtbot, sdata_blobs: SpatialData) -> None:
     table = sdata_blobs["table"]
     for key in list(table.obsm.keys()):
@@ -2133,6 +2156,12 @@ def test_widget_exposes_label_metadata_in_napari_status_bar(qtbot, sdata_blobs: 
 
 
 def test_widget_retrain_button_triggers_manual_retraining(qtbot, monkeypatch, sdata_blobs: SpatialData) -> None:
+    table = sdata_blobs["table"]
+    instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(
+        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
+        categories=[0, 1, 2],
+    )
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
     widget = HarpyWidget(viewer)
@@ -2148,6 +2177,7 @@ def test_widget_retrain_button_triggers_manual_retraining(qtbot, monkeypatch, sd
     monkeypatch.setattr(widget._classifier_controller, "retrain_now", fake_retrain_now)
 
     assert widget.auto_train_checkbox.isChecked() is False
+    assert widget.retrain_button.isEnabled()
 
     widget.retrain_button.click()
 

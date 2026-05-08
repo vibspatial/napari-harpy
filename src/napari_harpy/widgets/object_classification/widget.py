@@ -1261,16 +1261,21 @@ class ObjectClassificationWidget(QWidget):
 
         self._set_tooltip(self.training_scope_combo, training_scope_tooltip)
         self._set_tooltip(self.prediction_scope_combo, prediction_scope_tooltip)
+        classifier_preparation_summary = self._classifier_controller.describe_current_preparation()
         classifier_preparation_spec = build_object_classification_classifier_preparation_card_spec(
             selected_segmentation_name=self.selected_segmentation_name,
             selected_table_name=self.selected_table_name,
             selected_feature_key=self.selected_feature_key,
             table_binding_error=self._table_binding_error,
-            summary=self._classifier_controller.describe_current_preparation(),
+            summary=classifier_preparation_summary,
         )
         self._apply_status_card_spec(self.classifier_preparation_status, classifier_preparation_spec)
 
-        can_retrain = self._classifier_controller.can_retrain
+        can_retrain = (
+            classifier_preparation_summary is not None
+            and classifier_preparation_summary.eligible
+            and not self._classifier_controller.is_training
+        )
         self.retrain_button.setEnabled(can_retrain)
         can_export = self._classifier_controller.can_export_classifier
         self.export_classifier_button.setEnabled(can_export)
@@ -1283,6 +1288,8 @@ class ObjectClassificationWidget(QWidget):
             tooltip = "Choose a feature matrix before training the classifier."
         elif self._classifier_controller.is_training:
             tooltip = "A classifier training job is currently running."
+        elif classifier_preparation_summary is not None and not classifier_preparation_summary.eligible:
+            tooltip = classifier_preparation_summary.reason
         elif self._classifier_controller.is_dirty:
             tooltip = "The classifier model is stale. Click Train Classifier to refresh predictions."
         else:
@@ -1516,6 +1523,10 @@ class ObjectClassificationWidget(QWidget):
         self._update_classifier_controls()
 
     def _retrain_classifier(self) -> None:
+        if not self._classifier_controller.can_retrain:
+            self._update_classifier_controls()
+            return
+
         self._classifier_controller.mark_dirty(reason="the user requested classifier training")
         self._classifier_controller.retrain_now()
         self._update_selection_status()

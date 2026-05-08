@@ -605,6 +605,22 @@ def test_classifier_controller_describes_current_preparation_without_building_wo
     assert summary.eligible is True
 
 
+def test_classifier_controller_can_retrain_requires_trainable_preparation(sdata_blobs: SpatialData) -> None:
+    _set_deterministic_features(sdata_blobs)
+    controller = ClassifierController(debounce_interval_ms=0)
+    controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
+
+    assert controller.can_retrain is False
+
+    _set_user_classes(sdata_blobs, {1: 1, 2: 1})
+
+    assert controller.can_retrain is False
+
+    _set_user_classes(sdata_blobs, {1: 1, 24: 2})
+
+    assert controller.can_retrain is True
+
+
 def test_classifier_controller_resets_predictions_when_only_one_class_is_labeled(
     qtbot, sdata_blobs: SpatialData
 ) -> None:
