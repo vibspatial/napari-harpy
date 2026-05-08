@@ -366,7 +366,7 @@ Status:
 - Verified with `ruff check src/napari_harpy/_transcript_tiles.py tests/test_transcript_tiles.py`
 - The points-element validation contract currently lives in the private `_validate_points_element(...)` helper
 - Cache build parameter validation currently lives at the start of `_compute_transcript_tile_cache_metadata(...)`
-- Public writer wiring remains part of Step 10
+- Public writer wiring remains part of Step 11
 
 Implement validation before any output directory is created so later failures are clearer and failed inputs do not leave cache artifacts behind.
 
@@ -854,15 +854,41 @@ Do not include `is_exact`; readers derive exact/sampled status from `metadata.js
 
 Once the finest unsampled level works, add coarse levels.
 
+In this slice, "candidate rows" and "sampled rows" mean cache point rows: one row per transcript point carried forward from the finer level.
+They do not mean Parquet row groups.
+Parquet row groups are physical storage chunks written later by `_write_level_dataset(...)`, after point-row sampling is complete.
+
 For each level from `finest_level - 1` down to `0`:
 
-1. take candidate rows from the previously constructed finer level, starting from the finest unsampled level
+1. take candidate point rows from the previously constructed finer level, starting from the finest unsampled level
 2. reconstruct absolute coordinates from the finer level's `tile_x`, `tile_y`, `x_rel`, and `y_rel`
-3. annotate those candidate rows for the current coarser level
-4. subdivide each current-level coarse tile into a fixed micro-grid
-5. allocate `coarse_tile_budget` across occupied micro-grid cells
-6. choose deterministic representative points within each occupied cell
-7. write the current coarser level's row groups and manifest rows
+3. annotate those candidate point rows for the current coarser level
+4. for each current-level coarse tile, compute a deterministic pseudo-random sampling key from stable row identity
+5. order candidate point rows by that sampling key, with stable row identity as a tie-breaker
+6. keep the first `coarse_tile_budget` point rows for that tile
+7. write the selected point rows to Parquet row groups with `_write_level_dataset(...)`
+
+Do not use micro-grid bins in Slice 8.
+For the first implementation, use naive deterministic per-tile sampling:
+
+```text
+For each coarse tile:
+  compute a deterministic pseudo-random sampling key from stable row identity
+  order candidate point rows by sampling key and stable identity
+  keep first coarse_tile_budget point rows
+```
+
+Required guarantees:
+
+- deterministic sampling
+- at most `coarse_tile_budget` point rows per sampled coarse tile
+- no gene-aware behavior yet
+- no attempt to preserve sparse spatial regions inside a coarse tile yet
+- clearly documented limitation: dense hotspots may dominate coarse overviews
+
+The sampling key is computed for each candidate point row, not for a Parquet row group.
+For example, if one coarse tile has 2,000,000 candidate transcript rows and `coarse_tile_budget = 50_000`, the sampler keeps 50,000 point rows.
+Only after this selection does `_write_level_dataset(...)` split those selected point rows into Parquet row groups according to `max_rows_per_row_group`.
 
 For a row from the previously constructed finer level, reconstruct absolute coordinates before current-level annotation:
 
@@ -901,79 +927,62 @@ That tradeoff is acceptable for the first spatial-first visualization cache.
 
 Future quality improvements can revisit canonical-source-per-level sampling if benchmarks or visual QA show that compounded sampling loss is a real problem.
 
-The micro-grid is used to make overview sampling spatially even.
-Without it, a deterministic whole-tile sample can be dominated by the densest hotspot in a coarse tile and may erase sparse spatial regions.
-The micro-grid splits each coarse tile into small bins, gives occupied bins some representation when the budget allows, and then gives dense bins more of the remaining budget.
+Stable row identity should be:
 
-`cell_id` is the stable identifier for one of those micro-grid bins.
-For an `8 x 8` grid, one simple implementation is:
+- the validated `transcript_id` column when provided
+- otherwise a private internal build row id created before coarse sampling and propagated through sampled levels
 
-```text
-cell_x = floor((x_rel / tile_size) * 8)
-cell_y = floor((y_rel / tile_size) * 8)
-cell_id = cell_y * 8 + cell_x
-```
+Stable row identity is not itself the sampling order.
+It is the input to a deterministic pseudo-random sampling key.
+This avoids biasing sampled overviews toward the source dataframe order, which may already be spatially sorted.
 
-Clamp `cell_x` and `cell_y` to `0..7` as a defensive guard against floating-point edge cases.
-Sampling then happens within each `cell_id`, which keeps sparse occupied areas visible while still allowing dense areas to contribute more representatives.
-
-Example quota allocation for one coarse tile:
+Recommended sampling key:
 
 ```text
-coarse_tile_budget = 10
-
-cell_id  occupancy
-0        900
-1        80
-2        20
-3        1
+sampling_key = stable_hash(level, tile_x, tile_y, stable_row_identity)
 ```
 
-First give each occupied cell quota `1`, using `4` of the `10` slots.
-The remaining `6` slots are distributed in proportion to occupancy.
-The proportional extra quotas are approximately `5.39`, `0.48`, `0.12`, and `0.006`.
-Take the integer floors first, then give the one leftover slot to the largest fractional remainder.
-The final quotas are:
+Then sort within each coarse tile by:
 
 ```text
-cell_id  quota
-0        6
-1        2
-2        1
-3        1
+sampling_key, stable_row_identity
 ```
 
-If two cells have the same fractional remainder, break ties deterministically by `cell_id`.
+Never use Python's built-in `hash()` for this key because it is intentionally randomized between processes.
+Use a stable implementation such as `hashlib.blake2b(...)`, `pandas.util.hash_pandas_object(...)`, or another deterministic `uint64` hash.
 
-Recommended first implementation choices:
+The internal row id must be unique within one build.
+It only supports deterministic coarse-level sampling across rebuilds when input dataframe row order and partitioning are stable.
+A practical deterministic internal row id implementation is to compute partition lengths, derive cumulative partition offsets, and assign `uint64` row ids within each partition as `partition_offset + row_position`.
 
-- keep the micro-grid size as a private constant and start with `8 x 8`
-- compute a deterministic `cell_id` from the per-tile micro-grid coordinates
-- if occupied cells `<= coarse_tile_budget`, assign quota `1` to each occupied cell, then distribute the remaining quota approximately by occupancy using a largest-remainder rule with stable tie-break on `cell_id`
-- if occupied cells `> coarse_tile_budget`, assign quota `1` only to the `coarse_tile_budget` occupied cells with highest occupancy, with stable tie-break on `cell_id`
-- if `transcript_id` is provided, compute a stable per-row ordering key from a canonical encoding of the validated `transcript_id`
-- otherwise, compute a per-row ordering key from the internal unique row id created at the finest level and propagated through sampled finer levels
-- internal row ids must be unique within one build, but they only support deterministic coarse-level sampling across rebuilds when input dataframe row order and partitioning are stable
-- a practical deterministic internal row id implementation is to compute partition lengths, derive cumulative partition offsets, and assign `uint64` row ids within each partition as `partition_offset + row_position`
-- never use Python's built-in `hash()` for sampling
-- after selecting rows from each cell, sort the final sampled rows deterministically before writing so rebuilds do not depend on Dask partition order
-- cap each sampled coarse tile at `coarse_tile_budget`
+Recommended helper split:
 
-Keep Phase 1A sampling spatial-only. Do not add gene-aware overview sampling yet.
+- `_ensure_sampling_row_identity(...)`
+- `_reconstruct_absolute_coordinates_from_level(...)`
+- `_sample_coarse_level_naively(...)`
 
-Recommended concrete deterministic algorithm for one coarse tile:
+The exact helper names do not need to match, but keep row identity, coordinate reconstruction, and per-tile sampling responsibilities separate.
 
-1. compute the micro-grid cell coordinates for every candidate row in the tile
-2. compute `cell_id` from those cell coordinates
-3. count rows per occupied cell
-4. assign cell quotas with the rules above
-5. compute one per-row ordering key from validated `transcript_id` or the propagated internal build row id
-6. within each occupied cell, sort rows by that ordering key and keep the first `quota[cell]`
-7. concatenate selected rows from all occupied cells
-8. sort the selected rows deterministically before writing
+Recommended concrete deterministic algorithm for one coarser level:
+
+1. reconstruct absolute `x` and `y` from the previously constructed finer level
+2. annotate rows for the current coarser level with `_annotate_tiles_for_level(...)`
+3. compute a stable pseudo-random `sampling_key` from `level`, `tile_x`, `tile_y`, and stable row identity
+4. sort candidate point rows within each coarse tile by `sampling_key`, then stable row identity
+5. keep the first `coarse_tile_budget` point rows per coarse tile
+6. sort the selected point rows deterministically before writing
+7. write sampled point rows with `_write_level_dataset(...)`
+
+Implementation note:
+
+- To guarantee the `coarse_tile_budget` cap globally, sampling must consider all candidate point rows for the same coarse tile, even when that tile appears in multiple Dask partitions.
+- A simple implementation may use a Dask groupby or shuffle by current-level tile for correctness.
+- A more IO-friendly implementation can first perform partition-local deterministic pre-trimming to `coarse_tile_budget` per tile, then perform a second global deterministic trim to `coarse_tile_budget` per tile before writing.
 
 When `transcript_id` is provided and validated, repeating the build with the same inputs must produce the same sampled rows even if Dask partition order changes.
 When `transcript_id` is not provided, deterministic coarse-level sampling across rebuilds is guaranteed only when input dataframe row order and partitioning are stable.
+
+Keep Phase 1A sampling spatial-only. Do not add gene-aware overview sampling yet.
 
 ### 9. `metadata.json` and `manifest.parquet`
 
@@ -1083,7 +1092,72 @@ With partition-local writing, multiple row groups may have the same `level`, `ti
 
 Write `manifest.parquet` last.
 
-### 10. Public Points Element Builder
+### 10. Deferred Micro-grid Sampling Quality
+
+This slice is intentionally deferred until after the naive deterministic coarse-level writer is working.
+Do not implement micro-grid sampling in the first Slice 8 implementation.
+
+The micro-grid idea is a future sampling-quality improvement for coarse overview levels.
+It is used to make overview sampling spatially even.
+Without it, a deterministic whole-tile sample can be dominated by the densest hotspot in a coarse tile and may erase sparse spatial regions.
+The micro-grid splits each coarse tile into small bins, gives occupied bins some representation when the budget allows, and then gives dense bins more of the remaining budget.
+
+`cell_id` is the stable identifier for one of those micro-grid bins.
+For an `8 x 8` grid, one simple implementation is:
+
+```text
+cell_x = floor((x_rel / tile_size) * 8)
+cell_y = floor((y_rel / tile_size) * 8)
+cell_id = cell_y * 8 + cell_x
+```
+
+Clamp `cell_x` and `cell_y` to `0..7` as a defensive guard against floating-point edge cases.
+Sampling then happens within each `cell_id`, which keeps sparse occupied areas visible while still allowing dense areas to contribute more representatives.
+
+Example quota allocation for one coarse tile:
+
+```text
+coarse_tile_budget = 10
+
+cell_id  occupancy
+0        900
+1        80
+2        20
+3        1
+```
+
+First give each occupied cell quota `1`, using `4` of the `10` slots.
+The remaining `6` slots are distributed in proportion to occupancy.
+The proportional extra quotas are approximately `5.39`, `0.48`, `0.12`, and `0.006`.
+Take the integer floors first, then give the one leftover slot to the largest fractional remainder.
+The final quotas are:
+
+```text
+cell_id  quota
+0        6
+1        2
+2        1
+3        1
+```
+
+If two cells have the same fractional remainder, break ties deterministically by `cell_id`.
+
+Future implementation choices:
+
+- keep the micro-grid size as a private constant and start with `8 x 8`
+- compute a deterministic `cell_id` from the per-tile micro-grid coordinates
+- if occupied cells `<= coarse_tile_budget`, assign quota `1` to each occupied cell, then distribute the remaining quota approximately by occupancy using a largest-remainder rule with stable tie-break on `cell_id`
+- if occupied cells `> coarse_tile_budget`, assign quota `1` only to the `coarse_tile_budget` occupied cells with highest occupancy, with stable tie-break on `cell_id`
+- compute one per-row ordering key from validated `transcript_id` or the propagated internal build row id
+- within each occupied cell, sort rows by that ordering key and keep the first `quota[cell]`
+- concatenate selected rows from all occupied cells
+- sort the selected rows deterministically before writing
+- cap each sampled coarse tile at `coarse_tile_budget`
+
+This slice is still spatial-only.
+Do not add gene-aware overview sampling here; that belongs to the later gene-aware overview phase.
+
+### 11. Public Points Element Builder
 
 Wire the public `build_transcript_visualization_cache_for_points_element(...)` entry point around the internal writer helpers.
 
