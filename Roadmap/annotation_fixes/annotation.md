@@ -607,7 +607,7 @@ Phase 2B should not add new cancellation behavior:
 - Clicking `Train Classifier` still runs the manual retrain path even when auto
   training is unchecked.
 
-If pending-job cancellation becomes important, handle it later with the Phase 4
+If pending-job cancellation becomes important, handle it later with the Phase 5
 timer lifecycle work rather than mixing it into the training-policy toggle.
 
 ### Edge Cases
@@ -750,7 +750,117 @@ Add tests for:
 - Persisted table state remains compatible with existing write/reload tests.
 - Classifier training still reads the expected integer class values.
 
-## Phase 4: Classifier Debounce Timer Lifecycle
+## Phase 4: Faster `user_class` Viewer Styling Refresh
+
+### Goal
+
+Reduce the remaining `ViewerStylingController.refresh()` cost for the common
+case where the user is annotating with `color_by == "user_class"` and auto
+training is disabled.
+
+Phase 1 made the resulting colormap sparse, but the refresh path still discovers
+that sparse state by scanning and rebuilding full-region table state. Phase 4
+keeps the public behavior as a full labels-layer refresh, but removes avoidable
+full-table work inside that refresh.
+
+### Measurement Snapshot
+
+Measured against:
+
+```text
+/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium_full_data_core.zarr
+labels: cell_labels_global_ROI1
+table: table_global_ROI1
+rows: 406,611
+user_class categories: [0, 1]
+nonzero user_class rows: 11
+```
+
+Current approximate timings:
+
+```text
+ViewerStylingController.refresh()              ~1.28s
+refresh_layer_colors()                         ~0.93s
+refresh_layer_features()                       ~0.35s
+_get_region_rows_by_instance()                 ~0.11s
+_get_region_feature_rows()                     ~0.34s
+_get_class_color_lookup(user_class)            ~0.24s
+sparse color loop over all 406k rows           ~0.35s
+sparse color loop over only labeled rows       ~0.0005s
+DirectLabelColormap construction/assignment    ~0.0003s
+```
+
+### Current Problem
+
+The sparse `user_class` colormap still pays several full-region costs:
+
+- `refresh()` calls `refresh_layer_colors()` and `refresh_layer_features()`;
+  each call rebuilds region feature rows independently.
+- `_get_region_feature_rows()` normalizes `user_class`, `pred_class`, and
+  `pred_confidence` for every row in the selected region.
+- `_get_class_color_lookup(...)` normalizes the full table column to discover
+  categories, even when the column is already a valid categorical column with a
+  stored palette.
+- `refresh_layer_colors()` loops over every instance id and skips unlabeled
+  rows one by one, even though the resulting colormap contains only the
+  annotated labels.
+
+### Proposed Behavior
+
+Optimize the valid `user_class` refresh path without introducing private napari
+state mutation:
+
+- In `refresh()`, compute region feature rows once and reuse them for both color
+  and feature refresh work.
+- For `color_by == "user_class"`, build the sparse color dict from only rows
+  whose normalized `user_class != 0`.
+- In `_get_class_color_lookup(...)`, use categorical categories and
+  `table.uns["user_class_colors"]` directly when the selected column is already
+  a valid categorical class column.
+- Fall back to the current full-normalization lookup path for non-categorical or
+  invalid table state.
+- Keep full explicit mappings for `pred_class` and continuous
+  `pred_confidence` unless a later measurement justifies optimizing them too.
+
+### Non-Goals
+
+- Do not mutate an existing napari colormap in place.
+- Do not update only one `layer.features` row.
+- Do not skip feature refreshes yet; this phase only removes redundant
+  rebuilding/scanning inside the current full-refresh model.
+- Do not change classifier prediction refresh behavior.
+
+### Files
+
+- `src/napari_harpy/widgets/object_classification/viewer_styling.py`
+- `tests/test_widget.py`
+- Add a focused viewer-styling test file if that keeps tests clearer.
+
+### Tests
+
+Add or update tests for:
+
+- sparse `user_class` color dict only contains nonzero user-class labels plus
+  base entries
+- existing `user_class` categorical categories and `user_class_colors` are used
+  without full-column normalization in the valid path
+- invalid/non-categorical state still falls back to the robust full
+  normalization behavior
+- `refresh()` reuses one region feature-row snapshot for color and feature
+  refresh
+- `pred_class` and `pred_confidence` behavior remains unchanged
+
+### Acceptance Criteria
+
+- User-class color refresh no longer loops over every label id just to skip
+  unlabeled cells.
+- User-class color lookup does not normalize the full table column when the
+  categorical column and palette are valid.
+- A full `refresh()` does not rebuild region feature rows twice.
+- Layer colors/features remain equivalent to the previous full-refresh
+  behavior.
+
+## Phase 5: Classifier Debounce Timer Lifecycle
 
 ### Goal
 
@@ -813,11 +923,11 @@ Add or adjust tests so that:
 - Debounced classifier behavior is unchanged while the widget is alive.
 - Worker cancellation/reload behavior remains unchanged.
 
-## Phase 5: Final Benchmark And Optional Incremental Layer Feature/Color Updates
+## Phase 6: Final Benchmark And Optional Incremental Layer Feature/Color Updates
 
 ### Goal
 
-Measure the remaining annotation cost after Phases 1-4, including Phase 2A and
+Measure the remaining annotation cost after Phases 1-5, including Phase 2A and
 Phase 2B. Only pursue incremental layer updates if those measurements show they
 are still needed.
 
@@ -832,10 +942,10 @@ This is where maintainability risk rises:
 - it couples annotation changes to layer feature layout assumptions
 - it is easy to accidentally diverge from full-refresh behavior
 
-Sparse `user_class` coloring and disabling auto-training should already remove
-the largest visible costs. Row-scoped table edits should remove another broad
-table operation. We should re-measure in this phase before adding any
-incremental layer-update code.
+Sparse `user_class` coloring, disabling auto-training, row-scoped table edits,
+and faster user-class styling refreshes should remove the largest visible
+costs. We should re-measure in this phase before adding any incremental
+layer-update code.
 
 ### Benchmark Scope
 
@@ -864,7 +974,7 @@ table: table_global_ROI1
 
 ### Acceptance Criteria Before Starting
 
-- Phases 1-4, including Phase 2A and Phase 2B, have landed.
+- Phases 1-5, including Phase 2A and Phase 2B, have landed.
 - Benchmarks still show annotation lag dominated by `layer.features` refresh or
   colormap assignment.
 - We have a small, documented napari-compatible API surface for refreshing a
@@ -875,11 +985,12 @@ table: table_global_ROI1
 1. Phase 1: Sparse `user_class` colormap.
 2. Phase 2A: Split classifier status from prediction-table refresh.
 3. Phase 2B: Auto-training checkbox.
-4. Phase 4: Classifier timer lifecycle.
-5. Phase 3: Row-scoped `user_class` edits.
-6. Phase 5: benchmark, then only add incremental layer updates if still needed.
+4. Phase 3: Row-scoped `user_class` edits.
+5. Phase 4: Faster `user_class` viewer styling refresh.
+6. Phase 5: Classifier timer lifecycle.
+7. Phase 6: benchmark, then only add incremental layer updates if still needed.
 
-The timer fix can land before Phase 2A, Phase 2B, or Phase 3 if tests expose
+The timer fix can land before Phase 2A, Phase 2B, Phase 3, or Phase 4 if tests expose
 the stale callback race earlier.
 
 ## Verification Matrix
