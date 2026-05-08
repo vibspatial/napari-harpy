@@ -450,6 +450,22 @@ Add or update tests for:
 
 ## Phase 2B: Manual/Automatic Classifier Training Toggle
 
+**Status: Implemented.**
+
+Implemented details:
+
+- Added an `Auto train` checkbox before `Train Classifier`.
+- Auto train is unchecked by default.
+- Annotation edits always mark persistence dirty, mark classifier outputs stale,
+  and refresh annotation styling.
+- Annotation edits only call `schedule_retrain()` when auto train is checked.
+- `Train Classifier` remains the manual training path when auto train is
+  unchecked.
+- The checkbox uses the shared widget checkbox stylesheet so it stays readable
+  on the object-classification panel.
+- The manual train button is enabled only when classifier preparation is
+  trainable, preserving the previous behavior for one-class/no-label states.
+
 ### Goal
 
 Add a checkbox that lets users disable automatic classifier retraining after
