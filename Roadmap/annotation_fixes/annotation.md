@@ -822,6 +822,94 @@ state mutation:
 - Keep full explicit mappings for `pred_class` and continuous
   `pred_confidence` unless a later measurement justifies optimizing them too.
 
+### Implementation Details
+
+Keep this phase as a full layer refresh. The implementation should reduce how
+much table work is repeated inside that refresh, not introduce incremental
+napari state mutation.
+
+Suggested structure:
+
+```python
+def refresh(self) -> None:
+    if self._labels_layer is None:
+        return
+
+    feature_rows = self._get_region_feature_rows()
+    self.refresh_layer_colors(feature_rows=feature_rows)
+    self.refresh_layer_features(feature_rows=feature_rows)
+```
+
+`refresh_layer_colors(...)` and `refresh_layer_features(...)` can keep their
+public no-argument behavior by accepting an optional `feature_rows` argument and
+computing it only when missing:
+
+```python
+def refresh_layer_colors(self, *, feature_rows: pd.DataFrame | None = None) -> None:
+    if feature_rows is None:
+        feature_rows = self._get_region_feature_rows()
+```
+
+That keeps existing callers working while letting `refresh()` avoid calling
+`_get_region_feature_rows()` twice.
+
+For user-class coloring:
+
+```python
+class_by_instance = feature_rows[USER_CLASS_COLUMN]
+labeled_class_by_instance = class_by_instance[class_by_instance != UNLABELED_CLASS]
+for instance_id, class_id in labeled_class_by_instance.items():
+    color_dict[int(instance_id)] = class_color_lookup.get(int(class_id), unlabeled_color)
+```
+
+Do not use this sparse-row-only loop for `pred_class`. Prediction coloring
+should keep explicit entries for every prediction row because class `0` can be a
+real cleared/unknown prediction state and because prediction columns are written
+in bulk by the classifier.
+
+For user-class color lookup, add a valid-categorical fast path. A safe first
+version can be private to `viewer_styling.py`, for example:
+
+```python
+def _read_valid_categorical_class_categories(values: pd.Series, *, unlabeled_class: int) -> list[int] | None:
+    ...
+```
+
+The fast path should require:
+
+- column dtype is `pd.CategoricalDtype`
+- categories are integer class ids
+- categories are sorted
+- categories include `UNLABELED_CLASS`
+- category codes contain no missing values
+- stored palette length matches the category count
+
+If any condition fails, keep the existing robust path:
+
+```python
+normalize_class_values(...)
+read_series_class_categories(...)
+stored_palette_to_lookup(...)
+backfill_missing_class_colors(...)
+```
+
+The helper added in Phase 3 already keeps `user_class` valid in the common
+annotation path, so the fast path should be hit after normal annotation edits.
+
+### Expected Impact
+
+This phase should mainly remove:
+
+- the second `_get_region_feature_rows()` call inside `refresh()`
+- the full-table user-class normalization inside `_get_class_color_lookup(...)`
+- the Python loop over all 406k rows for sparse user-class coloring
+
+It will not remove:
+
+- the remaining full-region feature-table build
+- assignment to `layer.features`
+- explicit full-row prediction coloring for `pred_class` / `pred_confidence`
+
 ### Non-Goals
 
 - Do not mutate an existing napari colormap in place.
@@ -848,6 +936,8 @@ Add or update tests for:
   normalization behavior
 - `refresh()` reuses one region feature-row snapshot for color and feature
   refresh
+- `refresh_layer_colors()` and `refresh_layer_features()` still work when called
+  directly without a precomputed `feature_rows`
 - `pred_class` and `pred_confidence` behavior remains unchanged
 
 ### Acceptance Criteria
