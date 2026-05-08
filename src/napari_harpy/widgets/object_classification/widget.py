@@ -1581,11 +1581,17 @@ class ObjectClassificationWidget(QWidget):
         self._viewer_styling_controller.refresh()
 
     def _refresh_after_user_class_annotation(self, change: UserClassAnnotationChange) -> None:
-        if self._viewer_styling_controller.color_by != COLOR_BY_USER_CLASS:
+        color_by = self._viewer_styling_controller.color_by
+        if color_by == COLOR_BY_USER_CLASS:
+            if self._viewer_styling_controller.refresh_user_class_annotation(change):
+                return
             self._refresh_layer_styling()
             return
 
-        if self._viewer_styling_controller.refresh_user_class_annotation(change):
+        if color_by in (COLOR_BY_PRED_CLASS, COLOR_BY_PRED_CONFIDENCE):
+            if self._viewer_styling_controller.refresh_user_class_feature(change):
+                return
+            self._refresh_layer_styling()
             return
 
         self._refresh_layer_styling()

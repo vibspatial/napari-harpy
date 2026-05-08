@@ -253,6 +253,37 @@ def test_row_scoped_user_class_annotation_clear_removes_sparse_color_entry(
     assert layer.features.set_index("index").loc[5, USER_CLASS_COLUMN] == 0
 
 
+def test_row_scoped_user_class_feature_refresh_keeps_prediction_colormap(
+    monkeypatch: pytest.MonkeyPatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_user_classes(sdata_blobs, {5: 4}, categories=[0, 4])
+    layer = _FakeLabelsLayer()
+    controller = _make_controller(sdata_blobs, layer)
+    controller.set_color_by(COLOR_BY_PRED_CLASS)
+    feature_rows = _feature_rows(
+        {1: 0, 5: 4, 6: 0},
+        pred_class_by_instance={1: 0, 5: 2, 6: 2},
+    )
+    controller.refresh_layer_colors(feature_rows=feature_rows)
+    controller.refresh_layer_features(feature_rows=feature_rows)
+    original_colormap = layer.colormap
+    original_refresh_count = layer.refresh_count
+
+    def fail_full_feature_rows() -> pd.DataFrame:
+        raise AssertionError("feature-only annotation refresh must not rebuild all feature rows")
+
+    monkeypatch.setattr(controller, "_get_region_feature_rows", fail_full_feature_rows)
+
+    handled = controller.refresh_user_class_feature(UserClassAnnotationChange(instance_id=6, class_id=4))
+
+    assert handled is True
+    assert layer.colormap is original_colormap
+    assert layer.refresh_count == original_refresh_count
+    assert layer.features.set_index("index").loc[6, USER_CLASS_COLUMN] == 4
+    assert layer.features.set_index("index").loc[1, USER_CLASS_COLUMN] == 0
+
+
 def test_row_scoped_user_class_annotation_returns_false_for_missing_feature_row(sdata_blobs: SpatialData) -> None:
     _set_user_classes(sdata_blobs, {5: 4}, categories=[0, 4])
     layer = _FakeLabelsLayer()

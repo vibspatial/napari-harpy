@@ -219,6 +219,25 @@ class ViewerStylingController:
 
         return True
 
+    def refresh_user_class_feature(self, change: UserClassAnnotationChange) -> bool:
+        """Refresh one user-class feature value without repainting label colors.
+
+        This is the direct-annotation fast path for prediction color modes:
+        annotation changes `user_class`, while `pred_class`/`pred_confidence`
+        colors are refreshed only when the classifier writes predictions.
+        """
+        if self._labels_layer is None:
+            return False
+        if change.class_id < UNLABELED_CLASS:
+            return False
+
+        feature_rows = self._build_user_class_annotation_features(change)
+        if feature_rows is None:
+            return False
+
+        self._labels_layer.features = feature_rows
+        return True
+
     def _build_user_class_annotation_color_dict(
         self,
         change: UserClassAnnotationChange,

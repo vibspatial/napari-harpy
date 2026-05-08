@@ -1552,7 +1552,50 @@ def test_widget_user_class_annotation_falls_back_to_full_refresh_when_row_scoped
     assert full_refresh_calls == ["refresh"]
 
 
-def test_widget_user_class_annotation_uses_full_refresh_in_prediction_color_mode(
+def test_widget_user_class_annotation_updates_feature_only_in_prediction_color_modes(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    def run_annotation_in_color_mode(color_by: str) -> None:
+        layer = make_blobs_labels_layer(sdata_blobs)
+        viewer = DummyViewer(layers=[layer])
+        widget = HarpyWidget(viewer)
+        qtbot.addWidget(widget)
+        select_segmentation(widget)
+        widget.color_by_combo.setCurrentIndex(widget.color_by_combo.findData(color_by))
+        color_refresh_calls = []
+        feature_refresh_calls = []
+        full_refresh_calls = []
+
+        def record_color_refresh(change) -> bool:
+            color_refresh_calls.append(change)
+            return True
+
+        def record_feature_refresh(change) -> bool:
+            feature_refresh_calls.append(change)
+            return True
+
+        def record_full_refresh() -> None:
+            full_refresh_calls.append("refresh")
+
+        monkeypatch.setattr(widget._viewer_styling_controller, "refresh_user_class_annotation", record_color_refresh)
+        monkeypatch.setattr(widget._viewer_styling_controller, "refresh_user_class_feature", record_feature_refresh)
+        monkeypatch.setattr(widget._viewer_styling_controller, "refresh", record_full_refresh)
+
+        layer.selected_label = 5
+        widget.class_spinbox.setValue(4)
+        widget.apply_class_button.click()
+
+        assert color_refresh_calls == []
+        assert [(call.instance_id, call.class_id) for call in feature_refresh_calls] == [(5, 4)]
+        assert full_refresh_calls == []
+
+    run_annotation_in_color_mode("pred_class")
+    run_annotation_in_color_mode("pred_confidence")
+
+
+def test_widget_user_class_annotation_falls_back_to_full_refresh_when_prediction_feature_refresh_fails(
     qtbot,
     monkeypatch,
     sdata_blobs: SpatialData,
@@ -1563,25 +1606,65 @@ def test_widget_user_class_annotation_uses_full_refresh_in_prediction_color_mode
     qtbot.addWidget(widget)
     select_segmentation(widget)
     widget.color_by_combo.setCurrentIndex(widget.color_by_combo.findData("pred_class"))
-    row_scoped_calls = []
+    feature_refresh_calls = []
     full_refresh_calls = []
 
-    def record_row_scoped_refresh(change) -> bool:
-        row_scoped_calls.append(change)
-        return True
+    def record_feature_refresh(change) -> bool:
+        feature_refresh_calls.append(change)
+        return False
 
     def record_full_refresh() -> None:
         full_refresh_calls.append("refresh")
 
-    monkeypatch.setattr(widget._viewer_styling_controller, "refresh_user_class_annotation", record_row_scoped_refresh)
+    monkeypatch.setattr(widget._viewer_styling_controller, "refresh_user_class_feature", record_feature_refresh)
     monkeypatch.setattr(widget._viewer_styling_controller, "refresh", record_full_refresh)
 
     layer.selected_label = 5
     widget.class_spinbox.setValue(4)
     widget.apply_class_button.click()
 
-    assert row_scoped_calls == []
+    assert len(feature_refresh_calls) == 1
+    assert feature_refresh_calls[0].instance_id == 5
+    assert feature_refresh_calls[0].class_id == 4
     assert full_refresh_calls == ["refresh"]
+
+
+def test_widget_auto_train_prediction_color_mode_keeps_immediate_refresh_feature_only(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+    widget.color_by_combo.setCurrentIndex(widget.color_by_combo.findData("pred_class"))
+    schedule_calls: list[str] = []
+    feature_refresh_calls = []
+    full_refresh_calls: list[str] = []
+
+    def record_schedule_retrain(*args, **kwargs) -> bool:
+        del args, kwargs
+        schedule_calls.append("schedule")
+        return False
+
+    def record_feature_refresh(change) -> bool:
+        feature_refresh_calls.append(change)
+        return True
+
+    monkeypatch.setattr(widget._classifier_controller, "schedule_retrain", record_schedule_retrain)
+    monkeypatch.setattr(widget._viewer_styling_controller, "refresh_user_class_feature", record_feature_refresh)
+    monkeypatch.setattr(widget._viewer_styling_controller, "refresh", lambda: full_refresh_calls.append("refresh"))
+
+    widget.auto_train_checkbox.setChecked(True)
+    layer.selected_label = 5
+    widget.class_spinbox.setValue(4)
+    widget.apply_class_button.click()
+
+    assert schedule_calls == ["schedule"]
+    assert [(call.instance_id, call.class_id) for call in feature_refresh_calls] == [(5, 4)]
+    assert full_refresh_calls == []
 
 
 def test_widget_auto_train_toggle_controls_annotation_retraining(
