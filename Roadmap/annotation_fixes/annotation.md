@@ -1053,18 +1053,18 @@ Add or update tests for:
 - The change stays independent from row-scoped table edits and viewer-styling
   refresh optimizations.
 
-## Phase 6: User-Class Color-Only Annotation Refresh
+## Phase 6: Row-Scoped `user_class` Viewer Refresh
 
 ### Goal
 
 Avoid calling `_get_region_feature_rows()` during the common annotation path when
-`color_by == "user_class"` and the only viewer-visible change needed immediately
-is the labels-layer color update.
+`color_by == "user_class"`, while still keeping both labels-layer colors and
+hover/properties features up to date for the annotated object.
 
 Phase 4 still performs a full public styling refresh and therefore still builds
 one selected-region feature table per annotation. Phase 6 adds a narrower
-annotation-specific path that refreshes `user_class` colors without rebuilding
-`layer.features`.
+annotation-specific path that updates only the affected user-class color entry
+and only the affected `layer.features` row.
 
 ### Current Problem
 
@@ -1080,52 +1080,117 @@ On the measured Xenium table, `_get_region_feature_rows()` costs roughly
 for all selected-region label ids.
 
 For a simple user annotation with auto training disabled and
-`color_by == "user_class"`, the immediate visual update only needs:
+`color_by == "user_class"`, the full feature table rebuild is unnecessary. The
+annotation operation already knows:
 
 ```text
-instance id -> nonzero user_class
+selected instance id -> new user_class
 ```
 
 It does not need normalized prediction columns, prediction confidence, or a full
-`layer.features` rebuild.
+selected-region feature dataframe.
+
+However, hover/properties data must remain current. Stale `layer.features` after
+annotation is not acceptable because users should be able to inspect the newly
+annotated cell immediately.
 
 ### Proposed Behavior
 
-Add a user-class color-only refresh path that is used only for annotation edits
-when the viewer is currently colored by `user_class`.
+Add a row-scoped user-class annotation refresh path that is used only for
+annotation edits when the viewer is currently colored by `user_class`.
+
+The fast path eligibility should stay intentionally narrow:
+
+```text
+event source: direct user annotation
+color mode: user_class
+viewer state: valid row-scoped labels features and sparse DirectLabelColormap
+table state: valid user_class categorical column and palette
+```
+
+Auto-training state does not decide whether the immediate annotation refresh can
+use this path. If auto train is enabled, the immediate `user_class` annotation can
+still be row-scoped, and the later classifier prediction write must still use the
+full refresh path.
+
+The annotation callback should carry a small payload describing what changed,
+instead of being a no-argument signal:
 
 Suggested shape:
 
 ```python
-def refresh_user_class_colors_only(self) -> None:
-    ...
+@dataclass(frozen=True)
+class UserClassAnnotationChange:
+    instance_id: int
+    class_id: int
 ```
 
-or an equivalently explicit private/public method name on
-`ViewerStylingController`.
+`AnnotationController._set_current_class(...)` already has both values:
 
-The method should:
+- `state.instance_id`
+- `class_id`
 
-- read the bound table and selected table metadata
-- filter `table.obs` to the selected labels element
-- keep only the selected instance key and `USER_CLASS_COLUMN`
-- coerce valid positive instance ids to `int64`
-- preserve current duplicate semantics with
-  `drop_duplicates(subset=[instance_key], keep="last")`
-- read `user_class` directly from the valid categorical column
-- keep only rows where `user_class != UNLABELED_CLASS`
-- build and assign the sparse `DirectLabelColormap`
+so it can call the annotation-changed callback with that payload after
+`set_user_class_for_rows(...)` succeeds.
 
-Conceptually:
+`ObjectClassificationWidget._on_annotation_changed(...)` can then choose:
 
 ```python
-class_by_instance = self._get_region_user_class_by_instance()
-labeled_class_by_instance = class_by_instance[class_by_instance != UNLABELED_CLASS]
+if (
+    change is not None
+    and self._viewer_styling_controller.color_by == COLOR_BY_USER_CLASS
+    and self._viewer_styling_controller.refresh_user_class_annotation(change)
+):
+    ...
+else:
+    self._refresh_layer_styling()
 ```
 
-This path should reuse the Phase 4 valid-categorical color lookup fast path. If
-the `user_class` column or palette is invalid, fall back to the full refresh
-path instead of trying to repair state inside the color-only method.
+`ViewerStylingController.refresh_user_class_annotation(...)` should update two
+public napari layer properties without rebuilding all region features:
+
+1. Labels colors:
+   - copy the current sparse `DirectLabelColormap.color_dict`
+   - if `class_id == UNLABELED_CLASS`, remove the explicit entry for
+     `instance_id`
+   - otherwise resolve the new class color from the valid `user_class`
+     categorical palette and set `color_dict[instance_id]`
+   - assign a new `DirectLabelColormap`
+
+2. Labels features:
+   - copy `layer.features`
+   - locate the row where the feature `"index"` column equals `instance_id`
+   - update only `USER_CLASS_COLUMN` for that row
+   - assign the updated dataframe back to `layer.features`
+
+This still avoids private napari internals. The controller should replace public
+properties with updated copies rather than mutating hidden caches.
+
+### Color Lookup
+
+The row-scoped path should not call `normalize_class_values(...)` or
+`_get_region_feature_rows()`.
+
+It should use the strict Phase 4 valid-categorical palette fast path to resolve
+the color for the one changed class id. If the `user_class` column or palette is
+invalid, return `False` so the widget can fall back to the full refresh path.
+
+For clearing annotations:
+
+```python
+class_id == UNLABELED_CLASS
+```
+
+remove the explicit color entry for the instance id. The sparse colormap default
+then colors the object as unlabeled.
+
+For assigning annotations:
+
+```python
+class_id > UNLABELED_CLASS
+```
+
+write only the explicit entry for the changed instance id.
 
 ### Where It Is Used
 
@@ -1133,7 +1198,9 @@ In the annotation changed path:
 
 ```python
 if self._viewer_styling.color_by == COLOR_BY_USER_CLASS:
-    self._viewer_styling.refresh_user_class_colors_only()
+    handled = self._viewer_styling.refresh_user_class_annotation(change)
+    if not handled:
+        self._viewer_styling.refresh()
 else:
     self._viewer_styling.refresh()
 ```
@@ -1142,6 +1209,7 @@ The exact call site should preserve current behavior for:
 
 - `color_by == "pred_class"`
 - `color_by == "pred_confidence"`
+- auto-train classifier prediction writes
 - classifier prediction updates
 - selection changes
 - table/feature/scope changes
@@ -1149,34 +1217,60 @@ The exact call site should preserve current behavior for:
 
 Those paths should continue to use the full refresh path.
 
-### Tradeoff
+In other words:
 
-This phase intentionally does not update `layer.features` after every annotation
-edit. That means hover/properties data derived from `layer.features` may show the
-previous `user_class` value until the next full refresh.
+- direct annotation + `color_by == "user_class"`: try row-scoped refresh, then
+  fall back to full refresh if unsafe
+- direct annotation + `color_by != "user_class"`: full refresh
+- classifier prediction/state output changed: full refresh
+- selection/binding/table structure changed: full refresh
 
-This is acceptable only if:
+### Fallback Conditions
 
-- labels-layer colors update immediately and correctly
-- full refreshes still happen on selection/binding/color-mode/classifier changes
-- the stale feature-row window is documented and considered less important than
-  annotation responsiveness
+Return `False` and let the widget perform a full refresh when:
 
-If stale hover/properties are not acceptable in practice, do not broaden this
-phase into private napari mutation. Instead, leave this phase unimplemented and
-revisit row-scoped `layer.features` updates in the final benchmark phase.
+- no labels layer is bound
+- current colormap is not a `DirectLabelColormap`
+- `layer.features` is missing, empty, or lacks `"index"` / `USER_CLASS_COLUMN`
+- the annotated `instance_id` is not present exactly once in `layer.features`
+- the `user_class` column or palette is invalid
+- color lookup for the changed positive class id cannot be resolved
+
+The fallback preserves correctness while the happy path stays fast for normal
+Phase 3-maintained `user_class` state.
+
+### Maintainability Guardrails
+
+Keep the branching contained and easy to debug:
+
+- Put the fast-path decision in one small widget helper, for example
+  `_refresh_after_user_class_annotation(change) -> bool`.
+- Put the row-scoped layer mutation in one `ViewerStylingController` method,
+  for example `refresh_user_class_annotation(change) -> bool`.
+- The viewer-styling method should return a simple boolean: `True` means the
+  row-scoped update was fully applied; `False` means the caller must perform a
+  normal full refresh.
+- Avoid mixing classifier state, auto-train policy, persistence, and styling
+  fallback decisions in the same conditional block.
+- Prefer early returns for fallback checks over deeply nested branches.
+- Add a short debug-level log only when falling back would be useful during
+  development; do not surface fallback details in the user UI.
 
 ### Non-Goals
 
-- Do not mutate one row inside `layer.features` in this phase.
 - Do not mutate napari private colormap internals.
+- Do not rebuild the full selected-region feature table in the happy path.
+- Do not scan the selected region to rediscover all annotated cells in the happy
+  path.
 - Do not change prediction coloring or prediction feature refresh behavior.
 - Do not skip full refreshes for selection, binding, color-mode, classifier, or
   table-structure changes.
+- Do not change classifier dirty/retrain behavior.
 
 ### Files
 
 - `src/napari_harpy/widgets/object_classification/viewer_styling.py`
+- `src/napari_harpy/widgets/object_classification/annotation_controller.py`
 - `src/napari_harpy/widgets/object_classification/widget.py`
 - `tests/test_widget.py`
 - Add a focused viewer-styling test file if that keeps tests clearer.
@@ -1185,20 +1279,34 @@ revisit row-scoped `layer.features` updates in the final benchmark phase.
 
 Add or update tests for:
 
-- annotation with `color_by == "user_class"` uses the color-only refresh path
+- annotation with `color_by == "user_class"` uses the row-scoped refresh path
 - annotation with `color_by == "pred_class"` still uses the full refresh path
-- color-only refresh does not call `_get_region_feature_rows()`
-- color-only refresh preserves duplicate instance-id semantics
-- invalid/missing `user_class` state falls back to full refresh
-- color-only refresh updates the sparse colormap and leaves `layer.features`
-  unchanged
+- annotation with `color_by == "pred_confidence"` still uses the full refresh
+  path
+- auto train enabled still uses full refresh when classifier predictions are
+  written after training
+- row-scoped refresh does not call `_get_region_feature_rows()`
+- row-scoped refresh updates the sparse colormap for assigning a class
+- row-scoped refresh removes the explicit sparse colormap entry for clearing a
+  class
+- row-scoped refresh updates only the matching `layer.features` row's
+  `USER_CLASS_COLUMN`
+- hover/properties feature state is current immediately after annotation
+- invalid/missing `user_class`, missing feature rows, or invalid colormap state
+  falls back to full refresh
+- classifier prediction changes still use full refresh
+- selection/table/feature/color-mode changes still use full refresh
 
 ### Acceptance Criteria
 
 - The common `user_class` annotation path no longer calls
   `_get_region_feature_rows()`.
+- `pred_class`, `pred_confidence`, classifier prediction writes, and
+  selection/binding changes still call the full refresh path.
 - Visual labels-layer coloring remains correct after adding/removing an
   annotation.
+- `layer.features` has the new `user_class` value for the annotated instance
+  immediately after annotation.
 - Prediction coloring, classifier updates, and full viewer refreshes remain
   equivalent to the previous behavior.
 
@@ -1265,7 +1373,7 @@ Add or adjust tests so that:
 - Debounced classifier behavior is unchanged while the widget is alive.
 - Worker cancellation/reload behavior remains unchanged.
 
-## Phase 8: Final Benchmark And Optional Incremental Layer Feature/Color Updates
+## Phase 8: Final Benchmark And Optional Deeper Layer Updates
 
 ### Goal
 
@@ -1273,21 +1381,23 @@ Measure the remaining annotation cost after Phases 1-7, including Phase 2A and
 Phase 2B. Only pursue incremental layer updates if those measurements show they
 are still needed.
 
-This phase would update a single row in `layer.features` and a single entry in
-an existing `DirectLabelColormap` after a user-class edit.
+Phase 6 should already update a single `layer.features` row and labels colormap
+entry through public layer-property assignment. This final phase is for
+benchmarking the remaining cost and only considering deeper incremental napari
+state work if it is still needed.
 
 ### Why It Is Deferred
 
 This is where maintainability risk rises:
 
 - it may require mutating napari colormap internals or clearing private caches
-- it couples annotation changes to layer feature layout assumptions
 - it is easy to accidentally diverge from full-refresh behavior
 
 Sparse `user_class` coloring, disabling auto-training, row-scoped table edits,
-faster user-class styling refreshes, and avoiding repeated classifier
-preparation summaries should remove the largest visible costs. We should
-re-measure in this phase before adding any incremental layer-update code.
+faster user-class styling refreshes, row-scoped annotation refresh, and avoiding
+repeated classifier preparation summaries should remove the largest visible
+costs. We should re-measure in this phase before adding any private
+layer-update code.
 
 ### Benchmark Scope
 
@@ -1329,10 +1439,13 @@ table: table_global_ROI1
 3. Phase 2B: Auto-training checkbox.
 4. Phase 3: Row-scoped `user_class` edits.
 5. Phase 4: Faster `user_class` viewer styling refresh.
-6. Phase 5: Avoid repeated classifier preparation summaries.
-7. Phase 6: User-class color-only annotation refresh.
+6. Phase 6: Row-scoped `user_class` viewer refresh.
+7. Phase 5: Avoid repeated classifier preparation summaries.
 8. Phase 7: Classifier timer lifecycle.
-9. Phase 8: benchmark, then only add incremental layer updates if still needed.
+9. Phase 8: benchmark, then only add deeper private layer updates if still needed.
+
+Phase 5 is independent and can be deferred until after Phase 6 because the
+remaining visible annotation lag is now dominated by viewer refresh work.
 
 The timer fix can land before Phase 2A, Phase 2B, Phase 3, Phase 4, Phase 5, or
 Phase 6 if tests expose the stale callback race earlier.
