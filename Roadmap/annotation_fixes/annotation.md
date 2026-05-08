@@ -492,10 +492,10 @@ When auto training is disabled:
 Add a checkbox near the classifier controls:
 
 ```text
-[x] Auto train
+[ ] Auto train
 ```
 
-Default: checked, preserving existing behavior.
+Default: unchecked, favoring fast manual annotation.
 
 Suggested placement:
 
@@ -524,7 +524,7 @@ When unchecked:
 Store the preference on the widget:
 
 ```python
-self._auto_train_enabled = True
+self._auto_train_enabled = False
 ```
 
 The checkbox is the source of truth for user interaction, and the widget state
@@ -537,7 +537,7 @@ def _on_auto_train_toggled(self, checked: bool) -> None:
 ```
 
 The setting is not persisted to zarr in this phase. A new widget starts with
-auto training enabled.
+auto training disabled.
 
 ### Implementation Notes
 
@@ -548,10 +548,10 @@ auto training enabled.
 auto_train_checkbox
 ```
 
-- Set it checked by default:
+- Set it unchecked by default:
 
 ```python
-self.auto_train_checkbox.setChecked(True)
+self.auto_train_checkbox.setChecked(False)
 ```
 
 - In `_on_annotation_changed()`:
@@ -609,15 +609,16 @@ timer lifecycle work rather than mixing it into the training-policy toggle.
 
 Add tests for:
 
-- the checkbox exists, is named `auto_train_checkbox`, and is checked by default
-- default checked state preserves current auto-retrain behavior
+- the checkbox exists, is named `auto_train_checkbox`, and is unchecked by
+  default
+- default unchecked state prevents auto-retrain after annotation
 - unchecking the checkbox prevents `schedule_retrain()` from being called after
   annotation
 - unchecking the checkbox still calls `mark_dirty()`
 - unchecking the checkbox still refreshes annotation styling through
   `_on_annotation_changed()`
 - unchecking the checkbox still marks persistence dirty after annotation
-- re-checking the checkbox makes subsequent annotations schedule retraining
+- checking the checkbox makes subsequent annotations schedule retraining
   again
 - clicking `Train Classifier` still invokes manual retraining when auto training
   is disabled
