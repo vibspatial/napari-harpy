@@ -13,7 +13,7 @@ from matplotlib.colors import to_rgba
 from napari.layers import Image, Labels
 from napari.utils.colormaps import DirectLabelColormap
 from qtpy.QtCore import QObject, Signal
-from qtpy.QtWidgets import QComboBox, QScrollArea
+from qtpy.QtWidgets import QCheckBox, QComboBox, QScrollArea
 from spatialdata import SpatialData, read_zarr
 from spatialdata.models import TableModel
 from spatialdata.transformations import get_transformation
@@ -261,6 +261,12 @@ def test_widget_can_be_instantiated(qtbot) -> None:
     assert widget.selected_prediction_scope == classifier_module.DEFAULT_PREDICTION_SCOPE
     assert widget.selected_coordinate_system is None
     assert widget.selected_color_by == "user_class"
+    assert widget.auto_train_checkbox.objectName() == "auto_train_checkbox"
+    assert widget.findChild(QCheckBox, "auto_train_checkbox") is widget.auto_train_checkbox
+    assert widget.auto_train_checkbox.text() == "Auto train"
+    assert widget.auto_train_checkbox.isChecked() is False
+    assert "QCheckBox" in widget.auto_train_checkbox.styleSheet()
+    assert widget._auto_train_enabled is False
     assert all(button.text() != "Rescan Viewer" for button in widget.findChildren(type(widget.retrain_button)))
     assert "No SpatialData Loaded" in widget.selection_status.text()
     assert widget.coordinate_system_combo.sizeAdjustPolicy() == (
@@ -1465,6 +1471,59 @@ def test_widget_recolors_layer_from_user_class_annotations(qtbot, sdata_blobs: S
     assert layer.features.set_index("index").loc[5, USER_CLASS_COLUMN] == 4
 
 
+def test_widget_auto_train_toggle_controls_annotation_retraining(
+    qtbot, monkeypatch, backed_sdata_blobs: SpatialData
+) -> None:
+    layer = make_blobs_labels_layer(backed_sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+    schedule_calls: list[str] = []
+    mark_dirty_reasons: list[str | None] = []
+    refresh_calls: list[str] = []
+
+    def record_schedule_retrain(*args, **kwargs) -> bool:
+        del args, kwargs
+        schedule_calls.append("schedule")
+        return False
+
+    def record_mark_dirty(*, reason: str | None = None) -> None:
+        mark_dirty_reasons.append(reason)
+
+    monkeypatch.setattr(widget._classifier_controller, "schedule_retrain", record_schedule_retrain)
+    monkeypatch.setattr(widget._classifier_controller, "mark_dirty", record_mark_dirty)
+    monkeypatch.setattr(widget, "_refresh_layer_styling", lambda: refresh_calls.append("refresh"))
+
+    assert widget.auto_train_checkbox.isChecked() is False
+    assert widget._auto_train_enabled is False
+
+    widget.auto_train_checkbox.setChecked(True)
+    widget.auto_train_checkbox.setChecked(False)
+
+    assert schedule_calls == []
+    assert mark_dirty_reasons == []
+    assert widget._persistence_controller.is_dirty is False
+
+    layer.selected_label = 5
+    widget.class_spinbox.setValue(3)
+    widget.apply_class_button.click()
+
+    assert schedule_calls == []
+    assert mark_dirty_reasons == ["the annotations changed"]
+    assert refresh_calls == ["refresh"]
+    assert widget._persistence_controller.is_dirty is True
+
+    widget.auto_train_checkbox.setChecked(True)
+    layer.selected_label = 6
+    widget.class_spinbox.setValue(4)
+    widget.apply_class_button.click()
+
+    assert schedule_calls == ["schedule"]
+    assert mark_dirty_reasons == ["the annotations changed", "the annotations changed"]
+    assert refresh_calls == ["refresh", "refresh"]
+
+
 def test_widget_does_not_log_warning_when_existing_user_class_colors_are_overwritten(
     qtbot, monkeypatch, sdata_blobs: SpatialData
 ) -> None:
@@ -1966,6 +2025,7 @@ def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs:
     widget = HarpyWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
+    widget.auto_train_checkbox.setChecked(True)
 
     layer.selected_label = 1
     widget.class_spinbox.setValue(1)
@@ -2003,6 +2063,7 @@ def test_widget_colors_predictions_using_pred_class_palette_in_pred_class_mode(q
     widget = HarpyWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
+    widget.auto_train_checkbox.setChecked(True)
 
     layer.selected_label = 1
     widget.class_spinbox.setValue(1)
@@ -2085,6 +2146,8 @@ def test_widget_retrain_button_triggers_manual_retraining(qtbot, monkeypatch, sd
         return True
 
     monkeypatch.setattr(widget._classifier_controller, "retrain_now", fake_retrain_now)
+
+    assert widget.auto_train_checkbox.isChecked() is False
 
     widget.retrain_button.click()
 

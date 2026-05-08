@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from qtpy.QtCore import QSignalBlocker, Qt
 from qtpy.QtGui import QKeySequence, QPixmap, QShortcut
 from qtpy.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -64,6 +65,9 @@ from napari_harpy.widgets.object_classification.viewer_styling import (
 )
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,
+)
+from napari_harpy.widgets.shared_styles import (
+    CHECKBOX_STYLESHEET as _CHECKBOX_STYLESHEET,
 )
 from napari_harpy.widgets.shared_styles import (
     WIDGET_BORDER_COLOR,
@@ -160,6 +164,7 @@ class ObjectClassificationWidget(QWidget):
         self._selected_feature_key: str | None = None
         self._selected_training_scope: ClassifierScopeMode = DEFAULT_TRAINING_SCOPE
         self._selected_prediction_scope: ClassifierScopeMode = DEFAULT_PREDICTION_SCOPE
+        self._auto_train_enabled = False
         self._logo_path = Path(__file__).resolve().parents[4] / "docs" / "_static" / "logo.png"
 
         layout = QVBoxLayout(self)
@@ -266,6 +271,14 @@ class ObjectClassificationWidget(QWidget):
         persistence_action_layout = QHBoxLayout(self.persistence_action_row)
         persistence_action_layout.setContentsMargins(0, 0, 0, 0)
         persistence_action_layout.setSpacing(8)
+        self.auto_train_checkbox = QCheckBox("Auto train")
+        self.auto_train_checkbox.setObjectName("auto_train_checkbox")
+        self.auto_train_checkbox.setChecked(False)
+        self.auto_train_checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.auto_train_checkbox.setStyleSheet(_CHECKBOX_STYLESHEET)
+        self.auto_train_checkbox.toggled.connect(self._on_auto_train_toggled)
+        self._update_auto_train_tooltip()
+
         self.retrain_button = QPushButton("Train Classifier")
         self.retrain_button.setObjectName("retrain_button")
         self.retrain_button.clicked.connect(self._retrain_classifier)
@@ -329,6 +342,7 @@ class ObjectClassificationWidget(QWidget):
         class_action_layout.addWidget(self.apply_class_button, 1)
         class_action_layout.addWidget(self.clear_class_button, 1)
         class_editor_layout.addWidget(self.class_action_row)
+        retrain_action_layout.addWidget(self.auto_train_checkbox)
         retrain_action_layout.addWidget(self.retrain_button, 1)
         retrain_action_layout.addWidget(self.export_classifier_button, 1)
         persistence_action_layout.addWidget(self.sync_button, 1)
@@ -851,6 +865,11 @@ class ObjectClassificationWidget(QWidget):
     def _on_prediction_scope_changed(self, index: int) -> None:
         self._set_selected_prediction_scope(index)
         self._bind_current_selection(classifier_dirty_reason="the prediction scope changed")
+
+    def _on_auto_train_toggled(self, checked: bool) -> None:
+        self._auto_train_enabled = bool(checked)
+        self._update_auto_train_tooltip()
+        self._update_classifier_controls()
 
     def _on_color_by_changed(self, index: int) -> None:
         color_by = self.color_by_combo.itemData(index)
@@ -1476,7 +1495,8 @@ class ObjectClassificationWidget(QWidget):
         self._mark_persistence_dirty()
         self._classifier_controller.mark_dirty(reason="the annotations changed")
         self._refresh_layer_styling()
-        self._classifier_controller.schedule_retrain()
+        if self._auto_train_enabled:
+            self._classifier_controller.schedule_retrain()
         self._update_selection_status()
 
     def _on_classifier_table_state_changed(self) -> None:
@@ -1545,6 +1565,14 @@ class ObjectClassificationWidget(QWidget):
 
     def _refresh_layer_styling(self) -> None:
         self._viewer_styling_controller.refresh()
+
+    def _update_auto_train_tooltip(self) -> None:
+        if self._auto_train_enabled:
+            tooltip = "Automatically train the classifier after each annotation."
+        else:
+            tooltip = "Keep predictions stale while annotating; click Train Classifier to update predictions."
+
+        self._set_tooltip(self.auto_train_checkbox, tooltip)
 
     def _mark_persistence_dirty(self) -> None:
         self._persistence_controller.mark_dirty()
