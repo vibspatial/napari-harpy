@@ -94,10 +94,32 @@ For `color_by == "user_class"`:
   - `pred_confidence`, because continuous values are expected to differ per
     label
 
+### Non-Goals
+
+- Do not add benchmark code in this phase.
+- Do not change the annotation table write path.
+- Do not add the auto-training checkbox.
+- Do not mutate an existing napari colormap in place.
+- Do not update only one `layer.features` row.
+- Do not change classifier prediction refresh behavior.
+- Do not change viewer-widget styled overlay coloring outside object
+  classification.
+
+This phase is intentionally only about reducing the size of the `user_class`
+labels colormap produced by the existing full-refresh path.
+
 ### Files
 
 - `src/napari_harpy/widgets/object_classification/viewer_styling.py`
 - `tests/test_widget.py`
+
+### Behavior Matrix
+
+| Color mode | Colormap strategy in Phase 1 | Reason |
+| --- | --- | --- |
+| `user_class` | Sparse: default color for unlabeled, explicit entries for labeled objects only | Most cells are unlabeled during manual annotation |
+| `pred_class` | Keep existing full explicit mapping | Predictions can affect many cells and will be considered separately |
+| `pred_confidence` | Keep existing full explicit mapping | Continuous confidence values can differ per cell |
 
 ### Implementation Notes
 
@@ -108,10 +130,48 @@ def _base_labels_color_dict(default_color: Any) -> dict[int | None, Any]:
     return {None: default_color, 0: "transparent"}
 ```
 
+- Build the base color dictionary after resolving the effective unlabeled color
+  from `_get_class_color_lookup(...)`.
 - In the `user_class` branch, skip entries where `class_id == UNLABELED_CLASS`.
+- Keep the existing loop shape for `pred_class` and `pred_confidence`.
 - Keep current class-palette lookup behavior unchanged.
 - Do not mutate an existing colormap in this phase; assign a new sparse
   `DirectLabelColormap` through the existing full-refresh path.
+- Keep the layer `refresh()` call exactly where it currently happens.
+- Avoid clever abstractions. A small helper plus a clearly separated
+  `user_class` branch is preferable to a generalized color-strategy framework.
+
+Suggested structure:
+
+```python
+if self._color_by == COLOR_BY_PRED_CONFIDENCE:
+    # existing continuous behavior
+elif self._color_by == COLOR_BY_USER_CLASS:
+    class_color_lookup = ...
+    unlabeled_color = ...
+    color_dict = _base_labels_color_dict(unlabeled_color)
+    for instance_id in instance_ids:
+        class_id = int(class_by_instance.at[instance_id])
+        if class_id == UNLABELED_CLASS:
+            continue
+        color_dict[instance_id] = class_color_lookup.get(class_id, unlabeled_color)
+else:
+    # existing pred_class behavior
+```
+
+### Edge Cases
+
+- If `user_class` is missing, `_get_region_feature_rows()` already returns all
+  unlabeled values. The sparse colormap should then contain only `{None, 0}`.
+- If all objects are unlabeled, the sparse colormap should contain only
+  `{None, 0}`.
+- If a class palette is missing or incomplete, existing fallback behavior from
+  `_get_class_color_lookup(...)` should still choose stable default colors.
+- Tests should use `layer.colormap.map(unlabeled_label_id)` for unlabeled cells,
+  because unlabeled label ids are no longer expected to be keys in
+  `color_dict`.
+- Background label `0` must remain transparent and must not inherit the
+  unlabeled object color.
 
 ### Tests
 
@@ -122,6 +182,35 @@ Add or update widget tests so that after annotating label `5`:
 - `layer.colormap.map(6)` returns the unlabeled/default color
 - label `5` and label `6` have different colors when label `5` is assigned a
   positive user class
+- background label `0` remains transparent
+
+Add or keep regression coverage that:
+
+- `pred_class` mode still colors predicted classes as before
+- `pred_confidence` mode still creates distinct colors for different confidence
+  values
+- layer features still expose `instance_id` and `user_class` after annotation
+
+### Manual QA
+
+After implementation, manually inspect:
+
+- loading `cell_labels_global_ROI1`
+- selecting object classification
+- applying a positive user class to one object
+- verifying the selected object changes color while other unlabeled objects keep
+  the unlabeled color
+- switching to `pred_class` and `pred_confidence` modes still works
+
+Manual QA should not require writing to zarr.
+
+### Review Checklist
+
+- The diff is limited to `viewer_styling.py` and widget tests.
+- No classifier scheduling code changes are included.
+- No annotation table mutation code changes are included.
+- No private napari cache/event manipulation is introduced.
+- The sparse behavior is expressed in tests, not only in comments.
 
 ### Acceptance Criteria
 
@@ -129,6 +218,7 @@ Add or update widget tests so that after annotating label `5`:
   unlabeled object.
 - Existing user-class color behavior is unchanged visually.
 - Existing prediction and confidence coloring tests still pass.
+- Phase 1 remains independently revertible without affecting later phases.
 
 ## Phase 2: Manual/Automatic Classifier Training Toggle
 
