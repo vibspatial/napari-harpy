@@ -32,47 +32,31 @@ napari lifecycle concerns in one difficult-to-maintain change.
   categories remain sorted, and `user_class_colors` remains aligned to
   categories.
 
-## Phase 0: Baseline And Guardrails
+## Phase 0: Guardrails
 
 ### Goal
 
-Capture the current behavior and performance shape before changing code.
+Keep the annotation-performance work scoped and easy to review before changing
+production code.
 
 ### Scope
 
-- Add a short benchmark/dev note in this roadmap, or keep a local script in a
-  scratch area, that measures:
-  - table row count for the active segmentation
-  - time to apply one `user_class` edit
-  - time to refresh `user_class` layer coloring
-  - size of `layer.colormap.color_dict`
+- Do not add benchmark code yet.
 - Do not commit large benchmark data.
 - Do not make production changes in this phase.
+- Use the current qualitative lag report and previous investigation as enough
+  context to start with the smallest low-risk implementation slice.
 
-### Suggested Commands
+### Deferred Benchmarking
 
-Use the project environment:
-
-```bash
-source .venv/bin/activate
-```
-
-Measure against:
-
-```text
-/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium_full_redo.zarr
-labels: cell_labels_global_ROI1
-table: table_global_ROI1
-```
+Benchmark/dev-note work is deferred to the last phase, after the independent
+fixes have landed. This avoids spending time polishing measurement scaffolding
+before we know which fixes remain necessary.
 
 ### Acceptance Criteria
 
-- We can reproduce the lag source with numbers.
-- We know whether each later phase improves:
-  - table write time
-  - color refresh time
-  - classifier scheduling behavior
-  - stale timer behavior
+- The roadmap is split into independent phases.
+- Phase 1 can start without introducing benchmark code.
 
 ## Phase 1: Sparse `user_class` Labels Colormap
 
@@ -362,11 +346,12 @@ Add or adjust tests so that:
 - Debounced classifier behavior is unchanged while the widget is alive.
 - Worker cancellation/reload behavior remains unchanged.
 
-## Phase 5: Optional Incremental Layer Feature/Color Updates
+## Phase 5: Final Benchmark And Optional Incremental Layer Feature/Color Updates
 
 ### Goal
 
-Only pursue this if Phases 1-4 are not enough.
+Measure the remaining annotation cost after Phases 1-4. Only pursue incremental
+layer updates if those measurements show they are still needed.
 
 This phase would update a single row in `layer.features` and a single entry in
 an existing `DirectLabelColormap` after a user-class edit.
@@ -381,7 +366,33 @@ This is where maintainability risk rises:
 
 Sparse `user_class` coloring and disabling auto-training should already remove
 the largest visible costs. Row-scoped table edits should remove another broad
-table operation. We should re-measure before adding this phase.
+table operation. We should re-measure in this phase before adding any
+incremental layer-update code.
+
+### Benchmark Scope
+
+Add a short benchmark/dev note in this roadmap, or keep a local script in a
+scratch area, that measures:
+
+- table row count for the active segmentation
+- time to apply one `user_class` edit
+- time to refresh `user_class` layer coloring
+- size of `layer.colormap.color_dict`
+- whether classifier work is scheduled after annotation
+
+Use the project environment:
+
+```bash
+source .venv/bin/activate
+```
+
+Measure against:
+
+```text
+/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium_full_redo.zarr
+labels: cell_labels_global_ROI1
+table: table_global_ROI1
+```
 
 ### Acceptance Criteria Before Starting
 
@@ -397,8 +408,7 @@ table operation. We should re-measure before adding this phase.
 2. Phase 2: Auto-training checkbox.
 3. Phase 4: Classifier timer lifecycle.
 4. Phase 3: Row-scoped `user_class` edits.
-5. Re-measure.
-6. Phase 5 only if needed.
+5. Phase 5: benchmark, then only add incremental layer updates if still needed.
 
 The timer fix can land before Phase 2 or Phase 3 if tests expose the stale
 callback race earlier.
