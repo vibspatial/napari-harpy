@@ -688,6 +688,25 @@ The helper should:
 - remove unused categories after clearing
 - refresh `table.uns["user_class_colors"]` to match the resulting categories
 
+### Fast-Path Requirements
+
+The normal valid-column path is the performance-sensitive path. It must avoid
+the broad work that Phase 3 is meant to remove:
+
+- Do not call `ensure_annotation_column()` before the row edit when
+  `user_class` already exists as a valid categorical class column.
+- Do not call `_to_user_class_values(...)` on the full `user_class` column in
+  the happy path.
+- Do not call `_set_user_class_annotation_state(...)` on the full table in the
+  happy path.
+- Do not normalize or rewrite the whole `user_class` column when assigning one
+  selected row to a class that already exists in the categorical categories.
+- Do not resync categories or `user_class_colors` when assigning an
+  already-existing class and the edit does not make any category unused.
+- Fall back to full normalization only when `user_class` is missing, not
+  categorical, has invalid categories/values, or when category cleanup is
+  actually required.
+
 ### Files
 
 - `src/napari_harpy/core/annotation.py`
@@ -707,12 +726,18 @@ The helper should:
   - colors remain `default_class_colors(categories)`
 - If the existing column is not categorical or contains invalid values, fall
   back to full normalization once, then perform the row edit.
+- Category cleanup may still scan categorical codes to detect whether a class
+  became unused. That is acceptable; the primary win is avoiding full
+  string/numeric conversion and categorical-column reconstruction for every
+  annotation.
 
 ### Tests
 
 Add tests for:
 
 - assigning a new class updates the selected row only
+- assigning an existing class does not rewrite the whole `user_class` column or
+  resync `user_class_colors`
 - clearing the only labeled object removes the unused class category
 - assigning another class replaces categories as expected
 - existing non-categorical `user_class` state is recovered safely
