@@ -552,7 +552,7 @@ def _write_level_dataset(
     level: int,
     build_path: str | PathLike[str],
     max_rows_per_row_group: int,
-) -> list[dict[str, object]]:
+) -> pd.DataFrame:
     """Write one tile level as partition-local Parquet part files.
 
     Each physical Parquet row group written by this helper contains rows from
@@ -563,8 +563,8 @@ def _write_level_dataset(
     `_assign_tile_shards` later numbers those shards deterministically across
     the collected metadata.
 
-    The returned rows are manifest candidates. Slice 9 adds `schema_version`
-    before writing the final manifest.
+    The returned dataframe contains manifest candidate rows. Slice 9 adds
+    `schema_version` before writing the final manifest.
     """
     level_record = _get_transcript_tile_level(cache, level)
     max_rows_per_row_group = _validate_positive_integer(max_rows_per_row_group, "max_rows_per_row_group")
@@ -586,13 +586,12 @@ def _write_level_dataset(
     ).compute()
 
     if metadata_rows.empty:
-        return []
+        return _level_row_group_metadata_meta()
 
     # Example: tile (3, 1) may appear in part-00000 row group 0 and
     # part-00002 row group 1. Number those physical chunks as tile_shard
     # 0 and 1 in deterministic part-file order.
-    metadata_rows = _assign_tile_shards(metadata_rows)
-    return metadata_rows.to_dict("records")
+    return _assign_tile_shards(metadata_rows)
 
 
 def _write_level_partition(

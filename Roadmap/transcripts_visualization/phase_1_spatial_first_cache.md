@@ -753,7 +753,7 @@ _write_level_dataset(
     level: int,
     build_path: Path,
     max_rows_per_row_group: int,
-) -> list[dict]
+) -> pd.DataFrame
 ```
 
 For Slice 7, call it with rows annotated by:
@@ -815,7 +815,7 @@ The level part files should contain these columns, in this order:
 
 Use the dtypes standardized in Slice 6.
 
-The returned row-group metadata dicts should contain:
+The returned row-group metadata dataframe should contain:
 
 - `level`
 - `level_file`
@@ -826,7 +826,7 @@ The returned row-group metadata dicts should contain:
 - `row_group`
 - `tile_shard`
 
-These returned dicts are the Slice 7 contribution to the later `manifest.parquet`.
+These returned rows are the Slice 7 contribution to the later `manifest.parquet`.
 After Slice 9 adds `schema_version`, the compact manifest schema is:
 
 ```text

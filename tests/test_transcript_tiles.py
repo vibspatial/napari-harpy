@@ -836,9 +836,9 @@ def test_write_level_dataset_writes_partition_local_part_files_and_metadata(tmp_
     )
     build_path = tmp_path / "build"
 
-    metadata = _write_level_dataset(level_rows, cache, level=0, build_path=build_path, max_rows_per_row_group=10)
+    manifest_rows = _write_level_dataset(level_rows, cache, level=0, build_path=build_path, max_rows_per_row_group=10)
 
-    manifest_rows = pd.DataFrame(metadata)
+    assert isinstance(manifest_rows, pd.DataFrame)
     assert "schema_version" not in manifest_rows.columns
     assert manifest_rows[["level_file", "tile_x", "tile_y", "row_group", "tile_shard", "n_points"]].to_dict(
         "records"
@@ -923,9 +923,8 @@ def test_write_level_dataset_splits_dense_tiles_into_row_groups(tmp_path: Path) 
     )
     build_path = tmp_path / "build"
 
-    metadata = _write_level_dataset(level_rows, cache, level=0, build_path=build_path, max_rows_per_row_group=2)
+    manifest_rows = _write_level_dataset(level_rows, cache, level=0, build_path=build_path, max_rows_per_row_group=2)
 
-    manifest_rows = pd.DataFrame(metadata)
     assert manifest_rows[["row_group", "tile_shard", "n_points"]].to_dict("records") == [
         {"row_group": 0, "tile_shard": 0, "n_points": 2},
         {"row_group": 1, "tile_shard": 1, "n_points": 2},
@@ -951,7 +950,13 @@ def test_write_level_dataset_rejects_missing_level_columns(tmp_path: Path) -> No
     )
 
     with pytest.raises(ValueError, match="gene_id"):
-        _write_level_dataset(level_rows, _example_cache(), level=0, build_path=tmp_path / "build", max_rows_per_row_group=10)
+        _write_level_dataset(
+            level_rows,
+            _example_cache(),
+            level=0,
+            build_path=tmp_path / "build",
+            max_rows_per_row_group=10,
+        )
 
 
 def test_validate_points_element_uses_default_output_path(backed_sdata_blobs: SpatialData) -> None:
