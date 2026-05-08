@@ -1,0 +1,421 @@
+# Annotation Performance Roadmap
+
+## Context
+
+Annotating `cell_labels_global_ROI1` in
+`/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium_full_redo.zarr` feels laggy
+because the current object-classification path performs multiple broad updates
+after every add/remove annotation.
+
+The selected Xenium table has roughly 407k cell rows. For a single user-class
+edit, the current flow can:
+
+- normalize and rewrite the whole `user_class` categorical column
+- rebuild a label-to-color mapping for every cell in the active segmentation
+- refresh layer features for every cell
+- mark classifier outputs dirty and schedule classifier retraining
+
+The goal is to isolate these issues and fix them one at a time. Avoid a large
+"smart fast path" that couples annotation, coloring, classifier scheduling, and
+napari lifecycle concerns in one difficult-to-maintain change.
+
+## Principles
+
+- Keep every phase independently reviewable and revertible.
+- Keep the existing full-refresh paths for binding, table changes, color-mode
+  changes, reload, and classifier prediction updates.
+- Optimize the common `user_class` add/remove interaction first.
+- Prefer simple data structures and explicit tests over hidden mutable state.
+- Do not introduce private napari-event manipulation unless a phase explicitly
+  proves it is needed.
+- Preserve persisted table semantics: `user_class` remains categorical, class
+  categories remain sorted, and `user_class_colors` remains aligned to
+  categories.
+
+## Phase 0: Baseline And Guardrails
+
+### Goal
+
+Capture the current behavior and performance shape before changing code.
+
+### Scope
+
+- Add a short benchmark/dev note in this roadmap, or keep a local script in a
+  scratch area, that measures:
+  - table row count for the active segmentation
+  - time to apply one `user_class` edit
+  - time to refresh `user_class` layer coloring
+  - size of `layer.colormap.color_dict`
+- Do not commit large benchmark data.
+- Do not make production changes in this phase.
+
+### Suggested Commands
+
+Use the project environment:
+
+```bash
+source .venv/bin/activate
+```
+
+Measure against:
+
+```text
+/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium_full_redo.zarr
+labels: cell_labels_global_ROI1
+table: table_global_ROI1
+```
+
+### Acceptance Criteria
+
+- We can reproduce the lag source with numbers.
+- We know whether each later phase improves:
+  - table write time
+  - color refresh time
+  - classifier scheduling behavior
+  - stale timer behavior
+
+## Phase 1: Sparse `user_class` Labels Colormap
+
+### Goal
+
+Make `user_class` coloring sparse so unlabeled cells use the default color and
+only explicitly annotated cells receive explicit color entries.
+
+This is the easiest win because most cells are usually unlabeled during manual
+annotation. We do not need one `DirectLabelColormap.color_dict` entry per cell
+just to say "unlabeled".
+
+### Current Problem
+
+`ViewerStylingController.refresh_layer_colors()` builds a full dictionary:
+
+```text
+{None: unlabeled_color, 0: transparent, 1: ..., 2: ..., ..., 407124: ...}
+```
+
+When almost all cells are unlabeled, this duplicates the same color hundreds of
+thousands of times.
+
+### Proposed Behavior
+
+For `color_by == "user_class"`:
+
+- Build `DirectLabelColormap` with:
+  - `None: unlabeled_color`
+  - `0: transparent`
+  - one explicit entry only for labels whose `user_class != 0`
+- Let napari use the `None` default color for all missing/unlabeled label ids.
+- Keep full explicit mappings for:
+  - `pred_class`, unless separately optimized later
+  - `pred_confidence`, because continuous values are expected to differ per
+    label
+
+### Files
+
+- `src/napari_harpy/widgets/object_classification/viewer_styling.py`
+- `tests/test_widget.py`
+
+### Implementation Notes
+
+- Introduce a small helper such as:
+
+```python
+def _base_labels_color_dict(default_color: Any) -> dict[int | None, Any]:
+    return {None: default_color, 0: "transparent"}
+```
+
+- In the `user_class` branch, skip entries where `class_id == UNLABELED_CLASS`.
+- Keep current class-palette lookup behavior unchanged.
+- Do not mutate an existing colormap in this phase; assign a new sparse
+  `DirectLabelColormap` through the existing full-refresh path.
+
+### Tests
+
+Add or update widget tests so that after annotating label `5`:
+
+- `layer.colormap` is a `DirectLabelColormap`
+- `layer.colormap.color_dict` has only `{None, 0, 5}` for one labeled object
+- `layer.colormap.map(6)` returns the unlabeled/default color
+- label `5` and label `6` have different colors when label `5` is assigned a
+  positive user class
+
+### Acceptance Criteria
+
+- A full `user_class` color refresh no longer creates entries for every
+  unlabeled object.
+- Existing user-class color behavior is unchanged visually.
+- Existing prediction and confidence coloring tests still pass.
+
+## Phase 2: Manual/Automatic Classifier Training Toggle
+
+### Goal
+
+Add a checkbox that lets users disable automatic classifier retraining after
+each annotation.
+
+This separates "I am annotating quickly" from "I want predictions updated after
+each click".
+
+### Proposed UI
+
+Add a checkbox near the classifier controls:
+
+```text
+[x] Auto train
+```
+
+Default: checked, preserving existing behavior.
+
+When unchecked:
+
+- annotation edits still mark persistence dirty
+- annotation edits still mark classifier outputs dirty/stale
+- annotation edits still refresh annotation coloring
+- annotation edits do not call `schedule_retrain()`
+- the existing `Train Classifier` button remains the manual path
+
+### Files
+
+- `src/napari_harpy/widgets/object_classification/widget.py`
+- `tests/test_widget.py`
+
+### Implementation Notes
+
+- Store widget state as something like:
+
+```python
+self._auto_train_enabled = True
+```
+
+- Add a `QCheckBox` with object name:
+
+```text
+auto_train_checkbox
+```
+
+- In `_on_annotation_changed()`:
+
+```python
+self._classifier_controller.mark_dirty(reason="the annotations changed")
+if self._auto_train_enabled:
+    self._classifier_controller.schedule_retrain()
+```
+
+- Keep `mark_dirty()` outside the checkbox condition so classifier status and
+  export availability remain honest.
+- Update tooltip/status text to make the manual path clear when auto training
+  is disabled.
+
+### Tests
+
+Add tests for:
+
+- default state preserves current auto-retrain behavior
+- unchecking the checkbox prevents `schedule_retrain()` from being called after
+  annotation
+- unchecking the checkbox still calls `mark_dirty()`
+- clicking `Train Classifier` still invokes manual retraining when auto training
+  is disabled
+
+### Acceptance Criteria
+
+- Users can annotate repeatedly without triggering classifier work on each edit.
+- The classifier state clearly indicates stale predictions.
+- Manual training remains available and unchanged.
+
+## Phase 3: Row-Scoped `user_class` Table Edits
+
+### Goal
+
+Update only the selected row(s) when applying or removing a user class, instead
+of normalizing and rewriting the whole `user_class` column on every edit.
+
+### Current Problem
+
+`AnnotationController._set_current_class()` currently does:
+
+```python
+self.ensure_annotation_column(USER_CLASS_COLUMN)
+user_class_values = _to_user_class_values(state.table.obs[USER_CLASS_COLUMN])
+user_class_values.loc[matching_rows] = int(class_id)
+_set_user_class_annotation_state(state.table, user_class_values)
+```
+
+This is simple and robust, but expensive for large tables because it converts
+the whole column and rebuilds categorical state on each edit.
+
+### Proposed Behavior
+
+Add a focused helper in `core/annotation.py`, for example:
+
+```python
+def set_user_class_for_rows(table: AnnData, rows: pd.Series, class_id: int) -> None:
+    ...
+```
+
+The helper should:
+
+- ensure `user_class` exists if missing
+- recover through full normalization if the existing column is invalid
+- add the requested category if absent
+- assign only `rows`
+- remove unused categories after clearing
+- refresh `table.uns["user_class_colors"]` to match the resulting categories
+
+### Files
+
+- `src/napari_harpy/core/annotation.py`
+- `src/napari_harpy/widgets/object_classification/annotation_controller.py`
+- `tests/test_widget.py`
+- `tests/test_class_palette.py` or a new focused annotation-core test if useful
+
+### Design Constraints
+
+- Keep `_set_user_class_annotation_state()` for full normalization on bind,
+  reload, and recovery.
+- The row-scoped helper must not duplicate the full palette logic in multiple
+  places.
+- Preserve exact current category behavior:
+  - assigning class `3` to an all-unlabeled table yields categories `[0, 3]`
+  - clearing the only labeled class yields categories `[0]`
+  - colors remain `default_class_colors(categories)`
+- If the existing column is not categorical or contains invalid values, fall
+  back to full normalization once, then perform the row edit.
+
+### Tests
+
+Add tests for:
+
+- assigning a new class updates the selected row only
+- clearing the only labeled object removes the unused class category
+- assigning another class replaces categories as expected
+- existing non-categorical `user_class` state is recovered safely
+- `user_class_colors` remains aligned with `user_class.cat.categories`
+
+### Acceptance Criteria
+
+- A single annotation no longer converts the entire column in the normal valid
+  state.
+- Persisted table state remains compatible with existing write/reload tests.
+- Classifier training still reads the expected integer class values.
+
+## Phase 4: Classifier Debounce Timer Lifecycle
+
+### Goal
+
+Fix the stale Qt timer cleanup race independently of annotation performance.
+
+### Current Problem
+
+The classifier controller owns a debounce `QTimer`. Faster annotation paths can
+make tests expose a race where a scheduled timer fires after the widget has
+already been deleted, and the callback tries to update deleted Qt labels.
+
+### Proposed Behavior
+
+Make timer ownership and shutdown explicit.
+
+Options to evaluate:
+
+1. Parent the debounce timer to the widget.
+2. Add a `shutdown()` method to `ClassifierController` that stops pending work
+   and clears UI callbacks.
+3. Connect the widget's `destroyed` signal to the controller shutdown path.
+
+The implementation can use both timer parenting and explicit shutdown if that is
+the clearest lifecycle model.
+
+### Files
+
+- `src/napari_harpy/widgets/object_classification/controller.py`
+- `src/napari_harpy/widgets/object_classification/widget.py`
+- `tests/test_widget.py`
+
+### Implementation Notes
+
+- Keep controller usable in tests without a widget parent.
+- Consider constructor shape:
+
+```python
+ClassifierController(..., timer_parent: QObject | None = None)
+```
+
+- `shutdown()` should:
+  - stop the debounce timer
+  - cancel/quit active workers if any
+  - invalidate pending job ids
+  - clear `on_state_changed` and `on_table_state_changed` callbacks
+- Avoid relying only on Python object destruction; Qt signal timing is the risky
+  part.
+
+### Tests
+
+Add or adjust tests so that:
+
+- pending debounced retrain does not call widget callbacks after widget deletion
+- calling `shutdown()` is idempotent
+- existing classifier retraining tests still pass
+
+### Acceptance Criteria
+
+- No Qt event-loop exception from stale classifier timers.
+- Debounced classifier behavior is unchanged while the widget is alive.
+- Worker cancellation/reload behavior remains unchanged.
+
+## Phase 5: Optional Incremental Layer Feature/Color Updates
+
+### Goal
+
+Only pursue this if Phases 1-4 are not enough.
+
+This phase would update a single row in `layer.features` and a single entry in
+an existing `DirectLabelColormap` after a user-class edit.
+
+### Why It Is Deferred
+
+This is where maintainability risk rises:
+
+- it may require mutating napari colormap internals or clearing private caches
+- it couples annotation changes to layer feature layout assumptions
+- it is easy to accidentally diverge from full-refresh behavior
+
+Sparse `user_class` coloring and disabling auto-training should already remove
+the largest visible costs. Row-scoped table edits should remove another broad
+table operation. We should re-measure before adding this phase.
+
+### Acceptance Criteria Before Starting
+
+- Phases 1-4 have landed.
+- Benchmarks still show annotation lag dominated by `layer.features` refresh or
+  colormap assignment.
+- We have a small, documented napari-compatible API surface for refreshing a
+  single labels layer styling change.
+
+## Suggested Landing Order
+
+1. Phase 1: Sparse `user_class` colormap.
+2. Phase 2: Auto-training checkbox.
+3. Phase 4: Classifier timer lifecycle.
+4. Phase 3: Row-scoped `user_class` edits.
+5. Re-measure.
+6. Phase 5 only if needed.
+
+The timer fix can land before Phase 2 or Phase 3 if tests expose the stale
+callback race earlier.
+
+## Verification Matrix
+
+Run focused checks after each phase:
+
+```bash
+source .venv/bin/activate
+ruff check src/napari_harpy tests
+pytest -q tests/test_widget.py
+```
+
+Run broader checks before merging the full annotation-performance set:
+
+```bash
+source .venv/bin/activate
+pytest -q tests/test_widget.py tests/test_classifier.py tests/test_persistence.py
+```
