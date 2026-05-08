@@ -1539,7 +1539,11 @@ def test_widget_user_class_annotation_falls_back_to_full_refresh_when_row_scoped
     def record_full_refresh() -> None:
         full_refresh_calls.append("refresh")
 
-    monkeypatch.setattr(widget._viewer_styling_controller, "refresh_user_class_annotation", record_row_scoped_refresh)
+    monkeypatch.setattr(
+        widget._viewer_styling_controller,
+        "refresh_user_class_colormap_and_feature",
+        record_row_scoped_refresh,
+    )
     monkeypatch.setattr(widget._viewer_styling_controller, "refresh", record_full_refresh)
 
     layer.selected_label = 5
@@ -1579,7 +1583,11 @@ def test_widget_user_class_annotation_updates_feature_only_in_prediction_color_m
         def record_full_refresh() -> None:
             full_refresh_calls.append("refresh")
 
-        monkeypatch.setattr(widget._viewer_styling_controller, "refresh_user_class_annotation", record_color_refresh)
+        monkeypatch.setattr(
+            widget._viewer_styling_controller,
+            "refresh_user_class_colormap_and_feature",
+            record_color_refresh,
+        )
         monkeypatch.setattr(widget._viewer_styling_controller, "refresh_user_class_feature", record_feature_refresh)
         monkeypatch.setattr(widget._viewer_styling_controller, "refresh", record_full_refresh)
 
@@ -1694,7 +1702,11 @@ def test_widget_auto_train_toggle_controls_annotation_retraining(
 
     monkeypatch.setattr(widget._classifier_controller, "schedule_retrain", record_schedule_retrain)
     monkeypatch.setattr(widget._classifier_controller, "mark_dirty", record_mark_dirty)
-    monkeypatch.setattr(widget._viewer_styling_controller, "refresh_user_class_annotation", record_row_scoped_refresh)
+    monkeypatch.setattr(
+        widget._viewer_styling_controller,
+        "refresh_user_class_colormap_and_feature",
+        record_row_scoped_refresh,
+    )
     monkeypatch.setattr(widget, "_refresh_layer_styling", lambda: refresh_calls.append("refresh"))
 
     assert widget.auto_train_checkbox.isChecked() is False

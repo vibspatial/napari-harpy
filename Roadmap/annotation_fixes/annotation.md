@@ -607,14 +607,15 @@ Phase 2B should not add new cancellation behavior:
 - Clicking `Train Classifier` still runs the manual retrain path even when auto
   training is unchecked.
 
-If pending-job cancellation becomes important, handle it later with the Phase 7
+If pending-job cancellation becomes important, handle it later with the Phase 8
 timer lifecycle work rather than mixing it into the training-policy toggle.
 
 ### Edge Cases
 
 - If auto training is disabled and the user is viewing `pred_class` or
-  `pred_confidence`, annotation can still refresh the layer using the selected
-  color source, but predictions remain stale because no classifier run happens.
+  `pred_confidence`, predictions remain stale because no classifier run happens.
+  Phase 7 can avoid repainting prediction colors while still updating the
+  annotated row's `user_class` feature value.
 - If auto training is disabled and no feature matrix is selected, annotations
   still work and classifier status should remain honest about the missing
   feature matrix/manual training availability.
@@ -1302,7 +1303,7 @@ Add or update tests for:
 - The common `user_class` annotation path no longer calls
   `_get_region_feature_rows()`.
 - `pred_class`, `pred_confidence`, classifier prediction writes, and
-  selection/binding changes still call the full refresh path.
+  selection/binding changes still call the full refresh path in this phase.
 - Visual labels-layer coloring remains correct after adding/removing an
   annotation.
 - `layer.features` has the new `user_class` value for the annotated instance
@@ -1310,7 +1311,122 @@ Add or update tests for:
 - Prediction coloring, classifier updates, and full viewer refreshes remain
   equivalent to the previous behavior.
 
-## Phase 7: Classifier Debounce Timer Lifecycle
+## Phase 7: Refresh Prediction Styling Only When Predictions Change
+
+### Goal
+
+Avoid full prediction-color styling refreshes during direct annotation when the
+viewer is colored by `pred_class` or `pred_confidence`.
+
+Direct annotation changes `user_class`; it does not directly write
+`pred_class` or `pred_confidence`. Prediction styling should therefore be
+refreshed only when the classifier actually clears or writes prediction columns.
+
+### Current Problem
+
+After Phase 6, `_refresh_after_user_class_annotation(...)` is narrow:
+
+```python
+if color_by == "user_class":
+    try row-scoped user_class color + feature refresh
+else:
+    full refresh
+```
+
+That means annotating while viewing `pred_class` or `pred_confidence` still calls
+`_get_region_feature_rows()` and rebuilds prediction coloring, even though the
+annotation event itself only changed `user_class`.
+
+This keeps correctness, but it is unnecessarily expensive for large selected
+regions.
+
+### Proposed Behavior
+
+Treat classifier prediction writes as the only trigger for prediction styling
+refreshes:
+
+```python
+if color_by == "user_class":
+    try row-scoped user_class color + feature refresh
+elif color_by in {"pred_class", "pred_confidence"}:
+    try row-scoped user_class feature refresh only
+else:
+    full refresh
+```
+
+The feature-only path should:
+
+- update only `layer.features[USER_CLASS_COLUMN]` for the annotated instance
+- leave the current prediction colormap unchanged
+- avoid `_get_region_feature_rows()`
+- return `False` if the feature row cannot be updated safely, so the widget can
+  fall back to a full refresh
+
+This preserves hover/properties correctness without repainting prediction colors
+that did not change during the annotation event.
+
+Auto-training state should not decide whether the immediate annotation refresh
+repaints prediction colors:
+
+- if auto train is disabled, predictions remain stale and visible until the user
+  clicks `Train Classifier`
+- if auto train is enabled, the immediate annotation still only updates
+  `user_class`; the later classifier prediction callback performs the full
+  refresh after predictions are actually written
+
+### Full Refresh Cases
+
+Keep full refresh behavior for:
+
+- manual `Train Classifier`
+- classifier prediction writes
+- `color_by` changes
+- selection, binding, table, feature, training-scope, or prediction-scope changes
+- any failed row-scoped feature update
+
+The classifier prediction callback remains the authoritative place where
+`pred_class` / `pred_confidence` viewer styling is refreshed after predictions
+are actually cleared or written.
+
+### Maintainability Guardrails
+
+- Keep this as a separate helper from the `user_class` color fast path, for
+  example `refresh_user_class_feature(change) -> bool`.
+- Do not let prediction color logic leak into the feature-only helper.
+- Do not decide from classifier dirty text/status or auto-train state. The branch
+  should use only the event source and current color mode.
+- Prefer full refresh fallback over trying to repair unexpected layer state.
+
+### Files
+
+- `src/napari_harpy/widgets/object_classification/viewer_styling.py`
+- `src/napari_harpy/widgets/object_classification/widget.py`
+- `tests/test_widget.py`
+- `tests/test_viewer_styling.py`
+
+### Tests
+
+Add or update tests for:
+
+- `color_by == "pred_class"` direct annotation updates only the annotated
+  row's `user_class` feature and does not full-refresh styling
+- `color_by == "pred_confidence"` direct annotation behaves the same
+- the prediction colormap is unchanged in those paths
+- failed row-scoped feature update falls back to full refresh
+- auto train enabled still avoids immediate prediction-color refresh during the
+  direct annotation event
+- classifier prediction writes still full-refresh prediction styling
+
+### Acceptance Criteria
+
+- Direct annotation in prediction color modes does not call
+  `_get_region_feature_rows()` in the happy path.
+- Hover/properties `user_class` is current immediately after annotation.
+- Prediction colors remain visually unchanged until classifier predictions are
+  explicitly recomputed.
+- Prediction writes and selection/binding changes still full-refresh.
+
+## Phase 8: Classifier Debounce Timer Lifecycle
 
 ### Goal
 
@@ -1373,11 +1489,11 @@ Add or adjust tests so that:
 - Debounced classifier behavior is unchanged while the widget is alive.
 - Worker cancellation/reload behavior remains unchanged.
 
-## Phase 8: Final Benchmark And Optional Deeper Layer Updates
+## Phase 9: Final Benchmark And Optional Deeper Layer Updates
 
 ### Goal
 
-Measure the remaining annotation cost after Phases 1-7, including Phase 2A and
+Measure the remaining annotation cost after Phases 1-8, including Phase 2A and
 Phase 2B. Only pursue incremental layer updates if those measurements show they
 are still needed.
 
@@ -1426,7 +1542,7 @@ table: table_global_ROI1
 
 ### Acceptance Criteria Before Starting
 
-- Phases 1-7, including Phase 2A and Phase 2B, have landed.
+- Phases 1-8, including Phase 2A and Phase 2B, have landed.
 - Benchmarks still show annotation lag dominated by `layer.features` refresh or
   colormap assignment.
 - We have a small, documented napari-compatible API surface for refreshing a
@@ -1440,15 +1556,16 @@ table: table_global_ROI1
 4. Phase 3: Row-scoped `user_class` edits.
 5. Phase 4: Faster `user_class` viewer styling refresh.
 6. Phase 6: Row-scoped `user_class` viewer refresh.
-7. Phase 5: Avoid repeated classifier preparation summaries.
-8. Phase 7: Classifier timer lifecycle.
-9. Phase 8: benchmark, then only add deeper private layer updates if still needed.
+7. Phase 7: Refresh prediction styling only when predictions change.
+8. Phase 5: Avoid repeated classifier preparation summaries.
+9. Phase 8: Classifier timer lifecycle.
+10. Phase 9: benchmark, then only add deeper private layer updates if still needed.
 
-Phase 5 is independent and can be deferred until after Phase 6 because the
+Phase 5 is independent and can be deferred until after Phase 6 or Phase 7 because the
 remaining visible annotation lag is now dominated by viewer refresh work.
 
-The timer fix can land before Phase 2A, Phase 2B, Phase 3, Phase 4, Phase 5, or
-Phase 6 if tests expose the stale callback race earlier.
+The timer fix can land before Phase 2A, Phase 2B, Phase 3, Phase 4, Phase 5,
+Phase 6, or Phase 7 if tests expose the stale callback race earlier.
 
 ## Verification Matrix
 

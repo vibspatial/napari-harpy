@@ -220,7 +220,7 @@ def test_row_scoped_user_class_annotation_updates_colormap_and_features(
 
     monkeypatch.setattr(controller, "_get_region_feature_rows", fail_full_feature_rows)
 
-    handled = controller.refresh_user_class_annotation(UserClassAnnotationChange(instance_id=6, class_id=4))
+    handled = controller.refresh_user_class_colormap_and_feature(UserClassAnnotationChange(instance_id=6, class_id=4))
 
     assert handled is True
     assert isinstance(layer.colormap, DirectLabelColormap)
@@ -245,7 +245,7 @@ def test_row_scoped_user_class_annotation_clear_removes_sparse_color_entry(
 
     monkeypatch.setattr(controller, "_get_region_feature_rows", fail_full_feature_rows)
 
-    handled = controller.refresh_user_class_annotation(UserClassAnnotationChange(instance_id=5, class_id=0))
+    handled = controller.refresh_user_class_colormap_and_feature(UserClassAnnotationChange(instance_id=5, class_id=0))
 
     assert handled is True
     assert isinstance(layer.colormap, DirectLabelColormap)
@@ -294,7 +294,7 @@ def test_row_scoped_user_class_annotation_returns_false_for_missing_feature_row(
     original_color_keys = set(layer.colormap.color_dict)
     original_features = layer.features.copy()
 
-    handled = controller.refresh_user_class_annotation(UserClassAnnotationChange(instance_id=99, class_id=4))
+    handled = controller.refresh_user_class_colormap_and_feature(UserClassAnnotationChange(instance_id=99, class_id=4))
 
     assert handled is False
     assert set(layer.colormap.color_dict) == original_color_keys

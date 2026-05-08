@@ -192,7 +192,7 @@ class ViewerStylingController:
             instance_key=instance_key,
         )
 
-    def refresh_user_class_annotation(self, change: UserClassAnnotationChange) -> bool:
+    def refresh_user_class_colormap_and_feature(self, change: UserClassAnnotationChange) -> bool:
         """Refresh one user-class annotation in labels colors and features.
 
         Returns ``True`` when the row-scoped update was fully applied. Returns

@@ -1581,9 +1581,18 @@ class ObjectClassificationWidget(QWidget):
         self._viewer_styling_controller.refresh()
 
     def _refresh_after_user_class_annotation(self, change: UserClassAnnotationChange) -> None:
+        """Refresh labels after one annotation, preferring row-scoped updates.
+
+        To keep annotation responsive, try the narrowest safe viewer update
+        before falling back to a full layer refresh:
+
+        - `user_class` coloring: update the edited label color and feature row
+        - prediction coloring: update only the edited `user_class` feature row
+        - other modes or unsafe layer state: perform a full refresh
+        """
         color_by = self._viewer_styling_controller.color_by
         if color_by == COLOR_BY_USER_CLASS:
-            if self._viewer_styling_controller.refresh_user_class_annotation(change):
+            if self._viewer_styling_controller.refresh_user_class_colormap_and_feature(change):
                 return
             self._refresh_layer_styling()
             return
