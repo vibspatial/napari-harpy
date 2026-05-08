@@ -607,7 +607,7 @@ Phase 2B should not add new cancellation behavior:
 - Clicking `Train Classifier` still runs the manual retrain path even when auto
   training is unchecked.
 
-If pending-job cancellation becomes important, handle it later with the Phase 5
+If pending-job cancellation becomes important, handle it later with the Phase 6
 timer lifecycle work rather than mixing it into the training-policy toggle.
 
 ### Edge Cases
@@ -860,7 +860,110 @@ Add or update tests for:
 - Layer colors/features remain equivalent to the previous full-refresh
   behavior.
 
-## Phase 5: Classifier Debounce Timer Lifecycle
+## Phase 5: Avoid Repeated Classifier Preparation Summaries
+
+### Goal
+
+Avoid recomputing classifier preparation summaries multiple times during one
+annotation interaction, especially when auto training is disabled.
+
+The preparation summary is useful for honest feedback and train-button
+availability, but it scans enough table/feature state that repeated calls add
+visible latency on large tables.
+
+### Measurement Snapshot
+
+Measured against:
+
+```text
+/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium_full_data_core.zarr
+labels: cell_labels_global_ROI1
+table: table_global_ROI1
+feature matrix: features_testing
+rows: 406,611
+```
+
+Current approximate timing:
+
+```text
+ClassifierController.describe_current_preparation()    ~0.120s
+```
+
+### Current Problem
+
+With auto training disabled, annotation still marks classifier outputs stale.
+That status/control update path can recompute preparation summaries more than
+once for the same underlying table state:
+
+1. `_on_annotation_changed()` calls `mark_dirty(...)`.
+2. `mark_dirty(...)` updates classifier status.
+3. The classifier status callback updates classifier feedback/controls.
+4. `_update_classifier_controls()` calls
+   `describe_current_preparation()` to build the preparation card and decide
+   whether `Train Classifier` is enabled.
+5. `_on_annotation_changed()` then calls `_update_selection_status()`, which
+   calls `_update_classifier_controls()` again and can recompute the same
+   summary.
+
+On the measured table, each summary is only about 120ms, but repeated summaries
+stack up and become noticeable after the larger table-edit and styling costs
+are reduced.
+
+### Proposed Behavior
+
+Keep classifier preparation feedback accurate, but compute it at most once for
+one UI refresh cycle:
+
+- Let `_update_classifier_controls(...)` accept an optional precomputed
+  `ClassifierPreparationSummary`.
+- When `_on_annotation_changed()` already knows it will call both
+  `mark_dirty(...)` and `_update_selection_status()`, avoid doing the same
+  preparation work twice.
+- Consider having `_on_classifier_state_changed()` update feedback/status text
+  only, and let the explicit end-of-annotation UI refresh update preparation
+  cards and controls once.
+- Alternatively, cache the latest preparation summary with a simple invalidation
+  key based on the selected table object, feature key, scopes, and a table-state
+  revision owned by the widget/controller.
+- Keep the cache local and explicit. Do not infer correctness from object
+  identity alone if the underlying table can mutate in place.
+
+### Non-Goals
+
+- Do not make classifier feedback stale or hide trainability warnings.
+- Do not skip preparation summaries after selection, feature-matrix, training
+  scope, prediction scope, reload, or classifier-result changes.
+- Do not change classifier training eligibility rules.
+- Do not add benchmark code in this phase.
+
+### Files
+
+- `src/napari_harpy/widgets/object_classification/widget.py`
+- `src/napari_harpy/widgets/object_classification/controller.py` if a small
+  controller-side cache or invalidation hook is clearer
+- `tests/test_widget.py`
+- `tests/test_classifier.py` only if controller-side behavior changes
+
+### Tests
+
+Add or update tests for:
+
+- one annotation with auto training disabled does not call
+  `describe_current_preparation()` redundantly
+- classifier preparation feedback and `Train Classifier` enablement still update
+  after annotation
+- selection/table/feature/scope changes still refresh the preparation summary
+- manual `Train Classifier` eligibility remains unchanged
+
+### Acceptance Criteria
+
+- The auto-training-disabled annotation path computes classifier preparation at
+  most once for the resulting UI refresh.
+- Classifier preparation cards and train/export controls remain accurate.
+- The change stays independent from row-scoped table edits and viewer-styling
+  refresh optimizations.
+
+## Phase 6: Classifier Debounce Timer Lifecycle
 
 ### Goal
 
@@ -923,11 +1026,11 @@ Add or adjust tests so that:
 - Debounced classifier behavior is unchanged while the widget is alive.
 - Worker cancellation/reload behavior remains unchanged.
 
-## Phase 6: Final Benchmark And Optional Incremental Layer Feature/Color Updates
+## Phase 7: Final Benchmark And Optional Incremental Layer Feature/Color Updates
 
 ### Goal
 
-Measure the remaining annotation cost after Phases 1-5, including Phase 2A and
+Measure the remaining annotation cost after Phases 1-6, including Phase 2A and
 Phase 2B. Only pursue incremental layer updates if those measurements show they
 are still needed.
 
@@ -943,9 +1046,9 @@ This is where maintainability risk rises:
 - it is easy to accidentally diverge from full-refresh behavior
 
 Sparse `user_class` coloring, disabling auto-training, row-scoped table edits,
-and faster user-class styling refreshes should remove the largest visible
-costs. We should re-measure in this phase before adding any incremental
-layer-update code.
+faster user-class styling refreshes, and avoiding repeated classifier
+preparation summaries should remove the largest visible costs. We should
+re-measure in this phase before adding any incremental layer-update code.
 
 ### Benchmark Scope
 
@@ -974,7 +1077,7 @@ table: table_global_ROI1
 
 ### Acceptance Criteria Before Starting
 
-- Phases 1-5, including Phase 2A and Phase 2B, have landed.
+- Phases 1-6, including Phase 2A and Phase 2B, have landed.
 - Benchmarks still show annotation lag dominated by `layer.features` refresh or
   colormap assignment.
 - We have a small, documented napari-compatible API surface for refreshing a
@@ -987,11 +1090,12 @@ table: table_global_ROI1
 3. Phase 2B: Auto-training checkbox.
 4. Phase 3: Row-scoped `user_class` edits.
 5. Phase 4: Faster `user_class` viewer styling refresh.
-6. Phase 5: Classifier timer lifecycle.
-7. Phase 6: benchmark, then only add incremental layer updates if still needed.
+6. Phase 5: Avoid repeated classifier preparation summaries.
+7. Phase 6: Classifier timer lifecycle.
+8. Phase 7: benchmark, then only add incremental layer updates if still needed.
 
-The timer fix can land before Phase 2A, Phase 2B, Phase 3, or Phase 4 if tests expose
-the stale callback race earlier.
+The timer fix can land before Phase 2A, Phase 2B, Phase 3, Phase 4, or Phase 5
+if tests expose the stale callback race earlier.
 
 ## Verification Matrix
 
