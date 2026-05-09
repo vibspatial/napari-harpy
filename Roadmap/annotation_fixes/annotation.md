@@ -1440,52 +1440,94 @@ already been deleted, and the callback tries to update deleted Qt labels.
 
 ### Proposed Behavior
 
-Make timer ownership and shutdown explicit.
+Make timer ownership and shutdown explicit. This phase should use both timer
+parenting and an explicit shutdown contract:
 
-Options to evaluate:
-
-1. Parent the debounce timer to the widget.
-2. Add a `shutdown()` method to `ClassifierController` that stops pending work
-   and clears UI callbacks.
-3. Connect the widget's `destroyed` signal to the controller shutdown path.
-
-The implementation can use both timer parenting and explicit shutdown if that is
-the clearest lifecycle model.
+- parent the debounce timer to the widget when the controller is used by
+  `ObjectClassificationWidget`
+- add `ClassifierController.shutdown()` to stop pending async work and clear UI
+  callbacks
+- connect the widget's `destroyed` signal to the controller shutdown path
+- keep the controller usable in tests and non-widget contexts without a timer
+  parent
 
 ### Files
 
 - `src/napari_harpy/widgets/object_classification/controller.py`
 - `src/napari_harpy/widgets/object_classification/widget.py`
+- `tests/test_classifier.py`
 - `tests/test_widget.py`
 
 ### Implementation Notes
 
-- Keep controller usable in tests without a widget parent.
-- Consider constructor shape:
+Use an optional timer parent:
 
 ```python
 ClassifierController(..., timer_parent: QObject | None = None)
+```
+
+The debounce timer should then be created as:
+
+```python
+self._debounce_timer = QTimer(timer_parent)
 ```
 
 - `shutdown()` should:
   - stop the debounce timer
   - cancel/quit active workers if any
   - invalidate pending job ids
-  - clear `on_state_changed` and `on_table_state_changed` callbacks
+  - clear `_active_worker`, `_active_job`, and `_active_worker_job_id`
+  - clear all widget/UI callbacks:
+    - `_on_state_changed`
+    - `_on_table_state_changed`
+    - `_on_prediction_state_changed`
+  - be idempotent
+- Add an internal shutdown guard, for example `_is_shutdown`, so late timer or
+  worker callbacks cannot notify UI callbacks after shutdown.
+- Guard at least:
+  - `_launch_scheduled_retrain(...)`
+  - `_launch_retrain_job(...)`
+  - `_set_status(...)`
+  - `_notify_table_state_changed(...)`
+  - `_notify_prediction_table_state_changed(...)`
+- Widget integration should be explicit:
+
+```python
+self._classifier_controller = ClassifierController(..., timer_parent=self)
+self.destroyed.connect(self._shutdown_classifier_controller)
+```
+
+with:
+
+```python
+def _shutdown_classifier_controller(self, *args) -> None:
+    self._classifier_controller.shutdown()
+```
+
 - Avoid relying only on Python object destruction; Qt signal timing is the risky
   part.
 
 ### Tests
 
-Add or adjust tests so that:
+Add controller-level tests so that:
 
-- pending debounced retrain does not call widget callbacks after widget deletion
+- scheduled debounce + `shutdown()` + waiting longer than the debounce interval
+  does not create a worker
+- active worker + `shutdown()` calls `worker.quit()`
+- late worker `returned`, `errored`, or `finished` signals after shutdown do not
+  call table, prediction, or state callbacks
 - calling `shutdown()` is idempotent
 - existing classifier retraining tests still pass
+
+Add a widget-level test so that:
+
+- widget destruction calls classifier-controller shutdown
+- pending debounce does not reach widget callbacks after shutdown
 
 ### Acceptance Criteria
 
 - No Qt event-loop exception from stale classifier timers.
+- Pending timers and late worker signals become no-ops after shutdown.
 - Debounced classifier behavior is unchanged while the widget is alive.
 - Worker cancellation/reload behavior remains unchanged.
 
