@@ -200,7 +200,7 @@ def test_viewer_widget_refreshes_cards_when_shared_sdata_changes(qtbot, sdata_bl
     assert len(widget.image_rows) == 2
     assert len(widget.labels_rows) == 2
     assert widget.images_section_toggle.text() == "Images (2)"
-    assert widget.labels_section_toggle.text() == "Segmentations (2)"
+    assert widget.labels_section_toggle.text() == "Labels (2)"
     assert not widget.images_group.is_expanded()
     assert not widget.labels_group.is_expanded()
     assert widget.image_rows[0].detail_widget.isHidden()
@@ -584,8 +584,8 @@ def test_viewer_widget_coordinate_system_switch_prunes_old_harpy_layers(qtbot, m
         coordinate_system="local",
     )
     widget._set_action_feedback(
-        title="Segmentation Loaded",
-        lines=["Loaded segmentation `global_image` in coordinate system `global`."],
+        title="Labels Loaded",
+        lines=["Loaded labels `global_image` in coordinate system `global`."],
         kind="success",
     )
 
@@ -679,8 +679,8 @@ def test_viewer_widget_add_update_labels_loads_and_activates_layer(qtbot, sdata_
     first_card.add_update_button.click()
 
     assert len(viewer.layers) == 1
-    _assert_action_feedback_card(widget, title="Segmentation Loaded", kind="success")
-    assert "Loaded segmentation `blobs_labels`" in widget.action_feedback_label.text()
+    _assert_action_feedback_card(widget, title="Labels Loaded", kind="success")
+    assert "Loaded labels `blobs_labels`" in widget.action_feedback_label.text()
 
 
 def test_viewer_widget_add_update_labels_dispatches_to_styled_overlay_path(qtbot, monkeypatch, sdata_blobs) -> None:

@@ -982,7 +982,7 @@ class ViewerWidget(QWidget):
         self.images_section_toggle = self.images_group.toggle_button
         self.images_section_title = self.images_section_toggle
 
-        self.labels_empty_label = QLabel("No segmentation masks available in the selected coordinate system.")
+        self.labels_empty_label = QLabel("No labels available in the selected coordinate system.")
         self.labels_empty_label.setObjectName("viewer_widget_labels_empty_state")
         self.labels_empty_label.setWordWrap(True)
         self.labels_empty_label.setStyleSheet(_EMPTY_STATE_STYLESHEET)
@@ -993,7 +993,7 @@ class ViewerWidget(QWidget):
         self.labels_section_layout.setContentsMargins(0, 0, 0, 0)
         self.labels_section_layout.setSpacing(8)
         self.labels_group = _CollapsibleSectionWidget(
-            title="Segmentations",
+            title="Labels",
             object_name="viewer_widget_labels_group",
             toggle_object_name="viewer_widget_labels_section_toggle",
             expanded=False,
@@ -1129,7 +1129,7 @@ class ViewerWidget(QWidget):
 
         self.summary_label.setText(
             f"In coordinate system `{coordinate_system}`: "
-            f"{len(image_names)} image element(s) and {len(label_names)} segmentation mask(s)."
+            f"{len(image_names)} image element(s) and {len(label_names)} labels element(s)."
         )
         self._rebuild_image_cards(sdata, image_names)
         self._rebuild_labels_cards(sdata, label_names)
@@ -1240,7 +1240,7 @@ class ViewerWidget(QWidget):
 
         if sdata is None or not coordinate_system:
             self._set_action_feedback(
-                title="Segmentation Load Error",
+                title="Labels Load Error",
                 lines=["Load a SpatialData object and select a coordinate system first."],
                 kind="error",
             )
@@ -1249,17 +1249,17 @@ class ViewerWidget(QWidget):
         try:
             layer = self._app_state.viewer_adapter.ensure_labels_loaded(sdata, label_name, coordinate_system)
         except ValueError as error:
-            self._set_action_feedback(title="Segmentation Load Error", lines=[str(error)], kind="error")
+            self._set_action_feedback(title="Labels Load Error", lines=[str(error)], kind="error")
             return
 
         self._app_state.viewer_adapter.activate_layer(layer)
         display_name, was_shortened = format_feedback_identifier(label_name)
         self._set_action_feedback(
-            title="Segmentation Loaded",
-            lines=[f"Loaded segmentation `{display_name}` in coordinate system `{coordinate_system}`."],
+            title="Labels Loaded",
+            lines=[f"Loaded labels `{display_name}` in coordinate system `{coordinate_system}`."],
             kind="success",
             tooltip_message=(
-                f"Loaded segmentation `{label_name}` in coordinate system `{coordinate_system}`."
+                f"Loaded labels `{label_name}` in coordinate system `{coordinate_system}`."
                 if was_shortened
                 else None
             ),
@@ -1280,7 +1280,7 @@ class ViewerWidget(QWidget):
         if request.table_name is None:
             self._set_action_feedback(
                 title="Colored Overlay Error",
-                lines=[f"Segmentation `{request.label_name}` has no linked table for table-driven coloring."],
+                lines=[f"Labels element `{request.label_name}` has no linked table for table-driven coloring."],
                 kind="error",
             )
             return
@@ -1317,7 +1317,7 @@ class ViewerWidget(QWidget):
             source_text = f'X[:, "{request.selected_color_source.value_key}"]'
 
         action_line = (
-            f"{action} colored overlay for {source_text} on segmentation `{request.label_name}` "
+            f"{action} colored overlay for {source_text} on labels element `{request.label_name}` "
             f"in coordinate system `{coordinate_system}`."
         )
         feedback_kind: StatusCardKind = "success"

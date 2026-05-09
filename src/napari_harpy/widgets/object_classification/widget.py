@@ -102,9 +102,11 @@ class _DirtyReloadDecision(Enum):
 _APPLY_CLASS_SHORTCUT = "A"
 _REMOVE_CLASS_SHORTCUT = "R"
 _INPUT_CONTROL_STYLESHEET = build_input_control_stylesheet("QComboBox, QSpinBox")
-_TABLE_WIDE_TRAINING_SCOPE_LABEL = "All eligible labeled regions in table"
-_TABLE_WIDE_PREDICTION_SCOPE_LABEL = "All eligible regions in table"
-_SELECTED_SEGMENTATION_TRAINING_SCOPE_LABEL = "Selected segmentation only"
+_TABLE_WIDE_TRAINING_SCOPE_LABEL = "All eligible annotated rows in table"
+_TABLE_WIDE_PREDICTION_SCOPE_LABEL = "All eligible rows in table"
+_SELECTED_SEGMENTATION_TRAINING_SCOPE_LABEL = "Selected labels element only"
+_WRITE_TABLE_STATE_BUTTON_TEXT = "Write Table State"
+_RELOAD_TABLE_STATE_BUTTON_TEXT = "Reload Table State"
 _CLASS_EDITOR_STYLESHEET = (
     f"QWidget#class_editor {{background-color: {WIDGET_PANEL_COLOR}; "
     f"border: 1px solid {WIDGET_BORDER_COLOR}; border-radius: 10px;}}"
@@ -214,7 +216,7 @@ class ObjectClassificationWidget(QWidget):
 
         self.segmentation_combo = CompactComboBox()
         self.segmentation_combo.setObjectName("segmentation_mask_combo")
-        self.segmentation_combo.setPlaceholderText("Choose segmentation mask")
+        self.segmentation_combo.setPlaceholderText("Choose a labels element")
         self.segmentation_combo.currentIndexChanged.connect(self._on_segmentation_changed)
         self.segmentation_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
 
@@ -308,7 +310,7 @@ class ObjectClassificationWidget(QWidget):
         self.export_classifier_button.setMinimumHeight(28)
         self.export_classifier_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
 
-        self.sync_button = QPushButton("Write")
+        self.sync_button = QPushButton(_WRITE_TABLE_STATE_BUTTON_TEXT)
         self.sync_button.setObjectName("sync_to_zarr_button")
         self.sync_button.clicked.connect(self._write_to_zarr)
         self.sync_button.setEnabled(False)
@@ -316,7 +318,7 @@ class ObjectClassificationWidget(QWidget):
         self.sync_button.setMinimumHeight(28)
         self.sync_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
 
-        self.reload_button = QPushButton("Reload")
+        self.reload_button = QPushButton(_RELOAD_TABLE_STATE_BUTTON_TEXT)
         self.reload_button.setObjectName("reload_from_zarr_button")
         self.reload_button.clicked.connect(self._reload_from_zarr)
         self.reload_button.setEnabled(False)
@@ -383,7 +385,7 @@ class ObjectClassificationWidget(QWidget):
         self.persistence_feedback.hide()
 
         selector_layout.addRow(self._create_form_label("Coordinate system"), self.coordinate_system_combo)
-        selector_layout.addRow(self._create_form_label("Segmentation mask"), self.segmentation_combo)
+        selector_layout.addRow(self._create_form_label("Labels element"), self.segmentation_combo)
         selector_layout.addRow(self._create_form_label("Table"), self.table_combo)
         selector_layout.addRow(self._create_form_label("Feature matrix"), self.feature_matrix_combo)
         selector_layout.addRow(self._create_form_label("Training scope"), self.training_scope_combo)
@@ -508,7 +510,7 @@ class ObjectClassificationWidget(QWidget):
         self._refresh_label_options()
         self._refresh_table_names()
         self._prepare_selected_labels_layer()
-        self._bind_current_selection(classifier_dirty_reason="the segmentation selection changed")
+        self._bind_current_selection(classifier_dirty_reason="the labels element selection changed")
 
     def _on_sdata_changed(self, sdata: SpatialData | None) -> None:
         self.refresh_from_sdata(sdata)
@@ -726,7 +728,7 @@ class ObjectClassificationWidget(QWidget):
         self._set_selected_label_option(index)
         self._refresh_table_names()
         self._prepare_selected_labels_layer()
-        self._bind_current_selection(classifier_dirty_reason="the segmentation selection changed")
+        self._bind_current_selection(classifier_dirty_reason="the labels element selection changed")
 
     def _set_selected_label_option(self, index: int) -> None:
         if index < 0 or index >= len(self._label_options):
@@ -1193,11 +1195,12 @@ class ObjectClassificationWidget(QWidget):
 
         if self.selected_spatialdata is None or self.selected_table_name is None:
             sync_tooltip = (
-                "Choose a backed SpatialData annotation table to enable writing the in-memory table state to disk."
+                "Choose a backed SpatialData annotation table to enable writing annotations, predictions, "
+                "and classifier metadata to disk."
             )
             reload_tooltip = (
                 "Choose a backed SpatialData annotation table to enable discarding the current in-memory table state "
-                "and reloading it from disk."
+                "and reloading the table from disk."
             )
         elif self._table_binding_error is not None:
             sync_tooltip = self._table_binding_error
@@ -1208,9 +1211,12 @@ class ObjectClassificationWidget(QWidget):
         else:
             table_store_path = self._persistence_controller.selected_table_store_path
             destination = self.selected_spatialdata.path if table_store_path is None else table_store_path
-            sync_tooltip = f"Write the current in-memory `{self.selected_table_name}` table state to `{destination}`."
+            sync_tooltip = (
+                f"Write annotations, predictions, and classifier metadata for `{self.selected_table_name}` "
+                f"to `{destination}`."
+            )
             reload_tooltip = (
-                f"Discard the current in-memory `{self.selected_table_name}` table state and reload it from "
+                f"Discard the current in-memory `{self.selected_table_name}` table state and reload the table from "
                 f"`{destination}`."
             )
             if self._persistence_controller.is_dirty:
@@ -1258,10 +1264,10 @@ class ObjectClassificationWidget(QWidget):
             or self.selected_table_name is None
         ):
             training_scope_tooltip = (
-                "Choose a segmentation and annotation table before configuring classifier training scope."
+                "Choose a labels element and annotation table before configuring classifier training scope."
             )
             prediction_scope_tooltip = (
-                "Choose a segmentation and annotation table before configuring classifier prediction scope."
+                "Choose a labels element and annotation table before configuring classifier prediction scope."
             )
         elif self._table_binding_error is not None:
             training_scope_tooltip = self._table_binding_error
@@ -1270,10 +1276,12 @@ class ObjectClassificationWidget(QWidget):
             training_scope_tooltip = "A classifier training job is currently running."
             prediction_scope_tooltip = "A classifier training job is currently running."
         elif self.selected_training_scope == "all":
-            training_scope_tooltip = "Train on eligible labeled rows from all annotated regions in the selected table."
+            training_scope_tooltip = (
+                "Train on eligible labeled rows from all annotated labels elements in the selected table."
+            )
             prediction_scope_tooltip = self._prediction_scope_tooltip()
         else:
-            training_scope_tooltip = "Train only on eligible labeled rows from the selected segmentation region."
+            training_scope_tooltip = "Train only on eligible labeled rows from the selected labels element."
             prediction_scope_tooltip = self._prediction_scope_tooltip()
 
         self._set_tooltip(self.training_scope_combo, training_scope_tooltip)
@@ -1298,7 +1306,7 @@ class ObjectClassificationWidget(QWidget):
         self.export_classifier_button.setEnabled(can_export)
 
         if self.selected_spatialdata is None or self.selected_table_name is None:
-            tooltip = "Choose a segmentation and annotation table to enable classifier training."
+            tooltip = "Choose a labels element and annotation table to enable classifier training."
         elif self._table_binding_error is not None:
             tooltip = self._table_binding_error
         elif self.selected_feature_key is None:
@@ -1330,15 +1338,15 @@ class ObjectClassificationWidget(QWidget):
     def _prediction_scope_tooltip(self) -> str:
         if self.selected_prediction_scope == "all":
             return (
-                "Write predictions for all eligible regions in the selected table. In-scope rows with invalid "
+                "Write predictions for all eligible rows in the selected table. In-scope rows with invalid "
                 "features will be cleared."
             )
 
-        return "Write predictions only for eligible rows from the selected segmentation region."
+        return "Write predictions only for eligible rows from the selected labels element."
 
     def _write_to_zarr(self) -> None:
         # TODO: consider disabling write while classifier retraining is pending
-        # so "Write Table to zarr" always snapshots a settled table state.
+        # so "Write Table State" always snapshots a settled table state.
         self._write_selected_table_to_zarr()
 
     def _write_selected_table_to_zarr(
@@ -1355,7 +1363,9 @@ class ObjectClassificationWidget(QWidget):
 
         if show_feedback:
             destination = self._selected_table_store_destination()
-            message = feedback_message or f"Wrote `{self.selected_table_name}` table state to `{destination}`."
+            message = feedback_message or (
+                f"Wrote `{self.selected_table_name}` annotations, predictions, and classifier metadata to `{destination}`."
+            )
             self._set_persistence_feedback(message, error=False)
         self._update_selection_status()
         return True
@@ -1375,7 +1385,9 @@ class ObjectClassificationWidget(QWidget):
 
             source = self._selected_table_store_destination()
             self._reload_selected_table_from_zarr(
-                feedback_message=f"Wrote local changes and reloaded `{self.selected_table_name}` table state from `{source}`.",
+                feedback_message=(
+                    f"Wrote local table state and reloaded `{self.selected_table_name}` table state from `{source}`."
+                ),
             )
             return
 
@@ -1443,8 +1455,8 @@ class ObjectClassificationWidget(QWidget):
         button_row = QHBoxLayout()
         button_row.setSpacing(10)
         button_row.addStretch(1)
-        write_button = QPushButton("Write local edits and reload")
-        discard_button = QPushButton("Reload and discard local edits")
+        write_button = QPushButton("Write table state and reload")
+        discard_button = QPushButton("Reload table state and discard local edits")
         cancel_button = QPushButton("Cancel")
 
         write_button.setStyleSheet(

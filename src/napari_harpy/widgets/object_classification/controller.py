@@ -571,7 +571,7 @@ class ClassifierController:
                 prediction_scope=prediction_scope,
                 eligible=False,
                 reason=(
-                    f"No table rows for segmentation `{self._selected_label_name}` were found in "
+                    f"No table rows for labels element `{self._selected_label_name}` were found in "
                     f"`{self._selected_table_name}`."
                 ),
                 labeled_count=0,
@@ -1114,7 +1114,7 @@ class ClassifierController:
 
         config_prediction_regions = _normalize_prediction_regions(config.get("prediction_regions"))
         if self._selected_label_name is not None and self._selected_label_name not in config_prediction_regions:
-            mismatches.append(f"loaded predictions do not cover segmentation `{self._selected_label_name}`")
+            mismatches.append(f"loaded predictions do not cover labels element `{self._selected_label_name}`")
 
         if mismatches:
             self._is_dirty = True

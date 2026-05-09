@@ -62,14 +62,14 @@ def build_object_classification_selection_status_card_spec(
     if selected_segmentation_name is None:
         return _ObjectClassificationStatusCardSpec(
             title="Selection",
-            lines=("Choose a segmentation mask in the selected coordinate system to enable object picking.",),
+            lines=("Choose a labels element in the selected coordinate system to enable object picking.",),
             kind="info",
         )
 
     if labels_layer_preparation_result.kind == "error":
         return _ObjectClassificationStatusCardSpec(
             title="Layer Load Issue",
-            lines=(labels_layer_preparation_result.error or "Could not load the selected segmentation layer.",),
+            lines=(labels_layer_preparation_result.error or "Could not load the selected labels layer.",),
             kind="warning",
         )
 
@@ -77,7 +77,7 @@ def build_object_classification_selection_status_card_spec(
         return _ObjectClassificationStatusCardSpec(
             title="Selection",
             lines=(
-                "The chosen segmentation is known in SpatialData for the selected coordinate system, "
+                "The chosen labels element is known in SpatialData for the selected coordinate system, "
                 "but is not currently loaded as a napari Labels layer.",
             ),
             kind="warning",
@@ -88,8 +88,8 @@ def build_object_classification_selection_status_card_spec(
             title="Selection Warning",
             lines=(
                 *layer_preparation_lines,
-                f"Bound to {selected_segmentation_name}.",
-                "This segmentation is loaded, but no annotation table is linked to it.",
+                f"Bound to labels element `{selected_segmentation_name}`.",
+                "This labels layer is loaded, but no annotation table is linked to it.",
             ),
             kind="warning",
         )
@@ -99,7 +99,7 @@ def build_object_classification_selection_status_card_spec(
             title="Selection Warning",
             lines=(
                 *layer_preparation_lines,
-                f"Bound to {selected_segmentation_name}.",
+                f"Bound to labels element `{selected_segmentation_name}`.",
                 table_binding_error,
             ),
             kind="warning",
@@ -110,7 +110,7 @@ def build_object_classification_selection_status_card_spec(
             title="Selection",
             lines=(
                 *layer_preparation_lines,
-                f"Bound to {selected_segmentation_name}.",
+                f"Bound to labels element `{selected_segmentation_name}`.",
                 "Click an object in the viewer.",
             ),
             kind="info",
@@ -120,7 +120,7 @@ def build_object_classification_selection_status_card_spec(
         return _ObjectClassificationStatusCardSpec(
             title="Selection Warning",
             lines=(
-                f"Bound to {selected_segmentation_name}.",
+                f"Bound to labels element `{selected_segmentation_name}`.",
                 missing_table_row_message,
             ),
             kind="warning",
@@ -130,7 +130,7 @@ def build_object_classification_selection_status_card_spec(
     return _ObjectClassificationStatusCardSpec(
         title="Selection Ready",
         lines=(
-            f"Bound to {selected_segmentation_name}.",
+            f"Bound to labels element `{selected_segmentation_name}`.",
             f"Current {instance_key_name}: {selected_instance_id}.",
             f"Current class: {current_class_label}.",
         ),
@@ -161,8 +161,8 @@ def build_object_classification_classifier_preparation_card_spec(
     kind: StatusCardKind = "warning" if not summary.eligible else "success"
     feature_key_text, feature_key_shortened = format_feedback_identifier(selected_feature_key, max_length=32)
     lines = [
-        f"Training labels: {_format_count(summary.labeled_count, 'row')}",
-        f"Training regions: {_format_count(summary.training_region_count, 'region')}",
+        f"Training annotations: {_format_count(summary.labeled_count, 'row')}",
+        f"Training elements: {_format_count(summary.training_region_count, 'labels element', 'labels elements')}",
         f"Prediction rows: {_format_count(summary.resolved_prediction_row_count, 'row')}",
         f"Prediction scope: {_format_prediction_scope(summary)}",
         _format_feature_matrix_line(feature_key_text, summary.n_features),
@@ -212,14 +212,14 @@ def _format_labels_layer_preparation_line(result: _LabelsLayerPreparationResult)
         return None
 
     verb = "Loaded" if result.kind == "loaded" else "Activated"
-    return f"{verb} segmentation `{result.label_name}` in coordinate system `{result.coordinate_system}`."
+    return f"{verb} labels element `{result.label_name}` in coordinate system `{result.coordinate_system}`."
 
 
 def _format_prediction_scope(summary: ClassifierPreparationSummary) -> str:
     region_count = len(summary.prediction_scope.regions)
     if summary.prediction_scope.mode == "selected_segmentation_only" and region_count <= 1:
-        return "selected region"
-    return _format_count(region_count, "region")
+        return "selected labels element"
+    return _format_count(region_count, "labels element", "labels elements")
 
 
 def _format_feature_matrix_line(feature_key: str, n_features: int | None) -> str:

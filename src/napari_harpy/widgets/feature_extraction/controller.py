@@ -36,7 +36,7 @@ def _resolve_thread_worker() -> Any:
     return thread_worker
 
 
-FEATURE_EXTRACTION_IDLE_STATUS = "Feature extraction: choose a segmentation, table, and output key."
+FEATURE_EXTRACTION_IDLE_STATUS = "Feature extraction: choose a labels element, table, and output key."
 
 thread_worker = _resolve_thread_worker()
 
@@ -359,7 +359,7 @@ class FeatureExtractionController:
         worker.finished.connect(partial(self._on_worker_finished, job.job_id))
         if job.triplet_count == 1 and job.label_name is not None:
             self._set_status(
-                f"Feature extraction: calculating `{job.feature_key}` for segmentation `{job.label_name}`.",
+                f"Feature extraction: calculating `{job.feature_key}` for labels element `{job.label_name}`.",
                 kind="info",
             )
         else:
@@ -385,14 +385,14 @@ class FeatureExtractionController:
             if self._selected_coordinate_system_hint is None and self._selected_label_name_hint is not None:
                 self._set_status("Feature extraction: choose a coordinate system.", kind="warning")
             elif self._selected_coordinate_system_hint is not None and self._selected_label_name_hint is None:
-                self._set_status("Feature extraction: choose a segmentation mask.", kind="warning")
+                self._set_status("Feature extraction: choose a labels element.", kind="warning")
             else:
                 self._set_status(FEATURE_EXTRACTION_IDLE_STATUS, kind="warning")
             return None
 
         if table is None or self._selected_table_name is None:
             self._set_status(
-                "Feature extraction: choose an annotation table linked to the selected segmentation.",
+                "Feature extraction: choose an annotation table linked to the selected labels element.",
                 kind="warning",
             )
             return None
@@ -472,7 +472,7 @@ class FeatureExtractionController:
             return
 
         if not self._selected_triplets and self._selected_coordinate_system_hint is not None:
-            self._set_status("Feature extraction: choose a segmentation mask.", kind="warning")
+            self._set_status("Feature extraction: choose a labels element.", kind="warning")
             return
 
         if not self._selected_triplets and self._selected_coordinate_system_hint is None:
@@ -484,7 +484,7 @@ class FeatureExtractionController:
 
         if self._get_bound_table() is None:
             self._set_status(
-                "Feature extraction: choose an annotation table linked to the selected segmentation.",
+                "Feature extraction: choose an annotation table linked to the selected labels element.",
                 kind="warning",
             )
             return

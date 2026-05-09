@@ -253,8 +253,8 @@ class PersistenceController:
             regions = _normalize_regions(snapshot_attrs.get(TableModel.REGION_KEY))
             if self._selected_label_name not in regions:
                 raise ValueError(
-                    f"Cannot reload table `{current_table_name}` for segmentation `{self._selected_label_name}`: "
-                    "the disk snapshot no longer annotates the selected segmentation."
+                    f"Cannot reload table `{current_table_name}` for labels element `{self._selected_label_name}`: "
+                    "the disk snapshot no longer annotates the selected labels element."
                 )
 
     def reload_table_state(self) -> str:
@@ -269,7 +269,7 @@ class PersistenceController:
         return table_path
 
     def write_table_state(self) -> str:
-        """Write the current table annotation state back to the backed zarr store."""
+        """Write table annotations, predictions, and selected classifier metadata to the backed zarr store."""
         sdata = self._require_selected_spatialdata()
         table_name = self._require_selected_table_name()
         table_path = write_table_prediction_state(

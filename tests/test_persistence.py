@@ -454,5 +454,5 @@ def test_persistence_controller_rejects_reload_when_selected_segmentation_is_no_
     }
     _write_disk_snapshot_state(backed_sdata_blobs, obs=obs, obsm=obsm, uns=uns)
 
-    with pytest.raises(ValueError, match="no longer annotates the selected segmentation"):
+    with pytest.raises(ValueError, match="no longer annotates the selected labels element"):
         controller.reload_table_state()

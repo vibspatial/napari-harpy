@@ -304,7 +304,7 @@ def test_widget_refreshes_when_shared_sdata_changes(qtbot, sdata_blobs: SpatialD
     assert widget.selected_spatialdata is sdata_blobs
     assert widget.selected_table_name is None
     assert widget.selected_feature_key is None
-    assert "Choose a segmentation mask" in widget.selection_status.text()
+    assert "Choose a labels element" in widget.selection_status.text()
 
 
 def test_widget_clears_when_shared_sdata_is_cleared(qtbot, sdata_blobs: SpatialData) -> None:
@@ -368,14 +368,14 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_bl
     assert widget.selected_instance_id is None
     assert all(button.text() != "Rescan Viewer" for button in widget.findChildren(type(widget.retrain_button)))
     assert widget.retrain_button.text() == "Train Classifier"
-    assert widget.sync_button.text() == "Write"
-    assert widget.reload_button.text() == "Reload"
+    assert widget.sync_button.text() == "Write Table State"
+    assert widget.reload_button.text() == "Reload Table State"
     assert not widget.sync_button.isEnabled()
     assert not widget.reload_button.isEnabled()
     assert not widget.retrain_button.isEnabled()
     assert len(viewer.layers) == 1
     assert viewer.layers.selection.active is None
-    assert "Choose a segmentation mask" in widget.selection_status.text()
+    assert "Choose a labels element" in widget.selection_status.text()
     assert widget.validation_status.isHidden()
     assert widget.validation_status.text() == ""
     assert widget.classifier_feedback.isHidden()
@@ -407,7 +407,7 @@ def test_widget_populates_segmentation_choices_from_shared_sdata_without_loaded_
     assert len(viewer.layers) == 0
     assert widget._annotation_controller.labels_layer is None
     assert widget._viewer_styling_controller.labels_layer is None
-    assert "Choose a segmentation mask" in widget.selection_status.text()
+    assert "Choose a labels element" in widget.selection_status.text()
     assert not widget.apply_class_button.isEnabled()
 
 
@@ -648,7 +648,7 @@ def test_widget_clears_selected_segmentation_on_coordinate_system_change_even_wh
     assert widget._viewer_styling_controller.labels_layer is None
     assert list(viewer.layers) == []
     assert app_state.viewer_adapter.layer_bindings.get_binding(global_layer) is None
-    assert "Choose a segmentation mask" in widget.selection_status.text()
+    assert "Choose a labels element" in widget.selection_status.text()
 
 
 def test_widget_unbinds_when_selected_segmentation_is_not_valid_in_new_coordinate_system(qtbot, monkeypatch) -> None:
@@ -704,7 +704,7 @@ def test_widget_unbinds_when_selected_segmentation_is_not_valid_in_new_coordinat
     assert widget._annotation_controller.labels_layer is None
     assert widget._viewer_styling_controller.labels_layer is None
     assert list(viewer.layers) == []
-    assert "Choose a segmentation mask" in widget.selection_status.text()
+    assert "Choose a labels element" in widget.selection_status.text()
 
 
 def test_widget_surfaces_invalid_table_binding_for_duplicate_instance_ids(qtbot, sdata_blobs: SpatialData) -> None:
@@ -748,7 +748,7 @@ def test_widget_auto_loads_selected_segmentation_when_shared_sdata_is_set(qtbot,
     assert widget.selected_segmentation_name is None
     assert widget.selected_table_name is None
     assert widget.selected_feature_key is None
-    assert "Choose a segmentation mask" in widget.selection_status.text()
+    assert "Choose a labels element" in widget.selection_status.text()
 
 
 def test_widget_updates_table_dropdown_when_segmentation_changes(qtbot, sdata_blobs: SpatialData) -> None:
@@ -791,7 +791,7 @@ def test_widget_warns_when_loaded_segmentation_has_no_annotation_table(qtbot, sd
     assert widget.selected_segmentation_name == "blobs_multiscale_labels"
     assert widget.selected_table_name is None
     assert viewer.layers.selection.active is multiscale_layer
-    assert "This segmentation is loaded, but no annotation table is linked to it." in widget.selection_status.text()
+    assert "This labels layer is loaded, but no annotation table is linked to it." in widget.selection_status.text()
     assert not widget.class_spinbox.isEnabled()
     assert not widget.apply_class_button.isEnabled()
 
@@ -929,7 +929,7 @@ def test_widget_shows_classifier_preparation_hidden_write_notice_for_table_wide_
 
     assert not widget.classifier_preparation_status.isHidden()
     assert f"Prediction rows: {table.n_obs}" in widget.classifier_preparation_status.text()
-    assert "Prediction scope: 2 regions" in widget.classifier_preparation_status.text()
+    assert "Prediction scope: 2 labels elements" in widget.classifier_preparation_status.text()
     assert "Some prediction updates may not be visible in the current selection." in (
         widget.classifier_preparation_status.text()
     )
@@ -970,10 +970,10 @@ def test_widget_shows_eligible_classifier_preparation_summary(qtbot, sdata_blobs
 
     assert not widget.classifier_preparation_status.isHidden()
     preparation_text = widget.classifier_preparation_status.text()
-    assert "Training labels: 4 rows" in preparation_text
-    assert "Training regions: 1 region" in preparation_text
+    assert "Training annotations: 4 rows" in preparation_text
+    assert "Training elements: 1 labels element" in preparation_text
     assert f"Prediction rows: {table.n_obs} rows" in preparation_text
-    assert "Prediction scope: selected region" in preparation_text
+    assert "Prediction scope: selected labels element" in preparation_text
     assert "Features: `features_1`, 4 features" in preparation_text
     assert "Need at least" not in preparation_text
 
@@ -1237,10 +1237,10 @@ def test_widget_auto_loads_selected_segmentation_when_it_is_not_yet_loaded(qtbot
     assert viewer.layers.selection.active is viewer.layers[-1]
     assert widget._annotation_controller.labels_layer is viewer.layers[-1]
     assert widget._viewer_styling_controller.labels_layer is viewer.layers[-1]
-    assert "Loaded segmentation `blobs_multiscale_labels` in coordinate system `global`." in (
+    assert "Loaded labels element `blobs_multiscale_labels` in coordinate system `global`." in (
         widget.selection_status.text()
     )
-    assert "This segmentation is loaded, but no annotation table is linked to it." in widget.selection_status.text()
+    assert "This labels layer is loaded, but no annotation table is linked to it." in widget.selection_status.text()
 
 
 def test_widget_clears_selected_segmentation_after_manual_layer_removal(qtbot, sdata_blobs: SpatialData) -> None:
@@ -1265,7 +1265,7 @@ def test_widget_clears_selected_segmentation_after_manual_layer_removal(qtbot, s
     assert widget._viewer_styling_controller.labels_layer is None
     assert widget.selected_table_name is None
     assert widget.selected_feature_key is None
-    assert "Choose a segmentation mask" in widget.selection_status.text()
+    assert "Choose a labels element" in widget.selection_status.text()
 
 
 def test_widget_ignores_unrelated_labels_layer_removal(qtbot, monkeypatch, sdata_blobs: SpatialData) -> None:
@@ -1776,8 +1776,10 @@ def test_widget_enables_sync_for_backed_spatialdata(qtbot, backed_sdata_blobs: S
 
     assert widget.sync_button.isEnabled()
     assert widget.reload_button.isEnabled()
-    assert f"Write the current in-memory `table` table state to `{expected_table_path}`." in sync_tooltip
-    assert f"Discard the current in-memory `table` table state and reload it from `{expected_table_path}`." in (
+    assert f"Write annotations, predictions, and classifier metadata for `table` to `{expected_table_path}`." in (
+        sync_tooltip
+    )
+    assert f"Discard the current in-memory `table` table state and reload the table from `{expected_table_path}`." in (
         reload_tooltip
     )
 
@@ -1831,7 +1833,10 @@ def test_widget_syncs_user_class_to_backed_zarr(qtbot, backed_sdata_blobs: Spati
 
     assert widget.sync_button.isEnabled()
     assert widget.reload_button.isEnabled()
-    _assert_persistence_success_feedback(widget, f"Wrote `table` table state to `{expected_table_path}`.")
+    _assert_persistence_success_feedback(
+        widget,
+        f"Wrote `table` annotations, predictions, and classifier metadata to `{expected_table_path}`.",
+    )
     assert isinstance(reread["table"].obs[USER_CLASS_COLUMN].dtype, pd.CategoricalDtype)
     assert list(reread["table"].obs[USER_CLASS_COLUMN].cat.categories) == [0, 3]
     assert reread["table"].obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
@@ -1939,7 +1944,7 @@ def test_widget_dirty_reload_can_write_then_reload(qtbot, monkeypatch, backed_sd
     assert reread["table"].obs.loc[disk_mask, USER_CLASS_COLUMN].tolist() == [3]
     _assert_persistence_success_feedback(
         widget,
-        f"Wrote local changes and reloaded `table` table state from `{expected_table_path}`.",
+        f"Wrote local table state and reloaded `table` table state from `{expected_table_path}`.",
     )
 
 

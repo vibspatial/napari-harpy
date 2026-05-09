@@ -209,7 +209,7 @@ def test_feature_extraction_widget_populates_selector_flow_from_spatialdata(
         "blobs_multiscale_labels",
     ]
     assert widget.segmentation_combo.currentIndex() == -1
-    assert widget.segmentation_combo.placeholderText() == "Choose a segmentation mask"
+    assert widget.segmentation_combo.placeholderText() == "Choose a labels element"
     assert widget.image_combo.count() == 1
     assert [widget.image_combo.itemText(index) for index in range(widget.image_combo.count())] == ["No image"]
     assert widget.table_combo.count() == 0
@@ -770,7 +770,7 @@ def test_feature_extraction_widget_clears_blocked_remembered_segmentation_and_im
 
     restored_aligned_widgets = widget._triplet_card_widgets_by_coordinate_system["aligned"]
     assert restored_aligned_widgets.segmentation_combo.currentIndex() == -1
-    assert restored_aligned_widgets.segmentation_combo.placeholderText() == "Choose a segmentation mask"
+    assert restored_aligned_widgets.segmentation_combo.placeholderText() == "Choose a labels element"
     assert restored_aligned_widgets.image_combo.currentText() == "No image"
     assert "shared_labels" in restored_aligned_widgets.segmentation_note_label.text()
     assert "global" in restored_aligned_widgets.segmentation_note_label.text()
@@ -1193,7 +1193,7 @@ def test_feature_extraction_widget_blocks_when_selected_segmentation_has_no_link
     assert widget.coordinate_system_combo.count() == 1
     assert widget.selected_coordinate_system == "global"
     assert "Batch Incomplete" in widget.selection_status.text()
-    assert "No table annotates all currently staged segmentations." in widget.selection_status.text()
+    assert "No table annotates all currently staged labels elements." in widget.selection_status.text()
     tooltip = unescape(widget.selection_status.toolTip()).replace("&#8203;", "").replace("\u200b", "")
     assert "global: blobs_multiscale_labels (no image)" in tooltip
 
@@ -1212,7 +1212,7 @@ def test_feature_extraction_widget_uses_batch_table_error_as_status_tooltip(
         "validate_table_region_instance_ids",
         lambda sdata, table_name, *, label_names=None: (_ for _ in ()).throw(
             ValueError(
-                "Table `table` cannot annotate segmentation region `blobs_labels` because "
+                "Table `table` cannot annotate labels element `blobs_labels` because "
                 "`instance_id` contains duplicate values within that region: `1`, `2`."
             )
         ),

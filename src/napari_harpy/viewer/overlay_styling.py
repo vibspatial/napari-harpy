@@ -59,7 +59,7 @@ def apply_table_color_source_to_labels_layer(
     table = get_table(sdata, style_spec.table_name)
     table_metadata = get_table_metadata(sdata, style_spec.table_name)
     if not table_metadata.annotates(label_name):
-        raise ValueError(f"Table `{style_spec.table_name}` does not annotate segmentation `{label_name}`.")
+        raise ValueError(f"Table `{style_spec.table_name}` does not annotate labels element `{label_name}`.")
 
     region_rows, obs_index = _get_region_rows_by_instance(table, table_metadata, label_name)
     if style_spec.value_kind == "instance" or (

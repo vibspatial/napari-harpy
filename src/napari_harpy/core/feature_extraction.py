@@ -10,7 +10,7 @@ _INTENSITY_FEATURES = frozenset({"sum", "mean", "var", "min", "max", "kurtosis",
 
 @dataclass(frozen=True)
 class FeatureExtractionTriplet:
-    """One explicit `coordinate_system -> segmentation -> image` selection."""
+    """One explicit `coordinate_system -> labels element -> image` selection."""
 
     coordinate_system: str
     label_name: str
@@ -66,10 +66,10 @@ def _normalize_triplets(
         if not normalized_coordinate_system:
             raise ValueError("Feature extraction triplets require a coordinate system.")
         if not normalized_label_name:
-            raise ValueError("Feature extraction triplets require a segmentation name.")
+            raise ValueError("Feature extraction triplets require a labels element name.")
         if normalized_label_name in seen_label_names:
             raise ValueError(
-                f"Duplicate segmentation selections are not allowed in a single feature-extraction request: "
+                f"Duplicate labels element selections are not allowed in a single feature-extraction request: "
                 f"`{normalized_label_name}`."
             )
 
