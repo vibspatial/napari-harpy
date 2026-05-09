@@ -368,8 +368,8 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_bl
     assert widget.selected_instance_id is None
     assert all(button.text() != "Rescan Viewer" for button in widget.findChildren(type(widget.retrain_button)))
     assert widget.retrain_button.text() == "Train Classifier"
-    assert widget.sync_button.text() == "Write"
-    assert widget.reload_button.text() == "Reload"
+    assert widget.sync_button.text() == "Write Table State"
+    assert widget.reload_button.text() == "Reload Table State"
     assert not widget.sync_button.isEnabled()
     assert not widget.reload_button.isEnabled()
     assert not widget.retrain_button.isEnabled()
@@ -1776,8 +1776,10 @@ def test_widget_enables_sync_for_backed_spatialdata(qtbot, backed_sdata_blobs: S
 
     assert widget.sync_button.isEnabled()
     assert widget.reload_button.isEnabled()
-    assert f"Write the current in-memory `table` table state to `{expected_table_path}`." in sync_tooltip
-    assert f"Discard the current in-memory `table` table state and reload it from `{expected_table_path}`." in (
+    assert f"Write annotations, predictions, and classifier metadata for `table` to `{expected_table_path}`." in (
+        sync_tooltip
+    )
+    assert f"Discard the current in-memory `table` table state and reload the table from `{expected_table_path}`." in (
         reload_tooltip
     )
 
@@ -1831,7 +1833,10 @@ def test_widget_syncs_user_class_to_backed_zarr(qtbot, backed_sdata_blobs: Spati
 
     assert widget.sync_button.isEnabled()
     assert widget.reload_button.isEnabled()
-    _assert_persistence_success_feedback(widget, f"Wrote `table` table state to `{expected_table_path}`.")
+    _assert_persistence_success_feedback(
+        widget,
+        f"Wrote `table` annotations, predictions, and classifier metadata to `{expected_table_path}`.",
+    )
     assert isinstance(reread["table"].obs[USER_CLASS_COLUMN].dtype, pd.CategoricalDtype)
     assert list(reread["table"].obs[USER_CLASS_COLUMN].cat.categories) == [0, 3]
     assert reread["table"].obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
@@ -1939,7 +1944,7 @@ def test_widget_dirty_reload_can_write_then_reload(qtbot, monkeypatch, backed_sd
     assert reread["table"].obs.loc[disk_mask, USER_CLASS_COLUMN].tolist() == [3]
     _assert_persistence_success_feedback(
         widget,
-        f"Wrote local changes and reloaded `table` table state from `{expected_table_path}`.",
+        f"Wrote local table state and reloaded `table` table state from `{expected_table_path}`.",
     )
 
 

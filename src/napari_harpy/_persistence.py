@@ -269,7 +269,7 @@ class PersistenceController:
         return table_path
 
     def write_table_state(self) -> str:
-        """Write the current table annotation state back to the backed zarr store."""
+        """Write table annotations, predictions, and selected classifier metadata to the backed zarr store."""
         sdata = self._require_selected_spatialdata()
         table_name = self._require_selected_table_name()
         table_path = write_table_prediction_state(
