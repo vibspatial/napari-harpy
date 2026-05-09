@@ -127,13 +127,13 @@ def _build_table_blocker_card_spec(
 ) -> _FeatureExtractionStatusCardSpec:
     if table_blocker == "choose_table":
         title = "Batch Incomplete"
-        lines = ("Choose a table that annotates all staged segmentations.",)
+        lines = ("Choose a table that annotates all staged labels elements.",)
     elif table_blocker == "no_eligible":
         title = "Batch Incomplete"
-        lines = ("No table annotates all currently staged segmentations.",)
+        lines = ("No table annotates all currently staged labels elements.",)
     else:
         title = "Table Not Ready"
-        lines = ("Selected table cannot currently be used for all staged segmentations.",)
+        lines = ("Selected table cannot currently be used for all staged labels elements.",)
 
     tooltip_lines = _build_entry_tooltip_lines(entries)
     if table_tooltip_message:
@@ -182,7 +182,7 @@ def _format_entry_line(
             coordinate_shortened or label_shortened,
         )
 
-    label_name, label_shortened = _format_identifier(entry.label_name or "unknown segmentation", shorten=shorten)
+    label_name, label_shortened = _format_identifier(entry.label_name or "unknown labels element", shorten=shorten)
     if entry.image_name is None:
         return f"{coordinate_system}: {label_name} (no image)", coordinate_shortened or label_shortened
 

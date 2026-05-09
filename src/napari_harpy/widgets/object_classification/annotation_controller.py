@@ -77,7 +77,7 @@ class _SelectionTableState:
 
         return (
             f"Selected {instance_key_name} {self.instance_id} is not present in annotation table "
-            f"`{self.table_name}` for segmentation `{self.label_name}` and cannot receive a user class."
+            f"`{self.table_name}` for labels element `{self.label_name}` and cannot receive a user class."
         )
 
 
@@ -305,7 +305,7 @@ class AnnotationController:
         if state.metadata is None:
             raise ValueError("Choose an annotation table before annotating.")
         if state.label_name is None:
-            raise ValueError("Choose a segmentation mask before annotating.")
+            raise ValueError("Choose a labels element before annotating.")
         if state.instance_id is None:
             raise ValueError("Pick an object in the viewer before annotating.")
 

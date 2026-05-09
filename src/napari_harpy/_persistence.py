@@ -253,8 +253,8 @@ class PersistenceController:
             regions = _normalize_regions(snapshot_attrs.get(TableModel.REGION_KEY))
             if self._selected_label_name not in regions:
                 raise ValueError(
-                    f"Cannot reload table `{current_table_name}` for segmentation `{self._selected_label_name}`: "
-                    "the disk snapshot no longer annotates the selected segmentation."
+                    f"Cannot reload table `{current_table_name}` for labels element `{self._selected_label_name}`: "
+                    "the disk snapshot no longer annotates the selected labels element."
                 )
 
     def reload_table_state(self) -> str:

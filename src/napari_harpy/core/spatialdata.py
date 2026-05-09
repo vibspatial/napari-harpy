@@ -134,7 +134,7 @@ def get_table_annotated_label_names(sdata: SpatialData, table_name: str) -> list
     if missing_regions:
         missing = _format_name_list(missing_regions)
         raise ValueError(
-            f"Table `{table_name}` declares segmentation region(s) {missing}, "
+            f"Table `{table_name}` declares labels element(s) {missing}, "
             "but no matching labels element exists in the selected SpatialData object."
         )
 
@@ -154,15 +154,13 @@ def validate_table_annotation_coverage(
     invalid_regions = [label_name for label_name in requested_label_names if label_name not in available_label_names]
     if invalid_regions:
         invalid = _format_name_list(invalid_regions)
-        raise ValueError(
-            f"Segmentation region(s) {invalid} are not available in the selected SpatialData object."
-        )
+        raise ValueError(f"Labels element(s) {invalid} are not available in the selected SpatialData object.")
 
     annotated_label_names = set(get_table_annotated_label_names(sdata, table_name))
     missing_regions = [label_name for label_name in requested_label_names if label_name not in annotated_label_names]
     if missing_regions:
         missing = _format_name_list(missing_regions)
-        raise ValueError(f"Table `{table_name}` does not annotate segmentation region(s) {missing}.")
+        raise ValueError(f"Table `{table_name}` does not annotate labels element(s) {missing}.")
 
     return table_metadata
 
@@ -197,7 +195,7 @@ def validate_table_region_instance_ids(
 
         preview = _format_duplicate_preview(duplicate_labels)
         raise ValueError(
-            f"Table `{table_name}` cannot annotate segmentation region `{label_name}` because "
+            f"Table `{table_name}` cannot annotate labels element `{label_name}` because "
             f"`{table_metadata.instance_key}` contains duplicate values within that region: {preview}."
         )
 
@@ -220,7 +218,7 @@ def validate_table_binding(sdata: SpatialData, label_name: str, table_name: str)
     if duplicate_labels:
         preview = _format_duplicate_preview(duplicate_labels)
         raise ValueError(
-            f"Table `{table_name}` cannot be bound to segmentation `{label_name}` because `{table_metadata.instance_key}` "
+            f"Table `{table_name}` cannot be bound to labels element `{label_name}` because `{table_metadata.instance_key}` "
             f"contains duplicate values within that region: {preview}."
         )
 

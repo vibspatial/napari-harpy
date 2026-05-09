@@ -95,7 +95,7 @@ def test_feature_extraction_controller_blocks_when_no_table_is_selected(sdata_bl
     assert controller.status_kind == "warning"
     assert (
         controller.status_message
-        == "Feature extraction: choose an annotation table linked to the selected segmentation."
+        == "Feature extraction: choose an annotation table linked to the selected labels element."
     )
 
 
@@ -151,7 +151,7 @@ def test_feature_extraction_controller_requires_segmentation_mask(sdata_blobs: S
 
     assert controller.can_calculate is False
     assert controller.status_kind == "warning"
-    assert controller.status_message == "Feature extraction: choose a segmentation mask."
+    assert controller.status_message == "Feature extraction: choose a labels element."
     assert controller._prepare_feature_extraction_job(8) is None
 
 

@@ -243,7 +243,7 @@ def test_validate_table_annotation_coverage_rejects_unannotated_regions(sdata_bl
         tables={"table": table},
     )
 
-    with pytest.raises(ValueError, match="does not annotate segmentation region\\(s\\) `blobs_multiscale_labels`"):
+    with pytest.raises(ValueError, match="does not annotate labels element\\(s\\) `blobs_multiscale_labels`"):
         validate_table_annotation_coverage(fake_sdata, "table", ["blobs_multiscale_labels"])
 
 
@@ -292,7 +292,7 @@ def test_validate_table_region_instance_ids_rejects_duplicates_with_region_speci
         tables={"table": table},
     )
 
-    with pytest.raises(ValueError, match="segmentation region `blobs_multiscale_labels`"):
+    with pytest.raises(ValueError, match="labels element `blobs_multiscale_labels`"):
         validate_table_region_instance_ids(fake_sdata, "table")
 
 

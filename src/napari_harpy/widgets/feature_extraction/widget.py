@@ -119,7 +119,7 @@ _MORPHOLOGY_FEATURES = (
 _DEFAULT_FEATURE_MATRIX_KEY = "features"
 _MAX_VISIBLE_EXTRACTION_CHANNELS = 5
 _FEATURE_GROUPS_TOP_SPACING = 12
-_CHOOSE_SEGMENTATION_TEXT = "Choose a segmentation mask"
+_CHOOSE_SEGMENTATION_TEXT = "Choose a labels element"
 ElementIdentity = tuple[int, str]
 
 
@@ -450,7 +450,7 @@ class FeatureExtractionWidget(QWidget):
         self.coordinate_system_combo.hide()
         self._set_tooltip(
             self.coordinate_system_combo,
-            "Choose a coordinate system in which the segmentation mask and image are registered. In the selected coordinate system they should have the same shape, and only an identity transform, a translation, or a sequence of translations may be defined relative to it.",
+            "Choose a coordinate system in which the labels element and image are registered. In the selected coordinate system they should have the same shape, and only an identity transform, a translation, or a sequence of translations may be defined relative to it.",
         )
 
         self.output_key_line_edit = QLineEdit()
@@ -771,7 +771,7 @@ class FeatureExtractionWidget(QWidget):
         image_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
         image_note_label = self._create_triplet_card_note_label(f"feature_extraction_image_note_{coordinate_system}")
 
-        layout.addWidget(self._create_form_label("Segmentation mask"))
+        layout.addWidget(self._create_form_label("Labels element"))
         layout.addWidget(segmentation_combo)
         layout.addWidget(segmentation_note_label)
         layout.addWidget(self._create_form_label("Image"))
@@ -864,7 +864,7 @@ class FeatureExtractionWidget(QWidget):
             owner_coordinate_system, blocked_option = blocked_restored_selection
             fragments.append(
                 f"`{blocked_option.display_name}` already selected in `{owner_coordinate_system}`, "
-                "so choose a different segmentation mask"
+                "so choose a different labels element"
             )
         elif blocked_label_options_by_owner:
             if len(blocked_label_options_by_owner) == 1:
@@ -872,13 +872,13 @@ class FeatureExtractionWidget(QWidget):
                 fragments.append(f"`{blocked_option.display_name}` already selected in `{owner_coordinate_system}`")
             else:
                 fragments.append(
-                    f"{self._format_count_phrase(len(blocked_label_options_by_owner), 'segmentation')} already selected in other cards"
+                    f"{self._format_count_phrase(len(blocked_label_options_by_owner), 'labels element')} already selected in other cards"
                 )
 
         if unavailable_label_count > 0:
             transform_subject = "its" if unavailable_label_count == 1 else "their"
             fragments.append(
-                f"{self._format_count_phrase(unavailable_label_count, 'segmentation')} unavailable because "
+                f"{self._format_count_phrase(unavailable_label_count, 'labels element')} unavailable because "
                 f"{transform_subject} supported transform relative to `{coordinate_system}` is not "
                 "translation-only or identity"
             )
@@ -895,12 +895,12 @@ class FeatureExtractionWidget(QWidget):
         if unavailable_image_count == 1:
             return (
                 "1 image unavailable because it does not have the same shape and transform relative "
-                f"to `{coordinate_system}` as the selected segmentation mask."
+                f"to `{coordinate_system}` as the selected labels element."
             )
 
         return (
             f"{unavailable_image_count} images unavailable because they do not have the same shape and "
-            f"transform relative to `{coordinate_system}` as the selected segmentation mask."
+            f"transform relative to `{coordinate_system}` as the selected labels element."
         )
 
     def _sync_remembered_card_selection_from_state(
@@ -1644,7 +1644,7 @@ class FeatureExtractionWidget(QWidget):
 
         error_text: str | None = None
         if has_missing_segmentation:
-            error_text = "Choose a segmentation available in every checked coordinate system."
+            error_text = "Choose a labels element available in every checked coordinate system."
         elif has_missing_required_image:
             error_text = "Choose an image for every extraction target before calculating intensity features."
         elif requires_image and self._batch_channel_error is not None:
@@ -2021,7 +2021,7 @@ class FeatureExtractionWidget(QWidget):
 
             blocking_reason: str | None = None
             if selected_label_option is None:
-                blocking_reason = "choose a segmentation"
+                blocking_reason = "choose a labels element"
             elif requires_image and selected_image_option is None:
                 blocking_reason = "choose an image"
             elif requires_image and coordinate_system in incompatible_coordinate_systems:
@@ -2141,8 +2141,8 @@ class FeatureExtractionWidget(QWidget):
 
         if self.selected_table_name is None:
             if not self._table_names:
-                return "No table annotates all staged segmentations."
-            return "Choose a table that annotates all staged segmentations."
+                return "No table annotates all staged labels elements."
+            return "Choose a table that annotates all staged labels elements."
 
         if self._table_binding_error is not None:
             return self._table_binding_error
