@@ -7,6 +7,16 @@
 browsing data inside napari, alongside feature extraction and interactive
 object classification workflows.
 
+## Installation
+
+Install the latest version from the `main` branch:
+
+PyPI release coming soon.
+
+```bash
+python -m pip install "git+https://github.com/vibspatial/napari-harpy.git@main"
+```
+
 ## Quickstart
 
 The quickest way to try the plugin is to create a small example `SpatialData`
