@@ -831,6 +831,105 @@ def test_classifier_controller_freeze_for_reload_cancels_pending_debounce(
     assert controller.status_message == "Classifier: model is stale. Click Train Classifier to refresh predictions."
 
 
+def test_classifier_controller_shutdown_cancels_pending_debounce(
+    qtbot, monkeypatch, sdata_blobs: SpatialData
+) -> None:
+    _set_deterministic_features(sdata_blobs)
+    _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
+    created_job_ids: list[int] = []
+    state_changes: list[str] = []
+
+    def fake_create_training_worker(self, job):
+        del self
+        created_job_ids.append(job.job_id)
+        raise AssertionError("shutdown should cancel the debounce before a worker is created")
+
+    monkeypatch.setattr(ClassifierController, "_create_training_worker", fake_create_training_worker)
+
+    controller = ClassifierController(
+        debounce_interval_ms=50,
+        on_state_changed=lambda: state_changes.append("changed"),
+    )
+    controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
+
+    assert controller.schedule_retrain() is True
+    assert controller._debounce_timer.isActive() is True
+
+    state_changes.clear()
+    controller.shutdown()
+    controller.shutdown()
+    qtbot.wait(150)
+
+    assert created_job_ids == []
+    assert state_changes == []
+    assert controller.is_training is False
+    assert controller.can_retrain is False
+    assert controller.schedule_retrain() is False
+
+
+def test_classifier_controller_shutdown_quits_worker_and_ignores_late_signals(
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_deterministic_features(sdata_blobs)
+    _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
+    state_changes: list[str] = []
+    table_state_changes: list[str] = []
+    prediction_state_changes: list[str] = []
+    workers: list[_DeferredWorker] = []
+
+    def fake_create_training_worker(job):
+        result = classifier_module.ClassifierJobResult(
+            job_id=job.job_id,
+            feature_key=job.feature_key,
+            label_name=job.label_name,
+            table_name=job.table_name,
+            pred_classes=np.full(job.prediction_scope.table_row_positions.shape, 1, dtype=np.int64),
+            pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.9, dtype=np.float64),
+            trained_at="2026-04-13T09:00:00+00:00",
+            model_params=dict(classifier_module.RANDOM_FOREST_PARAMS),
+            summary=job.summary,
+        )
+        worker = _DeferredWorker(result)
+        workers.append(worker)
+        return worker
+
+    controller = ClassifierController(
+        debounce_interval_ms=0,
+        on_state_changed=lambda: state_changes.append("changed"),
+        on_table_state_changed=lambda: table_state_changes.append("changed"),
+        on_prediction_state_changed=lambda: prediction_state_changes.append("changed"),
+    )
+    controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
+    controller._create_training_worker = fake_create_training_worker  # type: ignore[method-assign]
+
+    assert controller.retrain_now() is True
+    assert len(workers) == 1
+    worker = workers[0]
+    assert worker.started is True
+    assert controller.is_training is True
+
+    state_changes.clear()
+    table_state_changes.clear()
+    prediction_state_changes.clear()
+
+    controller.shutdown()
+    controller.shutdown()
+
+    assert worker.quit_called is True
+    assert controller.is_training is False
+    assert controller._on_state_changed is None
+    assert controller._on_table_state_changed is None
+    assert controller._on_prediction_state_changed is None
+
+    worker.emit_returned()
+    worker.errored.emit(RuntimeError("late error"))
+    worker.finished.emit()
+
+    assert state_changes == []
+    assert table_state_changes == []
+    assert prediction_state_changes == []
+
+
 def test_classifier_controller_invalidates_pending_work_for_selected_feature_matrix_overwrite(
     sdata_blobs: SpatialData,
 ) -> None:

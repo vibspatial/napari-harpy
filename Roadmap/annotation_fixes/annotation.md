@@ -1426,7 +1426,7 @@ Add or update tests for:
   explicitly recomputed.
 - Prediction writes and selection/binding changes still full-refresh.
 
-## Phase 8: Classifier Debounce Timer Lifecycle
+## Phase 8: Classifier Debounce Timer Lifecycle - Implemented
 
 ### Goal
 

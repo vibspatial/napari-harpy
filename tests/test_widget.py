@@ -2226,6 +2226,37 @@ def test_widget_classifier_status_changes_do_not_refresh_layer_styling(
     assert "scheduled" in widget.classifier_feedback.text()
 
 
+def test_widget_destroyed_shuts_down_classifier_controller(
+    qtbot, monkeypatch, sdata_blobs: SpatialData
+) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    select_segmentation(widget)
+    controller = widget._classifier_controller
+    created_job_ids: list[int] = []
+
+    def fake_create_training_worker(job):
+        created_job_ids.append(job.job_id)
+        raise AssertionError("widget destruction should cancel pending classifier debounce")
+
+    monkeypatch.setattr(controller, "_create_training_worker", fake_create_training_worker)
+    controller._debounce_interval_ms = 50
+    controller._debounce_timer.setInterval(50)
+
+    assert controller._debounce_timer.parent() is widget
+    assert controller.schedule_retrain() is True
+    assert controller._debounce_timer.isActive() is True
+
+    widget.deleteLater()
+    qtbot.waitUntil(lambda: controller._is_shutdown, timeout=1000)
+    qtbot.wait(150)
+
+    assert created_job_ids == []
+    assert controller.is_training is False
+    assert controller.schedule_retrain() is False
+
+
 def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs: SpatialData) -> None:
     table = sdata_blobs["table"]
     instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)

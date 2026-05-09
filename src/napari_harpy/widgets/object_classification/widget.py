@@ -148,7 +148,17 @@ class ObjectClassificationWidget(QWidget):
             on_state_changed=self._on_classifier_state_changed,
             on_table_state_changed=self._on_classifier_table_state_changed,
             on_prediction_state_changed=self._on_classifier_prediction_state_changed,
+            timer_parent=self,
         )
+        # If the widget is destroyed while classifier debounce/training is still
+        # pending, shut down async classifier callbacks before they can update
+        # deleted Qt controls.
+        # Also, capture the controller directly
+        # (via classifier_controller = self._classifier_controller) so the destruction
+        # callback does not need to access attributes through `self` while Qt is
+        # tearing down the widget object.
+        classifier_controller = self._classifier_controller
+        self.destroyed.connect(classifier_controller.shutdown)
         self._viewer_styling_controller = ViewerStylingController(
             self._app_state.viewer_adapter,
         )
@@ -1242,8 +1252,14 @@ class ObjectClassificationWidget(QWidget):
         self.training_scope_combo.setEnabled(can_configure_scope)
         self.prediction_scope_combo.setEnabled(can_configure_scope)
 
-        if self.selected_spatialdata is None or self.selected_segmentation_name is None or self.selected_table_name is None:
-            training_scope_tooltip = "Choose a segmentation and annotation table before configuring classifier training scope."
+        if (
+            self.selected_spatialdata is None
+            or self.selected_segmentation_name is None
+            or self.selected_table_name is None
+        ):
+            training_scope_tooltip = (
+                "Choose a segmentation and annotation table before configuring classifier training scope."
+            )
             prediction_scope_tooltip = (
                 "Choose a segmentation and annotation table before configuring classifier prediction scope."
             )
@@ -1254,9 +1270,7 @@ class ObjectClassificationWidget(QWidget):
             training_scope_tooltip = "A classifier training job is currently running."
             prediction_scope_tooltip = "A classifier training job is currently running."
         elif self.selected_training_scope == "all":
-            training_scope_tooltip = (
-                "Train on eligible labeled rows from all annotated regions in the selected table."
-            )
+            training_scope_tooltip = "Train on eligible labeled rows from all annotated regions in the selected table."
             prediction_scope_tooltip = self._prediction_scope_tooltip()
         else:
             training_scope_tooltip = "Train only on eligible labeled rows from the selected segmentation region."

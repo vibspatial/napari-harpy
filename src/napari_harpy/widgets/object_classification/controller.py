@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import pandas as pd
-from qtpy.QtCore import QTimer
+from qtpy.QtCore import QObject, QTimer
 from sklearn.ensemble import RandomForestClassifier
 
 import napari_harpy.core.classifier as _classifier_core
@@ -214,11 +214,15 @@ class ClassifierController:
         on_state_changed: Callable[[], None] | None = None,
         on_table_state_changed: Callable[[], None] | None = None,
         on_prediction_state_changed: Callable[[], None] | None = None,
+        # In the widget, pass the widget as parent so Qt destroys the debounce
+        # timer with the UI. Tests and non-widget callers can leave this as None.
+        timer_parent: QObject | None = None,
     ) -> None:
         self._debounce_interval_ms = max(0, int(debounce_interval_ms))
         self._on_state_changed = on_state_changed
         self._on_table_state_changed = on_table_state_changed
         self._on_prediction_state_changed = on_prediction_state_changed
+        self._is_shutdown = False
 
         self._selected_spatialdata: SpatialData | None = None
         self._selected_label_name: str | None = None
@@ -243,7 +247,7 @@ class ClassifierController:
         self._status_message = "Classifier: choose an annotation table and feature matrix."
         self._status_kind = "warning"
 
-        self._debounce_timer = QTimer()
+        self._debounce_timer = QTimer(timer_parent)
         self._debounce_timer.setSingleShot(True)
         self._debounce_timer.setInterval(self._debounce_interval_ms)
         self._debounce_timer.timeout.connect(self._launch_scheduled_retrain)
@@ -271,7 +275,7 @@ class ClassifierController:
     @property
     def can_retrain(self) -> bool:
         """Return whether the current classifier inputs support a retrain request."""
-        if self.is_training:
+        if self._is_shutdown or self.is_training:
             return False
 
         summary = self._prepare_classifier_summary()
@@ -305,6 +309,9 @@ class ClassifierController:
         prediction_scope: ClassifierScopeMode = DEFAULT_PREDICTION_SCOPE,
     ) -> bool:
         """Bind the controller to the currently selected SpatialData inputs."""
+        if self._is_shutdown:
+            return False
+
         next_table_metadata = None
         if sdata is not None and table_name is not None:
             next_table_metadata = get_table_metadata(sdata, table_name)
@@ -345,6 +352,9 @@ class ClassifierController:
 
     def mark_dirty(self, reason: str | None = None) -> None:
         """Mark the current classifier outputs as stale after an input change."""
+        if self._is_shutdown:
+            return
+
         if self._get_bound_table() is None:
             self._is_dirty = False
             self._clear_model_snapshot()
@@ -361,6 +371,9 @@ class ClassifierController:
 
     def schedule_retrain(self, *, immediate: bool = False) -> bool:
         """Schedule a background retraining job for the current classifier inputs."""
+        if self._is_shutdown:
+            return False
+
         if self._get_bound_table() is None:
             self._set_status("Classifier: choose an annotation table and feature matrix.", kind="warning")
             return False
@@ -382,14 +395,43 @@ class ClassifierController:
 
         return True
 
+    def shutdown(self, *args: object) -> None:
+        """Stop async classifier work and detach widget callbacks.
+
+        Shutdown is terminal and idempotent. It is used when the owning widget is
+        being destroyed, so pending timer or worker signals must not call back
+        into Qt objects that may already be gone.
+
+        Extra positional arguments are ignored so this method can be connected
+        directly to Qt signals such as ``QObject.destroyed``.
+        """
+        del args
+
+        if self._is_shutdown:
+            return
+
+        self._is_shutdown = True
+        self._latest_requested_job_id += 1
+        self._debounce_timer.stop()
+        self._cancel_active_worker()
+        self._on_state_changed = None
+        self._on_table_state_changed = None
+        self._on_prediction_state_changed = None
+
     def freeze_for_reload(self) -> None:
         """Cancel pending async work so reload cannot apply stale classifier results."""
+        if self._is_shutdown:
+            return
+
         self._invalidate_async_jobs()
         self._clear_model_snapshot("the table is being reloaded")
         self._update_idle_status()
 
     def invalidate_for_feature_matrix_overwrite(self, feature_key: str) -> bool:
         """Invalidate pending work when the selected feature matrix was overwritten in place."""
+        if self._is_shutdown:
+            return False
+
         if self._get_bound_table() is None or self._selected_feature_key != feature_key:
             return False
 
@@ -401,6 +443,9 @@ class ClassifierController:
 
     def reset_after_reload(self) -> None:
         """Recompute classifier state from the reloaded table without retraining."""
+        if self._is_shutdown:
+            return
+
         self._invalidate_async_jobs()
         self._clear_model_snapshot("the table was reloaded from disk")
         table = self._get_bound_table()
@@ -415,6 +460,9 @@ class ClassifierController:
 
     def describe_current_preparation(self) -> ClassifierPreparationSummary | None:
         """Return a side-effect-free summary of the currently bound classifier state."""
+        if self._is_shutdown:
+            return None
+
         return self._prepare_classifier_summary()
 
     def export_classifier(self, path: str | Path) -> ClassifierExportBundle:
@@ -426,9 +474,15 @@ class ClassifierController:
         return bundle
 
     def _launch_scheduled_retrain(self) -> None:
+        if self._is_shutdown:
+            return
+
         self._launch_retrain_job(self._latest_requested_job_id)
 
     def _launch_retrain_job(self, job_id: int) -> None:
+        if self._is_shutdown:
+            return
+
         if job_id != self._latest_requested_job_id:
             return
 
@@ -731,6 +785,9 @@ class ClassifierController:
         self._set_status(f"Classifier: {job.summary.reason}", kind="warning")
 
     def _on_worker_returned(self, job_id: int, result: ClassifierJobResult) -> None:
+        if self._is_shutdown:
+            return
+
         if job_id != self._latest_requested_job_id or job_id != self._active_worker_job_id:
             return
 
@@ -766,6 +823,9 @@ class ClassifierController:
         )
 
     def _on_worker_errored(self, job_id: int, error: Exception) -> None:
+        if self._is_shutdown:
+            return
+
         if job_id != self._latest_requested_job_id or job_id != self._active_worker_job_id:
             return
 
@@ -797,6 +857,9 @@ class ClassifierController:
         self._set_status(f"Classifier: training failed: {error}", kind="error")
 
     def _on_worker_finished(self, job_id: int) -> None:
+        if self._is_shutdown:
+            return
+
         if job_id != self._active_worker_job_id:
             return
 
@@ -969,14 +1032,23 @@ class ClassifierController:
     def _set_status(self, message: str, *, kind: str) -> None:
         self._status_message = message
         self._status_kind = kind
+        if self._is_shutdown:
+            return
+
         if self._on_state_changed is not None:
             self._on_state_changed()
 
     def _notify_table_state_changed(self) -> None:
+        if self._is_shutdown:
+            return
+
         if self._on_table_state_changed is not None:
             self._on_table_state_changed()
 
     def _notify_prediction_table_state_changed(self) -> None:
+        if self._is_shutdown:
+            return
+
         self._notify_table_state_changed()
         if self._on_prediction_state_changed is not None:
             self._on_prediction_state_changed()
