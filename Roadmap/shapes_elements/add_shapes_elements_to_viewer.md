@@ -395,7 +395,7 @@ it is a semantic join, not basic SpatialData table annotation.
 
 ### Slice 1: Discovery And UI Shell
 
-Status: proposed
+Status: completed
 
 Purpose:
 
