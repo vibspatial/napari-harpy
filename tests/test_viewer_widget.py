@@ -190,7 +190,7 @@ def test_viewer_widget_refreshes_cards_when_shared_sdata_changes(qtbot, sdata_bl
     assert len(widget.labels_cards) == 2
     assert len(widget.shape_cards) == 3
     assert [card.image_name for card in widget.image_cards] == ["blobs_image", "blobs_multiscale_image"]
-    assert [card.label_name for card in widget.labels_cards] == ["blobs_labels", "blobs_multiscale_labels"]
+    assert [card.labels_name for card in widget.labels_cards] == ["blobs_labels", "blobs_multiscale_labels"]
     assert [card.shapes_name for card in widget.shape_cards] == [
         "blobs_circles",
         "blobs_multipolygons",
@@ -417,7 +417,7 @@ def test_viewer_widget_labels_card_repopulates_color_sources_when_linked_table_c
         viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: ["labels"]
     )
     monkeypatch.setattr(
-        viewer_widget_module, "get_annotating_table_names", lambda sdata, label_name: ["table_a", "table_b"]
+        viewer_widget_module, "get_annotating_table_names", lambda sdata, labels_name: ["table_a", "table_b"]
     )
     monkeypatch.setattr(
         viewer_widget_module,
@@ -584,7 +584,7 @@ def test_viewer_widget_filters_cards_by_selected_coordinate_system(qtbot, monkey
     monkeypatch.setattr(
         viewer_widget_module,
         "get_annotating_table_names",
-        lambda sdata, label_name: ["table_global"] if label_name == "labels_global" else ["table_local"],
+        lambda sdata, labels_name: ["table_global"] if labels_name == "labels_global" else ["table_local"],
     )
     monkeypatch.setattr(
         viewer_widget_module,
@@ -598,7 +598,7 @@ def test_viewer_widget_filters_cards_by_selected_coordinate_system(qtbot, monkey
     assert widget.coordinate_system_combo.count() == 2
     assert widget.app_state.coordinate_system == "global"
     assert [card.image_name for card in widget.image_cards] == ["image_global"]
-    assert [card.label_name for card in widget.labels_cards] == ["labels_global"]
+    assert [card.labels_name for card in widget.labels_cards] == ["labels_global"]
     assert [card.shapes_name for card in widget.shape_cards] == ["shape_global"]
 
     with qtbot.waitSignal(widget.app_state.coordinate_system_changed) as blocker:
@@ -609,7 +609,7 @@ def test_viewer_widget_filters_cards_by_selected_coordinate_system(qtbot, monkey
     assert blocker.args[0].source == "viewer_widget"
     assert widget.app_state.coordinate_system == "local"
     assert [card.image_name for card in widget.image_cards] == ["image_local"]
-    assert [card.label_name for card in widget.labels_cards] == ["labels_local"]
+    assert [card.labels_name for card in widget.labels_cards] == ["labels_local"]
     assert [card.shapes_name for card in widget.shape_cards] == ["shape_local"]
 
 
@@ -642,7 +642,7 @@ def test_viewer_widget_refreshes_from_shared_coordinate_system_changes(qtbot, mo
     monkeypatch.setattr(
         viewer_widget_module,
         "get_annotating_table_names",
-        lambda sdata, label_name: ["table_global"] if label_name == "labels_global" else ["table_local"],
+        lambda sdata, labels_name: ["table_global"] if labels_name == "labels_global" else ["table_local"],
     )
     monkeypatch.setattr(viewer_widget_module, "get_table_color_source_options", lambda sdata, table_name: [])
 
@@ -654,7 +654,7 @@ def test_viewer_widget_refreshes_from_shared_coordinate_system_changes(qtbot, mo
     assert changed is True
     assert widget.coordinate_system_combo.currentText() == "local"
     assert [card.image_name for card in widget.image_cards] == ["image_local"]
-    assert [card.label_name for card in widget.labels_cards] == ["labels_local"]
+    assert [card.labels_name for card in widget.labels_cards] == ["labels_local"]
     assert [card.shapes_name for card in widget.shape_cards] == ["shape_local"]
 
 
@@ -809,7 +809,7 @@ def test_viewer_widget_add_update_labels_dispatches_to_styled_overlay_path(qtbot
 
     assert len(recorded_requests) == 1
     request = recorded_requests[0]
-    assert request.label_name == "blobs_labels"
+    assert request.labels_name == "blobs_labels"
     assert request.table_name == "table"
     assert request.selected_source_kind == "x_var"
     assert request.selected_color_source is not None

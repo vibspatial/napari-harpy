@@ -23,9 +23,9 @@ if TYPE_CHECKING:
 class SpatialDataLabelsOption:
     """A selectable labels element discovered from a loaded SpatialData object."""
 
-    label_name: str
+    labels_name: str
     # User-facing text for the dropdown. This may include the dataset name to
-    # disambiguate equal label names coming from different SpatialData objects.
+    # disambiguate equal labels element names coming from different SpatialData objects.
     display_name: str
     sdata: SpatialData
     # Selectable coordinate systems for this labels element in the current
@@ -35,7 +35,7 @@ class SpatialDataLabelsOption:
     @property
     def identity(self) -> tuple[int, str]:
         """Return a stable identity for preserving widget selection across refreshes."""
-        return (id(self.sdata), self.label_name)
+        return (id(self.sdata), self.labels_name)
 
 
 @dataclass(frozen=True)
@@ -79,7 +79,7 @@ class SpatialDataFeatureExtractionLabelDiscovery:
 
     coordinate_system: str
     eligible_label_options: list[SpatialDataLabelsOption]
-    coordinate_system_label_count: int
+    coordinate_system_labels_count: int
     unavailable_label_count: int
 
 
@@ -88,7 +88,7 @@ class SpatialDataFeatureExtractionImageDiscovery:
     """Feature-extraction image discovery summary for one `(coordinate system, label)` pair."""
 
     coordinate_system: str
-    label_name: str
+    labels_name: str
     eligible_image_options: list[SpatialDataImageOption]
     coordinate_system_image_count: int
     unavailable_image_count: int
@@ -103,14 +103,14 @@ class SpatialDataTableMetadata:
     instance_key: str
     regions: tuple[str, ...]
 
-    def annotates(self, label_name: str) -> bool:
+    def annotates(self, labels_name: str) -> bool:
         """Return whether this table can annotate the given labels element."""
-        return label_name in self.regions
+        return labels_name in self.regions
 
 
-def get_annotating_table_names(sdata: SpatialData, label_name: str) -> list[str]:
+def get_annotating_table_names(sdata: SpatialData, labels_name: str) -> list[str]:
     """Return the table names that annotate a labels element in a SpatialData object."""
-    return sorted(get_element_annotators(sdata, label_name))
+    return sorted(get_element_annotators(sdata, labels_name))
 
 
 def get_table(sdata: SpatialData, table_name: str) -> AnnData:
@@ -139,13 +139,15 @@ def get_table_metadata(sdata: SpatialData, table_name: str) -> SpatialDataTableM
     )
 
 
-def get_table_annotated_label_names(sdata: SpatialData, table_name: str) -> list[str]:
+def get_table_annotated_labels_names(sdata: SpatialData, table_name: str) -> list[str]:
     """Return the labels regions a table declares, validated against available labels."""
     table_metadata = get_table_metadata(sdata, table_name)
-    available_label_names = set(_get_label_names(sdata))
-    annotated_label_names = sorted(set(table_metadata.regions))
+    available_labels_names = set(_get_labels_names(sdata))
+    annotated_labels_names = sorted(set(table_metadata.regions))
 
-    missing_regions = [label_name for label_name in annotated_label_names if label_name not in available_label_names]
+    missing_regions = [
+        labels_name for labels_name in annotated_labels_names if labels_name not in available_labels_names
+    ]
     if missing_regions:
         missing = _format_name_list(missing_regions)
         raise ValueError(
@@ -153,26 +155,30 @@ def get_table_annotated_label_names(sdata: SpatialData, table_name: str) -> list
             "but no matching labels element exists in the selected SpatialData object."
         )
 
-    return annotated_label_names
+    return annotated_labels_names
 
 
 def validate_table_annotation_coverage(
     sdata: SpatialData,
     table_name: str,
-    label_names: Sequence[str],
+    labels_names: Sequence[str],
 ) -> SpatialDataTableMetadata:
     """Validate that a table annotates every requested labels region."""
     table_metadata = get_table_metadata(sdata, table_name)
-    requested_label_names = _normalize_requested_label_names(label_names)
-    available_label_names = set(_get_label_names(sdata))
+    requested_labels_names = _normalize_requested_labels_names(labels_names)
+    available_labels_names = set(_get_labels_names(sdata))
 
-    invalid_regions = [label_name for label_name in requested_label_names if label_name not in available_label_names]
+    invalid_regions = [
+        labels_name for labels_name in requested_labels_names if labels_name not in available_labels_names
+    ]
     if invalid_regions:
         invalid = _format_name_list(invalid_regions)
         raise ValueError(f"Labels element(s) {invalid} are not available in the selected SpatialData object.")
 
-    annotated_label_names = set(get_table_annotated_label_names(sdata, table_name))
-    missing_regions = [label_name for label_name in requested_label_names if label_name not in annotated_label_names]
+    annotated_labels_names = set(get_table_annotated_labels_names(sdata, table_name))
+    missing_regions = [
+        labels_name for labels_name in requested_labels_names if labels_name not in annotated_labels_names
+    ]
     if missing_regions:
         missing = _format_name_list(missing_regions)
         raise ValueError(f"Table `{table_name}` does not annotate labels element(s) {missing}.")
@@ -184,7 +190,7 @@ def validate_table_region_instance_ids(
     sdata: SpatialData,
     table_name: str,
     *,
-    label_names: Sequence[str] | None = None,
+    labels_names: Sequence[str] | None = None,
 ) -> SpatialDataTableMetadata:
     """Validate per-region `instance_key` uniqueness for one table."""
     table = get_table(sdata, table_name)
@@ -199,30 +205,30 @@ def validate_table_region_instance_ids(
             f"Table `{table_metadata.table_name}` is missing required obs column `{table_metadata.instance_key}`."
         )
 
-    if label_names is None:
-        regions_to_check = get_table_annotated_label_names(sdata, table_name)
+    if labels_names is None:
+        regions_to_check = get_table_annotated_labels_names(sdata, table_name)
     else:
-        validate_table_annotation_coverage(sdata, table_name, label_names)
-        regions_to_check = _normalize_requested_label_names(label_names)
+        validate_table_annotation_coverage(sdata, table_name, labels_names)
+        regions_to_check = _normalize_requested_labels_names(labels_names)
 
-    for label_name in regions_to_check:
-        duplicate_labels = _get_duplicate_region_instances(table, table_metadata, label_name)
+    for labels_name in regions_to_check:
+        duplicate_labels = _get_duplicate_region_instances(table, table_metadata, labels_name)
         if not duplicate_labels:
             continue
 
         preview = _format_duplicate_preview(duplicate_labels)
         raise ValueError(
-            f"Table `{table_name}` cannot annotate labels element `{label_name}` because "
+            f"Table `{table_name}` cannot annotate labels element `{labels_name}` because "
             f"`{table_metadata.instance_key}` contains duplicate values within that region: {preview}."
         )
 
     return table_metadata
 
 
-def validate_table_binding(sdata: SpatialData, label_name: str, table_name: str) -> SpatialDataTableMetadata:
+def validate_table_binding(sdata: SpatialData, labels_name: str, table_name: str) -> SpatialDataTableMetadata:
     """Validate that a table can be safely bound to a selected labels element."""
     table = get_table(sdata, table_name)
-    table_metadata = validate_table_annotation_coverage(sdata, table_name, [label_name])
+    table_metadata = validate_table_annotation_coverage(sdata, table_name, [labels_name])
     if table_metadata.region_key not in table.obs.columns:
         raise ValueError(
             f"Table `{table_metadata.table_name}` is missing required obs column `{table_metadata.region_key}`."
@@ -233,11 +239,11 @@ def validate_table_binding(sdata: SpatialData, label_name: str, table_name: str)
             f"Table `{table_metadata.table_name}` is missing required obs column `{table_metadata.instance_key}`."
         )
 
-    duplicate_labels = _get_duplicate_region_instances(table, table_metadata, label_name)
+    duplicate_labels = _get_duplicate_region_instances(table, table_metadata, labels_name)
     if duplicate_labels:
         preview = _format_duplicate_preview(duplicate_labels)
         raise ValueError(
-            f"Table `{table_name}` cannot be bound to labels element `{label_name}` because `{table_metadata.instance_key}` "
+            f"Table `{table_name}` cannot be bound to labels element `{labels_name}` because `{table_metadata.instance_key}` "
             f"contains duplicate values within that region: {preview}."
         )
 
@@ -301,16 +307,16 @@ def get_table_color_source_options(sdata: SpatialData, table_name: str) -> list[
     )
 
 
-def get_spatialdata_label_options_from_sdata(sdata: SpatialData) -> list[SpatialDataLabelsOption]:
+def get_spatialdata_labels_options_from_sdata(sdata: SpatialData) -> list[SpatialDataLabelsOption]:
     """Return selectable labels elements directly from a loaded SpatialData object."""
     return [
         SpatialDataLabelsOption(
-            label_name=label_name,
-            display_name=label_name,
+            labels_name=labels_name,
+            display_name=labels_name,
             sdata=sdata,
-            coordinate_systems=_get_element_coordinate_systems(sdata.labels[label_name]),
+            coordinate_systems=_get_element_coordinate_systems(sdata.labels[labels_name]),
         )
-        for label_name in _get_label_names(sdata)
+        for labels_name in _get_labels_names(sdata)
     ]
 
 
@@ -331,8 +337,8 @@ def get_coordinate_system_names_from_sdata(sdata: SpatialData) -> list[str]:
     """Return all coordinate-system names exposed by spatial elements in a loaded `SpatialData`."""
     coordinate_systems: set[str] = set()
 
-    for label_name in _get_label_names(sdata):
-        coordinate_systems.update(_get_element_coordinate_systems(sdata.labels[label_name]))
+    for labels_name in _get_labels_names(sdata):
+        coordinate_systems.update(_get_element_coordinate_systems(sdata.labels[labels_name]))
 
     for image_name in _get_image_names(sdata):
         coordinate_systems.update(_get_element_coordinate_systems(sdata.images[image_name]))
@@ -381,7 +387,7 @@ def get_image_channel_names_from_sdata(sdata: SpatialData, image_name: str) -> l
     return channel_names
 
 
-def get_spatialdata_label_options_for_coordinate_system_from_sdata(
+def get_spatialdata_labels_options_for_coordinate_system_from_sdata(
     *,
     sdata: SpatialData,
     coordinate_system: str,
@@ -389,13 +395,13 @@ def get_spatialdata_label_options_for_coordinate_system_from_sdata(
     """Return labels options restricted to a selected coordinate system."""
     return [
         SpatialDataLabelsOption(
-            label_name=label_name,
-            display_name=label_name,
+            labels_name=labels_name,
+            display_name=labels_name,
             sdata=sdata,
-            coordinate_systems=_get_element_coordinate_systems(sdata.labels[label_name]),
+            coordinate_systems=_get_element_coordinate_systems(sdata.labels[labels_name]),
         )
-        for label_name in _get_label_names(sdata)
-        if coordinate_system in _get_element_coordinate_systems(sdata.labels[label_name])
+        for labels_name in _get_labels_names(sdata)
+        if coordinate_system in _get_element_coordinate_systems(sdata.labels[labels_name])
     ]
 
 
@@ -405,27 +411,27 @@ def get_spatialdata_feature_extraction_label_discovery_for_coordinate_system_fro
     coordinate_system: str,
 ) -> SpatialDataFeatureExtractionLabelDiscovery:
     """Return feature-extraction label discovery summary for one coordinate system."""
-    coordinate_system_label_names = [
-        label_name
-        for label_name in _get_label_names(sdata)
-        if coordinate_system in _get_element_coordinate_systems(sdata.labels[label_name])
+    coordinate_system_labels_names = [
+        labels_name
+        for labels_name in _get_labels_names(sdata)
+        if coordinate_system in _get_element_coordinate_systems(sdata.labels[labels_name])
     ]
     eligible_label_options = [
         SpatialDataLabelsOption(
-            label_name=label_name,
-            display_name=label_name,
+            labels_name=labels_name,
+            display_name=labels_name,
             sdata=sdata,
-            coordinate_systems=_get_element_coordinate_systems(sdata.labels[label_name]),
+            coordinate_systems=_get_element_coordinate_systems(sdata.labels[labels_name]),
         )
-        for label_name in coordinate_system_label_names
-        if _is_feature_extraction_transform_supported(sdata.labels[label_name], coordinate_system)
+        for labels_name in coordinate_system_labels_names
+        if _is_feature_extraction_transform_supported(sdata.labels[labels_name], coordinate_system)
     ]
-    coordinate_system_label_count = len(coordinate_system_label_names)
+    coordinate_system_labels_count = len(coordinate_system_labels_names)
     return SpatialDataFeatureExtractionLabelDiscovery(
         coordinate_system=coordinate_system,
         eligible_label_options=eligible_label_options,
-        coordinate_system_label_count=coordinate_system_label_count,
-        unavailable_label_count=coordinate_system_label_count - len(eligible_label_options),
+        coordinate_system_labels_count=coordinate_system_labels_count,
+        unavailable_label_count=coordinate_system_labels_count - len(eligible_label_options),
     )
 
 
@@ -469,16 +475,16 @@ def get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and
     *,
     sdata: SpatialData,
     coordinate_system: str,
-    label_name: str,
+    labels_name: str,
 ) -> SpatialDataFeatureExtractionImageDiscovery:
     """Return feature-extraction image discovery summary for one `(coordinate system, label)` pair."""
-    available_label_names = _get_label_names(sdata)
-    if label_name not in available_label_names:
-        raise ValueError(f"Labels element `{label_name}` is not available in the selected SpatialData object.")
+    available_labels_names = _get_labels_names(sdata)
+    if labels_name not in available_labels_names:
+        raise ValueError(f"Labels element `{labels_name}` is not available in the selected SpatialData object.")
 
-    label_element = sdata.labels[label_name]
+    label_element = sdata.labels[labels_name]
     if coordinate_system not in _get_element_coordinate_systems(label_element):
-        raise ValueError(f"Labels element `{label_name}` is not available in coordinate system `{coordinate_system}`.")
+        raise ValueError(f"Labels element `{labels_name}` is not available in coordinate system `{coordinate_system}`.")
 
     label_shape = _get_spatial_shape(label_element)
     label_affine = _get_feature_extraction_affine_matrix(label_element, coordinate_system)
@@ -512,7 +518,7 @@ def get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and
     coordinate_system_image_count = len(coordinate_system_image_names)
     return SpatialDataFeatureExtractionImageDiscovery(
         coordinate_system=coordinate_system,
-        label_name=label_name,
+        labels_name=labels_name,
         eligible_image_options=matches,
         coordinate_system_image_count=coordinate_system_image_count,
         unavailable_image_count=coordinate_system_image_count - len(matches),
@@ -736,7 +742,7 @@ def _is_pickable_labels_layer(layer: Any) -> bool:
     return isinstance(layer, Labels) and getattr(events, "selected_label", None) is not None
 
 
-def _get_label_names(sdata: SpatialData) -> list[str]:
+def _get_labels_names(sdata: SpatialData) -> list[str]:
     labels = getattr(sdata, "labels", {})
     return sorted(labels.keys())
 
@@ -751,8 +757,8 @@ def _get_shapes_names(sdata: SpatialData) -> list[str]:
     return sorted(shapes.keys())
 
 
-def _normalize_requested_label_names(label_names: Sequence[str]) -> list[str]:
-    return sorted({str(label_name) for label_name in label_names})
+def _normalize_requested_labels_names(labels_names: Sequence[str]) -> list[str]:
+    return sorted({str(labels_name) for labels_name in labels_names})
 
 
 def _format_name_list(names: Sequence[str]) -> str:
@@ -770,9 +776,9 @@ def _format_duplicate_preview(duplicate_labels: Sequence[Any]) -> str:
 def _get_duplicate_region_instances(
     table: AnnData,
     table_metadata: SpatialDataTableMetadata,
-    label_name: str,
+    labels_name: str,
 ) -> list[Any]:
-    region_rows = table.obs.loc[table.obs[table_metadata.region_key] == label_name]
+    region_rows = table.obs.loc[table.obs[table_metadata.region_key] == labels_name]
     if region_rows.empty:
         return []
 
@@ -904,7 +910,7 @@ def _get_loaded_spatialdata_layer(
 def build_layer_metadata_adata(
     viewer: Any | None,
     sdata: SpatialData,
-    label_name: str,
+    labels_name: str,
     table_name: str,
 ) -> AnnData | None:
     """Build the AnnData stored as napari layer metadata for a labels element.
@@ -913,7 +919,7 @@ def build_layer_metadata_adata(
     The napari layer metadata ``adata`` is only a compatibility cache for
     ``napari-spatialdata``. To avoid materializing a second full AnnData
     object on every refresh, we first try to expose a lightweight view of
-    just the rows for ``label_name``.
+    just the rows for ``labels_name``.
 
     That region-only view is safe when its ``instance_key`` values are
     compatible with the loaded layer's cached ``metadata["indices"]``.
@@ -935,7 +941,7 @@ def build_layer_metadata_adata(
     """
     table = get_table(sdata, table_name)
     table_metadata = get_table_metadata(sdata, table_name)
-    region_mask = (table.obs[table_metadata.region_key] == label_name).to_numpy(dtype=bool, copy=False)
+    region_mask = (table.obs[table_metadata.region_key] == labels_name).to_numpy(dtype=bool, copy=False)
     if not region_mask.any():
         return None
 
@@ -943,7 +949,7 @@ def build_layer_metadata_adata(
     layer = _get_loaded_spatialdata_layer(
         viewer,
         sdata=sdata,
-        element_name=label_name,
+        element_name=labels_name,
         layer_filter=_is_pickable_labels_layer,
     )
     if _layer_indices_align_with_region_view(layer, region_view, table_metadata.instance_key) is not False:
@@ -951,7 +957,7 @@ def build_layer_metadata_adata(
 
     _, adata = join_spatialelement_table(
         sdata=sdata,
-        spatial_element_names=label_name,
+        spatial_element_names=labels_name,
         table_name=table_name,
         how="left",
         match_rows="left",
@@ -962,7 +968,7 @@ def build_layer_metadata_adata(
     return _normalize_layer_metadata_adata(adata)
 
 
-def refresh_layer_table_metadata(viewer: Any | None, sdata: SpatialData, label_name: str, table_name: str) -> bool:
+def refresh_layer_table_metadata(viewer: Any | None, sdata: SpatialData, labels_name: str, table_name: str) -> bool:
     """Refresh table-derived metadata on the loaded napari layer for a labels element.
 
     Harpy originally tried to keep ``layer.metadata["adata"]`` refreshed as a
@@ -981,7 +987,7 @@ def refresh_layer_table_metadata(viewer: Any | None, sdata: SpatialData, label_n
     layer = _get_loaded_spatialdata_layer(
         viewer,
         sdata=sdata,
-        element_name=label_name,
+        element_name=labels_name,
         layer_filter=_is_pickable_labels_layer,
     )
     if layer is None:
@@ -993,10 +999,10 @@ def refresh_layer_table_metadata(viewer: Any | None, sdata: SpatialData, label_n
         layer.metadata = metadata
 
     table_metadata = get_table_metadata(sdata, table_name)
-    layer.metadata["adata"] = build_layer_metadata_adata(viewer, sdata, label_name, table_name)
+    layer.metadata["adata"] = build_layer_metadata_adata(viewer, sdata, labels_name, table_name)
     layer.metadata["region_key"] = table_metadata.region_key
     layer.metadata["instance_key"] = table_metadata.instance_key
 
-    table_names = get_annotating_table_names(sdata, label_name)
+    table_names = get_annotating_table_names(sdata, labels_name)
     layer.metadata["table_names"] = table_names if table_names else None
     return True

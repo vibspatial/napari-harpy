@@ -482,10 +482,10 @@ Scope:
   - `n_predicted_rows`
 - drop legacy single-scope fields that no longer describe the real write
   target cleanly:
-  - `label_name`
+  - `labels_name`
   - `n_active_objects`
 - update reload-state comparison so it no longer relies only on one stored
-  `label_name`;
+  `labels_name`;
   staleness should be based on:
   - whether `feature_key` matches
   - whether `table_name` matches
@@ -605,7 +605,7 @@ class ClassifierPreparationSummary:
 class ClassifierJob:
     job_id: int
     feature_key: str
-    label_name: str
+    labels_name: str
     table_name: str
     predict_features: Any
     train_features: Any
@@ -770,7 +770,7 @@ class _ObjectClassificationStatusCardSpec:
 @dataclass(frozen=True)
 class _LabelsLayerPreparationResult:
     kind: Literal["none", "loaded", "activated", "error"]
-    label_name: str | None = None
+    labels_name: str | None = None
     coordinate_system: str | None = None
     error: str | None = None
 ```

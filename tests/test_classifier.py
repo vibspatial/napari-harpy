@@ -118,7 +118,7 @@ def _set_invalid_feature_rows_for_region(
 def _resolved_scope(
     positions: np.ndarray | list[int] | tuple[int, ...],
     *,
-    label_name: str = "blobs_labels",
+    labels_name: str = "blobs_labels",
     mode: classifier_module.ClassifierScopeMode = "selected_segmentation_only",
     regions: tuple[str, ...] | None = None,
     n_rows_in_regions: int | None = None,
@@ -129,7 +129,7 @@ def _resolved_scope(
         raw_table_row_positions = np.arange(n_rows_in_regions, dtype=np.int64)
     return classifier_module.ResolvedClassifierScope(
         mode=mode,
-        regions=(label_name,) if regions is None else regions,
+        regions=(labels_name,) if regions is None else regions,
         raw_table_row_positions=raw_table_row_positions,
         table_row_positions=table_row_positions,
     )
@@ -238,7 +238,7 @@ def test_classifier_controller_refuses_export_while_training(tmp_path, sdata_blo
         result = classifier_module.ClassifierJobResult(
             job_id=job.job_id,
             feature_key=job.feature_key,
-            label_name=job.label_name,
+            labels_name=job.labels_name,
             table_name=job.table_name,
             pred_classes=np.full(job.prediction_scope.table_row_positions.shape, 1, dtype=np.int64),
             pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.9, dtype=np.float64),
@@ -525,7 +525,7 @@ def test_classifier_controller_default_prediction_scope_leaves_hidden_regions_un
         result = classifier_module.ClassifierJobResult(
             job_id=job.job_id,
             feature_key=job.feature_key,
-            label_name=job.label_name,
+            labels_name=job.labels_name,
             table_name=job.table_name,
             pred_classes=np.full(job.prediction_scope.table_row_positions.shape, 3, dtype=np.int64),
             pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.88, dtype=np.float64),
@@ -692,7 +692,7 @@ def test_classifier_controller_drops_stale_results(qtbot, monkeypatch, sdata_blo
         return classifier_module.ClassifierJobResult(
             job_id=job.job_id,
             feature_key=job.feature_key,
-            label_name=job.label_name,
+            labels_name=job.labels_name,
             table_name=job.table_name,
             pred_classes=pred_class,
             pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.9, dtype=np.float64),
@@ -733,7 +733,7 @@ def test_classifier_controller_bind_is_passive_until_marked_dirty(qtbot, monkeyp
         return classifier_module.ClassifierJobResult(
             job_id=job.job_id,
             feature_key=job.feature_key,
-            label_name=job.label_name,
+            labels_name=job.labels_name,
             table_name=job.table_name,
             pred_classes=np.full(job.prediction_scope.table_row_positions.shape, 1, dtype=np.int64),
             pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.9, dtype=np.float64),
@@ -831,9 +831,7 @@ def test_classifier_controller_freeze_for_reload_cancels_pending_debounce(
     assert controller.status_message == "Classifier: model is stale. Click Train Classifier to refresh predictions."
 
 
-def test_classifier_controller_shutdown_cancels_pending_debounce(
-    qtbot, monkeypatch, sdata_blobs: SpatialData
-) -> None:
+def test_classifier_controller_shutdown_cancels_pending_debounce(qtbot, monkeypatch, sdata_blobs: SpatialData) -> None:
     _set_deterministic_features(sdata_blobs)
     _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
     created_job_ids: list[int] = []
@@ -881,7 +879,7 @@ def test_classifier_controller_shutdown_quits_worker_and_ignores_late_signals(
         result = classifier_module.ClassifierJobResult(
             job_id=job.job_id,
             feature_key=job.feature_key,
-            label_name=job.label_name,
+            labels_name=job.labels_name,
             table_name=job.table_name,
             pred_classes=np.full(job.prediction_scope.table_row_positions.shape, 1, dtype=np.int64),
             pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.9, dtype=np.float64),
@@ -938,7 +936,7 @@ def test_classifier_controller_invalidates_pending_work_for_selected_feature_mat
     result = classifier_module.ClassifierJobResult(
         job_id=1,
         feature_key="features_1",
-        label_name="blobs_labels",
+        labels_name="blobs_labels",
         table_name="table",
         pred_classes=np.array([1, 2], dtype=np.int64),
         pred_confidences=np.array([0.9, 0.8], dtype=np.float64),
@@ -985,7 +983,7 @@ def test_classifier_controller_reset_after_reload_ignores_late_worker_results(
         result = classifier_module.ClassifierJobResult(
             job_id=job.job_id,
             feature_key=job.feature_key,
-            label_name=job.label_name,
+            labels_name=job.labels_name,
             table_name=job.table_name,
             pred_classes=np.full(job.prediction_scope.table_row_positions.shape, 1, dtype=np.int64),
             pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.91, dtype=np.float64),

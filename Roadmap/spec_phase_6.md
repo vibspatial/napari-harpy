@@ -138,7 +138,7 @@ The intended implementation is:
 1. reload disk state into `sdata.tables[table_name]`
 2. resolve the currently bound napari layer for the selected spatial element
 3. construct a fresh joined `AnnData` for that layer using the selected `sdata`, `table_name`, and
-   `label_name`
+   `labels_name`
 4. use the same join semantics as `napari-spatialdata`:
    - `join_spatialelement_table(...)`
    - `how="left"`

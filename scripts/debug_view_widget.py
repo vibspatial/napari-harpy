@@ -9,7 +9,7 @@ from napari_harpy import Interactive
 
 SDATA_PATH = Path("/Users/arne.defauw/VIB/DATA/test_data/sdata_blobs.zarr")
 COORDINATE_SYSTEM = "global"
-LABEL_NAME = "blobs_labels_rotated"
+LABELS_NAME = "blobs_labels_rotated"
 IMAGE_NAME = "blobs_image"
 MULTISCALE_IMAGE_NAME = "blobs_multiscale_image"
 
@@ -35,7 +35,7 @@ def _main() -> None:
 
     labels_layer = viewer_adapter.ensure_labels_loaded(
         sdata,
-        label_name=LABEL_NAME,
+        labels_name=LABELS_NAME,
         coordinate_system=COORDINATE_SYSTEM,
     )
 

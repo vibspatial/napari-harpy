@@ -13,7 +13,7 @@ class FeatureExtractionTriplet:
     """One explicit `coordinate_system -> labels element -> image` selection."""
 
     coordinate_system: str
-    label_name: str
+    labels_name: str
     image_name: str | None
     channels: tuple[FeatureExtractionChannel, ...] | None = None
 
@@ -56,32 +56,32 @@ def _normalize_triplets(
         values = list(triplets)
 
     normalized: list[FeatureExtractionTriplet] = []
-    seen_label_names: set[str] = set()
+    seen_labels_names: set[str] = set()
     for triplet in values:
         normalized_coordinate_system = str(triplet.coordinate_system).strip()
-        normalized_label_name = str(triplet.label_name).strip()
+        normalized_labels_name = str(triplet.labels_name).strip()
         normalized_image_name = None if triplet.image_name is None else str(triplet.image_name).strip() or None
         normalized_channels = _normalize_channels(triplet.channels)
 
         if not normalized_coordinate_system:
             raise ValueError("Feature extraction triplets require a coordinate system.")
-        if not normalized_label_name:
+        if not normalized_labels_name:
             raise ValueError("Feature extraction triplets require a labels element name.")
-        if normalized_label_name in seen_label_names:
+        if normalized_labels_name in seen_labels_names:
             raise ValueError(
                 f"Duplicate labels element selections are not allowed in a single feature-extraction request: "
-                f"`{normalized_label_name}`."
+                f"`{normalized_labels_name}`."
             )
 
         normalized.append(
             FeatureExtractionTriplet(
                 coordinate_system=normalized_coordinate_system,
-                label_name=normalized_label_name,
+                labels_name=normalized_labels_name,
                 image_name=normalized_image_name,
                 channels=normalized_channels,
             )
         )
-        seen_label_names.add(normalized_label_name)
+        seen_labels_names.add(normalized_labels_name)
 
     return tuple(normalized)
 
@@ -108,8 +108,8 @@ def _get_triplet_channel_selection_error(
 def _resolve_harpy_labels_name_parameter(
     triplets: Sequence[FeatureExtractionTriplet],
 ) -> str | list[str]:
-    label_names = [triplet.label_name for triplet in triplets]
-    return label_names[0] if len(label_names) == 1 else label_names
+    labels_names = [triplet.labels_name for triplet in triplets]
+    return labels_names[0] if len(labels_names) == 1 else labels_names
 
 
 def _resolve_harpy_coordinate_system_parameter(

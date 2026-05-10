@@ -40,7 +40,7 @@ class _SelectionTableState:
 
     table: AnnData | None
     metadata: SpatialDataTableMetadata | None
-    label_name: str | None
+    labels_name: str | None
     table_name: str | None
     instance_id: int | None
     matching_rows: pd.Series | None
@@ -50,7 +50,7 @@ class _SelectionTableState:
         return (
             self.table is not None
             and self.metadata is not None
-            and self.label_name is not None
+            and self.labels_name is not None
             and self.table_name is not None
             and self.instance_id is not None
         )
@@ -67,7 +67,7 @@ class _SelectionTableState:
     def missing_table_row_message(self) -> str | None:
         instance_key_name = self.instance_key_name
         if (
-            self.label_name is None
+            self.labels_name is None
             or self.table_name is None
             or self.instance_id is None
             or instance_key_name is None
@@ -77,7 +77,7 @@ class _SelectionTableState:
 
         return (
             f"Selected {instance_key_name} {self.instance_id} is not present in annotation table "
-            f"`{self.table_name}` for labels element `{self.label_name}` and cannot receive a user class."
+            f"`{self.table_name}` for labels element `{self.labels_name}` and cannot receive a user class."
         )
 
 
@@ -95,7 +95,7 @@ class AnnotationController:
         self._on_annotation_changed = on_annotation_changed
         self._labels_layer: Any | None = None
         self._selected_spatialdata: SpatialData | None = None
-        self._selected_label_name: str | None = None
+        self._selected_labels_name: str | None = None
         self._selected_coordinate_system: str | None = None
         self._selected_table_name: str | None = None
         self._selected_table_metadata: SpatialDataTableMetadata | None = None
@@ -150,14 +150,14 @@ class AnnotationController:
     def bind(
         self,
         sdata: SpatialData | None,
-        label_name: str | None,
+        labels_name: str | None,
         table_name: str | None = None,
         coordinate_system: str | None = None,
     ) -> None:
         """Bind the controller to the selected labels layer and annotation table."""
         next_layer = None
-        if sdata is not None and label_name is not None:
-            next_layer = self._viewer_adapter.get_loaded_primary_labels_layer(sdata, label_name, coordinate_system)
+        if sdata is not None and labels_name is not None:
+            next_layer = self._viewer_adapter.get_loaded_primary_labels_layer(sdata, labels_name, coordinate_system)
 
         next_table_metadata = None
         if sdata is not None and table_name is not None:
@@ -165,7 +165,7 @@ class AnnotationController:
 
         layer_changed = next_layer is not self._labels_layer
         self._selected_spatialdata = sdata
-        self._selected_label_name = label_name
+        self._selected_labels_name = labels_name
         self._selected_coordinate_system = coordinate_system
         self._selected_table_name = table_name
         self._selected_table_metadata = next_table_metadata
@@ -304,7 +304,7 @@ class AnnotationController:
             raise ValueError("Choose an annotation table before annotating.")
         if state.metadata is None:
             raise ValueError("Choose an annotation table before annotating.")
-        if state.label_name is None:
+        if state.labels_name is None:
             raise ValueError("Choose a labels element before annotating.")
         if state.instance_id is None:
             raise ValueError("Pick an object in the viewer before annotating.")
@@ -343,10 +343,10 @@ class AnnotationController:
         return table
 
     def _matching_rows_mask(self, obs: pd.DataFrame, metadata: SpatialDataTableMetadata) -> pd.Series:
-        if self._selected_label_name is None or self._selected_instance_id is None:
+        if self._selected_labels_name is None or self._selected_instance_id is None:
             return pd.Series(False, index=obs.index)
 
-        return (obs[metadata.region_key] == self._selected_label_name) & (
+        return (obs[metadata.region_key] == self._selected_labels_name) & (
             obs[metadata.instance_key] == self._selected_instance_id
         )
 
@@ -357,7 +357,7 @@ class AnnotationController:
         if (
             table is not None
             and metadata is not None
-            and self._selected_label_name is not None
+            and self._selected_labels_name is not None
             and self._selected_instance_id is not None
         ):
             matching_rows = self._matching_rows_mask(table.obs, metadata)
@@ -365,7 +365,7 @@ class AnnotationController:
         return _SelectionTableState(
             table=table,
             metadata=metadata,
-            label_name=self._selected_label_name,
+            labels_name=self._selected_labels_name,
             table_name=self._selected_table_name,
             instance_id=self._selected_instance_id,
             matching_rows=matching_rows,

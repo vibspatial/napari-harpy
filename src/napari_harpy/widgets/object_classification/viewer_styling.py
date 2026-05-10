@@ -61,7 +61,7 @@ class ViewerStylingController:
         self._viewer_adapter = viewer_adapter
         self._labels_layer: Any | None = None
         self._selected_spatialdata: SpatialData | None = None
-        self._selected_label_name: str | None = None
+        self._selected_labels_name: str | None = None
         self._selected_coordinate_system: str | None = None
         self._selected_table_name: str | None = None
         self._selected_table_metadata: SpatialDataTableMetadata | None = None
@@ -80,16 +80,16 @@ class ViewerStylingController:
     def bind(
         self,
         sdata: SpatialData | None,
-        label_name: str | None,
+        labels_name: str | None,
         table_name: str | None,
         coordinate_system: str | None = None,
     ) -> None:
         """Bind styling to the selected labels layer and annotation table."""
         next_layer = None
-        if sdata is not None and label_name is not None:
+        if sdata is not None and labels_name is not None:
             next_layer = self._viewer_adapter.get_loaded_primary_labels_layer(
                 sdata,
-                label_name,
+                labels_name,
                 coordinate_system,
             )
 
@@ -99,7 +99,7 @@ class ViewerStylingController:
 
         self._labels_layer = next_layer
         self._selected_spatialdata = sdata
-        self._selected_label_name = label_name
+        self._selected_labels_name = labels_name
         self._selected_coordinate_system = coordinate_system
         self._selected_table_name = table_name
         self._selected_table_metadata = next_table_metadata
@@ -304,10 +304,10 @@ class ViewerStylingController:
     def _get_region_rows_by_instance(self) -> pd.DataFrame:
         table = self._get_bound_table()
         metadata = self._selected_table_metadata
-        if table is None or metadata is None or self._selected_label_name is None:
+        if table is None or metadata is None or self._selected_labels_name is None:
             return pd.DataFrame(index=pd.Index([], dtype="int64", name="index"))
 
-        region_rows = table.obs.loc[table.obs[metadata.region_key] == self._selected_label_name].copy()
+        region_rows = table.obs.loc[table.obs[metadata.region_key] == self._selected_labels_name].copy()
         instance_ids = pd.to_numeric(region_rows[metadata.instance_key], errors="coerce")
         region_rows = region_rows.loc[instance_ids.notna()].copy()
         region_rows[metadata.instance_key] = instance_ids.loc[region_rows.index].astype("int64")

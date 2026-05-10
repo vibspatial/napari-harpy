@@ -375,7 +375,7 @@ selections.
 Possible `ViewerSelectionState` fields:
 
 - `coordinate_system`
-- `label_name`
+- `labels_name`
 - `table_name`
 - `image_name`
 - `display_mode`
@@ -393,7 +393,7 @@ state into napari.
 Possible `FeatureExtractionSelectionState` fields:
 
 - `coordinate_system`
-- `label_name`
+- `labels_name`
 - `table_name`
 - `image_name`
 - `feature_channel_indices`
@@ -405,7 +405,7 @@ Possible `FeatureExtractionSelectionState` fields:
 
 Possible `ObjectClassificationSelectionState` fields:
 
-- `label_name`
+- `labels_name`
 - `table_name`
 - `feature_key`
 - `color_by`

@@ -203,23 +203,23 @@ class _DeferredWorker(QObject):
         self.finished.emit()
 
 
-def make_blobs_labels_layer(sdata: SpatialData, label_name: str = "blobs_labels") -> Labels:
+def make_blobs_labels_layer(sdata: SpatialData, labels_name: str = "blobs_labels") -> Labels:
     layer = Labels(
-        sdata.labels[label_name],
-        name=label_name,
-        metadata={"sdata": sdata, "name": label_name},
+        sdata.labels[labels_name],
+        name=labels_name,
+        metadata={"sdata": sdata, "name": labels_name},
     )
     return layer
 
 
-def make_multiscale_blobs_labels_layer(sdata: SpatialData, label_name: str = "blobs_labels") -> Labels:
-    base_data = np.asarray(sdata.labels[label_name])
+def make_multiscale_blobs_labels_layer(sdata: SpatialData, labels_name: str = "blobs_labels") -> Labels:
+    base_data = np.asarray(sdata.labels[labels_name])
     multiscale_data = [base_data, base_data[::2, ::2]]
     indices = [int(value) for value in np.unique(base_data).tolist() if int(value) > 0]
     layer = Labels(
         multiscale_data,
-        name=label_name,
-        metadata={"sdata": sdata, "name": label_name, "indices": indices},
+        name=labels_name,
+        metadata={"sdata": sdata, "name": labels_name, "indices": indices},
     )
     return layer
 
@@ -418,20 +418,20 @@ def test_widget_filters_segmentation_choices_by_selected_coordinate_system(
     viewer = make_viewer_with_shared_sdata(sdata_blobs)
 
     global_option = SpatialDataLabelsOption(
-        label_name="blobs_labels",
+        labels_name="blobs_labels",
         display_name="blobs_labels",
         sdata=sdata_blobs,
         coordinate_systems=("global",),
     )
     cells_option = SpatialDataLabelsOption(
-        label_name="blobs_multiscale_labels",
+        labels_name="blobs_multiscale_labels",
         display_name="blobs_multiscale_labels",
         sdata=sdata_blobs,
         coordinate_systems=("cells",),
     )
     monkeypatch.setattr(
         widget_module,
-        "get_spatialdata_label_options_for_coordinate_system_from_sdata",
+        "get_spatialdata_labels_options_for_coordinate_system_from_sdata",
         lambda *, sdata, coordinate_system: [global_option] if coordinate_system == "global" else [cells_option],
     )
 
@@ -476,7 +476,7 @@ def test_widget_coordinate_system_change_updates_viewer_widget(qtbot, monkeypatc
     _patch_coordinate_system_names(monkeypatch, ["global", "local"])
     fake_sdata = object()
     shared_option = SpatialDataLabelsOption(
-        label_name="shared_labels",
+        labels_name="shared_labels",
         display_name="shared_labels",
         sdata=fake_sdata,
         coordinate_systems=("global", "local"),
@@ -484,10 +484,10 @@ def test_widget_coordinate_system_change_updates_viewer_widget(qtbot, monkeypatc
 
     monkeypatch.setattr(
         widget_module,
-        "get_spatialdata_label_options_for_coordinate_system_from_sdata",
+        "get_spatialdata_labels_options_for_coordinate_system_from_sdata",
         lambda *, sdata, coordinate_system: [shared_option],
     )
-    monkeypatch.setattr(widget_module, "get_annotating_table_names", lambda sdata, label_name: [])
+    monkeypatch.setattr(widget_module, "get_annotating_table_names", lambda sdata, labels_name: [])
     monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
     monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: [])
 
@@ -527,7 +527,7 @@ def test_shared_coordinate_system_switch_prunes_registered_layers_and_keeps_exte
     monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: [])
     monkeypatch.setattr(
         widget_module,
-        "get_spatialdata_label_options_for_coordinate_system_from_sdata",
+        "get_spatialdata_labels_options_for_coordinate_system_from_sdata",
         lambda *, sdata, coordinate_system: [],
     )
 
@@ -595,7 +595,7 @@ def test_widget_clears_selected_segmentation_on_coordinate_system_change_even_wh
     _patch_coordinate_system_names(monkeypatch, ["global", "local"])
     fake_sdata = object()
     shared_option = SpatialDataLabelsOption(
-        label_name="shared_labels",
+        labels_name="shared_labels",
         display_name="shared_labels",
         sdata=fake_sdata,
         coordinate_systems=("global", "local"),
@@ -604,10 +604,10 @@ def test_widget_clears_selected_segmentation_on_coordinate_system_change_even_wh
 
     monkeypatch.setattr(
         widget_module,
-        "get_spatialdata_label_options_for_coordinate_system_from_sdata",
+        "get_spatialdata_labels_options_for_coordinate_system_from_sdata",
         lambda *, sdata, coordinate_system: [shared_option],
     )
-    monkeypatch.setattr(widget_module, "get_annotating_table_names", lambda sdata, label_name: [])
+    monkeypatch.setattr(widget_module, "get_annotating_table_names", lambda sdata, labels_name: [])
 
     viewer = DummyViewer(seed_shared_sdata=False)
     app_state = get_or_create_app_state(viewer)
@@ -624,7 +624,7 @@ def test_widget_clears_selected_segmentation_on_coordinate_system_change_even_wh
     monkeypatch.setattr(
         app_state.viewer_adapter,
         "ensure_labels_loaded",
-        lambda sdata, label_name, coordinate_system: (_ for _ in ()).throw(
+        lambda sdata, labels_name, coordinate_system: (_ for _ in ()).throw(
             AssertionError("Coordinate-system switching should not auto-load a replacement segmentation layer.")
         ),
     )
@@ -655,13 +655,13 @@ def test_widget_unbinds_when_selected_segmentation_is_not_valid_in_new_coordinat
     _patch_coordinate_system_names(monkeypatch, ["global", "local"])
     fake_sdata = object()
     global_option = SpatialDataLabelsOption(
-        label_name="global_labels",
+        labels_name="global_labels",
         display_name="global_labels",
         sdata=fake_sdata,
         coordinate_systems=("global",),
     )
     local_option = SpatialDataLabelsOption(
-        label_name="local_labels",
+        labels_name="local_labels",
         display_name="local_labels",
         sdata=fake_sdata,
         coordinate_systems=("local",),
@@ -670,10 +670,10 @@ def test_widget_unbinds_when_selected_segmentation_is_not_valid_in_new_coordinat
 
     monkeypatch.setattr(
         widget_module,
-        "get_spatialdata_label_options_for_coordinate_system_from_sdata",
+        "get_spatialdata_labels_options_for_coordinate_system_from_sdata",
         lambda *, sdata, coordinate_system: [global_option] if coordinate_system == "global" else [local_option],
     )
-    monkeypatch.setattr(widget_module, "get_annotating_table_names", lambda sdata, label_name: [])
+    monkeypatch.setattr(widget_module, "get_annotating_table_names", lambda sdata, labels_name: [])
 
     viewer = DummyViewer(seed_shared_sdata=False)
     app_state = get_or_create_app_state(viewer)
@@ -809,14 +809,14 @@ def test_widget_updates_selected_feature_key_when_feature_matrix_changes(qtbot, 
 
     def record_bind(
         sdata,
-        label_name,
+        labels_name,
         table_name,
         feature_key,
         *,
         training_scope=classifier_module.DEFAULT_TRAINING_SCOPE,
         prediction_scope=classifier_module.DEFAULT_PREDICTION_SCOPE,
     ) -> bool:
-        del sdata, label_name, table_name, feature_key
+        del sdata, labels_name, table_name, feature_key
         bind_calls.append((training_scope, prediction_scope))
         return True
 
@@ -829,7 +829,9 @@ def test_widget_updates_selected_feature_key_when_feature_matrix_changes(qtbot, 
     assert "feature matrix changed" in widget.classifier_feedback.text()
 
 
-def test_widget_marks_classifier_dirty_when_training_scope_changes(qtbot, monkeypatch, sdata_blobs: SpatialData) -> None:
+def test_widget_marks_classifier_dirty_when_training_scope_changes(
+    qtbot, monkeypatch, sdata_blobs: SpatialData
+) -> None:
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
@@ -842,14 +844,14 @@ def test_widget_marks_classifier_dirty_when_training_scope_changes(qtbot, monkey
 
     def record_bind(
         sdata,
-        label_name,
+        labels_name,
         table_name,
         feature_key,
         *,
         training_scope=classifier_module.DEFAULT_TRAINING_SCOPE,
         prediction_scope=classifier_module.DEFAULT_PREDICTION_SCOPE,
     ) -> bool:
-        del sdata, label_name, table_name, feature_key
+        del sdata, labels_name, table_name, feature_key
         bind_calls.append((training_scope, prediction_scope))
         return True
 
@@ -881,14 +883,14 @@ def test_widget_marks_classifier_dirty_when_prediction_scope_changes(
 
     def record_bind(
         sdata,
-        label_name,
+        labels_name,
         table_name,
         feature_key,
         *,
         training_scope=classifier_module.DEFAULT_TRAINING_SCOPE,
         prediction_scope=classifier_module.DEFAULT_PREDICTION_SCOPE,
     ) -> bool:
-        del sdata, label_name, table_name, feature_key
+        del sdata, labels_name, table_name, feature_key
         bind_calls.append((training_scope, prediction_scope))
         return True
 
@@ -978,9 +980,7 @@ def test_widget_shows_eligible_classifier_preparation_summary(qtbot, sdata_blobs
     assert "Need at least" not in preparation_text
 
 
-def test_widget_disables_retrain_button_when_preparation_is_not_trainable(
-    qtbot, sdata_blobs: SpatialData
-) -> None:
+def test_widget_disables_retrain_button_when_preparation_is_not_trainable(qtbot, sdata_blobs: SpatialData) -> None:
     table = sdata_blobs["table"]
     instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
@@ -1069,7 +1069,7 @@ def test_widget_invalidates_classifier_when_selected_feature_matrix_is_overwritt
         classifier_module.ClassifierJobResult(
             job_id=1,
             feature_key="features_1",
-            label_name="blobs_labels",
+            labels_name="blobs_labels",
             table_name="table",
             pred_classes=np.array([1, 2], dtype=np.int64),
             pred_confidences=np.array([0.9, 0.8], dtype=np.float64),
@@ -2081,7 +2081,7 @@ def test_widget_reload_freezes_classifier_worker_and_ignores_late_results(
         result = classifier_module.ClassifierJobResult(
             job_id=job.job_id,
             feature_key=job.feature_key,
-            label_name=job.label_name,
+            labels_name=job.labels_name,
             table_name=job.table_name,
             pred_classes=np.full(job.prediction_scope.table_row_positions.shape, 1, dtype=np.int64),
             pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.91, dtype=np.float64),
@@ -2173,7 +2173,7 @@ def test_widget_retrain_button_recovers_after_worker_finishes(qtbot, monkeypatch
         result = classifier_module.ClassifierJobResult(
             job_id=job.job_id,
             feature_key=job.feature_key,
-            label_name=job.label_name,
+            labels_name=job.labels_name,
             table_name=job.table_name,
             pred_classes=np.full(job.prediction_scope.table_row_positions.shape, 1, dtype=np.int64),
             pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.91, dtype=np.float64),
@@ -2231,9 +2231,7 @@ def test_widget_classifier_status_changes_do_not_refresh_layer_styling(
     assert "scheduled" in widget.classifier_feedback.text()
 
 
-def test_widget_destroyed_shuts_down_classifier_controller(
-    qtbot, monkeypatch, sdata_blobs: SpatialData
-) -> None:
+def test_widget_destroyed_shuts_down_classifier_controller(qtbot, monkeypatch, sdata_blobs: SpatialData) -> None:
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
     widget = HarpyWidget(viewer)

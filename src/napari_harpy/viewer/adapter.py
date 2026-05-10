@@ -374,7 +374,7 @@ class ViewerAdapter(QObject):
     def get_loaded_primary_labels_layer(
         self,
         sdata: SpatialData,
-        label_name: str,
+        labels_name: str,
         coordinate_system: str | None = None,
     ) -> Labels | None:
         """Return the loaded primary labels layer for one labels element.
@@ -392,7 +392,7 @@ class ViewerAdapter(QObject):
             if _matches_labels_binding(
                 binding,
                 sdata=sdata,
-                element_name=label_name,
+                element_name=labels_name,
                 coordinate_system=coordinate_system,
                 labels_role="primary",
             ):
@@ -403,7 +403,7 @@ class ViewerAdapter(QObject):
     def get_loaded_styled_labels_layer(
         self,
         sdata: SpatialData,
-        label_name: str,
+        labels_name: str,
         style_spec: TableColorSourceSpec,
         coordinate_system: str | None = None,
     ) -> Labels | None:
@@ -416,7 +416,7 @@ class ViewerAdapter(QObject):
             if _matches_labels_binding(
                 binding,
                 sdata=sdata,
-                element_name=label_name,
+                element_name=labels_name,
                 coordinate_system=coordinate_system,
                 labels_role="styled",
                 style_spec=style_spec,
@@ -428,7 +428,7 @@ class ViewerAdapter(QObject):
     def get_loaded_styled_labels_layers(
         self,
         sdata: SpatialData,
-        label_name: str,
+        labels_name: str,
         coordinate_system: str | None = None,
     ) -> list[Labels]:
         """Return all loaded styled labels layers for one labels element."""
@@ -441,7 +441,7 @@ class ViewerAdapter(QObject):
             if _matches_labels_binding(
                 binding,
                 sdata=sdata,
-                element_name=label_name,
+                element_name=labels_name,
                 coordinate_system=coordinate_system,
                 labels_role="styled",
             ):
@@ -449,18 +449,18 @@ class ViewerAdapter(QObject):
 
         return matches
 
-    def ensure_labels_loaded(self, sdata: SpatialData, label_name: str, coordinate_system: str) -> Labels:
+    def ensure_labels_loaded(self, sdata: SpatialData, labels_name: str, coordinate_system: str) -> Labels:
         """Load a labels element into napari if it is not already present."""
-        existing_layer = self._get_loaded_labels_layer_for_coordinate_system(sdata, label_name, coordinate_system)
+        existing_layer = self._get_loaded_labels_layer_for_coordinate_system(sdata, labels_name, coordinate_system)
         if existing_layer is not None:
             return existing_layer
 
-        layer = _build_labels_layer(sdata, label_name, coordinate_system, name=label_name)
+        layer = _build_labels_layer(sdata, labels_name, coordinate_system, name=labels_name)
         _add_layer_to_viewer(self._viewer, layer)
         self.register_layer(
             layer,
             sdata=sdata,
-            element_name=label_name,
+            element_name=labels_name,
             element_type="labels",
             coordinate_system=coordinate_system,
         )
@@ -469,14 +469,14 @@ class ViewerAdapter(QObject):
     def ensure_styled_labels_loaded(
         self,
         sdata: SpatialData,
-        label_name: str,
+        labels_name: str,
         coordinate_system: str,
         style_spec: TableColorSourceSpec,
     ) -> StyledLabelsLoadResult:
         """Load or update one styled labels overlay variant."""
         existing_layer = self.get_loaded_styled_labels_layer(
             sdata,
-            label_name,
+            labels_name,
             style_spec,
             coordinate_system,
         )
@@ -484,15 +484,15 @@ class ViewerAdapter(QObject):
         if existing_layer is None:
             layer = _build_labels_layer(
                 sdata,
-                label_name,
+                labels_name,
                 coordinate_system,
-                name=build_styled_labels_layer_name(label_name, style_spec),
+                name=build_styled_labels_layer_name(labels_name, style_spec),
             )
             _add_layer_to_viewer(self._viewer, layer)
             self.register_layer(
                 layer,
                 sdata=sdata,
-                element_name=label_name,
+                element_name=labels_name,
                 element_type="labels",
                 coordinate_system=coordinate_system,
                 labels_role="styled",
@@ -501,11 +501,11 @@ class ViewerAdapter(QObject):
         else:
             layer = existing_layer
 
-        layer.name = build_styled_labels_layer_name(label_name, style_spec)
+        layer.name = build_styled_labels_layer_name(labels_name, style_spec)
         style_result = apply_table_color_source_to_labels_layer(
             layer,
             sdata=sdata,
-            label_name=label_name,
+            labels_name=labels_name,
             style_spec=style_spec,
         )
         return StyledLabelsLoadResult(
@@ -516,9 +516,9 @@ class ViewerAdapter(QObject):
             coercion_applied=style_result.coercion_applied,
         )
 
-    def remove_labels_layer(self, sdata: SpatialData, label_name: str, coordinate_system: str) -> Labels | None:
+    def remove_labels_layer(self, sdata: SpatialData, labels_name: str, coordinate_system: str) -> Labels | None:
         """Remove the loaded labels layer for one labels element in one coordinate system."""
-        layer = self._get_loaded_labels_layer_for_coordinate_system(sdata, label_name, coordinate_system)
+        layer = self._get_loaded_labels_layer_for_coordinate_system(sdata, labels_name, coordinate_system)
         if layer is None:
             return None
 
@@ -743,10 +743,10 @@ class ViewerAdapter(QObject):
     def _get_loaded_labels_layer_for_coordinate_system(
         self,
         sdata: SpatialData,
-        label_name: str,
+        labels_name: str,
         coordinate_system: str,
     ) -> Labels | None:
-        return self.get_loaded_primary_labels_layer(sdata, label_name, coordinate_system)
+        return self.get_loaded_primary_labels_layer(sdata, labels_name, coordinate_system)
 
     def _get_loaded_image_layer_for_coordinate_system(
         self,
@@ -991,19 +991,21 @@ def _flatten_multiscale_element(element: DataTree) -> list[DataArray]:
 
 def _build_labels_layer(
     sdata: SpatialData,
-    label_name: str,
+    labels_name: str,
     coordinate_system: str,
     *,
     name: str,
 ) -> Labels:
     labels = getattr(sdata, "labels", {})
-    if label_name not in labels:
-        raise ValueError(f"Labels element `{label_name}` is not available in the selected SpatialData object.")
+    if labels_name not in labels:
+        raise ValueError(f"Labels element `{labels_name}` is not available in the selected SpatialData object.")
 
-    label_element = labels[label_name]
+    label_element = labels[labels_name]
     available_coordinate_systems = set(get_transformation(label_element, get_all=True).keys())
     if coordinate_system not in available_coordinate_systems:
-        raise ValueError(f"Coordinate system `{coordinate_system}` is not available for labels element `{label_name}`.")
+        raise ValueError(
+            f"Coordinate system `{coordinate_system}` is not available for labels element `{labels_name}`."
+        )
 
     labels_data = _flatten_multiscale_element(label_element) if isinstance(label_element, DataTree) else label_element
     return Labels(

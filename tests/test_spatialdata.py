@@ -19,12 +19,12 @@ from napari_harpy.core.spatialdata import (
     get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata,
     get_spatialdata_feature_extraction_label_discovery_for_coordinate_system_from_sdata,
     get_spatialdata_image_options_for_coordinate_system_from_sdata,
-    get_spatialdata_label_options_for_coordinate_system_from_sdata,
-    get_spatialdata_label_options_from_sdata,
+    get_spatialdata_labels_options_for_coordinate_system_from_sdata,
+    get_spatialdata_labels_options_from_sdata,
     get_spatialdata_shapes_options_for_coordinate_system_from_sdata,
     get_spatialdata_shapes_options_from_sdata,
     get_table,
-    get_table_annotated_label_names,
+    get_table_annotated_labels_names,
     get_table_color_source_options,
     get_table_metadata,
     get_table_obs_color_source_options,
@@ -38,11 +38,11 @@ from napari_harpy.core.spatialdata import (
 )
 
 
-def make_blobs_labels_layer(sdata: SpatialData, label_name: str = "blobs_labels") -> Labels:
+def make_blobs_labels_layer(sdata: SpatialData, labels_name: str = "blobs_labels") -> Labels:
     return Labels(
-        sdata.labels[label_name],
-        name=label_name,
-        metadata={"sdata": sdata, "name": label_name},
+        sdata.labels[labels_name],
+        name=labels_name,
+        metadata={"sdata": sdata, "name": labels_name},
     )
 
 
@@ -200,7 +200,7 @@ def test_validate_table_binding_rejects_duplicate_instance_ids_within_selected_r
         validate_table_binding(sdata_blobs, "blobs_labels", "table")
 
 
-def test_get_table_annotated_label_names_returns_sorted_regions_for_multi_region_table(
+def test_get_table_annotated_labels_names_returns_sorted_regions_for_multi_region_table(
     sdata_blobs: SpatialData,
 ) -> None:
     table = sdata_blobs["table"].copy()
@@ -218,10 +218,10 @@ def test_get_table_annotated_label_names_returns_sorted_regions_for_multi_region
         tables={"table": table},
     )
 
-    assert get_table_annotated_label_names(fake_sdata, "table") == ["blobs_labels", "blobs_multiscale_labels"]
+    assert get_table_annotated_labels_names(fake_sdata, "table") == ["blobs_labels", "blobs_multiscale_labels"]
 
 
-def test_get_table_annotated_label_names_rejects_invalid_regions(sdata_blobs: SpatialData) -> None:
+def test_get_table_annotated_labels_names_rejects_invalid_regions(sdata_blobs: SpatialData) -> None:
     table = sdata_blobs["table"].copy()
     table.obs["region"] = table.obs["region"].cat.add_categories(["missing_labels"])
     table.obs.loc[table.obs.index[0], "region"] = "missing_labels"
@@ -235,7 +235,7 @@ def test_get_table_annotated_label_names_rejects_invalid_regions(sdata_blobs: Sp
     )
 
     with pytest.raises(ValueError, match="missing_labels"):
-        get_table_annotated_label_names(fake_sdata, "table")
+        get_table_annotated_labels_names(fake_sdata, "table")
 
 
 def test_validate_table_annotation_coverage_rejects_unannotated_regions(sdata_blobs: SpatialData) -> None:
@@ -315,10 +315,10 @@ def test_normalize_table_metadata_normalizes_numpy_array_region_attrs_in_place(s
     assert table.uns[TableModel.ATTRS_KEY][TableModel.REGION_KEY] == ["blobs_labels"]
 
 
-def test_get_spatialdata_label_options_from_sdata_returns_all_labels(sdata_blobs: SpatialData) -> None:
-    options = get_spatialdata_label_options_from_sdata(sdata_blobs)
+def test_get_spatialdata_labels_options_from_sdata_returns_all_labels(sdata_blobs: SpatialData) -> None:
+    options = get_spatialdata_labels_options_from_sdata(sdata_blobs)
 
-    assert [option.label_name for option in options] == [
+    assert [option.labels_name for option in options] == [
         "blobs_labels",
         "blobs_multiscale_labels",
     ]
@@ -412,7 +412,7 @@ def test_get_image_channel_names_from_sdata_rejects_duplicate_channel_names(monk
         get_image_channel_names_from_sdata(fake_sdata, "image_with_duplicates")
 
 
-def test_get_spatialdata_label_options_for_coordinate_system_from_sdata_filters_labels(
+def test_get_spatialdata_labels_options_for_coordinate_system_from_sdata_filters_labels(
     monkeypatch,
     sdata_blobs: SpatialData,
 ) -> None:
@@ -429,12 +429,12 @@ def test_get_spatialdata_label_options_for_coordinate_system_from_sdata_filters_
 
     monkeypatch.setattr(spatialdata_module, "get_transformation", _fake_get_transformation)
 
-    options = get_spatialdata_label_options_for_coordinate_system_from_sdata(
+    options = get_spatialdata_labels_options_for_coordinate_system_from_sdata(
         sdata=sdata_blobs,
         coordinate_system="aligned",
     )
 
-    assert [option.label_name for option in options] == ["blobs_labels"]
+    assert [option.labels_name for option in options] == ["blobs_labels"]
     assert options[0].coordinate_systems == ("aligned", "global")
 
 
@@ -522,8 +522,8 @@ def test_get_spatialdata_feature_extraction_label_options_for_coordinate_system_
     )
 
     assert discovery.coordinate_system == "global"
-    assert [option.label_name for option in discovery.eligible_label_options] == ["eligible_alpha", "eligible_beta"]
-    assert discovery.coordinate_system_label_count == 4
+    assert [option.labels_name for option in discovery.eligible_label_options] == ["eligible_alpha", "eligible_beta"]
+    assert discovery.coordinate_system_labels_count == 4
     assert discovery.unavailable_label_count == 2
 
 
@@ -564,11 +564,11 @@ def test_get_spatialdata_matching_image_options_for_coordinate_system_and_label_
     discovery = get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata(
         sdata=fake_sdata,
         coordinate_system="global",
-        label_name="segmentation",
+        labels_name="segmentation",
     )
 
     assert discovery.coordinate_system == "global"
-    assert discovery.label_name == "segmentation"
+    assert discovery.labels_name == "segmentation"
     assert [option.image_name for option in discovery.eligible_image_options] == ["matching_a", "matching_b"]
     assert discovery.coordinate_system_image_count == 5
     assert discovery.unavailable_image_count == 3

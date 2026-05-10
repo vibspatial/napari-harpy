@@ -12,7 +12,7 @@ _FeatureExtractionTableBlocker = Literal["choose_table", "no_eligible", "invalid
 @dataclass(frozen=True)
 class _FeatureExtractionStatusCardEntry:
     coordinate_system: str
-    label_name: str | None
+    labels_name: str | None
     image_name: str | None
     blocking_reason: str | None = None
 
@@ -32,14 +32,14 @@ class _FeatureExtractionStatusCardSpec:
 def build_feature_extraction_status_card_entries(
     checked_coordinate_systems: Sequence[str],
     *,
-    label_names_by_coordinate_system: Mapping[str, str | None],
+    labels_names_by_coordinate_system: Mapping[str, str | None],
     image_names_by_coordinate_system: Mapping[str, str | None],
     blocking_reasons_by_coordinate_system: Mapping[str, str | None],
 ) -> tuple[_FeatureExtractionStatusCardEntry, ...]:
     return tuple(
         _FeatureExtractionStatusCardEntry(
             coordinate_system=coordinate_system,
-            label_name=label_names_by_coordinate_system.get(coordinate_system),
+            labels_name=labels_names_by_coordinate_system.get(coordinate_system),
             image_name=image_names_by_coordinate_system.get(coordinate_system),
             blocking_reason=blocking_reasons_by_coordinate_system.get(coordinate_system),
         )
@@ -173,21 +173,21 @@ def _format_entry_line(
 ) -> tuple[str, bool]:
     coordinate_system, coordinate_shortened = _format_identifier(entry.coordinate_system, shorten=shorten)
     if entry.blocking_reason is not None:
-        if shorten or entry.label_name is None:
+        if shorten or entry.labels_name is None:
             return f"{coordinate_system}: {entry.blocking_reason}", coordinate_shortened
 
-        label_name, label_shortened = _format_identifier(entry.label_name, shorten=shorten)
+        labels_name, label_shortened = _format_identifier(entry.labels_name, shorten=shorten)
         return (
-            f"{coordinate_system}: {label_name} ({entry.blocking_reason})",
+            f"{coordinate_system}: {labels_name} ({entry.blocking_reason})",
             coordinate_shortened or label_shortened,
         )
 
-    label_name, label_shortened = _format_identifier(entry.label_name or "unknown labels element", shorten=shorten)
+    labels_name, label_shortened = _format_identifier(entry.labels_name or "unknown labels element", shorten=shorten)
     if entry.image_name is None:
-        return f"{coordinate_system}: {label_name} (no image)", coordinate_shortened or label_shortened
+        return f"{coordinate_system}: {labels_name} (no image)", coordinate_shortened or label_shortened
 
     image_text, image_shortened = _format_identifier(entry.image_name, shorten=shorten)
-    return f"{coordinate_system}: {label_name} and {image_text}", (
+    return f"{coordinate_system}: {labels_name} and {image_text}", (
         coordinate_shortened or label_shortened or image_shortened
     )
 

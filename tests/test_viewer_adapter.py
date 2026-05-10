@@ -66,10 +66,10 @@ class UnsupportedViewer:
         self.layers = None
 
 
-def make_labels_layer(*, sdata, label_name: str = "blobs_labels", metadata: dict[str, object] | None = None) -> Labels:
+def make_labels_layer(*, sdata, labels_name: str = "blobs_labels", metadata: dict[str, object] | None = None) -> Labels:
     return Labels(
-        sdata.labels[label_name],
-        name=label_name,
+        sdata.labels[labels_name],
+        name=labels_name,
         metadata={} if metadata is None else metadata,
     )
 
@@ -480,8 +480,8 @@ def test_viewer_adapter_ensure_labels_loaded_adds_layer_and_registers_binding(sd
 
 
 def test_viewer_adapter_primary_labels_signal_ignores_styled_bindings(sdata_blobs) -> None:
-    primary_layer = make_labels_layer(sdata=sdata_blobs, label_name="blobs_labels")
-    styled_layer = make_labels_layer(sdata=sdata_blobs, label_name="blobs_labels")
+    primary_layer = make_labels_layer(sdata=sdata_blobs, labels_name="blobs_labels")
+    styled_layer = make_labels_layer(sdata=sdata_blobs, labels_name="blobs_labels")
     styled_layer.name = "blobs_labels[cell_type]"
     viewer = DummyViewer([primary_layer, styled_layer])
     adapter = ViewerAdapter(viewer)
@@ -565,7 +565,9 @@ def test_viewer_adapter_ensure_styled_labels_loaded_creates_registered_overlay_w
     assert odd_feature_row["index"] == odd_instance
     assert odd_feature_row["instance_id"] == odd_instance
     assert np.allclose(result.layer.colormap.color_dict[odd_instance], np.asarray(to_rgba("#ff0000"), dtype=np.float32))
-    assert np.allclose(result.layer.colormap.color_dict[even_instance], np.asarray(to_rgba("#00ff00"), dtype=np.float32))
+    assert np.allclose(
+        result.layer.colormap.color_dict[even_instance], np.asarray(to_rgba("#00ff00"), dtype=np.float32)
+    )
 
 
 def test_viewer_adapter_ensure_styled_labels_loaded_reuses_matching_variant(sdata_blobs) -> None:
@@ -588,7 +590,9 @@ def test_viewer_adapter_ensure_styled_labels_loaded_reuses_matching_variant(sdat
     assert len(viewer.layers) == 1
 
 
-def test_viewer_adapter_ensure_styled_labels_loaded_creates_distinct_variants_for_different_style_specs(sdata_blobs) -> None:
+def test_viewer_adapter_ensure_styled_labels_loaded_creates_distinct_variants_for_different_style_specs(
+    sdata_blobs,
+) -> None:
     table = sdata_blobs["table"]
     table.obs["cell_type"] = pd.Categorical(["odd"] * table.n_obs)
     style_a = TableColorSourceSpec(
@@ -664,7 +668,9 @@ def test_viewer_adapter_ensure_styled_labels_loaded_colors_bool_obs_categoricall
     assert features.loc[odd_instance, "is_even"] == np.False_
     assert features.loc[even_instance, "is_even"] == np.True_
     assert np.allclose(result.layer.colormap.color_dict[odd_instance], np.asarray(to_rgba("#ff0000"), dtype=np.float32))
-    assert np.allclose(result.layer.colormap.color_dict[even_instance], np.asarray(to_rgba("#00ff00"), dtype=np.float32))
+    assert np.allclose(
+        result.layer.colormap.color_dict[even_instance], np.asarray(to_rgba("#00ff00"), dtype=np.float32)
+    )
 
 
 def test_viewer_adapter_ensure_styled_labels_loaded_colors_binary_int_obs_categorically(sdata_blobs) -> None:
@@ -695,7 +701,9 @@ def test_viewer_adapter_ensure_styled_labels_loaded_colors_binary_int_obs_catego
     one_instance = int(table.obs.loc[table.obs["binary_state"] == 1, "instance_id"].iloc[0])
     assert int(features.loc[zero_instance, "binary_state"]) == 0
     assert int(features.loc[one_instance, "binary_state"]) == 1
-    assert np.allclose(result.layer.colormap.color_dict[zero_instance], np.asarray(to_rgba("#ff0000"), dtype=np.float32))
+    assert np.allclose(
+        result.layer.colormap.color_dict[zero_instance], np.asarray(to_rgba("#ff0000"), dtype=np.float32)
+    )
     assert np.allclose(result.layer.colormap.color_dict[one_instance], np.asarray(to_rgba("#00ff00"), dtype=np.float32))
 
 
@@ -726,7 +734,9 @@ def test_viewer_adapter_ensure_styled_labels_loaded_colors_non_binary_int_obs_co
     max_instance = int(table.obs["instance_id"].max())
     assert float(features.loc[min_instance, "object_score"]) == float(min_instance)
     assert float(features.loc[max_instance, "object_score"]) == float(max_instance)
-    assert not np.allclose(result.layer.colormap.color_dict[min_instance], result.layer.colormap.color_dict[max_instance])
+    assert not np.allclose(
+        result.layer.colormap.color_dict[min_instance], result.layer.colormap.color_dict[max_instance]
+    )
 
 
 def test_viewer_adapter_ensure_styled_labels_loaded_colors_instance_key_as_labels(sdata_blobs) -> None:
@@ -959,7 +969,10 @@ def test_viewer_adapter_ensure_image_loaded_overlay_adds_one_layer_per_selected_
     assert len(layers) == 2
     assert [layer.name for layer in layers] == ["blobs_image[0]", "blobs_image[2]"]
     assert [layer.blending for layer in layers] == ["additive", "additive"]
-    assert [binding.channel_index for binding in (adapter.layer_bindings.get_binding(layer) for layer in layers)] == [0, 2]
+    assert [binding.channel_index for binding in (adapter.layer_bindings.get_binding(layer) for layer in layers)] == [
+        0,
+        2,
+    ]
     assert [binding.channel_name for binding in (adapter.layer_bindings.get_binding(layer) for layer in layers)] == [
         "0",
         "2",

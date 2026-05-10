@@ -159,9 +159,9 @@ activation, and minimal layer-binding state.
   - layer -> `element_type`
   - layer -> `coordinate_system`
 - add helpers such as:
-  - `get_loaded_labels_layer(label_name)`
+  - `get_loaded_labels_layer(labels_name)`
   - `get_loaded_image_layers(image_name)`
-  - `ensure_labels_loaded(sdata, label_name, coordinate_system)`
+  - `ensure_labels_loaded(sdata, labels_name, coordinate_system)`
   - `ensure_image_loaded(...)`
   - `activate_layer(layer)`
 - treat `viewer.layers` as the source of truth for what is currently loaded in

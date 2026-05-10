@@ -329,14 +329,14 @@ def _recompute_visible_triplet_card_states(
 class SpatialDataFeatureExtractionLabelDiscovery:
     coordinate_system: str
     eligible_label_options: list[SpatialDataLabelsOption]
-    coordinate_system_label_count: int
+    coordinate_system_labels_count: int
     unavailable_label_count: int
 
 
 @dataclass(frozen=True)
 class SpatialDataFeatureExtractionImageDiscovery:
     coordinate_system: str
-    label_name: str
+    labels_name: str
     eligible_image_options: list[SpatialDataImageOption]
     coordinate_system_image_count: int
     unavailable_image_count: int
@@ -354,7 +354,7 @@ def get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and
     *,
     sdata: SpatialData,
     coordinate_system: str,
-    label_name: str,
+    labels_name: str,
 ) -> SpatialDataFeatureExtractionImageDiscovery:
     ...
 ```
@@ -362,7 +362,7 @@ def get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and
 - `eligible_label_options` means labels in the coordinate system that satisfy
   feature-extraction eligibility rules.
 - `eligible_image_options` means images that are eligible for the specific
-  `(coordinate_system, label_name)` pair; although the field name is
+  `(coordinate_system, labels_name)` pair; although the field name is
   symmetric with labels, its semantics remain label-dependent.
 - the widget then derives:
   - `selectable_label_options` from `eligible_label_options`, minus
@@ -619,7 +619,7 @@ Implementation detail:
 @dataclass(frozen=True)
 class _FeatureExtractionStagedBatchState:
     checked_coordinate_systems: tuple[str, ...]
-    label_names: tuple[str, ...]
+    labels_names: tuple[str, ...]
     triplets: tuple[FeatureExtractionTriplet, ...]
     invalid_coordinate_systems: tuple[str, ...]
     error_text: str | None
@@ -646,7 +646,7 @@ def _resolve_staged_batch_state(self) -> _FeatureExtractionStagedBatchState:
   - return `triplets=()` and one shared batch `error_text` whenever any
     checked card is invalid, so the widget binds no batch request at all
     rather than binding a partial valid subset;
-  - keep `label_names` populated for the checked cards whose segmentation
+  - keep `labels_names` populated for the checked cards whose segmentation
     choice is already known, even when `triplets=()` because the full batch is
     still invalid;
   - return the full ordered triplet tuple only when every checked card is
@@ -654,8 +654,8 @@ def _resolve_staged_batch_state(self) -> _FeatureExtractionStagedBatchState:
 - use that staged-batch helper before table discovery:
   - while not every checked card has a valid segmentation selection, keep the
     table combo disabled because the required batch label set is not yet known;
-  - once the staged batch is valid enough to expose `label_names`, show only
-    tables that annotate every staged batch label name rather than showing a
+  - once the staged batch is valid enough to expose `labels_names`, show only
+    tables that annotate every staged batch labels element rather than showing a
     broader list plus a later incompatibility error;
   - for batch table discovery, derive selectable tables from the staged batch
     label set rather than from the active card's single selected segmentation;
@@ -806,7 +806,7 @@ Implementation detail:
 @dataclass(frozen=True)
 class _FeatureExtractionStatusCardEntry:
     coordinate_system: str
-    label_name: str | None
+    labels_name: str | None
     image_name: str | None
     blocking_reason: str | None = None
 

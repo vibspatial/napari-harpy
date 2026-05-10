@@ -157,7 +157,7 @@ class ImageLoadRequest:
 
 @dataclass(frozen=True)
 class LabelsLoadRequest:
-    label_name: str
+    labels_name: str
     table_name: str | None
     selected_source_kind: ColorSourceKind | None
     selected_color_source: TableColorSourceSpec | None
@@ -459,15 +459,15 @@ class _LabelsCardWidget(QFrame):
     def __init__(
         self,
         *,
-        label_name: str,
+        labels_name: str,
         table_names: list[str],
         table_color_sources_by_table: dict[str, list[TableColorSourceSpec]],
     ) -> None:
         super().__init__()
-        self.label_name = label_name
+        self.labels_name = labels_name
         self._table_color_sources_by_table = table_color_sources_by_table
         self._filtered_color_sources: list[TableColorSourceSpec] = []
-        self.setObjectName(f"viewer_widget_labels_card_{label_name}")
+        self.setObjectName(f"viewer_widget_labels_card_{labels_name}")
         self.setProperty("harpyViewerDetailPanel", True)
         self.setStyleSheet(_DETAIL_PANEL_STYLESHEET)
 
@@ -475,8 +475,8 @@ class _LabelsCardWidget(QFrame):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
-        self.title_label = _ElidedLabel(label_name, self)
-        self.title_label.setObjectName(f"viewer_widget_labels_card_title_{label_name}")
+        self.title_label = _ElidedLabel(labels_name, self)
+        self.title_label.setObjectName(f"viewer_widget_labels_card_title_{labels_name}")
         self.title_label.setStyleSheet(_CARD_TITLE_STYLESHEET)
         self.title_label.hide()
 
@@ -487,7 +487,7 @@ class _LabelsCardWidget(QFrame):
 
         linked_table_label = _create_form_label("Linked table")
         self.linked_table_combo = CompactComboBox()
-        self.linked_table_combo.setObjectName(f"viewer_widget_linked_table_combo_{label_name}")
+        self.linked_table_combo.setObjectName(f"viewer_widget_linked_table_combo_{labels_name}")
         self.linked_table_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
         if table_names:
             self.linked_table_combo.addItems(table_names)
@@ -497,7 +497,7 @@ class _LabelsCardWidget(QFrame):
 
         color_source_kind_label = _create_form_label("Color source")
         self.color_source_kind_combo = CompactComboBox()
-        self.color_source_kind_combo.setObjectName(f"viewer_widget_color_source_kind_combo_{label_name}")
+        self.color_source_kind_combo.setObjectName(f"viewer_widget_color_source_kind_combo_{labels_name}")
         self.color_source_kind_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
         self.color_source_kind_combo.addItem("None", None)
         self.color_source_kind_combo.addItem("Observations", "obs_column")
@@ -505,7 +505,7 @@ class _LabelsCardWidget(QFrame):
 
         self.color_source_value_label = _create_form_label("Value source")
         self.color_source_value_input = QLineEdit()
-        self.color_source_value_input.setObjectName(f"viewer_widget_color_source_value_input_{label_name}")
+        self.color_source_value_input.setObjectName(f"viewer_widget_color_source_value_input_{labels_name}")
         self.color_source_value_input.setStyleSheet(build_input_control_stylesheet("QLineEdit"))
         self.color_source_value_input.setMinimumWidth(0)
         self.color_source_value_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -518,12 +518,12 @@ class _LabelsCardWidget(QFrame):
         self.color_source_value_input.setCompleter(self._color_source_completer)
 
         self.action_status_label = QLabel()
-        self.action_status_label.setObjectName(f"viewer_widget_action_status_{label_name}")
+        self.action_status_label.setObjectName(f"viewer_widget_action_status_{labels_name}")
         self.action_status_label.setWordWrap(True)
         self.action_status_label.setStyleSheet(_SUMMARY_LABEL_STYLESHEET)
 
         self.add_update_button = QPushButton("Add / Update in viewer")
-        self.add_update_button.setObjectName(f"viewer_widget_add_update_labels_button_{label_name}")
+        self.add_update_button.setObjectName(f"viewer_widget_add_update_labels_button_{labels_name}")
         self.add_update_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.add_update_button.setMinimumHeight(28)
         self.add_update_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
@@ -672,7 +672,7 @@ class _LabelsCardWidget(QFrame):
     def _emit_add_update_request(self, _checked: bool = False) -> None:
         self.add_update_requested.emit(
             LabelsLoadRequest(
-                label_name=self.label_name,
+                labels_name=self.labels_name,
                 table_name=self.selected_table_name,
                 selected_source_kind=self.selected_source_kind,
                 selected_color_source=self.selected_color_source,
@@ -937,7 +937,7 @@ class ViewerWidget(QWidget):
         self._labels_rows: list[_DisclosureElementWidget] = []
         self._image_rows: list[_DisclosureElementWidget] = []
         self._shape_rows: list[_DisclosureElementWidget] = []
-        self._expanded_label_names: set[str] = set()
+        self._expanded_labels_names: set[str] = set()
         self._expanded_image_names: set[str] = set()
         self._expanded_shapes_names: set[str] = set()
         self._logo_path = Path(__file__).resolve().parents[4] / "docs" / "_static" / "logo.png"
@@ -1197,19 +1197,19 @@ class ViewerWidget(QWidget):
                 self.summary_label.setText("No coordinate system selected.")
             return
 
-        label_names = _get_labels_in_coordinate_system(sdata, coordinate_system)
+        labels_names = _get_labels_in_coordinate_system(sdata, coordinate_system)
         image_names = _get_images_in_coordinate_system(sdata, coordinate_system)
         shapes_names = _get_shapes_in_coordinate_system(sdata, coordinate_system)
 
         self.summary_label.setText(
             f"In coordinate system `{coordinate_system}`: "
-            f"{len(image_names)} image element(s), {len(label_names)} labels element(s), "
+            f"{len(image_names)} image element(s), {len(labels_names)} labels element(s), "
             f"and {len(shapes_names)} shapes element(s)."
         )
         self._rebuild_image_cards(sdata, image_names)
-        self._rebuild_labels_cards(sdata, label_names)
+        self._rebuild_labels_cards(sdata, labels_names)
         self._rebuild_shapes_cards(shapes_names)
-        self._update_section_empty_states(image_names, label_names, shapes_names)
+        self._update_section_empty_states(image_names, labels_names, shapes_names)
 
     def _rebuild_image_cards(self, sdata: SpatialData, image_names: list[str]) -> None:
         _clear_layout(self.images_section_layout)
@@ -1247,32 +1247,32 @@ class ViewerWidget(QWidget):
             self._image_cards.append(card)
             self._image_rows.append(row)
 
-    def _rebuild_labels_cards(self, sdata: SpatialData, label_names: list[str]) -> None:
+    def _rebuild_labels_cards(self, sdata: SpatialData, labels_names: list[str]) -> None:
         _clear_layout(self.labels_section_layout)
         self._labels_cards = []
         self._labels_rows = []
-        self._expanded_label_names.intersection_update(label_names)
+        self._expanded_labels_names.intersection_update(labels_names)
 
-        for label_name in label_names:
-            table_names = get_annotating_table_names(sdata, label_name)
+        for labels_name in labels_names:
+            table_names = get_annotating_table_names(sdata, labels_name)
             table_color_sources_by_table = {
                 table_name: get_table_color_source_options(sdata, table_name) for table_name in table_names
             }
             card = _LabelsCardWidget(
-                label_name=label_name,
+                labels_name=labels_name,
                 table_names=table_names,
                 table_color_sources_by_table=table_color_sources_by_table,
             )
             card.add_update_requested.connect(self._add_or_update_labels_layer)
             row = _DisclosureElementWidget(
-                title=label_name,
-                object_name=f"viewer_widget_labels_row_{label_name}",
-                toggle_object_name=f"viewer_widget_labels_row_toggle_{label_name}",
+                title=labels_name,
+                object_name=f"viewer_widget_labels_row_{labels_name}",
+                toggle_object_name=f"viewer_widget_labels_row_toggle_{labels_name}",
                 detail_widget=card,
-                expanded=label_name in self._expanded_label_names,
+                expanded=labels_name in self._expanded_labels_names,
             )
             row.expanded_changed.connect(
-                lambda expanded, *, name=label_name: self._on_labels_row_expanded(
+                lambda expanded, *, name=labels_name: self._on_labels_row_expanded(
                     name,
                     expanded,
                 )
@@ -1319,14 +1319,14 @@ class ViewerWidget(QWidget):
 
     def _on_labels_row_expanded(
         self,
-        label_name: str,
+        labels_name: str,
         expanded: bool,
     ) -> None:
         if expanded:
-            self._expanded_label_names.add(label_name)
+            self._expanded_labels_names.add(labels_name)
             return
 
-        self._expanded_label_names.discard(label_name)
+        self._expanded_labels_names.discard(labels_name)
 
     def _on_shapes_row_expanded(
         self,
@@ -1341,12 +1341,12 @@ class ViewerWidget(QWidget):
 
     def _add_or_update_labels_layer(self, request: LabelsLoadRequest) -> None:
         if request.selected_source_kind is None:
-            self._add_or_update_primary_labels_layer(request.label_name)
+            self._add_or_update_primary_labels_layer(request.labels_name)
             return
 
         self._add_or_update_styled_labels_layer(request)
 
-    def _add_or_update_primary_labels_layer(self, label_name: str) -> None:
+    def _add_or_update_primary_labels_layer(self, labels_name: str) -> None:
         sdata = self._app_state.sdata
         coordinate_system = self._app_state.coordinate_system
 
@@ -1359,19 +1359,19 @@ class ViewerWidget(QWidget):
             return
 
         try:
-            layer = self._app_state.viewer_adapter.ensure_labels_loaded(sdata, label_name, coordinate_system)
+            layer = self._app_state.viewer_adapter.ensure_labels_loaded(sdata, labels_name, coordinate_system)
         except ValueError as error:
             self._set_action_feedback(title="Labels Load Error", lines=[str(error)], kind="error")
             return
 
         self._app_state.viewer_adapter.activate_layer(layer)
-        display_name, was_shortened = format_feedback_identifier(label_name)
+        display_name, was_shortened = format_feedback_identifier(labels_name)
         self._set_action_feedback(
             title="Labels Loaded",
             lines=[f"Loaded labels `{display_name}` in coordinate system `{coordinate_system}`."],
             kind="success",
             tooltip_message=(
-                f"Loaded labels `{label_name}` in coordinate system `{coordinate_system}`." if was_shortened else None
+                f"Loaded labels `{labels_name}` in coordinate system `{coordinate_system}`." if was_shortened else None
             ),
         )
 
@@ -1390,7 +1390,7 @@ class ViewerWidget(QWidget):
         if request.table_name is None:
             self._set_action_feedback(
                 title="Colored Overlay Error",
-                lines=[f"Labels element `{request.label_name}` has no linked table for table-driven coloring."],
+                lines=[f"Labels element `{request.labels_name}` has no linked table for table-driven coloring."],
                 kind="error",
             )
             return
@@ -1402,7 +1402,7 @@ class ViewerWidget(QWidget):
                 title="Colored Overlay Error",
                 lines=[
                     f"Select {missing_source_article} {missing_source_label} "
-                    f"to create a colored overlay for `{request.label_name}`."
+                    f"to create a colored overlay for `{request.labels_name}`."
                 ],
                 kind="error",
             )
@@ -1411,7 +1411,7 @@ class ViewerWidget(QWidget):
         try:
             result = self._app_state.viewer_adapter.ensure_styled_labels_loaded(
                 sdata,
-                request.label_name,
+                request.labels_name,
                 coordinate_system,
                 request.selected_color_source,
             )
@@ -1427,7 +1427,7 @@ class ViewerWidget(QWidget):
             source_text = f'X[:, "{request.selected_color_source.value_key}"]'
 
         action_line = (
-            f"{action} colored overlay for {source_text} on labels element `{request.label_name}` "
+            f"{action} colored overlay for {source_text} on labels element `{request.labels_name}` "
             f"in coordinate system `{coordinate_system}`."
         )
         feedback_kind: StatusCardKind = "success"
@@ -1549,17 +1549,17 @@ class ViewerWidget(QWidget):
     def _update_section_empty_states(
         self,
         image_names: list[str],
-        label_names: list[str],
+        labels_names: list[str],
         shapes_names: list[str],
     ) -> None:
         self.images_group.set_count(len(image_names))
-        self.labels_group.set_count(len(label_names))
+        self.labels_group.set_count(len(labels_names))
         self.shapes_group.set_count(len(shapes_names))
         self.images_empty_label.setVisible(not image_names)
-        self.labels_empty_label.setVisible(not label_names)
+        self.labels_empty_label.setVisible(not labels_names)
         self.shapes_empty_label.setVisible(not shapes_names)
         self.images_section.setVisible(bool(image_names))
-        self.labels_section.setVisible(bool(label_names))
+        self.labels_section.setVisible(bool(labels_names))
         self.shapes_section.setVisible(bool(shapes_names))
 
     def _clear_cards(self) -> None:
@@ -1573,7 +1573,7 @@ class ViewerWidget(QWidget):
         self._labels_rows = []
         self._shape_rows = []
         self._expanded_image_names.clear()
-        self._expanded_label_names.clear()
+        self._expanded_labels_names.clear()
         self._expanded_shapes_names.clear()
 
     def _set_action_feedback(
@@ -1653,8 +1653,8 @@ def _create_form_label(text: str) -> QLabel:
 def _get_labels_in_coordinate_system(sdata: SpatialData, coordinate_system: str) -> list[str]:
     labels = getattr(sdata, "labels", {})
     return sorted(
-        label_name
-        for label_name, element in labels.items()
+        labels_name
+        for labels_name, element in labels.items()
         if coordinate_system in get_transformation(element, get_all=True).keys()
     )
 

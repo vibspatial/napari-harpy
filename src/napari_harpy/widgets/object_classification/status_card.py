@@ -13,7 +13,7 @@ _LabelsLayerPreparationKind = Literal["none", "loaded", "activated", "error"]
 @dataclass(frozen=True)
 class _LabelsLayerPreparationResult:
     kind: _LabelsLayerPreparationKind
-    label_name: str | None = None
+    labels_name: str | None = None
     coordinate_system: str | None = None
     error: str | None = None
 
@@ -208,11 +208,11 @@ def _labels_layer_preparation_lines(result: _LabelsLayerPreparationResult) -> tu
 
 
 def _format_labels_layer_preparation_line(result: _LabelsLayerPreparationResult) -> str | None:
-    if result.kind not in ("loaded", "activated") or result.label_name is None or result.coordinate_system is None:
+    if result.kind not in ("loaded", "activated") or result.labels_name is None or result.coordinate_system is None:
         return None
 
     verb = "Loaded" if result.kind == "loaded" else "Activated"
-    return f"{verb} labels element `{result.label_name}` in coordinate system `{result.coordinate_system}`."
+    return f"{verb} labels element `{result.labels_name}` in coordinate system `{result.coordinate_system}`."
 
 
 def _format_prediction_scope(summary: ClassifierPreparationSummary) -> str:

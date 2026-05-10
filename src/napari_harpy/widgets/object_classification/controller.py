@@ -135,7 +135,7 @@ class ClassifierJob:
 
     job_id: int
     feature_key: str
-    label_name: str
+    labels_name: str
     table_name: str
     predict_features: Any
     train_features: Any
@@ -157,7 +157,7 @@ class ClassifierJobResult:
 
     job_id: int
     feature_key: str
-    label_name: str
+    labels_name: str
     table_name: str
     pred_classes: np.ndarray
     pred_confidences: np.ndarray
@@ -193,7 +193,7 @@ def _fit_classifier_job(job: ClassifierJob) -> ClassifierJobResult:
     return ClassifierJobResult(
         job_id=job.job_id,
         feature_key=job.feature_key,
-        label_name=job.label_name,
+        labels_name=job.labels_name,
         table_name=job.table_name,
         pred_classes=pred_classes,
         pred_confidences=pred_confidences,
@@ -225,7 +225,7 @@ class ClassifierController:
         self._is_shutdown = False
 
         self._selected_spatialdata: SpatialData | None = None
-        self._selected_label_name: str | None = None
+        self._selected_labels_name: str | None = None
         self._selected_table_name: str | None = None
         self._selected_feature_key: str | None = None
         self._selected_training_scope: ClassifierScopeMode = DEFAULT_TRAINING_SCOPE
@@ -302,7 +302,7 @@ class ClassifierController:
     def bind(
         self,
         sdata: SpatialData | None,
-        label_name: str | None,
+        labels_name: str | None,
         table_name: str | None,
         feature_key: str | None,
         training_scope: ClassifierScopeMode = DEFAULT_TRAINING_SCOPE,
@@ -320,7 +320,7 @@ class ClassifierController:
         normalized_prediction_scope = _normalize_scope_mode(prediction_scope)
         context_changed = (
             sdata is not self._selected_spatialdata
-            or label_name != self._selected_label_name
+            or labels_name != self._selected_labels_name
             or table_name != self._selected_table_name
             or feature_key != self._selected_feature_key
             or normalized_training_scope != self._selected_training_scope
@@ -328,7 +328,7 @@ class ClassifierController:
         )
 
         self._selected_spatialdata = sdata
-        self._selected_label_name = label_name
+        self._selected_labels_name = labels_name
         self._selected_table_name = table_name
         self._selected_feature_key = feature_key
         self._selected_training_scope = normalized_training_scope
@@ -516,7 +516,7 @@ class ClassifierController:
     def _prepare_classifier_summary(self) -> ClassifierPreparationSummary | None:
         table = self._get_bound_table()
         metadata = self._selected_table_metadata
-        if table is None or metadata is None or self._selected_label_name is None or self._selected_table_name is None:
+        if table is None or metadata is None or self._selected_labels_name is None or self._selected_table_name is None:
             return None
 
         # Early error paths still need region/count context for status and
@@ -571,7 +571,7 @@ class ClassifierController:
                 prediction_scope=prediction_scope,
                 eligible=False,
                 reason=(
-                    f"No table rows for labels element `{self._selected_label_name}` were found in "
+                    f"No table rows for labels element `{self._selected_labels_name}` were found in "
                     f"`{self._selected_table_name}`."
                 ),
                 labeled_count=0,
@@ -668,7 +668,7 @@ class ClassifierController:
 
     def _prepare_classifier_job(self, job_id: int) -> ClassifierJob | None:
         table = self._get_bound_table()
-        if table is None or self._selected_label_name is None or self._selected_table_name is None:
+        if table is None or self._selected_labels_name is None or self._selected_table_name is None:
             self._set_status("Classifier: choose an annotation table and feature matrix.", kind="warning")
             return None
 
@@ -684,7 +684,7 @@ class ClassifierController:
             return ClassifierJob(
                 job_id=job_id,
                 feature_key=feature_key,
-                label_name=self._selected_label_name,
+                labels_name=self._selected_labels_name,
                 table_name=self._selected_table_name,
                 predict_features=empty_features,
                 train_features=empty_features,
@@ -714,7 +714,7 @@ class ClassifierController:
             return ClassifierJob(
                 job_id=job_id,
                 feature_key=feature_key,
-                label_name=self._selected_label_name,
+                labels_name=self._selected_labels_name,
                 table_name=self._selected_table_name,
                 predict_features=np.empty((0, 0), dtype=np.float64),
                 train_features=np.empty((0, 0), dtype=np.float64),
@@ -734,7 +734,7 @@ class ClassifierController:
             return ClassifierJob(
                 job_id=job_id,
                 feature_key=feature_key,
-                label_name=self._selected_label_name,
+                labels_name=self._selected_labels_name,
                 table_name=self._selected_table_name,
                 predict_features=np.empty((0, 0), dtype=np.float64),
                 train_features=np.empty((0, 0), dtype=np.float64),
@@ -752,7 +752,7 @@ class ClassifierController:
         return ClassifierJob(
             job_id=job_id,
             feature_key=feature_key,
-            label_name=self._selected_label_name,
+            labels_name=self._selected_labels_name,
             table_name=self._selected_table_name,
             predict_features=predict_features,
             train_features=train_features,
@@ -1113,8 +1113,8 @@ class ClassifierController:
             )
 
         config_prediction_regions = _normalize_prediction_regions(config.get("prediction_regions"))
-        if self._selected_label_name is not None and self._selected_label_name not in config_prediction_regions:
-            mismatches.append(f"loaded predictions do not cover labels element `{self._selected_label_name}`")
+        if self._selected_labels_name is not None and self._selected_labels_name not in config_prediction_regions:
+            mismatches.append(f"loaded predictions do not cover labels element `{self._selected_labels_name}`")
 
         if mismatches:
             self._is_dirty = True
@@ -1153,7 +1153,7 @@ class ClassifierController:
     ) -> ResolvedClassifierScopes:
         def resolve_one_scope(scope_mode: ClassifierScopeMode) -> ResolvedClassifierScope:
             if scope_mode == "selected_segmentation_only":
-                regions: tuple[str, ...] = () if self._selected_label_name is None else (self._selected_label_name,)
+                regions: tuple[str, ...] = () if self._selected_labels_name is None else (self._selected_labels_name,)
             elif scope_mode == "all":
                 regions = metadata.regions
             else:  # pragma: no cover - guarded by _normalize_scope_mode

@@ -199,7 +199,7 @@ def test_feature_extraction_controller_prepares_immutable_job_payload(sdata_blob
     assert isinstance(job, FeatureExtractionJob)
     assert job.job_id == 7
     assert job.sdata is sdata_blobs
-    assert job.label_name == "blobs_labels"
+    assert job.labels_name == "blobs_labels"
     assert job.image_name == "blobs_image"
     assert job.channels is None
     assert job.table_name == "table"
@@ -210,7 +210,7 @@ def test_feature_extraction_controller_prepares_immutable_job_payload(sdata_blob
     assert job.request.triplets == (
         FeatureExtractionTriplet(
             coordinate_system="global",
-            label_name="blobs_labels",
+            labels_name="blobs_labels",
             image_name="blobs_image",
             channels=None,
         ),
@@ -282,12 +282,12 @@ def test_feature_extraction_controller_bind_batch_is_ready_for_multi_target_requ
         (
             FeatureExtractionTriplet(
                 coordinate_system="global",
-                label_name="blobs_labels",
+                labels_name="blobs_labels",
                 image_name=None,
             ),
             FeatureExtractionTriplet(
                 coordinate_system="global",
-                label_name="blobs_multiscale_labels",
+                labels_name="blobs_multiscale_labels",
                 image_name=None,
             ),
         ),
@@ -309,7 +309,7 @@ def test_feature_extraction_controller_exposes_binding_state_snapshot(
     triplets = (
         FeatureExtractionTriplet(
             coordinate_system="global",
-            label_name="blobs_labels",
+            labels_name="blobs_labels",
             image_name="blobs_image",
             channels=("0", "2"),
         ),
@@ -343,13 +343,13 @@ def test_feature_extraction_controller_bind_batch_rejects_mixed_channel_selectio
         (
             FeatureExtractionTriplet(
                 coordinate_system="global",
-                label_name="blobs_labels",
+                labels_name="blobs_labels",
                 image_name="blobs_image",
                 channels=("0", "1"),
             ),
             FeatureExtractionTriplet(
                 coordinate_system="global",
-                label_name="blobs_multiscale_labels",
+                labels_name="blobs_multiscale_labels",
                 image_name="blobs_multiscale_image",
                 channels=("2",),
             ),
@@ -372,7 +372,7 @@ def test_feature_extraction_controller_notifies_table_state_change_on_success(sd
     deferred_worker = _DeferredWorker(
         FeatureExtractionResult(
             job_id=1,
-            label_name="blobs_labels",
+            labels_name="blobs_labels",
             table_name="table",
             feature_key="feature_matrix_1",
         )
@@ -415,7 +415,7 @@ def test_feature_extraction_controller_notifies_feature_matrix_written_on_succes
     deferred_worker = _DeferredWorker(
         FeatureExtractionResult(
             job_id=1,
-            label_name="blobs_labels",
+            labels_name="blobs_labels",
             table_name="table",
             feature_key="feature_matrix_1",
             change_kind="created",
@@ -459,7 +459,7 @@ def test_feature_extraction_controller_calculate_accepts_one_shot_overwrite_over
     deferred_worker = _DeferredWorker(
         FeatureExtractionResult(
             job_id=1,
-            label_name="blobs_labels",
+            labels_name="blobs_labels",
             table_name="table",
             feature_key="feature_matrix_1",
         )
@@ -496,7 +496,7 @@ def test_feature_extraction_controller_calculate_launches_job_with_selected_chan
     deferred_worker = _DeferredWorker(
         FeatureExtractionResult(
             job_id=1,
-            label_name="blobs_labels",
+            labels_name="blobs_labels",
             table_name="table",
             feature_key="feature_matrix_1",
         )
@@ -546,7 +546,7 @@ def test_run_feature_extraction_job_passes_channels_to_harpy(monkeypatch, sdata_
                 triplets=(
                     FeatureExtractionTriplet(
                         coordinate_system="global",
-                        label_name="blobs_labels",
+                        labels_name="blobs_labels",
                         image_name="blobs_image",
                         channels=("0", "2"),
                     ),
@@ -563,7 +563,7 @@ def test_run_feature_extraction_job_passes_channels_to_harpy(monkeypatch, sdata_
     assert captured_kwargs["feature_matrices_key"] == "feature_matrices"
     assert result == FeatureExtractionResult(
         job_id=4,
-        label_name="blobs_labels",
+        labels_name="blobs_labels",
         table_name="table",
         feature_key="feature_matrix_1",
     )
@@ -592,13 +592,13 @@ def test_run_feature_extraction_job_submits_multi_target_request_to_harpy(
                 triplets=(
                     FeatureExtractionTriplet(
                         coordinate_system="global",
-                        label_name="blobs_labels",
+                        labels_name="blobs_labels",
                         image_name="blobs_image",
                         channels=("0", "2"),
                     ),
                     FeatureExtractionTriplet(
                         coordinate_system="aligned",
-                        label_name="blobs_multiscale_labels",
+                        labels_name="blobs_multiscale_labels",
                         image_name="blobs_multiscale_image",
                         channels=("0", "2"),
                     ),
@@ -619,7 +619,7 @@ def test_run_feature_extraction_job_submits_multi_target_request_to_harpy(
     assert captured_kwargs["overwrite_feature_key"] is True
     assert result == FeatureExtractionResult(
         job_id=5,
-        label_name=None,
+        labels_name=None,
         table_name="table",
         feature_key="feature_matrix_batch",
         triplet_count=2,
@@ -658,12 +658,12 @@ def test_run_feature_extraction_job_fills_one_feature_matrix_for_multiple_region
                 triplets=(
                     FeatureExtractionTriplet(
                         coordinate_system="global",
-                        label_name="blobs_labels",
+                        labels_name="blobs_labels",
                         image_name=None,
                     ),
                     FeatureExtractionTriplet(
                         coordinate_system="global_1",
-                        label_name="blobs_labels_2",
+                        labels_name="blobs_labels_2",
                         image_name=None,
                     ),
                 ),
@@ -680,7 +680,7 @@ def test_run_feature_extraction_job_fills_one_feature_matrix_for_multiple_region
 
     assert result == FeatureExtractionResult(
         job_id=6,
-        label_name=None,
+        labels_name=None,
         table_name="table_multi",
         feature_key=feature_key,
         triplet_count=2,
@@ -724,7 +724,7 @@ def test_feature_extraction_controller_drops_stale_results_after_rebinding(sdata
     deferred_worker = _DeferredWorker(
         FeatureExtractionResult(
             job_id=1,
-            label_name="blobs_labels",
+            labels_name="blobs_labels",
             table_name="table",
             feature_key="feature_matrix_1",
         )

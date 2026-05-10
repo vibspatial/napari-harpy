@@ -244,7 +244,7 @@ widget state. The active table in `sdata[table_name]` is treated as the source o
 
 Harpy currently:
 
-filters the authoritative table by `region_key == selected_label_name`
+filters the authoritative table by `region_key == selected_labels_name`
 coerces and validates `instance_key`
 drops duplicate instance ids
 indexes rows by `instance_key`
