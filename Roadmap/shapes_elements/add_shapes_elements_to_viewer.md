@@ -140,14 +140,14 @@ Add a shapes option model in `core.spatialdata`:
 ```python
 @dataclass(frozen=True)
 class SpatialDataShapesOption:
-    shape_name: str
+    shapes_name: str
     display_name: str
     sdata: SpatialData
     coordinate_systems: tuple[str, ...]
 
     @property
     def identity(self) -> tuple[int, str]:
-        return (id(self.sdata), self.shape_name)
+        return (id(self.sdata), self.shapes_name)
 ```
 
 Add shape color source metadata. Keep it separate from
@@ -181,10 +181,10 @@ shape-column fields.
 
 Add helpers in `core.spatialdata`:
 
-- `_get_shape_names(sdata) -> list[str]`
-- `get_spatialdata_shape_options_from_sdata(sdata)`
-- `get_spatialdata_shape_options_for_coordinate_system_from_sdata(...)`
-- `get_shape_column_color_source_options(sdata, shape_name)`
+- `_get_shapes_names(sdata) -> list[str]`
+- `get_spatialdata_shapes_options_from_sdata(sdata)`
+- `get_spatialdata_shapes_options_for_coordinate_system_from_sdata(...)`
+- `get_shape_column_color_source_options(sdata, shapes_name)`
 
 Update:
 
@@ -193,7 +193,7 @@ Update:
 
 Column discovery rules:
 
-- inspect `sdata.shapes[shape_name]`;
+- inspect `sdata.shapes[shapes_name]`;
 - exclude the active geometry column;
 - treat columns named `<value_column>_colors` as optional companion color
   columns for categorical shape columns, not as ordinary color-by choices;
@@ -284,7 +284,7 @@ Recommended first implementation:
 - convert transformed geometry coordinates from `x, y` to napari `y, x`;
 - create the napari `Shapes` layer without an additional affine transform;
 - keep the transformed `GeoDataFrame` only as layer construction input, not as
-  a replacement for `sdata.shapes[shape_name]`.
+  a replacement for `sdata.shapes[shapes_name]`.
 
 This avoids subtle bugs from trying to apply an `x, y` affine matrix to
 napari data ordered as `y, x`.
@@ -377,7 +377,7 @@ only for tables that explicitly annotate the selected shapes element.
 
 Rules:
 
-- discover tables with `get_element_annotators(sdata, shape_name)`;
+- discover tables with `get_element_annotators(sdata, shapes_name)`;
 - validate `region_key`, `instance_key`, and duplicate instance ids within the
   shapes region;
 - align table values to shape rows through `instance_key` and the
@@ -422,9 +422,9 @@ Recommended concrete code touchpoints:
 
 - add `SpatialDataShapesOption` beside `SpatialDataLabelsOption` and
   `SpatialDataImageOption`;
-- add `_get_shape_names(sdata) -> list[str]`;
-- add `get_spatialdata_shape_options_from_sdata(sdata)`;
-- add `get_spatialdata_shape_options_for_coordinate_system_from_sdata(...)`;
+- add `_get_shapes_names(sdata) -> list[str]`;
+- add `get_spatialdata_shapes_options_from_sdata(sdata)`;
+- add `get_spatialdata_shapes_options_for_coordinate_system_from_sdata(...)`;
 - update `get_coordinate_system_names_from_sdata(...)` so shapes-only
   SpatialData objects expose selectable coordinate systems;
 - add `_get_shapes_in_coordinate_system(...)` in the viewer widget module, or

@@ -21,6 +21,8 @@ from napari_harpy.core.spatialdata import (
     get_spatialdata_image_options_for_coordinate_system_from_sdata,
     get_spatialdata_label_options_for_coordinate_system_from_sdata,
     get_spatialdata_label_options_from_sdata,
+    get_spatialdata_shapes_options_for_coordinate_system_from_sdata,
+    get_spatialdata_shapes_options_from_sdata,
     get_table,
     get_table_annotated_label_names,
     get_table_color_source_options,
@@ -53,9 +55,10 @@ def make_blobs_image_layer(sdata: SpatialData, image_name: str = "blobs_image") 
 
 
 class DummySpatialData:
-    def __init__(self, *, labels=None, images=None, tables=None) -> None:
+    def __init__(self, *, labels=None, images=None, shapes=None, tables=None) -> None:
         self.labels = {} if labels is None else labels
         self.images = {} if images is None else images
+        self.shapes = {} if shapes is None else shapes
         self._tables = {} if tables is None else tables
 
     def __getitem__(self, key: str):
@@ -116,7 +119,9 @@ def test_get_table_obs_color_source_options_classifies_supported_columns(sdata_b
     )
     table.obs["cat_id_obs"] = pd.Categorical([f"cell-{index:04d}" for index in range(n_obs)])
     table.obs["datetime_obs"] = pd.date_range("2024-01-01", periods=n_obs)
-    table.obs["object_obs"] = pd.Series([{"index": index} for index in range(n_obs)], index=table.obs.index, dtype="object")
+    table.obs["object_obs"] = pd.Series(
+        [{"index": index} for index in range(n_obs)], index=table.obs.index, dtype="object"
+    )
 
     options = get_table_obs_color_source_options(sdata_blobs, "table")
 
@@ -328,15 +333,40 @@ def test_get_spatialdata_label_options_from_sdata_returns_all_labels(sdata_blobs
     assert all(option.sdata is sdata_blobs for option in options)
 
 
+def test_get_spatialdata_shapes_options_from_sdata_returns_all_shapes(sdata_blobs: SpatialData) -> None:
+    options = get_spatialdata_shapes_options_from_sdata(sdata_blobs)
+
+    assert [option.shapes_name for option in options] == [
+        "blobs_circles",
+        "blobs_multipolygons",
+        "blobs_polygons",
+    ]
+    assert [option.display_name for option in options] == [
+        "blobs_circles",
+        "blobs_multipolygons",
+        "blobs_polygons",
+    ]
+    assert [option.coordinate_systems for option in options] == [
+        ("global",),
+        ("global",),
+        ("global",),
+    ]
+    assert all(option.sdata is sdata_blobs for option in options)
+
+
 def test_get_coordinate_system_names_from_sdata_returns_sorted_union(
     monkeypatch,
     sdata_blobs: SpatialData,
 ) -> None:
+    shapes_names = sorted(sdata_blobs.shapes.keys())
     transformation_by_id = {
         id(sdata_blobs.labels["blobs_labels"]): {"global": object(), "aligned": object()},
         id(sdata_blobs.labels["blobs_multiscale_labels"]): {"global": object()},
         id(sdata_blobs.images["blobs_image"]): {"global": object()},
         id(sdata_blobs.images["blobs_multiscale_image"]): {"local": object()},
+        id(sdata_blobs.shapes[shapes_names[0]]): {"shape_space": object()},
+        id(sdata_blobs.shapes[shapes_names[1]]): {"global": object()},
+        id(sdata_blobs.shapes[shapes_names[2]]): {"global": object()},
     }
 
     def _fake_get_transformation(element, get_all: bool = False):
@@ -345,7 +375,21 @@ def test_get_coordinate_system_names_from_sdata_returns_sorted_union(
 
     monkeypatch.setattr(spatialdata_module, "get_transformation", _fake_get_transformation)
 
-    assert get_coordinate_system_names_from_sdata(sdata_blobs) == ["aligned", "global", "local"]
+    assert get_coordinate_system_names_from_sdata(sdata_blobs) == ["aligned", "global", "local", "shape_space"]
+
+
+def test_get_coordinate_system_names_from_sdata_includes_shapes_only_data(monkeypatch) -> None:
+    shape_element = object()
+    fake_sdata = DummySpatialData(shapes={"cell_boundaries": shape_element})
+
+    def _fake_get_transformation(element, get_all: bool = False):
+        del get_all
+        assert element is shape_element
+        return {"shape_space": object()}
+
+    monkeypatch.setattr(spatialdata_module, "get_transformation", _fake_get_transformation)
+
+    assert get_coordinate_system_names_from_sdata(fake_sdata) == ["shape_space"]
 
 
 def test_get_image_channel_names_from_sdata_returns_channel_axis_names(sdata_blobs: SpatialData) -> None:
@@ -391,6 +435,30 @@ def test_get_spatialdata_label_options_for_coordinate_system_from_sdata_filters_
     )
 
     assert [option.label_name for option in options] == ["blobs_labels"]
+    assert options[0].coordinate_systems == ("aligned", "global")
+
+
+def test_get_spatialdata_shapes_options_for_coordinate_system_from_sdata_filters_shapes(monkeypatch) -> None:
+    global_shape = object()
+    local_shape = object()
+    fake_sdata = DummySpatialData(shapes={"global_shape": global_shape, "local_shape": local_shape})
+    transformation_by_id = {
+        id(global_shape): {"global": object(), "aligned": object()},
+        id(local_shape): {"local": object()},
+    }
+
+    def _fake_get_transformation(element, get_all: bool = False):
+        del get_all
+        return transformation_by_id[id(element)]
+
+    monkeypatch.setattr(spatialdata_module, "get_transformation", _fake_get_transformation)
+
+    options = get_spatialdata_shapes_options_for_coordinate_system_from_sdata(
+        sdata=fake_sdata,
+        coordinate_system="aligned",
+    )
+
+    assert [option.shapes_name for option in options] == ["global_shape"]
     assert options[0].coordinate_systems == ("aligned", "global")
 
 

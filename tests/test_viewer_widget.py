@@ -89,6 +89,7 @@ def test_viewer_widget_can_be_instantiated(qtbot) -> None:
     assert not widget.coordinate_system_combo.isEnabled()
     assert widget.image_cards == []
     assert widget.labels_cards == []
+    assert widget.shape_cards == []
 
 
 def test_elided_label_only_shows_tooltip_when_text_is_truncated(qtbot, monkeypatch) -> None:
@@ -187,8 +188,14 @@ def test_viewer_widget_refreshes_cards_when_shared_sdata_changes(qtbot, sdata_bl
     assert widget.coordinate_system_combo.itemText(0) == "global"
     assert len(widget.image_cards) == 2
     assert len(widget.labels_cards) == 2
+    assert len(widget.shape_cards) == 3
     assert [card.image_name for card in widget.image_cards] == ["blobs_image", "blobs_multiscale_image"]
     assert [card.label_name for card in widget.labels_cards] == ["blobs_labels", "blobs_multiscale_labels"]
+    assert [card.shapes_name for card in widget.shape_cards] == [
+        "blobs_circles",
+        "blobs_multipolygons",
+        "blobs_polygons",
+    ]
     assert widget.image_cards[0].channel_names == ["0", "1", "2"]
     assert widget.image_cards[0].stack_toggle.text() == "stack"
     assert widget.image_cards[0].stack_toggle.isChecked()
@@ -199,12 +206,20 @@ def test_viewer_widget_refreshes_cards_when_shared_sdata_changes(qtbot, sdata_bl
     assert "Cyan" in widget.image_cards[0].channel_color_buttons[0].toolTip()
     assert len(widget.image_rows) == 2
     assert len(widget.labels_rows) == 2
+    assert len(widget.shape_rows) == 3
     assert widget.images_section_toggle.text() == "Images (2)"
     assert widget.labels_section_toggle.text() == "Labels (2)"
+    assert widget.shapes_section_toggle.text() == "Shapes (3)"
     assert not widget.images_group.is_expanded()
     assert not widget.labels_group.is_expanded()
+    assert not widget.shapes_group.is_expanded()
     assert widget.image_rows[0].detail_widget.isHidden()
     assert widget.labels_rows[0].detail_widget.isHidden()
+    assert widget.shape_rows[0].detail_widget.isHidden()
+    assert widget.shape_cards[0].action_status_label.text() == (
+        "Action: shapes layer loading will be available in the next slice"
+    )
+    assert not widget.shape_cards[0].add_update_button.isEnabled()
     assert widget.labels_cards[0].linked_table_combo.count() == 1
     assert widget.labels_cards[0].linked_table_combo.itemText(0) == "table"
     assert widget.labels_cards[0].linked_table_combo.sizeAdjustPolicy() == (
@@ -228,11 +243,14 @@ def test_viewer_widget_progressive_disclosure_expands_sections_and_elements(qtbo
     first_image_row = widget.image_rows[0]
     second_image_row = widget.image_rows[1]
     first_labels_row = widget.labels_rows[0]
+    first_shape_row = widget.shape_rows[0]
 
     assert widget.images_group.content_widget.isHidden()
     assert widget.labels_group.content_widget.isHidden()
+    assert widget.shapes_group.content_widget.isHidden()
     assert first_image_row.detail_widget.isHidden()
     assert first_labels_row.detail_widget.isHidden()
+    assert first_shape_row.detail_widget.isHidden()
     assert widget.images_section_toggle.arrowType() == Qt.ArrowType.NoArrow
     assert not widget.images_section_toggle.icon().isNull()
 
@@ -263,6 +281,14 @@ def test_viewer_widget_progressive_disclosure_expands_sections_and_elements(qtbo
     assert not first_labels_row.detail_widget.isHidden()
     assert widget.labels_cards[0].linked_table_combo.currentText() == "table"
 
+    widget.shapes_section_toggle.click()
+    first_shape_row.toggle_button.click()
+
+    assert widget.shapes_group.is_expanded()
+    assert first_shape_row.is_expanded()
+    assert not first_shape_row.detail_widget.isHidden()
+    assert not widget.shape_cards[0].add_update_button.isEnabled()
+
 
 def test_viewer_widget_progressive_disclosure_actions_still_load_layers(qtbot, sdata_blobs) -> None:
     viewer = DummyViewer()
@@ -286,6 +312,56 @@ def test_viewer_widget_progressive_disclosure_actions_still_load_layers(qtbot, s
 
     assert len(viewer.layers) == 2
     assert viewer.layers[1].name == "blobs_labels"
+
+    widget.shapes_section_toggle.click()
+    widget.shape_rows[0].toggle_button.click()
+    widget.shape_cards[0].add_update_button.click()
+
+    assert len(viewer.layers) == 2
+
+
+def test_viewer_widget_shapes_empty_state_appears_when_no_shapes(qtbot, monkeypatch) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    fake_sdata = object()
+
+    qtbot.addWidget(widget)
+
+    _patch_coordinate_system_names(monkeypatch, ["global"])
+    monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(viewer_widget_module, "_get_shapes_in_coordinate_system", lambda sdata, coordinate_system: [])
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(fake_sdata)
+
+    assert widget.shapes_section_toggle.text() == "Shapes (0)"
+    assert not widget.shapes_empty_label.isHidden()
+    assert widget.shapes_section.isHidden()
+    assert widget.shape_cards == []
+    assert widget.shape_rows == []
+
+
+def test_viewer_widget_preserves_expanded_shape_rows_across_refreshes(qtbot, sdata_blobs) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata_blobs)
+
+    widget.shapes_section_toggle.click()
+    widget.shape_rows[0].toggle_button.click()
+    expanded_shapes_name = widget.shape_cards[0].shapes_name
+
+    widget.refresh_from_sdata(sdata_blobs)
+
+    refreshed_row = widget.shape_rows[0]
+    refreshed_card = widget.shape_cards[0]
+    assert refreshed_card.shapes_name == expanded_shapes_name
+    assert refreshed_row.is_expanded()
+    assert not refreshed_row.detail_widget.isHidden()
 
 
 def test_viewer_widget_labels_cards_expose_table_driven_coloring_controls(qtbot, sdata_blobs) -> None:
@@ -337,15 +413,27 @@ def test_viewer_widget_labels_card_repopulates_color_sources_when_linked_table_c
 
     _patch_coordinate_system_names(monkeypatch, ["global"])
     monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: [])
-    monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: ["labels"])
-    monkeypatch.setattr(viewer_widget_module, "get_annotating_table_names", lambda sdata, label_name: ["table_a", "table_b"])
+    monkeypatch.setattr(
+        viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: ["labels"]
+    )
+    monkeypatch.setattr(
+        viewer_widget_module, "get_annotating_table_names", lambda sdata, label_name: ["table_a", "table_b"]
+    )
     monkeypatch.setattr(
         viewer_widget_module,
         "get_table_color_source_options",
         lambda sdata, table_name: (
-            [TableColorSourceSpec(table_name=table_name, source_kind="obs_column", value_key="cell_type", value_kind="categorical")]
+            [
+                TableColorSourceSpec(
+                    table_name=table_name, source_kind="obs_column", value_key="cell_type", value_kind="categorical"
+                )
+            ]
             if table_name == "table_a"
-            else [TableColorSourceSpec(table_name=table_name, source_kind="x_var", value_key="GeneA", value_kind="continuous")]
+            else [
+                TableColorSourceSpec(
+                    table_name=table_name, source_kind="x_var", value_key="GeneA", value_kind="continuous"
+                )
+            ]
         ),
     )
 
@@ -356,9 +444,7 @@ def test_viewer_widget_labels_card_repopulates_color_sources_when_linked_table_c
 
     card.color_source_kind_combo.setCurrentIndex(1)
     assert card.color_source_value_input.isEnabled()
-    assert card.color_source_value_input.completer().model().stringList() == [
-        "cell_type"
-    ]
+    assert card.color_source_value_input.completer().model().stringList() == ["cell_type"]
     assert card.action_status_label.text() == 'Action: add/update colored overlay for obs["cell_type"]'
 
     card.linked_table_combo.setCurrentIndex(1)
@@ -367,9 +453,7 @@ def test_viewer_widget_labels_card_repopulates_color_sources_when_linked_table_c
 
     card.color_source_kind_combo.setCurrentIndex(2)
     assert card.color_source_value_input.isEnabled()
-    assert card.color_source_value_input.completer().model().stringList() == [
-        "GeneA"
-    ]
+    assert card.color_source_value_input.completer().model().stringList() == ["GeneA"]
     assert card.action_status_label.text() == 'Action: add/update colored overlay for X[:, "GeneA"]'
 
 
@@ -415,8 +499,12 @@ def test_viewer_widget_overlay_channel_panel_scrolls_when_many_channels(qtbot, m
 
     _patch_coordinate_system_names(monkeypatch, ["global"])
     monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
-    monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: ["image"])
-    monkeypatch.setattr(viewer_widget_module, "get_image_channel_names_from_sdata", lambda sdata, image_name: many_channels)
+    monkeypatch.setattr(
+        viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: ["image"]
+    )
+    monkeypatch.setattr(
+        viewer_widget_module, "get_image_channel_names_from_sdata", lambda sdata, image_name: many_channels
+    )
 
     with qtbot.waitSignal(widget.app_state.sdata_changed):
         widget.app_state.set_sdata(fake_sdata)
@@ -438,7 +526,9 @@ def test_viewer_widget_surfaces_duplicate_channel_names_and_disables_overlay(qtb
 
     _patch_coordinate_system_names(monkeypatch, ["global"])
     monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
-    monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: ["image"])
+    monkeypatch.setattr(
+        viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: ["image"]
+    )
     monkeypatch.setattr(
         viewer_widget_module,
         "get_image_channel_names_from_sdata",
@@ -483,7 +573,14 @@ def test_viewer_widget_filters_cards_by_selected_coordinate_system(qtbot, monkey
         "_get_images_in_coordinate_system",
         lambda sdata, coordinate_system: ["image_global"] if coordinate_system == "global" else ["image_local"],
     )
-    monkeypatch.setattr(viewer_widget_module, "get_image_channel_names_from_sdata", lambda sdata, image_name: ["c0", "c1"])
+    monkeypatch.setattr(
+        viewer_widget_module,
+        "_get_shapes_in_coordinate_system",
+        lambda sdata, coordinate_system: ["shape_global"] if coordinate_system == "global" else ["shape_local"],
+    )
+    monkeypatch.setattr(
+        viewer_widget_module, "get_image_channel_names_from_sdata", lambda sdata, image_name: ["c0", "c1"]
+    )
     monkeypatch.setattr(
         viewer_widget_module,
         "get_annotating_table_names",
@@ -502,6 +599,7 @@ def test_viewer_widget_filters_cards_by_selected_coordinate_system(qtbot, monkey
     assert widget.app_state.coordinate_system == "global"
     assert [card.image_name for card in widget.image_cards] == ["image_global"]
     assert [card.label_name for card in widget.labels_cards] == ["labels_global"]
+    assert [card.shapes_name for card in widget.shape_cards] == ["shape_global"]
 
     with qtbot.waitSignal(widget.app_state.coordinate_system_changed) as blocker:
         widget.coordinate_system_combo.setCurrentIndex(1)
@@ -512,6 +610,7 @@ def test_viewer_widget_filters_cards_by_selected_coordinate_system(qtbot, monkey
     assert widget.app_state.coordinate_system == "local"
     assert [card.image_name for card in widget.image_cards] == ["image_local"]
     assert [card.label_name for card in widget.labels_cards] == ["labels_local"]
+    assert [card.shapes_name for card in widget.shape_cards] == ["shape_local"]
 
 
 def test_viewer_widget_refreshes_from_shared_coordinate_system_changes(qtbot, monkeypatch) -> None:
@@ -532,7 +631,14 @@ def test_viewer_widget_refreshes_from_shared_coordinate_system_changes(qtbot, mo
         "_get_images_in_coordinate_system",
         lambda sdata, coordinate_system: ["image_global"] if coordinate_system == "global" else ["image_local"],
     )
-    monkeypatch.setattr(viewer_widget_module, "get_image_channel_names_from_sdata", lambda sdata, image_name: ["c0", "c1"])
+    monkeypatch.setattr(
+        viewer_widget_module,
+        "_get_shapes_in_coordinate_system",
+        lambda sdata, coordinate_system: ["shape_global"] if coordinate_system == "global" else ["shape_local"],
+    )
+    monkeypatch.setattr(
+        viewer_widget_module, "get_image_channel_names_from_sdata", lambda sdata, image_name: ["c0", "c1"]
+    )
     monkeypatch.setattr(
         viewer_widget_module,
         "get_annotating_table_names",
@@ -549,6 +655,7 @@ def test_viewer_widget_refreshes_from_shared_coordinate_system_changes(qtbot, mo
     assert widget.coordinate_system_combo.currentText() == "local"
     assert [card.image_name for card in widget.image_cards] == ["image_local"]
     assert [card.label_name for card in widget.labels_cards] == ["labels_local"]
+    assert [card.shapes_name for card in widget.shape_cards] == ["shape_local"]
 
 
 def test_viewer_widget_coordinate_system_switch_prunes_old_harpy_layers(qtbot, monkeypatch) -> None:
@@ -734,7 +841,7 @@ def test_viewer_widget_add_update_labels_creates_and_updates_styled_overlay(qtbo
     assert binding is not None
     assert binding.labels_role == "styled"
     _assert_action_feedback_card(widget, title="Colored Overlay Created", kind="success")
-    assert "Created colored overlay for obs[\"cell_type\"]" in widget.action_feedback_label.text()
+    assert 'Created colored overlay for obs["cell_type"]' in widget.action_feedback_label.text()
     assert "stored categorical palette" in widget.action_feedback_label.text()
 
     first_card.add_update_button.click()
@@ -742,7 +849,7 @@ def test_viewer_widget_add_update_labels_creates_and_updates_styled_overlay(qtbo
     assert len(viewer.layers) == 1
     assert viewer.layers[0] is layer
     _assert_action_feedback_card(widget, title="Colored Overlay Updated", kind="success")
-    assert "Updated colored overlay for obs[\"cell_type\"]" in widget.action_feedback_label.text()
+    assert 'Updated colored overlay for obs["cell_type"]' in widget.action_feedback_label.text()
 
 
 def test_viewer_widget_styled_overlay_missing_palette_uses_info_card(qtbot, sdata_blobs) -> None:
@@ -817,9 +924,7 @@ def test_viewer_widget_styled_overlay_string_coercion_uses_warning_card(qtbot, s
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)
     table = sdata_blobs["table"]
-    table.obs["sample_type"] = [
-        "odd" if instance_id % 2 else "even" for instance_id in table.obs["instance_id"]
-    ]
+    table.obs["sample_type"] = ["odd" if instance_id % 2 else "even" for instance_id in table.obs["instance_id"]]
 
     qtbot.addWidget(widget)
 
@@ -911,7 +1016,9 @@ def test_viewer_widget_add_update_image_overlay_passes_selected_channels_and_col
 
     _patch_coordinate_system_names(monkeypatch, ["global"])
     monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
-    monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: ["image"])
+    monkeypatch.setattr(
+        viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: ["image"]
+    )
     monkeypatch.setattr(
         viewer_widget_module,
         "get_image_channel_names_from_sdata",
@@ -1021,7 +1128,9 @@ def test_viewer_widget_add_update_image_uses_selected_coordinate_system(qtbot, m
         "_get_images_in_coordinate_system",
         lambda sdata, coordinate_system: ["image_global"] if coordinate_system == "global" else ["image_local"],
     )
-    monkeypatch.setattr(viewer_widget_module, "get_image_channel_names_from_sdata", lambda sdata, image_name: ["c0", "c1"])
+    monkeypatch.setattr(
+        viewer_widget_module, "get_image_channel_names_from_sdata", lambda sdata, image_name: ["c0", "c1"]
+    )
     monkeypatch.setattr(
         widget.app_state.viewer_adapter,
         "ensure_image_loaded",

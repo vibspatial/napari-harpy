@@ -33,6 +33,7 @@ from napari_harpy.core.spatialdata import (
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
     get_image_channel_names_from_sdata,
+    get_spatialdata_shapes_options_for_coordinate_system_from_sdata,
     get_table_color_source_options,
 )
 from napari_harpy.core.table_color_source import ColorSourceKind, TableColorSourceSpec
@@ -883,6 +884,43 @@ class _ImageCardWidget(QFrame):
         self.channel_scroll_area.setMaximumHeight(visible_height)
 
 
+class _ShapesCardWidget(QFrame):
+    """Card UI shell for one shapes element in the selected coordinate system."""
+
+    def __init__(self, *, shapes_name: str) -> None:
+        super().__init__()
+        self.shapes_name = shapes_name
+        self.setObjectName(f"viewer_widget_shapes_card_{shapes_name}")
+        self.setProperty("harpyViewerDetailPanel", True)
+        self.setStyleSheet(_DETAIL_PANEL_STYLESHEET)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        self.title_label = _ElidedLabel(shapes_name, self)
+        self.title_label.setObjectName(f"viewer_widget_shapes_card_title_{shapes_name}")
+        self.title_label.setStyleSheet(_CARD_TITLE_STYLESHEET)
+        self.title_label.hide()
+
+        self.action_status_label = QLabel("Action: shapes layer loading will be available in the next slice")
+        self.action_status_label.setObjectName(f"viewer_widget_shapes_action_status_{shapes_name}")
+        self.action_status_label.setWordWrap(True)
+        self.action_status_label.setStyleSheet(_SUMMARY_LABEL_STYLESHEET)
+
+        self.add_update_button = QPushButton("Add / Update in viewer")
+        self.add_update_button.setObjectName(f"viewer_widget_add_update_shapes_button_{shapes_name}")
+        self.add_update_button.setMinimumHeight(28)
+        self.add_update_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
+        self.add_update_button.setEnabled(False)
+        self.add_update_button.setToolTip(
+            format_tooltip("Shapes loading is intentionally disabled until Slice 2 implements napari layer creation.")
+        )
+
+        layout.addWidget(self.action_status_label)
+        layout.addWidget(self.add_update_button)
+
+
 class ViewerWidget(QWidget):
     """Shared viewer widget backed by `HarpyAppState` and `ViewerAdapter`."""
 
@@ -895,10 +933,13 @@ class ViewerWidget(QWidget):
         self._app_state = get_or_create_app_state(napari_viewer)
         self._labels_cards: list[_LabelsCardWidget] = []
         self._image_cards: list[_ImageCardWidget] = []
+        self._shape_cards: list[_ShapesCardWidget] = []
         self._labels_rows: list[_DisclosureElementWidget] = []
         self._image_rows: list[_DisclosureElementWidget] = []
+        self._shape_rows: list[_DisclosureElementWidget] = []
         self._expanded_label_names: set[str] = set()
         self._expanded_image_names: set[str] = set()
+        self._expanded_shapes_names: set[str] = set()
         self._logo_path = Path(__file__).resolve().parents[4] / "docs" / "_static" / "logo.png"
 
         root_layout = QVBoxLayout(self)
@@ -1003,6 +1044,27 @@ class ViewerWidget(QWidget):
         self.labels_section_toggle = self.labels_group.toggle_button
         self.labels_section_title = self.labels_section_toggle
 
+        self.shapes_empty_label = QLabel("No shapes available in the selected coordinate system.")
+        self.shapes_empty_label.setObjectName("viewer_widget_shapes_empty_state")
+        self.shapes_empty_label.setWordWrap(True)
+        self.shapes_empty_label.setStyleSheet(_EMPTY_STATE_STYLESHEET)
+
+        self.shapes_section = QWidget()
+        self.shapes_section.setObjectName("viewer_widget_shapes_section")
+        self.shapes_section_layout = QVBoxLayout(self.shapes_section)
+        self.shapes_section_layout.setContentsMargins(0, 0, 0, 0)
+        self.shapes_section_layout.setSpacing(8)
+        self.shapes_group = _CollapsibleSectionWidget(
+            title="Shapes",
+            object_name="viewer_widget_shapes_group",
+            toggle_object_name="viewer_widget_shapes_section_toggle",
+            expanded=False,
+        )
+        self.shapes_group.content_layout.addWidget(self.shapes_empty_label)
+        self.shapes_group.content_layout.addWidget(self.shapes_section)
+        self.shapes_section_toggle = self.shapes_group.toggle_button
+        self.shapes_section_title = self.shapes_section_toggle
+
         self.content_layout.addWidget(header_logo)
         self.content_layout.addWidget(title)
         self.content_layout.addWidget(self.open_sdata_button)
@@ -1012,6 +1074,7 @@ class ViewerWidget(QWidget):
         self.content_layout.addWidget(self.action_feedback_label)
         self.content_layout.addWidget(self.images_group)
         self.content_layout.addWidget(self.labels_group)
+        self.content_layout.addWidget(self.shapes_group)
         self.content_layout.addStretch(1)
 
         self.scroll_area.setWidget(self.scroll_content)
@@ -1037,6 +1100,11 @@ class ViewerWidget(QWidget):
         return list(self._image_cards)
 
     @property
+    def shape_cards(self) -> list[_ShapesCardWidget]:
+        """Return the currently visible shapes cards."""
+        return list(self._shape_cards)
+
+    @property
     def image_rows(self) -> list[_DisclosureElementWidget]:
         """Return the currently visible compact image rows."""
         return list(self._image_rows)
@@ -1045,6 +1113,11 @@ class ViewerWidget(QWidget):
     def labels_rows(self) -> list[_DisclosureElementWidget]:
         """Return the currently visible compact labels rows."""
         return list(self._labels_rows)
+
+    @property
+    def shape_rows(self) -> list[_DisclosureElementWidget]:
+        """Return the currently visible compact shapes rows."""
+        return list(self._shape_rows)
 
     def _on_sdata_changed(self, sdata: SpatialData | None) -> None:
         """Refresh the widget when the shared loaded `SpatialData` changes."""
@@ -1098,7 +1171,7 @@ class ViewerWidget(QWidget):
                 self.summary_label.setText("No SpatialData loaded.")
                 self.coordinate_system_combo.setEnabled(False)
                 self._clear_cards()
-                self._update_section_empty_states([], [])
+                self._update_section_empty_states([], [], [])
                 return
 
             coordinate_systems = get_coordinate_system_names_from_sdata(sdata)
@@ -1117,7 +1190,7 @@ class ViewerWidget(QWidget):
 
         if sdata is None or not coordinate_system:
             self._clear_cards()
-            self._update_section_empty_states([], [])
+            self._update_section_empty_states([], [], [])
             if sdata is None:
                 self.summary_label.setText("No SpatialData loaded.")
             else:
@@ -1126,14 +1199,17 @@ class ViewerWidget(QWidget):
 
         label_names = _get_labels_in_coordinate_system(sdata, coordinate_system)
         image_names = _get_images_in_coordinate_system(sdata, coordinate_system)
+        shapes_names = _get_shapes_in_coordinate_system(sdata, coordinate_system)
 
         self.summary_label.setText(
             f"In coordinate system `{coordinate_system}`: "
-            f"{len(image_names)} image element(s) and {len(label_names)} labels element(s)."
+            f"{len(image_names)} image element(s), {len(label_names)} labels element(s), "
+            f"and {len(shapes_names)} shapes element(s)."
         )
         self._rebuild_image_cards(sdata, image_names)
         self._rebuild_labels_cards(sdata, label_names)
-        self._update_section_empty_states(image_names, label_names)
+        self._rebuild_shapes_cards(shapes_names)
+        self._update_section_empty_states(image_names, label_names, shapes_names)
 
     def _rebuild_image_cards(self, sdata: SpatialData, image_names: list[str]) -> None:
         _clear_layout(self.images_section_layout)
@@ -1205,6 +1281,31 @@ class ViewerWidget(QWidget):
             self._labels_cards.append(card)
             self._labels_rows.append(row)
 
+    def _rebuild_shapes_cards(self, shapes_names: list[str]) -> None:
+        _clear_layout(self.shapes_section_layout)
+        self._shape_cards = []
+        self._shape_rows = []
+        self._expanded_shapes_names.intersection_update(shapes_names)
+
+        for shapes_name in shapes_names:
+            card = _ShapesCardWidget(shapes_name=shapes_name)
+            row = _DisclosureElementWidget(
+                title=shapes_name,
+                object_name=f"viewer_widget_shapes_row_{shapes_name}",
+                toggle_object_name=f"viewer_widget_shapes_row_toggle_{shapes_name}",
+                detail_widget=card,
+                expanded=shapes_name in self._expanded_shapes_names,
+            )
+            row.expanded_changed.connect(
+                lambda expanded, *, name=shapes_name: self._on_shapes_row_expanded(
+                    name,
+                    expanded,
+                )
+            )
+            self.shapes_section_layout.addWidget(row)
+            self._shape_cards.append(card)
+            self._shape_rows.append(row)
+
     def _on_image_row_expanded(
         self,
         image_name: str,
@@ -1226,6 +1327,17 @@ class ViewerWidget(QWidget):
             return
 
         self._expanded_label_names.discard(label_name)
+
+    def _on_shapes_row_expanded(
+        self,
+        shapes_name: str,
+        expanded: bool,
+    ) -> None:
+        if expanded:
+            self._expanded_shapes_names.add(shapes_name)
+            return
+
+        self._expanded_shapes_names.discard(shapes_name)
 
     def _add_or_update_labels_layer(self, request: LabelsLoadRequest) -> None:
         if request.selected_source_kind is None:
@@ -1259,9 +1371,7 @@ class ViewerWidget(QWidget):
             lines=[f"Loaded labels `{display_name}` in coordinate system `{coordinate_system}`."],
             kind="success",
             tooltip_message=(
-                f"Loaded labels `{label_name}` in coordinate system `{coordinate_system}`."
-                if was_shortened
-                else None
+                f"Loaded labels `{label_name}` in coordinate system `{coordinate_system}`." if was_shortened else None
             ),
         )
 
@@ -1436,23 +1546,35 @@ class ViewerWidget(QWidget):
             ),
         )
 
-    def _update_section_empty_states(self, image_names: list[str], label_names: list[str]) -> None:
+    def _update_section_empty_states(
+        self,
+        image_names: list[str],
+        label_names: list[str],
+        shapes_names: list[str],
+    ) -> None:
         self.images_group.set_count(len(image_names))
         self.labels_group.set_count(len(label_names))
+        self.shapes_group.set_count(len(shapes_names))
         self.images_empty_label.setVisible(not image_names)
         self.labels_empty_label.setVisible(not label_names)
+        self.shapes_empty_label.setVisible(not shapes_names)
         self.images_section.setVisible(bool(image_names))
         self.labels_section.setVisible(bool(label_names))
+        self.shapes_section.setVisible(bool(shapes_names))
 
     def _clear_cards(self) -> None:
         _clear_layout(self.images_section_layout)
         _clear_layout(self.labels_section_layout)
+        _clear_layout(self.shapes_section_layout)
         self._image_cards = []
         self._labels_cards = []
+        self._shape_cards = []
         self._image_rows = []
         self._labels_rows = []
+        self._shape_rows = []
         self._expanded_image_names.clear()
         self._expanded_label_names.clear()
+        self._expanded_shapes_names.clear()
 
     def _set_action_feedback(
         self,
@@ -1544,3 +1666,13 @@ def _get_images_in_coordinate_system(sdata: SpatialData, coordinate_system: str)
         for image_name, element in images.items()
         if coordinate_system in get_transformation(element, get_all=True).keys()
     )
+
+
+def _get_shapes_in_coordinate_system(sdata: SpatialData, coordinate_system: str) -> list[str]:
+    return [
+        option.shapes_name
+        for option in get_spatialdata_shapes_options_for_coordinate_system_from_sdata(
+            sdata=sdata,
+            coordinate_system=coordinate_system,
+        )
+    ]

@@ -59,6 +59,21 @@ class SpatialDataImageOption:
 
 
 @dataclass(frozen=True)
+class SpatialDataShapesOption:
+    """A selectable shapes element discovered from a loaded SpatialData object."""
+
+    shapes_name: str
+    display_name: str
+    sdata: SpatialData
+    coordinate_systems: tuple[str, ...]
+
+    @property
+    def identity(self) -> tuple[int, str]:
+        """Return a stable identity for preserving widget selection across refreshes."""
+        return (id(self.sdata), self.shapes_name)
+
+
+@dataclass(frozen=True)
 class SpatialDataFeatureExtractionLabelDiscovery:
     """Feature-extraction label discovery summary for one coordinate system."""
 
@@ -175,7 +190,9 @@ def validate_table_region_instance_ids(
     table = get_table(sdata, table_name)
     table_metadata = get_table_metadata(sdata, table_name)
     if table_metadata.region_key not in table.obs.columns:
-        raise ValueError(f"Table `{table_metadata.table_name}` is missing required obs column `{table_metadata.region_key}`.")
+        raise ValueError(
+            f"Table `{table_metadata.table_name}` is missing required obs column `{table_metadata.region_key}`."
+        )
 
     if table_metadata.instance_key not in table.obs.columns:
         raise ValueError(
@@ -207,7 +224,9 @@ def validate_table_binding(sdata: SpatialData, label_name: str, table_name: str)
     table = get_table(sdata, table_name)
     table_metadata = validate_table_annotation_coverage(sdata, table_name, [label_name])
     if table_metadata.region_key not in table.obs.columns:
-        raise ValueError(f"Table `{table_metadata.table_name}` is missing required obs column `{table_metadata.region_key}`.")
+        raise ValueError(
+            f"Table `{table_metadata.table_name}` is missing required obs column `{table_metadata.region_key}`."
+        )
 
     if table_metadata.instance_key not in table.obs.columns:
         raise ValueError(
@@ -295,8 +314,21 @@ def get_spatialdata_label_options_from_sdata(sdata: SpatialData) -> list[Spatial
     ]
 
 
+def get_spatialdata_shapes_options_from_sdata(sdata: SpatialData) -> list[SpatialDataShapesOption]:
+    """Return selectable shapes elements directly from a loaded SpatialData object."""
+    return [
+        SpatialDataShapesOption(
+            shapes_name=shapes_name,
+            display_name=shapes_name,
+            sdata=sdata,
+            coordinate_systems=_get_element_coordinate_systems(sdata.shapes[shapes_name]),
+        )
+        for shapes_name in _get_shapes_names(sdata)
+    ]
+
+
 def get_coordinate_system_names_from_sdata(sdata: SpatialData) -> list[str]:
-    """Return all coordinate-system names exposed by labels and images in a loaded `SpatialData`."""
+    """Return all coordinate-system names exposed by spatial elements in a loaded `SpatialData`."""
     coordinate_systems: set[str] = set()
 
     for label_name in _get_label_names(sdata):
@@ -304,6 +336,9 @@ def get_coordinate_system_names_from_sdata(sdata: SpatialData) -> list[str]:
 
     for image_name in _get_image_names(sdata):
         coordinate_systems.update(_get_element_coordinate_systems(sdata.images[image_name]))
+
+    for shapes_name in _get_shapes_names(sdata):
+        coordinate_systems.update(_get_element_coordinate_systems(sdata.shapes[shapes_name]))
 
     return sorted(coordinate_systems)
 
@@ -363,6 +398,7 @@ def get_spatialdata_label_options_for_coordinate_system_from_sdata(
         if coordinate_system in _get_element_coordinate_systems(sdata.labels[label_name])
     ]
 
+
 def get_spatialdata_feature_extraction_label_discovery_for_coordinate_system_from_sdata(
     *,
     sdata: SpatialData,
@@ -410,6 +446,25 @@ def get_spatialdata_image_options_for_coordinate_system_from_sdata(
         if coordinate_system in _get_element_coordinate_systems(sdata.images[image_name])
     ]
 
+
+def get_spatialdata_shapes_options_for_coordinate_system_from_sdata(
+    *,
+    sdata: SpatialData,
+    coordinate_system: str,
+) -> list[SpatialDataShapesOption]:
+    """Return shapes options restricted to a selected coordinate system."""
+    return [
+        SpatialDataShapesOption(
+            shapes_name=shapes_name,
+            display_name=shapes_name,
+            sdata=sdata,
+            coordinate_systems=_get_element_coordinate_systems(sdata.shapes[shapes_name]),
+        )
+        for shapes_name in _get_shapes_names(sdata)
+        if coordinate_system in _get_element_coordinate_systems(sdata.shapes[shapes_name])
+    ]
+
+
 def get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata(
     *,
     sdata: SpatialData,
@@ -423,9 +478,7 @@ def get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and
 
     label_element = sdata.labels[label_name]
     if coordinate_system not in _get_element_coordinate_systems(label_element):
-        raise ValueError(
-            f"Labels element `{label_name}` is not available in coordinate system `{coordinate_system}`."
-        )
+        raise ValueError(f"Labels element `{label_name}` is not available in coordinate system `{coordinate_system}`.")
 
     label_shape = _get_spatial_shape(label_element)
     label_affine = _get_feature_extraction_affine_matrix(label_element, coordinate_system)
@@ -693,6 +746,11 @@ def _get_image_names(sdata: SpatialData) -> list[str]:
     return sorted(images.keys())
 
 
+def _get_shapes_names(sdata: SpatialData) -> list[str]:
+    shapes = getattr(sdata, "shapes", {})
+    return sorted(shapes.keys())
+
+
 def _normalize_requested_label_names(label_names: Sequence[str]) -> list[str]:
     return sorted({str(label_name) for label_name in label_names})
 
@@ -756,11 +814,7 @@ def _get_spatial_shape(element: Any) -> tuple[int, ...]:
     if shape is None:
         return ()
 
-    size_by_axis = {
-        axis: int(size)
-        for axis, size in zip(axes, shape, strict=False)
-        if axis in {"z", "y", "x"}
-    }
+    size_by_axis = {axis: int(size) for axis, size in zip(axes, shape, strict=False) if axis in {"z", "y", "x"}}
     return tuple(size_by_axis[axis] for axis in ("z", "y", "x") if axis in size_by_axis)
 
 
