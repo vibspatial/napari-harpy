@@ -293,26 +293,35 @@ Supported geometry rules:
 
 - `Polygon`: render the exterior ring as one napari polygon.
 - `MultiPolygon`: render each polygon part as one napari polygon, while keeping
-  a source-index mapping so all parts receive the same color.
+  a source-index mapping so all parts receive the same color. This is more
+  complete than `napari-spatialdata`'s current viewer path, which explodes
+  multipolygons and keeps only the largest polygon per source row.
 - circles: SpatialData stores these as `Point` geometries plus a `radius`
-  column. Render as napari ellipses if the coordinate handling is clean;
-  otherwise approximate as polygons from `point.buffer(radius)`.
-- empty or invalid geometries: skip them and report a warning in the action
-  feedback.
-- holes/interiors: do not promise exact hole rendering in the first version
-  unless napari's `Shapes` layer can represent them correctly in our target
-  version. Rendering exterior rings only is acceptable for the first version if
-  the feedback or implementation note is explicit.
+  column. Render them as napari `ellipse` shapes from four bounding-box corner
+  coordinates. This gives the viewer one plain `Shapes` layer contract for
+  polygons, multipolygons, and circles.
+- empty geometries: skip them and report a warning in the action feedback.
+- invalid geometries: try a conservative `shapely.make_valid(...)` repair when
+  available; flatten any repaired polygonal result into renderable polygons;
+  skip still-empty, still-invalid, or non-polygonal results and report a warning.
+- holes/interiors: preserve them if the target napari version's polygon encoding
+  can represent them reliably; otherwise render exterior rings only and make the
+  dropped-interior count explicit in the action feedback or implementation note.
 
-Keep a per-napari-shape-row source mapping in layer metadata or binding-adjacent
-state:
+Keep a per-napari-shape-row source mapping as primary layer metadata:
 
 ```python
-source_shape_index_by_row: tuple[object, ...]
+layer.metadata["source_shapes_index_by_row"] = tuple(...)
 ```
 
 This is required because one SpatialData shape row can become several napari
 shape rows when it is a `MultiPolygon`.
+
+`napari-spatialdata` stores this concept under the generic
+`layer.metadata["indices"]` key. Harpy should use
+`source_shapes_index_by_row` as the primary key because it names the row-mapping
+contract directly and avoids overloading the labels/table-oriented meaning of
+`indices`.
 
 ## Shape Styling
 
@@ -335,6 +344,22 @@ Styled shapes:
   categorical representation, without mutating the `GeoDataFrame`;
 - do not write palette columns or category cleanup back to `sdata`;
 - do not consult companion color columns for continuous columns.
+
+Shape-column styling should use
+`layer.metadata["source_shapes_index_by_row"]` to align source values to
+rendered napari shape rows. Napari expects one color per `layer.data` row, but
+Harpy's values live on `sdata.shapes[shapes_name]`. If one source row expands
+into several rendered rows, such as a `MultiPolygon`, every rendered row should
+look up the same source index and therefore receive the same color.
+
+For example:
+
+```python
+source_index_by_row = layer.metadata["source_shapes_index_by_row"]
+source_values = sdata.shapes[shapes_name][column_name]
+row_values = [source_values.loc[source_index] for source_index in source_index_by_row]
+layer.face_color = [palette[value] for value in row_values]
+```
 
 For categorical companion colors, build the category-to-color mapping from the
 full original shape column before expanding multipolygons. For example:
@@ -459,16 +484,24 @@ Implement:
 
 - add `ShapesLayerBinding`;
 - add adapter lookup, registration, and removal paths for plain shapes layers;
-- implement GeoDataFrame to napari `Shapes` conversion;
-- support polygons, multipolygons, and circles;
+- implement GeoDataFrame to napari `Shapes` conversion in the selected
+  coordinate system;
+- support polygons, multipolygons, and `Point` + `radius` circles;
 - apply coordinate-system transforms by materializing transformed geometries;
+- set `layer.metadata["source_shapes_index_by_row"]` as the primary rendered-row
+  to source-row mapping;
+- skip empty, invalid, or unsupported geometries with explicit feedback instead
+  of failing the whole load when at least one shape can be rendered;
 - activate the loaded shapes layer after `Add / Update`.
 
 Recommended tests:
 
 - plain polygons load as a napari `Shapes` layer;
-- multipolygon rows create multiple napari shapes but keep source-index mapping;
-- circle rows render as ellipses or polygon approximations;
+- multipolygon rows create multiple napari shapes and duplicate their source row
+  in `metadata["source_shapes_index_by_row"]`;
+- circle rows render as napari ellipses;
+- empty or invalid geometries are skipped with warning feedback;
+- polygon interiors are either preserved or explicitly reported as dropped;
 - loading the same shapes element twice reuses the existing plain layer;
 - removing layers for a coordinate system also removes shapes layers;
 - object-classification labels-layer signals are not emitted for shapes.
@@ -484,7 +517,9 @@ Implement:
 - add styled shapes adapter lookup and load/update path;
 - style shapes by categorical and continuous columns;
 - use valid `<column>_colors` companion columns as stored categorical palettes;
-- repeat colors for multipolygon parts;
+- use `metadata["source_shapes_index_by_row"]` to align source shape-column
+  values to rendered napari rows;
+- repeat colors for multipolygon parts by repeating the source row lookup;
 - provide feedback for created vs updated layers, palette source, invalid
   companion palettes, and skipped geometries.
 
@@ -499,6 +534,8 @@ Recommended tests:
 - non-binary integer and float columns are continuous;
 - string/object scalar columns are temporarily categorical without mutating the
   `GeoDataFrame`;
+- multipolygon parts repeat the source row color via
+  `metadata["source_shapes_index_by_row"]`;
 - mixed unsupported columns are hidden from the selector;
 - styled layer identity includes the selected column and is reused on repeat.
 
