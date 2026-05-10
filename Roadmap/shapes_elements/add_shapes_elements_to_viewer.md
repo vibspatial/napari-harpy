@@ -397,21 +397,59 @@ it is a semantic join, not basic SpatialData table annotation.
 
 Status: proposed
 
+Purpose:
+
+Establish shapes as a first-class browsable element type in the viewer widget,
+without loading geometry into napari yet. This slice should make shapes visible
+in the coordinate-system-first UI and settle the widget contract that later
+slices will attach loading and styling behavior to.
+
 Implement:
 
 - add shape discovery helpers;
 - include shapes coordinate systems in viewer coordinate-system discovery;
 - add a `Shapes` collapsible section to `ViewerWidget`;
-- add `_ShapesCardWidget` with plain load controls and disabled column-color
-  controls if no colorable columns exist;
-- update summary and empty states to include shapes counts.
+- add `_ShapesCardWidget` as a mostly presentational card for one shapes
+  element;
+- show a disabled `Add / Update in viewer` control or equivalent disabled
+  action state until Slice 2 implements layer loading;
+- update summary and empty states to include shapes counts;
+- expose `shape_cards` and `shape_rows` test helpers on `ViewerWidget`,
+  matching the existing image and labels helpers;
+- preserve expanded shapes row state across coordinate-system refreshes.
+
+Recommended concrete code touchpoints:
+
+- add `SpatialDataShapesOption` beside `SpatialDataLabelsOption` and
+  `SpatialDataImageOption`;
+- add `_get_shape_names(sdata) -> list[str]`;
+- add `get_spatialdata_shape_options_from_sdata(sdata)`;
+- add `get_spatialdata_shape_options_for_coordinate_system_from_sdata(...)`;
+- update `get_coordinate_system_names_from_sdata(...)` so shapes-only
+  SpatialData objects expose selectable coordinate systems;
+- add `_get_shapes_in_coordinate_system(...)` in the viewer widget module, or
+  delegate directly to the new core helper;
+- extend `ViewerWidget._refresh_coordinate_system_content(...)`,
+  `_update_section_empty_states(...)`, and `_clear_cards(...)` to handle
+  images, labels, and shapes consistently.
+
+Out of scope:
+
+- creating napari `Shapes` layers;
+- adding `ShapesLayerBinding` or other adapter registry changes;
+- geometry conversion from `GeoDataFrame` to napari shape arrays;
+- shape-column coloring;
+- table-backed shape coloring;
+- any labels-to-shapes table inference.
 
 Recommended tests:
 
 - coordinate systems are discovered from shapes-only data;
 - shapes section appears when shapes are available;
 - shapes section empty state appears when none are available;
-- expanded-row state is preserved across refreshes.
+- expanded-row state is preserved across refreshes;
+- the disabled Slice 1 action does not call the adapter or mutate viewer
+  layers.
 
 ### Slice 2: Plain Shapes Layer Loading
 
