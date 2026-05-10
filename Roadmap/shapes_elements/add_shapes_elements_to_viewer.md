@@ -304,9 +304,36 @@ Supported geometry rules:
 - invalid geometries: try a conservative `shapely.make_valid(...)` repair when
   available; flatten any repaired polygonal result into renderable polygons;
   skip still-empty, still-invalid, or non-polygonal results and report a warning.
-- holes/interiors: preserve them if the target napari version's polygon encoding
-  can represent them reliably; otherwise render exterior rings only and make the
-  dropped-interior count explicit in the action feedback or implementation note.
+- holes/interiors: preserve them for polygon and multipolygon parts by encoding
+  each Shapely polygon as one napari polygon path with embedded interior rings.
+  Napari represents holes by removing bridge edges that are traversed twice, so
+  Harpy should orient the polygon and embed each interior ring in the exterior
+  path before converting `x, y` coordinates to napari `y, x` coordinates.
+
+Recommended hole encoding:
+
+```python
+def _polygon_to_napari_path(polygon: Polygon) -> list[tuple[float, float]]:
+    """Encode a Shapely polygon as one napari path, preserving holes.
+
+    Napari can render polygon holes when the interior rings are embedded in the
+    same vertex path as the exterior ring and wind in the opposite direction.
+    The repeated exterior anchor creates bridge edges that napari's
+    triangulation removes because they are traversed twice.
+    """
+    oriented = shapely.geometry.polygon.orient(polygon, sign=1.0)
+    path = list(oriented.exterior.coords)
+    anchor = path[0]
+    for interior in oriented.interiors:
+        path.extend(interior.coords)
+        path.append(anchor)
+    return path
+```
+
+This keeps one source `Polygon` as one napari shape row even when it has holes.
+For `MultiPolygon`, apply the same encoding to each polygon part and map every
+part back to the same source row in
+`layer.metadata["source_shapes_index_by_row"]`.
 
 Keep a per-napari-shape-row source mapping as primary layer metadata:
 
@@ -492,6 +519,8 @@ Implement:
   to source-row mapping;
 - skip empty, invalid, or unsupported geometries with explicit feedback instead
   of failing the whole load when at least one shape can be rendered;
+- preserve polygon interiors by encoding holes as embedded rings in the napari
+  polygon path;
 - activate the loaded shapes layer after `Add / Update`.
 
 Recommended tests:
@@ -501,7 +530,7 @@ Recommended tests:
   in `metadata["source_shapes_index_by_row"]`;
 - circle rows render as napari ellipses;
 - empty or invalid geometries are skipped with warning feedback;
-- polygon interiors are either preserved or explicitly reported as dropped;
+- polygon interiors render as holes rather than filled exterior-only polygons;
 - loading the same shapes element twice reuses the existing plain layer;
 - removing layers for a coordinate system also removes shapes layers;
 - object-classification labels-layer signals are not emitted for shapes.
