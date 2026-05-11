@@ -24,6 +24,22 @@ The widget must support two primary workflows:
 - creating new shapes annotations;
 - modifying existing shapes elements.
 
+## Layer Role Contract
+
+`ShapesAnnotation()` must treat primary and styled shapes layers differently:
+
+- primary shapes layers are annotation-capable layers that can be listened to,
+  edited, and written back;
+- styled shapes layers are viewer-only color variants and must not be used as
+  write-back sources;
+- when selecting an existing layer to edit, the widget should filter for Harpy
+  bindings with `shapes_role="primary"`;
+- when creating a new annotation layer, the widget should register it as a
+  primary shapes layer.
+
+This keeps visual coloring separate from geometry editing and prevents
+accidental write-back from a styled viewer overlay.
+
 ## Workflow A: Create New Shapes
 
 This workflow means "create a new shapes annotation element".

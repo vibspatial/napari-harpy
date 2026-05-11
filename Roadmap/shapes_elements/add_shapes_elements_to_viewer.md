@@ -543,26 +543,114 @@ Recommended tests:
 
 Status: proposed
 
+Follow the styled-labels pattern, but use direct columns on the shapes
+`GeoDataFrame` instead of linked tables. A shapes card should have a `Color
+source` selector:
+
+- `None` means `Add / Update` loads or reuses the primary shapes layer;
+- `Shape column` means `Add / Update` loads or updates a separate styled shapes
+  layer variant.
+
+The second control should be labelled `Shape column`, not `Observations` or
+`Vars`, because the source is a column on `sdata.shapes[shapes_name]` itself.
+
+The primary/styled distinction is required for the future
+`ShapesAnnotation()` widget: annotation should listen to and edit primary
+shapes layers only, while styled shapes layers are viewer-only variants.
+
 Implement:
 
-- add `ShapeColorSourceSpec`;
-- add shape-column source discovery;
-- choose whether shape-column coloring updates the existing shapes layer or
-  creates separate styled layer variants, then add the matching adapter lookup
-  and load/update path;
-- style shapes by categorical and continuous columns;
-- use valid `<column>_colors` companion columns as stored categorical palettes;
+- add `ShapeColorSourceSpec`, modelled after `TableColorSourceSpec` but scoped
+  to direct shapes columns:
+  - `source_kind: Literal["shape_column"]`;
+  - `value_key: str`;
+  - `value_kind: Literal["categorical", "continuous"]`;
+- add shape-column source discovery for `sdata.shapes[shapes_name]`:
+  - include scalar columns that can be classified as categorical or continuous;
+  - exclude the geometry column;
+  - exclude explicit color/palette columns, including columns ending in
+    `_colors`, `_color`, or `.color`;
+  - keep companion `<column>_colors` columns available only as palettes for
+    their corresponding value column;
+- extend the shapes card UI:
+  - add `Color source` with `None` and `Shape column`;
+  - add a searchable/autocompleted `Shape column` input populated from
+    `ShapeColorSourceSpec` options;
+  - show `Action: add/update primary shapes layer` when `Color source = None`;
+  - show `Action: add/update styled shapes layer for shape["<column>"]` when a
+    shape column is selected;
+- extend `ShapesLoadRequest` so it can carry an optional selected
+  `ShapeColorSourceSpec`;
+- dispatch from the viewer widget:
+  - no selected shape color source -> `ViewerAdapter.ensure_shapes_loaded(...)`;
+  - selected shape color source -> `ViewerAdapter.ensure_styled_shapes_loaded(...)`;
+- extend `ShapesLayerBinding` with:
+  - `shapes_role: Literal["primary", "styled"] = "primary"`;
+  - `style_spec: ShapeColorSourceSpec | None = None`;
+- keep `ensure_shapes_loaded(...)` as the primary-layer path and make all
+  primary lookup/removal code filter `shapes_role="primary"`;
+- add styled-shapes adapter paths matching styled labels:
+  - `get_loaded_styled_shapes_layer(...)`;
+  - `get_loaded_styled_shapes_layers(...)`;
+  - `ensure_styled_shapes_loaded(...)`;
+  - a user-facing layer name such as
+    `build_styled_shapes_layer_name(shapes_name, style_spec)`;
+- allow primary and styled shapes layers for the same shapes element to coexist;
+- register styled shapes layers with `shapes_role="styled"` and `style_spec`;
+- mirror debugging metadata on styled shapes layers:
+  - `shapes_role`;
+  - `style_spec`;
+  - `style_source_kind`;
+  - `style_value_key`;
+  - `style_value_kind`;
+  - `style_feature_name` if the feature column name is disambiguated;
+- style shapes by categorical and continuous columns:
+  - apply one color per rendered napari shape row;
+  - prefer coloring both `face_color` and `edge_color`, with a readable edge and
+    a translucent face so image data remains visible underneath;
+  - use a neutral missing color for missing values;
+- use valid `<column>_colors` companion columns as stored categorical palettes:
+  - build the category-to-color mapping from the full source shape column before
+    expanding multipolygons;
+  - if a category has conflicting companion colors, fall back to the default
+    categorical palette;
+  - if the companion palette is missing, incomplete, or invalid, fall back to
+    the default categorical palette;
+- classify shape columns like styled labels:
+  - pandas categorical, bool, and exact binary integer columns are categorical;
+  - non-binary integer and float columns are continuous;
+  - string/object scalar columns are temporarily categorical without mutating
+    the `GeoDataFrame`;
 - use `metadata["source_shapes_index_by_row"]` to align source shape-column
   values to rendered napari rows;
 - add the selected style source column to the `layer.features` DataFrame,
   aligned to rendered napari rows, instead of copying all GeoDataFrame columns
   during Slice 2;
-- repeat colors for multipolygon parts by repeating the source row lookup;
-- provide feedback for created vs updated layers, palette source, invalid
-  companion palettes, and skipped geometries.
+- if the selected style source column name collides with the source-index
+  feature column, store it in a disambiguated feature column and record that
+  name in metadata;
+- repeat colors and feature values for multipolygon parts by repeating the
+  source row lookup;
+- provide feedback for primary vs styled load paths, created vs updated styled
+  layers, palette source, invalid companion palettes, string coercion, and
+  skipped geometries.
 
 Recommended tests:
 
+- shapes cards expose `Color source = None | Shape column` and a `Shape column`
+  autocomplete populated from the shapes element;
+- geometry and explicit color/palette columns are hidden from the shape-column
+  selector;
+- `Add / Update` with no selected shape column dispatches to the primary
+  `ensure_shapes_loaded(...)` path;
+- `Add / Update` with a selected shape column dispatches to
+  `ensure_styled_shapes_loaded(...)`;
+- primary and styled shapes layers can coexist for the same shapes element;
+- styled shapes lookup reuses a matching variant and creates distinct variants
+  for different columns;
+- styled shapes bindings have `shapes_role="styled"` and keep their
+  `ShapeColorSourceSpec`;
+- primary shapes bindings have `shapes_role="primary"` and no style spec;
 - categorical columns produce per-shape categorical colors;
 - categorical columns use valid `<column>_colors` companion palettes;
 - invalid companion color values fall back to the default palette;
@@ -574,6 +662,8 @@ Recommended tests:
   `GeoDataFrame`;
 - the selected style source column is added to `layer.features` and repeated
   for multipolygon parts;
+- style source feature-name collisions are disambiguated without overwriting the
+  source-index feature;
 - multipolygon parts repeat the source row color via
   `metadata["source_shapes_index_by_row"]`;
 - mixed unsupported columns are hidden from the selector;
@@ -626,15 +716,12 @@ viewer roadmap should remain focused on loading, viewing, and coloring shapes.
   `leiden_colors`.
 - Direct shape-column coloring does not mutate the `GeoDataFrame`.
 - Labels annotation and object-classification behavior remain unchanged.
-- Table-backed shapes coloring is only exposed when SpatialData metadata says
-  the table annotates the selected shapes element.
+- Table-backed shapes coloring is not exposed in this roadmap.
 
 ## Non-Goals For The First Version
 
 - editing shapes geometry in napari and writing it back to SpatialData;
 - rich legends or palette editors;
-- exact polygon-hole rendering unless napari supports it cleanly in our target
-  version;
 - using labels-linked tables to color shapes by implicit id matching;
 - cross-element biological-object identity resolution.
 
