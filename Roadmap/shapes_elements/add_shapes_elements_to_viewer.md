@@ -7,7 +7,7 @@ napari-harpy.
 
 The viewer widget should discover shapes elements from the loaded
 `SpatialData` object, show them beside images and segmentations, and let users
-load them into napari. After plain loading is stable, the viewer should support
+load them into napari. After basic loading is stable, the viewer should support
 coloring shapes by scalar columns stored directly on the `GeoDataFrame`.
 
 The initial design should be conservative around `AnnData` table-backed shape
@@ -61,7 +61,7 @@ First version:
 
 - discover and load shapes elements;
 - add a dedicated `Shapes` section to the viewer widget;
-- support plain geometry display;
+- support geometry display;
 - support coloring by scalar columns directly stored on the shapes
   `GeoDataFrame`, for example `leiden`, `in_tumor`, `area`, or `score`;
 - keep table-backed shape coloring out of the first implementation unless the
@@ -123,15 +123,16 @@ rows. The first version of the card should expose:
   - `Action: add/update shapes layer`;
   - `Action: add/update colored shapes layer for shapes["leiden"]`.
 
-The first version should use one plain shapes layer for `None` and one styled
-shape variant per selected column. That mirrors the labels overlay model and
-allows users to compare multiple shape annotations without constantly
-recoloring one layer.
+The first version should use one shapes layer for `None`. A later coloring
+slice can decide whether styled shape variants should live in separate layers
+or update an existing shapes layer.
 
-Layer names should make the style source visible:
+Layer naming for the initial `None` path:
 
-- plain: `shapes_name`
-- styled column: `shapes_name[shape:leiden]`
+- `None`: `shapes_name`
+
+If a later coloring slice chooses separate styled layer variants, specify their
+names in that slice.
 
 ## Data Model Additions
 
@@ -249,8 +250,6 @@ Recommended binding shape:
 @dataclass(frozen=True, kw_only=True)
 class ShapesLayerBinding(BaseLayerBinding):
     element_type: Literal["shapes"] = "shapes"
-    shapes_role: Literal["plain", "styled"] = "plain"
-    style_spec: ShapeColorSourceSpec | None = None
 ```
 
 Update the union:
@@ -261,12 +260,12 @@ LayerBinding = LabelsLayerBinding | ImageLayerBinding | ShapesLayerBinding
 
 Add `ViewerAdapter` methods:
 
-- `get_loaded_plain_shapes_layer(...)`
-- `get_loaded_styled_shapes_layer(...)`
-- `get_loaded_styled_shapes_layers(...)`
+- `_get_loaded_shapes_layer_for_coordinate_system(...)`
 - `ensure_shapes_loaded(...)`
-- `ensure_styled_shapes_loaded(...)`
-- `remove_shapes_layers(...)`
+- `remove_shapes_layer(...)`
+
+Shape-column coloring should choose its adapter contract in Slice 3 instead of
+baking a styled-layer model into Slice 2.
 
 Shape layers should not emit `primary_labels_layers_changed`. Object
 classification should remain labels-only.
@@ -298,7 +297,7 @@ Supported geometry rules:
   multipolygons and keeps only the largest polygon per source row.
 - circles: SpatialData stores these as `Point` geometries plus a `radius`
   column. Render them as napari `ellipse` shapes from four bounding-box corner
-  coordinates. This gives the viewer one plain `Shapes` layer contract for
+  coordinates. This gives the viewer one `Shapes` layer contract for
   polygons, multipolygons, and circles.
 - empty geometries: skip them and report a warning in the action feedback.
 - invalid geometries: try a conservative `shapely.make_valid(...)` repair when
@@ -503,14 +502,14 @@ Recommended tests:
 - the disabled Slice 1 action does not call the adapter or mutate viewer
   layers.
 
-### Slice 2: Plain Shapes Layer Loading
+### Slice 2: Shapes Layer Loading
 
 Status: proposed
 
 Implement:
 
 - add `ShapesLayerBinding`;
-- add adapter lookup, registration, and removal paths for plain shapes layers;
+- add adapter lookup, registration, and removal paths for shapes layers;
 - implement GeoDataFrame to napari `Shapes` conversion in the selected
   coordinate system;
 - support polygons, multipolygons, and `Point` + `radius` circles;
@@ -525,13 +524,13 @@ Implement:
 
 Recommended tests:
 
-- plain polygons load as a napari `Shapes` layer;
+- polygons load as a napari `Shapes` layer;
 - multipolygon rows create multiple napari shapes and duplicate their source row
   in `metadata["source_shapes_index_by_row"]`;
 - circle rows render as napari ellipses;
 - empty or invalid geometries are skipped with warning feedback;
 - polygon interiors render as holes rather than filled exterior-only polygons;
-- loading the same shapes element twice reuses the existing plain layer;
+- loading the same shapes element twice reuses the existing shapes layer;
 - removing layers for a coordinate system also removes shapes layers;
 - object-classification labels-layer signals are not emitted for shapes.
 
@@ -543,7 +542,9 @@ Implement:
 
 - add `ShapeColorSourceSpec`;
 - add shape-column source discovery;
-- add styled shapes adapter lookup and load/update path;
+- choose whether shape-column coloring updates the existing shapes layer or
+  creates separate styled layer variants, then add the matching adapter lookup
+  and load/update path;
 - style shapes by categorical and continuous columns;
 - use valid `<column>_colors` companion columns as stored categorical palettes;
 - use `metadata["source_shapes_index_by_row"]` to align source shape-column

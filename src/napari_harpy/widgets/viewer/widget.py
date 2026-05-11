@@ -163,6 +163,11 @@ class LabelsLoadRequest:
     selected_color_source: TableColorSourceSpec | None
 
 
+@dataclass(frozen=True)
+class ShapesLoadRequest:
+    shapes_name: str
+
+
 class _ElidedLabel(QLabel):
     """Single-line label that shows a tooltip only when the text is elided."""
 
@@ -887,6 +892,8 @@ class _ImageCardWidget(QFrame):
 class _ShapesCardWidget(QFrame):
     """Card UI shell for one shapes element in the selected coordinate system."""
 
+    add_update_requested = Signal(object)
+
     def __init__(self, *, shapes_name: str) -> None:
         super().__init__()
         self.shapes_name = shapes_name
@@ -903,22 +910,24 @@ class _ShapesCardWidget(QFrame):
         self.title_label.setStyleSheet(_CARD_TITLE_STYLESHEET)
         self.title_label.hide()
 
-        self.action_status_label = QLabel("Action: shapes layer loading will be available in the next slice")
+        self.action_status_label = QLabel("Action: add/update shapes layer")
         self.action_status_label.setObjectName(f"viewer_widget_shapes_action_status_{shapes_name}")
         self.action_status_label.setWordWrap(True)
         self.action_status_label.setStyleSheet(_SUMMARY_LABEL_STYLESHEET)
 
         self.add_update_button = QPushButton("Add / Update in viewer")
         self.add_update_button.setObjectName(f"viewer_widget_add_update_shapes_button_{shapes_name}")
+        self.add_update_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.add_update_button.setMinimumHeight(28)
         self.add_update_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
-        self.add_update_button.setEnabled(False)
-        self.add_update_button.setToolTip(
-            format_tooltip("Shapes loading is intentionally disabled until Slice 2 implements napari layer creation.")
-        )
+        self.add_update_button.clicked.connect(self._emit_add_update_request)
+        self.add_update_button.setToolTip("")
 
         layout.addWidget(self.action_status_label)
         layout.addWidget(self.add_update_button)
+
+    def _emit_add_update_request(self, _checked: bool = False) -> None:
+        self.add_update_requested.emit(ShapesLoadRequest(shapes_name=self.shapes_name))
 
 
 class ViewerWidget(QWidget):
@@ -1289,6 +1298,7 @@ class ViewerWidget(QWidget):
 
         for shapes_name in shapes_names:
             card = _ShapesCardWidget(shapes_name=shapes_name)
+            card.add_update_requested.connect(self._add_or_update_shapes_layer)
             row = _DisclosureElementWidget(
                 title=shapes_name,
                 object_name=f"viewer_widget_shapes_row_{shapes_name}",
@@ -1453,6 +1463,48 @@ class ViewerWidget(QWidget):
             title=title,
             lines=lines,
             kind=feedback_kind,
+        )
+
+    def _add_or_update_shapes_layer(self, request: ShapesLoadRequest) -> None:
+        sdata = self._app_state.sdata
+        coordinate_system = self._app_state.coordinate_system
+        shapes_name = request.shapes_name
+
+        if sdata is None or not coordinate_system:
+            self._set_action_feedback(
+                title="Shapes Load Error",
+                lines=["Load a SpatialData object and select a coordinate system first."],
+                kind="error",
+            )
+            return
+
+        try:
+            layer = self._app_state.viewer_adapter.ensure_shapes_loaded(sdata, shapes_name, coordinate_system)
+        except ValueError as error:
+            self._set_action_feedback(title="Shapes Load Error", lines=[str(error)], kind="error")
+            return
+
+        self._app_state.viewer_adapter.activate_layer(layer)
+        display_name, was_shortened = format_feedback_identifier(shapes_name)
+        skipped_geometry_count = _get_layer_skipped_geometry_count(layer)
+        feedback_kind: StatusCardKind = "success"
+        title = "Shapes Loaded"
+        lines = [f"Loaded shapes `{display_name}` in coordinate system `{coordinate_system}`."]
+        if skipped_geometry_count:
+            feedback_kind = "warning"
+            title = "Shapes Loaded With Warning"
+            lines.append(
+                f"Skipped {skipped_geometry_count} empty, invalid, or unsupported "
+                "geometries while loading renderable shapes."
+            )
+
+        self._set_action_feedback(
+            title=title,
+            lines=lines,
+            kind=feedback_kind,
+            tooltip_message=(
+                f"Loaded shapes `{shapes_name}` in coordinate system `{coordinate_system}`." if was_shortened else None
+            ),
         )
 
     def _add_or_update_image_layer(self, request: ImageLoadRequest) -> None:
@@ -1676,3 +1728,15 @@ def _get_shapes_in_coordinate_system(sdata: SpatialData, coordinate_system: str)
             coordinate_system=coordinate_system,
         )
     ]
+
+
+def _get_layer_skipped_geometry_count(layer: object) -> int:
+    metadata = getattr(layer, "metadata", None)
+    if not isinstance(metadata, dict):
+        return 0
+
+    value = metadata.get("skipped_geometry_count", 0)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0

@@ -216,10 +216,8 @@ def test_viewer_widget_refreshes_cards_when_shared_sdata_changes(qtbot, sdata_bl
     assert widget.image_rows[0].detail_widget.isHidden()
     assert widget.labels_rows[0].detail_widget.isHidden()
     assert widget.shape_rows[0].detail_widget.isHidden()
-    assert widget.shape_cards[0].action_status_label.text() == (
-        "Action: shapes layer loading will be available in the next slice"
-    )
-    assert not widget.shape_cards[0].add_update_button.isEnabled()
+    assert widget.shape_cards[0].action_status_label.text() == "Action: add/update shapes layer"
+    assert widget.shape_cards[0].add_update_button.isEnabled()
     assert widget.labels_cards[0].linked_table_combo.count() == 1
     assert widget.labels_cards[0].linked_table_combo.itemText(0) == "table"
     assert widget.labels_cards[0].linked_table_combo.sizeAdjustPolicy() == (
@@ -287,7 +285,7 @@ def test_viewer_widget_progressive_disclosure_expands_sections_and_elements(qtbo
     assert widget.shapes_group.is_expanded()
     assert first_shape_row.is_expanded()
     assert not first_shape_row.detail_widget.isHidden()
-    assert not widget.shape_cards[0].add_update_button.isEnabled()
+    assert widget.shape_cards[0].add_update_button.isEnabled()
 
 
 def test_viewer_widget_progressive_disclosure_actions_still_load_layers(qtbot, sdata_blobs) -> None:
@@ -317,7 +315,8 @@ def test_viewer_widget_progressive_disclosure_actions_still_load_layers(qtbot, s
     widget.shape_rows[0].toggle_button.click()
     widget.shape_cards[0].add_update_button.click()
 
-    assert len(viewer.layers) == 2
+    assert len(viewer.layers) == 3
+    assert viewer.layers[2].name == "blobs_circles"
 
 
 def test_viewer_widget_shapes_empty_state_appears_when_no_shapes(qtbot, monkeypatch) -> None:
@@ -1154,6 +1153,123 @@ def test_viewer_widget_add_update_image_uses_selected_coordinate_system(qtbot, m
 
     assert recorded_calls == [(fake_sdata, "image_local", "local", "stack")]
     assert activated_layers == [fake_layer]
+
+
+def test_viewer_widget_add_update_shapes_loads_layer(qtbot, sdata_blobs) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata_blobs)
+
+    first_card = widget.shape_cards[0]
+
+    first_card.add_update_button.click()
+
+    assert len(viewer.layers) == 1
+    layer = viewer.layers[0]
+    assert layer.name == "blobs_circles"
+    binding = widget.app_state.viewer_adapter.layer_bindings.get_binding(layer)
+    assert binding is not None
+    assert binding.element_type == "shapes"
+    assert binding.element_name == "blobs_circles"
+    assert binding.coordinate_system == "global"
+    assert viewer.layers.selection.active is layer
+    _assert_action_feedback_card(widget, title="Shapes Loaded", kind="success")
+    assert "Loaded shapes `blobs_circles` in coordinate system `global`." in widget.action_feedback_label.text()
+
+
+def test_viewer_widget_add_update_shapes_reuses_existing_layer(qtbot, sdata_blobs) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata_blobs)
+
+    first_card = widget.shape_cards[0]
+
+    first_card.add_update_button.click()
+    first_layer = viewer.layers[0]
+
+    first_card.add_update_button.click()
+
+    assert len(viewer.layers) == 1
+    assert viewer.layers[0] is first_layer
+
+
+def test_viewer_widget_add_update_shapes_uses_selected_coordinate_system(qtbot, monkeypatch) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    fake_sdata = object()
+    fake_layer = object()
+    recorded_calls: list[tuple[object, str, str]] = []
+    activated_layers: list[object] = []
+
+    qtbot.addWidget(widget)
+
+    _patch_coordinate_system_names(monkeypatch, ["global", "local"])
+    monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(
+        viewer_widget_module,
+        "_get_shapes_in_coordinate_system",
+        lambda sdata, coordinate_system: ["shape_global"] if coordinate_system == "global" else ["shape_local"],
+    )
+    monkeypatch.setattr(
+        widget.app_state.viewer_adapter,
+        "ensure_shapes_loaded",
+        lambda sdata, shapes_name, coordinate_system: (
+            recorded_calls.append((sdata, shapes_name, coordinate_system)) or fake_layer
+        ),
+    )
+    monkeypatch.setattr(
+        widget.app_state.viewer_adapter,
+        "activate_layer",
+        lambda layer: activated_layers.append(layer) or True,
+    )
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(fake_sdata)
+
+    widget.coordinate_system_combo.setCurrentIndex(1)
+    shape_card = widget.shape_cards[0]
+
+    shape_card.add_update_button.click()
+
+    assert recorded_calls == [(fake_sdata, "shape_local", "local")]
+    assert activated_layers == [fake_layer]
+
+
+def test_viewer_widget_add_update_shapes_reports_skipped_geometry_warning(qtbot, monkeypatch) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    fake_sdata = object()
+    fake_layer = SimpleNamespace(metadata={"skipped_geometry_count": 2})
+
+    qtbot.addWidget(widget)
+
+    _patch_coordinate_system_names(monkeypatch, ["global"])
+    monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(viewer_widget_module, "_get_shapes_in_coordinate_system", lambda sdata, coordinate_system: ["cells"])
+    monkeypatch.setattr(
+        widget.app_state.viewer_adapter,
+        "ensure_shapes_loaded",
+        lambda sdata, shapes_name, coordinate_system: fake_layer,
+    )
+    monkeypatch.setattr(widget.app_state.viewer_adapter, "activate_layer", lambda layer: True)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(fake_sdata)
+
+    widget.shape_cards[0].add_update_button.click()
+
+    _assert_action_feedback_card(widget, title="Shapes Loaded With Warning", kind="warning")
+    assert "Skipped 2 empty, invalid, or unsupported geometries" in widget.action_feedback_label.text()
 
 
 def test_viewer_widget_shares_app_state_for_same_viewer(qtbot) -> None:
