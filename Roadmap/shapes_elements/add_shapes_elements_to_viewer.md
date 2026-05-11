@@ -504,7 +504,7 @@ Recommended tests:
 
 ### Slice 2: Shapes Layer Loading
 
-Status: proposed
+Status: completed
 
 Implement:
 
