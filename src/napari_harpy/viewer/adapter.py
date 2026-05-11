@@ -48,7 +48,12 @@ DEFAULT_OVERLAY_COLORS = (
 
 
 class _HarpyShapes(Shapes):
-    """Napari Shapes layer that exposes source GeoDataFrame indices in the status bar."""
+    """Napari ``Shapes`` layer with Harpy-specific status-bar text.
+
+    This subclass only customizes display behavior: when the cursor is over a
+    rendered shape, it reads the configured source-index feature column from
+    ``layer.features`` and appends that value to napari's status bar.
+    """
 
     def __init__(
         self,

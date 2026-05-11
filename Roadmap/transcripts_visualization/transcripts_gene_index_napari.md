@@ -260,6 +260,45 @@ sample_key = pandas.util.hash_pandas_object(..., index=False, hash_key=<fixed 16
 
 If cross-language stability becomes important, switch to a named stable hash such as xxhash64 or BLAKE2b-64.
 
+## Row Group Size
+
+Use this default for the gene-index MVP:
+
+```text
+target_rows_per_row_group = 25_000
+```
+
+This is intentionally smaller than a bulk-analytics Parquet row group. The cache is for interactive selected-gene display, where read granularity matters more than maximum compression.
+
+Recommended tuning range:
+
+```text
+10_000 rows: more responsive previews and less sample overshoot
+25_000 rows: default MVP choice
+50_000 rows: fewer row groups and better compression for very large datasets
+```
+
+The default pairs well with:
+
+```text
+max_points = 100_000
+```
+
+With those values, a large selected gene needs about four row groups to reach the default preview size, while rare genes still usually fit in one row group.
+
+The row group size is a target, not a reason to mix genes. The stronger invariant is:
+
+```text
+Never mix genes inside a row group in the MVP.
+```
+
+Consequences:
+
+- a gene with fewer than `25_000` transcripts gets one smaller row group;
+- a gene with more than `25_000` transcripts is split across multiple row groups;
+- a row group should not be padded with rows from another gene;
+- the final row group for a large gene may contain fewer than `25_000` rows.
+
 ## Build Algorithm
 
 Recommended public entry point:
@@ -274,7 +313,7 @@ def build_transcript_gene_index_cache_for_points_element(
     y: str = "y",
     gene: str = "gene",
     transcript_id: str | None = None,
-    target_rows_per_row_group: int = 50_000,
+    target_rows_per_row_group: int = 25_000,
     default_max_points: int = 100_000,
 ) -> TranscriptGeneIndexCache:
     ...

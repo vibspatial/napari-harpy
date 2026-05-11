@@ -250,10 +250,9 @@ Recommended binding shape:
 @dataclass(frozen=True, kw_only=True)
 class ShapesLayerBinding(BaseLayerBinding):
     element_type: Literal["shapes"] = "shapes"
-    shapes_role: Literal["primary", "styled"] = "primary"
-    style_spec: ShapeColorSourceSpec | None = None
     source_shapes_index_by_row: tuple[Any, ...] = ()
     source_shapes_index_feature_name: str = "index"
+    skipped_geometry_count: int = 0
 ```
 
 Update the union:
@@ -268,17 +267,39 @@ Add `ViewerAdapter` methods:
 - `ensure_shapes_loaded(...)`
 - `remove_shapes_layer(...)`
 
-Shape-column coloring should choose its adapter contract in Slice 3 instead of
+Shape-column coloring should choose its adapter contract in Slice 4 instead of
 baking a styled-layer model into Slice 2.
 
-`ShapesLayerBinding.source_shapes_index_by_row` is the authoritative Harpy
-mapping from rendered napari shape rows back to source `GeoDataFrame` indices.
+As the adapter grows, avoid extending one generic public
+`ViewerAdapter.register_layer(...)` method with every layer-type-specific
+argument. Prefer typed registration entrypoints:
+
+```python
+def register_labels_layer(...) -> LabelsLayerBinding: ...
+def register_image_layer(...) -> ImageLayerBinding: ...
+def register_shapes_layer(...) -> ShapesLayerBinding: ...
+```
+
+The typed methods should construct the appropriate binding and then call one
+shared private registration helper, so insertion bookkeeping and viewer signals
+stay centralized while labels-, image-, and shapes-specific parameters remain
+readable.
+
+Slice 4 should extend this binding with `shapes_role` and `style_spec` for
+primary/styled layer variants.
+
+After Slice 3, `ShapesLayerBinding.source_shapes_index_by_row` is the
+authoritative Harpy mapping from rendered napari shape rows back to source
+`GeoDataFrame` indices.
 `layer.features[source_shapes_index_feature_name]` is the napari-visible
 feature table used for status-bar display and manual inspection.
+`ShapesLayerBinding.skipped_geometry_count` stores the skipped-geometry count
+needed for viewer feedback without using `layer.metadata`.
 
-Do not store Harpy shapes contracts in `layer.metadata`. This includes source
-row mappings, source-index feature names, shapes roles, and style specs. Shape
-layer identity and behavior should be resolved through `LayerBindingRegistry`.
+After Slice 3, do not store Harpy shapes contracts in `layer.metadata`. This
+includes source row mappings, source-index feature names, skipped-geometry
+counts, shapes roles, and style specs. Shape layer identity and behavior should
+be resolved through `LayerBindingRegistry`.
 
 Shape layers should not emit `primary_labels_layers_changed`. Object
 classification should remain labels-only.
@@ -528,14 +549,11 @@ Implement:
   coordinate system;
 - support polygons, multipolygons, and `Point` + `radius` circles;
 - apply coordinate-system transforms by materializing transformed geometries;
-- set `ShapesLayerBinding.source_shapes_index_by_row` as the authoritative
+- set `layer.metadata["source_shapes_index_by_row"]` as the initial
   rendered-row to source-row mapping;
-- set `ShapesLayerBinding.source_shapes_index_feature_name` to the
-  `layer.features` column that stores the source index;
 - populate `layer.features` only with the source index column, using the
   GeoDataFrame index name or `"index"` fallback, so the status bar can expose
   source identity without copying every source column;
-- do not store Harpy shapes contracts in `layer.metadata`;
 - skip empty, invalid, or unsupported geometries with explicit feedback instead
   of failing the whole load when at least one shape can be rendered;
 - preserve polygon interiors by encoding holes as embedded rings in the napari
@@ -546,19 +564,89 @@ Recommended tests:
 
 - polygons load as a napari `Shapes` layer;
 - multipolygon rows create multiple napari shapes and duplicate their source row
-  in `ShapesLayerBinding.source_shapes_index_by_row`;
+  in `metadata["source_shapes_index_by_row"]`;
 - circle rows render as napari ellipses;
 - `layer.features` contains only the source index column, including named
   GeoDataFrame indexes and the `"index"` fallback for unnamed indexes;
-- shape layers do not store source mapping or source-index feature contracts in
-  `layer.metadata`;
 - empty or invalid geometries are skipped with warning feedback;
 - polygon interiors render as holes rather than filled exterior-only polygons;
 - loading the same shapes element twice reuses the existing shapes layer;
 - removing layers for a coordinate system also removes shapes layers;
 - object-classification labels-layer signals are not emitted for shapes.
 
-### Slice 3: Shape-Column Coloring
+### Slice 3: Move Shapes Row Mapping Into Bindings
+
+Status: proposed
+
+Slice 2 made shapes loadable, but it still uses `layer.metadata` for some
+Harpy-internal shapes contracts. Before adding styled shapes layers, move those
+contracts into `ShapesLayerBinding` so later styling and annotation work is not
+dependent on a loose napari metadata dictionary.
+
+Implement:
+
+- first split the public adapter registration API into typed entrypoints:
+  - `ViewerAdapter.register_labels_layer(...)`;
+  - `ViewerAdapter.register_image_layer(...)`;
+  - `ViewerAdapter.register_shapes_layer(...)`;
+- keep a shared private helper for the actual registry insertion and common
+  side effects, so signal emission and viewer-loaded bookkeeping stay in one
+  place;
+- keep `unregister_layer(...)` generic because unregistering only needs the
+  live napari layer object;
+- keep binding lookup/filtering registry-backed;
+- extend `ShapesLayerBinding` with:
+  - `source_shapes_index_by_row: tuple[Any, ...] = ()`;
+  - `source_shapes_index_feature_name: str = "index"`;
+  - `skipped_geometry_count: int = 0`;
+- treat `ShapesLayerBinding.source_shapes_index_by_row` as the authoritative
+  rendered-napari-row to source-`GeoDataFrame`-index mapping;
+- treat `ShapesLayerBinding.source_shapes_index_feature_name` as the name of
+  the `layer.features` column that stores the source index for napari status
+  display and manual inspection;
+- treat `ShapesLayerBinding.skipped_geometry_count` as the authoritative source
+  for skipped-geometry viewer feedback;
+- keep `layer.features[source_shapes_index_feature_name]` as the
+  napari-visible source-index feature table;
+- remove all code paths that read
+  `layer.metadata["source_shapes_index_by_row"]` for Harpy logic;
+- stop writing shapes source-row mappings and source-index feature names into
+  `layer.metadata`;
+- keep skipped-geometry feedback out of shapes layer metadata as well; read it
+  from the shapes binding when the viewer widget builds action feedback;
+- update `ViewerAdapter.ensure_shapes_loaded(...)` so it registers the source
+  row mapping, source-index feature name, and skipped-geometry count through
+  `register_shapes_layer(...)` when the primary shapes layer is created;
+- keep `ensure_shapes_loaded(...)` reuse behavior registry-backed, so an
+  existing registered shapes layer returns the same binding-backed contract;
+- keep object-classification labels-layer signals unchanged.
+
+Out of scope:
+
+- shape-column source discovery;
+- styled shapes layers;
+- `ShapeColorSourceSpec`;
+- primary/styled shapes roles;
+- shape coloring.
+
+Recommended tests:
+
+- `ShapesLayerBinding.source_shapes_index_by_row` matches the rendered napari
+  rows for polygons, multipolygons, and circles;
+- `ShapesLayerBinding.source_shapes_index_feature_name` is `"index"` for
+  unnamed GeoDataFrame indexes and the GeoDataFrame index name for named
+  indexes;
+- `layer.features[source_shapes_index_feature_name]` still exposes source
+  indices for the status bar;
+- shapes layers do not store source-row mappings, source-index feature names,
+  shapes roles, style specs, or skipped-geometry counts in `layer.metadata`;
+- typed registration entrypoints create the expected binding subclasses and
+  preserve existing primary-labels signal behavior;
+- viewer skipped-geometry feedback still works without reading layer metadata;
+- reusing an already-loaded shapes layer preserves the binding-backed mapping;
+- removing shapes layers unregisters the binding and its source-row mapping.
+
+### Slice 4: Shape-Column Coloring
 
 Status: proposed
 
@@ -621,8 +709,8 @@ Implement:
 - extend `ShapesLayerBinding` with:
   - `shapes_role: Literal["primary", "styled"] = "primary"`;
   - `style_spec: ShapeColorSourceSpec | None = None`;
-  - `source_shapes_index_by_row: tuple[Any, ...] = ()`;
-  - `source_shapes_index_feature_name: str = "index"`;
+- reuse `source_shapes_index_by_row` and `source_shapes_index_feature_name`
+  from the Slice 3 binding contract for both primary and styled shapes layers;
 - keep `ensure_shapes_loaded(...)` as the primary-layer path and make all
   primary lookup/removal code filter `shapes_role="primary"`;
 - add styled-shapes adapter paths matching styled labels:
@@ -704,7 +792,7 @@ Recommended tests:
 - mixed unsupported columns are hidden from the selector;
 - styled layer identity includes the selected column and is reused on repeat.
 
-### Slice 4: Explicit Shape-Table Coloring
+### Slice 5: Explicit Shape-Table Coloring
 
 Status: not planned
 
