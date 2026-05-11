@@ -558,6 +558,21 @@ The primary/styled distinction is required for the future
 `ShapesAnnotation()` widget: annotation should listen to and edit primary
 shapes layers only, while styled shapes layers are viewer-only variants.
 
+Implementation reuse guidance:
+
+- follow the styled-labels adapter and widget structure for layer roles,
+  `style_spec` identity, created-vs-updated feedback, and source selector UI;
+- do not call the labels-specific `apply_table_color_source_to_labels_layer`
+  path for shapes, because it assumes linked `AnnData`, instance-key alignment,
+  and `DirectLabelColormap`;
+- extract small shared helpers only when they stay domain-neutral, such as
+  scalar column classification, string/object categorical warnings,
+  category-value normalization, color validation, default categorical palettes,
+  and continuous value normalization;
+- keep shapes-specific styling in a separate module, because shapes use direct
+  `GeoDataFrame` columns, row-level companion `<column>_colors`, and one
+  `face_color` / `edge_color` value per rendered napari shape row.
+
 Implement:
 
 - add `ShapeColorSourceSpec`, modelled after `TableColorSourceSpec` but scoped
