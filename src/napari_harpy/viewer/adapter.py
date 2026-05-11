@@ -481,6 +481,19 @@ class ViewerAdapter(QObject):
 
         return matches
 
+    def get_loaded_image_layers(self, sdata: SpatialData, image_name: str) -> list[Image]:
+        """Return loaded image layers for a SpatialData image element."""
+        matches: list[Image] = []
+        for layer in self._iter_candidate_layers():
+            if not _is_image_layer(layer):
+                continue
+
+            binding = self._layer_bindings.get_binding(layer)
+            if _matches_binding(binding, sdata=sdata, element_name=image_name, element_type="image"):
+                matches.append(layer)
+
+        return matches
+
     def ensure_labels_loaded(self, sdata: SpatialData, labels_name: str, coordinate_system: str) -> Labels:
         """Load a labels element into napari if it is not already present."""
         existing_layer = self._get_loaded_labels_layer_for_coordinate_system(sdata, labels_name, coordinate_system)
@@ -494,23 +507,6 @@ class ViewerAdapter(QObject):
             sdata=sdata,
             element_name=labels_name,
             element_type="labels",
-            coordinate_system=coordinate_system,
-        )
-        return layer
-
-    def ensure_shapes_loaded(self, sdata: SpatialData, shapes_name: str, coordinate_system: str) -> Shapes:
-        """Load a shapes element into napari if it is not already present."""
-        existing_layer = self._get_loaded_shapes_layer_for_coordinate_system(sdata, shapes_name, coordinate_system)
-        if existing_layer is not None:
-            return existing_layer
-
-        layer = _build_shapes_layer(sdata, shapes_name, coordinate_system, name=shapes_name)
-        _add_layer_to_viewer(self._viewer, layer)
-        self.register_layer(
-            layer,
-            sdata=sdata,
-            element_name=shapes_name,
-            element_type="shapes",
             coordinate_system=coordinate_system,
         )
         return layer
@@ -564,24 +560,6 @@ class ViewerAdapter(QObject):
             palette_source=style_result.palette_source,
             coercion_applied=style_result.coercion_applied,
         )
-
-    def remove_labels_layer(self, sdata: SpatialData, labels_name: str, coordinate_system: str) -> Labels | None:
-        """Remove the loaded labels layer for one labels element in one coordinate system."""
-        layer = self._get_loaded_labels_layer_for_coordinate_system(sdata, labels_name, coordinate_system)
-        if layer is None:
-            return None
-
-        self._remove_layer_from_viewer_and_registry(layer)
-        return layer
-
-    def remove_shapes_layer(self, sdata: SpatialData, shapes_name: str, coordinate_system: str) -> Shapes | None:
-        """Remove the loaded shapes layer for one shapes element in one coordinate system."""
-        layer = self._get_loaded_shapes_layer_for_coordinate_system(sdata, shapes_name, coordinate_system)
-        if layer is None:
-            return None
-
-        self._remove_layer_from_viewer_and_registry(layer)
-        return layer
 
     def ensure_image_loaded(
         self,
@@ -714,18 +692,31 @@ class ViewerAdapter(QObject):
 
         return loaded_overlay_layers
 
-    def get_loaded_image_layers(self, sdata: SpatialData, image_name: str) -> list[Image]:
-        """Return loaded image layers for a SpatialData image element."""
-        matches: list[Image] = []
-        for layer in self._iter_candidate_layers():
-            if not _is_image_layer(layer):
-                continue
+    def ensure_shapes_loaded(self, sdata: SpatialData, shapes_name: str, coordinate_system: str) -> Shapes:
+        """Load a shapes element into napari if it is not already present."""
+        existing_layer = self._get_loaded_shapes_layer_for_coordinate_system(sdata, shapes_name, coordinate_system)
+        if existing_layer is not None:
+            return existing_layer
 
-            binding = self._layer_bindings.get_binding(layer)
-            if _matches_binding(binding, sdata=sdata, element_name=image_name, element_type="image"):
-                matches.append(layer)
+        layer = _build_shapes_layer(sdata, shapes_name, coordinate_system, name=shapes_name)
+        _add_layer_to_viewer(self._viewer, layer)
+        self.register_layer(
+            layer,
+            sdata=sdata,
+            element_name=shapes_name,
+            element_type="shapes",
+            coordinate_system=coordinate_system,
+        )
+        return layer
 
-        return matches
+    def remove_labels_layer(self, sdata: SpatialData, labels_name: str, coordinate_system: str) -> Labels | None:
+        """Remove the loaded labels layer for one labels element in one coordinate system."""
+        layer = self._get_loaded_labels_layer_for_coordinate_system(sdata, labels_name, coordinate_system)
+        if layer is None:
+            return None
+
+        self._remove_layer_from_viewer_and_registry(layer)
+        return layer
 
     def remove_image_layers(self, sdata: SpatialData, image_name: str, coordinate_system: str) -> list[Image]:
         """Remove loaded stack and overlay layers for one image in one coordinate system."""
@@ -742,6 +733,15 @@ class ViewerAdapter(QObject):
                 removed_layers.append(layer)
 
         return removed_layers
+
+    def remove_shapes_layer(self, sdata: SpatialData, shapes_name: str, coordinate_system: str) -> Shapes | None:
+        """Remove the loaded shapes layer for one shapes element in one coordinate system."""
+        layer = self._get_loaded_shapes_layer_for_coordinate_system(sdata, shapes_name, coordinate_system)
+        if layer is None:
+            return None
+
+        self._remove_layer_from_viewer_and_registry(layer)
+        return layer
 
     def remove_layers_outside_coordinate_system(
         self,
@@ -806,27 +806,6 @@ class ViewerAdapter(QObject):
     ) -> Labels | None:
         return self.get_loaded_primary_labels_layer(sdata, labels_name, coordinate_system)
 
-    def _get_loaded_shapes_layer_for_coordinate_system(
-        self,
-        sdata: SpatialData,
-        shapes_name: str,
-        coordinate_system: str | None = None,
-    ) -> Shapes | None:
-        for layer in self._iter_candidate_layers():
-            if not _is_shapes_layer(layer):
-                continue
-
-            binding = self._layer_bindings.get_binding(layer)
-            if _matches_shapes_binding(
-                binding,
-                sdata=sdata,
-                element_name=shapes_name,
-                coordinate_system=coordinate_system,
-            ):
-                return layer
-
-        return None
-
     def _get_loaded_image_layer_for_coordinate_system(
         self,
         sdata: SpatialData,
@@ -855,6 +834,27 @@ class ViewerAdapter(QObject):
             matches.append(layer)
 
         return matches
+
+    def _get_loaded_shapes_layer_for_coordinate_system(
+        self,
+        sdata: SpatialData,
+        shapes_name: str,
+        coordinate_system: str | None = None,
+    ) -> Shapes | None:
+        for layer in self._iter_candidate_layers():
+            if not _is_shapes_layer(layer):
+                continue
+
+            binding = self._layer_bindings.get_binding(layer)
+            if _matches_shapes_binding(
+                binding,
+                sdata=sdata,
+                element_name=shapes_name,
+                coordinate_system=coordinate_system,
+            ):
+                return layer
+
+        return None
 
 
 def _apply_minimal_layer_metadata(layer: Layer, binding: LayerBinding) -> None:
