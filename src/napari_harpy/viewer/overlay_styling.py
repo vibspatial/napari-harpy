@@ -52,16 +52,16 @@ def apply_table_color_source_to_labels_layer(
     layer: Labels,
     *,
     sdata: SpatialData,
-    label_name: str,
+    labels_name: str,
     style_spec: TableColorSourceSpec,
 ) -> StyledLabelsStyleResult:
     """Apply one table-backed source to a styled labels layer."""
     table = get_table(sdata, style_spec.table_name)
     table_metadata = get_table_metadata(sdata, style_spec.table_name)
-    if not table_metadata.annotates(label_name):
-        raise ValueError(f"Table `{style_spec.table_name}` does not annotate labels element `{label_name}`.")
+    if not table_metadata.annotates(labels_name):
+        raise ValueError(f"Table `{style_spec.table_name}` does not annotate labels element `{labels_name}`.")
 
-    region_rows, obs_index = _get_region_rows_by_instance(table, table_metadata, label_name)
+    region_rows, obs_index = _get_region_rows_by_instance(table, table_metadata, labels_name)
     if style_spec.value_kind == "instance" or (
         style_spec.source_kind == "obs_column" and style_spec.value_key == table_metadata.instance_key
     ):
@@ -92,11 +92,11 @@ def apply_table_color_source_to_labels_layer(
     return style_result
 
 
-def build_styled_labels_layer_name(label_name: str, style_spec: TableColorSourceSpec) -> str:
+def build_styled_labels_layer_name(labels_name: str, style_spec: TableColorSourceSpec) -> str:
     """Return the user-facing layer name for one styled labels variant."""
     if style_spec.source_kind == "obs_column":
-        return f"{label_name}[obs:{style_spec.value_key}]"
-    return f"{label_name}[X:{style_spec.value_key}]"
+        return f"{labels_name}[obs:{style_spec.value_key}]"
+    return f"{labels_name}[X:{style_spec.value_key}]"
 
 
 def _build_obs_column_colormap(
@@ -264,8 +264,10 @@ def _build_x_var_colormap(
     return style_result, color_dict, pd.DataFrame({var_name: numeric_region_series}, index=region_rows.index)
 
 
-def _get_region_rows_by_instance(table: AnnData, table_metadata: Any, label_name: str) -> tuple[pd.DataFrame, pd.Index]:
-    region_rows = table.obs.loc[table.obs[table_metadata.region_key] == label_name].copy()
+def _get_region_rows_by_instance(
+    table: AnnData, table_metadata: Any, labels_name: str
+) -> tuple[pd.DataFrame, pd.Index]:
+    region_rows = table.obs.loc[table.obs[table_metadata.region_key] == labels_name].copy()
 
     instance_ids = pd.to_numeric(region_rows[table_metadata.instance_key], errors="coerce")
     region_rows = region_rows.loc[instance_ids.notna()].copy()

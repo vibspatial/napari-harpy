@@ -261,7 +261,7 @@ def apply_classifier_with_feature_extraction(
         classifier,
         table_name=resolved_target.table_name,
         feature_key=resolved_target.feature_key,
-        prediction_regions=tuple(triplet.label_name for triplet in resolved_target.triplets),
+        prediction_regions=tuple(triplet.labels_name for triplet in resolved_target.triplets),
         pred_class_column=pred_class_column,
         pred_confidence_column=pred_confidence_column,
         classifier_path=classifier_path,
@@ -364,11 +364,11 @@ def _build_headless_feature_target(
     triplets = tuple(
         FeatureExtractionTriplet(
             coordinate_system=resolved_coordinate_system,
-            label_name=resolved_label_name,
+            labels_name=resolved_labels_name,
             image_name=resolved_image_name,
             channels=normalized_channels,
         )
-        for resolved_label_name, resolved_coordinate_system, resolved_image_name in zip(
+        for resolved_labels_name, resolved_coordinate_system, resolved_image_name in zip(
             normalized_labels,
             coordinate_systems,
             image_names,
@@ -451,7 +451,7 @@ def _broadcast_parallel_values(values: tuple[T, ...], expected_count: int, name:
 
 def _resolve_coordinate_systems_for_labels(
     sdata: SpatialData,
-    labels_name: tuple[str, ...],
+    labels_names: tuple[str, ...],
     coordinate_system: str | Sequence[str] | None,
 ) -> tuple[str, ...]:
     """Return one validated coordinate system per labels element.
@@ -462,30 +462,30 @@ def _resolve_coordinate_systems_for_labels(
     exposes exactly one coordinate system.
     """
     if coordinate_system is not None:
-        coordinate_systems = _normalize_parallel_names(coordinate_system, len(labels_name), "coordinate_system")
-        for label_name, resolved_coordinate_system in zip(labels_name, coordinate_systems, strict=True):
-            available_coordinate_systems = _get_label_coordinate_systems(sdata, label_name)
+        coordinate_systems = _normalize_parallel_names(coordinate_system, len(labels_names), "coordinate_system")
+        for labels_name, resolved_coordinate_system in zip(labels_names, coordinate_systems, strict=True):
+            available_coordinate_systems = _get_label_coordinate_systems(sdata, labels_name)
             if resolved_coordinate_system not in available_coordinate_systems:
                 available = ", ".join(f"`{name}`" for name in available_coordinate_systems)
                 raise ValueError(
-                    f"Labels element `{label_name}` is not available in coordinate system "
+                    f"Labels element `{labels_name}` is not available in coordinate system "
                     f"`{resolved_coordinate_system}`. Available coordinate systems: {available}."
                 )
         return coordinate_systems
 
-    return _infer_coordinate_systems_for_labels(sdata, labels_name)
+    return _infer_coordinate_systems_for_labels(sdata, labels_names)
 
 
-def _infer_coordinate_systems_for_labels(sdata: SpatialData, labels_name: tuple[str, ...]) -> tuple[str, ...]:
+def _infer_coordinate_systems_for_labels(sdata: SpatialData, labels_names: tuple[str, ...]) -> tuple[str, ...]:
     coordinate_systems_by_label = {
-        label_name: _get_label_coordinate_systems(sdata, label_name) for label_name in labels_name
+        labels_name: _get_label_coordinate_systems(sdata, labels_name) for labels_name in labels_names
     }
     if all(len(coordinate_systems) == 1 for coordinate_systems in coordinate_systems_by_label.values()):
         return tuple(coordinate_systems[0] for coordinate_systems in coordinate_systems_by_label.values())
 
     options = "; ".join(
-        f"{label_name}: {', '.join(coordinate_systems)}"
-        for label_name, coordinate_systems in coordinate_systems_by_label.items()
+        f"{labels_name}: {', '.join(coordinate_systems)}"
+        for labels_name, coordinate_systems in coordinate_systems_by_label.items()
     )
     raise ValueError(
         "Could not infer a unique coordinate system for feature extraction. "
@@ -493,13 +493,13 @@ def _infer_coordinate_systems_for_labels(sdata: SpatialData, labels_name: tuple[
     )
 
 
-def _get_label_coordinate_systems(sdata: SpatialData, label_name: str) -> tuple[str, ...]:
-    if label_name not in sdata.labels:
-        raise ValueError(f"Labels element `{label_name}` is not available in the target SpatialData object.")
+def _get_label_coordinate_systems(sdata: SpatialData, labels_name: str) -> tuple[str, ...]:
+    if labels_name not in sdata.labels:
+        raise ValueError(f"Labels element `{labels_name}` is not available in the target SpatialData object.")
 
-    coordinate_systems = _get_element_coordinate_systems(sdata.labels[label_name])
+    coordinate_systems = _get_element_coordinate_systems(sdata.labels[labels_name])
     if not coordinate_systems:
-        raise ValueError(f"Labels element `{label_name}` does not expose any coordinate systems.")
+        raise ValueError(f"Labels element `{labels_name}` does not expose any coordinate systems.")
     return coordinate_systems
 
 

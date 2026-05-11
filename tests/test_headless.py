@@ -271,7 +271,7 @@ def test_compute_features_for_classifier_uses_target_mapping(
             triplets=(
                 headless.FeatureExtractionTriplet(
                     coordinate_system="target_global",
-                    label_name="target_cells",
+                    labels_name="target_cells",
                     image_name=None,
                 ),
             ),
@@ -416,9 +416,10 @@ def test_apply_classifier_from_path_persists_backed_prediction_state(
     assert "headless_class" in disk_table.obs
     assert "headless_confidence" in disk_table.obs
     assert "headless_class_colors" in disk_table.uns
-    assert disk_table.obs["headless_class"].astype("string").tolist() == table.obs["headless_class"].astype(
-        "string"
-    ).tolist()
+    assert (
+        disk_table.obs["headless_class"].astype("string").tolist()
+        == table.obs["headless_class"].astype("string").tolist()
+    )
     assert np.allclose(
         disk_table.obs["headless_confidence"].to_numpy(dtype=np.float64),
         table.obs["headless_confidence"].to_numpy(dtype=np.float64),

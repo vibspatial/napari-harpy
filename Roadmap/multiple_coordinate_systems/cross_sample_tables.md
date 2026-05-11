@@ -607,7 +607,7 @@ Work:
 - use discovery helpers of the following shape as the source of truth for the
   widget:
   - `SpatialDataFeatureExtractionLabelDiscovery` with
-    `eligible_label_options`, `coordinate_system_label_count`, and
+    `eligible_label_options`, `coordinate_system_labels_count`, and
     `unavailable_label_count`;
   - `SpatialDataFeatureExtractionImageDiscovery` with
     `eligible_image_options`, `coordinate_system_image_count`, and

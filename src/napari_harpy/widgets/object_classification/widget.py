@@ -37,7 +37,7 @@ from napari_harpy.core.spatialdata import (
     SpatialDataTableMetadata,
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
-    get_spatialdata_label_options_for_coordinate_system_from_sdata,
+    get_spatialdata_labels_options_for_coordinate_system_from_sdata,
     get_table_metadata,
     get_table_obsm_keys,
     validate_table_binding,
@@ -449,7 +449,7 @@ class ObjectClassificationWidget(QWidget):
     @property
     def selected_segmentation_name(self) -> str | None:
         """Return the currently selected labels element name."""
-        return None if self._selected_label_option is None else self._selected_label_option.label_name
+        return None if self._selected_label_option is None else self._selected_label_option.labels_name
 
     @property
     def selected_spatialdata(self) -> SpatialData | None:
@@ -560,7 +560,7 @@ class ObjectClassificationWidget(QWidget):
         if self.selected_spatialdata is None or self.selected_coordinate_system is None:
             self._label_options = []
         else:
-            self._label_options = get_spatialdata_label_options_for_coordinate_system_from_sdata(
+            self._label_options = get_spatialdata_labels_options_for_coordinate_system_from_sdata(
                 sdata=self.selected_spatialdata,
                 coordinate_system=self.selected_coordinate_system,
             )
@@ -765,18 +765,17 @@ class ObjectClassificationWidget(QWidget):
             )
             if existing_layer is not None:
                 if self._app_state.viewer_adapter.layer_bindings.get_binding(existing_layer) is None:
-                    self._app_state.viewer_adapter.register_layer(
+                    self._app_state.viewer_adapter.register_labels_layer(
                         existing_layer,
                         sdata=self.selected_spatialdata,
-                        element_name=self.selected_segmentation_name,
-                        element_type="labels",
+                        labels_name=self.selected_segmentation_name,
                         coordinate_system=self.selected_coordinate_system,
                     )
                 activated = self._app_state.viewer_adapter.activate_layer(existing_layer)
                 if activated:
                     self._labels_layer_preparation_result = _LabelsLayerPreparationResult(
                         kind="activated",
-                        label_name=self.selected_segmentation_name,
+                        labels_name=self.selected_segmentation_name,
                         coordinate_system=self.selected_coordinate_system,
                     )
                 return self._labels_layer_preparation_result
@@ -794,7 +793,7 @@ class ObjectClassificationWidget(QWidget):
             self._app_state.viewer_adapter.activate_layer(layer)
             self._labels_layer_preparation_result = _LabelsLayerPreparationResult(
                 kind="loaded",
-                label_name=self.selected_segmentation_name,
+                labels_name=self.selected_segmentation_name,
                 coordinate_system=self.selected_coordinate_system,
             )
             return self._labels_layer_preparation_result

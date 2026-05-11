@@ -5,9 +5,16 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, TypeGuard
 
 import numpy as np
+import pandas as pd
 from loguru import logger
-from napari.layers import Image, Labels, Layer
+from napari.layers import Image, Labels, Layer, Shapes
 from qtpy.QtCore import QObject, Signal
+from shapely import make_valid
+from shapely.errors import GEOSException
+from shapely.geometry import GeometryCollection, MultiPolygon, Point, Polygon
+from shapely.geometry.base import BaseGeometry
+from shapely.geometry.polygon import orient
+from spatialdata import transform as transform_spatial_element
 from spatialdata.models import get_axes_names
 from spatialdata.transformations import get_transformation
 from xarray import DataArray, DataTree
@@ -23,6 +30,11 @@ if TYPE_CHECKING:
     from spatialdata import SpatialData
 
 ImageDisplayMode = Literal["stack", "overlay"]
+ElementType = Literal["labels", "image", "shapes"]
+ShapesLayerShapeType = Literal["polygon", "ellipse"]
+# Name of the layer.features column that _HarpyShapes reads to display the
+# source GeoDataFrame index in napari's status bar.
+DEFAULT_SHAPES_INDEX_FEATURE_NAME = "index"
 DEFAULT_OVERLAY_COLORS = (
     "#00FFFF",  # cyan
     "#FF00FF",  # magenta
@@ -35,13 +47,95 @@ DEFAULT_OVERLAY_COLORS = (
 )
 
 
+class _HarpyShapes(Shapes):
+    """Napari ``Shapes`` layer with Harpy-specific status-bar text.
+
+    This subclass only customizes display behavior: when the cursor is over a
+    rendered shape, it reads the configured source-index feature column from
+    ``layer.features`` and appends that value to napari's status bar.
+    """
+
+    def __init__(
+        self,
+        *args: Any,
+        source_shapes_index_feature_name: str = DEFAULT_SHAPES_INDEX_FEATURE_NAME,
+        **kwargs: Any,
+    ) -> None:
+        self._source_shapes_index_feature_name = source_shapes_index_feature_name
+        super().__init__(*args, **kwargs)
+
+    def get_status(
+        self,
+        position: Any | None = None,
+        *,
+        view_direction: Any | None = None,
+        dims_displayed: list[int] | None = None,
+        world: bool = False,
+        value: Any | None = None,
+    ) -> dict[str, str]:
+        status = super().get_status(
+            position,
+            view_direction=view_direction,
+            dims_displayed=dims_displayed,
+            world=world,
+            value=value,
+        )
+        if position is None:
+            return status
+
+        shape_value = self.get_value(
+            position,
+            view_direction=view_direction,
+            dims_displayed=dims_displayed,
+            world=world,
+        )
+        source_index_status = self._get_source_index_status(shape_value)
+        if source_index_status:
+            status["coordinates"] += f"; {source_index_status}"
+            status["value"] += f"; {source_index_status}"
+        return status
+
+    def _get_source_index_status(self, value: Any) -> str | None:
+        if not isinstance(value, tuple) or not value:
+            return None
+
+        shape_index = value[0]
+        if shape_index is None:
+            return None
+
+        try:
+            feature_row = self.features.iloc[int(shape_index)]
+        except (IndexError, TypeError, ValueError):
+            return None
+
+        index_feature_name = self._source_shapes_index_feature_name
+        if index_feature_name not in feature_row:
+            return None
+
+        source_index = feature_row[index_feature_name]
+        if self._is_missing_feature_value(source_index):
+            return None
+
+        return f"{index_feature_name}: {source_index}"
+
+    @staticmethod
+    def _is_missing_feature_value(value: Any) -> bool:
+        if value is None:
+            return True
+
+        try:
+            return bool(pd.isna(value))
+        except (TypeError, ValueError):
+            return False
+
+
 @dataclass(frozen=True, kw_only=True)
 class BaseLayerBinding:
     """Runtime binding between a napari layer and a SpatialData element."""
 
     layer: Layer
     element_name: str
-    element_type: Literal["labels", "image"]
+    element_type: ElementType
     coordinate_system: str | None
     sdata_id: int | None = None
 
@@ -65,7 +159,64 @@ class ImageLayerBinding(BaseLayerBinding):
     channel_name: str | None = None
 
 
-LayerBinding = LabelsLayerBinding | ImageLayerBinding
+@dataclass(frozen=True, kw_only=True)
+class ShapesLayerBinding(BaseLayerBinding):
+    """Binding metadata specific to shapes layers."""
+
+    element_type: Literal["shapes"] = "shapes"
+    source_shapes_index_by_row: tuple[Any, ...] = ()
+    source_shapes_index_feature_name: str = DEFAULT_SHAPES_INDEX_FEATURE_NAME
+    skipped_geometry_count: int = 0
+
+
+LayerBinding = LabelsLayerBinding | ImageLayerBinding | ShapesLayerBinding
+
+
+@dataclass(frozen=True)
+class _NapariShapesLayerInputs:
+    """Prepared inputs for constructing one napari ``Shapes`` layer.
+
+    Parameters
+    ----------
+    data
+        One vertex array per rendered napari shape. This length can differ
+        from the source GeoDataFrame row count because a ``MultiPolygon`` row
+        expands into multiple rendered shapes, while empty, invalid, or
+        unsupported geometries are skipped.
+    shape_types
+        Napari shape type for each row in ``data``.
+    features
+        DataFrame row-aligned to ``data``. It currently stores the source
+        GeoDataFrame index for status-bar display.
+    source_shapes_index_feature_name
+        Name of the ``features`` column that stores the source GeoDataFrame
+        index, using the GeoDataFrame index name or ``"index"`` fallback.
+    source_shapes_index_by_row
+        Source GeoDataFrame index for each rendered napari row. This is later
+        stored in the Harpy layer binding so every row in ``data`` can be
+        mapped back to its source row even when ``len(data)`` differs from the
+        source GeoDataFrame row count. For example, if source row ``"cell_7"``
+        is a ``MultiPolygon`` that expands into three rendered napari polygons
+        and source row ``"cell_8"`` expands into one rendered napari polygon,
+        this value is ``("cell_7", "cell_7", "cell_7", "cell_8")``.
+    skipped_geometry_count
+        Number of source rows that could not be rendered.
+    """
+
+    data: list[np.ndarray]
+    shape_types: list[ShapesLayerShapeType]
+    features: pd.DataFrame
+    source_shapes_index_feature_name: str
+    source_shapes_index_by_row: tuple[Any, ...]
+    skipped_geometry_count: int
+
+
+@dataclass(frozen=True)
+class _BuiltShapesLayer:
+    layer: Shapes
+    source_shapes_index_feature_name: str
+    source_shapes_index_by_row: tuple[Any, ...]
+    skipped_geometry_count: int
 
 
 class LayerBindingRegistry:
@@ -111,47 +262,84 @@ class LayerBindingRegistry:
     def __init__(self) -> None:
         self._bindings: dict[int, LayerBinding] = {}
 
-    def register_layer(
+    def register_labels_layer(
         self,
-        layer: Layer,
+        layer: Labels,
         *,
         element_name: str,
-        element_type: Literal["labels", "image"],
         coordinate_system: str | None = None,
         sdata: SpatialData | None = None,
         labels_role: Literal["primary", "styled"] = "primary",
         style_spec: TableColorSourceSpec | None = None,
+    ) -> LabelsLayerBinding:
+        """Register a labels layer binding."""
+        if labels_role == "primary" and style_spec is not None:
+            raise ValueError("Primary labels bindings must not carry a style specification.")
+        if labels_role == "styled" and style_spec is None:
+            raise ValueError("Styled labels bindings require a style specification.")
+
+        binding = LabelsLayerBinding(
+            layer=layer,
+            element_name=element_name,
+            coordinate_system=coordinate_system,
+            sdata_id=_get_sdata_id(sdata),
+            labels_role=labels_role,
+            style_spec=style_spec,
+        )
+        self._register_binding(binding)
+        return binding
+
+    def register_image_layer(
+        self,
+        layer: Image,
+        *,
+        element_name: str,
+        coordinate_system: str | None = None,
+        sdata: SpatialData | None = None,
         image_display_mode: ImageDisplayMode | None = None,
         channel_index: int | None = None,
         channel_name: str | None = None,
-    ) -> LayerBinding:
-        """Register a layer binding and attach lightweight metadata."""
-        sdata_id = None if sdata is None else id(sdata)
-        if element_type == "labels":
-            if labels_role == "primary" and style_spec is not None:
-                raise ValueError("Primary labels bindings must not carry a style specification.")
-            if labels_role == "styled" and style_spec is None:
-                raise ValueError("Styled labels bindings require a style specification.")
-            binding = LabelsLayerBinding(
-                layer=layer,
-                element_name=element_name,
-                coordinate_system=coordinate_system,
-                sdata_id=sdata_id,
-                labels_role=labels_role,
-                style_spec=style_spec,
-            )
-        else:
-            binding = ImageLayerBinding(
-                layer=layer,
-                element_name=element_name,
-                coordinate_system=coordinate_system,
-                sdata_id=sdata_id,
-                image_display_mode=image_display_mode,
-                channel_index=channel_index,
-                channel_name=channel_name,
-            )
-        self._bindings[id(layer)] = binding
-        _apply_minimal_layer_metadata(layer, binding)
+    ) -> ImageLayerBinding:
+        """Register an image layer binding."""
+        binding = ImageLayerBinding(
+            layer=layer,
+            element_name=element_name,
+            coordinate_system=coordinate_system,
+            sdata_id=_get_sdata_id(sdata),
+            image_display_mode=image_display_mode,
+            channel_index=channel_index,
+            channel_name=channel_name,
+        )
+        self._register_binding(binding)
+        return binding
+
+    def register_shapes_layer(
+        self,
+        layer: Shapes,
+        *,
+        element_name: str,
+        coordinate_system: str | None = None,
+        sdata: SpatialData | None = None,
+        source_shapes_index_by_row: tuple[Any, ...] = (),
+        source_shapes_index_feature_name: str = DEFAULT_SHAPES_INDEX_FEATURE_NAME,
+        skipped_geometry_count: int = 0,
+    ) -> ShapesLayerBinding:
+        """Register a shapes layer binding."""
+        binding = ShapesLayerBinding(
+            layer=layer,
+            element_name=element_name,
+            coordinate_system=coordinate_system,
+            sdata_id=_get_sdata_id(sdata),
+            source_shapes_index_by_row=source_shapes_index_by_row,
+            source_shapes_index_feature_name=source_shapes_index_feature_name,
+            skipped_geometry_count=skipped_geometry_count,
+        )
+        self._register_binding(binding)
+        return binding
+
+    def _register_binding(self, binding: LayerBinding) -> LayerBinding:
+        """Store a binding in the registry."""
+        self._bindings[id(binding.layer)] = binding
         return binding
 
     def unregister_layer(self, layer: Layer) -> LayerBinding | None:
@@ -171,7 +359,7 @@ class LayerBindingRegistry:
         *,
         sdata: SpatialData | None = None,
         element_name: str | None = None,
-        element_type: Literal["labels", "image"] | None = None,
+        element_type: ElementType | None = None,
         coordinate_system: str | None = None,
         labels_role: Literal["primary", "styled"] | None = None,
         style_spec: TableColorSourceSpec | None = None,
@@ -246,21 +434,17 @@ class ViewerAdapter(QObject):
         """Return the shared layer-binding registry."""
         return self._layer_bindings
 
-    def register_layer(
+    def register_labels_layer(
         self,
-        layer: Layer,
+        layer: Labels,
         *,
-        element_name: str,
-        element_type: Literal["labels", "image"],
+        labels_name: str,
         coordinate_system: str | None = None,
         sdata: SpatialData | None = None,
         labels_role: Literal["primary", "styled"] = "primary",
         style_spec: TableColorSourceSpec | None = None,
-        image_display_mode: ImageDisplayMode | None = None,
-        channel_index: int | None = None,
-        channel_name: str | None = None,
-    ) -> LayerBinding:
-        """Register a layer in the shared binding registry.
+    ) -> LabelsLayerBinding:
+        """Register a labels layer in the shared binding registry.
 
         For primary labels layers, registration itself may be the moment when a
         live napari layer becomes Harpy-usable. This happens on the normal
@@ -270,21 +454,68 @@ class ViewerAdapter(QObject):
         already present in the viewer so those flows do not depend on the
         viewer's ``inserted`` event having seen a binding already.
         """
-        binding = self._layer_bindings.register_layer(
+        binding = self._layer_bindings.register_labels_layer(
             layer,
-            element_name=element_name,
-            element_type=element_type,
+            element_name=labels_name,
             coordinate_system=coordinate_system,
             sdata=sdata,
             labels_role=labels_role,
             style_spec=style_spec,
+        )
+        self._handle_registered_binding(binding)
+        return binding
+
+    def register_image_layer(
+        self,
+        layer: Image,
+        *,
+        image_name: str,
+        coordinate_system: str | None = None,
+        sdata: SpatialData | None = None,
+        image_display_mode: ImageDisplayMode | None = None,
+        channel_index: int | None = None,
+        channel_name: str | None = None,
+    ) -> ImageLayerBinding:
+        """Register an image layer in the shared binding registry."""
+        binding = self._layer_bindings.register_image_layer(
+            layer,
+            element_name=image_name,
+            coordinate_system=coordinate_system,
+            sdata=sdata,
             image_display_mode=image_display_mode,
             channel_index=channel_index,
             channel_name=channel_name,
         )
-        if _is_primary_labels_binding(binding) and self._is_layer_loaded_in_viewer(layer):
-            self.primary_labels_layers_changed.emit()
+        self._handle_registered_binding(binding)
         return binding
+
+    def register_shapes_layer(
+        self,
+        layer: Shapes,
+        *,
+        shapes_name: str,
+        coordinate_system: str | None = None,
+        sdata: SpatialData | None = None,
+        source_shapes_index_by_row: tuple[Any, ...] = (),
+        source_shapes_index_feature_name: str = DEFAULT_SHAPES_INDEX_FEATURE_NAME,
+        skipped_geometry_count: int = 0,
+    ) -> ShapesLayerBinding:
+        """Register a shapes layer in the shared binding registry."""
+        binding = self._layer_bindings.register_shapes_layer(
+            layer,
+            element_name=shapes_name,
+            coordinate_system=coordinate_system,
+            sdata=sdata,
+            source_shapes_index_by_row=source_shapes_index_by_row,
+            source_shapes_index_feature_name=source_shapes_index_feature_name,
+            skipped_geometry_count=skipped_geometry_count,
+        )
+        self._handle_registered_binding(binding)
+        return binding
+
+    def _handle_registered_binding(self, binding: LayerBinding) -> None:
+        if _is_primary_labels_binding(binding) and self._is_layer_loaded_in_viewer(binding.layer):
+            self.primary_labels_layers_changed.emit()
 
     def unregister_layer(self, layer: Layer) -> LayerBinding | None:
         """Remove a layer from the shared binding registry."""
@@ -374,7 +605,7 @@ class ViewerAdapter(QObject):
     def get_loaded_primary_labels_layer(
         self,
         sdata: SpatialData,
-        label_name: str,
+        labels_name: str,
         coordinate_system: str | None = None,
     ) -> Labels | None:
         """Return the loaded primary labels layer for one labels element.
@@ -392,7 +623,7 @@ class ViewerAdapter(QObject):
             if _matches_labels_binding(
                 binding,
                 sdata=sdata,
-                element_name=label_name,
+                element_name=labels_name,
                 coordinate_system=coordinate_system,
                 labels_role="primary",
             ):
@@ -403,7 +634,7 @@ class ViewerAdapter(QObject):
     def get_loaded_styled_labels_layer(
         self,
         sdata: SpatialData,
-        label_name: str,
+        labels_name: str,
         style_spec: TableColorSourceSpec,
         coordinate_system: str | None = None,
     ) -> Labels | None:
@@ -416,7 +647,7 @@ class ViewerAdapter(QObject):
             if _matches_labels_binding(
                 binding,
                 sdata=sdata,
-                element_name=label_name,
+                element_name=labels_name,
                 coordinate_system=coordinate_system,
                 labels_role="styled",
                 style_spec=style_spec,
@@ -428,7 +659,7 @@ class ViewerAdapter(QObject):
     def get_loaded_styled_labels_layers(
         self,
         sdata: SpatialData,
-        label_name: str,
+        labels_name: str,
         coordinate_system: str | None = None,
     ) -> list[Labels]:
         """Return all loaded styled labels layers for one labels element."""
@@ -441,7 +672,7 @@ class ViewerAdapter(QObject):
             if _matches_labels_binding(
                 binding,
                 sdata=sdata,
-                element_name=label_name,
+                element_name=labels_name,
                 coordinate_system=coordinate_system,
                 labels_role="styled",
             ):
@@ -449,19 +680,31 @@ class ViewerAdapter(QObject):
 
         return matches
 
-    def ensure_labels_loaded(self, sdata: SpatialData, label_name: str, coordinate_system: str) -> Labels:
+    def get_loaded_image_layers(self, sdata: SpatialData, image_name: str) -> list[Image]:
+        """Return loaded image layers for a SpatialData image element."""
+        matches: list[Image] = []
+        for layer in self._iter_candidate_layers():
+            if not _is_image_layer(layer):
+                continue
+
+            binding = self._layer_bindings.get_binding(layer)
+            if _matches_binding(binding, sdata=sdata, element_name=image_name, element_type="image"):
+                matches.append(layer)
+
+        return matches
+
+    def ensure_labels_loaded(self, sdata: SpatialData, labels_name: str, coordinate_system: str) -> Labels:
         """Load a labels element into napari if it is not already present."""
-        existing_layer = self._get_loaded_labels_layer_for_coordinate_system(sdata, label_name, coordinate_system)
+        existing_layer = self._get_loaded_labels_layer_for_coordinate_system(sdata, labels_name, coordinate_system)
         if existing_layer is not None:
             return existing_layer
 
-        layer = _build_labels_layer(sdata, label_name, coordinate_system, name=label_name)
+        layer = _build_labels_layer(sdata, labels_name, coordinate_system, name=labels_name)
         _add_layer_to_viewer(self._viewer, layer)
-        self.register_layer(
+        self.register_labels_layer(
             layer,
             sdata=sdata,
-            element_name=label_name,
-            element_type="labels",
+            labels_name=labels_name,
             coordinate_system=coordinate_system,
         )
         return layer
@@ -469,14 +712,14 @@ class ViewerAdapter(QObject):
     def ensure_styled_labels_loaded(
         self,
         sdata: SpatialData,
-        label_name: str,
+        labels_name: str,
         coordinate_system: str,
         style_spec: TableColorSourceSpec,
     ) -> StyledLabelsLoadResult:
         """Load or update one styled labels overlay variant."""
         existing_layer = self.get_loaded_styled_labels_layer(
             sdata,
-            label_name,
+            labels_name,
             style_spec,
             coordinate_system,
         )
@@ -484,16 +727,15 @@ class ViewerAdapter(QObject):
         if existing_layer is None:
             layer = _build_labels_layer(
                 sdata,
-                label_name,
+                labels_name,
                 coordinate_system,
-                name=build_styled_labels_layer_name(label_name, style_spec),
+                name=build_styled_labels_layer_name(labels_name, style_spec),
             )
             _add_layer_to_viewer(self._viewer, layer)
-            self.register_layer(
+            self.register_labels_layer(
                 layer,
                 sdata=sdata,
-                element_name=label_name,
-                element_type="labels",
+                labels_name=labels_name,
                 coordinate_system=coordinate_system,
                 labels_role="styled",
                 style_spec=style_spec,
@@ -501,11 +743,11 @@ class ViewerAdapter(QObject):
         else:
             layer = existing_layer
 
-        layer.name = build_styled_labels_layer_name(label_name, style_spec)
+        layer.name = build_styled_labels_layer_name(labels_name, style_spec)
         style_result = apply_table_color_source_to_labels_layer(
             layer,
             sdata=sdata,
-            label_name=label_name,
+            labels_name=labels_name,
             style_spec=style_spec,
         )
         return StyledLabelsLoadResult(
@@ -515,15 +757,6 @@ class ViewerAdapter(QObject):
             palette_source=style_result.palette_source,
             coercion_applied=style_result.coercion_applied,
         )
-
-    def remove_labels_layer(self, sdata: SpatialData, label_name: str, coordinate_system: str) -> Labels | None:
-        """Remove the loaded labels layer for one labels element in one coordinate system."""
-        layer = self._get_loaded_labels_layer_for_coordinate_system(sdata, label_name, coordinate_system)
-        if layer is None:
-            return None
-
-        self._remove_layer_from_viewer_and_registry(layer)
-        return layer
 
     def ensure_image_loaded(
         self,
@@ -575,11 +808,10 @@ class ViewerAdapter(QObject):
                 rgb=rgb,
             )
             _add_layer_to_viewer(self._viewer, layer)
-            self.register_layer(
+            self.register_image_layer(
                 layer,
                 sdata=sdata,
-                element_name=image_name,
-                element_type="image",
+                image_name=image_name,
                 coordinate_system=coordinate_system,
                 image_display_mode=mode,
             )
@@ -636,11 +868,10 @@ class ViewerAdapter(QObject):
                     colormap=color,
                 )
                 _add_layer_to_viewer(self._viewer, layer)
-                self.register_layer(
+                self.register_image_layer(
                     layer,
                     sdata=sdata,
-                    element_name=image_name,
-                    element_type="image",
+                    image_name=image_name,
                     coordinate_system=coordinate_system,
                     image_display_mode=mode,
                     channel_index=channel_index,
@@ -656,18 +887,34 @@ class ViewerAdapter(QObject):
 
         return loaded_overlay_layers
 
-    def get_loaded_image_layers(self, sdata: SpatialData, image_name: str) -> list[Image]:
-        """Return loaded image layers for a SpatialData image element."""
-        matches: list[Image] = []
-        for layer in self._iter_candidate_layers():
-            if not _is_image_layer(layer):
-                continue
+    def ensure_shapes_loaded(self, sdata: SpatialData, shapes_name: str, coordinate_system: str) -> Shapes:
+        """Load a shapes element into napari if it is not already present."""
+        existing_layer = self._get_loaded_shapes_layer_for_coordinate_system(sdata, shapes_name, coordinate_system)
+        if existing_layer is not None:
+            return existing_layer
 
-            binding = self._layer_bindings.get_binding(layer)
-            if _matches_binding(binding, sdata=sdata, element_name=image_name, element_type="image"):
-                matches.append(layer)
+        built_layer = _build_shapes_layer(sdata, shapes_name, coordinate_system, name=shapes_name)
+        layer = built_layer.layer
+        _add_layer_to_viewer(self._viewer, layer)
+        self.register_shapes_layer(
+            layer,
+            sdata=sdata,
+            shapes_name=shapes_name,
+            coordinate_system=coordinate_system,
+            source_shapes_index_by_row=built_layer.source_shapes_index_by_row,
+            source_shapes_index_feature_name=built_layer.source_shapes_index_feature_name,
+            skipped_geometry_count=built_layer.skipped_geometry_count,
+        )
+        return layer
 
-        return matches
+    def remove_labels_layer(self, sdata: SpatialData, labels_name: str, coordinate_system: str) -> Labels | None:
+        """Remove the loaded labels layer for one labels element in one coordinate system."""
+        layer = self._get_loaded_labels_layer_for_coordinate_system(sdata, labels_name, coordinate_system)
+        if layer is None:
+            return None
+
+        self._remove_layer_from_viewer_and_registry(layer)
+        return layer
 
     def remove_image_layers(self, sdata: SpatialData, image_name: str, coordinate_system: str) -> list[Image]:
         """Remove loaded stack and overlay layers for one image in one coordinate system."""
@@ -684,6 +931,15 @@ class ViewerAdapter(QObject):
                 removed_layers.append(layer)
 
         return removed_layers
+
+    def remove_shapes_layer(self, sdata: SpatialData, shapes_name: str, coordinate_system: str) -> Shapes | None:
+        """Remove the loaded shapes layer for one shapes element in one coordinate system."""
+        layer = self._get_loaded_shapes_layer_for_coordinate_system(sdata, shapes_name, coordinate_system)
+        if layer is None:
+            return None
+
+        self._remove_layer_from_viewer_and_registry(layer)
+        return layer
 
     def remove_layers_outside_coordinate_system(
         self,
@@ -743,10 +999,10 @@ class ViewerAdapter(QObject):
     def _get_loaded_labels_layer_for_coordinate_system(
         self,
         sdata: SpatialData,
-        label_name: str,
+        labels_name: str,
         coordinate_system: str,
     ) -> Labels | None:
-        return self.get_loaded_primary_labels_layer(sdata, label_name, coordinate_system)
+        return self.get_loaded_primary_labels_layer(sdata, labels_name, coordinate_system)
 
     def _get_loaded_image_layer_for_coordinate_system(
         self,
@@ -777,58 +1033,30 @@ class ViewerAdapter(QObject):
 
         return matches
 
+    def _get_loaded_shapes_layer_for_coordinate_system(
+        self,
+        sdata: SpatialData,
+        shapes_name: str,
+        coordinate_system: str | None = None,
+    ) -> Shapes | None:
+        for layer in self._iter_candidate_layers():
+            if not _is_shapes_layer(layer):
+                continue
 
-def _apply_minimal_layer_metadata(layer: Layer, binding: LayerBinding) -> None:
-    """Mirror a small subset of binding info onto the layer for debugging.
+            binding = self._layer_bindings.get_binding(layer)
+            if _matches_shapes_binding(
+                binding,
+                sdata=sdata,
+                element_name=shapes_name,
+                coordinate_system=coordinate_system,
+            ):
+                return layer
 
-    Harpy treats ``LayerBindingRegistry`` as the authoritative layer-binding
-    contract. These metadata fields are only a lightweight convenience so a
-    napari layer remains somewhat self-describing during debugging or manual
-    inspection.
-
-    # TODO -> inspect if this should be removed.
-    """
-    metadata = getattr(layer, "metadata", None)
-    if not isinstance(metadata, dict):
-        metadata = {}
-        layer.metadata = metadata
-
-    metadata["element_name"] = binding.element_name
-    metadata["element_type"] = binding.element_type
-    metadata["coordinate_system"] = binding.coordinate_system
-    _set_optional_metadata_value(
-        metadata, "labels_role", binding.labels_role if isinstance(binding, LabelsLayerBinding) else None
-    )
-    _set_optional_metadata_value(
-        metadata, "style_spec", binding.style_spec if isinstance(binding, LabelsLayerBinding) else None
-    )
-    style_spec = binding.style_spec if isinstance(binding, LabelsLayerBinding) else None
-    _set_optional_metadata_value(metadata, "style_table_name", None if style_spec is None else style_spec.table_name)
-    _set_optional_metadata_value(metadata, "style_source_kind", None if style_spec is None else style_spec.source_kind)
-    _set_optional_metadata_value(metadata, "style_value_key", None if style_spec is None else style_spec.value_key)
-    _set_optional_metadata_value(metadata, "style_value_kind", None if style_spec is None else style_spec.value_kind)
-    _set_optional_metadata_value(
-        metadata,
-        "image_display_mode",
-        binding.image_display_mode if isinstance(binding, ImageLayerBinding) else None,
-    )
-    _set_optional_metadata_value(
-        metadata,
-        "channel_index",
-        binding.channel_index if isinstance(binding, ImageLayerBinding) else None,
-    )
-    _set_optional_metadata_value(
-        metadata,
-        "channel_name",
-        binding.channel_name if isinstance(binding, ImageLayerBinding) else None,
-    )
+        return None
 
 
-def _set_optional_metadata_value(metadata: dict[str, Any], key: str, value: Any) -> None:
-    if value is None:
-        metadata.pop(key, None)
-        return
-    metadata[key] = value
+def _get_sdata_id(sdata: SpatialData | None) -> int | None:
+    return None if sdata is None else id(sdata)
 
 
 def _add_layer_to_viewer(viewer: Any | None, layer: Layer) -> None:
@@ -989,21 +1217,215 @@ def _flatten_multiscale_element(element: DataTree) -> list[DataArray]:
     return multiscale_data
 
 
+def _build_shapes_layer(
+    sdata: SpatialData,
+    shapes_name: str,
+    coordinate_system: str,
+    *,
+    name: str,
+) -> _BuiltShapesLayer:
+    shapes = getattr(sdata, "shapes", {})
+    if shapes_name not in shapes:
+        raise ValueError(f"Shapes element `{shapes_name}` is not available in the selected SpatialData object.")
+
+    shapes_element = shapes[shapes_name]
+    available_coordinate_systems = set(get_transformation(shapes_element, get_all=True).keys())
+    if coordinate_system not in available_coordinate_systems:
+        raise ValueError(
+            f"Coordinate system `{coordinate_system}` is not available for shapes element `{shapes_name}`."
+        )
+
+    # Unlike raster images and labels, vector shapes can be transformed by
+    # moving their coordinates directly without resampling array data. Doing
+    # that first lets geometry repair, hole handling, and circle-radius
+    # conversion operate in the final display coordinate system.
+    transformed_shapes = transform_spatial_element(shapes_element, to_coordinate_system=coordinate_system)
+    napari_layer_inputs = _prepare_napari_shapes_layer_inputs(transformed_shapes)
+    if not napari_layer_inputs.data:
+        raise ValueError(
+            f"Shapes element `{shapes_name}` has no renderable geometries in coordinate system `{coordinate_system}`."
+        )
+
+    layer = _HarpyShapes(
+        napari_layer_inputs.data,
+        name=name,
+        shape_type=napari_layer_inputs.shape_types,
+        features=napari_layer_inputs.features,
+        source_shapes_index_feature_name=napari_layer_inputs.source_shapes_index_feature_name,
+        edge_color="#00FFFF",
+        face_color="#00000000",
+        edge_width=1,
+        opacity=0.8,
+    )
+    return _BuiltShapesLayer(
+        layer=layer,
+        source_shapes_index_feature_name=napari_layer_inputs.source_shapes_index_feature_name,
+        source_shapes_index_by_row=napari_layer_inputs.source_shapes_index_by_row,
+        skipped_geometry_count=napari_layer_inputs.skipped_geometry_count,
+    )
+
+
+def _prepare_napari_shapes_layer_inputs(shapes_element: Any) -> _NapariShapesLayerInputs:
+    data: list[np.ndarray] = []
+    shape_types: list[ShapesLayerShapeType] = []
+    feature_rows: list[dict[str, Any]] = []
+    source_indices: list[Any] = []
+    skipped_geometry_count = 0
+    has_radius = "radius" in getattr(shapes_element, "columns", [])
+    geometry_column_name = getattr(getattr(shapes_element, "geometry", None), "name", "geometry")
+    index_feature_name = _get_shapes_index_feature_name(shapes_element)
+
+    for source_index, row in shapes_element.iterrows():
+        geometry = row[geometry_column_name]
+        row_shape_count = len(data)
+        feature_row = {index_feature_name: source_index}
+
+        if _is_empty_geometry(geometry):
+            skipped_geometry_count += 1
+            continue
+
+        if isinstance(geometry, Point):
+            if not has_radius:
+                skipped_geometry_count += 1
+                continue
+
+            ellipse = _circle_to_napari_ellipse(geometry, row["radius"])
+            if ellipse is None:
+                skipped_geometry_count += 1
+                continue
+
+            data.append(ellipse)
+            shape_types.append("ellipse")
+            feature_rows.append(feature_row)
+            source_indices.append(source_index)
+            continue
+
+        for polygon in _iter_renderable_polygons(geometry):
+            data.append(_polygon_to_napari_path(polygon))
+            shape_types.append("polygon")
+            feature_rows.append(feature_row)
+            source_indices.append(source_index)
+
+        if len(data) == row_shape_count:
+            skipped_geometry_count += 1
+
+    return _NapariShapesLayerInputs(
+        data=data,
+        shape_types=shape_types,
+        features=pd.DataFrame(feature_rows),
+        source_shapes_index_feature_name=index_feature_name,
+        source_shapes_index_by_row=tuple(source_indices),
+        skipped_geometry_count=skipped_geometry_count,
+    )
+
+
+def _get_shapes_index_feature_name(shapes_element: Any) -> str:
+    index_name = getattr(getattr(shapes_element, "index", None), "name", None)
+    if index_name is None:
+        return DEFAULT_SHAPES_INDEX_FEATURE_NAME
+    return str(index_name)
+
+
+def _circle_to_napari_ellipse(point: Point, radius: Any) -> np.ndarray | None:
+    try:
+        radius_value = float(radius)
+    except (TypeError, ValueError):
+        return None
+
+    if not np.isfinite(radius_value) or radius_value <= 0:
+        return None
+
+    y = float(point.y)
+    x = float(point.x)
+    return np.asarray(
+        [
+            (y - radius_value, x - radius_value),
+            (y + radius_value, x - radius_value),
+            (y + radius_value, x + radius_value),
+            (y - radius_value, x + radius_value),
+        ],
+        dtype=float,
+    )
+
+
+def _iter_renderable_polygons(geometry: BaseGeometry) -> Iterable[Polygon]:
+    repaired_geometry = _repair_geometry(geometry)
+    if _is_empty_geometry(repaired_geometry):
+        return
+
+    if isinstance(repaired_geometry, Polygon):
+        if _is_renderable_polygon(repaired_geometry):
+            yield repaired_geometry
+        return
+
+    if isinstance(repaired_geometry, MultiPolygon):
+        for polygon in repaired_geometry.geoms:
+            if _is_renderable_polygon(polygon):
+                yield polygon
+        return
+
+    if isinstance(repaired_geometry, GeometryCollection):
+        for part in repaired_geometry.geoms:
+            yield from _iter_renderable_polygons(part)
+
+
+def _repair_geometry(geometry: BaseGeometry) -> BaseGeometry:
+    if _is_empty_geometry(geometry) or getattr(geometry, "is_valid", True):
+        return geometry
+
+    try:
+        return make_valid(geometry)
+    except (GEOSException, TypeError, ValueError) as error:  # pragma: no cover - defensive around GEOS failures
+        logger.warning("Could not repair invalid shapes geometry: {}", error)
+        return geometry
+
+
+def _is_empty_geometry(geometry: Any) -> bool:
+    return geometry is None or bool(getattr(geometry, "is_empty", True))
+
+
+def _is_renderable_polygon(polygon: Polygon) -> bool:
+    return not polygon.is_empty and polygon.is_valid and len(polygon.exterior.coords) >= 4
+
+
+def _polygon_to_napari_path(polygon: Polygon) -> np.ndarray:
+    """Encode a Shapely polygon as one napari path, preserving holes.
+
+    Napari can render polygon holes when the interior rings are embedded in the
+    same vertex path as the exterior ring and wind in the opposite direction.
+    The repeated exterior anchor creates bridge edges that napari's
+    triangulation removes because they are traversed twice.
+    """
+    oriented = orient(polygon, sign=1.0)
+    path = [_xy_coordinate(coord) for coord in oriented.exterior.coords]
+    anchor = path[0]
+    for interior in oriented.interiors:
+        path.extend(_xy_coordinate(coord) for coord in interior.coords)
+        path.append(anchor)
+    return np.asarray([(y, x) for x, y in path], dtype=float)
+
+
+def _xy_coordinate(coordinate: Sequence[float]) -> tuple[float, float]:
+    return float(coordinate[0]), float(coordinate[1])
+
+
 def _build_labels_layer(
     sdata: SpatialData,
-    label_name: str,
+    labels_name: str,
     coordinate_system: str,
     *,
     name: str,
 ) -> Labels:
     labels = getattr(sdata, "labels", {})
-    if label_name not in labels:
-        raise ValueError(f"Labels element `{label_name}` is not available in the selected SpatialData object.")
+    if labels_name not in labels:
+        raise ValueError(f"Labels element `{labels_name}` is not available in the selected SpatialData object.")
 
-    label_element = labels[label_name]
+    label_element = labels[labels_name]
     available_coordinate_systems = set(get_transformation(label_element, get_all=True).keys())
     if coordinate_system not in available_coordinate_systems:
-        raise ValueError(f"Coordinate system `{coordinate_system}` is not available for labels element `{label_name}`.")
+        raise ValueError(
+            f"Coordinate system `{coordinate_system}` is not available for labels element `{labels_name}`."
+        )
 
     labels_data = _flatten_multiscale_element(label_element) if isinstance(label_element, DataTree) else label_element
     return Labels(
@@ -1032,7 +1454,7 @@ def _matches_binding(
     *,
     sdata: SpatialData,
     element_name: str,
-    element_type: Literal["labels", "image"],
+    element_type: ElementType,
 ) -> bool:
     if binding is None:
         return False
@@ -1063,12 +1485,32 @@ def _matches_labels_binding(
     return True
 
 
+def _matches_shapes_binding(
+    binding: LayerBinding | None,
+    *,
+    sdata: SpatialData,
+    element_name: str,
+    coordinate_system: str | None = None,
+) -> bool:
+    if not isinstance(binding, ShapesLayerBinding):
+        return False
+    if binding.sdata_id != id(sdata) or binding.element_name != element_name:
+        return False
+    if coordinate_system is not None and binding.coordinate_system != coordinate_system:
+        return False
+    return True
+
+
 def _is_labels_binding(binding: LayerBinding | None) -> TypeGuard[LabelsLayerBinding]:
     return isinstance(binding, LabelsLayerBinding)
 
 
 def _is_image_binding(binding: LayerBinding | None) -> TypeGuard[ImageLayerBinding]:
     return isinstance(binding, ImageLayerBinding)
+
+
+def _is_shapes_binding(binding: LayerBinding | None) -> TypeGuard[ShapesLayerBinding]:
+    return isinstance(binding, ShapesLayerBinding)
 
 
 def _is_primary_labels_binding(binding: LayerBinding | None) -> TypeGuard[LabelsLayerBinding]:
@@ -1087,3 +1529,7 @@ def _is_pickable_labels_layer(layer: Layer) -> bool:
 def _is_image_layer(layer: Layer) -> bool:
     # napari `Labels` layers are scalar-field siblings of `Image`, not subclasses.
     return isinstance(layer, Image)
+
+
+def _is_shapes_layer(layer: Layer) -> bool:
+    return isinstance(layer, Shapes)

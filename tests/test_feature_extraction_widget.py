@@ -71,7 +71,7 @@ def make_label_discovery(
     return SpatialDataFeatureExtractionLabelDiscovery(
         coordinate_system=coordinate_system,
         eligible_label_options=options,
-        coordinate_system_label_count=len(options) + unavailable_label_count,
+        coordinate_system_labels_count=len(options) + unavailable_label_count,
         unavailable_label_count=unavailable_label_count,
     )
 
@@ -79,13 +79,13 @@ def make_label_discovery(
 def make_image_discovery(
     *,
     coordinate_system: str,
-    label_name: str,
+    labels_name: str,
     options: list[SpatialDataImageOption],
     unavailable_image_count: int = 0,
 ) -> SpatialDataFeatureExtractionImageDiscovery:
     return SpatialDataFeatureExtractionImageDiscovery(
         coordinate_system=coordinate_system,
-        label_name=label_name,
+        labels_name=labels_name,
         eligible_image_options=options,
         coordinate_system_image_count=len(options) + unavailable_image_count,
         unavailable_image_count=unavailable_image_count,
@@ -98,11 +98,11 @@ def make_viewer_with_shared_sdata(sdata: SpatialData) -> DummyViewer:
     return viewer
 
 
-def make_blobs_labels_layer(sdata: SpatialData, label_name: str = "blobs_labels") -> Labels:
+def make_blobs_labels_layer(sdata: SpatialData, labels_name: str = "blobs_labels") -> Labels:
     return Labels(
-        sdata.labels[label_name],
-        name=label_name,
-        metadata={"sdata": sdata, "name": label_name},
+        sdata.labels[labels_name],
+        name=labels_name,
+        metadata={"sdata": sdata, "name": labels_name},
     )
 
 
@@ -130,7 +130,9 @@ def test_feature_extraction_widget_can_be_instantiated(qtbot) -> None:
     assert "No SpatialData Loaded" in widget.selection_status.text()
     assert "shared Harpy state" in unescape(widget.selection_status.text())
     assert all(button.text() != "Rescan Viewer" for button in widget.findChildren(type(widget.calculate_button)))
-    assert widget.segmentation_combo.sizeAdjustPolicy() == QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+    assert (
+        widget.segmentation_combo.sizeAdjustPolicy() == QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+    )
     assert widget.image_combo.sizeAdjustPolicy() == QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
     assert widget.table_combo.sizeAdjustPolicy() == QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
     assert widget.coordinate_system_combo.sizeAdjustPolicy() == (
@@ -243,7 +245,7 @@ def test_feature_extraction_widget_filters_labels_and_images_by_coordinate_syste
             coordinate_system=coordinate_system,
             options=[
                 SpatialDataLabelsOption(
-                    label_name=f"labels_{coordinate_system}",
+                    labels_name=f"labels_{coordinate_system}",
                     display_name=f"labels_{coordinate_system}",
                     sdata=sdata,
                     coordinate_systems=(coordinate_system,),
@@ -254,13 +256,13 @@ def test_feature_extraction_widget_filters_labels_and_images_by_coordinate_syste
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata",
-        lambda *, sdata, coordinate_system, label_name: make_image_discovery(
+        lambda *, sdata, coordinate_system, labels_name: make_image_discovery(
             coordinate_system=coordinate_system,
-            label_name=label_name,
+            labels_name=labels_name,
             options=[
                 SpatialDataImageOption(
-                    image_name=f"image_{coordinate_system}_{label_name}",
-                    display_name=f"image_{coordinate_system}_{label_name}",
+                    image_name=f"image_{coordinate_system}_{labels_name}",
+                    display_name=f"image_{coordinate_system}_{labels_name}",
                     sdata=sdata,
                     coordinate_systems=(coordinate_system,),
                 )
@@ -270,17 +272,17 @@ def test_feature_extraction_widget_filters_labels_and_images_by_coordinate_syste
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "get_annotating_table_names",
-        lambda sdata, label_name: ["table"],
+        lambda sdata, labels_name: ["table"],
     )
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "validate_table_annotation_coverage",
-        lambda sdata, table_name, label_names: None,
+        lambda sdata, table_name, labels_names: None,
     )
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "validate_table_region_instance_ids",
-        lambda sdata, table_name, *, label_names=None: None,
+        lambda sdata, table_name, *, labels_names=None: None,
     )
 
     widget = FeatureExtractionWidget(viewer)
@@ -301,9 +303,7 @@ def test_feature_extraction_widget_filters_labels_and_images_by_coordinate_syste
         "labels_aligned"
     ]
     assert widget.segmentation_combo.currentIndex() == -1
-    assert [widget.image_combo.itemText(index) for index in range(widget.image_combo.count())] == [
-        "No image"
-    ]
+    assert [widget.image_combo.itemText(index) for index in range(widget.image_combo.count())] == ["No image"]
     select_segmentation(widget, "aligned", 0)
     assert widget.selected_segmentation_name == "labels_aligned"
     assert [widget.image_combo.itemText(index) for index in range(widget.image_combo.count())] == [
@@ -321,9 +321,7 @@ def test_feature_extraction_widget_filters_labels_and_images_by_coordinate_syste
         "labels_global"
     ]
     assert widget.segmentation_combo.currentIndex() == -1
-    assert [widget.image_combo.itemText(index) for index in range(widget.image_combo.count())] == [
-        "No image"
-    ]
+    assert [widget.image_combo.itemText(index) for index in range(widget.image_combo.count())] == ["No image"]
     select_segmentation(widget, "global", 0)
     assert widget.selected_segmentation_name == "labels_global"
     assert [widget.image_combo.itemText(index) for index in range(widget.image_combo.count())] == [
@@ -353,7 +351,7 @@ def test_feature_extraction_widget_renders_one_card_per_checked_coordinate_syste
             coordinate_system=coordinate_system,
             options=[
                 SpatialDataLabelsOption(
-                    label_name=f"labels_{coordinate_system}",
+                    labels_name=f"labels_{coordinate_system}",
                     display_name=f"labels_{coordinate_system}",
                     sdata=sdata,
                     coordinate_systems=(coordinate_system,),
@@ -364,13 +362,13 @@ def test_feature_extraction_widget_renders_one_card_per_checked_coordinate_syste
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata",
-        lambda *, sdata, coordinate_system, label_name: make_image_discovery(
+        lambda *, sdata, coordinate_system, labels_name: make_image_discovery(
             coordinate_system=coordinate_system,
-            label_name=label_name,
+            labels_name=labels_name,
             options=[
                 SpatialDataImageOption(
-                    image_name=f"image_{coordinate_system}_{label_name}",
-                    display_name=f"image_{coordinate_system}_{label_name}",
+                    image_name=f"image_{coordinate_system}_{labels_name}",
+                    display_name=f"image_{coordinate_system}_{labels_name}",
                     sdata=sdata,
                     coordinate_systems=(coordinate_system,),
                 )
@@ -380,17 +378,17 @@ def test_feature_extraction_widget_renders_one_card_per_checked_coordinate_syste
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "get_annotating_table_names",
-        lambda sdata, label_name: ["table"],
+        lambda sdata, labels_name: ["table"],
     )
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "validate_table_annotation_coverage",
-        lambda sdata, table_name, label_names: None,
+        lambda sdata, table_name, labels_names: None,
     )
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "validate_table_region_instance_ids",
-        lambda sdata, table_name, *, label_names=None: None,
+        lambda sdata, table_name, *, labels_names=None: None,
     )
 
     widget = FeatureExtractionWidget(viewer)
@@ -421,19 +419,19 @@ def test_feature_extraction_widget_restores_explicit_triplet_when_returning_to_c
     viewer = make_viewer_with_shared_sdata(sdata_blobs)
 
     aligned_label_1 = SpatialDataLabelsOption(
-        label_name="labels_aligned_1",
+        labels_name="labels_aligned_1",
         display_name="labels_aligned_1",
         sdata=sdata_blobs,
         coordinate_systems=("aligned",),
     )
     aligned_label_2 = SpatialDataLabelsOption(
-        label_name="labels_aligned_2",
+        labels_name="labels_aligned_2",
         display_name="labels_aligned_2",
         sdata=sdata_blobs,
         coordinate_systems=("aligned",),
     )
     global_label = SpatialDataLabelsOption(
-        label_name="labels_global",
+        labels_name="labels_global",
         display_name="labels_global",
         sdata=sdata_blobs,
         coordinate_systems=("global",),
@@ -475,26 +473,26 @@ def test_feature_extraction_widget_restores_explicit_triplet_when_returning_to_c
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata",
-        lambda *, sdata, coordinate_system, label_name: make_image_discovery(
+        lambda *, sdata, coordinate_system, labels_name: make_image_discovery(
             coordinate_system=coordinate_system,
-            label_name=label_name,
-            options=[image_by_label[label_name]],
+            labels_name=labels_name,
+            options=[image_by_label[labels_name]],
         ),
     )
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "get_annotating_table_names",
-        lambda sdata, label_name: ["table"],
+        lambda sdata, labels_name: ["table"],
     )
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "validate_table_annotation_coverage",
-        lambda sdata, table_name, label_names: None,
+        lambda sdata, table_name, labels_names: None,
     )
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "validate_table_region_instance_ids",
-        lambda sdata, table_name, *, label_names=None: None,
+        lambda sdata, table_name, *, labels_names=None: None,
     )
 
     widget = FeatureExtractionWidget(viewer)
@@ -548,19 +546,19 @@ def test_feature_extraction_widget_excludes_duplicate_segmentation_across_visibl
     viewer = make_viewer_with_shared_sdata(sdata_blobs)
 
     shared_label = SpatialDataLabelsOption(
-        label_name="shared_labels",
+        labels_name="shared_labels",
         display_name="shared_labels",
         sdata=sdata_blobs,
         coordinate_systems=("aligned", "global"),
     )
     aligned_only_label = SpatialDataLabelsOption(
-        label_name="aligned_only",
+        labels_name="aligned_only",
         display_name="aligned_only",
         sdata=sdata_blobs,
         coordinate_systems=("aligned",),
     )
     global_only_label = SpatialDataLabelsOption(
-        label_name="global_only",
+        labels_name="global_only",
         display_name="global_only",
         sdata=sdata_blobs,
         coordinate_systems=("global",),
@@ -576,22 +574,24 @@ def test_feature_extraction_widget_excludes_duplicate_segmentation_across_visibl
         "get_spatialdata_feature_extraction_label_discovery_for_coordinate_system_from_sdata",
         lambda *, sdata, coordinate_system: make_label_discovery(
             coordinate_system=coordinate_system,
-            options=[shared_label, aligned_only_label] if coordinate_system == "aligned" else [shared_label, global_only_label],
+            options=[shared_label, aligned_only_label]
+            if coordinate_system == "aligned"
+            else [shared_label, global_only_label],
         ),
     )
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata",
-        lambda *, sdata, coordinate_system, label_name: make_image_discovery(
+        lambda *, sdata, coordinate_system, labels_name: make_image_discovery(
             coordinate_system=coordinate_system,
-            label_name=label_name,
+            labels_name=labels_name,
             options=[],
         ),
     )
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "get_annotating_table_names",
-        lambda sdata, label_name: ["table"],
+        lambda sdata, labels_name: ["table"],
     )
 
     widget = FeatureExtractionWidget(viewer)
@@ -602,9 +602,9 @@ def test_feature_extraction_widget_excludes_duplicate_segmentation_across_visibl
     select_segmentation(widget, "aligned", 0)
 
     global_widgets = widget._triplet_card_widgets_by_coordinate_system["global"]
-    assert [global_widgets.segmentation_combo.itemText(index) for index in range(global_widgets.segmentation_combo.count())] == [
-        "global_only"
-    ]
+    assert [
+        global_widgets.segmentation_combo.itemText(index) for index in range(global_widgets.segmentation_combo.count())
+    ] == ["global_only"]
     assert "shared_labels" in global_widgets.segmentation_note_label.text()
     assert "aligned" in global_widgets.segmentation_note_label.text()
 
@@ -617,19 +617,19 @@ def test_feature_extraction_widget_excludes_later_selected_shared_segmentation_f
     viewer = make_viewer_with_shared_sdata(sdata_blobs)
 
     aligned_only_label = SpatialDataLabelsOption(
-        label_name="aligned_only",
+        labels_name="aligned_only",
         display_name="aligned_only",
         sdata=sdata_blobs,
         coordinate_systems=("aligned",),
     )
     shared_label = SpatialDataLabelsOption(
-        label_name="shared_labels",
+        labels_name="shared_labels",
         display_name="shared_labels",
         sdata=sdata_blobs,
         coordinate_systems=("aligned", "global"),
     )
     global_only_label = SpatialDataLabelsOption(
-        label_name="global_only",
+        labels_name="global_only",
         display_name="global_only",
         sdata=sdata_blobs,
         coordinate_systems=("global",),
@@ -645,22 +645,24 @@ def test_feature_extraction_widget_excludes_later_selected_shared_segmentation_f
         "get_spatialdata_feature_extraction_label_discovery_for_coordinate_system_from_sdata",
         lambda *, sdata, coordinate_system: make_label_discovery(
             coordinate_system=coordinate_system,
-            options=[aligned_only_label, shared_label] if coordinate_system == "aligned" else [shared_label, global_only_label],
+            options=[aligned_only_label, shared_label]
+            if coordinate_system == "aligned"
+            else [shared_label, global_only_label],
         ),
     )
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata",
-        lambda *, sdata, coordinate_system, label_name: make_image_discovery(
+        lambda *, sdata, coordinate_system, labels_name: make_image_discovery(
             coordinate_system=coordinate_system,
-            label_name=label_name,
+            labels_name=labels_name,
             options=[],
         ),
     )
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "get_annotating_table_names",
-        lambda sdata, label_name: ["table"],
+        lambda sdata, labels_name: ["table"],
     )
 
     widget = FeatureExtractionWidget(viewer)
@@ -674,9 +676,10 @@ def test_feature_extraction_widget_excludes_later_selected_shared_segmentation_f
 
     aligned_widgets = widget._triplet_card_widgets_by_coordinate_system["aligned"]
     assert aligned_widgets.segmentation_combo.currentText() == "aligned_only"
-    assert [aligned_widgets.segmentation_combo.itemText(index) for index in range(aligned_widgets.segmentation_combo.count())] == [
-        "aligned_only"
-    ]
+    assert [
+        aligned_widgets.segmentation_combo.itemText(index)
+        for index in range(aligned_widgets.segmentation_combo.count())
+    ] == ["aligned_only"]
     assert "shared_labels" in aligned_widgets.segmentation_note_label.text()
     assert "global" in aligned_widgets.segmentation_note_label.text()
 
@@ -689,19 +692,19 @@ def test_feature_extraction_widget_clears_blocked_remembered_segmentation_and_im
     viewer = make_viewer_with_shared_sdata(sdata_blobs)
 
     shared_label = SpatialDataLabelsOption(
-        label_name="shared_labels",
+        labels_name="shared_labels",
         display_name="shared_labels",
         sdata=sdata_blobs,
         coordinate_systems=("aligned", "global"),
     )
     aligned_only_label = SpatialDataLabelsOption(
-        label_name="aligned_only",
+        labels_name="aligned_only",
         display_name="aligned_only",
         sdata=sdata_blobs,
         coordinate_systems=("aligned",),
     )
     global_only_label = SpatialDataLabelsOption(
-        label_name="global_only",
+        labels_name="global_only",
         display_name="global_only",
         sdata=sdata_blobs,
         coordinate_systems=("global",),
@@ -731,22 +734,26 @@ def test_feature_extraction_widget_clears_blocked_remembered_segmentation_and_im
         "get_spatialdata_feature_extraction_label_discovery_for_coordinate_system_from_sdata",
         lambda *, sdata, coordinate_system: make_label_discovery(
             coordinate_system=coordinate_system,
-            options=[shared_label, aligned_only_label] if coordinate_system == "aligned" else [shared_label, global_only_label],
+            options=[shared_label, aligned_only_label]
+            if coordinate_system == "aligned"
+            else [shared_label, global_only_label],
         ),
     )
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata",
-        lambda *, sdata, coordinate_system, label_name: make_image_discovery(
+        lambda *, sdata, coordinate_system, labels_name: make_image_discovery(
             coordinate_system=coordinate_system,
-            label_name=label_name,
-            options=[] if (coordinate_system, label_name) not in image_by_selection else [image_by_selection[(coordinate_system, label_name)]],
+            labels_name=labels_name,
+            options=[]
+            if (coordinate_system, labels_name) not in image_by_selection
+            else [image_by_selection[(coordinate_system, labels_name)]],
         ),
     )
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "get_annotating_table_names",
-        lambda sdata, label_name: ["table"],
+        lambda sdata, labels_name: ["table"],
     )
 
     widget = FeatureExtractionWidget(viewer)
@@ -862,7 +869,7 @@ def test_feature_extraction_widget_keeps_shared_channel_selector_visible_for_inc
             coordinate_system=coordinate_system,
             options=[
                 SpatialDataLabelsOption(
-                    label_name=f"labels_{coordinate_system}",
+                    labels_name=f"labels_{coordinate_system}",
                     display_name=f"labels_{coordinate_system}",
                     sdata=sdata,
                     coordinate_systems=(coordinate_system,),
@@ -873,9 +880,9 @@ def test_feature_extraction_widget_keeps_shared_channel_selector_visible_for_inc
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata",
-        lambda *, sdata, coordinate_system, label_name: make_image_discovery(
+        lambda *, sdata, coordinate_system, labels_name: make_image_discovery(
             coordinate_system=coordinate_system,
-            label_name=label_name,
+            labels_name=labels_name,
             options=[
                 SpatialDataImageOption(
                     image_name=f"image_{coordinate_system}",
@@ -889,7 +896,7 @@ def test_feature_extraction_widget_keeps_shared_channel_selector_visible_for_inc
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "get_annotating_table_names",
-        lambda sdata, label_name: ["table"],
+        lambda sdata, labels_name: ["table"],
     )
     monkeypatch.setattr(
         feature_extraction_widget_module,
@@ -937,7 +944,7 @@ def test_feature_extraction_widget_remembers_shared_channel_selection_by_schema(
             coordinate_system=coordinate_system,
             options=[
                 SpatialDataLabelsOption(
-                    label_name=f"labels_{coordinate_system}",
+                    labels_name=f"labels_{coordinate_system}",
                     display_name=f"labels_{coordinate_system}",
                     sdata=sdata,
                     coordinate_systems=(coordinate_system,),
@@ -948,9 +955,9 @@ def test_feature_extraction_widget_remembers_shared_channel_selection_by_schema(
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata",
-        lambda *, sdata, coordinate_system, label_name: make_image_discovery(
+        lambda *, sdata, coordinate_system, labels_name: make_image_discovery(
             coordinate_system=coordinate_system,
-            label_name=label_name,
+            labels_name=labels_name,
             options=[
                 SpatialDataImageOption(
                     image_name=f"image_{coordinate_system}",
@@ -964,7 +971,7 @@ def test_feature_extraction_widget_remembers_shared_channel_selection_by_schema(
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "get_annotating_table_names",
-        lambda sdata, label_name: ["table"],
+        lambda sdata, labels_name: ["table"],
     )
     monkeypatch.setattr(
         feature_extraction_widget_module,
@@ -1113,7 +1120,7 @@ def test_feature_extraction_widget_reports_one_line_per_checked_card_in_batch_re
             coordinate_system=coordinate_system,
             options=[
                 SpatialDataLabelsOption(
-                    label_name=f"labels_{coordinate_system}",
+                    labels_name=f"labels_{coordinate_system}",
                     display_name=f"labels_{coordinate_system}",
                     sdata=sdata,
                     coordinate_systems=(coordinate_system,),
@@ -1124,13 +1131,13 @@ def test_feature_extraction_widget_reports_one_line_per_checked_card_in_batch_re
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata",
-        lambda *, sdata, coordinate_system, label_name: make_image_discovery(
+        lambda *, sdata, coordinate_system, labels_name: make_image_discovery(
             coordinate_system=coordinate_system,
-            label_name=label_name,
+            labels_name=labels_name,
             options=[
                 SpatialDataImageOption(
-                    image_name=f"image_{coordinate_system}_{label_name}",
-                    display_name=f"image_{coordinate_system}_{label_name}",
+                    image_name=f"image_{coordinate_system}_{labels_name}",
+                    display_name=f"image_{coordinate_system}_{labels_name}",
                     sdata=sdata,
                     coordinate_systems=(coordinate_system,),
                 )
@@ -1140,17 +1147,17 @@ def test_feature_extraction_widget_reports_one_line_per_checked_card_in_batch_re
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "get_annotating_table_names",
-        lambda sdata, label_name: ["table"],
+        lambda sdata, labels_name: ["table"],
     )
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "validate_table_annotation_coverage",
-        lambda sdata, table_name, label_names: None,
+        lambda sdata, table_name, labels_names: None,
     )
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "validate_table_region_instance_ids",
-        lambda sdata, table_name, *, label_names=None: None,
+        lambda sdata, table_name, *, labels_names=None: None,
     )
 
     widget = FeatureExtractionWidget(viewer)
@@ -1169,8 +1176,8 @@ def test_feature_extraction_widget_reports_one_line_per_checked_card_in_batch_re
     assert global_label is not None
     status_text = unescape(widget.selection_status.text())
     assert "Batch Ready" in status_text
-    assert f"aligned: {aligned_label.label_name} (no image)" in status_text
-    assert f"global: {global_label.label_name} (no image)" in status_text
+    assert f"aligned: {aligned_label.labels_name} (no image)" in status_text
+    assert f"global: {global_label.labels_name} (no image)" in status_text
     assert widget.selection_status.toolTip() == ""
 
 
@@ -1210,7 +1217,7 @@ def test_feature_extraction_widget_uses_batch_table_error_as_status_tooltip(
     monkeypatch.setattr(
         feature_extraction_widget_module,
         "validate_table_region_instance_ids",
-        lambda sdata, table_name, *, label_names=None: (_ for _ in ()).throw(
+        lambda sdata, table_name, *, labels_names=None: (_ for _ in ()).throw(
             ValueError(
                 "Table `table` cannot annotate labels element `blobs_labels` because "
                 "`instance_id` contains duplicate values within that region: `1`, `2`."
@@ -1308,7 +1315,7 @@ def test_feature_extraction_widget_rebinds_controller_when_inputs_change(
         (
             FeatureExtractionTriplet(
                 coordinate_system="global",
-                label_name="blobs_labels",
+                labels_name="blobs_labels",
                 image_name=None,
                 channels=None,
             ),
@@ -1350,7 +1357,7 @@ def test_feature_extraction_widget_binds_selected_channels_into_controller(
         (
             FeatureExtractionTriplet(
                 coordinate_system="global",
-                label_name="blobs_labels",
+                labels_name="blobs_labels",
                 image_name="blobs_image",
                 channels=("0", "2"),
             ),

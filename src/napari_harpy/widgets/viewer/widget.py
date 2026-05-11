@@ -33,10 +33,11 @@ from napari_harpy.core.spatialdata import (
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
     get_image_channel_names_from_sdata,
+    get_spatialdata_shapes_options_for_coordinate_system_from_sdata,
     get_table_color_source_options,
 )
 from napari_harpy.core.table_color_source import ColorSourceKind, TableColorSourceSpec
-from napari_harpy.viewer.adapter import DEFAULT_OVERLAY_COLORS
+from napari_harpy.viewer.adapter import DEFAULT_OVERLAY_COLORS, ShapesLayerBinding, ViewerAdapter
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,
 )
@@ -156,10 +157,15 @@ class ImageLoadRequest:
 
 @dataclass(frozen=True)
 class LabelsLoadRequest:
-    label_name: str
+    labels_name: str
     table_name: str | None
     selected_source_kind: ColorSourceKind | None
     selected_color_source: TableColorSourceSpec | None
+
+
+@dataclass(frozen=True)
+class ShapesLoadRequest:
+    shapes_name: str
 
 
 class _ElidedLabel(QLabel):
@@ -458,15 +464,15 @@ class _LabelsCardWidget(QFrame):
     def __init__(
         self,
         *,
-        label_name: str,
+        labels_name: str,
         table_names: list[str],
         table_color_sources_by_table: dict[str, list[TableColorSourceSpec]],
     ) -> None:
         super().__init__()
-        self.label_name = label_name
+        self.labels_name = labels_name
         self._table_color_sources_by_table = table_color_sources_by_table
         self._filtered_color_sources: list[TableColorSourceSpec] = []
-        self.setObjectName(f"viewer_widget_labels_card_{label_name}")
+        self.setObjectName(f"viewer_widget_labels_card_{labels_name}")
         self.setProperty("harpyViewerDetailPanel", True)
         self.setStyleSheet(_DETAIL_PANEL_STYLESHEET)
 
@@ -474,8 +480,8 @@ class _LabelsCardWidget(QFrame):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
-        self.title_label = _ElidedLabel(label_name, self)
-        self.title_label.setObjectName(f"viewer_widget_labels_card_title_{label_name}")
+        self.title_label = _ElidedLabel(labels_name, self)
+        self.title_label.setObjectName(f"viewer_widget_labels_card_title_{labels_name}")
         self.title_label.setStyleSheet(_CARD_TITLE_STYLESHEET)
         self.title_label.hide()
 
@@ -486,7 +492,7 @@ class _LabelsCardWidget(QFrame):
 
         linked_table_label = _create_form_label("Linked table")
         self.linked_table_combo = CompactComboBox()
-        self.linked_table_combo.setObjectName(f"viewer_widget_linked_table_combo_{label_name}")
+        self.linked_table_combo.setObjectName(f"viewer_widget_linked_table_combo_{labels_name}")
         self.linked_table_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
         if table_names:
             self.linked_table_combo.addItems(table_names)
@@ -496,7 +502,7 @@ class _LabelsCardWidget(QFrame):
 
         color_source_kind_label = _create_form_label("Color source")
         self.color_source_kind_combo = CompactComboBox()
-        self.color_source_kind_combo.setObjectName(f"viewer_widget_color_source_kind_combo_{label_name}")
+        self.color_source_kind_combo.setObjectName(f"viewer_widget_color_source_kind_combo_{labels_name}")
         self.color_source_kind_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
         self.color_source_kind_combo.addItem("None", None)
         self.color_source_kind_combo.addItem("Observations", "obs_column")
@@ -504,7 +510,7 @@ class _LabelsCardWidget(QFrame):
 
         self.color_source_value_label = _create_form_label("Value source")
         self.color_source_value_input = QLineEdit()
-        self.color_source_value_input.setObjectName(f"viewer_widget_color_source_value_input_{label_name}")
+        self.color_source_value_input.setObjectName(f"viewer_widget_color_source_value_input_{labels_name}")
         self.color_source_value_input.setStyleSheet(build_input_control_stylesheet("QLineEdit"))
         self.color_source_value_input.setMinimumWidth(0)
         self.color_source_value_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -517,12 +523,12 @@ class _LabelsCardWidget(QFrame):
         self.color_source_value_input.setCompleter(self._color_source_completer)
 
         self.action_status_label = QLabel()
-        self.action_status_label.setObjectName(f"viewer_widget_action_status_{label_name}")
+        self.action_status_label.setObjectName(f"viewer_widget_action_status_{labels_name}")
         self.action_status_label.setWordWrap(True)
         self.action_status_label.setStyleSheet(_SUMMARY_LABEL_STYLESHEET)
 
         self.add_update_button = QPushButton("Add / Update in viewer")
-        self.add_update_button.setObjectName(f"viewer_widget_add_update_labels_button_{label_name}")
+        self.add_update_button.setObjectName(f"viewer_widget_add_update_labels_button_{labels_name}")
         self.add_update_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.add_update_button.setMinimumHeight(28)
         self.add_update_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
@@ -671,7 +677,7 @@ class _LabelsCardWidget(QFrame):
     def _emit_add_update_request(self, _checked: bool = False) -> None:
         self.add_update_requested.emit(
             LabelsLoadRequest(
-                label_name=self.label_name,
+                labels_name=self.labels_name,
                 table_name=self.selected_table_name,
                 selected_source_kind=self.selected_source_kind,
                 selected_color_source=self.selected_color_source,
@@ -883,6 +889,47 @@ class _ImageCardWidget(QFrame):
         self.channel_scroll_area.setMaximumHeight(visible_height)
 
 
+class _ShapesCardWidget(QFrame):
+    """Card UI shell for one shapes element in the selected coordinate system."""
+
+    add_update_requested = Signal(object)
+
+    def __init__(self, *, shapes_name: str) -> None:
+        super().__init__()
+        self.shapes_name = shapes_name
+        self.setObjectName(f"viewer_widget_shapes_card_{shapes_name}")
+        self.setProperty("harpyViewerDetailPanel", True)
+        self.setStyleSheet(_DETAIL_PANEL_STYLESHEET)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        self.title_label = _ElidedLabel(shapes_name, self)
+        self.title_label.setObjectName(f"viewer_widget_shapes_card_title_{shapes_name}")
+        self.title_label.setStyleSheet(_CARD_TITLE_STYLESHEET)
+        self.title_label.hide()
+
+        self.action_status_label = QLabel("Action: add/update shapes layer")
+        self.action_status_label.setObjectName(f"viewer_widget_shapes_action_status_{shapes_name}")
+        self.action_status_label.setWordWrap(True)
+        self.action_status_label.setStyleSheet(_SUMMARY_LABEL_STYLESHEET)
+
+        self.add_update_button = QPushButton("Add / Update in viewer")
+        self.add_update_button.setObjectName(f"viewer_widget_add_update_shapes_button_{shapes_name}")
+        self.add_update_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.add_update_button.setMinimumHeight(28)
+        self.add_update_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
+        self.add_update_button.clicked.connect(self._emit_add_update_request)
+        self.add_update_button.setToolTip("")
+
+        layout.addWidget(self.action_status_label)
+        layout.addWidget(self.add_update_button)
+
+    def _emit_add_update_request(self, _checked: bool = False) -> None:
+        self.add_update_requested.emit(ShapesLoadRequest(shapes_name=self.shapes_name))
+
+
 class ViewerWidget(QWidget):
     """Shared viewer widget backed by `HarpyAppState` and `ViewerAdapter`."""
 
@@ -895,10 +942,13 @@ class ViewerWidget(QWidget):
         self._app_state = get_or_create_app_state(napari_viewer)
         self._labels_cards: list[_LabelsCardWidget] = []
         self._image_cards: list[_ImageCardWidget] = []
+        self._shape_cards: list[_ShapesCardWidget] = []
         self._labels_rows: list[_DisclosureElementWidget] = []
         self._image_rows: list[_DisclosureElementWidget] = []
-        self._expanded_label_names: set[str] = set()
+        self._shape_rows: list[_DisclosureElementWidget] = []
+        self._expanded_labels_names: set[str] = set()
         self._expanded_image_names: set[str] = set()
+        self._expanded_shapes_names: set[str] = set()
         self._logo_path = Path(__file__).resolve().parents[4] / "docs" / "_static" / "logo.png"
 
         root_layout = QVBoxLayout(self)
@@ -1003,6 +1053,27 @@ class ViewerWidget(QWidget):
         self.labels_section_toggle = self.labels_group.toggle_button
         self.labels_section_title = self.labels_section_toggle
 
+        self.shapes_empty_label = QLabel("No shapes available in the selected coordinate system.")
+        self.shapes_empty_label.setObjectName("viewer_widget_shapes_empty_state")
+        self.shapes_empty_label.setWordWrap(True)
+        self.shapes_empty_label.setStyleSheet(_EMPTY_STATE_STYLESHEET)
+
+        self.shapes_section = QWidget()
+        self.shapes_section.setObjectName("viewer_widget_shapes_section")
+        self.shapes_section_layout = QVBoxLayout(self.shapes_section)
+        self.shapes_section_layout.setContentsMargins(0, 0, 0, 0)
+        self.shapes_section_layout.setSpacing(8)
+        self.shapes_group = _CollapsibleSectionWidget(
+            title="Shapes",
+            object_name="viewer_widget_shapes_group",
+            toggle_object_name="viewer_widget_shapes_section_toggle",
+            expanded=False,
+        )
+        self.shapes_group.content_layout.addWidget(self.shapes_empty_label)
+        self.shapes_group.content_layout.addWidget(self.shapes_section)
+        self.shapes_section_toggle = self.shapes_group.toggle_button
+        self.shapes_section_title = self.shapes_section_toggle
+
         self.content_layout.addWidget(header_logo)
         self.content_layout.addWidget(title)
         self.content_layout.addWidget(self.open_sdata_button)
@@ -1012,6 +1083,7 @@ class ViewerWidget(QWidget):
         self.content_layout.addWidget(self.action_feedback_label)
         self.content_layout.addWidget(self.images_group)
         self.content_layout.addWidget(self.labels_group)
+        self.content_layout.addWidget(self.shapes_group)
         self.content_layout.addStretch(1)
 
         self.scroll_area.setWidget(self.scroll_content)
@@ -1037,6 +1109,11 @@ class ViewerWidget(QWidget):
         return list(self._image_cards)
 
     @property
+    def shape_cards(self) -> list[_ShapesCardWidget]:
+        """Return the currently visible shapes cards."""
+        return list(self._shape_cards)
+
+    @property
     def image_rows(self) -> list[_DisclosureElementWidget]:
         """Return the currently visible compact image rows."""
         return list(self._image_rows)
@@ -1045,6 +1122,11 @@ class ViewerWidget(QWidget):
     def labels_rows(self) -> list[_DisclosureElementWidget]:
         """Return the currently visible compact labels rows."""
         return list(self._labels_rows)
+
+    @property
+    def shape_rows(self) -> list[_DisclosureElementWidget]:
+        """Return the currently visible compact shapes rows."""
+        return list(self._shape_rows)
 
     def _on_sdata_changed(self, sdata: SpatialData | None) -> None:
         """Refresh the widget when the shared loaded `SpatialData` changes."""
@@ -1098,7 +1180,7 @@ class ViewerWidget(QWidget):
                 self.summary_label.setText("No SpatialData loaded.")
                 self.coordinate_system_combo.setEnabled(False)
                 self._clear_cards()
-                self._update_section_empty_states([], [])
+                self._update_section_empty_states([], [], [])
                 return
 
             coordinate_systems = get_coordinate_system_names_from_sdata(sdata)
@@ -1117,23 +1199,26 @@ class ViewerWidget(QWidget):
 
         if sdata is None or not coordinate_system:
             self._clear_cards()
-            self._update_section_empty_states([], [])
+            self._update_section_empty_states([], [], [])
             if sdata is None:
                 self.summary_label.setText("No SpatialData loaded.")
             else:
                 self.summary_label.setText("No coordinate system selected.")
             return
 
-        label_names = _get_labels_in_coordinate_system(sdata, coordinate_system)
+        labels_names = _get_labels_in_coordinate_system(sdata, coordinate_system)
         image_names = _get_images_in_coordinate_system(sdata, coordinate_system)
+        shapes_names = _get_shapes_in_coordinate_system(sdata, coordinate_system)
 
         self.summary_label.setText(
             f"In coordinate system `{coordinate_system}`: "
-            f"{len(image_names)} image element(s) and {len(label_names)} labels element(s)."
+            f"{len(image_names)} image element(s), {len(labels_names)} labels element(s), "
+            f"and {len(shapes_names)} shapes element(s)."
         )
         self._rebuild_image_cards(sdata, image_names)
-        self._rebuild_labels_cards(sdata, label_names)
-        self._update_section_empty_states(image_names, label_names)
+        self._rebuild_labels_cards(sdata, labels_names)
+        self._rebuild_shapes_cards(shapes_names)
+        self._update_section_empty_states(image_names, labels_names, shapes_names)
 
     def _rebuild_image_cards(self, sdata: SpatialData, image_names: list[str]) -> None:
         _clear_layout(self.images_section_layout)
@@ -1171,32 +1256,32 @@ class ViewerWidget(QWidget):
             self._image_cards.append(card)
             self._image_rows.append(row)
 
-    def _rebuild_labels_cards(self, sdata: SpatialData, label_names: list[str]) -> None:
+    def _rebuild_labels_cards(self, sdata: SpatialData, labels_names: list[str]) -> None:
         _clear_layout(self.labels_section_layout)
         self._labels_cards = []
         self._labels_rows = []
-        self._expanded_label_names.intersection_update(label_names)
+        self._expanded_labels_names.intersection_update(labels_names)
 
-        for label_name in label_names:
-            table_names = get_annotating_table_names(sdata, label_name)
+        for labels_name in labels_names:
+            table_names = get_annotating_table_names(sdata, labels_name)
             table_color_sources_by_table = {
                 table_name: get_table_color_source_options(sdata, table_name) for table_name in table_names
             }
             card = _LabelsCardWidget(
-                label_name=label_name,
+                labels_name=labels_name,
                 table_names=table_names,
                 table_color_sources_by_table=table_color_sources_by_table,
             )
             card.add_update_requested.connect(self._add_or_update_labels_layer)
             row = _DisclosureElementWidget(
-                title=label_name,
-                object_name=f"viewer_widget_labels_row_{label_name}",
-                toggle_object_name=f"viewer_widget_labels_row_toggle_{label_name}",
+                title=labels_name,
+                object_name=f"viewer_widget_labels_row_{labels_name}",
+                toggle_object_name=f"viewer_widget_labels_row_toggle_{labels_name}",
                 detail_widget=card,
-                expanded=label_name in self._expanded_label_names,
+                expanded=labels_name in self._expanded_labels_names,
             )
             row.expanded_changed.connect(
-                lambda expanded, *, name=label_name: self._on_labels_row_expanded(
+                lambda expanded, *, name=labels_name: self._on_labels_row_expanded(
                     name,
                     expanded,
                 )
@@ -1204,6 +1289,32 @@ class ViewerWidget(QWidget):
             self.labels_section_layout.addWidget(row)
             self._labels_cards.append(card)
             self._labels_rows.append(row)
+
+    def _rebuild_shapes_cards(self, shapes_names: list[str]) -> None:
+        _clear_layout(self.shapes_section_layout)
+        self._shape_cards = []
+        self._shape_rows = []
+        self._expanded_shapes_names.intersection_update(shapes_names)
+
+        for shapes_name in shapes_names:
+            card = _ShapesCardWidget(shapes_name=shapes_name)
+            card.add_update_requested.connect(self._add_or_update_shapes_layer)
+            row = _DisclosureElementWidget(
+                title=shapes_name,
+                object_name=f"viewer_widget_shapes_row_{shapes_name}",
+                toggle_object_name=f"viewer_widget_shapes_row_toggle_{shapes_name}",
+                detail_widget=card,
+                expanded=shapes_name in self._expanded_shapes_names,
+            )
+            row.expanded_changed.connect(
+                lambda expanded, *, name=shapes_name: self._on_shapes_row_expanded(
+                    name,
+                    expanded,
+                )
+            )
+            self.shapes_section_layout.addWidget(row)
+            self._shape_cards.append(card)
+            self._shape_rows.append(row)
 
     def _on_image_row_expanded(
         self,
@@ -1218,23 +1329,34 @@ class ViewerWidget(QWidget):
 
     def _on_labels_row_expanded(
         self,
-        label_name: str,
+        labels_name: str,
         expanded: bool,
     ) -> None:
         if expanded:
-            self._expanded_label_names.add(label_name)
+            self._expanded_labels_names.add(labels_name)
             return
 
-        self._expanded_label_names.discard(label_name)
+        self._expanded_labels_names.discard(labels_name)
+
+    def _on_shapes_row_expanded(
+        self,
+        shapes_name: str,
+        expanded: bool,
+    ) -> None:
+        if expanded:
+            self._expanded_shapes_names.add(shapes_name)
+            return
+
+        self._expanded_shapes_names.discard(shapes_name)
 
     def _add_or_update_labels_layer(self, request: LabelsLoadRequest) -> None:
         if request.selected_source_kind is None:
-            self._add_or_update_primary_labels_layer(request.label_name)
+            self._add_or_update_primary_labels_layer(request.labels_name)
             return
 
         self._add_or_update_styled_labels_layer(request)
 
-    def _add_or_update_primary_labels_layer(self, label_name: str) -> None:
+    def _add_or_update_primary_labels_layer(self, labels_name: str) -> None:
         sdata = self._app_state.sdata
         coordinate_system = self._app_state.coordinate_system
 
@@ -1247,21 +1369,19 @@ class ViewerWidget(QWidget):
             return
 
         try:
-            layer = self._app_state.viewer_adapter.ensure_labels_loaded(sdata, label_name, coordinate_system)
+            layer = self._app_state.viewer_adapter.ensure_labels_loaded(sdata, labels_name, coordinate_system)
         except ValueError as error:
             self._set_action_feedback(title="Labels Load Error", lines=[str(error)], kind="error")
             return
 
         self._app_state.viewer_adapter.activate_layer(layer)
-        display_name, was_shortened = format_feedback_identifier(label_name)
+        display_name, was_shortened = format_feedback_identifier(labels_name)
         self._set_action_feedback(
             title="Labels Loaded",
             lines=[f"Loaded labels `{display_name}` in coordinate system `{coordinate_system}`."],
             kind="success",
             tooltip_message=(
-                f"Loaded labels `{label_name}` in coordinate system `{coordinate_system}`."
-                if was_shortened
-                else None
+                f"Loaded labels `{labels_name}` in coordinate system `{coordinate_system}`." if was_shortened else None
             ),
         )
 
@@ -1280,7 +1400,7 @@ class ViewerWidget(QWidget):
         if request.table_name is None:
             self._set_action_feedback(
                 title="Colored Overlay Error",
-                lines=[f"Labels element `{request.label_name}` has no linked table for table-driven coloring."],
+                lines=[f"Labels element `{request.labels_name}` has no linked table for table-driven coloring."],
                 kind="error",
             )
             return
@@ -1292,7 +1412,7 @@ class ViewerWidget(QWidget):
                 title="Colored Overlay Error",
                 lines=[
                     f"Select {missing_source_article} {missing_source_label} "
-                    f"to create a colored overlay for `{request.label_name}`."
+                    f"to create a colored overlay for `{request.labels_name}`."
                 ],
                 kind="error",
             )
@@ -1301,7 +1421,7 @@ class ViewerWidget(QWidget):
         try:
             result = self._app_state.viewer_adapter.ensure_styled_labels_loaded(
                 sdata,
-                request.label_name,
+                request.labels_name,
                 coordinate_system,
                 request.selected_color_source,
             )
@@ -1317,7 +1437,7 @@ class ViewerWidget(QWidget):
             source_text = f'X[:, "{request.selected_color_source.value_key}"]'
 
         action_line = (
-            f"{action} colored overlay for {source_text} on labels element `{request.label_name}` "
+            f"{action} colored overlay for {source_text} on labels element `{request.labels_name}` "
             f"in coordinate system `{coordinate_system}`."
         )
         feedback_kind: StatusCardKind = "success"
@@ -1343,6 +1463,48 @@ class ViewerWidget(QWidget):
             title=title,
             lines=lines,
             kind=feedback_kind,
+        )
+
+    def _add_or_update_shapes_layer(self, request: ShapesLoadRequest) -> None:
+        sdata = self._app_state.sdata
+        coordinate_system = self._app_state.coordinate_system
+        shapes_name = request.shapes_name
+
+        if sdata is None or not coordinate_system:
+            self._set_action_feedback(
+                title="Shapes Load Error",
+                lines=["Load a SpatialData object and select a coordinate system first."],
+                kind="error",
+            )
+            return
+
+        try:
+            layer = self._app_state.viewer_adapter.ensure_shapes_loaded(sdata, shapes_name, coordinate_system)
+        except ValueError as error:
+            self._set_action_feedback(title="Shapes Load Error", lines=[str(error)], kind="error")
+            return
+
+        self._app_state.viewer_adapter.activate_layer(layer)
+        display_name, was_shortened = format_feedback_identifier(shapes_name)
+        skipped_geometry_count = _get_layer_skipped_geometry_count(self._app_state.viewer_adapter, layer)
+        feedback_kind: StatusCardKind = "success"
+        title = "Shapes Loaded"
+        lines = [f"Loaded shapes `{display_name}` in coordinate system `{coordinate_system}`."]
+        if skipped_geometry_count:
+            feedback_kind = "warning"
+            title = "Shapes Loaded With Warning"
+            lines.append(
+                f"Skipped {skipped_geometry_count} empty, invalid, or unsupported "
+                "geometries while loading renderable shapes."
+            )
+
+        self._set_action_feedback(
+            title=title,
+            lines=lines,
+            kind=feedback_kind,
+            tooltip_message=(
+                f"Loaded shapes `{shapes_name}` in coordinate system `{coordinate_system}`." if was_shortened else None
+            ),
         )
 
     def _add_or_update_image_layer(self, request: ImageLoadRequest) -> None:
@@ -1436,23 +1598,35 @@ class ViewerWidget(QWidget):
             ),
         )
 
-    def _update_section_empty_states(self, image_names: list[str], label_names: list[str]) -> None:
+    def _update_section_empty_states(
+        self,
+        image_names: list[str],
+        labels_names: list[str],
+        shapes_names: list[str],
+    ) -> None:
         self.images_group.set_count(len(image_names))
-        self.labels_group.set_count(len(label_names))
+        self.labels_group.set_count(len(labels_names))
+        self.shapes_group.set_count(len(shapes_names))
         self.images_empty_label.setVisible(not image_names)
-        self.labels_empty_label.setVisible(not label_names)
+        self.labels_empty_label.setVisible(not labels_names)
+        self.shapes_empty_label.setVisible(not shapes_names)
         self.images_section.setVisible(bool(image_names))
-        self.labels_section.setVisible(bool(label_names))
+        self.labels_section.setVisible(bool(labels_names))
+        self.shapes_section.setVisible(bool(shapes_names))
 
     def _clear_cards(self) -> None:
         _clear_layout(self.images_section_layout)
         _clear_layout(self.labels_section_layout)
+        _clear_layout(self.shapes_section_layout)
         self._image_cards = []
         self._labels_cards = []
+        self._shape_cards = []
         self._image_rows = []
         self._labels_rows = []
+        self._shape_rows = []
         self._expanded_image_names.clear()
-        self._expanded_label_names.clear()
+        self._expanded_labels_names.clear()
+        self._expanded_shapes_names.clear()
 
     def _set_action_feedback(
         self,
@@ -1531,8 +1705,8 @@ def _create_form_label(text: str) -> QLabel:
 def _get_labels_in_coordinate_system(sdata: SpatialData, coordinate_system: str) -> list[str]:
     labels = getattr(sdata, "labels", {})
     return sorted(
-        label_name
-        for label_name, element in labels.items()
+        labels_name
+        for labels_name, element in labels.items()
         if coordinate_system in get_transformation(element, get_all=True).keys()
     )
 
@@ -1544,3 +1718,24 @@ def _get_images_in_coordinate_system(sdata: SpatialData, coordinate_system: str)
         for image_name, element in images.items()
         if coordinate_system in get_transformation(element, get_all=True).keys()
     )
+
+
+def _get_shapes_in_coordinate_system(sdata: SpatialData, coordinate_system: str) -> list[str]:
+    return [
+        option.shapes_name
+        for option in get_spatialdata_shapes_options_for_coordinate_system_from_sdata(
+            sdata=sdata,
+            coordinate_system=coordinate_system,
+        )
+    ]
+
+
+def _get_layer_skipped_geometry_count(viewer_adapter: ViewerAdapter, layer: object) -> int:
+    binding = viewer_adapter.layer_bindings.get_binding(layer)
+    if not isinstance(binding, ShapesLayerBinding):
+        return 0
+
+    try:
+        return int(binding.skipped_geometry_count)
+    except (TypeError, ValueError):
+        return 0

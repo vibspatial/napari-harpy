@@ -7,7 +7,7 @@ napari-harpy.
 
 The viewer widget should discover shapes elements from the loaded
 `SpatialData` object, show them beside images and segmentations, and let users
-load them into napari. After plain loading is stable, the viewer should support
+load them into napari. After basic loading is stable, the viewer should support
 coloring shapes by scalar columns stored directly on the `GeoDataFrame`.
 
 The initial design should be conservative around `AnnData` table-backed shape
@@ -61,7 +61,7 @@ First version:
 
 - discover and load shapes elements;
 - add a dedicated `Shapes` section to the viewer widget;
-- support plain geometry display;
+- support geometry display;
 - support coloring by scalar columns directly stored on the shapes
   `GeoDataFrame`, for example `leiden`, `in_tumor`, `area`, or `score`;
 - keep table-backed shape coloring out of the first implementation unless the
@@ -123,15 +123,16 @@ rows. The first version of the card should expose:
   - `Action: add/update shapes layer`;
   - `Action: add/update colored shapes layer for shapes["leiden"]`.
 
-The first version should use one plain shapes layer for `None` and one styled
-shape variant per selected column. That mirrors the labels overlay model and
-allows users to compare multiple shape annotations without constantly
-recoloring one layer.
+The first version should use one shapes layer for `None`. A later coloring
+slice can decide whether styled shape variants should live in separate layers
+or update an existing shapes layer.
 
-Layer names should make the style source visible:
+Layer naming for the initial `None` path:
 
-- plain: `shapes_name`
-- styled column: `shapes_name[shape:leiden]`
+- `None`: `shapes_name`
+
+If a later coloring slice chooses separate styled layer variants, specify their
+names in that slice.
 
 ## Data Model Additions
 
@@ -140,17 +141,17 @@ Add a shapes option model in `core.spatialdata`:
 ```python
 @dataclass(frozen=True)
 class SpatialDataShapesOption:
-    shape_name: str
+    shapes_name: str
     display_name: str
     sdata: SpatialData
     coordinate_systems: tuple[str, ...]
 
     @property
     def identity(self) -> tuple[int, str]:
-        return (id(self.sdata), self.shape_name)
+        return (id(self.sdata), self.shapes_name)
 ```
 
-Add shape color source metadata. Keep it separate from
+Add a shape color source specification. Keep it separate from
 `TableColorSourceSpec`, because first-version shape coloring is element-column
 backed, not table-backed.
 
@@ -161,7 +162,7 @@ ShapeColorSourceKind = Literal["shape_column"]
 class ShapeColorSourceSpec:
     source_kind: ShapeColorSourceKind
     value_key: str
-    value_kind: ColorValueKind
+    value_kind: Literal["categorical", "continuous"]
 
     @property
     def identity(self) -> tuple[ShapeColorSourceKind, str]:
@@ -181,10 +182,10 @@ shape-column fields.
 
 Add helpers in `core.spatialdata`:
 
-- `_get_shape_names(sdata) -> list[str]`
-- `get_spatialdata_shape_options_from_sdata(sdata)`
-- `get_spatialdata_shape_options_for_coordinate_system_from_sdata(...)`
-- `get_shape_column_color_source_options(sdata, shape_name)`
+- `_get_shapes_names(sdata) -> list[str]`
+- `get_spatialdata_shapes_options_from_sdata(sdata)`
+- `get_spatialdata_shapes_options_for_coordinate_system_from_sdata(...)`
+- `get_shape_column_color_source_options(sdata, shapes_name)`
 
 Update:
 
@@ -193,7 +194,7 @@ Update:
 
 Column discovery rules:
 
-- inspect `sdata.shapes[shape_name]`;
+- inspect `sdata.shapes[shapes_name]`;
 - exclude the active geometry column;
 - treat columns named `<value_column>_colors` as optional companion color
   columns for categorical shape columns, not as ordinary color-by choices;
@@ -249,8 +250,9 @@ Recommended binding shape:
 @dataclass(frozen=True, kw_only=True)
 class ShapesLayerBinding(BaseLayerBinding):
     element_type: Literal["shapes"] = "shapes"
-    shapes_role: Literal["plain", "styled"] = "plain"
-    style_spec: ShapeColorSourceSpec | None = None
+    source_shapes_index_by_row: tuple[Any, ...] = ()
+    source_shapes_index_feature_name: str = "index"
+    skipped_geometry_count: int = 0
 ```
 
 Update the union:
@@ -261,12 +263,43 @@ LayerBinding = LabelsLayerBinding | ImageLayerBinding | ShapesLayerBinding
 
 Add `ViewerAdapter` methods:
 
-- `get_loaded_plain_shapes_layer(...)`
-- `get_loaded_styled_shapes_layer(...)`
-- `get_loaded_styled_shapes_layers(...)`
+- `_get_loaded_shapes_layer_for_coordinate_system(...)`
 - `ensure_shapes_loaded(...)`
-- `ensure_styled_shapes_loaded(...)`
-- `remove_shapes_layers(...)`
+- `remove_shapes_layer(...)`
+
+Shape-column coloring should choose its adapter contract in Slice 4 instead of
+baking a styled-layer model into Slice 2.
+
+As the adapter grows, avoid extending one generic public
+`ViewerAdapter.register_layer(...)` method with every layer-type-specific
+argument. Prefer typed registration entrypoints:
+
+```python
+def register_labels_layer(...) -> LabelsLayerBinding: ...
+def register_image_layer(...) -> ImageLayerBinding: ...
+def register_shapes_layer(...) -> ShapesLayerBinding: ...
+```
+
+The typed methods should construct the appropriate binding and then call one
+shared private registration helper, so insertion bookkeeping and viewer signals
+stay centralized while labels-, image-, and shapes-specific parameters remain
+readable.
+
+Slice 4 should extend this binding with `shapes_role` and `style_spec` for
+primary/styled layer variants.
+
+After Slice 3, `ShapesLayerBinding.source_shapes_index_by_row` is the
+authoritative Harpy mapping from rendered napari shape rows back to source
+`GeoDataFrame` indices.
+`layer.features[source_shapes_index_feature_name]` is the napari-visible
+feature table used for status-bar display and manual inspection.
+`ShapesLayerBinding.skipped_geometry_count` stores the skipped-geometry count
+needed for viewer feedback without using `layer.metadata`.
+
+After Slice 3, do not store Harpy shapes contracts in `layer.metadata`. This
+includes source row mappings, source-index feature names, skipped-geometry
+counts, shapes roles, and style specs. Shape layer identity and behavior should
+be resolved through `LayerBindingRegistry`.
 
 Shape layers should not emit `primary_labels_layers_changed`. Object
 classification should remain labels-only.
@@ -284,7 +317,7 @@ Recommended first implementation:
 - convert transformed geometry coordinates from `x, y` to napari `y, x`;
 - create the napari `Shapes` layer without an additional affine transform;
 - keep the transformed `GeoDataFrame` only as layer construction input, not as
-  a replacement for `sdata.shapes[shape_name]`.
+  a replacement for `sdata.shapes[shapes_name]`.
 
 This avoids subtle bugs from trying to apply an `x, y` affine matrix to
 napari data ordered as `y, x`.
@@ -293,26 +326,62 @@ Supported geometry rules:
 
 - `Polygon`: render the exterior ring as one napari polygon.
 - `MultiPolygon`: render each polygon part as one napari polygon, while keeping
-  a source-index mapping so all parts receive the same color.
+  a source-index mapping so all parts receive the same color. This is more
+  complete than `napari-spatialdata`'s current viewer path, which explodes
+  multipolygons and keeps only the largest polygon per source row.
 - circles: SpatialData stores these as `Point` geometries plus a `radius`
-  column. Render as napari ellipses if the coordinate handling is clean;
-  otherwise approximate as polygons from `point.buffer(radius)`.
-- empty or invalid geometries: skip them and report a warning in the action
-  feedback.
-- holes/interiors: do not promise exact hole rendering in the first version
-  unless napari's `Shapes` layer can represent them correctly in our target
-  version. Rendering exterior rings only is acceptable for the first version if
-  the feedback or implementation note is explicit.
+  column. Render them as napari `ellipse` shapes from four bounding-box corner
+  coordinates. This gives the viewer one `Shapes` layer contract for
+  polygons, multipolygons, and circles.
+- empty geometries: skip them and report a warning in the action feedback.
+- invalid geometries: try a conservative `shapely.make_valid(...)` repair when
+  available; flatten any repaired polygonal result into renderable polygons;
+  skip still-empty, still-invalid, or non-polygonal results and report a warning.
+- holes/interiors: preserve them for polygon and multipolygon parts by encoding
+  each Shapely polygon as one napari polygon path with embedded interior rings.
+  Napari represents holes by removing bridge edges that are traversed twice, so
+  Harpy should orient the polygon and embed each interior ring in the exterior
+  path before converting `x, y` coordinates to napari `y, x` coordinates.
 
-Keep a per-napari-shape-row source mapping in layer metadata or binding-adjacent
-state:
+Recommended hole encoding:
 
 ```python
-source_shape_index_by_row: tuple[object, ...]
+def _polygon_to_napari_path(polygon: Polygon) -> list[tuple[float, float]]:
+    """Encode a Shapely polygon as one napari path, preserving holes.
+
+    Napari can render polygon holes when the interior rings are embedded in the
+    same vertex path as the exterior ring and wind in the opposite direction.
+    The repeated exterior anchor creates bridge edges that napari's
+    triangulation removes because they are traversed twice.
+    """
+    oriented = shapely.geometry.polygon.orient(polygon, sign=1.0)
+    path = list(oriented.exterior.coords)
+    anchor = path[0]
+    for interior in oriented.interiors:
+        path.extend(interior.coords)
+        path.append(anchor)
+    return path
+```
+
+This keeps one source `Polygon` as one napari shape row even when it has holes.
+For `MultiPolygon`, apply the same encoding to each polygon part and map every
+part back to the same source row in
+`ShapesLayerBinding.source_shapes_index_by_row`.
+
+Keep a per-napari-shape-row source mapping in the adapter binding:
+
+```python
+binding.source_shapes_index_by_row = tuple(...)
 ```
 
 This is required because one SpatialData shape row can become several napari
 shape rows when it is a `MultiPolygon`.
+
+`napari-spatialdata` stores this concept under the generic
+`layer.metadata["indices"]` key. Harpy should not follow that storage contract
+for shapes. The row mapping should live in `ShapesLayerBinding`, because Harpy
+already treats `LayerBindingRegistry` as the authoritative layer contract and
+uses layer metadata only as loose napari-facing state for other layer types.
 
 ## Shape Styling
 
@@ -335,6 +404,23 @@ Styled shapes:
   categorical representation, without mutating the `GeoDataFrame`;
 - do not write palette columns or category cleanup back to `sdata`;
 - do not consult companion color columns for continuous columns.
+
+Shape-column styling should use
+`ShapesLayerBinding.source_shapes_index_by_row` to align source values to
+rendered napari shape rows. Napari expects one color per `layer.data` row, but
+Harpy's values live on `sdata.shapes[shapes_name]`. If one source row expands
+into several rendered rows, such as a `MultiPolygon`, every rendered row should
+look up the same source index and therefore receive the same color.
+
+For example:
+
+```python
+binding = adapter.layer_bindings.get_binding(layer)
+source_index_by_row = binding.source_shapes_index_by_row
+source_values = sdata.shapes[shapes_name][column_name]
+row_values = [source_values.loc[source_index] for source_index in source_index_by_row]
+layer.face_color = [palette[value] for value in row_values]
+```
 
 For categorical companion colors, build the category-to-color mapping from the
 full original shape column before expanding multipolygons. For example:
@@ -364,7 +450,7 @@ styled labels:
 class StyledShapesLoadResult:
     layer: Shapes
     created: bool
-    value_kind: ColorValueKind
+    value_kind: Literal["categorical", "continuous"]
     palette_source: Literal["shape_column", "default", None]
     coercion_applied: bool
     skipped_geometry_count: int
@@ -377,7 +463,7 @@ only for tables that explicitly annotate the selected shapes element.
 
 Rules:
 
-- discover tables with `get_element_annotators(sdata, shape_name)`;
+- discover tables with `get_element_annotators(sdata, shapes_name)`;
 - validate `region_key`, `instance_key`, and duplicate instance ids within the
   shapes region;
 - align table values to shape rows through `instance_key` and the
@@ -395,63 +481,299 @@ it is a semantic join, not basic SpatialData table annotation.
 
 ### Slice 1: Discovery And UI Shell
 
-Status: proposed
+Status: completed
+
+Purpose:
+
+Establish shapes as a first-class browsable element type in the viewer widget,
+without loading geometry into napari yet. This slice should make shapes visible
+in the coordinate-system-first UI and settle the widget contract that later
+slices will attach loading and styling behavior to.
 
 Implement:
 
 - add shape discovery helpers;
 - include shapes coordinate systems in viewer coordinate-system discovery;
 - add a `Shapes` collapsible section to `ViewerWidget`;
-- add `_ShapesCardWidget` with plain load controls and disabled column-color
-  controls if no colorable columns exist;
-- update summary and empty states to include shapes counts.
+- add `_ShapesCardWidget` as a mostly presentational card for one shapes
+  element;
+- show a disabled `Add / Update in viewer` control or equivalent disabled
+  action state until Slice 2 implements layer loading;
+- update summary and empty states to include shapes counts;
+- expose `shape_cards` and `shape_rows` test helpers on `ViewerWidget`,
+  matching the existing image and labels helpers;
+- preserve expanded shapes row state across coordinate-system refreshes.
+
+Recommended concrete code touchpoints:
+
+- add `SpatialDataShapesOption` beside `SpatialDataLabelsOption` and
+  `SpatialDataImageOption`;
+- add `_get_shapes_names(sdata) -> list[str]`;
+- add `get_spatialdata_shapes_options_from_sdata(sdata)`;
+- add `get_spatialdata_shapes_options_for_coordinate_system_from_sdata(...)`;
+- update `get_coordinate_system_names_from_sdata(...)` so shapes-only
+  SpatialData objects expose selectable coordinate systems;
+- add `_get_shapes_in_coordinate_system(...)` in the viewer widget module, or
+  delegate directly to the new core helper;
+- extend `ViewerWidget._refresh_coordinate_system_content(...)`,
+  `_update_section_empty_states(...)`, and `_clear_cards(...)` to handle
+  images, labels, and shapes consistently.
+
+Out of scope:
+
+- creating napari `Shapes` layers;
+- adding `ShapesLayerBinding` or other adapter registry changes;
+- geometry conversion from `GeoDataFrame` to napari shape arrays;
+- shape-column coloring;
+- table-backed shape coloring;
+- any labels-to-shapes table inference.
 
 Recommended tests:
 
 - coordinate systems are discovered from shapes-only data;
 - shapes section appears when shapes are available;
 - shapes section empty state appears when none are available;
-- expanded-row state is preserved across refreshes.
+- expanded-row state is preserved across refreshes;
+- the disabled Slice 1 action does not call the adapter or mutate viewer
+  layers.
 
-### Slice 2: Plain Shapes Layer Loading
+### Slice 2: Shapes Layer Loading
 
-Status: proposed
+Status: completed
 
 Implement:
 
 - add `ShapesLayerBinding`;
-- add adapter lookup, registration, and removal paths for plain shapes layers;
-- implement GeoDataFrame to napari `Shapes` conversion;
-- support polygons, multipolygons, and circles;
+- add adapter lookup, registration, and removal paths for shapes layers;
+- implement GeoDataFrame to napari `Shapes` conversion in the selected
+  coordinate system;
+- support polygons, multipolygons, and `Point` + `radius` circles;
 - apply coordinate-system transforms by materializing transformed geometries;
+- set `layer.metadata["source_shapes_index_by_row"]` as the initial
+  rendered-row to source-row mapping;
+- populate `layer.features` only with the source index column, using the
+  GeoDataFrame index name or `"index"` fallback, so the status bar can expose
+  source identity without copying every source column;
+- skip empty, invalid, or unsupported geometries with explicit feedback instead
+  of failing the whole load when at least one shape can be rendered;
+- preserve polygon interiors by encoding holes as embedded rings in the napari
+  polygon path;
 - activate the loaded shapes layer after `Add / Update`.
 
 Recommended tests:
 
-- plain polygons load as a napari `Shapes` layer;
-- multipolygon rows create multiple napari shapes but keep source-index mapping;
-- circle rows render as ellipses or polygon approximations;
-- loading the same shapes element twice reuses the existing plain layer;
+- polygons load as a napari `Shapes` layer;
+- multipolygon rows create multiple napari shapes and duplicate their source row
+  in `metadata["source_shapes_index_by_row"]`;
+- circle rows render as napari ellipses;
+- `layer.features` contains only the source index column, including named
+  GeoDataFrame indexes and the `"index"` fallback for unnamed indexes;
+- empty or invalid geometries are skipped with warning feedback;
+- polygon interiors render as holes rather than filled exterior-only polygons;
+- loading the same shapes element twice reuses the existing shapes layer;
 - removing layers for a coordinate system also removes shapes layers;
 - object-classification labels-layer signals are not emitted for shapes.
 
-### Slice 3: Shape-Column Coloring
+### Slice 3: Move Shapes Row Mapping Into Bindings
 
-Status: proposed
+Status: completed
+
+Slice 2 made shapes loadable, but it still uses `layer.metadata` for some
+Harpy-internal shapes contracts. Before adding styled shapes layers, move those
+contracts into `ShapesLayerBinding` so later styling and annotation work is not
+dependent on a loose napari metadata dictionary.
 
 Implement:
 
-- add `ShapeColorSourceSpec`;
-- add shape-column source discovery;
-- add styled shapes adapter lookup and load/update path;
-- style shapes by categorical and continuous columns;
-- use valid `<column>_colors` companion columns as stored categorical palettes;
-- repeat colors for multipolygon parts;
-- provide feedback for created vs updated layers, palette source, invalid
-  companion palettes, and skipped geometries.
+- first split the public adapter registration API into typed entrypoints:
+  - `ViewerAdapter.register_labels_layer(...)`;
+  - `ViewerAdapter.register_image_layer(...)`;
+  - `ViewerAdapter.register_shapes_layer(...)`;
+- keep a shared private helper for the actual registry insertion and common
+  side effects, so signal emission and viewer-loaded bookkeeping stay in one
+  place;
+- keep `unregister_layer(...)` generic because unregistering only needs the
+  live napari layer object;
+- keep binding lookup/filtering registry-backed;
+- extend `ShapesLayerBinding` with:
+  - `source_shapes_index_by_row: tuple[Any, ...] = ()`;
+  - `source_shapes_index_feature_name: str = "index"`;
+  - `skipped_geometry_count: int = 0`;
+- treat `ShapesLayerBinding.source_shapes_index_by_row` as the authoritative
+  rendered-napari-row to source-`GeoDataFrame`-index mapping;
+- treat `ShapesLayerBinding.source_shapes_index_feature_name` as the name of
+  the `layer.features` column that stores the source index for napari status
+  display and manual inspection;
+- treat `ShapesLayerBinding.skipped_geometry_count` as the authoritative source
+  for skipped-geometry viewer feedback;
+- keep `layer.features[source_shapes_index_feature_name]` as the
+  napari-visible source-index feature table;
+- remove all code paths that read
+  `layer.metadata["source_shapes_index_by_row"]` for Harpy logic;
+- stop writing shapes source-row mappings and source-index feature names into
+  `layer.metadata`;
+- keep skipped-geometry feedback out of shapes layer metadata as well; read it
+  from the shapes binding when the viewer widget builds action feedback;
+- update `ViewerAdapter.ensure_shapes_loaded(...)` so it registers the source
+  row mapping, source-index feature name, and skipped-geometry count through
+  `register_shapes_layer(...)` when the primary shapes layer is created;
+- keep `ensure_shapes_loaded(...)` reuse behavior registry-backed, so an
+  existing registered shapes layer returns the same binding-backed contract;
+- keep object-classification labels-layer signals unchanged.
+
+Out of scope:
+
+- shape-column source discovery;
+- styled shapes layers;
+- `ShapeColorSourceSpec`;
+- primary/styled shapes roles;
+- shape coloring.
 
 Recommended tests:
 
+- `ShapesLayerBinding.source_shapes_index_by_row` matches the rendered napari
+  rows for polygons, multipolygons, and circles;
+- `ShapesLayerBinding.source_shapes_index_feature_name` is `"index"` for
+  unnamed GeoDataFrame indexes and the GeoDataFrame index name for named
+  indexes;
+- `layer.features[source_shapes_index_feature_name]` still exposes source
+  indices for the status bar;
+- shapes layers do not store source-row mappings, source-index feature names,
+  shapes roles, style specs, or skipped-geometry counts in `layer.metadata`;
+- typed registration entrypoints create the expected binding subclasses and
+  preserve existing primary-labels signal behavior;
+- viewer skipped-geometry feedback still works without reading layer metadata;
+- reusing an already-loaded shapes layer preserves the binding-backed mapping;
+- removing shapes layers unregisters the binding and its source-row mapping.
+
+### Slice 4: Shape-Column Coloring
+
+Status: proposed
+
+Follow the styled-labels pattern, but use direct columns on the shapes
+`GeoDataFrame` instead of linked tables. A shapes card should have a `Color
+source` selector:
+
+- `None` means `Add / Update` loads or reuses the primary shapes layer;
+- `Shape column` means `Add / Update` loads or updates a separate styled shapes
+  layer variant.
+
+The second control should be labelled `Shape column`, not `Observations` or
+`Vars`, because the source is a column on `sdata.shapes[shapes_name]` itself.
+
+The primary/styled distinction is required for the future
+`ShapesAnnotation()` widget: annotation should listen to and edit primary
+shapes layers only, while styled shapes layers are viewer-only variants.
+
+Implementation reuse guidance:
+
+- follow the styled-labels adapter and widget structure for layer roles,
+  `style_spec` identity, created-vs-updated feedback, and source selector UI;
+- do not call the labels-specific `apply_table_color_source_to_labels_layer`
+  path for shapes, because it assumes linked `AnnData`, instance-key alignment,
+  and `DirectLabelColormap`;
+- extract small shared helpers only when they stay domain-neutral, such as
+  scalar column classification, string/object categorical warnings,
+  category-value normalization, color validation, default categorical palettes,
+  and continuous value normalization;
+- keep shapes-specific styling in a separate module, because shapes use direct
+  `GeoDataFrame` columns, row-level companion `<column>_colors`, and one
+  `face_color` / `edge_color` value per rendered napari shape row.
+
+Implement:
+
+- add `ShapeColorSourceSpec`, modelled after `TableColorSourceSpec` but scoped
+  to direct shapes columns:
+  - `source_kind: Literal["shape_column"]`;
+  - `value_key: str`;
+  - `value_kind: Literal["categorical", "continuous"]`;
+- add shape-column source discovery for `sdata.shapes[shapes_name]`:
+  - include scalar columns that can be classified as categorical or continuous;
+  - exclude the geometry column;
+  - exclude explicit color/palette columns, including columns ending in
+    `_colors`, `_color`, or `.color`;
+  - keep companion `<column>_colors` columns available only as palettes for
+    their corresponding value column;
+- extend the shapes card UI:
+  - add `Color source` with `None` and `Shape column`;
+  - add a searchable/autocompleted `Shape column` input populated from
+    `ShapeColorSourceSpec` options;
+  - show `Action: add/update primary shapes layer` when `Color source = None`;
+  - show `Action: add/update styled shapes layer for shape["<column>"]` when a
+    shape column is selected;
+- extend `ShapesLoadRequest` so it can carry an optional selected
+  `ShapeColorSourceSpec`;
+- dispatch from the viewer widget:
+  - no selected shape color source -> `ViewerAdapter.ensure_shapes_loaded(...)`;
+  - selected shape color source -> `ViewerAdapter.ensure_styled_shapes_loaded(...)`;
+- extend `ShapesLayerBinding` with:
+  - `shapes_role: Literal["primary", "styled"] = "primary"`;
+  - `style_spec: ShapeColorSourceSpec | None = None`;
+- reuse `source_shapes_index_by_row` and `source_shapes_index_feature_name`
+  from the Slice 3 binding contract for both primary and styled shapes layers;
+- keep `ensure_shapes_loaded(...)` as the primary-layer path and make all
+  primary lookup/removal code filter `shapes_role="primary"`;
+- add styled-shapes adapter paths matching styled labels:
+  - `get_loaded_styled_shapes_layer(...)`;
+  - `get_loaded_styled_shapes_layers(...)`;
+  - `ensure_styled_shapes_loaded(...)`;
+  - a user-facing layer name such as
+    `build_styled_shapes_layer_name(shapes_name, style_spec)`;
+- allow primary and styled shapes layers for the same shapes element to coexist;
+- register styled shapes layers with `shapes_role="styled"` and `style_spec`;
+- keep styled shapes identity and source-row mappings in `ShapesLayerBinding`,
+  not in `layer.metadata`;
+- style shapes by categorical and continuous columns:
+  - apply one color per rendered napari shape row;
+  - prefer coloring both `face_color` and `edge_color`, with a readable edge and
+    a translucent face so image data remains visible underneath;
+  - use a neutral missing color for missing values;
+- use valid `<column>_colors` companion columns as stored categorical palettes:
+  - build the category-to-color mapping from the full source shape column before
+    expanding multipolygons;
+  - if a category has conflicting companion colors, fall back to the default
+    categorical palette;
+  - if the companion palette is missing, incomplete, or invalid, fall back to
+    the default categorical palette;
+- classify shape columns like styled labels:
+  - pandas categorical, bool, and exact binary integer columns are categorical;
+  - non-binary integer and float columns are continuous;
+  - string/object scalar columns are temporarily categorical without mutating
+    the `GeoDataFrame`;
+- use `ShapesLayerBinding.source_shapes_index_by_row` to align source
+  shape-column values to rendered napari rows;
+- add the selected style source column to the `layer.features` DataFrame,
+  aligned to rendered napari rows, instead of copying all GeoDataFrame columns
+  during Slice 2;
+- if the selected style source column name collides with the source-index
+  feature column, store it in a deterministic disambiguated feature column
+  without overwriting the source-index feature;
+- repeat colors and feature values for multipolygon parts by repeating the
+  source row lookup;
+- provide feedback for primary vs styled load paths, created vs updated styled
+  layers, palette source, invalid companion palettes, string coercion, and
+  skipped geometries.
+
+Recommended tests:
+
+- shapes cards expose `Color source = None | Shape column` and a `Shape column`
+  autocomplete populated from the shapes element;
+- geometry and explicit color/palette columns are hidden from the shape-column
+  selector;
+- `Add / Update` with no selected shape column dispatches to the primary
+  `ensure_shapes_loaded(...)` path;
+- `Add / Update` with a selected shape column dispatches to
+  `ensure_styled_shapes_loaded(...)`;
+- primary and styled shapes layers can coexist for the same shapes element;
+- styled shapes lookup reuses a matching variant and creates distinct variants
+  for different columns;
+- styled shapes bindings have `shapes_role="styled"` and keep their
+  `ShapeColorSourceSpec`;
+- primary shapes bindings have `shapes_role="primary"` and no style spec;
+- primary and styled shapes bindings carry `source_shapes_index_by_row` and
+  `source_shapes_index_feature_name`;
+- shapes layers do not store shapes roles, style specs, source mappings, or
+  source-index feature names in `layer.metadata`;
 - categorical columns produce per-shape categorical colors;
 - categorical columns use valid `<column>_colors` companion palettes;
 - invalid companion color values fall back to the default palette;
@@ -461,14 +783,21 @@ Recommended tests:
 - non-binary integer and float columns are continuous;
 - string/object scalar columns are temporarily categorical without mutating the
   `GeoDataFrame`;
+- the selected style source column is added to `layer.features` and repeated
+  for multipolygon parts;
+- style source feature-name collisions are disambiguated without overwriting the
+  source-index feature;
+- multipolygon parts repeat the source row color via
+  `ShapesLayerBinding.source_shapes_index_by_row`;
 - mixed unsupported columns are hidden from the selector;
 - styled layer identity includes the selected column and is reused on repeat.
 
-### Slice 4: Explicit Shape-Table Coloring
+### Slice 5: Explicit Shape-Table Coloring
 
-Status: follow-up
+Status: not planned
 
-Implement only after the first three slices are stable.
+Decision: do not implement explicit shape-table coloring in this roadmap.
+The notes below are retained as historical context only.
 
 Implement:
 
@@ -488,113 +817,14 @@ Recommended tests:
 - duplicate `instance_key` values within one shapes region are rejected;
 - missing shape indices receive the configured missing color.
 
-## Shape Write-Back Follow-Up
+## Shape Annotation And Write-Back
 
-Shape write-back should be treated as a separate roadmap area from first-pass
-shape viewing and coloring. There are two distinct user workflows here, and
-they should have separate write paths because they carry different risks.
+Shape annotation and write-back are tracked in
+`Roadmap/shapes_elements/annotation_shapes.md`.
 
-### Follow-Up A: Shape Annotation Creation
-
-This workflow means "create a new shapes annotation layer".
-
-User flow:
-
-- the user creates a new empty napari `Shapes` layer or clicks a Harpy action
-  such as `New Shapes Annotation`;
-- the user draws polygons, circles, or other supported shapes in napari;
-- Harpy converts that layer into a new `GeoDataFrame`;
-- Harpy writes it into `sdata.shapes[new_name]`.
-
-Recommended semantics:
-
-- save the new geometry in the active coordinate system;
-- store an `Identity()` transform to that active coordinate system, because the
-  user drew the coordinates directly in that displayed coordinate frame;
-- generate a fresh shape index;
-- optionally initialize columns such as `annotation_class`, `created_by`,
-  `created_at`, or other future annotation metadata;
-- assume no existing table linkage;
-- if the user wants a table later, make that a separate explicit action.
-
-This is the safer first write-back feature because the user is creating a new
-SpatialData element rather than mutating an existing one.
-
-Recommended tests:
-
-- a new napari shapes layer can be saved as `sdata.shapes[new_name]`;
-- the new shapes element has an `Identity()` transform to the active coordinate
-  system;
-- generated indices are unique and stable;
-- optional initialized columns are written with the expected length;
-- backed `SpatialData` can persist the new element to zarr when supported.
-
-### Follow-Up B: Shape Geometry Editing
-
-This workflow means "modify an existing `SpatialData` shapes element".
-
-User flow:
-
-- the user loads `sdata.shapes["cell_boundaries"]`;
-- the user edits geometry in the loaded napari layer;
-- Harpy writes the edited geometry back to the existing shapes element, or
-  saves it as a copy.
-
-This path needs stricter rules because Harpy must preserve or intentionally
-update existing state:
-
-- the existing `GeoDataFrame` index;
-- geometry type expectations, such as circles vs polygons vs multipolygons;
-- scalar annotation columns such as `leiden` or `in_tumor`;
-- companion color columns such as `leiden_colors`;
-- any tables whose `region` metadata annotates the shapes element by index;
-- coordinate transformations.
-
-Recommended first behavior:
-
-- support geometry-only edits that preserve the same shape count and source
-  indices;
-- always provide `Save as new shapes element`;
-- require explicit confirmation before overwriting the original shapes element;
-- block or warn on add/delete when a table annotates the shapes element;
-- reject unsupported napari shape types such as lines or paths until there is a
-  clear SpatialData representation;
-- if inverse-transforming back to the original coordinate frame is not proven
-  safe, save the edited copy in the active coordinate system with an
-  `Identity()` transform.
-
-Add/delete is a separate problem from vertex editing. If the user deletes or
-adds shapes, Harpy needs an explicit policy for table rows and metadata. That
-should not happen silently.
-
-Recommended tests:
-
-- editing vertices with unchanged source indices can update the geometry;
-- scalar columns and companion `_colors` columns survive geometry-only edits;
-- overwrite requires confirmation;
-- save-as-copy is available even when overwrite is blocked;
-- add/delete is blocked or clearly reported when linked tables annotate the
-  shapes element;
-- unsupported napari shape types are rejected with actionable feedback.
-
-### Follow-Up C: Shape Table Reconciliation
-
-This should come after annotation creation and strict geometry editing.
-
-This workflow handles add/delete edits when one or more `AnnData` tables
-explicitly annotate the edited shapes element.
-
-Open policy questions:
-
-- when a shape is deleted, should matching table rows be deleted, orphaned, or
-  moved to an audit table?
-- when a shape is added, should Harpy create table rows with missing values?
-- how should generated instance ids avoid collisions with existing indices?
-- how should these changes be represented in undo/redo or persistence
-  feedback?
-
-Until those policies are explicit, table-linked add/delete write-back should
-remain out of scope.
+That separate roadmap introduces a dedicated `ShapesAnnotation()` widget for
+creating new shapes annotations and modifying existing shapes elements. The
+viewer roadmap should remain focused on loading, viewing, and coloring shapes.
 
 ## Acceptance Criteria
 
@@ -609,15 +839,12 @@ remain out of scope.
   `leiden_colors`.
 - Direct shape-column coloring does not mutate the `GeoDataFrame`.
 - Labels annotation and object-classification behavior remain unchanged.
-- Table-backed shapes coloring is only exposed when SpatialData metadata says
-  the table annotates the selected shapes element.
+- Table-backed shapes coloring is not exposed in this roadmap.
 
 ## Non-Goals For The First Version
 
 - editing shapes geometry in napari and writing it back to SpatialData;
 - rich legends or palette editors;
-- exact polygon-hole rendering unless napari supports it cleanly in our target
-  version;
 - using labels-linked tables to color shapes by implicit id matching;
 - cross-element biological-object identity resolution.
 

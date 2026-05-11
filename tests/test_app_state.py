@@ -87,7 +87,7 @@ def _patch_empty_shared_widget_content(monkeypatch) -> None:
     monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: [])
     monkeypatch.setattr(
         object_widget_module,
-        "get_spatialdata_label_options_for_coordinate_system_from_sdata",
+        "get_spatialdata_labels_options_for_coordinate_system_from_sdata",
         lambda *, sdata, coordinate_system: [],
     )
 
@@ -149,10 +149,9 @@ def test_harpy_app_state_set_coordinate_system_emits_event_and_prunes_layers(qtb
     monkeypatch.setattr(
         state.viewer_adapter,
         "remove_layers_outside_coordinate_system",
-        lambda *, sdata, coordinate_system: removed_calls.append(
-            {"sdata": sdata, "coordinate_system": coordinate_system}
-        )
-        or [],
+        lambda *, sdata, coordinate_system: (
+            removed_calls.append({"sdata": sdata, "coordinate_system": coordinate_system}) or []
+        ),
     )
 
     with qtbot.waitSignal(state.coordinate_system_changed) as blocker:
@@ -286,7 +285,9 @@ def test_widgets_share_app_state_for_same_viewer(qtbot) -> None:
     assert feature_widget.app_state is get_or_create_app_state(viewer)
 
 
-def test_shared_viewer_and_object_widgets_keep_previous_coordinate_system_when_replacing_sdata(qtbot, monkeypatch) -> None:
+def test_shared_viewer_and_object_widgets_keep_previous_coordinate_system_when_replacing_sdata(
+    qtbot, monkeypatch
+) -> None:
     first_sdata = object()
     second_sdata = object()
     _patch_shared_coordinate_system_names(

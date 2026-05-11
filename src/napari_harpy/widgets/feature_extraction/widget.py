@@ -190,7 +190,7 @@ class _FeatureExtractionBatchChannelState:
 @dataclass(frozen=True)
 class _FeatureExtractionStagedBatchState:
     checked_coordinate_systems: tuple[str, ...]
-    label_names: tuple[str, ...]
+    labels_names: tuple[str, ...]
     triplets: tuple[FeatureExtractionTriplet, ...]
     invalid_coordinate_systems: tuple[str, ...]
     error_text: str | None
@@ -313,7 +313,7 @@ class FeatureExtractionWidget(QWidget):
         )
         self._staged_batch_state = _FeatureExtractionStagedBatchState(
             checked_coordinate_systems=(),
-            label_names=(),
+            labels_names=(),
             triplets=(),
             invalid_coordinate_systems=(),
             error_text=None,
@@ -541,7 +541,7 @@ class FeatureExtractionWidget(QWidget):
     @property
     def selected_segmentation_name(self) -> str | None:
         """Return the currently selected labels element name."""
-        return None if self._selected_label_option is None else self._selected_label_option.label_name
+        return None if self._selected_label_option is None else self._selected_label_option.labels_name
 
     @property
     def selected_spatialdata(self) -> SpatialData | None:
@@ -659,7 +659,7 @@ class FeatureExtractionWidget(QWidget):
         )
         self._staged_batch_state = _FeatureExtractionStagedBatchState(
             checked_coordinate_systems=(),
-            label_names=(),
+            labels_names=(),
             triplets=(),
             invalid_coordinate_systems=(),
             error_text=None,
@@ -1007,7 +1007,7 @@ class FeatureExtractionWidget(QWidget):
         image_discovery = get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata(
             sdata=self.selected_spatialdata,
             coordinate_system=coordinate_system,
-            label_name=selected_label_option.label_name,
+            labels_name=selected_label_option.labels_name,
         )
         selectable_image_options = image_discovery.eligible_image_options
         selected_image_option = next(
@@ -1592,7 +1592,7 @@ class FeatureExtractionWidget(QWidget):
         if self.selected_spatialdata is None or not checked_coordinate_systems:
             return _FeatureExtractionStagedBatchState(
                 checked_coordinate_systems=checked_coordinate_systems,
-                label_names=(),
+                labels_names=(),
                 triplets=(),
                 invalid_coordinate_systems=(),
                 error_text=None,
@@ -1604,8 +1604,8 @@ class FeatureExtractionWidget(QWidget):
             if requires_image and self._batch_channel_error is not None
             else set()
         )
-        label_names: list[str] = []
-        seen_label_names: set[str] = set()
+        labels_names: list[str] = []
+        seen_labels_names: set[str] = set()
         candidate_triplets: list[FeatureExtractionTriplet] = []
         invalid_coordinate_systems: list[str] = []
         has_missing_segmentation = False
@@ -1618,10 +1618,10 @@ class FeatureExtractionWidget(QWidget):
                 invalid_coordinate_systems.append(coordinate_system)
                 continue
 
-            label_name = state.selected_label_option.label_name
-            if label_name not in seen_label_names:
-                label_names.append(label_name)
-                seen_label_names.add(label_name)
+            labels_name = state.selected_label_option.labels_name
+            if labels_name not in seen_labels_names:
+                labels_names.append(labels_name)
+                seen_labels_names.add(labels_name)
 
             image_name = None if state.selected_image_option is None else state.selected_image_option.image_name
             if requires_image and image_name is None:
@@ -1636,7 +1636,7 @@ class FeatureExtractionWidget(QWidget):
             candidate_triplets.append(
                 FeatureExtractionTriplet(
                     coordinate_system=coordinate_system,
-                    label_name=label_name,
+                    labels_name=labels_name,
                     image_name=image_name,
                     channels=self.selected_extraction_channel_names if requires_image else None,
                 )
@@ -1652,18 +1652,18 @@ class FeatureExtractionWidget(QWidget):
 
         return _FeatureExtractionStagedBatchState(
             checked_coordinate_systems=checked_coordinate_systems,
-            label_names=tuple(label_names),
+            labels_names=tuple(labels_names),
             triplets=tuple(candidate_triplets) if error_text is None else (),
             invalid_coordinate_systems=tuple(invalid_coordinate_systems),
             error_text=error_text,
         )
 
-    def _eligible_table_names_for_label_batch(self, label_names: tuple[str, ...]) -> list[str]:
-        if self.selected_spatialdata is None or not label_names:
+    def _eligible_table_names_for_label_batch(self, labels_names: tuple[str, ...]) -> list[str]:
+        if self.selected_spatialdata is None or not labels_names:
             return []
 
         table_names_by_label = [
-            set(get_annotating_table_names(self.selected_spatialdata, label_name)) for label_name in label_names
+            set(get_annotating_table_names(self.selected_spatialdata, labels_name)) for labels_name in labels_names
         ]
         if not table_names_by_label:
             return []
@@ -1677,11 +1677,11 @@ class FeatureExtractionWidget(QWidget):
         if (
             self.selected_spatialdata is None
             or not staged_batch_state.checked_coordinate_systems
-            or len(staged_batch_state.label_names) != len(staged_batch_state.checked_coordinate_systems)
+            or len(staged_batch_state.labels_names) != len(staged_batch_state.checked_coordinate_systems)
         ):
             self._table_names = []
         else:
-            self._table_names = self._eligible_table_names_for_label_batch(staged_batch_state.label_names)
+            self._table_names = self._eligible_table_names_for_label_batch(staged_batch_state.labels_names)
 
         with QSignalBlocker(self.table_combo):
             self.table_combo.clear()
@@ -1949,8 +1949,8 @@ class FeatureExtractionWidget(QWidget):
         if (
             self.selected_spatialdata is None
             or self.selected_table_name is None
-            or not staged_batch_state.label_names
-            or len(staged_batch_state.label_names) != len(staged_batch_state.checked_coordinate_systems)
+            or not staged_batch_state.labels_names
+            or len(staged_batch_state.labels_names) != len(staged_batch_state.checked_coordinate_systems)
         ):
             return None
 
@@ -1958,12 +1958,12 @@ class FeatureExtractionWidget(QWidget):
             validate_table_annotation_coverage(
                 self.selected_spatialdata,
                 self.selected_table_name,
-                staged_batch_state.label_names,
+                staged_batch_state.labels_names,
             )
             validate_table_region_instance_ids(
                 self.selected_spatialdata,
                 self.selected_table_name,
-                label_names=staged_batch_state.label_names,
+                labels_names=staged_batch_state.labels_names,
             )
         except ValueError as error:
             return str(error)
@@ -2001,7 +2001,7 @@ class FeatureExtractionWidget(QWidget):
 
     def _build_selection_status_entries(self):
         checked_coordinate_systems = self._staged_batch_state.checked_coordinate_systems
-        label_names_by_coordinate_system: dict[str, str | None] = {}
+        labels_names_by_coordinate_system: dict[str, str | None] = {}
         image_names_by_coordinate_system: dict[str, str | None] = {}
         blocking_reasons_by_coordinate_system: dict[str, str | None] = {}
         channel_blocking_reason = self._selection_status_channel_blocking_reason()
@@ -2012,8 +2012,8 @@ class FeatureExtractionWidget(QWidget):
             state = self._triplet_card_states_by_coordinate_system.get(coordinate_system)
             selected_label_option = None if state is None else state.selected_label_option
             selected_image_option = None if state is None else state.selected_image_option
-            label_names_by_coordinate_system[coordinate_system] = (
-                None if selected_label_option is None else selected_label_option.label_name
+            labels_names_by_coordinate_system[coordinate_system] = (
+                None if selected_label_option is None else selected_label_option.labels_name
             )
             image_names_by_coordinate_system[coordinate_system] = (
                 None if selected_image_option is None else selected_image_option.image_name
@@ -2031,7 +2031,7 @@ class FeatureExtractionWidget(QWidget):
 
         return build_feature_extraction_status_card_entries(
             checked_coordinate_systems,
-            label_names_by_coordinate_system=label_names_by_coordinate_system,
+            labels_names_by_coordinate_system=labels_names_by_coordinate_system,
             image_names_by_coordinate_system=image_names_by_coordinate_system,
             blocking_reasons_by_coordinate_system=blocking_reasons_by_coordinate_system,
         )

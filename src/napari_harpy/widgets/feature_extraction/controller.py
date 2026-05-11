@@ -74,10 +74,10 @@ class FeatureExtractionJob:
     change_kind: FeatureMatrixWriteChangeKind = "created"
 
     @property
-    def label_name(self) -> str | None:
+    def labels_name(self) -> str | None:
         if len(self.request.triplets) != 1:
             return None
-        return self.request.triplets[0].label_name
+        return self.request.triplets[0].labels_name
 
     @property
     def image_name(self) -> str | None:
@@ -123,7 +123,7 @@ class FeatureExtractionResult:
     """Summary produced by a completed feature-extraction worker."""
 
     job_id: int
-    label_name: str | None  # why do we now allow label_name = None
+    labels_name: str | None  # why do we now allow labels_name = None
     table_name: str
     feature_key: str
     change_kind: FeatureMatrixWriteChangeKind = "created"
@@ -151,7 +151,7 @@ def _run_feature_extraction_job(job: FeatureExtractionJob) -> FeatureExtractionR
 
     return FeatureExtractionResult(
         job_id=job.job_id,
-        label_name=job.label_name,
+        labels_name=job.labels_name,
         table_name=job.request.table_name,
         feature_key=job.request.feature_key,
         change_kind=job.change_kind,
@@ -179,7 +179,7 @@ class FeatureExtractionController:
         self._selected_feature_names: tuple[str, ...] = ()
         self._selected_feature_key: str | None = None
         self._overwrite_feature_key = False
-        self._selected_label_name_hint: str | None = None
+        self._selected_labels_name_hint: str | None = None
         self._selected_coordinate_system_hint: str | None = None
 
         self._latest_requested_job_id = 0
@@ -236,7 +236,7 @@ class FeatureExtractionController:
     def bind(
         self,
         sdata: SpatialData | None,
-        label_name: str | None,
+        labels_name: str | None,
         image_name: str | None,
         table_name: str | None,
         coordinate_system: str | None,
@@ -252,11 +252,11 @@ class FeatureExtractionController:
         normalized_feature_key = None if feature_key is None else feature_key.strip()
         normalized_channels = _normalize_channels(channels)
         triplets: tuple[FeatureExtractionTriplet, ...] = ()
-        if label_name is not None and normalized_coordinate_system is not None:
+        if labels_name is not None and normalized_coordinate_system is not None:
             triplets = (
                 FeatureExtractionTriplet(
                     coordinate_system=normalized_coordinate_system,
-                    label_name=label_name,
+                    labels_name=labels_name,
                     image_name=image_name,
                     channels=normalized_channels,
                 ),
@@ -269,7 +269,7 @@ class FeatureExtractionController:
             feature_names=normalized_feature_names,
             feature_key=normalized_feature_key,
             overwrite_feature_key=overwrite_feature_key,
-            label_name_hint=label_name,
+            labels_name_hint=labels_name,
             coordinate_system_hint=normalized_coordinate_system,
         )
 
@@ -287,7 +287,7 @@ class FeatureExtractionController:
         normalized_triplets = _normalize_triplets(triplets)
         normalized_feature_names = _normalize_feature_names(feature_names)
         normalized_feature_key = None if feature_key is None else feature_key.strip()
-        label_name_hint = normalized_triplets[0].label_name if len(normalized_triplets) == 1 else None
+        labels_name_hint = normalized_triplets[0].labels_name if len(normalized_triplets) == 1 else None
         coordinate_system_hint = normalized_triplets[0].coordinate_system if len(normalized_triplets) == 1 else None
 
         return self._bind_batch_state(
@@ -297,7 +297,7 @@ class FeatureExtractionController:
             feature_names=normalized_feature_names,
             feature_key=normalized_feature_key,
             overwrite_feature_key=overwrite_feature_key,
-            label_name_hint=label_name_hint,
+            labels_name_hint=labels_name_hint,
             coordinate_system_hint=coordinate_system_hint,
         )
 
@@ -310,7 +310,7 @@ class FeatureExtractionController:
         feature_names: tuple[str, ...],
         feature_key: str | None,
         overwrite_feature_key: bool,
-        label_name_hint: str | None,
+        labels_name_hint: str | None,
         coordinate_system_hint: str | None,
     ) -> bool:
         context_changed = (
@@ -320,7 +320,7 @@ class FeatureExtractionController:
             or feature_names != self._selected_feature_names
             or feature_key != self._selected_feature_key
             or bool(overwrite_feature_key) is not self._overwrite_feature_key
-            or label_name_hint != self._selected_label_name_hint
+            or labels_name_hint != self._selected_labels_name_hint
             or coordinate_system_hint != self._selected_coordinate_system_hint
         )
 
@@ -330,7 +330,7 @@ class FeatureExtractionController:
         self._selected_feature_names = feature_names
         self._selected_feature_key = feature_key
         self._overwrite_feature_key = bool(overwrite_feature_key)
-        self._selected_label_name_hint = label_name_hint
+        self._selected_labels_name_hint = labels_name_hint
         self._selected_coordinate_system_hint = coordinate_system_hint
 
         if context_changed:
@@ -357,9 +357,9 @@ class FeatureExtractionController:
         worker.returned.connect(partial(self._on_worker_returned, job.job_id))
         worker.errored.connect(partial(self._on_worker_errored, job.job_id))
         worker.finished.connect(partial(self._on_worker_finished, job.job_id))
-        if job.triplet_count == 1 and job.label_name is not None:
+        if job.triplet_count == 1 and job.labels_name is not None:
             self._set_status(
-                f"Feature extraction: calculating `{job.feature_key}` for labels element `{job.label_name}`.",
+                f"Feature extraction: calculating `{job.feature_key}` for labels element `{job.labels_name}`.",
                 kind="info",
             )
         else:
@@ -382,9 +382,9 @@ class FeatureExtractionController:
             return None
 
         if not self._selected_triplets:
-            if self._selected_coordinate_system_hint is None and self._selected_label_name_hint is not None:
+            if self._selected_coordinate_system_hint is None and self._selected_labels_name_hint is not None:
                 self._set_status("Feature extraction: choose a coordinate system.", kind="warning")
-            elif self._selected_coordinate_system_hint is not None and self._selected_label_name_hint is None:
+            elif self._selected_coordinate_system_hint is not None and self._selected_labels_name_hint is None:
                 self._set_status("Feature extraction: choose a labels element.", kind="warning")
             else:
                 self._set_status(FEATURE_EXTRACTION_IDLE_STATUS, kind="warning")
@@ -476,7 +476,7 @@ class FeatureExtractionController:
             return
 
         if not self._selected_triplets and self._selected_coordinate_system_hint is None:
-            if self._selected_label_name_hint is not None:
+            if self._selected_labels_name_hint is not None:
                 self._set_status("Feature extraction: choose a coordinate system.", kind="warning")
             else:
                 self._set_status(FEATURE_EXTRACTION_IDLE_STATUS, kind="warning")

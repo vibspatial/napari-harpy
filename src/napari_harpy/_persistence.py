@@ -38,7 +38,7 @@ class PersistenceController:
     def __init__(self, app_state: HarpyAppState | None = None) -> None:
         self._app_state = HarpyAppState() if app_state is None else app_state
         self._selected_spatialdata: SpatialData | None = None
-        self._selected_label_name: str | None = None
+        self._selected_labels_name: str | None = None
         self._selected_table_name: str | None = None
 
     @property
@@ -84,10 +84,10 @@ class PersistenceController:
 
         return store_path / table_path
 
-    def bind(self, sdata: SpatialData | None, table_name: str | None, label_name: str | None = None) -> None:
+    def bind(self, sdata: SpatialData | None, table_name: str | None, labels_name: str | None = None) -> None:
         """Bind persistence to the selected SpatialData table."""
         self._selected_spatialdata = sdata
-        self._selected_label_name = label_name
+        self._selected_labels_name = labels_name
         self._selected_table_name = table_name
 
     def mark_dirty(self) -> None:
@@ -249,11 +249,11 @@ class PersistenceController:
                     f"{shape[0]}; expected {len(snapshot.obs)} rows."
                 )
 
-        if self._selected_label_name is not None:
+        if self._selected_labels_name is not None:
             regions = _normalize_regions(snapshot_attrs.get(TableModel.REGION_KEY))
-            if self._selected_label_name not in regions:
+            if self._selected_labels_name not in regions:
                 raise ValueError(
-                    f"Cannot reload table `{current_table_name}` for labels element `{self._selected_label_name}`: "
+                    f"Cannot reload table `{current_table_name}` for labels element `{self._selected_labels_name}`: "
                     "the disk snapshot no longer annotates the selected labels element."
                 )
 
@@ -303,6 +303,7 @@ class PersistenceController:
     def _resolve_table_path(self, sdata: SpatialData, table: AnnData, table_name: str) -> str:
         return resolve_table_path(sdata, table, table_name)
 
+
 def _normalize_regions(region: str | list[str] | None) -> tuple[str, ...]:
     if region is None:
         return ()
@@ -310,4 +311,4 @@ def _normalize_regions(region: str | list[str] | None) -> tuple[str, ...]:
     if isinstance(region, str):
         return (region,)
 
-    return tuple(str(label_name) for label_name in region)
+    return tuple(str(labels_name) for labels_name in region)

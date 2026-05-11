@@ -313,7 +313,7 @@ If we later expose table creation in the widget, use defaults aligned with `napa
 When calling Harpy in new-table mode, it should then:
 
 - include one row per nonzero label id
-- set `obs[region_key] = selected_label_name`
+- set `obs[region_key] = selected_labels_name`
 - set `obs[instance_key] = instance_id`
 - own obs-index creation internally
 

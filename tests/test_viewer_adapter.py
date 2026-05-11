@@ -3,11 +3,15 @@ from __future__ import annotations
 from collections.abc import Callable
 from types import SimpleNamespace
 
+import geopandas as gpd
 import numpy as np
 import pandas as pd
 from matplotlib.colors import to_rgba
-from napari.layers import Image, Labels
+from napari.layers import Image, Labels, Shapes
 from napari.utils.colormaps import CyclicLabelColormap, DirectLabelColormap
+from shapely.geometry import LineString, Polygon
+from spatialdata.models import ShapesModel
+from spatialdata.transformations import Identity
 
 import napari_harpy.viewer.overlay_styling as overlay_styling_module
 from napari_harpy._app_state import get_or_create_app_state
@@ -16,6 +20,7 @@ from napari_harpy.viewer.adapter import (
     ImageLayerBinding,
     LabelsLayerBinding,
     LayerBindingRegistry,
+    ShapesLayerBinding,
     ViewerAdapter,
 )
 
@@ -66,10 +71,10 @@ class UnsupportedViewer:
         self.layers = None
 
 
-def make_labels_layer(*, sdata, label_name: str = "blobs_labels", metadata: dict[str, object] | None = None) -> Labels:
+def make_labels_layer(*, sdata, labels_name: str = "blobs_labels", metadata: dict[str, object] | None = None) -> Labels:
     return Labels(
-        sdata.labels[label_name],
-        name=label_name,
+        sdata.labels[labels_name],
+        name=labels_name,
         metadata={} if metadata is None else metadata,
     )
 
@@ -80,6 +85,26 @@ def make_image_layer(*, name: str, metadata: dict[str, object] | None = None) ->
         name=name,
         metadata={} if metadata is None else metadata,
     )
+
+
+def make_shapes_layer(*, name: str = "cell_boundaries", metadata: dict[str, object] | None = None) -> Shapes:
+    return Shapes(
+        [np.asarray([(0, 0), (0, 4), (4, 4), (4, 0)], dtype=float)],
+        shape_type="polygon",
+        name=name,
+        metadata={} if metadata is None else metadata,
+    )
+
+
+def make_shapes_sdata(geodataframe: gpd.GeoDataFrame, shapes_name: str = "cell_boundaries") -> SimpleNamespace:
+    shapes = ShapesModel.parse(geodataframe, transformations={"global": Identity()})
+    return SimpleNamespace(shapes={shapes_name: shapes})
+
+
+def get_shapes_binding(adapter: ViewerAdapter, layer: Shapes) -> ShapesLayerBinding:
+    binding = adapter.layer_bindings.get_binding(layer)
+    assert isinstance(binding, ShapesLayerBinding)
+    return binding
 
 
 def test_app_state_initializes_viewer_services() -> None:
@@ -96,10 +121,9 @@ def test_layer_binding_registry_registers_and_unregisters_layers() -> None:
     registry = LayerBindingRegistry()
     layer = make_image_layer(name="raw image")
 
-    binding = registry.register_layer(
+    binding = registry.register_image_layer(
         layer,
         element_name="blobs_image",
-        element_type="image",
         coordinate_system="global",
     )
 
@@ -110,9 +134,9 @@ def test_layer_binding_registry_registers_and_unregisters_layers() -> None:
     assert binding.coordinate_system == "global"
     assert registry.get_binding(layer) == binding
     assert registry.find_bindings(element_name="blobs_image", element_type="image") == [binding]
-    assert layer.metadata["element_name"] == "blobs_image"
-    assert layer.metadata["element_type"] == "image"
-    assert layer.metadata["coordinate_system"] == "global"
+    assert "element_name" not in layer.metadata
+    assert "element_type" not in layer.metadata
+    assert "coordinate_system" not in layer.metadata
 
     removed = registry.unregister_layer(layer)
 
@@ -124,10 +148,9 @@ def test_layer_binding_registry_tracks_channel_overlay_identity() -> None:
     registry = LayerBindingRegistry()
     layer = make_image_layer(name="channel_0")
 
-    binding = registry.register_layer(
+    binding = registry.register_image_layer(
         layer,
         element_name="blobs_image",
-        element_type="image",
         coordinate_system="global",
         image_display_mode="overlay",
         channel_index=0,
@@ -145,9 +168,38 @@ def test_layer_binding_registry_tracks_channel_overlay_identity() -> None:
         channel_index=0,
         channel_name="DAPI",
     ) == [binding]
-    assert layer.metadata["image_display_mode"] == "overlay"
-    assert layer.metadata["channel_index"] == 0
-    assert layer.metadata["channel_name"] == "DAPI"
+    assert "image_display_mode" not in layer.metadata
+    assert "channel_index" not in layer.metadata
+    assert "channel_name" not in layer.metadata
+
+
+def test_layer_binding_registry_tracks_shapes_identity() -> None:
+    registry = LayerBindingRegistry()
+    layer = make_shapes_layer()
+
+    binding = registry.register_shapes_layer(
+        layer,
+        element_name="cell_boundaries",
+        coordinate_system="global",
+        source_shapes_index_by_row=("cell_1",),
+        source_shapes_index_feature_name="cell_id",
+        skipped_geometry_count=2,
+    )
+
+    assert isinstance(binding, ShapesLayerBinding)
+    assert binding.element_name == "cell_boundaries"
+    assert binding.element_type == "shapes"
+    assert binding.coordinate_system == "global"
+    assert binding.source_shapes_index_by_row == ("cell_1",)
+    assert binding.source_shapes_index_feature_name == "cell_id"
+    assert binding.skipped_geometry_count == 2
+    assert registry.find_bindings(element_name="cell_boundaries", element_type="shapes") == [binding]
+    assert "element_name" not in layer.metadata
+    assert "element_type" not in layer.metadata
+    assert "coordinate_system" not in layer.metadata
+    assert "source_shapes_index_by_row" not in layer.metadata
+    assert "source_shapes_index_feature_name" not in layer.metadata
+    assert "skipped_geometry_count" not in layer.metadata
 
 
 def test_layer_binding_registry_tracks_labels_role_and_style_spec() -> None:
@@ -160,10 +212,9 @@ def test_layer_binding_registry_tracks_labels_role_and_style_spec() -> None:
         value_kind="categorical",
     )
 
-    binding = registry.register_layer(
+    binding = registry.register_labels_layer(
         layer,
         element_name="blobs_labels",
-        element_type="labels",
         coordinate_system="global",
         labels_role="styled",
         style_spec=style_spec,
@@ -178,12 +229,12 @@ def test_layer_binding_registry_tracks_labels_role_and_style_spec() -> None:
         labels_role="styled",
         style_spec=style_spec,
     ) == [binding]
-    assert layer.metadata["labels_role"] == "styled"
-    assert layer.metadata["style_spec"] == style_spec
-    assert layer.metadata["style_table_name"] == "table"
-    assert layer.metadata["style_source_kind"] == "obs_column"
-    assert layer.metadata["style_value_key"] == "cell_type"
-    assert layer.metadata["style_value_kind"] == "categorical"
+    assert "labels_role" not in layer.metadata
+    assert "style_spec" not in layer.metadata
+    assert "style_table_name" not in layer.metadata
+    assert "style_source_kind" not in layer.metadata
+    assert "style_value_key" not in layer.metadata
+    assert "style_value_kind" not in layer.metadata
 
 
 def test_viewer_adapter_activate_layer_selects_only_matching_layer() -> None:
@@ -226,11 +277,10 @@ def test_viewer_adapter_finds_registered_labels_layer(sdata_blobs) -> None:
     viewer = DummyViewer([labels_layer])
     adapter = ViewerAdapter(viewer)
 
-    adapter.register_layer(
+    adapter.register_labels_layer(
         labels_layer,
         sdata=sdata_blobs,
-        element_name="blobs_labels",
-        element_type="labels",
+        labels_name="blobs_labels",
         coordinate_system="global",
     )
 
@@ -248,11 +298,10 @@ def test_viewer_adapter_primary_labels_lookup_ignores_styled_variants(sdata_blob
         value_kind="categorical",
     )
 
-    adapter.register_layer(
+    adapter.register_labels_layer(
         styled_layer,
         sdata=sdata_blobs,
-        element_name="blobs_labels",
-        element_type="labels",
+        labels_name="blobs_labels",
         coordinate_system="global",
         labels_role="styled",
         style_spec=style_spec,
@@ -282,11 +331,10 @@ def test_viewer_adapter_remove_labels_layer_removes_matching_binding(sdata_blobs
     viewer = DummyViewer([labels_layer])
     adapter = ViewerAdapter(viewer)
 
-    adapter.register_layer(
+    adapter.register_labels_layer(
         labels_layer,
         sdata=sdata_blobs,
-        element_name="blobs_labels",
-        element_type="labels",
+        labels_name="blobs_labels",
         coordinate_system="global",
     )
 
@@ -303,18 +351,16 @@ def test_viewer_adapter_returns_registered_image_layers_in_viewer_order(sdata_bl
     viewer = DummyViewer([second_layer, first_layer])
     adapter = ViewerAdapter(viewer)
 
-    adapter.register_layer(
+    adapter.register_image_layer(
         first_layer,
         sdata=sdata_blobs,
-        element_name="blobs_image",
-        element_type="image",
+        image_name="blobs_image",
         coordinate_system="global",
     )
-    adapter.register_layer(
+    adapter.register_image_layer(
         second_layer,
         sdata=sdata_blobs,
-        element_name="blobs_image",
-        element_type="image",
+        image_name="blobs_image",
         coordinate_system="global",
     )
 
@@ -327,19 +373,17 @@ def test_viewer_adapter_remove_image_layers_removes_stack_and_overlay_bindings(s
     viewer = DummyViewer([stack_layer, overlay_layer])
     adapter = ViewerAdapter(viewer)
 
-    adapter.register_layer(
+    adapter.register_image_layer(
         stack_layer,
         sdata=sdata_blobs,
-        element_name="blobs_image",
-        element_type="image",
+        image_name="blobs_image",
         coordinate_system="global",
         image_display_mode="stack",
     )
-    adapter.register_layer(
+    adapter.register_image_layer(
         overlay_layer,
         sdata=sdata_blobs,
-        element_name="blobs_image",
-        element_type="image",
+        image_name="blobs_image",
         coordinate_system="global",
         image_display_mode="overlay",
         channel_index=0,
@@ -360,79 +404,89 @@ def test_viewer_adapter_remove_layers_outside_coordinate_system_removes_only_non
     keep_layer = make_image_layer(name="keep")
     remove_image_layer = make_image_layer(name="remove_image")
     remove_labels_layer = make_labels_layer(sdata=sdata_blobs)
+    remove_shapes_layer = make_shapes_layer(name="remove_shapes")
     external_layer = make_image_layer(name="external")
-    viewer = DummyViewer([keep_layer, remove_image_layer, remove_labels_layer, external_layer])
+    viewer = DummyViewer([keep_layer, remove_image_layer, remove_labels_layer, remove_shapes_layer, external_layer])
     adapter = ViewerAdapter(viewer)
 
-    adapter.register_layer(
+    adapter.register_image_layer(
         keep_layer,
         sdata=sdata_blobs,
-        element_name="keep_image",
-        element_type="image",
+        image_name="keep_image",
         coordinate_system="global",
     )
-    adapter.register_layer(
+    adapter.register_image_layer(
         remove_image_layer,
         sdata=sdata_blobs,
-        element_name="remove_image",
-        element_type="image",
+        image_name="remove_image",
         coordinate_system="local",
     )
-    adapter.register_layer(
+    adapter.register_labels_layer(
         remove_labels_layer,
         sdata=sdata_blobs,
-        element_name="blobs_labels",
-        element_type="labels",
+        labels_name="blobs_labels",
+        coordinate_system="local",
+    )
+    adapter.register_shapes_layer(
+        remove_shapes_layer,
+        sdata=sdata_blobs,
+        shapes_name="blobs_polygons",
         coordinate_system="local",
     )
 
     removed_bindings = adapter.remove_layers_outside_coordinate_system(sdata=sdata_blobs, coordinate_system="global")
 
-    assert [binding.element_name for binding in removed_bindings] == ["remove_image", "blobs_labels"]
+    assert [binding.element_name for binding in removed_bindings] == ["remove_image", "blobs_labels", "blobs_polygons"]
     assert list(viewer.layers) == [keep_layer, external_layer]
     assert adapter.layer_bindings.get_binding(keep_layer) is not None
     assert adapter.layer_bindings.get_binding(remove_image_layer) is None
     assert adapter.layer_bindings.get_binding(remove_labels_layer) is None
+    assert adapter.layer_bindings.get_binding(remove_shapes_layer) is None
     assert adapter.layer_bindings.get_binding(external_layer) is None
 
 
 def test_viewer_adapter_remove_layers_for_sdata_removes_only_matching_registered_layers(sdata_blobs) -> None:
     removed_image_layer = make_image_layer(name="remove_image")
     removed_labels_layer = make_labels_layer(sdata=sdata_blobs)
+    removed_shapes_layer = make_shapes_layer(name="remove_shapes")
     kept_layer = make_image_layer(name="keep")
     external_layer = make_image_layer(name="external")
     other_sdata = SimpleNamespace()
-    viewer = DummyViewer([removed_image_layer, removed_labels_layer, kept_layer, external_layer])
+    viewer = DummyViewer([removed_image_layer, removed_labels_layer, removed_shapes_layer, kept_layer, external_layer])
     adapter = ViewerAdapter(viewer)
 
-    adapter.register_layer(
+    adapter.register_image_layer(
         removed_image_layer,
         sdata=sdata_blobs,
-        element_name="remove_image",
-        element_type="image",
+        image_name="remove_image",
         coordinate_system="global",
     )
-    adapter.register_layer(
+    adapter.register_labels_layer(
         removed_labels_layer,
         sdata=sdata_blobs,
-        element_name="blobs_labels",
-        element_type="labels",
+        labels_name="blobs_labels",
         coordinate_system="global",
     )
-    adapter.register_layer(
+    adapter.register_shapes_layer(
+        removed_shapes_layer,
+        sdata=sdata_blobs,
+        shapes_name="blobs_polygons",
+        coordinate_system="global",
+    )
+    adapter.register_image_layer(
         kept_layer,
         sdata=other_sdata,
-        element_name="keep_image",
-        element_type="image",
+        image_name="keep_image",
         coordinate_system="global",
     )
 
     removed_bindings = adapter.remove_layers_for_sdata(sdata_blobs)
 
-    assert [binding.element_name for binding in removed_bindings] == ["remove_image", "blobs_labels"]
+    assert [binding.element_name for binding in removed_bindings] == ["remove_image", "blobs_labels", "blobs_polygons"]
     assert list(viewer.layers) == [kept_layer, external_layer]
     assert adapter.layer_bindings.get_binding(removed_image_layer) is None
     assert adapter.layer_bindings.get_binding(removed_labels_layer) is None
+    assert adapter.layer_bindings.get_binding(removed_shapes_layer) is None
     assert adapter.layer_bindings.get_binding(kept_layer) is not None
     assert adapter.layer_bindings.get_binding(external_layer) is None
 
@@ -470,18 +524,18 @@ def test_viewer_adapter_ensure_labels_loaded_adds_layer_and_registers_binding(sd
     assert binding.element_type == "labels"
     assert binding.coordinate_system == "global"
     assert binding.labels_role == "primary"
-    assert layer.metadata["element_name"] == "blobs_labels"
-    assert layer.metadata["element_type"] == "labels"
-    assert layer.metadata["coordinate_system"] == "global"
-    assert layer.metadata["labels_role"] == "primary"
+    assert "element_name" not in layer.metadata
+    assert "element_type" not in layer.metadata
+    assert "coordinate_system" not in layer.metadata
+    assert "labels_role" not in layer.metadata
     assert "sdata" not in layer.metadata
     assert "_current_cs" not in layer.metadata
     assert labels_events == ["changed"]
 
 
 def test_viewer_adapter_primary_labels_signal_ignores_styled_bindings(sdata_blobs) -> None:
-    primary_layer = make_labels_layer(sdata=sdata_blobs, label_name="blobs_labels")
-    styled_layer = make_labels_layer(sdata=sdata_blobs, label_name="blobs_labels")
+    primary_layer = make_labels_layer(sdata=sdata_blobs, labels_name="blobs_labels")
+    styled_layer = make_labels_layer(sdata=sdata_blobs, labels_name="blobs_labels")
     styled_layer.name = "blobs_labels[cell_type]"
     viewer = DummyViewer([primary_layer, styled_layer])
     adapter = ViewerAdapter(viewer)
@@ -495,22 +549,20 @@ def test_viewer_adapter_primary_labels_signal_ignores_styled_bindings(sdata_blob
 
     adapter.primary_labels_layers_changed.connect(lambda: labels_events.append("changed"))
 
-    adapter.register_layer(
+    adapter.register_labels_layer(
         styled_layer,
         sdata=sdata_blobs,
-        element_name="blobs_labels",
-        element_type="labels",
+        labels_name="blobs_labels",
         coordinate_system="global",
         labels_role="styled",
         style_spec=style_spec,
     )
     assert labels_events == []
 
-    adapter.register_layer(
+    adapter.register_labels_layer(
         primary_layer,
         sdata=sdata_blobs,
-        element_name="blobs_labels",
-        element_type="labels",
+        labels_name="blobs_labels",
         coordinate_system="global",
     )
     assert labels_events == ["changed"]
@@ -553,10 +605,10 @@ def test_viewer_adapter_ensure_styled_labels_loaded_creates_registered_overlay_w
     assert isinstance(binding, LabelsLayerBinding)
     assert binding.labels_role == "styled"
     assert binding.style_spec == style_spec
-    assert result.layer.metadata["style_table_name"] == "table"
-    assert result.layer.metadata["style_source_kind"] == "obs_column"
-    assert result.layer.metadata["style_value_key"] == "cell_type"
-    assert result.layer.metadata["style_value_kind"] == "categorical"
+    assert "style_table_name" not in result.layer.metadata
+    assert "style_source_kind" not in result.layer.metadata
+    assert "style_value_key" not in result.layer.metadata
+    assert "style_value_kind" not in result.layer.metadata
     assert list(result.layer.features.columns) == ["index", "instance_id", "cell_type"]
 
     odd_instance = int(region_rows.loc[region_rows["instance_id"] % 2 == 1, "instance_id"].iloc[0])
@@ -565,7 +617,9 @@ def test_viewer_adapter_ensure_styled_labels_loaded_creates_registered_overlay_w
     assert odd_feature_row["index"] == odd_instance
     assert odd_feature_row["instance_id"] == odd_instance
     assert np.allclose(result.layer.colormap.color_dict[odd_instance], np.asarray(to_rgba("#ff0000"), dtype=np.float32))
-    assert np.allclose(result.layer.colormap.color_dict[even_instance], np.asarray(to_rgba("#00ff00"), dtype=np.float32))
+    assert np.allclose(
+        result.layer.colormap.color_dict[even_instance], np.asarray(to_rgba("#00ff00"), dtype=np.float32)
+    )
 
 
 def test_viewer_adapter_ensure_styled_labels_loaded_reuses_matching_variant(sdata_blobs) -> None:
@@ -588,7 +642,9 @@ def test_viewer_adapter_ensure_styled_labels_loaded_reuses_matching_variant(sdat
     assert len(viewer.layers) == 1
 
 
-def test_viewer_adapter_ensure_styled_labels_loaded_creates_distinct_variants_for_different_style_specs(sdata_blobs) -> None:
+def test_viewer_adapter_ensure_styled_labels_loaded_creates_distinct_variants_for_different_style_specs(
+    sdata_blobs,
+) -> None:
     table = sdata_blobs["table"]
     table.obs["cell_type"] = pd.Categorical(["odd"] * table.n_obs)
     style_a = TableColorSourceSpec(
@@ -664,7 +720,9 @@ def test_viewer_adapter_ensure_styled_labels_loaded_colors_bool_obs_categoricall
     assert features.loc[odd_instance, "is_even"] == np.False_
     assert features.loc[even_instance, "is_even"] == np.True_
     assert np.allclose(result.layer.colormap.color_dict[odd_instance], np.asarray(to_rgba("#ff0000"), dtype=np.float32))
-    assert np.allclose(result.layer.colormap.color_dict[even_instance], np.asarray(to_rgba("#00ff00"), dtype=np.float32))
+    assert np.allclose(
+        result.layer.colormap.color_dict[even_instance], np.asarray(to_rgba("#00ff00"), dtype=np.float32)
+    )
 
 
 def test_viewer_adapter_ensure_styled_labels_loaded_colors_binary_int_obs_categorically(sdata_blobs) -> None:
@@ -695,7 +753,9 @@ def test_viewer_adapter_ensure_styled_labels_loaded_colors_binary_int_obs_catego
     one_instance = int(table.obs.loc[table.obs["binary_state"] == 1, "instance_id"].iloc[0])
     assert int(features.loc[zero_instance, "binary_state"]) == 0
     assert int(features.loc[one_instance, "binary_state"]) == 1
-    assert np.allclose(result.layer.colormap.color_dict[zero_instance], np.asarray(to_rgba("#ff0000"), dtype=np.float32))
+    assert np.allclose(
+        result.layer.colormap.color_dict[zero_instance], np.asarray(to_rgba("#ff0000"), dtype=np.float32)
+    )
     assert np.allclose(result.layer.colormap.color_dict[one_instance], np.asarray(to_rgba("#00ff00"), dtype=np.float32))
 
 
@@ -726,7 +786,9 @@ def test_viewer_adapter_ensure_styled_labels_loaded_colors_non_binary_int_obs_co
     max_instance = int(table.obs["instance_id"].max())
     assert float(features.loc[min_instance, "object_score"]) == float(min_instance)
     assert float(features.loc[max_instance, "object_score"]) == float(max_instance)
-    assert not np.allclose(result.layer.colormap.color_dict[min_instance], result.layer.colormap.color_dict[max_instance])
+    assert not np.allclose(
+        result.layer.colormap.color_dict[min_instance], result.layer.colormap.color_dict[max_instance]
+    )
 
 
 def test_viewer_adapter_ensure_styled_labels_loaded_colors_instance_key_as_labels(sdata_blobs) -> None:
@@ -747,7 +809,7 @@ def test_viewer_adapter_ensure_styled_labels_loaded_colors_instance_key_as_label
     assert result.coercion_applied is False
     assert isinstance(result.layer.colormap, CyclicLabelColormap)
     assert result.layer.name == "blobs_labels[obs:instance_id]"
-    assert result.layer.metadata["style_value_kind"] == "instance"
+    assert "style_value_kind" not in result.layer.metadata
     assert list(result.layer.features.columns) == ["index", "instance_id"]
 
     instance_ids = table.obs.loc[table.obs["region"] == "blobs_labels", "instance_id"].astype("int64").tolist()
@@ -886,6 +948,178 @@ def test_viewer_adapter_ensure_labels_loaded_rejects_unknown_coordinate_system(s
         raise AssertionError("Expected ensure_labels_loaded to reject an unknown coordinate system.")
 
 
+def test_viewer_adapter_ensure_shapes_loaded_adds_polygon_layer_and_registers_binding(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    labels_events: list[str] = []
+
+    adapter.primary_labels_layers_changed.connect(lambda: labels_events.append("changed"))
+
+    layer = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
+
+    assert layer in viewer.layers
+    assert layer.name == "blobs_polygons"
+    assert layer.shape_type == ["polygon"] * len(sdata_blobs.shapes["blobs_polygons"])
+    expected_source_index_by_row = tuple(sdata_blobs.shapes["blobs_polygons"].index.to_list())
+    assert list(layer.features.columns) == ["index"]
+    assert tuple(layer.features["index"].to_list()) == expected_source_index_by_row
+    binding = get_shapes_binding(adapter, layer)
+    assert binding.element_name == "blobs_polygons"
+    assert binding.element_type == "shapes"
+    assert binding.coordinate_system == "global"
+    assert binding.source_shapes_index_by_row == expected_source_index_by_row
+    assert binding.source_shapes_index_feature_name == "index"
+    assert binding.skipped_geometry_count == 0
+    assert "element_name" not in layer.metadata
+    assert "element_type" not in layer.metadata
+    assert "coordinate_system" not in layer.metadata
+    assert "source_shapes_index_by_row" not in layer.metadata
+    assert "source_shapes_index_feature_name" not in layer.metadata
+    assert "skipped_geometry_count" not in layer.metadata
+    assert labels_events == []
+
+
+def test_viewer_adapter_ensure_shapes_loaded_expands_multipolygons_with_source_mapping(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    layer = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_multipolygons", "global")
+
+    expected_indices: list[object] = []
+    for source_index, geometry in sdata_blobs.shapes["blobs_multipolygons"].geometry.items():
+        expected_indices.extend([source_index] * len(geometry.geoms))
+
+    assert len(layer.data) == len(expected_indices)
+    assert layer.shape_type == ["polygon"] * len(expected_indices)
+    binding = get_shapes_binding(adapter, layer)
+    assert binding.source_shapes_index_by_row == tuple(expected_indices)
+    assert tuple(layer.features["index"].to_list()) == tuple(expected_indices)
+
+
+def test_viewer_adapter_ensure_shapes_loaded_renders_circles_as_ellipses(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    layer = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_circles", "global")
+
+    circles = sdata_blobs.shapes["blobs_circles"]
+    first_circle = circles.iloc[0]
+    radius = float(first_circle["radius"])
+    y = float(first_circle.geometry.y)
+    x = float(first_circle.geometry.x)
+    expected_first_ellipse = np.asarray(
+        [
+            (y - radius, x - radius),
+            (y + radius, x - radius),
+            (y + radius, x + radius),
+            (y - radius, x + radius),
+        ],
+        dtype=float,
+    )
+
+    assert layer.shape_type == ["ellipse"] * len(circles)
+    assert np.allclose(layer.data[0], expected_first_ellipse)
+    binding = get_shapes_binding(adapter, layer)
+    assert binding.source_shapes_index_by_row == tuple(circles.index.to_list())
+    assert tuple(layer.features["index"].to_list()) == tuple(circles.index.to_list())
+
+
+def test_viewer_adapter_ensure_shapes_loaded_preserves_polygon_holes() -> None:
+    polygon = Polygon(
+        shell=[(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)],
+        holes=[[(2, 2), (2, 5), (5, 5), (5, 2), (2, 2)]],
+    )
+    geodataframe = gpd.GeoDataFrame({"name": ["polygon_with_hole"], "geometry": [polygon]}, index=["donut"])
+    sdata = make_shapes_sdata(geodataframe, shapes_name="donuts")
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    layer = adapter.ensure_shapes_loaded(sdata, "donuts", "global")
+    labels = layer.to_labels(labels_shape=(12, 12))
+
+    binding = get_shapes_binding(adapter, layer)
+    assert binding.source_shapes_index_by_row == ("donut",)
+    assert list(layer.features.columns) == ["index"]
+    assert layer.features.iloc[0]["index"] == "donut"
+    assert "index: donut" in layer.get_status(position=(1, 1))["value"]
+    assert labels[1, 1] == 1
+    assert labels[3, 3] == 0
+
+
+def test_viewer_adapter_ensure_shapes_loaded_uses_named_geodataframe_index_in_features() -> None:
+    polygon = Polygon([(0, 0), (4, 0), (4, 4), (0, 4), (0, 0)])
+    geodataframe = gpd.GeoDataFrame({"cell_id": ["column_value"], "name": ["boundary"]}, geometry=[polygon], index=["cell_1"])
+    geodataframe.index.name = "cell_id"
+    sdata = make_shapes_sdata(geodataframe, shapes_name="cell_boundaries")
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    layer = adapter.ensure_shapes_loaded(sdata, "cell_boundaries", "global")
+
+    binding = get_shapes_binding(adapter, layer)
+    assert binding.source_shapes_index_by_row == ("cell_1",)
+    assert binding.source_shapes_index_feature_name == "cell_id"
+    assert list(layer.features.columns) == ["cell_id"]
+    assert layer.features.iloc[0]["cell_id"] == "cell_1"
+    assert "cell_id: cell_1" in layer.get_status(position=(1, 1))["value"]
+
+
+def test_viewer_adapter_ensure_shapes_loaded_skips_empty_invalid_or_unsupported_geometries() -> None:
+    valid_polygon = Polygon([(0, 0), (3, 0), (3, 3), (0, 3), (0, 0)])
+    invalid_bowtie = Polygon([(4, 0), (7, 3), (7, 0), (4, 3), (4, 0)])
+    empty_polygon = Polygon()
+    unsupported_line = LineString([(0, 5), (5, 5)])
+    geodataframe = gpd.GeoDataFrame(
+        {"geometry": [valid_polygon, invalid_bowtie, empty_polygon, unsupported_line]},
+        index=["valid", "bowtie", "empty", "line"],
+    )
+    sdata = make_shapes_sdata(geodataframe, shapes_name="mixed_shapes")
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    layer = adapter.ensure_shapes_loaded(sdata, "mixed_shapes", "global")
+
+    assert layer.shape_type == ["polygon", "polygon", "polygon"]
+    binding = get_shapes_binding(adapter, layer)
+    assert binding.source_shapes_index_by_row == ("valid", "bowtie", "bowtie")
+    assert binding.skipped_geometry_count == 2
+
+
+def test_viewer_adapter_ensure_shapes_loaded_reuses_matching_existing_layer(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    first = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
+    second = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
+
+    assert first is second
+    assert len(viewer.layers) == 1
+
+
+def test_viewer_adapter_remove_shapes_layer_removes_registered_layer(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    layer = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
+
+    removed_layer = adapter.remove_shapes_layer(sdata_blobs, "blobs_polygons", "global")
+
+    assert removed_layer is layer
+    assert list(viewer.layers) == []
+    assert adapter.layer_bindings.get_binding(layer) is None
+
+
+def test_viewer_adapter_ensure_shapes_loaded_rejects_unknown_coordinate_system(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    try:
+        adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "not_a_coordinate_system")
+    except ValueError as error:
+        assert "Coordinate system `not_a_coordinate_system`" in str(error)
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("Expected ensure_shapes_loaded to reject an unknown coordinate system.")
+
+
 def test_viewer_adapter_ensure_image_loaded_adds_stack_layer_and_registers_binding(sdata_blobs) -> None:
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
@@ -902,7 +1136,7 @@ def test_viewer_adapter_ensure_image_loaded_adds_stack_layer_and_registers_bindi
     assert binding.element_type == "image"
     assert binding.coordinate_system == "global"
     assert binding.image_display_mode == "stack"
-    assert layer.metadata["image_display_mode"] == "stack"
+    assert "image_display_mode" not in layer.metadata
 
 
 def test_viewer_adapter_ensure_image_loaded_reuses_matching_existing_stack_layer(sdata_blobs) -> None:
@@ -959,7 +1193,10 @@ def test_viewer_adapter_ensure_image_loaded_overlay_adds_one_layer_per_selected_
     assert len(layers) == 2
     assert [layer.name for layer in layers] == ["blobs_image[0]", "blobs_image[2]"]
     assert [layer.blending for layer in layers] == ["additive", "additive"]
-    assert [binding.channel_index for binding in (adapter.layer_bindings.get_binding(layer) for layer in layers)] == [0, 2]
+    assert [binding.channel_index for binding in (adapter.layer_bindings.get_binding(layer) for layer in layers)] == [
+        0,
+        2,
+    ]
     assert [binding.channel_name for binding in (adapter.layer_bindings.get_binding(layer) for layer in layers)] == [
         "0",
         "2",

@@ -175,7 +175,7 @@ Possible fields:
 
 - `dataset_id`
 - `sample_id` (future-facing)
-- `label_name`
+- `labels_name`
 - `image_name`
 - `table_name`
 - `coordinate_system`
