@@ -134,9 +134,9 @@ def test_layer_binding_registry_registers_and_unregisters_layers() -> None:
     assert binding.coordinate_system == "global"
     assert registry.get_binding(layer) == binding
     assert registry.find_bindings(element_name="blobs_image", element_type="image") == [binding]
-    assert layer.metadata["element_name"] == "blobs_image"
-    assert layer.metadata["element_type"] == "image"
-    assert layer.metadata["coordinate_system"] == "global"
+    assert "element_name" not in layer.metadata
+    assert "element_type" not in layer.metadata
+    assert "coordinate_system" not in layer.metadata
 
     removed = registry.unregister_layer(layer)
 
@@ -168,9 +168,9 @@ def test_layer_binding_registry_tracks_channel_overlay_identity() -> None:
         channel_index=0,
         channel_name="DAPI",
     ) == [binding]
-    assert layer.metadata["image_display_mode"] == "overlay"
-    assert layer.metadata["channel_index"] == 0
-    assert layer.metadata["channel_name"] == "DAPI"
+    assert "image_display_mode" not in layer.metadata
+    assert "channel_index" not in layer.metadata
+    assert "channel_name" not in layer.metadata
 
 
 def test_layer_binding_registry_tracks_shapes_identity() -> None:
@@ -229,12 +229,12 @@ def test_layer_binding_registry_tracks_labels_role_and_style_spec() -> None:
         labels_role="styled",
         style_spec=style_spec,
     ) == [binding]
-    assert layer.metadata["labels_role"] == "styled"
-    assert layer.metadata["style_spec"] == style_spec
-    assert layer.metadata["style_table_name"] == "table"
-    assert layer.metadata["style_source_kind"] == "obs_column"
-    assert layer.metadata["style_value_key"] == "cell_type"
-    assert layer.metadata["style_value_kind"] == "categorical"
+    assert "labels_role" not in layer.metadata
+    assert "style_spec" not in layer.metadata
+    assert "style_table_name" not in layer.metadata
+    assert "style_source_kind" not in layer.metadata
+    assert "style_value_key" not in layer.metadata
+    assert "style_value_kind" not in layer.metadata
 
 
 def test_viewer_adapter_activate_layer_selects_only_matching_layer() -> None:
@@ -524,10 +524,10 @@ def test_viewer_adapter_ensure_labels_loaded_adds_layer_and_registers_binding(sd
     assert binding.element_type == "labels"
     assert binding.coordinate_system == "global"
     assert binding.labels_role == "primary"
-    assert layer.metadata["element_name"] == "blobs_labels"
-    assert layer.metadata["element_type"] == "labels"
-    assert layer.metadata["coordinate_system"] == "global"
-    assert layer.metadata["labels_role"] == "primary"
+    assert "element_name" not in layer.metadata
+    assert "element_type" not in layer.metadata
+    assert "coordinate_system" not in layer.metadata
+    assert "labels_role" not in layer.metadata
     assert "sdata" not in layer.metadata
     assert "_current_cs" not in layer.metadata
     assert labels_events == ["changed"]
@@ -605,10 +605,10 @@ def test_viewer_adapter_ensure_styled_labels_loaded_creates_registered_overlay_w
     assert isinstance(binding, LabelsLayerBinding)
     assert binding.labels_role == "styled"
     assert binding.style_spec == style_spec
-    assert result.layer.metadata["style_table_name"] == "table"
-    assert result.layer.metadata["style_source_kind"] == "obs_column"
-    assert result.layer.metadata["style_value_key"] == "cell_type"
-    assert result.layer.metadata["style_value_kind"] == "categorical"
+    assert "style_table_name" not in result.layer.metadata
+    assert "style_source_kind" not in result.layer.metadata
+    assert "style_value_key" not in result.layer.metadata
+    assert "style_value_kind" not in result.layer.metadata
     assert list(result.layer.features.columns) == ["index", "instance_id", "cell_type"]
 
     odd_instance = int(region_rows.loc[region_rows["instance_id"] % 2 == 1, "instance_id"].iloc[0])
@@ -809,7 +809,7 @@ def test_viewer_adapter_ensure_styled_labels_loaded_colors_instance_key_as_label
     assert result.coercion_applied is False
     assert isinstance(result.layer.colormap, CyclicLabelColormap)
     assert result.layer.name == "blobs_labels[obs:instance_id]"
-    assert result.layer.metadata["style_value_kind"] == "instance"
+    assert "style_value_kind" not in result.layer.metadata
     assert list(result.layer.features.columns) == ["index", "instance_id"]
 
     instance_ids = table.obs.loc[table.obs["region"] == "blobs_labels", "instance_id"].astype("int64").tolist()
@@ -1136,7 +1136,7 @@ def test_viewer_adapter_ensure_image_loaded_adds_stack_layer_and_registers_bindi
     assert binding.element_type == "image"
     assert binding.coordinate_system == "global"
     assert binding.image_display_mode == "stack"
-    assert layer.metadata["image_display_mode"] == "stack"
+    assert "image_display_mode" not in layer.metadata
 
 
 def test_viewer_adapter_ensure_image_loaded_reuses_matching_existing_stack_layer(sdata_blobs) -> None:

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from numbers import Integral, Real
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
-from spatialdata import get_element_annotators, join_spatialelement_table
+from spatialdata import get_element_annotators
 from spatialdata.models import TableModel, get_axes_names
 from spatialdata.transformations import get_transformation
 from xarray import DataArray
@@ -611,71 +611,6 @@ def _flatten_string_values(value: Any) -> list[str]:
     return [str(value)]
 
 
-def _layer_indices_align_with_region_view(layer: Any | None, region_view: AnnData, instance_key: str) -> bool | None:
-    metadata = getattr(layer, "metadata", None)
-    if not isinstance(metadata, dict):
-        return None
-
-    layer_indices = _normalize_layer_indices(metadata.get("indices"))
-    if layer_indices is None:
-        return None
-
-    region_instances = region_view.obs[instance_key]
-    if not region_instances.is_unique:
-        return False
-
-    return bool(region_instances.isin(layer_indices).all())
-
-
-def _normalize_layer_metadata_adata(adata: AnnData) -> AnnData:
-    from pandas.api.types import CategoricalDtype
-
-    from napari_harpy.core.annotation import (
-        USER_CLASS_COLORS_KEY,
-        USER_CLASS_COLUMN,
-    )
-    from napari_harpy.core.class_palette import set_class_annotation_state
-    from napari_harpy.core.classifier import PRED_CLASS_COLORS_KEY, PRED_CLASS_COLUMN
-
-    color_keys_to_strip = {USER_CLASS_COLORS_KEY, PRED_CLASS_COLORS_KEY}
-
-    for column_name, colors_key in (
-        (USER_CLASS_COLUMN, USER_CLASS_COLORS_KEY),
-        (PRED_CLASS_COLUMN, PRED_CLASS_COLORS_KEY),
-    ):
-        if column_name not in adata.obs:
-            continue
-
-        column = adata.obs[column_name]
-        needs_category_normalization = not isinstance(column.dtype, CategoricalDtype)
-        if needs_category_normalization:
-            set_class_annotation_state(
-                adata,
-                column,
-                column_name=column_name,
-                colors_key=colors_key,
-                keep_colors=False,
-            )
-
-    if any(color_key in adata.uns for color_key in color_keys_to_strip):
-        adata.uns = {key: value for key, value in adata.uns.items() if key not in color_keys_to_strip}
-
-    return adata
-
-
-def _normalize_layer_indices(indices: Any) -> list[Any] | None:
-    if indices is None or isinstance(indices, str | bytes):
-        return None
-
-    if not isinstance(indices, Sequence):
-        try:
-            indices = list(indices)
-        except TypeError:
-            return None
-
-    return [index for index in indices if index != 0]
-
-
 def _classify_obs_color_source(column: pd.Series) -> ColorValueKind | None:
     if isinstance(column.dtype, pd.CategoricalDtype):
         return "categorical"
@@ -871,138 +806,3 @@ def _is_pure_xy_translation_affine(matrix: np.ndarray, spatial_axes: Sequence[st
 
 def _get_element_coordinate_systems(element: Any) -> tuple[str, ...]:
     return tuple(sorted(get_transformation(element, get_all=True).keys()))
-
-
-def _get_loaded_spatialdata_layer(
-    viewer: Any | None,
-    *,
-    sdata: SpatialData,
-    element_name: str,
-    layer_filter: Callable[[Any], bool],
-    coordinate_system: str | None = None,
-) -> Any | None:
-    layers = getattr(viewer, "layers", None)
-    if layers is None:
-        return None
-
-    for layer in layers:
-        metadata = getattr(layer, "metadata", None)
-        if not isinstance(metadata, dict):
-            continue
-
-        if metadata.get("sdata") is not sdata:
-            continue
-
-        if metadata.get("name") != element_name:
-            continue
-
-        if coordinate_system is not None:
-            layer_coordinate_system = metadata.get("coordinate_system", metadata.get("_current_cs"))
-            if layer_coordinate_system is not None and layer_coordinate_system != coordinate_system:
-                continue
-
-        if layer_filter(layer):
-            return layer
-
-    return None
-
-
-def build_layer_metadata_adata(
-    viewer: Any | None,
-    sdata: SpatialData,
-    labels_name: str,
-    table_name: str,
-) -> AnnData | None:
-    """Build the AnnData stored as napari layer metadata for a labels element.
-
-    Harpy keeps ``sdata[table_name]`` as the authoritative in-memory table.
-    The napari layer metadata ``adata`` is only a compatibility cache for
-    ``napari-spatialdata``. To avoid materializing a second full AnnData
-    object on every refresh, we first try to expose a lightweight view of
-    just the rows for ``labels_name``.
-
-    That region-only view is safe when its ``instance_key`` values are
-    compatible with the loaded layer's cached ``metadata["indices"]``.
-    ``napari-spatialdata`` later merges those indices against
-    ``adata.obs[instance_key]``, so the cheap path only requires the region
-    view to have unique instance ids and for those ids to be present in the
-    layer indices. If that compatibility check fails, we fall back to
-    ``join_spatialelement_table(..., how="left", match_rows="left")`` so
-    the cache matches ``napari-spatialdata``'s original layer-specific
-    semantics.
-
-    Harpy no longer uses this helper in the normal widget lifecycle for the
-    same reason described in ``refresh_layer_table_metadata(...)``:
-    ``napari-spatialdata`` may later rebuild ``layer.metadata["adata"]``
-    from the authoritative ``sdata[table_name]`` table again. As a result,
-    Harpy now treats ``sdata[table_name]`` as the only source of truth and
-    keeps this helper as an explicit cache-building utility rather than a
-    path that is relied on during normal interaction.
-    """
-    table = get_table(sdata, table_name)
-    table_metadata = get_table_metadata(sdata, table_name)
-    region_mask = (table.obs[table_metadata.region_key] == labels_name).to_numpy(dtype=bool, copy=False)
-    if not region_mask.any():
-        return None
-
-    region_view = table[region_mask, :]
-    layer = _get_loaded_spatialdata_layer(
-        viewer,
-        sdata=sdata,
-        element_name=labels_name,
-        layer_filter=_is_pickable_labels_layer,
-    )
-    if _layer_indices_align_with_region_view(layer, region_view, table_metadata.instance_key) is not False:
-        return _normalize_layer_metadata_adata(region_view)
-
-    _, adata = join_spatialelement_table(
-        sdata=sdata,
-        spatial_element_names=labels_name,
-        table_name=table_name,
-        how="left",
-        match_rows="left",
-    )
-    if adata is None or adata.shape[0] == 0:
-        return None
-
-    return _normalize_layer_metadata_adata(adata)
-
-
-def refresh_layer_table_metadata(viewer: Any | None, sdata: SpatialData, labels_name: str, table_name: str) -> bool:
-    """Refresh table-derived metadata on the loaded napari layer for a labels element.
-
-    Harpy originally tried to keep ``layer.metadata["adata"]`` refreshed as a
-    compatibility cache for ``napari-spatialdata`` so that edits to
-    ``sdata[table_name]`` would also be reflected in the currently loaded
-    labels layer metadata.
-
-    In practice, ``napari-spatialdata`` may later rebuild and overwrite that
-    cache from the authoritative ``sdata[table_name]`` table again when its
-    own widgets update. Because of that, Harpy no longer calls this helper as
-    part of the normal widget lifecycle and instead treats
-    ``sdata[table_name]`` as the only source of truth. This method is kept as
-    an explicit best-effort utility for cases where refreshing the layer
-    metadata cache is still useful.
-    """
-    layer = _get_loaded_spatialdata_layer(
-        viewer,
-        sdata=sdata,
-        element_name=labels_name,
-        layer_filter=_is_pickable_labels_layer,
-    )
-    if layer is None:
-        return False
-
-    metadata = getattr(layer, "metadata", None)
-    if not isinstance(metadata, dict):
-        metadata = {}
-        layer.metadata = metadata
-
-    table_metadata = get_table_metadata(sdata, table_name)
-    layer.metadata["adata"] = build_layer_metadata_adata(viewer, sdata, labels_name, table_name)
-    layer.metadata["region_key"] = table_metadata.region_key
-    layer.metadata["instance_key"] = table_metadata.instance_key
-
-    table_names = get_annotating_table_names(sdata, labels_name)
-    layer.metadata["table_names"] = table_names if table_names else None
-    return True

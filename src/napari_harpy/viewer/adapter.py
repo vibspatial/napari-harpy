@@ -338,9 +338,8 @@ class LayerBindingRegistry:
         return binding
 
     def _register_binding(self, binding: LayerBinding) -> LayerBinding:
-        """Store a binding and mirror debug metadata where appropriate."""
+        """Store a binding in the registry."""
         self._bindings[id(binding.layer)] = binding
-        _apply_minimal_layer_metadata(binding.layer, binding)
         return binding
 
     def unregister_layer(self, layer: Layer) -> LayerBinding | None:
@@ -1054,62 +1053,6 @@ class ViewerAdapter(QObject):
                 return layer
 
         return None
-
-
-def _apply_minimal_layer_metadata(layer: Layer, binding: LayerBinding) -> None:
-    """Mirror a small subset of binding info onto the layer for debugging.
-
-    Harpy treats ``LayerBindingRegistry`` as the authoritative layer-binding
-    contract. These metadata fields are only a lightweight convenience so a
-    napari layer remains somewhat self-describing during debugging or manual
-    inspection.
-
-    # TODO -> inspect if this should be removed.
-    """
-    if isinstance(binding, ShapesLayerBinding):
-        return
-
-    metadata = getattr(layer, "metadata", None)
-    if not isinstance(metadata, dict):
-        metadata = {}
-        layer.metadata = metadata
-
-    metadata["element_name"] = binding.element_name
-    metadata["element_type"] = binding.element_type
-    metadata["coordinate_system"] = binding.coordinate_system
-    _set_optional_metadata_value(
-        metadata, "labels_role", binding.labels_role if isinstance(binding, LabelsLayerBinding) else None
-    )
-    _set_optional_metadata_value(
-        metadata, "style_spec", binding.style_spec if isinstance(binding, LabelsLayerBinding) else None
-    )
-    style_spec = binding.style_spec if isinstance(binding, LabelsLayerBinding) else None
-    _set_optional_metadata_value(metadata, "style_table_name", None if style_spec is None else style_spec.table_name)
-    _set_optional_metadata_value(metadata, "style_source_kind", None if style_spec is None else style_spec.source_kind)
-    _set_optional_metadata_value(metadata, "style_value_key", None if style_spec is None else style_spec.value_key)
-    _set_optional_metadata_value(metadata, "style_value_kind", None if style_spec is None else style_spec.value_kind)
-    _set_optional_metadata_value(
-        metadata,
-        "image_display_mode",
-        binding.image_display_mode if isinstance(binding, ImageLayerBinding) else None,
-    )
-    _set_optional_metadata_value(
-        metadata,
-        "channel_index",
-        binding.channel_index if isinstance(binding, ImageLayerBinding) else None,
-    )
-    _set_optional_metadata_value(
-        metadata,
-        "channel_name",
-        binding.channel_name if isinstance(binding, ImageLayerBinding) else None,
-    )
-
-
-def _set_optional_metadata_value(metadata: dict[str, Any], key: str, value: Any) -> None:
-    if value is None:
-        metadata.pop(key, None)
-        return
-    metadata[key] = value
 
 
 def _get_sdata_id(sdata: SpatialData | None) -> int | None:
