@@ -5,7 +5,7 @@ from html import unescape
 from types import SimpleNamespace
 
 import numpy as np
-from napari.layers import Image
+from napari.layers import Image, Shapes
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import QComboBox
@@ -675,18 +675,16 @@ def test_viewer_widget_coordinate_system_switch_prunes_old_harpy_layers(qtbot, m
     with qtbot.waitSignal(widget.app_state.sdata_changed):
         widget.app_state.set_sdata(fake_sdata)
 
-    widget.app_state.viewer_adapter.register_layer(
+    widget.app_state.viewer_adapter.register_image_layer(
         global_layer,
         sdata=fake_sdata,
-        element_name="global_image",
-        element_type="image",
+        image_name="global_image",
         coordinate_system="global",
     )
-    widget.app_state.viewer_adapter.register_layer(
+    widget.app_state.viewer_adapter.register_image_layer(
         local_layer,
         sdata=fake_sdata,
-        element_name="local_image",
-        element_type="image",
+        image_name="local_image",
         coordinate_system="local",
     )
     widget._set_action_feedback(
@@ -1114,7 +1112,7 @@ def test_viewer_widget_add_update_image_uses_selected_coordinate_system(qtbot, m
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)
     fake_sdata = object()
-    fake_layer = object()
+    fake_layer = Shapes([np.asarray([(0, 0), (0, 1), (1, 1), (1, 0)], dtype=float)], shape_type="polygon")
     recorded_calls: list[tuple[object, str, str, str]] = []
     activated_layers: list[object] = []
 
@@ -1248,7 +1246,7 @@ def test_viewer_widget_add_update_shapes_reports_skipped_geometry_warning(qtbot,
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)
     fake_sdata = object()
-    fake_layer = SimpleNamespace(metadata={"skipped_geometry_count": 2})
+    fake_layer = object()
 
     qtbot.addWidget(widget)
 
@@ -1262,6 +1260,13 @@ def test_viewer_widget_add_update_shapes_reports_skipped_geometry_warning(qtbot,
         lambda sdata, shapes_name, coordinate_system: fake_layer,
     )
     monkeypatch.setattr(widget.app_state.viewer_adapter, "activate_layer", lambda layer: True)
+    widget.app_state.viewer_adapter.register_shapes_layer(
+        fake_layer,
+        sdata=fake_sdata,
+        shapes_name="cells",
+        coordinate_system="global",
+        skipped_geometry_count=2,
+    )
 
     with qtbot.waitSignal(widget.app_state.sdata_changed):
         widget.app_state.set_sdata(fake_sdata)

@@ -765,11 +765,10 @@ class ObjectClassificationWidget(QWidget):
             )
             if existing_layer is not None:
                 if self._app_state.viewer_adapter.layer_bindings.get_binding(existing_layer) is None:
-                    self._app_state.viewer_adapter.register_layer(
+                    self._app_state.viewer_adapter.register_labels_layer(
                         existing_layer,
                         sdata=self.selected_spatialdata,
-                        element_name=self.selected_segmentation_name,
-                        element_type="labels",
+                        labels_name=self.selected_segmentation_name,
                         coordinate_system=self.selected_coordinate_system,
                     )
                 activated = self._app_state.viewer_adapter.activate_layer(existing_layer)

@@ -37,7 +37,7 @@ from napari_harpy.core.spatialdata import (
     get_table_color_source_options,
 )
 from napari_harpy.core.table_color_source import ColorSourceKind, TableColorSourceSpec
-from napari_harpy.viewer.adapter import DEFAULT_OVERLAY_COLORS
+from napari_harpy.viewer.adapter import DEFAULT_OVERLAY_COLORS, ShapesLayerBinding, ViewerAdapter
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,
 )
@@ -1486,7 +1486,7 @@ class ViewerWidget(QWidget):
 
         self._app_state.viewer_adapter.activate_layer(layer)
         display_name, was_shortened = format_feedback_identifier(shapes_name)
-        skipped_geometry_count = _get_layer_skipped_geometry_count(layer)
+        skipped_geometry_count = _get_layer_skipped_geometry_count(self._app_state.viewer_adapter, layer)
         feedback_kind: StatusCardKind = "success"
         title = "Shapes Loaded"
         lines = [f"Loaded shapes `{display_name}` in coordinate system `{coordinate_system}`."]
@@ -1730,13 +1730,12 @@ def _get_shapes_in_coordinate_system(sdata: SpatialData, coordinate_system: str)
     ]
 
 
-def _get_layer_skipped_geometry_count(layer: object) -> int:
-    metadata = getattr(layer, "metadata", None)
-    if not isinstance(metadata, dict):
+def _get_layer_skipped_geometry_count(viewer_adapter: ViewerAdapter, layer: object) -> int:
+    binding = viewer_adapter.layer_bindings.get_binding(layer)
+    if not isinstance(binding, ShapesLayerBinding):
         return 0
 
-    value = metadata.get("skipped_geometry_count", 0)
     try:
-        return int(value)
+        return int(binding.skipped_geometry_count)
     except (TypeError, ValueError):
         return 0

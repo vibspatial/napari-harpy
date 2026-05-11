@@ -107,11 +107,10 @@ class DummyViewer:
                         coordinate_system = available_coordinate_systems[0]
                     elif "global" in available_coordinate_systems:
                         coordinate_system = "global"
-                app_state.viewer_adapter.register_layer(
+                app_state.viewer_adapter.register_labels_layer(
                     layer,
                     sdata=sdata,
-                    element_name=element_name,
-                    element_type="labels",
+                    labels_name=element_name,
                     coordinate_system=coordinate_system if isinstance(coordinate_system, str) else None,
                 )
 
@@ -541,32 +540,28 @@ def test_shared_coordinate_system_switch_prunes_registered_layers_and_keeps_exte
     qtbot.addWidget(viewer_widget)
     qtbot.addWidget(object_widget)
 
-    app_state.viewer_adapter.register_layer(
+    app_state.viewer_adapter.register_image_layer(
         global_image,
         sdata=fake_sdata,
-        element_name="global_image",
-        element_type="image",
+        image_name="global_image",
         coordinate_system="global",
     )
-    app_state.viewer_adapter.register_layer(
+    app_state.viewer_adapter.register_image_layer(
         local_image,
         sdata=fake_sdata,
-        element_name="local_image",
-        element_type="image",
+        image_name="local_image",
         coordinate_system="local",
     )
-    app_state.viewer_adapter.register_layer(
+    app_state.viewer_adapter.register_labels_layer(
         global_labels,
         sdata=fake_sdata,
-        element_name="global_labels",
-        element_type="labels",
+        labels_name="global_labels",
         coordinate_system="global",
     )
-    app_state.viewer_adapter.register_layer(
+    app_state.viewer_adapter.register_labels_layer(
         local_labels,
         sdata=fake_sdata,
-        element_name="local_labels",
-        element_type="labels",
+        labels_name="local_labels",
         coordinate_system="local",
     )
 
@@ -613,11 +608,10 @@ def test_widget_clears_selected_segmentation_on_coordinate_system_change_even_wh
     app_state = get_or_create_app_state(viewer)
     app_state.set_sdata(fake_sdata)
     viewer.layers.append(global_layer)
-    app_state.viewer_adapter.register_layer(
+    app_state.viewer_adapter.register_labels_layer(
         global_layer,
         sdata=fake_sdata,
-        element_name="shared_labels",
-        element_type="labels",
+        labels_name="shared_labels",
         coordinate_system="global",
     )
 
@@ -679,11 +673,10 @@ def test_widget_unbinds_when_selected_segmentation_is_not_valid_in_new_coordinat
     app_state = get_or_create_app_state(viewer)
     app_state.set_sdata(fake_sdata)
     viewer.layers.append(global_layer)
-    app_state.viewer_adapter.register_layer(
+    app_state.viewer_adapter.register_labels_layer(
         global_layer,
         sdata=fake_sdata,
-        element_name="global_labels",
-        element_type="labels",
+        labels_name="global_labels",
         coordinate_system="global",
     )
 

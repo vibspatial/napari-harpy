@@ -164,6 +164,9 @@ class ShapesLayerBinding(BaseLayerBinding):
     """Binding metadata specific to shapes layers."""
 
     element_type: Literal["shapes"] = "shapes"
+    source_shapes_index_by_row: tuple[Any, ...] = ()
+    source_shapes_index_feature_name: str = DEFAULT_SHAPES_INDEX_FEATURE_NAME
+    skipped_geometry_count: int = 0
 
 
 LayerBinding = LabelsLayerBinding | ImageLayerBinding | ShapesLayerBinding
@@ -189,9 +192,13 @@ class _NapariShapesLayerInputs:
         Name of the ``features`` column that stores the source GeoDataFrame
         index, using the GeoDataFrame index name or ``"index"`` fallback.
     source_shapes_index_by_row
-        Source GeoDataFrame index for each rendered napari row. This is kept as
-        metadata so every row in ``data`` can be mapped back to its source row
-        even when ``len(data)`` differs from the source GeoDataFrame row count.
+        Source GeoDataFrame index for each rendered napari row. This is later
+        stored in the Harpy layer binding so every row in ``data`` can be
+        mapped back to its source row even when ``len(data)`` differs from the
+        source GeoDataFrame row count. For example, if source row ``"cell_7"``
+        is a ``MultiPolygon`` that expands into three rendered napari polygons
+        and source row ``"cell_8"`` expands into one rendered napari polygon,
+        this value is ``("cell_7", "cell_7", "cell_7", "cell_8")``.
     skipped_geometry_count
         Number of source rows that could not be rendered.
     """
@@ -199,6 +206,14 @@ class _NapariShapesLayerInputs:
     data: list[np.ndarray]
     shape_types: list[ShapesLayerShapeType]
     features: pd.DataFrame
+    source_shapes_index_feature_name: str
+    source_shapes_index_by_row: tuple[Any, ...]
+    skipped_geometry_count: int
+
+
+@dataclass(frozen=True)
+class _BuiltShapesLayer:
+    layer: Shapes
     source_shapes_index_feature_name: str
     source_shapes_index_by_row: tuple[Any, ...]
     skipped_geometry_count: int
@@ -247,56 +262,85 @@ class LayerBindingRegistry:
     def __init__(self) -> None:
         self._bindings: dict[int, LayerBinding] = {}
 
-    def register_layer(
+    def register_labels_layer(
         self,
-        layer: Layer,
+        layer: Labels,
         *,
         element_name: str,
-        element_type: ElementType,
         coordinate_system: str | None = None,
         sdata: SpatialData | None = None,
         labels_role: Literal["primary", "styled"] = "primary",
         style_spec: TableColorSourceSpec | None = None,
+    ) -> LabelsLayerBinding:
+        """Register a labels layer binding."""
+        if labels_role == "primary" and style_spec is not None:
+            raise ValueError("Primary labels bindings must not carry a style specification.")
+        if labels_role == "styled" and style_spec is None:
+            raise ValueError("Styled labels bindings require a style specification.")
+
+        binding = LabelsLayerBinding(
+            layer=layer,
+            element_name=element_name,
+            coordinate_system=coordinate_system,
+            sdata_id=_get_sdata_id(sdata),
+            labels_role=labels_role,
+            style_spec=style_spec,
+        )
+        self._register_binding(binding)
+        return binding
+
+    def register_image_layer(
+        self,
+        layer: Image,
+        *,
+        element_name: str,
+        coordinate_system: str | None = None,
+        sdata: SpatialData | None = None,
         image_display_mode: ImageDisplayMode | None = None,
         channel_index: int | None = None,
         channel_name: str | None = None,
-    ) -> LayerBinding:
-        """Register a layer binding and attach lightweight metadata."""
-        sdata_id = None if sdata is None else id(sdata)
-        if element_type == "labels":
-            if labels_role == "primary" and style_spec is not None:
-                raise ValueError("Primary labels bindings must not carry a style specification.")
-            if labels_role == "styled" and style_spec is None:
-                raise ValueError("Styled labels bindings require a style specification.")
-            binding = LabelsLayerBinding(
-                layer=layer,
-                element_name=element_name,
-                coordinate_system=coordinate_system,
-                sdata_id=sdata_id,
-                labels_role=labels_role,
-                style_spec=style_spec,
-            )
-        elif element_type == "image":
-            binding = ImageLayerBinding(
-                layer=layer,
-                element_name=element_name,
-                coordinate_system=coordinate_system,
-                sdata_id=sdata_id,
-                image_display_mode=image_display_mode,
-                channel_index=channel_index,
-                channel_name=channel_name,
-            )
-        elif element_type == "shapes":
-            binding = ShapesLayerBinding(
-                layer=layer,
-                element_name=element_name,
-                coordinate_system=coordinate_system,
-                sdata_id=sdata_id,
-            )
-        else:  # pragma: no cover - defensive runtime validation
-            raise ValueError(f"Unsupported element type `{element_type}`.")
-        self._bindings[id(layer)] = binding
-        _apply_minimal_layer_metadata(layer, binding)
+    ) -> ImageLayerBinding:
+        """Register an image layer binding."""
+        binding = ImageLayerBinding(
+            layer=layer,
+            element_name=element_name,
+            coordinate_system=coordinate_system,
+            sdata_id=_get_sdata_id(sdata),
+            image_display_mode=image_display_mode,
+            channel_index=channel_index,
+            channel_name=channel_name,
+        )
+        self._register_binding(binding)
+        return binding
+
+    def register_shapes_layer(
+        self,
+        layer: Shapes,
+        *,
+        element_name: str,
+        coordinate_system: str | None = None,
+        sdata: SpatialData | None = None,
+        source_shapes_index_by_row: tuple[Any, ...] = (),
+        source_shapes_index_feature_name: str = DEFAULT_SHAPES_INDEX_FEATURE_NAME,
+        skipped_geometry_count: int = 0,
+    ) -> ShapesLayerBinding:
+        """Register a shapes layer binding."""
+        binding = ShapesLayerBinding(
+            layer=layer,
+            element_name=element_name,
+            coordinate_system=coordinate_system,
+            sdata_id=_get_sdata_id(sdata),
+            source_shapes_index_by_row=source_shapes_index_by_row,
+            source_shapes_index_feature_name=source_shapes_index_feature_name,
+            skipped_geometry_count=skipped_geometry_count,
+        )
+        self._register_binding(binding)
+        return binding
+
+    def _register_binding(self, binding: LayerBinding) -> LayerBinding:
+        """Store a binding and mirror debug metadata where appropriate."""
+        self._bindings[id(binding.layer)] = binding
+        _apply_minimal_layer_metadata(binding.layer, binding)
         return binding
 
     def unregister_layer(self, layer: Layer) -> LayerBinding | None:
@@ -391,21 +435,17 @@ class ViewerAdapter(QObject):
         """Return the shared layer-binding registry."""
         return self._layer_bindings
 
-    def register_layer(
+    def register_labels_layer(
         self,
-        layer: Layer,
+        layer: Labels,
         *,
-        element_name: str,
-        element_type: ElementType,
+        labels_name: str,
         coordinate_system: str | None = None,
         sdata: SpatialData | None = None,
         labels_role: Literal["primary", "styled"] = "primary",
         style_spec: TableColorSourceSpec | None = None,
-        image_display_mode: ImageDisplayMode | None = None,
-        channel_index: int | None = None,
-        channel_name: str | None = None,
-    ) -> LayerBinding:
-        """Register a layer in the shared binding registry.
+    ) -> LabelsLayerBinding:
+        """Register a labels layer in the shared binding registry.
 
         For primary labels layers, registration itself may be the moment when a
         live napari layer becomes Harpy-usable. This happens on the normal
@@ -415,21 +455,68 @@ class ViewerAdapter(QObject):
         already present in the viewer so those flows do not depend on the
         viewer's ``inserted`` event having seen a binding already.
         """
-        binding = self._layer_bindings.register_layer(
+        binding = self._layer_bindings.register_labels_layer(
             layer,
-            element_name=element_name,
-            element_type=element_type,
+            element_name=labels_name,
             coordinate_system=coordinate_system,
             sdata=sdata,
             labels_role=labels_role,
             style_spec=style_spec,
+        )
+        self._handle_registered_binding(binding)
+        return binding
+
+    def register_image_layer(
+        self,
+        layer: Image,
+        *,
+        image_name: str,
+        coordinate_system: str | None = None,
+        sdata: SpatialData | None = None,
+        image_display_mode: ImageDisplayMode | None = None,
+        channel_index: int | None = None,
+        channel_name: str | None = None,
+    ) -> ImageLayerBinding:
+        """Register an image layer in the shared binding registry."""
+        binding = self._layer_bindings.register_image_layer(
+            layer,
+            element_name=image_name,
+            coordinate_system=coordinate_system,
+            sdata=sdata,
             image_display_mode=image_display_mode,
             channel_index=channel_index,
             channel_name=channel_name,
         )
-        if _is_primary_labels_binding(binding) and self._is_layer_loaded_in_viewer(layer):
-            self.primary_labels_layers_changed.emit()
+        self._handle_registered_binding(binding)
         return binding
+
+    def register_shapes_layer(
+        self,
+        layer: Shapes,
+        *,
+        shapes_name: str,
+        coordinate_system: str | None = None,
+        sdata: SpatialData | None = None,
+        source_shapes_index_by_row: tuple[Any, ...] = (),
+        source_shapes_index_feature_name: str = DEFAULT_SHAPES_INDEX_FEATURE_NAME,
+        skipped_geometry_count: int = 0,
+    ) -> ShapesLayerBinding:
+        """Register a shapes layer in the shared binding registry."""
+        binding = self._layer_bindings.register_shapes_layer(
+            layer,
+            element_name=shapes_name,
+            coordinate_system=coordinate_system,
+            sdata=sdata,
+            source_shapes_index_by_row=source_shapes_index_by_row,
+            source_shapes_index_feature_name=source_shapes_index_feature_name,
+            skipped_geometry_count=skipped_geometry_count,
+        )
+        self._handle_registered_binding(binding)
+        return binding
+
+    def _handle_registered_binding(self, binding: LayerBinding) -> None:
+        if _is_primary_labels_binding(binding) and self._is_layer_loaded_in_viewer(binding.layer):
+            self.primary_labels_layers_changed.emit()
 
     def unregister_layer(self, layer: Layer) -> LayerBinding | None:
         """Remove a layer from the shared binding registry."""
@@ -615,11 +702,10 @@ class ViewerAdapter(QObject):
 
         layer = _build_labels_layer(sdata, labels_name, coordinate_system, name=labels_name)
         _add_layer_to_viewer(self._viewer, layer)
-        self.register_layer(
+        self.register_labels_layer(
             layer,
             sdata=sdata,
-            element_name=labels_name,
-            element_type="labels",
+            labels_name=labels_name,
             coordinate_system=coordinate_system,
         )
         return layer
@@ -647,11 +733,10 @@ class ViewerAdapter(QObject):
                 name=build_styled_labels_layer_name(labels_name, style_spec),
             )
             _add_layer_to_viewer(self._viewer, layer)
-            self.register_layer(
+            self.register_labels_layer(
                 layer,
                 sdata=sdata,
-                element_name=labels_name,
-                element_type="labels",
+                labels_name=labels_name,
                 coordinate_system=coordinate_system,
                 labels_role="styled",
                 style_spec=style_spec,
@@ -724,11 +809,10 @@ class ViewerAdapter(QObject):
                 rgb=rgb,
             )
             _add_layer_to_viewer(self._viewer, layer)
-            self.register_layer(
+            self.register_image_layer(
                 layer,
                 sdata=sdata,
-                element_name=image_name,
-                element_type="image",
+                image_name=image_name,
                 coordinate_system=coordinate_system,
                 image_display_mode=mode,
             )
@@ -785,11 +869,10 @@ class ViewerAdapter(QObject):
                     colormap=color,
                 )
                 _add_layer_to_viewer(self._viewer, layer)
-                self.register_layer(
+                self.register_image_layer(
                     layer,
                     sdata=sdata,
-                    element_name=image_name,
-                    element_type="image",
+                    image_name=image_name,
                     coordinate_system=coordinate_system,
                     image_display_mode=mode,
                     channel_index=channel_index,
@@ -811,14 +894,17 @@ class ViewerAdapter(QObject):
         if existing_layer is not None:
             return existing_layer
 
-        layer = _build_shapes_layer(sdata, shapes_name, coordinate_system, name=shapes_name)
+        built_layer = _build_shapes_layer(sdata, shapes_name, coordinate_system, name=shapes_name)
+        layer = built_layer.layer
         _add_layer_to_viewer(self._viewer, layer)
-        self.register_layer(
+        self.register_shapes_layer(
             layer,
             sdata=sdata,
-            element_name=shapes_name,
-            element_type="shapes",
+            shapes_name=shapes_name,
             coordinate_system=coordinate_system,
+            source_shapes_index_by_row=built_layer.source_shapes_index_by_row,
+            source_shapes_index_feature_name=built_layer.source_shapes_index_feature_name,
+            skipped_geometry_count=built_layer.skipped_geometry_count,
         )
         return layer
 
@@ -980,6 +1066,9 @@ def _apply_minimal_layer_metadata(layer: Layer, binding: LayerBinding) -> None:
 
     # TODO -> inspect if this should be removed.
     """
+    if isinstance(binding, ShapesLayerBinding):
+        return
+
     metadata = getattr(layer, "metadata", None)
     if not isinstance(metadata, dict):
         metadata = {}
@@ -1021,6 +1110,10 @@ def _set_optional_metadata_value(metadata: dict[str, Any], key: str, value: Any)
         metadata.pop(key, None)
         return
     metadata[key] = value
+
+
+def _get_sdata_id(sdata: SpatialData | None) -> int | None:
+    return None if sdata is None else id(sdata)
 
 
 def _add_layer_to_viewer(viewer: Any | None, layer: Layer) -> None:
@@ -1187,7 +1280,7 @@ def _build_shapes_layer(
     coordinate_system: str,
     *,
     name: str,
-) -> Shapes:
+) -> _BuiltShapesLayer:
     shapes = getattr(sdata, "shapes", {})
     if shapes_name not in shapes:
         raise ValueError(f"Shapes element `{shapes_name}` is not available in the selected SpatialData object.")
@@ -1210,7 +1303,7 @@ def _build_shapes_layer(
             f"Shapes element `{shapes_name}` has no renderable geometries in coordinate system `{coordinate_system}`."
         )
 
-    return _HarpyShapes(
+    layer = _HarpyShapes(
         napari_layer_inputs.data,
         name=name,
         shape_type=napari_layer_inputs.shape_types,
@@ -1220,10 +1313,12 @@ def _build_shapes_layer(
         face_color="#00000000",
         edge_width=1,
         opacity=0.8,
-        metadata={
-            "source_shapes_index_by_row": napari_layer_inputs.source_shapes_index_by_row,
-            "skipped_geometry_count": napari_layer_inputs.skipped_geometry_count,
-        },
+    )
+    return _BuiltShapesLayer(
+        layer=layer,
+        source_shapes_index_feature_name=napari_layer_inputs.source_shapes_index_feature_name,
+        source_shapes_index_by_row=napari_layer_inputs.source_shapes_index_by_row,
+        skipped_geometry_count=napari_layer_inputs.skipped_geometry_count,
     )
 
 

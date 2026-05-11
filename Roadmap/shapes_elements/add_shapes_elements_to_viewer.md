@@ -576,7 +576,7 @@ Recommended tests:
 
 ### Slice 3: Move Shapes Row Mapping Into Bindings
 
-Status: proposed
+Status: completed
 
 Slice 2 made shapes loadable, but it still uses `layer.metadata` for some
 Harpy-internal shapes contracts. Before adding styled shapes layers, move those
