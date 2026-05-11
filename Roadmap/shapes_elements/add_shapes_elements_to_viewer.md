@@ -151,7 +151,7 @@ class SpatialDataShapesOption:
         return (id(self.sdata), self.shapes_name)
 ```
 
-Add shape color source metadata. Keep it separate from
+Add a shape color source specification. Keep it separate from
 `TableColorSourceSpec`, because first-version shape coloring is element-column
 backed, not table-backed.
 
@@ -162,7 +162,7 @@ ShapeColorSourceKind = Literal["shape_column"]
 class ShapeColorSourceSpec:
     source_kind: ShapeColorSourceKind
     value_key: str
-    value_kind: ColorValueKind
+    value_kind: Literal["categorical", "continuous"]
 
     @property
     def identity(self) -> tuple[ShapeColorSourceKind, str]:
@@ -250,6 +250,10 @@ Recommended binding shape:
 @dataclass(frozen=True, kw_only=True)
 class ShapesLayerBinding(BaseLayerBinding):
     element_type: Literal["shapes"] = "shapes"
+    shapes_role: Literal["primary", "styled"] = "primary"
+    style_spec: ShapeColorSourceSpec | None = None
+    source_shapes_index_by_row: tuple[Any, ...] = ()
+    source_shapes_index_feature_name: str = "index"
 ```
 
 Update the union:
@@ -266,6 +270,15 @@ Add `ViewerAdapter` methods:
 
 Shape-column coloring should choose its adapter contract in Slice 3 instead of
 baking a styled-layer model into Slice 2.
+
+`ShapesLayerBinding.source_shapes_index_by_row` is the authoritative Harpy
+mapping from rendered napari shape rows back to source `GeoDataFrame` indices.
+`layer.features[source_shapes_index_feature_name]` is the napari-visible
+feature table used for status-bar display and manual inspection.
+
+Do not store Harpy shapes contracts in `layer.metadata`. This includes source
+row mappings, source-index feature names, shapes roles, and style specs. Shape
+layer identity and behavior should be resolved through `LayerBindingRegistry`.
 
 Shape layers should not emit `primary_labels_layers_changed`. Object
 classification should remain labels-only.
@@ -332,22 +345,22 @@ def _polygon_to_napari_path(polygon: Polygon) -> list[tuple[float, float]]:
 This keeps one source `Polygon` as one napari shape row even when it has holes.
 For `MultiPolygon`, apply the same encoding to each polygon part and map every
 part back to the same source row in
-`layer.metadata["source_shapes_index_by_row"]`.
+`ShapesLayerBinding.source_shapes_index_by_row`.
 
-Keep a per-napari-shape-row source mapping as primary layer metadata:
+Keep a per-napari-shape-row source mapping in the adapter binding:
 
 ```python
-layer.metadata["source_shapes_index_by_row"] = tuple(...)
+binding.source_shapes_index_by_row = tuple(...)
 ```
 
 This is required because one SpatialData shape row can become several napari
 shape rows when it is a `MultiPolygon`.
 
 `napari-spatialdata` stores this concept under the generic
-`layer.metadata["indices"]` key. Harpy should use
-`source_shapes_index_by_row` as the primary key because it names the row-mapping
-contract directly and avoids overloading the labels/table-oriented meaning of
-`indices`.
+`layer.metadata["indices"]` key. Harpy should not follow that storage contract
+for shapes. The row mapping should live in `ShapesLayerBinding`, because Harpy
+already treats `LayerBindingRegistry` as the authoritative layer contract and
+uses layer metadata only as loose napari-facing state for other layer types.
 
 ## Shape Styling
 
@@ -372,7 +385,7 @@ Styled shapes:
 - do not consult companion color columns for continuous columns.
 
 Shape-column styling should use
-`layer.metadata["source_shapes_index_by_row"]` to align source values to
+`ShapesLayerBinding.source_shapes_index_by_row` to align source values to
 rendered napari shape rows. Napari expects one color per `layer.data` row, but
 Harpy's values live on `sdata.shapes[shapes_name]`. If one source row expands
 into several rendered rows, such as a `MultiPolygon`, every rendered row should
@@ -381,7 +394,8 @@ look up the same source index and therefore receive the same color.
 For example:
 
 ```python
-source_index_by_row = layer.metadata["source_shapes_index_by_row"]
+binding = adapter.layer_bindings.get_binding(layer)
+source_index_by_row = binding.source_shapes_index_by_row
 source_values = sdata.shapes[shapes_name][column_name]
 row_values = [source_values.loc[source_index] for source_index in source_index_by_row]
 layer.face_color = [palette[value] for value in row_values]
@@ -415,7 +429,7 @@ styled labels:
 class StyledShapesLoadResult:
     layer: Shapes
     created: bool
-    value_kind: ColorValueKind
+    value_kind: Literal["categorical", "continuous"]
     palette_source: Literal["shape_column", "default", None]
     coercion_applied: bool
     skipped_geometry_count: int
@@ -514,11 +528,14 @@ Implement:
   coordinate system;
 - support polygons, multipolygons, and `Point` + `radius` circles;
 - apply coordinate-system transforms by materializing transformed geometries;
-- set `layer.metadata["source_shapes_index_by_row"]` as the primary rendered-row
-  to source-row mapping;
+- set `ShapesLayerBinding.source_shapes_index_by_row` as the authoritative
+  rendered-row to source-row mapping;
+- set `ShapesLayerBinding.source_shapes_index_feature_name` to the
+  `layer.features` column that stores the source index;
 - populate `layer.features` only with the source index column, using the
   GeoDataFrame index name or `"index"` fallback, so the status bar can expose
   source identity without copying every source column;
+- do not store Harpy shapes contracts in `layer.metadata`;
 - skip empty, invalid, or unsupported geometries with explicit feedback instead
   of failing the whole load when at least one shape can be rendered;
 - preserve polygon interiors by encoding holes as embedded rings in the napari
@@ -529,10 +546,12 @@ Recommended tests:
 
 - polygons load as a napari `Shapes` layer;
 - multipolygon rows create multiple napari shapes and duplicate their source row
-  in `metadata["source_shapes_index_by_row"]`;
+  in `ShapesLayerBinding.source_shapes_index_by_row`;
 - circle rows render as napari ellipses;
 - `layer.features` contains only the source index column, including named
   GeoDataFrame indexes and the `"index"` fallback for unnamed indexes;
+- shape layers do not store source mapping or source-index feature contracts in
+  `layer.metadata`;
 - empty or invalid geometries are skipped with warning feedback;
 - polygon interiors render as holes rather than filled exterior-only polygons;
 - loading the same shapes element twice reuses the existing shapes layer;
@@ -602,6 +621,8 @@ Implement:
 - extend `ShapesLayerBinding` with:
   - `shapes_role: Literal["primary", "styled"] = "primary"`;
   - `style_spec: ShapeColorSourceSpec | None = None`;
+  - `source_shapes_index_by_row: tuple[Any, ...] = ()`;
+  - `source_shapes_index_feature_name: str = "index"`;
 - keep `ensure_shapes_loaded(...)` as the primary-layer path and make all
   primary lookup/removal code filter `shapes_role="primary"`;
 - add styled-shapes adapter paths matching styled labels:
@@ -612,13 +633,8 @@ Implement:
     `build_styled_shapes_layer_name(shapes_name, style_spec)`;
 - allow primary and styled shapes layers for the same shapes element to coexist;
 - register styled shapes layers with `shapes_role="styled"` and `style_spec`;
-- mirror debugging metadata on styled shapes layers:
-  - `shapes_role`;
-  - `style_spec`;
-  - `style_source_kind`;
-  - `style_value_key`;
-  - `style_value_kind`;
-  - `style_feature_name` if the feature column name is disambiguated;
+- keep styled shapes identity and source-row mappings in `ShapesLayerBinding`,
+  not in `layer.metadata`;
 - style shapes by categorical and continuous columns:
   - apply one color per rendered napari shape row;
   - prefer coloring both `face_color` and `edge_color`, with a readable edge and
@@ -636,14 +652,14 @@ Implement:
   - non-binary integer and float columns are continuous;
   - string/object scalar columns are temporarily categorical without mutating
     the `GeoDataFrame`;
-- use `metadata["source_shapes_index_by_row"]` to align source shape-column
-  values to rendered napari rows;
+- use `ShapesLayerBinding.source_shapes_index_by_row` to align source
+  shape-column values to rendered napari rows;
 - add the selected style source column to the `layer.features` DataFrame,
   aligned to rendered napari rows, instead of copying all GeoDataFrame columns
   during Slice 2;
 - if the selected style source column name collides with the source-index
-  feature column, store it in a disambiguated feature column and record that
-  name in metadata;
+  feature column, store it in a deterministic disambiguated feature column
+  without overwriting the source-index feature;
 - repeat colors and feature values for multipolygon parts by repeating the
   source row lookup;
 - provide feedback for primary vs styled load paths, created vs updated styled
@@ -666,6 +682,10 @@ Recommended tests:
 - styled shapes bindings have `shapes_role="styled"` and keep their
   `ShapeColorSourceSpec`;
 - primary shapes bindings have `shapes_role="primary"` and no style spec;
+- primary and styled shapes bindings carry `source_shapes_index_by_row` and
+  `source_shapes_index_feature_name`;
+- shapes layers do not store shapes roles, style specs, source mappings, or
+  source-index feature names in `layer.metadata`;
 - categorical columns produce per-shape categorical colors;
 - categorical columns use valid `<column>_colors` companion palettes;
 - invalid companion color values fall back to the default palette;
@@ -680,7 +700,7 @@ Recommended tests:
 - style source feature-name collisions are disambiguated without overwriting the
   source-index feature;
 - multipolygon parts repeat the source row color via
-  `metadata["source_shapes_index_by_row"]`;
+  `ShapesLayerBinding.source_shapes_index_by_row`;
 - mixed unsupported columns are hidden from the selector;
 - styled layer identity includes the selected column and is reused on repeat.
 
