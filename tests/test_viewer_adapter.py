@@ -968,6 +968,8 @@ def test_viewer_adapter_ensure_shapes_loaded_adds_polygon_layer_and_registers_bi
     assert layer.shape_type == ["polygon"] * len(sdata_blobs.shapes["blobs_polygons"])
     assert layer.metadata["source_shapes_index_by_row"] == tuple(sdata_blobs.shapes["blobs_polygons"].index.to_list())
     assert layer.metadata["skipped_geometry_count"] == 0
+    assert list(layer.features.columns) == ["index"]
+    assert tuple(layer.features["index"].to_list()) == layer.metadata["source_shapes_index_by_row"]
     binding = adapter.layer_bindings.get_binding(layer)
     assert isinstance(binding, ShapesLayerBinding)
     assert binding.element_name == "blobs_polygons"
@@ -992,6 +994,7 @@ def test_viewer_adapter_ensure_shapes_loaded_expands_multipolygons_with_source_m
     assert len(layer.data) == len(expected_indices)
     assert layer.shape_type == ["polygon"] * len(expected_indices)
     assert layer.metadata["source_shapes_index_by_row"] == tuple(expected_indices)
+    assert tuple(layer.features["index"].to_list()) == tuple(expected_indices)
 
 
 def test_viewer_adapter_ensure_shapes_loaded_renders_circles_as_ellipses(sdata_blobs) -> None:
@@ -1018,6 +1021,7 @@ def test_viewer_adapter_ensure_shapes_loaded_renders_circles_as_ellipses(sdata_b
     assert layer.shape_type == ["ellipse"] * len(circles)
     assert np.allclose(layer.data[0], expected_first_ellipse)
     assert layer.metadata["source_shapes_index_by_row"] == tuple(circles.index.to_list())
+    assert tuple(layer.features["index"].to_list()) == tuple(circles.index.to_list())
 
 
 def test_viewer_adapter_ensure_shapes_loaded_preserves_polygon_holes() -> None:
@@ -1025,7 +1029,7 @@ def test_viewer_adapter_ensure_shapes_loaded_preserves_polygon_holes() -> None:
         shell=[(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)],
         holes=[[(2, 2), (2, 5), (5, 5), (5, 2), (2, 2)]],
     )
-    geodataframe = gpd.GeoDataFrame({"geometry": [polygon]}, index=["donut"])
+    geodataframe = gpd.GeoDataFrame({"name": ["polygon_with_hole"], "geometry": [polygon]}, index=["donut"])
     sdata = make_shapes_sdata(geodataframe, shapes_name="donuts")
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
@@ -1034,8 +1038,27 @@ def test_viewer_adapter_ensure_shapes_loaded_preserves_polygon_holes() -> None:
     labels = layer.to_labels(labels_shape=(12, 12))
 
     assert layer.metadata["source_shapes_index_by_row"] == ("donut",)
+    assert list(layer.features.columns) == ["index"]
+    assert layer.features.iloc[0]["index"] == "donut"
+    assert "index: donut" in layer.get_status(position=(1, 1))["value"]
     assert labels[1, 1] == 1
     assert labels[3, 3] == 0
+
+
+def test_viewer_adapter_ensure_shapes_loaded_uses_named_geodataframe_index_in_features() -> None:
+    polygon = Polygon([(0, 0), (4, 0), (4, 4), (0, 4), (0, 0)])
+    geodataframe = gpd.GeoDataFrame({"cell_id": ["column_value"], "name": ["boundary"]}, geometry=[polygon], index=["cell_1"])
+    geodataframe.index.name = "cell_id"
+    sdata = make_shapes_sdata(geodataframe, shapes_name="cell_boundaries")
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    layer = adapter.ensure_shapes_loaded(sdata, "cell_boundaries", "global")
+
+    assert layer.metadata["source_shapes_index_by_row"] == ("cell_1",)
+    assert list(layer.features.columns) == ["cell_id"]
+    assert layer.features.iloc[0]["cell_id"] == "cell_1"
+    assert "cell_id: cell_1" in layer.get_status(position=(1, 1))["value"]
 
 
 def test_viewer_adapter_ensure_shapes_loaded_skips_empty_invalid_or_unsupported_geometries() -> None:

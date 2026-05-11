@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, TypeGuard
 
 import numpy as np
+import pandas as pd
 from loguru import logger
 from napari.layers import Image, Labels, Layer, Shapes
 from qtpy.QtCore import QObject, Signal
@@ -31,6 +32,9 @@ if TYPE_CHECKING:
 ImageDisplayMode = Literal["stack", "overlay"]
 ElementType = Literal["labels", "image", "shapes"]
 ShapesLayerShapeType = Literal["polygon", "ellipse"]
+# Name of the layer.features column that _HarpyShapes reads to display the
+# source GeoDataFrame index in napari's status bar.
+DEFAULT_SHAPES_INDEX_FEATURE_NAME = "index"
 DEFAULT_OVERLAY_COLORS = (
     "#00FFFF",  # cyan
     "#FF00FF",  # magenta
@@ -41,6 +45,83 @@ DEFAULT_OVERLAY_COLORS = (
     "#FFA500",  # orange
     "#9370DB",  # purple
 )
+
+
+class _HarpyShapes(Shapes):
+    """Napari Shapes layer that exposes source GeoDataFrame indices in the status bar."""
+
+    def __init__(
+        self,
+        *args: Any,
+        source_shapes_index_feature_name: str = DEFAULT_SHAPES_INDEX_FEATURE_NAME,
+        **kwargs: Any,
+    ) -> None:
+        self._source_shapes_index_feature_name = source_shapes_index_feature_name
+        super().__init__(*args, **kwargs)
+
+    def get_status(
+        self,
+        position: Any | None = None,
+        *,
+        view_direction: Any | None = None,
+        dims_displayed: list[int] | None = None,
+        world: bool = False,
+        value: Any | None = None,
+    ) -> dict[str, str]:
+        status = super().get_status(
+            position,
+            view_direction=view_direction,
+            dims_displayed=dims_displayed,
+            world=world,
+            value=value,
+        )
+        if position is None:
+            return status
+
+        shape_value = self.get_value(
+            position,
+            view_direction=view_direction,
+            dims_displayed=dims_displayed,
+            world=world,
+        )
+        source_index_status = self._get_source_index_status(shape_value)
+        if source_index_status:
+            status["coordinates"] += f"; {source_index_status}"
+            status["value"] += f"; {source_index_status}"
+        return status
+
+    def _get_source_index_status(self, value: Any) -> str | None:
+        if not isinstance(value, tuple) or not value:
+            return None
+
+        shape_index = value[0]
+        if shape_index is None:
+            return None
+
+        try:
+            feature_row = self.features.iloc[int(shape_index)]
+        except (IndexError, TypeError, ValueError):
+            return None
+
+        index_feature_name = self._source_shapes_index_feature_name
+        if index_feature_name not in feature_row:
+            return None
+
+        source_index = feature_row[index_feature_name]
+        if self._is_missing_feature_value(source_index):
+            return None
+
+        return f"{index_feature_name}: {source_index}"
+
+    @staticmethod
+    def _is_missing_feature_value(value: Any) -> bool:
+        if value is None:
+            return True
+
+        try:
+            return bool(pd.isna(value))
+        except (TypeError, ValueError):
+            return False
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -85,8 +166,35 @@ LayerBinding = LabelsLayerBinding | ImageLayerBinding | ShapesLayerBinding
 
 @dataclass(frozen=True)
 class _NapariShapesLayerInputs:
+    """Prepared inputs for constructing one napari ``Shapes`` layer.
+
+    Parameters
+    ----------
+    data
+        One vertex array per rendered napari shape. This length can differ
+        from the source GeoDataFrame row count because a ``MultiPolygon`` row
+        expands into multiple rendered shapes, while empty, invalid, or
+        unsupported geometries are skipped.
+    shape_types
+        Napari shape type for each row in ``data``.
+    features
+        DataFrame row-aligned to ``data``. It currently stores the source
+        GeoDataFrame index for status-bar display.
+    source_shapes_index_feature_name
+        Name of the ``features`` column that stores the source GeoDataFrame
+        index, using the GeoDataFrame index name or ``"index"`` fallback.
+    source_shapes_index_by_row
+        Source GeoDataFrame index for each rendered napari row. This is kept as
+        metadata so every row in ``data`` can be mapped back to its source row
+        even when ``len(data)`` differs from the source GeoDataFrame row count.
+    skipped_geometry_count
+        Number of source rows that could not be rendered.
+    """
+
     data: list[np.ndarray]
     shape_types: list[ShapesLayerShapeType]
+    features: pd.DataFrame
+    source_shapes_index_feature_name: str
     source_shapes_index_by_row: tuple[Any, ...]
     skipped_geometry_count: int
 
@@ -1097,10 +1205,12 @@ def _build_shapes_layer(
             f"Shapes element `{shapes_name}` has no renderable geometries in coordinate system `{coordinate_system}`."
         )
 
-    return Shapes(
+    return _HarpyShapes(
         napari_layer_inputs.data,
         name=name,
         shape_type=napari_layer_inputs.shape_types,
+        features=napari_layer_inputs.features,
+        source_shapes_index_feature_name=napari_layer_inputs.source_shapes_index_feature_name,
         edge_color="#00FFFF",
         face_color="#00000000",
         edge_width=1,
@@ -1115,13 +1225,17 @@ def _build_shapes_layer(
 def _prepare_napari_shapes_layer_inputs(shapes_element: Any) -> _NapariShapesLayerInputs:
     data: list[np.ndarray] = []
     shape_types: list[ShapesLayerShapeType] = []
+    feature_rows: list[dict[str, Any]] = []
     source_indices: list[Any] = []
     skipped_geometry_count = 0
     has_radius = "radius" in getattr(shapes_element, "columns", [])
+    geometry_column_name = getattr(getattr(shapes_element, "geometry", None), "name", "geometry")
+    index_feature_name = _get_shapes_index_feature_name(shapes_element)
 
     for source_index, row in shapes_element.iterrows():
-        geometry = row["geometry"]
+        geometry = row[geometry_column_name]
         row_shape_count = len(data)
+        feature_row = {index_feature_name: source_index}
 
         if _is_empty_geometry(geometry):
             skipped_geometry_count += 1
@@ -1139,12 +1253,14 @@ def _prepare_napari_shapes_layer_inputs(shapes_element: Any) -> _NapariShapesLay
 
             data.append(ellipse)
             shape_types.append("ellipse")
+            feature_rows.append(feature_row)
             source_indices.append(source_index)
             continue
 
         for polygon in _iter_renderable_polygons(geometry):
             data.append(_polygon_to_napari_path(polygon))
             shape_types.append("polygon")
+            feature_rows.append(feature_row)
             source_indices.append(source_index)
 
         if len(data) == row_shape_count:
@@ -1153,9 +1269,18 @@ def _prepare_napari_shapes_layer_inputs(shapes_element: Any) -> _NapariShapesLay
     return _NapariShapesLayerInputs(
         data=data,
         shape_types=shape_types,
+        features=pd.DataFrame(feature_rows),
+        source_shapes_index_feature_name=index_feature_name,
         source_shapes_index_by_row=tuple(source_indices),
         skipped_geometry_count=skipped_geometry_count,
     )
+
+
+def _get_shapes_index_feature_name(shapes_element: Any) -> str:
+    index_name = getattr(getattr(shapes_element, "index", None), "name", None)
+    if index_name is None:
+        return DEFAULT_SHAPES_INDEX_FEATURE_NAME
+    return str(index_name)
 
 
 def _circle_to_napari_ellipse(point: Point, radius: Any) -> np.ndarray | None:

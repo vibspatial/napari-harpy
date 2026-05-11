@@ -516,6 +516,9 @@ Implement:
 - apply coordinate-system transforms by materializing transformed geometries;
 - set `layer.metadata["source_shapes_index_by_row"]` as the primary rendered-row
   to source-row mapping;
+- populate `layer.features` only with the source index column, using the
+  GeoDataFrame index name or `"index"` fallback, so the status bar can expose
+  source identity without copying every source column;
 - skip empty, invalid, or unsupported geometries with explicit feedback instead
   of failing the whole load when at least one shape can be rendered;
 - preserve polygon interiors by encoding holes as embedded rings in the napari
@@ -528,6 +531,8 @@ Recommended tests:
 - multipolygon rows create multiple napari shapes and duplicate their source row
   in `metadata["source_shapes_index_by_row"]`;
 - circle rows render as napari ellipses;
+- `layer.features` contains only the source index column, including named
+  GeoDataFrame indexes and the `"index"` fallback for unnamed indexes;
 - empty or invalid geometries are skipped with warning feedback;
 - polygon interiors render as holes rather than filled exterior-only polygons;
 - loading the same shapes element twice reuses the existing shapes layer;
@@ -549,6 +554,9 @@ Implement:
 - use valid `<column>_colors` companion columns as stored categorical palettes;
 - use `metadata["source_shapes_index_by_row"]` to align source shape-column
   values to rendered napari rows;
+- add the selected style source column to the `layer.features` DataFrame,
+  aligned to rendered napari rows, instead of copying all GeoDataFrame columns
+  during Slice 2;
 - repeat colors for multipolygon parts by repeating the source row lookup;
 - provide feedback for created vs updated layers, palette source, invalid
   companion palettes, and skipped geometries.
@@ -564,6 +572,8 @@ Recommended tests:
 - non-binary integer and float columns are continuous;
 - string/object scalar columns are temporarily categorical without mutating the
   `GeoDataFrame`;
+- the selected style source column is added to `layer.features` and repeated
+  for multipolygon parts;
 - multipolygon parts repeat the source row color via
   `metadata["source_shapes_index_by_row"]`;
 - mixed unsupported columns are hidden from the selector;
