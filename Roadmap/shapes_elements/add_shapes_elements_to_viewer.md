@@ -469,10 +469,15 @@ class StyledShapesLoadResult:
     layer: Shapes
     created: bool
     value_kind: Literal["categorical", "continuous"]
-    palette_source: Literal["shape_column", "default", None]
+    palette_source: Literal["stored", "default_missing", "default_invalid"] | None
     coercion_applied: bool
-    skipped_geometry_count: int
 ```
+
+For categorical columns, `palette_source` should report whether colors came
+from a valid stored companion palette (`"stored"`), whether no usable companion
+palette existed (`"default_missing"`), or whether a companion palette was found
+but rejected as invalid or conflicting (`"default_invalid"`). For continuous
+columns, `palette_source` should be `None`.
 
 ## Table-Backed Shape Coloring Follow-Up
 
