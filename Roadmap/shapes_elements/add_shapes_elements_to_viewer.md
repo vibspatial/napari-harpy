@@ -736,6 +736,11 @@ Implement:
 - extend `ShapesLayerBinding` with:
   - `shapes_role: Literal["primary", "styled"] = "primary"`;
   - `style_spec: ShapeColorSourceSpec | None = None`;
+- enforce the binding invariant:
+  - primary shapes bindings must have `shapes_role="primary"` and
+    `style_spec is None`;
+  - styled shapes bindings must have `shapes_role="styled"` and a non-`None`
+    `ShapeColorSourceSpec`;
 - reuse `source_shapes_index_by_row` and `source_shapes_index_feature_name`
   from the Slice 3 binding contract for both primary and styled shapes layers;
 - keep `ensure_shapes_loaded(...)` as the primary-layer path and make all
@@ -797,9 +802,9 @@ Recommended tests:
 - primary and styled shapes layers can coexist for the same shapes element;
 - styled shapes lookup reuses a matching variant and creates distinct variants
   for different columns;
-- styled shapes bindings have `shapes_role="styled"` and keep their
+- styled shapes bindings have `shapes_role="styled"` and a non-`None`
   `ShapeColorSourceSpec`;
-- primary shapes bindings have `shapes_role="primary"` and no style spec;
+- primary shapes bindings have `shapes_role="primary"` and `style_spec is None`;
 - primary and styled shapes bindings carry `source_shapes_index_by_row` and
   `source_shapes_index_feature_name`;
 - shapes layers do not store shapes roles, style specs, source mappings, or
