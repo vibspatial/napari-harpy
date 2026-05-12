@@ -151,12 +151,20 @@ class SpatialDataShapesOption:
         return (id(self.sdata), self.shapes_name)
 ```
 
-Add a shape color source specification. Keep it separate from
-`TableColorSourceSpec`, because first-version shape coloring is element-column
-backed, not table-backed.
+Add a neutral color-source module at `core/_color_source.py`. It should own the
+shared color-source primitives and the source-specific spec dataclasses for
+both table-backed labels and shape-column-backed shapes.
 
 ```python
+ColorValueKind = Literal["categorical", "continuous", "instance"]
+TableColorSourceKind = Literal["obs_column", "x_var"]
 ShapeColorSourceKind = Literal["shape_column"]
+
+@dataclass(frozen=True)
+class TableColorSourceSpec:
+    source_kind: TableColorSourceKind
+    value_key: str
+    value_kind: ColorValueKind
 
 @dataclass(frozen=True)
 class ShapeColorSourceSpec:
@@ -173,10 +181,20 @@ class ShapeColorSourceSpec:
         return self.value_key
 ```
 
+`TableColorSourceSpec` and `ShapeColorSourceSpec` should remain distinct
+dataclasses even though they live in the same module. The table spec describes
+linked `AnnData` sources, while the shape spec describes direct scalar columns
+on `sdata.shapes[shapes_name]`.
+
+Move the existing table color-source helpers, including high-cardinality string
+warnings, into `core/_color_source.py`. Remove `core/table_color_source.py` and
+update imports to `napari_harpy.core._color_source`; do not keep a compatibility
+shim or re-export module.
+
 If follow-up table-backed shape coloring lands later, introduce a broader
-`SpatialElementColorSourceSpec` or a union of `ShapeColorSourceSpec` and
-`TableColorSourceSpec`. Do not overload `TableColorSourceSpec` with optional
-shape-column fields.
+`SpatialElementColorSourceSpec` in `core/_color_source.py`, or use a union of
+`ShapeColorSourceSpec` and `TableColorSourceSpec`. Do not overload
+`TableColorSourceSpec` with optional shape-column fields.
 
 ## Discovery Helpers
 
@@ -682,8 +700,17 @@ Implementation reuse guidance:
 
 Implement:
 
-- add `ShapeColorSourceSpec`, modelled after `TableColorSourceSpec` but scoped
-  to direct shapes columns:
+- create `core/_color_source.py` as the shared color-source module:
+  - move the existing `TableColorSourceSpec`, `ColorValueKind`, and table
+    color-source helpers there;
+  - rename any table-only source-kind alias to an explicit
+    `TableColorSourceKind`, if needed;
+  - update all imports from `napari_harpy.core.table_color_source` to
+    `napari_harpy.core._color_source`;
+  - remove `core/table_color_source.py` instead of keeping a compatibility
+    shim;
+- add `ShapeColorSourceSpec` in `core/_color_source.py`, modelled after
+  `TableColorSourceSpec` but scoped to direct shapes columns:
   - `source_kind: Literal["shape_column"]`;
   - `value_key: str`;
   - `value_kind: Literal["categorical", "continuous"]`;
@@ -756,6 +783,9 @@ Implement:
 
 Recommended tests:
 
+- existing table color-source behavior still passes after imports move to
+  `core/_color_source.py`;
+- no `core/table_color_source.py` compatibility shim remains;
 - shapes cards expose `Color source = None | Shape column` and a `Shape column`
   autocomplete populated from the shapes element;
 - geometry and explicit color/palette columns are hidden from the shape-column
