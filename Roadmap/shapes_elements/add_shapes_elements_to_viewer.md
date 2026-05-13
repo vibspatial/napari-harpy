@@ -162,9 +162,14 @@ ShapeColorSourceKind = Literal["shape_column"]
 
 @dataclass(frozen=True)
 class TableColorSourceSpec:
+    table_name: str
     source_kind: TableColorSourceKind
     value_key: str
     value_kind: ColorValueKind
+
+    @property
+    def identity(self) -> tuple[str, TableColorSourceKind, str]:
+        return (self.table_name, self.source_kind, self.value_key)
 
 @dataclass(frozen=True)
 class ShapeColorSourceSpec:
@@ -788,8 +793,8 @@ Implement:
 - create `core/_color_source.py` as the shared color-source module:
   - move the existing `TableColorSourceSpec`, `ColorValueKind`, and source-kind
     aliases there;
-  - rename any table-only source-kind alias to an explicit
-    `TableColorSourceKind`, if needed;
+  - rename the current table-only `ColorSourceKind` alias to the explicit
+    `TableColorSourceKind`;
   - update all imports from `napari_harpy.core.table_color_source` to
     `napari_harpy.core._color_source`;
   - remove `core/table_color_source.py` instead of keeping a compatibility
