@@ -744,12 +744,11 @@ Implement:
   - normalize missing string/object values to `pd.NA` and non-missing values to
     `str(value)`;
   - derive categories as `pd.unique(normalized_full_values.dropna())`;
-  - use `default_categorical_colors(len(categories))`;
-  - return or expose `palette_source="default_missing"` and
-    `coercion_applied=True`;
+  - return only the normalized row values and categories; labels/shapes-specific
+    callers build the default palette and set `palette_source="default_missing"`
+    plus `coercion_applied=True`;
   - log the same normal coercion warning and high-cardinality warning as the
-    current labels path, with wording parameterized so labels can say
-    "observation column" and shapes can later say "shape column";
+    current labels path, using only the column name in the message;
 - keep `viewer/_styling.py` free of napari layer classes, `SpatialData`, and
   `AnnData`, so it can be reused by labels and shapes without depending on one
   layer type's alignment model;

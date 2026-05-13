@@ -13,7 +13,7 @@ from shapely.geometry import LineString, Polygon
 from spatialdata.models import ShapesModel
 from spatialdata.transformations import Identity
 
-import napari_harpy.viewer.overlay_styling as overlay_styling_module
+import napari_harpy.viewer._styling as styling_module
 from napari_harpy._app_state import get_or_create_app_state
 from napari_harpy.core.table_color_source import TableColorSourceSpec
 from napari_harpy.viewer.adapter import (
@@ -871,7 +871,7 @@ def test_viewer_adapter_ensure_styled_labels_loaded_warns_for_high_cardinality_s
         def warning(self, message: str) -> None:
             warning_messages.append(message)
 
-    monkeypatch.setattr(overlay_styling_module, "logger", DummyLogger())
+    monkeypatch.setattr(styling_module, "logger", DummyLogger())
 
     result = adapter.ensure_styled_labels_loaded(sdata_blobs, "blobs_labels", "global", style_spec)
 
