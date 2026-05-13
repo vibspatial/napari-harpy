@@ -458,7 +458,21 @@ This should produce a palette equivalent to:
 {"0": "#1f77b4", "1": "#ff7f0e"}
 ```
 
-If one category maps to multiple colors, or if any color token is invalid, the
+Resolve companion palette status deterministically:
+
+- missing `<column>_colors` companion column -> `palette_source =
+  "default_missing"`;
+- invalid color token for any non-null category -> `palette_source =
+  "default_invalid"`;
+- same category maps to multiple normalized colors -> `palette_source =
+  "default_invalid"`;
+- companion column is incomplete for any non-null category -> `palette_source =
+  "default_invalid"`;
+- valid, complete, non-conflicting companion palette -> `palette_source =
+  "stored"`.
+
+Missing values in the selected shape column do not require companion colors;
+they use the neutral missing color. If the companion palette is invalid, the
 entire companion palette should be ignored for that source and the default
 palette should be used instead. Do not try to partially salvage the mapping.
 
@@ -876,10 +890,17 @@ Implement:
 - use valid `<column>_colors` companion columns as stored categorical palettes:
   - build the category-to-color mapping from the full source shape column before
     expanding multipolygons;
-  - if a category has conflicting companion colors, fall back to the default
-    categorical palette;
-  - if the companion palette is missing, incomplete, or invalid, fall back to
-    the default categorical palette;
+  - if the companion column is missing, use the default categorical palette and
+    report `palette_source="default_missing"`;
+  - if any non-null category has an invalid color token, use the default
+    categorical palette and report `palette_source="default_invalid"`;
+  - if one category maps to multiple normalized colors, use the default
+    categorical palette and report `palette_source="default_invalid"`;
+  - if the companion column is incomplete for any non-null category, use the
+    default categorical palette and report `palette_source="default_invalid"`;
+  - missing values in the selected shape column do not require companion colors
+    and should use the neutral missing color;
+  - do not partially salvage invalid companion palettes;
 - classify shape columns like styled labels:
   - pandas categorical, bool, and exact binary integer columns are categorical;
   - non-binary integer and float columns are continuous;
@@ -927,9 +948,14 @@ Recommended tests:
 - missing values use neutral gray with `face_color` alpha `0.35` and
   `edge_color` alpha `1.0`;
 - categorical columns use valid `<column>_colors` companion palettes;
-- invalid companion color values fall back to the default palette;
-- categories with conflicting companion colors fall back to the default
-  palette;
+- missing companion palette columns report `palette_source="default_missing"`;
+- invalid companion color tokens report `palette_source="default_invalid"` and
+  fall back to the default palette;
+- categories with conflicting companion colors report
+  `palette_source="default_invalid"` and fall back to the default palette;
+- incomplete companion palettes for non-null categories report
+  `palette_source="default_invalid"` and fall back to the default palette;
+- missing selected shape-column values do not require companion colors;
 - bool and exact binary integer columns are categorical;
 - non-binary integer and float columns are continuous;
 - string/object scalar columns are temporarily categorical without mutating the
