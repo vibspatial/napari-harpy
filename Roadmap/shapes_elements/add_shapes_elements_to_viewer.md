@@ -186,10 +186,12 @@ dataclasses even though they live in the same module. The table spec describes
 linked `AnnData` sources, while the shape spec describes direct scalar columns
 on `sdata.shapes[shapes_name]`.
 
-Move the existing table color-source helpers, including high-cardinality string
-warnings, into `core/_color_source.py`. Remove `core/table_color_source.py` and
-update imports to `napari_harpy.core._color_source`; do not keep a compatibility
-shim or re-export module.
+Move the existing table color-source spec definitions into
+`core/_color_source.py`. Styling helpers such as high-cardinality string
+warnings should live in `viewer/_styling.py` after the styling refactor slice.
+Remove `core/table_color_source.py` and update imports to
+`napari_harpy.core._color_source`; do not keep a compatibility shim or
+re-export module.
 
 If follow-up table-backed shape coloring lands later, introduce a broader
 `SpatialElementColorSourceSpec` in `core/_color_source.py`, or use a union of
@@ -285,7 +287,7 @@ Add `ViewerAdapter` methods:
 - `ensure_shapes_loaded(...)`
 - `remove_shapes_layer(...)`
 
-Shape-column coloring should choose its adapter contract in Slice 4 instead of
+Shape-column coloring should choose its adapter contract in Slice 5 instead of
 baking a styled-layer model into Slice 2.
 
 As the adapter grows, avoid extending one generic public
@@ -303,7 +305,7 @@ shared private registration helper, so insertion bookkeeping and viewer signals
 stay centralized while labels-, image-, and shapes-specific parameters remain
 readable.
 
-Slice 4 should extend this binding with `shapes_role` and `style_spec` for
+Slice 5 should extend this binding with `shapes_role` and `style_spec` for
 primary/styled layer variants.
 
 After Slice 3, `ShapesLayerBinding.source_shapes_index_by_row` is the
@@ -460,8 +462,8 @@ If one category maps to multiple colors, or if any color token is invalid, the
 entire companion palette should be ignored for that source and the default
 palette should be used instead. Do not try to partially salvage the mapping.
 
-The implementation should return a structured result for feedback, similar to
-styled labels:
+The shapes-specific styling API should live in `viewer/shapes_styling.py`.
+It should return a structured result for feedback, similar to styled labels:
 
 ```python
 @dataclass(frozen=True)
@@ -669,7 +671,66 @@ Recommended tests:
 - reusing an already-loaded shapes layer preserves the binding-backed mapping;
 - removing shapes layers unregisters the binding and its source-row mapping.
 
-### Slice 4: Shape-Column Coloring
+### Slice 4: Styling Module Refactor
+
+Status: proposed
+
+Purpose:
+
+Prepare for shape-column styling by splitting the current labels overlay styling
+module into labels-specific code and reusable viewer styling primitives, without
+changing styled-label behavior.
+
+Implement:
+
+- rename `viewer/overlay_styling.py` to `viewer/labels_styling.py`;
+- update imports to the new module and remove `viewer/overlay_styling.py`
+  rather than keeping a compatibility shim;
+- keep labels-specific public API in `viewer/labels_styling.py`:
+  - `StyledLabelsStyleResult`;
+  - `StyledLabelsLoadResult`;
+  - `apply_table_color_source_to_labels_layer(...)`;
+  - `build_styled_labels_layer_name(...)`;
+  - labels-only table alignment, feature-table construction, and
+    `DirectLabelColormap` application helpers;
+- create `viewer/_styling.py` for internal reusable styling primitives:
+  - shared palette-source literal, for example
+    `Literal["stored", "default_missing", "default_invalid"]`;
+  - missing categorical and continuous colors;
+  - continuous colormap name;
+  - category-value normalization;
+  - string coercion and high-cardinality warning helpers that are useful for
+    viewer styling;
+  - color validation;
+  - default categorical palette materialization;
+  - continuous value normalization and color materialization;
+- keep `viewer/_styling.py` free of napari layer classes, `SpatialData`, and
+  `AnnData`, so it can be reused by labels and shapes without depending on one
+  layer type's alignment model;
+- make `viewer/labels_styling.py` call the shared helpers from
+  `viewer/_styling.py` while preserving the current labels behavior and
+  feedback semantics.
+
+Out of scope:
+
+- `ShapeColorSourceSpec`;
+- `viewer/shapes_styling.py`;
+- shape-column source discovery;
+- styled shapes layers;
+- shape coloring.
+
+Recommended tests:
+
+- existing styled-labels tests pass unchanged after imports move from
+  `viewer.overlay_styling` to `viewer.labels_styling`;
+- no imports of `viewer.overlay_styling` remain;
+- no `viewer/overlay_styling.py` compatibility shim remains;
+- styled-label palette feedback still reports `stored`, `default_missing`, and
+  `default_invalid` exactly as before;
+- styled-label string/object coercion warnings and feedback remain unchanged;
+- labels-only colormap application still uses `DirectLabelColormap`.
+
+### Slice 5: Shape-Column Coloring
 
 Status: proposed
 
@@ -695,19 +756,19 @@ Implementation reuse guidance:
 - do not call the labels-specific `apply_table_color_source_to_labels_layer`
   path for shapes, because it assumes linked `AnnData`, instance-key alignment,
   and `DirectLabelColormap`;
-- extract small shared helpers only when they stay domain-neutral, such as
-  scalar column classification, string/object categorical warnings,
-  category-value normalization, color validation, default categorical palettes,
-  and continuous value normalization;
-- keep shapes-specific styling in a separate module, because shapes use direct
-  `GeoDataFrame` columns, row-level companion `<column>_colors`, and one
-  `face_color` / `edge_color` value per rendered napari shape row.
+- reuse the domain-neutral helpers introduced in Slice 4 for palette-source
+  reporting, category-value normalization, color validation, default
+  categorical palettes, string/object categorical warnings, and continuous
+  value normalization;
+- keep shapes-specific styling in `viewer/shapes_styling.py`, because shapes
+  use direct `GeoDataFrame` columns, row-level companion `<column>_colors`, and
+  one `face_color` / `edge_color` value per rendered napari shape row.
 
 Implement:
 
 - create `core/_color_source.py` as the shared color-source module:
-  - move the existing `TableColorSourceSpec`, `ColorValueKind`, and table
-    color-source helpers there;
+  - move the existing `TableColorSourceSpec`, `ColorValueKind`, and source-kind
+    aliases there;
   - rename any table-only source-kind alias to an explicit
     `TableColorSourceKind`, if needed;
   - update all imports from `napari_harpy.core.table_color_source` to
@@ -719,6 +780,13 @@ Implement:
   - `source_kind: Literal["shape_column"]`;
   - `value_key: str`;
   - `value_kind: Literal["categorical", "continuous"]`;
+- create `viewer/shapes_styling.py` for shapes-specific styling:
+  - `StyledShapesStyleResult`;
+  - `StyledShapesLoadResult`;
+  - `apply_shape_color_source_to_shapes_layer(...)`;
+  - `build_styled_shapes_layer_name(...)`;
+  - shapes-only source-row alignment and `face_color` / `edge_color`
+    application helpers;
 - add shape-column source discovery for `sdata.shapes[shapes_name]`:
   - include scalar columns that can be classified as categorical or continuous;
   - exclude the geometry column;
@@ -832,7 +900,7 @@ Recommended tests:
 - mixed unsupported columns are hidden from the selector;
 - styled layer identity includes the selected column and is reused on repeat.
 
-### Slice 5: Explicit Shape-Table Coloring
+### Slice 6: Explicit Shape-Table Coloring
 
 Status: not planned
 
