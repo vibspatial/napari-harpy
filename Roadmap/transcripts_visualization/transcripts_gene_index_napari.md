@@ -352,6 +352,54 @@ Consequences:
 - a row group should not be padded with rows from another gene;
 - the final row group for a large gene may contain fewer than `25_000` rows.
 
+This is acceptable for the standalone gene-index MVP. With `1_000_000_000` transcripts, at most about `25_000` genes, and `target_rows_per_row_group = 25_000`, the rough row-group count is bounded by:
+
+```text
+1_000_000_000 / 25_000 + 25_000 = about 65_000 row groups
+```
+
+Those are row groups inside Parquet shard files, not separate files. That scale is reasonable for the MVP and keeps rare-gene reads exact and simple.
+
+## Future Spatial Plus Gene Layout
+
+Do not carry the strict single-gene row-group rule directly into a future spatial plus gene cache.
+
+A future `(tile, gene)` layout should avoid creating one tiny row group for every non-empty `(tile, gene_id)` pair. That could produce millions of small row groups once spatial tiling is introduced.
+
+Recommended future layout:
+
+```text
+write tile-major data
+within each tile, sort rows by gene_id
+within each gene_id, sort by sample_key or spatial key
+write row groups up to a target size
+allow multiple small genes in one row group
+keep each gene's rows contiguous within a row group
+split one gene across row groups only when that (tile, gene_id) group exceeds the target size
+```
+
+The future `tile_gene_index.parquet` would then point to ranges, not necessarily whole single-gene row groups:
+
+```text
+level
+tile_x
+tile_y
+gene_id
+data_file
+row_group
+row_offset
+n_points
+```
+
+For a rare gene, the reader may load one row group that also contains neighboring rare genes, then slice or filter in memory. The false-positive read is bounded by the row-group size. That tradeoff is better than exploding the number of row groups.
+
+So the storage policy is:
+
+```text
+gene-only MVP: keep row groups single-gene
+future spatial plus gene cache: use tile-major, gene-contiguous indexed ranges
+```
+
 ## Build Algorithm
 
 Recommended public entry point:
@@ -564,7 +612,7 @@ Those remain spatial-cache problems.
 - Exact display is still bounded by napari `Points` performance.
 - A row-group-per-gene policy can create many small row groups for rare genes.
 
-The many-small-row-groups concern is acceptable for an MVP. Most transcript datasets have thousands to tens of thousands of genes, not millions of genes. If metadata overhead becomes a problem, we can later pack very rare genes together and accept filtered false-positive reads for that rare-gene tail.
+The many-small-row-groups concern is acceptable for the standalone gene-index MVP. Most transcript datasets have thousands to tens of thousands of genes, not millions of genes. Rare genes should not be packed together in this MVP, because exact rare-gene reads are one of the main benefits of the cache. Packing small gene groups belongs to a future spatial plus gene layout where `(tile, gene)` row-group counts could otherwise explode.
 
 ## Suggested Module Shape
 
@@ -604,11 +652,3 @@ A first implementation is successful when:
 - all-genes selection is allowed and sampled when needed;
 - sampled results show a user-visible warning;
 - the napari integration updates one `Points` layer rather than creating many layers.
-
-## Open Questions
-
-Questions to answer during implementation:
-
-- Is one row group per rare gene acceptable for the datasets we care about?
-
-The only question that should block the MVP is the row-group invariant. Without gene-organized row groups, the index will not deliver the intended speedup.
