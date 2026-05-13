@@ -1052,7 +1052,7 @@ Recommended tests:
 
 ### Slice 8: Styled Shapes Adapter Path
 
-Status: proposed
+Status: completed
 
 Purpose:
 

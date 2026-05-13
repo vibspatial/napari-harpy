@@ -19,11 +19,16 @@ from spatialdata.models import get_axes_names
 from spatialdata.transformations import get_transformation
 from xarray import DataArray, DataTree
 
-from napari_harpy.core._color_source import TableColorSourceSpec
+from napari_harpy.core._color_source import ShapeColorSourceSpec, TableColorSourceSpec
 from napari_harpy.viewer.labels_styling import (
     StyledLabelsLoadResult,
     apply_table_color_source_to_labels_layer,
     build_styled_labels_layer_name,
+)
+from napari_harpy.viewer.shapes_styling import (
+    StyledShapesLoadResult,
+    apply_shape_color_source_to_shapes_layer,
+    build_styled_shapes_layer_name,
 )
 
 if TYPE_CHECKING:
@@ -148,6 +153,12 @@ class LabelsLayerBinding(BaseLayerBinding):
     labels_role: Literal["primary", "styled"] = "primary"
     style_spec: TableColorSourceSpec | None = None
 
+    def __post_init__(self) -> None:
+        if self.labels_role == "primary" and self.style_spec is not None:
+            raise ValueError("Primary labels bindings must not carry a style specification.")
+        if self.labels_role == "styled" and self.style_spec is None:
+            raise ValueError("Styled labels bindings require a style specification.")
+
 
 @dataclass(frozen=True, kw_only=True)
 class ImageLayerBinding(BaseLayerBinding):
@@ -165,6 +176,14 @@ class ShapesLayerBinding(BaseLayerBinding):
 
     Parameters
     ----------
+    element_type
+        Fixed layer binding discriminator for shapes elements.
+    shapes_role
+        Whether this layer is the primary geometry layer or a viewer-only
+        styled variant for one shape-column color source.
+    style_spec
+        Shape color source used for styled shape variants. Primary shape
+        bindings do not carry a style specification.
     source_shapes_index_by_row
         Source GeoDataFrame index label for each rendered napari shape row.
         This can be longer than the source GeoDataFrame row count when one
@@ -185,9 +204,17 @@ class ShapesLayerBinding(BaseLayerBinding):
     """
 
     element_type: Literal["shapes"] = "shapes"
+    shapes_role: Literal["primary", "styled"] = "primary"
+    style_spec: ShapeColorSourceSpec | None = None
     source_shapes_index_by_row: tuple[Any, ...] = ()
     source_shapes_index_feature_name: str = DEFAULT_SHAPES_INDEX_FEATURE_NAME
     skipped_geometry_count: int = 0
+
+    def __post_init__(self) -> None:
+        if self.shapes_role == "primary" and self.style_spec is not None:
+            raise ValueError("Primary shapes bindings must not carry a style specification.")
+        if self.shapes_role == "styled" and self.style_spec is None:
+            raise ValueError("Styled shapes bindings require a style specification.")
 
 
 LayerBinding = LabelsLayerBinding | ImageLayerBinding | ShapesLayerBinding
@@ -267,6 +294,8 @@ class LayerBindingRegistry:
     - styled-labels overlay metadata via ``style_spec``
     - image display mode such as ``stack`` or ``overlay``
     - overlay channel identity via ``channel_index`` / ``channel_name``
+    - shapes-layer role such as ``primary`` or ``styled``
+    - styled-shapes layer metadata via ``style_spec``
 
     The registry is Harpy's source of truth for answering questions such as:
 
@@ -294,11 +323,6 @@ class LayerBindingRegistry:
         style_spec: TableColorSourceSpec | None = None,
     ) -> LabelsLayerBinding:
         """Register a labels layer binding."""
-        if labels_role == "primary" and style_spec is not None:
-            raise ValueError("Primary labels bindings must not carry a style specification.")
-        if labels_role == "styled" and style_spec is None:
-            raise ValueError("Styled labels bindings require a style specification.")
-
         binding = LabelsLayerBinding(
             layer=layer,
             element_name=element_name,
@@ -341,6 +365,8 @@ class LayerBindingRegistry:
         element_name: str,
         coordinate_system: str | None = None,
         sdata: SpatialData | None = None,
+        shapes_role: Literal["primary", "styled"] = "primary",
+        style_spec: ShapeColorSourceSpec | None = None,
         source_shapes_index_by_row: tuple[Any, ...] = (),
         source_shapes_index_feature_name: str = DEFAULT_SHAPES_INDEX_FEATURE_NAME,
         skipped_geometry_count: int = 0,
@@ -351,6 +377,8 @@ class LayerBindingRegistry:
             element_name=element_name,
             coordinate_system=coordinate_system,
             sdata_id=_get_sdata_id(sdata),
+            shapes_role=shapes_role,
+            style_spec=style_spec,
             source_shapes_index_by_row=source_shapes_index_by_row,
             source_shapes_index_feature_name=source_shapes_index_feature_name,
             skipped_geometry_count=skipped_geometry_count,
@@ -383,7 +411,8 @@ class LayerBindingRegistry:
         element_type: ElementType | None = None,
         coordinate_system: str | None = None,
         labels_role: Literal["primary", "styled"] | None = None,
-        style_spec: TableColorSourceSpec | None = None,
+        shapes_role: Literal["primary", "styled"] | None = None,
+        style_spec: TableColorSourceSpec | ShapeColorSourceSpec | None = None,
         image_display_mode: ImageDisplayMode | None = None,
         channel_index: int | None = None,
         channel_name: str | None = None,
@@ -403,8 +432,13 @@ class LayerBindingRegistry:
             if labels_role is not None:
                 if not isinstance(binding, LabelsLayerBinding) or binding.labels_role != labels_role:
                     continue
+            if shapes_role is not None:
+                if not isinstance(binding, ShapesLayerBinding) or binding.shapes_role != shapes_role:
+                    continue
             if style_spec is not None:
-                if not isinstance(binding, LabelsLayerBinding) or binding.style_spec != style_spec:
+                if not isinstance(binding, (LabelsLayerBinding, ShapesLayerBinding)):
+                    continue
+                if binding.style_spec != style_spec:
                     continue
             if image_display_mode is not None:
                 if not isinstance(binding, ImageLayerBinding) or binding.image_display_mode != image_display_mode:
@@ -517,6 +551,8 @@ class ViewerAdapter(QObject):
         shapes_name: str,
         coordinate_system: str | None = None,
         sdata: SpatialData | None = None,
+        shapes_role: Literal["primary", "styled"] = "primary",
+        style_spec: ShapeColorSourceSpec | None = None,
         source_shapes_index_by_row: tuple[Any, ...] = (),
         source_shapes_index_feature_name: str = DEFAULT_SHAPES_INDEX_FEATURE_NAME,
         skipped_geometry_count: int = 0,
@@ -527,6 +563,8 @@ class ViewerAdapter(QObject):
             element_name=shapes_name,
             coordinate_system=coordinate_system,
             sdata=sdata,
+            shapes_role=shapes_role,
+            style_spec=style_spec,
             source_shapes_index_by_row=source_shapes_index_by_row,
             source_shapes_index_feature_name=source_shapes_index_feature_name,
             skipped_geometry_count=skipped_geometry_count,
@@ -696,6 +734,78 @@ class ViewerAdapter(QObject):
                 element_name=labels_name,
                 coordinate_system=coordinate_system,
                 labels_role="styled",
+            ):
+                matches.append(layer)
+
+        return matches
+
+    def get_loaded_primary_shapes_layer(
+        self,
+        sdata: SpatialData,
+        shapes_name: str,
+        coordinate_system: str | None = None,
+    ) -> Shapes | None:
+        """Return the loaded primary shapes layer for one shapes element."""
+        for layer in self._iter_candidate_layers():
+            if not _is_shapes_layer(layer):
+                continue
+
+            binding = self._layer_bindings.get_binding(layer)
+            if _matches_shapes_binding(
+                binding,
+                sdata=sdata,
+                element_name=shapes_name,
+                coordinate_system=coordinate_system,
+                shapes_role="primary",
+            ):
+                return layer
+
+        return None
+
+    def get_loaded_styled_shapes_layer(
+        self,
+        sdata: SpatialData,
+        shapes_name: str,
+        style_spec: ShapeColorSourceSpec,
+        coordinate_system: str | None = None,
+    ) -> Shapes | None:
+        """Return one loaded styled shapes layer for a specific style variant."""
+        for layer in self._iter_candidate_layers():
+            if not _is_shapes_layer(layer):
+                continue
+
+            binding = self._layer_bindings.get_binding(layer)
+            if _matches_shapes_binding(
+                binding,
+                sdata=sdata,
+                element_name=shapes_name,
+                coordinate_system=coordinate_system,
+                shapes_role="styled",
+                style_spec=style_spec,
+            ):
+                return layer
+
+        return None
+
+    def get_loaded_styled_shapes_layers(
+        self,
+        sdata: SpatialData,
+        shapes_name: str,
+        coordinate_system: str | None = None,
+    ) -> list[Shapes]:
+        """Return all loaded styled shapes layers for one shapes element."""
+        matches: list[Shapes] = []
+        for layer in self._iter_candidate_layers():
+            if not _is_shapes_layer(layer):
+                continue
+
+            binding = self._layer_bindings.get_binding(layer)
+            if _matches_shapes_binding(
+                binding,
+                sdata=sdata,
+                element_name=shapes_name,
+                coordinate_system=coordinate_system,
+                shapes_role="styled",
             ):
                 matches.append(layer)
 
@@ -928,6 +1038,67 @@ class ViewerAdapter(QObject):
         )
         return layer
 
+    def ensure_styled_shapes_loaded(
+        self,
+        sdata: SpatialData,
+        shapes_name: str,
+        coordinate_system: str,
+        style_spec: ShapeColorSourceSpec,
+    ) -> StyledShapesLoadResult:
+        """Load or update one styled shapes layer variant."""
+        existing_layer = self.get_loaded_styled_shapes_layer(
+            sdata,
+            shapes_name,
+            style_spec,
+            coordinate_system,
+        )
+        created = existing_layer is None
+        if existing_layer is None:
+            built_layer = _build_shapes_layer(
+                sdata,
+                shapes_name,
+                coordinate_system,
+                name=build_styled_shapes_layer_name(shapes_name, style_spec),
+            )
+            layer = built_layer.layer
+            _add_layer_to_viewer(self._viewer, layer)
+            binding = self.register_shapes_layer(
+                layer,
+                sdata=sdata,
+                shapes_name=shapes_name,
+                coordinate_system=coordinate_system,
+                shapes_role="styled",
+                style_spec=style_spec,
+                source_shapes_index_by_row=built_layer.source_shapes_index_by_row,
+                source_shapes_index_feature_name=built_layer.source_shapes_index_feature_name,
+                skipped_geometry_count=built_layer.skipped_geometry_count,
+            )
+        else:
+            layer = existing_layer
+            binding = self._layer_bindings.get_binding(layer)
+            if not isinstance(binding, ShapesLayerBinding):
+                raise ValueError("Styled shapes layer is missing its Harpy shapes binding.")
+
+        layer.name = build_styled_shapes_layer_name(shapes_name, style_spec)
+        shapes = getattr(sdata, "shapes", {})
+        if shapes_name not in shapes:
+            raise ValueError(f"Shapes element `{shapes_name}` is not available in the selected SpatialData object.")
+
+        style_result = apply_shape_color_source_to_shapes_layer(
+            layer,
+            shapes_element=shapes[shapes_name],
+            style_spec=style_spec,
+            source_shapes_index_by_row=binding.source_shapes_index_by_row,
+            source_shapes_index_feature_name=binding.source_shapes_index_feature_name,
+        )
+        return StyledShapesLoadResult(
+            layer=layer,
+            created=created,
+            value_kind=style_result.value_kind,
+            palette_source=style_result.palette_source,
+            coercion_applied=style_result.coercion_applied,
+        )
+
     def remove_labels_layer(self, sdata: SpatialData, labels_name: str, coordinate_system: str) -> Labels | None:
         """Remove the loaded labels layer for one labels element in one coordinate system."""
         layer = self._get_loaded_labels_layer_for_coordinate_system(sdata, labels_name, coordinate_system)
@@ -1058,22 +1229,9 @@ class ViewerAdapter(QObject):
         self,
         sdata: SpatialData,
         shapes_name: str,
-        coordinate_system: str | None = None,
+        coordinate_system: str,
     ) -> Shapes | None:
-        for layer in self._iter_candidate_layers():
-            if not _is_shapes_layer(layer):
-                continue
-
-            binding = self._layer_bindings.get_binding(layer)
-            if _matches_shapes_binding(
-                binding,
-                sdata=sdata,
-                element_name=shapes_name,
-                coordinate_system=coordinate_system,
-            ):
-                return layer
-
-        return None
+        return self.get_loaded_primary_shapes_layer(sdata, shapes_name, coordinate_system)
 
 
 def _get_sdata_id(sdata: SpatialData | None) -> int | None:
@@ -1512,12 +1670,18 @@ def _matches_shapes_binding(
     sdata: SpatialData,
     element_name: str,
     coordinate_system: str | None = None,
+    shapes_role: Literal["primary", "styled"] | None = None,
+    style_spec: ShapeColorSourceSpec | None = None,
 ) -> bool:
     if not isinstance(binding, ShapesLayerBinding):
         return False
     if binding.sdata_id != id(sdata) or binding.element_name != element_name:
         return False
     if coordinate_system is not None and binding.coordinate_system != coordinate_system:
+        return False
+    if shapes_role is not None and binding.shapes_role != shapes_role:
+        return False
+    if style_spec is not None and binding.style_spec != style_spec:
         return False
     return True
 

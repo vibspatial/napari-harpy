@@ -38,6 +38,14 @@ class StyledShapesStyleResult:
     coercion_applied: bool
 
 
+@dataclass(frozen=True)
+class StyledShapesLoadResult(StyledShapesStyleResult):
+    """Describe the styled shapes load/update result returned to the viewer."""
+
+    layer: Shapes
+    created: bool
+
+
 def apply_shape_color_source_to_shapes_layer(
     layer: Shapes,
     *,
