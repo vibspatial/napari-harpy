@@ -151,12 +151,29 @@ class SpatialDataShapesOption:
         return (id(self.sdata), self.shapes_name)
 ```
 
-Add a shape color source specification. Keep it separate from
-`TableColorSourceSpec`, because first-version shape coloring is element-column
-backed, not table-backed.
+Add a neutral color-source module at `core/_color_source.py`. It should own the
+shared color-source primitives and the source-specific spec dataclasses for
+both table-backed labels and shape-column-backed shapes.
 
 ```python
+TableColorSourceKind = Literal["obs_column", "x_var"]
+TableColorValueKind = Literal["categorical", "continuous", "instance"]
 ShapeColorSourceKind = Literal["shape_column"]
+
+@dataclass(frozen=True)
+class TableColorSourceSpec:
+    table_name: str
+    source_kind: TableColorSourceKind
+    value_key: str
+    value_kind: TableColorValueKind
+
+    @property
+    def identity(self) -> tuple[str, TableColorSourceKind, str]:
+        return (self.table_name, self.source_kind, self.value_key)
+
+    @property
+    def display_name(self) -> str:
+        return self.value_key
 
 @dataclass(frozen=True)
 class ShapeColorSourceSpec:
@@ -173,10 +190,22 @@ class ShapeColorSourceSpec:
         return self.value_key
 ```
 
+`TableColorSourceSpec` and `ShapeColorSourceSpec` should remain distinct
+dataclasses even though they live in the same module. The table spec describes
+linked `AnnData` sources, while the shape spec describes direct scalar columns
+on `sdata.shapes[shapes_name]`.
+
+Move the existing table color-source spec definitions into
+`core/_color_source.py`. Styling helpers such as high-cardinality string
+warnings should live in `viewer/_styling.py` after the styling refactor slice.
+Remove `core/table_color_source.py` and update imports to
+`napari_harpy.core._color_source`; do not keep a compatibility shim or
+re-export module.
+
 If follow-up table-backed shape coloring lands later, introduce a broader
-`SpatialElementColorSourceSpec` or a union of `ShapeColorSourceSpec` and
-`TableColorSourceSpec`. Do not overload `TableColorSourceSpec` with optional
-shape-column fields.
+`SpatialElementColorSourceSpec` in `core/_color_source.py`, or use a union of
+`ShapeColorSourceSpec` and `TableColorSourceSpec`. Do not overload
+`TableColorSourceSpec` with optional shape-column fields.
 
 ## Discovery Helpers
 
@@ -267,7 +296,7 @@ Add `ViewerAdapter` methods:
 - `ensure_shapes_loaded(...)`
 - `remove_shapes_layer(...)`
 
-Shape-column coloring should choose its adapter contract in Slice 4 instead of
+Shape-column coloring should choose its adapter contract in Slice 6 instead of
 baking a styled-layer model into Slice 2.
 
 As the adapter grows, avoid extending one generic public
@@ -285,7 +314,7 @@ shared private registration helper, so insertion bookkeeping and viewer signals
 stay centralized while labels-, image-, and shapes-specific parameters remain
 readable.
 
-Slice 4 should extend this binding with `shapes_role` and `style_spec` for
+Slice 6 should extend this binding with `shapes_role` and `style_spec` for
 primary/styled layer variants.
 
 After Slice 3, `ShapesLayerBinding.source_shapes_index_by_row` is the
@@ -423,7 +452,13 @@ layer.face_color = [palette[value] for value in row_values]
 ```
 
 For categorical companion colors, build the category-to-color mapping from the
-full original shape column before expanding multipolygons. For example:
+full original shape column before expanding multipolygons. Companion palettes
+should be considered for pandas categorical columns, bool columns, and exact
+binary integer columns. Plain string/object scalar columns should mirror styled
+labels: they are temporarily coerced to categorical values for viewer coloring,
+but they use the default categorical palette and ignore `<column>_colors`.
+
+For example:
 
 ```text
 geometry | leiden | leiden_colors
@@ -438,12 +473,26 @@ This should produce a palette equivalent to:
 {"0": "#1f77b4", "1": "#ff7f0e"}
 ```
 
-If one category maps to multiple colors, or if any color token is invalid, the
+Resolve companion palette status deterministically:
+
+- missing `<column>_colors` companion column -> `palette_source =
+  "default_missing"`;
+- invalid color token for any non-null category -> `palette_source =
+  "default_invalid"`;
+- same category maps to multiple normalized colors -> `palette_source =
+  "default_invalid"`;
+- companion column is incomplete for any non-null category -> `palette_source =
+  "default_invalid"`;
+- valid, complete, non-conflicting companion palette -> `palette_source =
+  "stored"`.
+
+Missing values in the selected shape column do not require companion colors;
+they use the neutral missing color. If the companion palette is invalid, the
 entire companion palette should be ignored for that source and the default
 palette should be used instead. Do not try to partially salvage the mapping.
 
-The implementation should return a structured result for feedback, similar to
-styled labels:
+The shapes-specific styling API should live in `viewer/shapes_styling.py`.
+It should return a structured result for feedback, similar to styled labels:
 
 ```python
 @dataclass(frozen=True)
@@ -451,10 +500,15 @@ class StyledShapesLoadResult:
     layer: Shapes
     created: bool
     value_kind: Literal["categorical", "continuous"]
-    palette_source: Literal["shape_column", "default", None]
+    palette_source: Literal["stored", "default_missing", "default_invalid"] | None
     coercion_applied: bool
-    skipped_geometry_count: int
 ```
+
+For categorical columns, `palette_source` should report whether colors came
+from a valid stored companion palette (`"stored"`), whether no usable companion
+palette existed (`"default_missing"`), or whether a companion palette was found
+but rejected as invalid or conflicting (`"default_invalid"`). For continuous
+columns, `palette_source` should be `None`.
 
 ## Table-Backed Shape Coloring Follow-Up
 
@@ -646,54 +700,459 @@ Recommended tests:
 - reusing an already-loaded shapes layer preserves the binding-backed mapping;
 - removing shapes layers unregisters the binding and its source-row mapping.
 
-### Slice 4: Shape-Column Coloring
+### Slice 4: Styling Module Refactor
 
-Status: proposed
+Status: completed
 
-Follow the styled-labels pattern, but use direct columns on the shapes
-`GeoDataFrame` instead of linked tables. A shapes card should have a `Color
-source` selector:
+Purpose:
 
-- `None` means `Add / Update` loads or reuses the primary shapes layer;
-- `Shape column` means `Add / Update` loads or updates a separate styled shapes
-  layer variant.
-
-The second control should be labelled `Shape column`, not `Observations` or
-`Vars`, because the source is a column on `sdata.shapes[shapes_name]` itself.
-
-The primary/styled distinction is required for the future
-`ShapesAnnotation()` widget: annotation should listen to and edit primary
-shapes layers only, while styled shapes layers are viewer-only variants.
-
-Implementation reuse guidance:
-
-- follow the styled-labels adapter and widget structure for layer roles,
-  `style_spec` identity, created-vs-updated feedback, and source selector UI;
-- do not call the labels-specific `apply_table_color_source_to_labels_layer`
-  path for shapes, because it assumes linked `AnnData`, instance-key alignment,
-  and `DirectLabelColormap`;
-- extract small shared helpers only when they stay domain-neutral, such as
-  scalar column classification, string/object categorical warnings,
-  category-value normalization, color validation, default categorical palettes,
-  and continuous value normalization;
-- keep shapes-specific styling in a separate module, because shapes use direct
-  `GeoDataFrame` columns, row-level companion `<column>_colors`, and one
-  `face_color` / `edge_color` value per rendered napari shape row.
+Prepare for shape-column styling by splitting the current labels overlay styling
+module into labels-specific code and reusable viewer styling primitives, without
+changing styled-label behavior.
 
 Implement:
 
-- add `ShapeColorSourceSpec`, modelled after `TableColorSourceSpec` but scoped
-  to direct shapes columns:
-  - `source_kind: Literal["shape_column"]`;
-  - `value_key: str`;
-  - `value_kind: Literal["categorical", "continuous"]`;
-- add shape-column source discovery for `sdata.shapes[shapes_name]`:
-  - include scalar columns that can be classified as categorical or continuous;
-  - exclude the geometry column;
-  - exclude explicit color/palette columns, including columns ending in
-    `_colors`, `_color`, or `.color`;
-  - keep companion `<column>_colors` columns available only as palettes for
-    their corresponding value column;
+- rename `viewer/overlay_styling.py` to `viewer/labels_styling.py`;
+- update imports to the new module and remove `viewer/overlay_styling.py`
+  rather than keeping a compatibility shim;
+- keep labels-specific public API in `viewer/labels_styling.py`:
+  - `StyledLabelsStyleResult`;
+  - `StyledLabelsLoadResult`;
+  - `apply_table_color_source_to_labels_layer(...)`;
+  - `build_styled_labels_layer_name(...)`;
+  - labels-only table alignment, feature-table construction, and
+    `DirectLabelColormap` application helpers;
+- create `viewer/_styling.py` for internal reusable styling primitives:
+  - shared palette-source literal, for example
+    `Literal["stored", "default_missing", "default_invalid"]`;
+  - missing categorical and continuous colors;
+  - continuous colormap name;
+  - category-value normalization;
+  - string coercion and high-cardinality warning helpers that are useful for
+    viewer styling;
+  - color validation;
+  - default categorical palette materialization;
+  - continuous value normalization and color materialization;
+- extract the current labels string/object branch from
+  `apply_table_color_source_to_labels_layer(...)` into `viewer/_styling.py` as
+  reusable, layer-agnostic logic:
+  - move `_is_string_like_series(...)`, `_normalize_string_value(...)`, and the
+    relevant category normalization helper out of the labels-specific module;
+  - move `string_categorical_warning_threshold(...)` and
+    `has_high_cardinality_string_values(...)` out of the current
+    `core/table_color_source.py` location;
+  - normalize missing string/object values to `pd.NA` and non-missing values to
+    `str(value)`;
+  - derive categories as `pd.unique(normalized_full_values.dropna())`;
+  - return only the normalized row values and categories; labels/shapes-specific
+    callers build the default palette and set `palette_source="default_missing"`
+    plus `coercion_applied=True`;
+  - log the same normal coercion warning and high-cardinality warning as the
+    current labels path, using only the column name in the message;
+- keep `viewer/_styling.py` free of napari layer classes, `SpatialData`, and
+  `AnnData`, so it can be reused by labels and shapes without depending on one
+  layer type's alignment model;
+- make `viewer/labels_styling.py` call the shared helpers from
+  `viewer/_styling.py` while preserving the current labels behavior and
+  feedback semantics.
+
+Out of scope:
+
+- `ShapeColorSourceSpec`;
+- `viewer/shapes_styling.py`;
+- shape-column source discovery;
+- styled shapes layers;
+- shape coloring.
+
+Recommended tests:
+
+- existing styled-labels tests pass unchanged after imports move from
+  `viewer.overlay_styling` to `viewer.labels_styling`;
+- no imports of `viewer.overlay_styling` remain;
+- no `viewer/overlay_styling.py` compatibility shim remains;
+- styled-label palette feedback still reports `stored`, `default_missing`, and
+  `default_invalid` exactly as before;
+- styled-label string/object coercion warnings and feedback remain unchanged;
+- styled-label string/object columns still ignore stored `<column>_colors`, use
+  the default categorical palette, report `palette_source="default_missing"`,
+  and set `coercion_applied=True`;
+- high-cardinality string/object label columns still log the same warning after
+  the helper moves to `viewer/_styling.py`;
+- labels-only colormap application still uses `DirectLabelColormap`.
+
+### Slice 5: Color Source Module Refactor
+
+Status: completed
+
+Purpose:
+
+Move shared color-source datatypes out of the table-specific module before
+adding shape-column color sources. This keeps the later `ShapeColorSourceSpec`
+addition small and avoids making `table_color_source.py` a mixed table/shapes
+module.
+
+Implement:
+
+- create `core/_color_source.py` as the shared color-source module:
+  - move the existing `TableColorSourceSpec`, table color-value kind, and
+    source-kind aliases there;
+  - rename the current table-only `ColorSourceKind` alias to the explicit
+    `TableColorSourceKind`;
+  - update all imports from `napari_harpy.core.table_color_source` to
+    `napari_harpy.core._color_source`;
+  - remove `core/table_color_source.py` instead of keeping a compatibility
+    shim;
+- keep behavior unchanged for existing table-backed labels coloring and table
+  color-source discovery;
+- keep viewer styling helpers in `viewer/_styling.py`, not in
+  `core/_color_source.py`.
+- do not move string/object coercion or high-cardinality warning helpers into
+  `core/_color_source.py`; by this slice, labels styling should import those
+  helpers from `viewer/_styling.py`.
+
+Out of scope:
+
+- `ShapeColorSourceSpec`;
+- shape-column source discovery;
+- styled shapes layers;
+- shape coloring.
+
+Recommended tests:
+
+- existing table color-source behavior still passes after imports move to
+  `core/_color_source.py`;
+- `TableColorSourceSpec.identity` and `TableColorSourceSpec.display_name`
+  remain unchanged after the module move;
+- no imports of `napari_harpy.core.table_color_source` remain;
+- no `core/table_color_source.py` compatibility shim remains;
+- no string/object coercion or high-cardinality viewer-styling helpers are
+  introduced in `core/_color_source.py`;
+- styled-label coloring behavior remains unchanged after the import move.
+
+### Slice 6: Shape Color Source Discovery
+
+Status: completed
+
+Purpose:
+
+Introduce direct shape-column color source metadata and discovery without
+changing the viewer, adapter, or styling behavior yet.
+
+Implement:
+
+- add shape color-source datatypes in `core/_color_source.py`, modelled after
+  `TableColorSourceSpec` but scoped to direct shapes columns:
+  - `ShapeColorSourceKind = Literal["shape_column"]`;
+  - `ShapeColorSourceSpec` with:
+    - `source_kind: ShapeColorSourceKind`;
+    - `value_key: str`;
+    - `value_kind: Literal["categorical", "continuous"]`;
+    - `identity -> tuple[ShapeColorSourceKind, str]`;
+    - `display_name -> str`;
+- add shape-column source discovery for `sdata.shapes[shapes_name]`, for
+  example `get_shape_column_color_source_options(sdata, shapes_name)`;
+- include scalar columns that can be classified as categorical or continuous;
+- exclude the active geometry column;
+- exclude explicit color/palette columns, including columns ending in
+  `_colors`, `_color`, or `.color`;
+- keep companion `<column>_colors` columns hidden from the normal selector;
+  they are palette companions for their matching value column, not selectable
+  value sources;
+- classify shape columns like styled labels:
+  - pandas categorical, bool, and exact binary integer columns are categorical;
+  - non-binary integer and float columns are continuous;
+  - string/object scalar columns are selectable as categorical;
+  - mixed or non-scalar columns are unsupported and hidden from the selector.
+
+Out of scope:
+
+- `viewer/shapes_styling.py`;
+- styled shapes adapter paths;
+- shapes card UI changes;
+- applying colors to napari layers.
+
+Recommended tests:
+
+- `ShapeColorSourceSpec.identity` and `display_name` behave like
+  `TableColorSourceSpec`;
+- geometry and explicit color/palette columns are hidden from shape-column
+  options;
+- companion `<column>_colors` columns are hidden from shape-column options;
+- pandas categorical, bool, exact binary integer, string/object scalar,
+  non-binary integer, and float columns are classified correctly;
+- mixed unsupported columns are hidden from the selector.
+
+### Slice 7: Shapes Styling Engine
+
+Status: completed
+
+Purpose:
+
+Create the shapes-specific styling module and keep it independently testable
+from the viewer widget. This slice colors an already-created napari `Shapes`
+layer using a direct column on the source shapes `GeoDataFrame`.
+
+Implementation reuse guidance:
+
+- do not call the labels-specific `apply_table_color_source_to_labels_layer`
+  path for shapes, because it assumes linked `AnnData`, instance-key alignment,
+  and `DirectLabelColormap`;
+- reuse the domain-neutral helpers introduced in Slice 4 for palette-source
+  reporting, category-value normalization, color validation, default
+  categorical palettes, string/object categorical warnings, and continuous
+  value normalization;
+- keep shapes-specific styling in `viewer/shapes_styling.py`, because shapes
+  use direct `GeoDataFrame` columns, row-level companion `<column>_colors`, and
+  one `face_color` / `edge_color` value per rendered napari shape row.
+
+Implement:
+
+- create `viewer/shapes_styling.py` with:
+  - `StyledShapesStyleResult`;
+  - `apply_shape_color_source_to_shapes_layer(...)`;
+  - `build_styled_shapes_layer_name(...)`;
+  - shapes-only source-row alignment and `face_color` / `edge_color`
+    application helpers;
+- `apply_shape_color_source_to_shapes_layer(...)` should take the source shapes
+  `GeoDataFrame`, a `ShapeColorSourceSpec`, and the rendered-row mapping from
+  the shapes binding: `source_shapes_index_by_row` and
+  `source_shapes_index_feature_name`;
+- styled shape coloring requires a unique source `GeoDataFrame` index. Primary
+  shapes rendering can still support duplicate index labels because it only
+  draws geometry, but styled coloring uses
+  `source_shapes_index_by_row` to look up one source attribute row per rendered
+  napari row. If the source shapes index contains duplicates, raise a clear
+  `ValueError` before applying colors;
+- style shapes by categorical and continuous columns:
+  - compute one base RGB color per rendered napari shape row;
+  - for categorical columns, derive the base RGB color from the categorical
+    palette;
+  - for continuous columns, derive the base RGB color from the continuous
+    colormap;
+  - set `face_color` to the base RGB color with alpha `0.35`;
+  - set `edge_color` to the same base RGB color with alpha `1.0`;
+  - use one neutral gray base RGB color for missing values, with the same face
+    alpha `0.35` and edge alpha `1.0`;
+  - do not change this alpha rule depending on whether image or labels layers
+    are currently loaded;
+- use valid `<column>_colors` companion columns as stored categorical palettes:
+  - consider companion palettes only for pandas categorical columns, bool
+    columns, and exact binary integer columns;
+  - build the category-to-color mapping from the full source shape column before
+    expanding multipolygons;
+  - if the companion column is missing, use the default categorical palette and
+    report `palette_source="default_missing"`;
+  - if any non-null category has an invalid color token, use the default
+    categorical palette and report `palette_source="default_invalid"`;
+  - if one category maps to multiple normalized colors, use the default
+    categorical palette and report `palette_source="default_invalid"`;
+  - if the companion column is incomplete for any non-null category, use the
+    default categorical palette and report `palette_source="default_invalid"`;
+  - missing values in the selected shape column do not require companion colors
+    and should use the neutral missing color;
+  - do not partially salvage invalid companion palettes;
+- handle string/object scalar columns like styled labels:
+  - temporarily coerce them to categorical values for viewer coloring;
+  - never mutate the source `GeoDataFrame`;
+  - ignore `<column>_colors`;
+  - use the default categorical palette;
+  - report `palette_source="default_missing"`;
+  - set `coercion_applied=True`;
+  - log the same style of warning as styled labels, including the
+    high-cardinality warning when the unique-value count exceeds the configured
+    threshold;
+- use `source_shapes_index_by_row` to align source shape-column values to
+  rendered napari rows;
+- add the selected style source column to the `layer.features` DataFrame,
+  aligned to rendered napari rows, instead of copying all GeoDataFrame columns;
+- if the selected style source column name collides with the source-index
+  feature column, store it in a deterministic disambiguated feature column
+  without overwriting the source-index feature:
+
+  ```python
+  def disambiguate_shape_style_feature_name(
+      style_column_name: str,
+      source_index_feature_name: str,
+  ) -> str:
+      """Return the layer.features column name for a selected shape style value.
+
+      GeoPandas and SpatialData allow a shapes GeoDataFrame to have both an
+      index named, for example, ``cell_id`` and a normal column named
+      ``cell_id``. Harpy stores the source GeoDataFrame index in
+      ``layer.features`` under the index name for status display, while styled
+      shapes also store the selected style column in ``layer.features`` for
+      inspection. Coloring by the normal ``cell_id`` column would otherwise
+      collide with the source-index feature column, so the selected style value
+      is stored as ``cell_id__value``.
+      """
+      if style_column_name == source_index_feature_name:
+          return f"{style_column_name}__value"
+      return style_column_name
+  ```
+
+  This is needed because GeoPandas and SpatialData allow a shapes
+  `GeoDataFrame` to have both an index named `cell_id` and a normal column named
+  `cell_id`. Harpy uses the index name as the source-index feature column for
+  status display, so coloring by the normal `cell_id` column must not overwrite
+  that source-index identity. In that case, `layer.features["cell_id"]` stores
+  the source index and `layer.features["cell_id__value"]` stores the selected
+  style column value.
+- repeat colors and feature values for multipolygon parts by repeating the
+  source row lookup;
+- expose enough result metadata for the adapter/UI to report value kind,
+  palette source, and string coercion.
+
+Out of scope:
+
+- adding styled shapes to `ViewerAdapter`;
+- shapes card UI changes;
+- changing primary shapes loading/removal behavior.
+
+Recommended tests:
+
+- categorical columns produce per-shape categorical colors;
+- categorical colors are applied as translucent `face_color` alpha `0.35` and
+  opaque `edge_color` alpha `1.0` from the same base RGB value;
+- continuous colors are applied as translucent `face_color` alpha `0.35` and
+  opaque `edge_color` alpha `1.0` from the same colormap-derived RGB value;
+- missing values use neutral gray with `face_color` alpha `0.35` and
+  `edge_color` alpha `1.0`;
+- pandas categorical, bool, and exact binary integer columns use valid
+  `<column>_colors` companion palettes;
+- missing companion palette columns report `palette_source="default_missing"`;
+- invalid companion color tokens report `palette_source="default_invalid"` and
+  fall back to the default palette;
+- categories with conflicting companion colors report
+  `palette_source="default_invalid"` and fall back to the default palette;
+- incomplete companion palettes for non-null categories report
+  `palette_source="default_invalid"` and fall back to the default palette;
+- missing selected shape-column values do not require companion colors;
+- bool and exact binary integer columns are categorical;
+- non-binary integer and float columns are continuous;
+- string/object scalar columns are temporarily categorical without mutating the
+  `GeoDataFrame`;
+- string/object scalar columns ignore `<column>_colors`, use the default
+  categorical palette, set `coercion_applied=True`, and report
+  `palette_source="default_missing"`;
+- high-cardinality string/object scalar columns log a warning matching the
+  styled-labels behavior;
+- the selected style source column is added to `layer.features` and repeated
+  for multipolygon parts;
+- style source feature-name collisions are disambiguated without overwriting the
+  source-index feature;
+- if the GeoDataFrame index is named `cell_id` and the selected style column is
+  also named `cell_id`, `layer.features["cell_id"]` stores the source index and
+  `layer.features["cell_id__value"]` stores the selected style column value;
+- multipolygon parts repeat the source row color via
+  `ShapesLayerBinding.source_shapes_index_by_row`;
+- `build_styled_shapes_layer_name(...)` returns a stable user-facing layer
+  name for one shape-column style variant.
+- duplicate source `GeoDataFrame` index labels raise a clear `ValueError` for
+  styled shape coloring, while primary shapes rendering remains unaffected.
+
+### Slice 8: Styled Shapes Adapter Path
+
+Status: completed
+
+Purpose:
+
+Add the adapter lifecycle for styled shapes layers, while keeping the widget UI
+unchanged. Primary and styled shapes layers must be able to coexist for the same
+SpatialData shapes element.
+
+Implement:
+
+- add `StyledShapesLoadResult` in `viewer/shapes_styling.py`, mirroring
+  `StyledLabelsLoadResult`:
+  - `layer: Shapes`;
+  - `created: bool`;
+  - inherited style fields from `StyledShapesStyleResult`;
+- extend `ShapesLayerBinding` with:
+  - `shapes_role: Literal["primary", "styled"] = "primary"`;
+  - `style_spec: ShapeColorSourceSpec | None = None`;
+- enforce the binding invariant:
+  - primary shapes bindings must have `shapes_role="primary"` and
+    `style_spec is None`;
+  - styled shapes bindings must have `shapes_role="styled"` and a non-`None`
+    `ShapeColorSourceSpec`;
+- reuse `source_shapes_index_by_row` and `source_shapes_index_feature_name`
+  from the Slice 3 binding contract for both primary and styled shapes layers;
+- keep `ensure_shapes_loaded(...)` as the primary-layer path and make all
+  primary lookup/removal code filter `shapes_role="primary"`;
+- keep `remove_shapes_layer(...)` primary-only, mirroring
+  `remove_labels_layer(...)`; it should remove the primary shapes layer for the
+  selected element and coordinate system and leave styled shapes variants
+  loaded;
+- do not add a styled-shapes removal API in this slice; add
+  `remove_styled_shapes_layers(...)` later only if the UI needs an explicit
+  bulk cleanup action;
+- keep coordinate-system cleanup role-agnostic:
+  `remove_layers_outside_coordinate_system(...)` should remove both primary and
+  styled shapes layers that do not belong to the active coordinate system, while
+  `remove_shapes_layer(...)` remains primary-only;
+- add styled-shapes adapter paths matching styled labels:
+  - `get_loaded_styled_shapes_layer(...)`;
+  - `get_loaded_styled_shapes_layers(...)`;
+  - `ensure_styled_shapes_loaded(...)`;
+- `ensure_styled_shapes_loaded(...)` should:
+  - build/reuse a shapes layer using the Slice 2 geometry conversion path;
+  - register it with `shapes_role="styled"` and the selected
+    `ShapeColorSourceSpec`;
+  - keep styled shapes identity and source-row mappings in
+    `ShapesLayerBinding`, not in `layer.metadata`;
+  - call `apply_shape_color_source_to_shapes_layer(...)`;
+  - return `StyledShapesLoadResult`;
+- allow primary and styled shapes layers for the same shapes element to coexist.
+
+Out of scope:
+
+- shapes card UI changes;
+- shape-column source discovery changes beyond using the spec type added in
+  Slice 6.
+
+Recommended tests:
+
+- primary and styled shapes layers can coexist for the same shapes element;
+- styled shapes lookup reuses a matching variant and creates distinct variants
+  for different columns;
+- styled shapes bindings have `shapes_role="styled"` and a non-`None`
+  `ShapeColorSourceSpec`;
+- primary shapes bindings have `shapes_role="primary"` and `style_spec is None`;
+- primary and styled shapes bindings carry `source_shapes_index_by_row` and
+  `source_shapes_index_feature_name`;
+- `remove_shapes_layer(...)` removes only the primary shapes layer and leaves
+  styled shapes variants for the same shapes element loaded;
+- no styled-shapes removal API is introduced unless a UI workflow needs it;
+- changing coordinate system removes both primary and styled shapes layers from
+  inactive coordinate systems through `remove_layers_outside_coordinate_system(...)`;
+- shapes layers do not store shapes roles, style specs, source mappings, or
+  source-index feature names in `layer.metadata`;
+- styled layer identity includes the selected column and is reused on repeat.
+
+### Slice 9: Shapes Widget Styling UI
+
+Status: completed
+
+Purpose:
+
+Expose the styled shapes adapter path in the viewer widget. A shapes card should
+let the user choose between loading the primary shapes layer and loading a
+styled shapes layer for one direct shape column.
+
+UI contract:
+
+- a shapes card has a `Color source` selector;
+- `None` means `Add / Update` loads or reuses the primary shapes layer;
+- `Shape column` means `Add / Update` loads or updates a separate styled shapes
+  layer variant;
+- the second control should be labelled `Shape column`, not `Observations` or
+  `Vars`, because the source is a column on `sdata.shapes[shapes_name]` itself;
+- the primary/styled distinction is required for the future
+  `ShapesAnnotation()` widget: annotation should listen to and edit primary
+  shapes layers only, while styled shapes layers are viewer-only variants.
+
+Implement:
+
 - extend the shapes card UI:
   - add `Color source` with `None` and `Shape column`;
   - add a searchable/autocompleted `Shape column` input populated from
@@ -706,93 +1165,34 @@ Implement:
 - dispatch from the viewer widget:
   - no selected shape color source -> `ViewerAdapter.ensure_shapes_loaded(...)`;
   - selected shape color source -> `ViewerAdapter.ensure_styled_shapes_loaded(...)`;
-- extend `ShapesLayerBinding` with:
-  - `shapes_role: Literal["primary", "styled"] = "primary"`;
-  - `style_spec: ShapeColorSourceSpec | None = None`;
-- reuse `source_shapes_index_by_row` and `source_shapes_index_feature_name`
-  from the Slice 3 binding contract for both primary and styled shapes layers;
-- keep `ensure_shapes_loaded(...)` as the primary-layer path and make all
-  primary lookup/removal code filter `shapes_role="primary"`;
-- add styled-shapes adapter paths matching styled labels:
-  - `get_loaded_styled_shapes_layer(...)`;
-  - `get_loaded_styled_shapes_layers(...)`;
-  - `ensure_styled_shapes_loaded(...)`;
-  - a user-facing layer name such as
-    `build_styled_shapes_layer_name(shapes_name, style_spec)`;
-- allow primary and styled shapes layers for the same shapes element to coexist;
-- register styled shapes layers with `shapes_role="styled"` and `style_spec`;
-- keep styled shapes identity and source-row mappings in `ShapesLayerBinding`,
-  not in `layer.metadata`;
-- style shapes by categorical and continuous columns:
-  - apply one color per rendered napari shape row;
-  - prefer coloring both `face_color` and `edge_color`, with a readable edge and
-    a translucent face so image data remains visible underneath;
-  - use a neutral missing color for missing values;
-- use valid `<column>_colors` companion columns as stored categorical palettes:
-  - build the category-to-color mapping from the full source shape column before
-    expanding multipolygons;
-  - if a category has conflicting companion colors, fall back to the default
-    categorical palette;
-  - if the companion palette is missing, incomplete, or invalid, fall back to
-    the default categorical palette;
-- classify shape columns like styled labels:
-  - pandas categorical, bool, and exact binary integer columns are categorical;
-  - non-binary integer and float columns are continuous;
-  - string/object scalar columns are temporarily categorical without mutating
-    the `GeoDataFrame`;
-- use `ShapesLayerBinding.source_shapes_index_by_row` to align source
-  shape-column values to rendered napari rows;
-- add the selected style source column to the `layer.features` DataFrame,
-  aligned to rendered napari rows, instead of copying all GeoDataFrame columns
-  during Slice 2;
-- if the selected style source column name collides with the source-index
-  feature column, store it in a deterministic disambiguated feature column
-  without overwriting the source-index feature;
-- repeat colors and feature values for multipolygon parts by repeating the
-  source row lookup;
 - provide feedback for primary vs styled load paths, created vs updated styled
   layers, palette source, invalid companion palettes, string coercion, and
-  skipped geometries.
+  skipped geometries;
+- catch duplicate-index styled-shapes errors and show them as clean status-card
+  feedback instead of a traceback.
+
+Out of scope:
+
+- changing the shapes styling engine;
+- changing adapter lookup/removal semantics;
+- explicit table-backed shape coloring.
 
 Recommended tests:
 
 - shapes cards expose `Color source = None | Shape column` and a `Shape column`
   autocomplete populated from the shapes element;
 - geometry and explicit color/palette columns are hidden from the shape-column
-  selector;
+  selector through the Slice 6 discovery helper;
 - `Add / Update` with no selected shape column dispatches to the primary
   `ensure_shapes_loaded(...)` path;
 - `Add / Update` with a selected shape column dispatches to
   `ensure_styled_shapes_loaded(...)`;
-- primary and styled shapes layers can coexist for the same shapes element;
-- styled shapes lookup reuses a matching variant and creates distinct variants
-  for different columns;
-- styled shapes bindings have `shapes_role="styled"` and keep their
-  `ShapeColorSourceSpec`;
-- primary shapes bindings have `shapes_role="primary"` and no style spec;
-- primary and styled shapes bindings carry `source_shapes_index_by_row` and
-  `source_shapes_index_feature_name`;
-- shapes layers do not store shapes roles, style specs, source mappings, or
-  source-index feature names in `layer.metadata`;
-- categorical columns produce per-shape categorical colors;
-- categorical columns use valid `<column>_colors` companion palettes;
-- invalid companion color values fall back to the default palette;
-- categories with conflicting companion colors fall back to the default
-  palette;
-- bool and exact binary integer columns are categorical;
-- non-binary integer and float columns are continuous;
-- string/object scalar columns are temporarily categorical without mutating the
-  `GeoDataFrame`;
-- the selected style source column is added to `layer.features` and repeated
-  for multipolygon parts;
-- style source feature-name collisions are disambiguated without overwriting the
-  source-index feature;
-- multipolygon parts repeat the source row color via
-  `ShapesLayerBinding.source_shapes_index_by_row`;
-- mixed unsupported columns are hidden from the selector;
-- styled layer identity includes the selected column and is reused on repeat.
+- UI feedback distinguishes created vs updated styled shapes layers;
+- UI feedback includes palette source, invalid companion palettes, string
+  coercion, duplicate-index styling errors, and skipped geometries when
+  applicable.
 
-### Slice 5: Explicit Shape-Table Coloring
+### Slice 10: Explicit Shape-Table Coloring
 
 Status: not planned
 

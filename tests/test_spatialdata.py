@@ -2,18 +2,22 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pytest
+from shapely.geometry import Polygon
 from spatialdata import SpatialData
 from spatialdata.models import TableModel
 from xarray import DataArray
 
 import napari_harpy.core.spatialdata as spatialdata_module
+from napari_harpy.core._color_source import ShapeColorSourceSpec
 from napari_harpy.core.spatialdata import (
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
     get_image_channel_names_from_sdata,
+    get_shape_column_color_source_options,
     get_spatialdata_feature_extraction_image_discovery_for_coordinate_system_and_label_from_sdata,
     get_spatialdata_feature_extraction_label_discovery_for_coordinate_system_from_sdata,
     get_spatialdata_image_options_for_coordinate_system_from_sdata,
@@ -152,6 +156,65 @@ def test_get_table_color_source_options_combines_obs_and_x_var_sources(sdata_blo
         ("table", "x_var", "channel_1_sum"),
         ("table", "x_var", "channel_2_sum"),
     ]
+
+
+def test_shape_color_source_spec_identity_and_display_name() -> None:
+    source = ShapeColorSourceSpec(
+        source_kind="shape_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    assert source.identity == ("shape_column", "cell_type")
+    assert source.display_name == "cell_type"
+
+
+def test_get_shape_column_color_source_options_classifies_supported_columns() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {
+            "cat_shape": pd.Categorical(["a", "b", "a"]),
+            "bool_shape": pd.Series([True, False, True], dtype="bool"),
+            "binary_int_shape": pd.Series([0, 1, 0], dtype="int64"),
+            "int_shape": pd.Series([1, 2, 3], dtype="int64"),
+            "float_shape": pd.Series([0.1, 0.2, 0.3], dtype="float64"),
+            "string_shape": pd.Series(["alpha", "beta", "alpha"], dtype="object"),
+            "radius": pd.Series([5.0, 6.0, 7.0], dtype="float64"),
+            "cat_shape_colors": ["red", "blue", "red"],
+            "manual_color": ["red", "blue", "red"],
+            "style.color": ["red", "blue", "red"],
+            "all_missing": pd.Series([None, None, None], dtype="object"),
+            "mixed_shape": pd.Series(["alpha", 1, "beta"], dtype="object"),
+            "object_shape": pd.Series([{"a": 1}, {"b": 2}, {"c": 3}], dtype="object"),
+        },
+        geometry=[
+            Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+            Polygon([(2, 0), (3, 0), (3, 1), (2, 1)]),
+            Polygon([(4, 0), (5, 0), (5, 1), (4, 1)]),
+        ],
+    )
+    fake_sdata = DummySpatialData(shapes={"cell_boundaries": geodataframe})
+
+    options = get_shape_column_color_source_options(fake_sdata, "cell_boundaries")
+
+    option_by_key = {option.value_key: option for option in options}
+
+    assert "geometry" not in option_by_key
+    assert "cat_shape_colors" not in option_by_key
+    assert "manual_color" not in option_by_key
+    assert "style.color" not in option_by_key
+    assert "all_missing" not in option_by_key
+    assert "mixed_shape" not in option_by_key
+    assert "object_shape" not in option_by_key
+    assert option_by_key["cat_shape"].value_kind == "categorical"
+    assert option_by_key["bool_shape"].value_kind == "categorical"
+    assert option_by_key["binary_int_shape"].value_kind == "categorical"
+    assert option_by_key["int_shape"].value_kind == "continuous"
+    assert option_by_key["float_shape"].value_kind == "continuous"
+    assert option_by_key["string_shape"].value_kind == "categorical"
+    assert option_by_key["radius"].value_kind == "continuous"
+    assert option_by_key["cat_shape"].source_kind == "shape_column"
+    assert option_by_key["cat_shape"].display_name == "cat_shape"
+    assert option_by_key["cat_shape"].identity == ("shape_column", "cat_shape")
 
 
 def test_get_table_metadata_resolves_table_metadata(sdata_blobs: SpatialData) -> None:

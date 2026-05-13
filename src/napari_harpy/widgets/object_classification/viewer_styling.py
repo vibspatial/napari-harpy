@@ -28,7 +28,7 @@ from napari_harpy.core.spatialdata import (
     get_table_metadata,
 )
 from napari_harpy.viewer.adapter import ViewerAdapter
-from napari_harpy.viewer.overlay_styling import _build_labels_features
+from napari_harpy.viewer.labels_styling import _build_labels_features
 from napari_harpy.widgets.object_classification.controller import (
     PRED_CLASS_COLORS_KEY,
     PRED_CLASS_COLUMN,

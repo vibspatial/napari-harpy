@@ -1,42 +1,39 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
 from loguru import logger
-from matplotlib import colormaps
-from matplotlib.colors import to_rgba
 from napari.layers import Labels
 from napari.utils.colormaps import DirectLabelColormap, label_colormap
 
-from napari_harpy.core.class_palette import default_categorical_colors, normalize_color_sequence
+from napari_harpy.core._color_source import TableColorSourceSpec, TableColorValueKind
+from napari_harpy.core.class_palette import normalize_color_sequence
 from napari_harpy.core.spatialdata import get_table, get_table_metadata
-from napari_harpy.core.table_color_source import (
-    ColorValueKind,
-    TableColorSourceSpec,
-    has_high_cardinality_string_values,
-    string_categorical_warning_threshold,
+from napari_harpy.viewer._styling import (
+    StyledPaletteSource,
+    build_string_categorical_values,
+    categorical_colors_for_values,
+    continuous_colors_for_values,
+    default_categorical_palette_for_categories,
+    is_string_like_series,
+    is_valid_color,
+    normalize_category_value,
 )
 
 if TYPE_CHECKING:
     from anndata import AnnData
     from spatialdata import SpatialData
 
-StyledLabelsPaletteSource = Literal["stored", "default_missing", "default_invalid"]
-
-MISSING_CATEGORICAL_COLOR = "#80808099"
-MISSING_CONTINUOUS_COLOR = "#80808099"
-OVERLAY_CONTINUOUS_COLORMAP = "viridis"
-
 
 @dataclass(frozen=True)
 class StyledLabelsStyleResult:
     """Describe how one styled labels overlay was colored."""
 
-    value_kind: ColorValueKind
-    palette_source: StyledLabelsPaletteSource | None
+    value_kind: TableColorValueKind
+    palette_source: StyledPaletteSource | None
     coercion_applied: bool
 
 
@@ -112,7 +109,7 @@ def _build_obs_column_colormap(
     region_series = region_rows[column_name]
 
     if _is_categorical_dtype(full_series):
-        categories = [_normalize_category_value(value) for value in full_series.cat.categories]
+        categories = [normalize_category_value(value) for value in full_series.cat.categories]
         palette_source, palette = _resolve_categorical_palette(
             table=table,
             column_name=column_name,
@@ -161,43 +158,27 @@ def _build_obs_column_colormap(
         )
         return style_result, color_dict, pd.DataFrame({column_name: numeric_region_series}, index=region_rows.index)
 
-    if _is_string_like_series(full_series):
-        full_values = pd.Series(
-            [_normalize_string_value(value) for value in full_series],
-            index=full_series.index,
-            name=column_name,
-            dtype="object",
+    if is_string_like_series(full_series):
+        string_region_values, categories = build_string_categorical_values(
+            full_values=full_series,
+            row_values=region_series,
+            column_name=column_name,
         )
-        region_values = pd.Series(
-            [_normalize_string_value(value) for value in region_series],
-            index=region_rows.index,
-            name=column_name,
-            dtype="object",
+        palette = default_categorical_palette_for_categories(categories)
+        color_dict = _build_categorical_color_dict(
+            string_region_values,
+            categories=categories,
+            palette=palette,
         )
-        non_missing_values = full_values.dropna().tolist()
-        if has_high_cardinality_string_values(non_missing_values, row_count=len(full_series)):
-            unique_count = len({str(value) for value in non_missing_values})
-            threshold = string_categorical_warning_threshold(len(full_series))
-            logger.warning(
-                f"Observation column `{column_name}` has {unique_count} unique string values across "
-                f"{len(full_series)} rows, which exceeds the categorical viewer-coloring threshold of {threshold}. "
-                "Harpy will render it with the default categorical palette anyway; "
-                "convert the column to pandas categorical dtype to mark this as intentional."
-            )
-        else:
-            logger.warning(
-                f"Coercing plain string/object observation column `{column_name}` to temporary categorical values "
-                "for viewer coloring."
-            )
-        categories = list(pd.unique(full_values.dropna()))
-        palette = default_categorical_colors(len(categories))
-        color_dict = _build_categorical_color_dict(region_values, categories=categories, palette=palette)
+        # Plain string/object columns are rendered as viewer-only categorical
+        # values. They do not use stored categorical palettes, so the caller
+        # should report the default palette and mark that coercion happened.
         style_result = StyledLabelsStyleResult(
             value_kind="categorical",
             palette_source="default_missing",
             coercion_applied=True,
         )
-        return style_result, color_dict, pd.DataFrame({column_name: region_values}, index=region_rows.index)
+        return style_result, color_dict, pd.DataFrame({column_name: string_region_values}, index=region_rows.index)
 
     numeric_region_series = pd.to_numeric(region_series, errors="coerce").astype("float64")
     color_dict = _build_continuous_color_dict(numeric_region_series)
@@ -295,27 +276,27 @@ def _resolve_categorical_palette(
     table: AnnData,
     column_name: str,
     categories: list[object],
-) -> tuple[StyledLabelsPaletteSource, list[str]]:
+) -> tuple[StyledPaletteSource, list[str]]:
     colors_key = f"{column_name}_colors"
     stored_colors = normalize_color_sequence(table.uns.get(colors_key))
     if stored_colors is None:
         logger.info(
             f"No stored `{colors_key}` palette found in `table.uns`; using the default categorical palette for viewer coloring."
         )
-        return "default_missing", default_categorical_colors(len(categories))
+        return "default_missing", default_categorical_palette_for_categories(categories)
 
     if len(stored_colors) != len(categories):
         logger.warning(
             f"Stored `{colors_key}` palette has {len(stored_colors)} colors for {len(categories)} categories; "
             "using the default categorical palette."
         )
-        return "default_invalid", default_categorical_colors(len(categories))
+        return "default_invalid", default_categorical_palette_for_categories(categories)
 
-    if not all(_is_valid_color(color) for color in stored_colors):
+    if not all(is_valid_color(color) for color in stored_colors):
         logger.warning(
             f"Stored `{colors_key}` palette contains invalid color values; using the default categorical palette."
         )
-        return "default_invalid", default_categorical_colors(len(categories))
+        return "default_invalid", default_categorical_palette_for_categories(categories)
 
     logger.info(f"Using stored `{colors_key}` palette from `table.uns` for viewer coloring.")
     return "stored", list(stored_colors)
@@ -327,41 +308,18 @@ def _build_categorical_color_dict(
     categories: list[object],
     palette: list[str],
 ) -> dict[int | None, Any]:
-    lookup = {_normalize_category_value(category): color for category, color in zip(categories, palette, strict=False)}
     color_dict: dict[int | None, Any] = {None: "transparent", 0: "transparent"}
-    for instance_id, value in values.items():
-        if pd.isna(value):
-            color_dict[int(instance_id)] = MISSING_CATEGORICAL_COLOR
-            continue
-        color_dict[int(instance_id)] = lookup.get(_normalize_category_value(value), MISSING_CATEGORICAL_COLOR)
+    colors = categorical_colors_for_values(values, categories=categories, palette=palette)
+    for instance_id, color in colors.items():
+        color_dict[int(instance_id)] = color
     return color_dict
 
 
 def _build_continuous_color_dict(values: pd.Series) -> dict[int | None, Any]:
     color_dict: dict[int | None, Any] = {None: "transparent", 0: "transparent"}
-    non_missing = values.dropna()
-    if non_missing.empty:
-        for instance_id in values.index:
-            color_dict[int(instance_id)] = MISSING_CONTINUOUS_COLOR
-        return color_dict
-
-    cmap = colormaps[OVERLAY_CONTINUOUS_COLORMAP]
-    min_value = float(non_missing.min())
-    max_value = float(non_missing.max())
-    if max_value == min_value:
-        normalized_values = {int(instance_id): 0.5 for instance_id in non_missing.index}
-    else:
-        normalized_values = {
-            int(instance_id): float((value - min_value) / (max_value - min_value))
-            for instance_id, value in non_missing.items()
-        }
-
-    for instance_id in values.index:
-        value = values.at[instance_id]
-        if pd.isna(value):
-            color_dict[int(instance_id)] = MISSING_CONTINUOUS_COLOR
-        else:
-            color_dict[int(instance_id)] = cmap(float(np.clip(normalized_values[int(instance_id)], 0.0, 1.0)))
+    colors = continuous_colors_for_values(values)
+    for instance_id, color in colors.items():
+        color_dict[int(instance_id)] = color
     return color_dict
 
 
@@ -383,39 +341,8 @@ def _is_categorical_dtype(values: pd.Series) -> bool:
     return isinstance(values.dtype, pd.CategoricalDtype)
 
 
-def _is_string_like_series(values: pd.Series) -> bool:
-    non_null = values.dropna()
-    if non_null.empty:
-        return False
-    return all(_is_string_scalar(value) for value in non_null.tolist())
-
-
-def _is_string_scalar(value: object) -> bool:
-    return isinstance(value, (str, bytes, np.str_, np.bytes_))
-
-
-def _normalize_string_value(value: object) -> object:
-    if pd.isna(value):
-        return pd.NA
-    return str(value)
-
-
-def _normalize_category_value(value: object) -> object:
-    if isinstance(value, np.generic):
-        return value.item()
-    return value
-
-
 def _has_exact_binary_zero_one_values(values: list[object]) -> bool:
     if not values:
         return False
     normalized_values = {int(value) for value in pd.to_numeric(pd.Series(values), errors="coerce").dropna().tolist()}
     return normalized_values == {0, 1} or normalized_values == {0} or normalized_values == {1}
-
-
-def _is_valid_color(value: str) -> bool:
-    try:
-        to_rgba(value)
-    except (TypeError, ValueError):
-        return False
-    return True

@@ -29,14 +29,20 @@ from spatialdata import read_zarr
 from spatialdata.transformations import get_transformation
 
 from napari_harpy._app_state import CoordinateSystemChangedEvent, HarpyAppState, get_or_create_app_state
+from napari_harpy.core._color_source import (
+    ShapeColorSourceKind,
+    ShapeColorSourceSpec,
+    TableColorSourceKind,
+    TableColorSourceSpec,
+)
 from napari_harpy.core.spatialdata import (
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
     get_image_channel_names_from_sdata,
+    get_shape_column_color_source_options,
     get_spatialdata_shapes_options_for_coordinate_system_from_sdata,
     get_table_color_source_options,
 )
-from napari_harpy.core.table_color_source import ColorSourceKind, TableColorSourceSpec
 from napari_harpy.viewer.adapter import DEFAULT_OVERLAY_COLORS, ShapesLayerBinding, ViewerAdapter
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,
@@ -159,13 +165,15 @@ class ImageLoadRequest:
 class LabelsLoadRequest:
     labels_name: str
     table_name: str | None
-    selected_source_kind: ColorSourceKind | None
+    selected_source_kind: TableColorSourceKind | None
     selected_color_source: TableColorSourceSpec | None
 
 
 @dataclass(frozen=True)
 class ShapesLoadRequest:
     shapes_name: str
+    selected_source_kind: ShapeColorSourceKind | None
+    selected_color_source: ShapeColorSourceSpec | None
 
 
 class _ElidedLabel(QLabel):
@@ -558,7 +566,7 @@ class _LabelsCardWidget(QFrame):
         return table_name if table_name in self._table_color_sources_by_table else None
 
     @property
-    def selected_source_kind(self) -> ColorSourceKind | None:
+    def selected_source_kind(self) -> TableColorSourceKind | None:
         value = self.color_source_kind_combo.currentData()
         return value if value in {"obs_column", "x_var"} else None
 
@@ -894,9 +902,16 @@ class _ShapesCardWidget(QFrame):
 
     add_update_requested = Signal(object)
 
-    def __init__(self, *, shapes_name: str) -> None:
+    def __init__(
+        self,
+        *,
+        shapes_name: str,
+        shape_color_sources: list[ShapeColorSourceSpec],
+    ) -> None:
         super().__init__()
         self.shapes_name = shapes_name
+        self._shape_color_sources = shape_color_sources
+        self._filtered_color_sources: list[ShapeColorSourceSpec] = []
         self.setObjectName(f"viewer_widget_shapes_card_{shapes_name}")
         self.setProperty("harpyViewerDetailPanel", True)
         self.setStyleSheet(_DETAIL_PANEL_STYLESHEET)
@@ -910,7 +925,33 @@ class _ShapesCardWidget(QFrame):
         self.title_label.setStyleSheet(_CARD_TITLE_STYLESHEET)
         self.title_label.hide()
 
-        self.action_status_label = QLabel("Action: add/update shapes layer")
+        form_layout = QFormLayout()
+        form_layout.setContentsMargins(0, 0, 0, 0)
+        form_layout.setHorizontalSpacing(8)
+        form_layout.setVerticalSpacing(6)
+
+        color_source_kind_label = _create_form_label("Color source")
+        self.color_source_kind_combo = CompactComboBox()
+        self.color_source_kind_combo.setObjectName(f"viewer_widget_shapes_color_source_kind_combo_{shapes_name}")
+        self.color_source_kind_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
+        self.color_source_kind_combo.addItem("None", None)
+        self.color_source_kind_combo.addItem("Shape column", "shape_column")
+
+        self.color_source_value_label = _create_form_label("Shape column")
+        self.color_source_value_input = QLineEdit()
+        self.color_source_value_input.setObjectName(f"viewer_widget_shapes_color_source_value_input_{shapes_name}")
+        self.color_source_value_input.setStyleSheet(build_input_control_stylesheet("QLineEdit"))
+        self.color_source_value_input.setMinimumWidth(0)
+        self.color_source_value_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.color_source_value_input.setEnabled(False)
+
+        self._color_source_completer_model = QStringListModel(self.color_source_value_input)
+        self._color_source_completer = QCompleter(self._color_source_completer_model, self.color_source_value_input)
+        self._color_source_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self._color_source_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.color_source_value_input.setCompleter(self._color_source_completer)
+
+        self.action_status_label = QLabel()
         self.action_status_label.setObjectName(f"viewer_widget_shapes_action_status_{shapes_name}")
         self.action_status_label.setWordWrap(True)
         self.action_status_label.setStyleSheet(_SUMMARY_LABEL_STYLESHEET)
@@ -923,11 +964,114 @@ class _ShapesCardWidget(QFrame):
         self.add_update_button.clicked.connect(self._emit_add_update_request)
         self.add_update_button.setToolTip("")
 
+        form_layout.addRow(color_source_kind_label, self.color_source_kind_combo)
+        form_layout.addRow(self.color_source_value_label, self.color_source_value_input)
+
+        layout.addLayout(form_layout)
         layout.addWidget(self.action_status_label)
         layout.addWidget(self.add_update_button)
 
+        self.color_source_kind_combo.currentIndexChanged.connect(self._refresh_color_source_controls)
+        self.color_source_value_input.textChanged.connect(self._update_action_status)
+        self.color_source_value_input.editingFinished.connect(self._sync_current_source_selection)
+
+        self._refresh_color_source_controls()
+
+    @property
+    def selected_source_kind(self) -> ShapeColorSourceKind | None:
+        value = self.color_source_kind_combo.currentData()
+        return value if value == "shape_column" else None
+
+    @property
+    def selected_color_source(self) -> ShapeColorSourceSpec | None:
+        current_text = self.color_source_value_input.text().strip()
+        for source in self._filtered_color_sources:
+            if source.display_name == current_text:
+                return source
+        return None
+
+    def _refresh_color_source_controls(self, _index: int | None = None) -> None:
+        selected_source_identity = (
+            self.selected_color_source.identity if self.selected_color_source is not None else None
+        )
+        source_kind = self.selected_source_kind
+        self._filtered_color_sources = [
+            source for source in self._shape_color_sources if source_kind is None or source.source_kind == source_kind
+        ]
+
+        with QSignalBlocker(self.color_source_value_input):
+            if source_kind is None:
+                self.color_source_value_input.setEnabled(False)
+                self.color_source_value_input.clear()
+                self.color_source_value_input.setPlaceholderText("Select a color source kind first")
+            else:
+                self.color_source_value_input.setEnabled(bool(self._filtered_color_sources))
+                if selected_source_identity is not None:
+                    matching_source = next(
+                        (
+                            source
+                            for source in self._filtered_color_sources
+                            if source.identity == selected_source_identity
+                        ),
+                        None,
+                    )
+                    if matching_source is not None:
+                        self.color_source_value_input.setText(matching_source.display_name)
+                    elif self._filtered_color_sources:
+                        self.color_source_value_input.setText(self._filtered_color_sources[0].display_name)
+                    else:
+                        self.color_source_value_input.clear()
+                elif self._filtered_color_sources:
+                    self.color_source_value_input.setText(self._filtered_color_sources[0].display_name)
+                else:
+                    self.color_source_value_input.clear()
+
+                self.color_source_value_input.setPlaceholderText("Search shape columns")
+
+            self._color_source_completer_model.setStringList(
+                [source.display_name for source in self._filtered_color_sources]
+            )
+
+        self._update_action_status()
+
+    def _sync_current_source_selection(self) -> None:
+        if not self.color_source_value_input.isEnabled():
+            return
+
+        current_text = self.color_source_value_input.text().strip()
+        for source in self._filtered_color_sources:
+            if source.display_name == current_text:
+                self.color_source_value_input.setText(source.display_name)
+                break
+        self._update_action_status()
+
+    def _update_action_status(self) -> None:
+        source_kind = self.selected_source_kind
+        selected_source = self.selected_color_source
+
+        if source_kind is None:
+            self.action_status_label.setText("Action: add/update primary shapes layer")
+            return
+
+        if selected_source is None:
+            if self._filtered_color_sources:
+                self.action_status_label.setText("Action: select a shape column for a styled shapes layer")
+            else:
+                self.action_status_label.setText("Action: no colorable shape columns available")
+            return
+
+        self.action_status_label.setText(
+            f'Action: add/update styled shapes layer for shape["{selected_source.value_key}"]'
+        )
+
     def _emit_add_update_request(self, _checked: bool = False) -> None:
-        self.add_update_requested.emit(ShapesLoadRequest(shapes_name=self.shapes_name))
+        self.add_update_requested.emit(
+            ShapesLoadRequest(
+                shapes_name=self.shapes_name,
+                selected_source_kind=self.selected_source_kind,
+                selected_color_source=self.selected_color_source,
+            )
+        )
 
 
 class ViewerWidget(QWidget):
@@ -1217,7 +1361,7 @@ class ViewerWidget(QWidget):
         )
         self._rebuild_image_cards(sdata, image_names)
         self._rebuild_labels_cards(sdata, labels_names)
-        self._rebuild_shapes_cards(shapes_names)
+        self._rebuild_shapes_cards(sdata, shapes_names)
         self._update_section_empty_states(image_names, labels_names, shapes_names)
 
     def _rebuild_image_cards(self, sdata: SpatialData, image_names: list[str]) -> None:
@@ -1290,14 +1434,17 @@ class ViewerWidget(QWidget):
             self._labels_cards.append(card)
             self._labels_rows.append(row)
 
-    def _rebuild_shapes_cards(self, shapes_names: list[str]) -> None:
+    def _rebuild_shapes_cards(self, sdata: SpatialData, shapes_names: list[str]) -> None:
         _clear_layout(self.shapes_section_layout)
         self._shape_cards = []
         self._shape_rows = []
         self._expanded_shapes_names.intersection_update(shapes_names)
 
         for shapes_name in shapes_names:
-            card = _ShapesCardWidget(shapes_name=shapes_name)
+            card = _ShapesCardWidget(
+                shapes_name=shapes_name,
+                shape_color_sources=get_shape_column_color_source_options(sdata, shapes_name),
+            )
             card.add_update_requested.connect(self._add_or_update_shapes_layer)
             row = _DisclosureElementWidget(
                 title=shapes_name,
@@ -1466,9 +1613,15 @@ class ViewerWidget(QWidget):
         )
 
     def _add_or_update_shapes_layer(self, request: ShapesLoadRequest) -> None:
+        if request.selected_source_kind is None:
+            self._add_or_update_primary_shapes_layer(request.shapes_name)
+            return
+
+        self._add_or_update_styled_shapes_layer(request)
+
+    def _add_or_update_primary_shapes_layer(self, shapes_name: str) -> None:
         sdata = self._app_state.sdata
         coordinate_system = self._app_state.coordinate_system
-        shapes_name = request.shapes_name
 
         if sdata is None or not coordinate_system:
             self._set_action_feedback(
@@ -1505,6 +1658,77 @@ class ViewerWidget(QWidget):
             tooltip_message=(
                 f"Loaded shapes `{shapes_name}` in coordinate system `{coordinate_system}`." if was_shortened else None
             ),
+        )
+
+    def _add_or_update_styled_shapes_layer(self, request: ShapesLoadRequest) -> None:
+        sdata = self._app_state.sdata
+        coordinate_system = self._app_state.coordinate_system
+
+        if sdata is None or not coordinate_system:
+            self._set_action_feedback(
+                title="Styled Shapes Error",
+                lines=["Load a SpatialData object and select a coordinate system first."],
+                kind="error",
+            )
+            return
+
+        if request.selected_color_source is None:
+            self._set_action_feedback(
+                title="Styled Shapes Error",
+                lines=[f"Select a shape column to create a styled shapes layer for `{request.shapes_name}`."],
+                kind="error",
+            )
+            return
+
+        try:
+            result = self._app_state.viewer_adapter.ensure_styled_shapes_loaded(
+                sdata,
+                request.shapes_name,
+                coordinate_system,
+                request.selected_color_source,
+            )
+        except ValueError as error:
+            self._set_action_feedback(title="Styled Shapes Error", lines=[str(error)], kind="error")
+            return
+
+        self._app_state.viewer_adapter.activate_layer(result.layer)
+        action = "Created" if result.created else "Updated"
+        source_text = f'shape["{request.selected_color_source.value_key}"]'
+        action_line = (
+            f"{action} styled shapes layer for {source_text} on shapes element `{request.shapes_name}` "
+            f"in coordinate system `{coordinate_system}`."
+        )
+        feedback_kind: StatusCardKind = "success"
+        title = f"Styled Shapes {action}"
+        lines = [action_line]
+        if result.coercion_applied:
+            feedback_kind = "warning"
+            title = f"{title} With Warning"
+            lines.append("Coerced string values to categorical and used the default categorical palette.")
+        elif result.palette_source == "stored":
+            lines.append("Used the stored categorical palette.")
+        elif result.palette_source == "default_invalid":
+            feedback_kind = "warning"
+            title = f"{title} With Warning"
+            lines.append("The stored categorical palette was invalid, so Harpy used the default categorical palette.")
+        elif result.palette_source == "default_missing":
+            feedback_kind = "info"
+            lines.append("Used the default categorical palette because no stored palette was present.")
+
+        skipped_geometry_count = _get_layer_skipped_geometry_count(self._app_state.viewer_adapter, result.layer)
+        if skipped_geometry_count:
+            feedback_kind = "warning"
+            if not title.endswith(" With Warning"):
+                title = f"{title} With Warning"
+            lines.append(
+                f"Skipped {skipped_geometry_count} empty, invalid, or unsupported "
+                "geometries while loading renderable shapes."
+            )
+
+        self._set_action_feedback(
+            title=title,
+            lines=lines,
+            kind=feedback_kind,
         )
 
     def _add_or_update_image_layer(self, request: ImageLoadRequest) -> None:

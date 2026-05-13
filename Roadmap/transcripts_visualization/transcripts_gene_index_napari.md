@@ -8,7 +8,7 @@ This document proposes a narrower MVP:
 
 - start from `sdata.points["transcripts"]`;
 - validate that the points table has `x`, `y`, and `gene` columns, or another configured index column;
-- build a gene-first cache optimized for quickly loading selected genes;
+- build a value-first cache optimized for quickly loading selected genes or another configured string/categorical value;
 - visualize the selected result in one napari `Points` layer;
 - if the selected subset is too large, show a deterministic sample and warn the user.
 
@@ -77,11 +77,11 @@ The MVP supports:
 - backed `SpatialData`;
 - one points element, initially `sdata.points["transcripts"]`;
 - required coordinate columns, default `x="x"` and `y="y"`;
-- required index column, default `gene="gene"`;
+- configurable string/categorical index column, default `gene="gene"`;
 - exact visualization when the selected subset is below a render threshold;
 - sampled visualization when the selected subset exceeds the threshold;
 - one napari `Points` layer for the selected subset;
-- programmatic gene selection first, with a simple UI later.
+- a minimal UI for choosing the points element, choosing the index-value column, building/rebuilding the cache, selecting cache-backed values, and visualizing the selected points.
 
 The MVP does not support:
 
@@ -110,16 +110,34 @@ y
 gene
 ```
 
-The gene column may later be generalized to another index column, for example `feature_name`, `gene_id`, or `target`.
+The first implementation should already allow the user to choose the index column. The default is `gene`, but any eligible value column can be used.
+
+Eligible index columns:
+
+- are not the configured `x` or `y` coordinate columns;
+- have string-like values or a categorical dtype;
+- can be normalized to non-empty string values.
+
+Examples:
+
+```text
+gene
+feature_name
+target
+probe
+```
+
+The cache can keep the existing `gene` terminology in file names and internal fields for the MVP, but it should store the actual source column name in `metadata.json`. In this document, "value" means one value from the configured index column.
 
 Validation should reject:
 
 - missing coordinate columns;
 - missing index column;
+- an index column that is neither string-like nor categorical;
 - non-numeric `x` or `y`;
 - non-finite `x` or `y`;
-- missing gene values;
-- gene values whose string form is empty after stripping whitespace;
+- missing index values;
+- index values whose string form is empty after stripping whitespace;
 - empty dataframes.
 
 Optional input:
@@ -142,9 +160,9 @@ source_points_name: string
 source_element_path: string
 x: string
 y: string
-gene: string
+index_column: string
 transcript_id: string | null
-n_transcripts: int
+source_n_transcripts: int
 n_genes: int
 target_rows_per_row_group: int
 default_max_points: int
@@ -173,8 +191,8 @@ Sort genes lexicographically for deterministic `gene_id` assignment in the first
 
 The reader uses this file to:
 
-- resolve selected gene names to `gene_id`;
-- report unknown genes;
+- resolve selected values to `gene_id`;
+- reject selected values that are not present in the cache vocabulary;
 - estimate the selected transcript count before reading data;
 - decide whether the selection should be exact or sampled.
 
@@ -226,8 +244,8 @@ The data files store the displayable transcript rows.
 Required columns:
 
 ```text
-x: float32 or float64
-y: float32 or float64
+x: float32
+y: float32
 gene_id: uint32
 sample_key: uint64
 ```
@@ -238,7 +256,7 @@ Optional columns:
 transcript_id
 ```
 
-For visualization, `float32` coordinates are likely sufficient and reduce memory pressure. The canonical full-precision values remain in `points.parquet`. If we want exact coordinate preservation for picked transcripts, keep `float64` or use `transcript_id` to look up canonical rows later.
+Store display coordinates as `float32`. This is good enough for napari transcript visualization and reduces memory pressure in both the cache and the `Points` layer. The canonical full-precision values remain in `points.parquet`. If exact coordinate preservation is needed for picked transcripts later, use `transcript_id` to look up canonical rows.
 
 Rows inside each gene should be ordered by a stable random-looking `sample_key`.
 
@@ -259,6 +277,41 @@ sample_key = pandas.util.hash_pandas_object(..., index=False, hash_key=<fixed 16
 ```
 
 If cross-language stability becomes important, switch to a named stable hash such as xxhash64 or BLAKE2b-64.
+
+## Cache Availability And Staleness Checks
+
+The viewer should not allow transcript visualization directly from `sdata.points[points_name]`.
+
+Instead, the transcript UI should follow this flow:
+
+1. The user selects the points element and index-value column.
+2. The user clicks `Create cache` or `Rebuild cache`.
+3. Harpy builds `transcripts_gene_index/`, including `genes.parquet`.
+4. The value search box is enabled only when a valid cache is available.
+5. The value search box reads available values from `genes.parquet`, not from the source points dataframe.
+
+This avoids offering values that are not present in the cache and avoids expensive source-data scans during interactive use.
+
+For the MVP, use cheap validation checks only. Do not compute a source Parquet footer digest, full content hash, or fresh source `value_counts` when opening the viewer.
+
+Required cache checks before enabling visualization:
+
+```text
+cache exists
+metadata.json exists
+genes.parquet exists
+gene_index.parquet exists
+metadata schema_version matches
+metadata source_element_path matches selected points element
+metadata x/y/index column names match current UI selection
+metadata source_n_transcripts == sum(genes.n_transcripts)
+metadata source_n_transcripts == sum(gene_index.n_points)
+metadata n_genes == len(genes.parquet)
+```
+
+If any check fails, mark the cache as missing or stale, disable the value search box and transcript visualization button, and ask the user to build or rebuild the cache.
+
+These checks mostly validate that the selected points element and UI column choices match the cache, and that the cache is internally consistent. They are not a cryptographic guarantee that the source points table has not changed. That stronger source fingerprint can be added later if stale-cache bugs become common, but it is intentionally out of scope for the MVP.
 
 ## Row Group Size
 
@@ -299,6 +352,54 @@ Consequences:
 - a row group should not be padded with rows from another gene;
 - the final row group for a large gene may contain fewer than `25_000` rows.
 
+This is acceptable for the standalone gene-index MVP. With `1_000_000_000` transcripts, at most about `25_000` genes, and `target_rows_per_row_group = 25_000`, the rough row-group count is bounded by:
+
+```text
+1_000_000_000 / 25_000 + 25_000 = about 65_000 row groups
+```
+
+Those are row groups inside Parquet shard files, not separate files. That scale is reasonable for the MVP and keeps rare-gene reads exact and simple.
+
+## Future Spatial Plus Gene Layout
+
+Do not carry the strict single-gene row-group rule directly into a future spatial plus gene cache.
+
+A future `(tile, gene)` layout should avoid creating one tiny row group for every non-empty `(tile, gene_id)` pair. That could produce millions of small row groups once spatial tiling is introduced.
+
+Recommended future layout:
+
+```text
+write tile-major data
+within each tile, sort rows by gene_id
+within each gene_id, sort by sample_key or spatial key
+write row groups up to a target size
+allow multiple small genes in one row group
+keep each gene's rows contiguous within a row group
+split one gene across row groups only when that (tile, gene_id) group exceeds the target size
+```
+
+The future `tile_gene_index.parquet` would then point to ranges, not necessarily whole single-gene row groups:
+
+```text
+level
+tile_x
+tile_y
+gene_id
+data_file
+row_group
+row_offset
+n_points
+```
+
+For a rare gene, the reader may load one row group that also contains neighboring rare genes, then slice or filter in memory. The false-positive read is bounded by the row-group size. That tradeoff is better than exploding the number of row groups.
+
+So the storage policy is:
+
+```text
+gene-only MVP: keep row groups single-gene
+future spatial plus gene cache: use tile-major, gene-contiguous indexed ranges
+```
+
 ## Build Algorithm
 
 Recommended public entry point:
@@ -311,7 +412,7 @@ def build_transcript_gene_index_cache_for_points_element(
     output_path: str | PathLike[str] | None = None,
     x: str = "x",
     y: str = "y",
-    gene: str = "gene",
+    index_column: str = "gene",
     transcript_id: str | None = None,
     target_rows_per_row_group: int = 25_000,
     default_max_points: int = 100_000,
@@ -323,7 +424,7 @@ Implementation steps:
 
 1. Validate the backed `SpatialData` object and resolve the points element path with `sdata.locate_element(...)`.
 2. Validate the points dataframe schema and data quality.
-3. Normalize gene labels by stripping whitespace and converting valid values to strings.
+3. Normalize selected index values by stripping whitespace and converting valid values to strings.
 4. Build `genes.parquet` using a Dask `value_counts`.
 5. Assign deterministic `gene_id` values from the sorted gene table.
 6. Create a working dataframe with `x`, `y`, `gene_id`, optional `transcript_id`, and `sample_key`.
@@ -341,14 +442,14 @@ For the first implementation, it is acceptable for one gene to appear in multipl
 Recommended reader entry point:
 
 ```python
-def load_transcripts_for_genes(
+def load_transcripts_for_values(
     cache_path: str | PathLike[str],
-    genes: Sequence[str] | Literal["all"],
+    values: Sequence[str] | Literal["all"],
     *,
     max_points: int = 100_000,
     sample: bool = True,
     columns: Sequence[str] = ("x", "y", "gene_id"),
-) -> TranscriptPointsSelection:
+) -> TranscriptGeneIndexSelection:
     ...
 ```
 
@@ -357,13 +458,15 @@ The reader should use `pyarrow`, not Dask, in the interactive path.
 Runtime flow:
 
 1. Load `metadata.json`, `genes.parquet`, and `gene_index.parquet`.
-2. Resolve selected gene names to `gene_id`.
-3. Sum `n_transcripts` for the selected genes before reading data.
-4. If the selected count is `<= max_points`, read all row groups for those genes.
+2. Resolve selected values to `gene_id`.
+3. Sum `n_transcripts` for the selected values before reading data.
+4. If the selected count is `<= max_points`, read all row groups for those values.
 5. If the selected count is `> max_points`, read a deterministic sample.
 6. Return coordinates and features for one napari `Points` layer.
 
-Unknown genes should not crash the viewer. They should be reported in a warning and skipped.
+Selected values should already come from `genes.parquet`. If a selected value is not present in `genes.parquet`, the reader should raise an error instead of warning and skipping it. That means the UI or controller allowed stale or invalid selection state to reach the reader, which is an internal consistency bug.
+
+The UI should make this rare by only allowing selections resolved from the cache-backed value search box. If the error still happens, surface it as a cache/selection consistency problem and ask the user to refresh the selection or rebuild the cache.
 
 ## Sampling Policy
 
@@ -373,13 +476,13 @@ The default threshold should start at:
 max_points = 100_000
 ```
 
-If the selected genes contain at most `max_points` transcripts:
+If the selected values contain at most `max_points` transcripts:
 
 ```text
 show exact selected transcripts
 ```
 
-If the selected genes contain more than `max_points` transcripts:
+If the selected values contain more than `max_points` transcripts:
 
 ```text
 show a deterministic sample and warn the user
@@ -393,34 +496,38 @@ Showing 100,000 of 2,431,912 selected transcripts.
 
 Recommended sampling policy:
 
-1. Allocate a sample quota per selected gene, proportional to its transcript count.
-2. If the number of selected genes is less than `max_points`, give each selected gene at least one point when possible.
-3. For each gene, read the first row groups in `gene_row_group` order until at least the quota is available.
+The MVP default is proportional sampling by transcript count, with a minimum of one point per selected value when possible. This preserves the visual meaning of density while avoiding complete disappearance of selected rare values in sampled previews.
+
+1. Allocate a sample quota per selected value, proportional to its transcript count.
+2. If the number of selected values is less than `max_points`, give each selected value at least one point when possible.
+3. For each value, read the first row groups in `gene_row_group` order until at least the quota is available.
 4. If the loaded rows exceed the quota, downsample by `sample_key`.
-5. Concatenate the sampled rows across genes.
+5. Concatenate the sampled rows across values.
+
+Balanced sampling and user-selectable sampling modes are deferred until the UI needs an explicit comparison mode. They are useful for comparing spatial patterns across values, but they intentionally distort abundance and should not be the default.
 
 Because rows within each gene are sorted by a stable random-looking `sample_key`, reading the first row groups gives a deterministic preview without scanning the full selected subset.
 
 This is important. If we simply read every selected row and then sample, large gene selections will still be slow.
 
-## All-Genes Selection
+## All-Values Selection
 
-Selecting all genes can be allowed.
+Selecting all values can be allowed.
 
 It should use the same count and sampling policy:
 
 ```text
-genes = "all"
-total_count = sum(genes.n_transcripts)
+values = "all"
+total_count = sum(genes_table.n_transcripts)
 if total_count <= max_points:
     show exact
 else:
     show sampled preview and warn
 ```
 
-For all-genes sampling, proportional quotas are a reasonable default. They preserve the global abundance distribution.
+For all-values sampling, proportional quotas are the MVP default. They preserve the global abundance distribution.
 
-A possible alternative is a more balanced per-gene sample, where rare genes get more visibility than proportional sampling would give them. That is useful for exploratory biology, but it changes the visual meaning of density. Start with proportional sampling and make balanced sampling an explicit option later.
+A possible alternative is a more balanced per-value sample, where rare values get more visibility than proportional sampling would give them. That is useful for exploratory biology, but it changes the visual meaning of density. Start with proportional sampling and make balanced sampling an explicit option later.
 
 ## napari Integration
 
@@ -428,21 +535,21 @@ The MVP should create or update one napari `Points` layer.
 
 Layer behavior:
 
-- layer name: `transcripts` or `transcripts: selected genes`;
+- layer name: `transcripts` or `transcripts: selected values`;
 - data: `Nx2` array from `y, x` or `x, y`, matching the coordinate convention used elsewhere in Harpy;
-- features: at least `gene`;
-- face color: categorical by `gene` for small gene selections;
+- features: at least the configured index-value column;
+- face color: categorical by the configured index-value column for small selections;
 - warning: displayed when the layer is sampled.
 
 Important implementation detail:
 
 ```text
-Do not create one napari layer per gene.
+Do not create one napari layer per value.
 ```
 
 A single layer is easier to update, hide, remove, and later connect to a controller.
 
-For many selected genes, categorical coloring may become visually noisy. The first version can still attach the `gene` feature and use a simple color cycle, then refine the UI later.
+For many selected values, categorical coloring may become visually noisy. The first version can still attach the configured value feature and use a simple color cycle, then refine the UI later.
 
 ## Why This Should Feel Snappy
 
@@ -452,10 +559,10 @@ This MVP avoids the current slow path:
 load full dask dataframe -> compute all rows -> filter/subsample
 ```
 
-Instead, selected-gene display becomes:
+Instead, selected-value display becomes:
 
 ```text
-selected gene names
+selected values
 -> gene_id values
 -> row groups listed in gene_index.parquet
 -> pyarrow read of only those row groups
@@ -465,9 +572,9 @@ selected gene names
 For sampled large selections:
 
 ```text
-selected gene names
--> per-gene quotas
--> first few sample-key-sorted row groups per gene
+selected values
+-> per-value quotas
+-> first few sample-key-sorted row groups per value
 -> pyarrow read of a bounded number of rows
 -> napari Points layer update
 ```
@@ -477,7 +584,7 @@ This should be fast for:
 - one rare gene;
 - a handful of marker genes;
 - a moderate gene panel;
-- all genes as a sampled preview.
+- all values as a sampled preview.
 
 It will not be fast for:
 
@@ -493,19 +600,30 @@ Those remain spatial-cache problems.
 
 - Much simpler than the multiscale spatial cache.
 - Gives an early user-visible transcript workflow.
-- Supports exact selected-gene display when counts are modest.
-- Avoids scanning `points.parquet` for every gene switch.
+- Supports exact selected-value display when counts are modest.
+- Avoids scanning `points.parquet` for every value switch.
 - Gives predictable behavior through a hard render threshold.
 
 ### Cost
 
-- Requires an offline shuffle by gene.
+- Requires an offline shuffle by the selected value column.
 - Duplicates a subset of the canonical transcript data in another cache.
 - Does not solve pan/zoom-scaled loading.
 - Exact display is still bounded by napari `Points` performance.
-- A row-group-per-gene policy can create many small row groups for rare genes.
+- A row-group-per-value policy can create many small row groups for rare values.
 
-The many-small-row-groups concern is acceptable for an MVP. Most transcript datasets have thousands to tens of thousands of genes, not millions of genes. If metadata overhead becomes a problem, we can later pack very rare genes together and accept filtered false-positive reads for that rare-gene tail.
+The many-small-row-groups concern is acceptable for the standalone gene-index MVP. Most transcript datasets have thousands to tens of thousands of genes, not millions of genes. Rare genes should not be packed together in this MVP, because exact rare-gene reads are one of the main benefits of the cache. Packing small gene groups belongs to a future spatial plus gene layout where `(tile, gene)` row-group counts could otherwise explode.
+
+## Deliverables
+
+The MVP should produce these implementation pieces:
+
+1. Cache builder: builds `transcripts_gene_index/` from a backed points element and a selected string/categorical index column.
+2. Cache validator: checks required files, schema version, selected source element, selected columns, and internal count consistency before visualization is enabled.
+3. Cache reader: loads exact or sampled selected values from `genes.parquet`, `gene_index.parquet`, and the data shard files using PyArrow.
+4. Viewer UI controls: lets the user choose the points element and index-value column, create or rebuild the cache, search/select values from `genes.parquet`, and request visualization.
+5. napari layer integration: creates or updates one `Points` layer for the selected values, with sampled-state warning text when applicable.
+6. Tests: cover input validation, cache layout, staleness checks, value resolution, exact reads, sampled reads, and row-group invariants.
 
 ## Suggested Module Shape
 
@@ -522,7 +640,7 @@ TRANSCRIPT_GENE_INDEX_SCHEMA_VERSION
 TranscriptGeneIndexCache
 TranscriptGeneIndexSelection
 build_transcript_gene_index_cache_for_points_element
-load_transcripts_for_genes
+load_transcripts_for_values
 add_transcript_gene_points_layer
 ```
 
@@ -537,24 +655,13 @@ The napari path should be thin and should not know how the cache is built intern
 A first implementation is successful when:
 
 - it can build `transcripts_gene_index/` from a backed `sdata.points["transcripts"]`;
-- it validates `x`, `y`, and `gene`;
+- it validates `x`, `y`, and the selected index-value column;
 - it writes `genes.parquet`, `gene_index.parquet`, and data Parquet files;
+- it validates cache availability and staleness before enabling visualization;
+- the value search box reads selectable values from `genes.parquet`;
 - every data row group listed in `gene_index.parquet` contains exactly one `gene_id`;
-- selecting a gene below the threshold loads exact points;
-- selecting genes above the threshold loads at most `max_points` points;
-- all-genes selection is allowed and sampled when needed;
+- selecting values below the threshold loads exact points;
+- selecting values above the threshold loads at most `max_points` points;
+- all-values selection is allowed and sampled when needed;
 - sampled results show a user-visible warning;
 - the napari integration updates one `Points` layer rather than creating many layers.
-
-## Open Questions
-
-Questions to answer during implementation:
-
-- Should display coordinates be stored as `float32` or preserve source dtype?
-- Should the first UI expose only gene names, or any configured index column?
-- Should the default sample be proportional, balanced across genes, or user-selectable?
-- Should missing selected genes be warnings only, or should strict mode raise an error?
-- Should cache staleness detection compare source file metadata, source row count, or a stronger fingerprint?
-- Is one row group per rare gene acceptable for the datasets we care about?
-
-The only question that should block the MVP is the row-group invariant. Without gene-organized row groups, the index will not deliver the intended speedup.

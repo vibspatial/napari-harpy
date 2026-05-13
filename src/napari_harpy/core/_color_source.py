@@ -1,0 +1,48 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Literal
+
+TableColorSourceKind = Literal["obs_column", "x_var"]
+TableColorValueKind = Literal["categorical", "continuous", "instance"]
+ShapeColorSourceKind = Literal["shape_column"]
+ShapeColorValueKind = Literal["categorical", "continuous"]
+
+
+@dataclass(frozen=True)
+class TableColorSourceSpec:
+    """Semantic description of one table-backed source used for labels coloring."""
+
+    table_name: str
+    source_kind: TableColorSourceKind
+    value_key: str
+    value_kind: TableColorValueKind
+
+    @property
+    def identity(self) -> tuple[str, TableColorSourceKind, str]:
+        """Return a stable identity for preserving selection across refreshes."""
+        return (self.table_name, self.source_kind, self.value_key)
+
+    @property
+    def display_name(self) -> str:
+        """Return the default user-facing name for this source."""
+        return self.value_key
+
+
+@dataclass(frozen=True)
+class ShapeColorSourceSpec:
+    """Semantic description of one direct shapes column used for coloring."""
+
+    source_kind: ShapeColorSourceKind
+    value_key: str
+    value_kind: ShapeColorValueKind
+
+    @property
+    def identity(self) -> tuple[ShapeColorSourceKind, str]:
+        """Return a stable identity for preserving selection across refreshes."""
+        return (self.source_kind, self.value_key)
+
+    @property
+    def display_name(self) -> str:
+        """Return the default user-facing name for this source."""
+        return self.value_key
