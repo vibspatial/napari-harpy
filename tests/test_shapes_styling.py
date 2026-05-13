@@ -14,6 +14,7 @@ from napari_harpy.viewer.shapes_styling import (
     SHAPES_EDGE_ALPHA,
     SHAPES_FACE_ALPHA,
     SHAPES_MISSING_BASE_COLOR,
+    _apply_rendered_row_colors_to_shapes_layer,
     apply_shape_color_source_to_shapes_layer,
     build_styled_shapes_layer_name,
     disambiguate_shape_style_feature_name,
@@ -119,12 +120,12 @@ def test_apply_shape_color_source_to_shapes_layer_uses_continuous_colormap_and_m
         source_shapes_index_feature_name="index",
     )
 
-    base_colors = continuous_colors_for_values(
+    rendered_row_colors = continuous_colors_for_values(
         pd.Series([0.0, 10.0, np.nan]),
         missing_color=SHAPES_MISSING_BASE_COLOR,
     )
-    expected_face = np.asarray([_rgba(color, SHAPES_FACE_ALPHA) for color in base_colors])
-    expected_edge = np.asarray([_rgba(color, SHAPES_EDGE_ALPHA) for color in base_colors])
+    expected_face = np.asarray([_rgba(color, SHAPES_FACE_ALPHA) for color in rendered_row_colors])
+    expected_edge = np.asarray([_rgba(color, SHAPES_EDGE_ALPHA) for color in rendered_row_colors])
 
     assert result.value_kind == "continuous"
     assert result.palette_source is None
@@ -324,6 +325,13 @@ def test_apply_shape_color_source_to_shapes_layer_rejects_duplicate_source_indic
             source_shapes_index_by_row=("cell_1",),
             source_shapes_index_feature_name="index",
         )
+
+
+def test_apply_rendered_row_colors_to_shapes_layer_requires_one_color_per_rendered_row() -> None:
+    layer = _make_shapes_layer(("cell_1", "cell_2"))
+
+    with pytest.raises(ValueError, match="one color for each rendered napari shape row"):
+        _apply_rendered_row_colors_to_shapes_layer(layer, pd.Series(["red"]))
 
 
 def test_build_styled_shapes_layer_name_returns_stable_shape_column_variant_name() -> None:

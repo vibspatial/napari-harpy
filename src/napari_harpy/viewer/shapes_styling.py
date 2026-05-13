@@ -79,16 +79,16 @@ def apply_shape_color_source_to_shapes_layer(
     row_values.index = pd.RangeIndex(len(row_values))
 
     if style_spec.value_kind == "categorical":
-        style_result, base_colors, feature_values = _build_categorical_shape_style(
+        style_result, rendered_row_colors, feature_values = _build_categorical_shape_style(
             shapes_element=shapes_element,
             column_name=style_spec.value_key,
             full_values=full_values,
             row_values=row_values,
         )
     else:
-        style_result, base_colors, feature_values = _build_continuous_shape_style(row_values)
+        style_result, rendered_row_colors, feature_values = _build_continuous_shape_style(row_values)
 
-    _apply_base_colors_to_shapes_layer(layer, base_colors)
+    _apply_rendered_row_colors_to_shapes_layer(layer, rendered_row_colors)
     # Unlike styled labels, styled shapes already have a useful feature table
     # from the geometry-loading path: the source GeoDataFrame index column used
     # for status-bar display. Preserve it and add only the selected style source
@@ -192,7 +192,7 @@ def _build_categorical_shape_style(
         palette_source = "default_missing"
         palette = default_categorical_palette_for_categories(categories)
 
-    base_colors = categorical_colors_for_values(
+    rendered_row_colors = categorical_colors_for_values(
         normalized_row_values,
         categories=categories,
         palette=palette,
@@ -204,21 +204,21 @@ def _build_categorical_shape_style(
             palette_source=palette_source,
             coercion_applied=coercion_applied,
         ),
-        base_colors,
+        rendered_row_colors,
         normalized_row_values,
     )
 
 
 def _build_continuous_shape_style(row_values: pd.Series) -> tuple[StyledShapesStyleResult, pd.Series, pd.Series]:
     numeric_row_values = pd.to_numeric(row_values, errors="coerce").astype("float64")
-    base_colors = continuous_colors_for_values(numeric_row_values, missing_color=SHAPES_MISSING_BASE_COLOR)
+    rendered_row_colors = continuous_colors_for_values(numeric_row_values, missing_color=SHAPES_MISSING_BASE_COLOR)
     return (
         StyledShapesStyleResult(
             value_kind="continuous",
             palette_source=None,
             coercion_applied=False,
         ),
-        base_colors,
+        rendered_row_colors,
         numeric_row_values,
     )
 
@@ -273,9 +273,11 @@ def _resolve_shape_categorical_palette(
     return "stored", [color_by_category[normalize_category_value(category)] for category in categories]
 
 
-def _apply_base_colors_to_shapes_layer(layer: Shapes, base_colors: pd.Series) -> None:
-    layer.face_color = _with_alpha(base_colors, SHAPES_FACE_ALPHA)
-    layer.edge_color = _with_alpha(base_colors, SHAPES_EDGE_ALPHA)
+def _apply_rendered_row_colors_to_shapes_layer(layer: Shapes, rendered_row_colors: pd.Series) -> None:
+    if len(rendered_row_colors) != len(layer.data):
+        raise ValueError("Rendered-row colors must contain one color for each rendered napari shape row.")
+    layer.face_color = _with_alpha(rendered_row_colors, SHAPES_FACE_ALPHA)
+    layer.edge_color = _with_alpha(rendered_row_colors, SHAPES_EDGE_ALPHA)
     refresh = getattr(layer, "refresh", None)
     if callable(refresh):
         refresh()
