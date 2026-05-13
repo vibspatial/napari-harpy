@@ -898,6 +898,13 @@ Implement:
   from the Slice 3 binding contract for both primary and styled shapes layers;
 - keep `ensure_shapes_loaded(...)` as the primary-layer path and make all
   primary lookup/removal code filter `shapes_role="primary"`;
+- keep `remove_shapes_layer(...)` primary-only, mirroring
+  `remove_labels_layer(...)`; it should remove the primary shapes layer for the
+  selected element and coordinate system and leave styled shapes variants
+  loaded;
+- do not add a styled-shapes removal API in this slice; add
+  `remove_styled_shapes_layers(...)` later only if the UI needs an explicit
+  bulk cleanup action;
 - add styled-shapes adapter paths matching styled labels:
   - `get_loaded_styled_shapes_layer(...)`;
   - `get_loaded_styled_shapes_layers(...)`;
@@ -1009,6 +1016,9 @@ Recommended tests:
 - primary shapes bindings have `shapes_role="primary"` and `style_spec is None`;
 - primary and styled shapes bindings carry `source_shapes_index_by_row` and
   `source_shapes_index_feature_name`;
+- `remove_shapes_layer(...)` removes only the primary shapes layer and leaves
+  styled shapes variants for the same shapes element loaded;
+- no styled-shapes removal API is introduced unless a UI workflow needs it;
 - shapes layers do not store shapes roles, style specs, source mappings, or
   source-index feature names in `layer.metadata`;
 - categorical columns produce per-shape categorical colors;
