@@ -905,6 +905,10 @@ Implement:
 - do not add a styled-shapes removal API in this slice; add
   `remove_styled_shapes_layers(...)` later only if the UI needs an explicit
   bulk cleanup action;
+- keep coordinate-system cleanup role-agnostic:
+  `remove_layers_outside_coordinate_system(...)` should remove both primary and
+  styled shapes layers that do not belong to the active coordinate system, while
+  `remove_shapes_layer(...)` remains primary-only;
 - add styled-shapes adapter paths matching styled labels:
   - `get_loaded_styled_shapes_layer(...)`;
   - `get_loaded_styled_shapes_layers(...)`;
@@ -1019,6 +1023,8 @@ Recommended tests:
 - `remove_shapes_layer(...)` removes only the primary shapes layer and leaves
   styled shapes variants for the same shapes element loaded;
 - no styled-shapes removal API is introduced unless a UI workflow needs it;
+- changing coordinate system removes both primary and styled shapes layers from
+  inactive coordinate systems through `remove_layers_outside_coordinate_system(...)`;
 - shapes layers do not store shapes roles, style specs, source mappings, or
   source-index feature names in `layer.metadata`;
 - categorical columns produce per-shape categorical colors;
