@@ -443,7 +443,13 @@ layer.face_color = [palette[value] for value in row_values]
 ```
 
 For categorical companion colors, build the category-to-color mapping from the
-full original shape column before expanding multipolygons. For example:
+full original shape column before expanding multipolygons. Companion palettes
+should be considered for pandas categorical columns, bool columns, and exact
+binary integer columns. Plain string/object scalar columns should mirror styled
+labels: they are temporarily coerced to categorical values for viewer coloring,
+but they use the default categorical palette and ignore `<column>_colors`.
+
+For example:
 
 ```text
 geometry | leiden | leiden_colors
@@ -718,6 +724,23 @@ Implement:
   - color validation;
   - default categorical palette materialization;
   - continuous value normalization and color materialization;
+- extract the current labels string/object branch from
+  `apply_table_color_source_to_labels_layer(...)` into `viewer/_styling.py` as
+  reusable, layer-agnostic logic:
+  - move `_is_string_like_series(...)`, `_normalize_string_value(...)`, and the
+    relevant category normalization helper out of the labels-specific module;
+  - move `string_categorical_warning_threshold(...)` and
+    `has_high_cardinality_string_values(...)` out of the current
+    `core/table_color_source.py` location;
+  - normalize missing string/object values to `pd.NA` and non-missing values to
+    `str(value)`;
+  - derive categories as `pd.unique(normalized_full_values.dropna())`;
+  - use `default_categorical_colors(len(categories))`;
+  - return or expose `palette_source="default_missing"` and
+    `coercion_applied=True`;
+  - log the same normal coercion warning and high-cardinality warning as the
+    current labels path, with wording parameterized so labels can say
+    "observation column" and shapes can later say "shape column";
 - keep `viewer/_styling.py` free of napari layer classes, `SpatialData`, and
   `AnnData`, so it can be reused by labels and shapes without depending on one
   layer type's alignment model;
@@ -742,6 +765,11 @@ Recommended tests:
 - styled-label palette feedback still reports `stored`, `default_missing`, and
   `default_invalid` exactly as before;
 - styled-label string/object coercion warnings and feedback remain unchanged;
+- styled-label string/object columns still ignore stored `<column>_colors`, use
+  the default categorical palette, report `palette_source="default_missing"`,
+  and set `coercion_applied=True`;
+- high-cardinality string/object label columns still log the same warning after
+  the helper moves to `viewer/_styling.py`;
 - labels-only colormap application still uses `DirectLabelColormap`.
 
 ### Slice 5: Color Source Module Refactor
@@ -770,6 +798,9 @@ Implement:
   color-source discovery;
 - keep viewer styling helpers in `viewer/_styling.py`, not in
   `core/_color_source.py`.
+- do not move string/object coercion or high-cardinality warning helpers into
+  `core/_color_source.py`; by this slice, labels styling should import those
+  helpers from `viewer/_styling.py`.
 
 Out of scope:
 
@@ -784,6 +815,8 @@ Recommended tests:
   `core/_color_source.py`;
 - no imports of `napari_harpy.core.table_color_source` remain;
 - no `core/table_color_source.py` compatibility shim remains;
+- no string/object coercion or high-cardinality viewer-styling helpers are
+  introduced in `core/_color_source.py`;
 - styled-label coloring behavior remains unchanged after the import move.
 
 ### Slice 6: Shape-Column Coloring
@@ -888,6 +921,8 @@ Implement:
   - do not change this alpha rule depending on whether image or labels layers
     are currently loaded;
 - use valid `<column>_colors` companion columns as stored categorical palettes:
+  - consider companion palettes only for pandas categorical columns, bool
+    columns, and exact binary integer columns;
   - build the category-to-color mapping from the full source shape column before
     expanding multipolygons;
   - if the companion column is missing, use the default categorical palette and
@@ -904,8 +939,15 @@ Implement:
 - classify shape columns like styled labels:
   - pandas categorical, bool, and exact binary integer columns are categorical;
   - non-binary integer and float columns are continuous;
-  - string/object scalar columns are temporarily categorical without mutating
-    the `GeoDataFrame`;
+  - string/object scalar columns are selectable as categorical, temporarily
+    coerced to categorical values for viewer coloring, and never mutate the
+    `GeoDataFrame`;
+  - string/object scalar columns ignore `<column>_colors`, use the default
+    categorical palette, report `palette_source="default_missing"`, and set
+    `coercion_applied=True`;
+  - string/object scalar columns should log the same style of warning as styled
+    labels, including the high-cardinality warning when the unique-value count
+    exceeds the configured threshold;
 - use `ShapesLayerBinding.source_shapes_index_by_row` to align source
   shape-column values to rendered napari rows;
 - add the selected style source column to the `layer.features` DataFrame,
@@ -947,7 +989,8 @@ Recommended tests:
   opaque `edge_color` alpha `1.0` from the same colormap-derived RGB value;
 - missing values use neutral gray with `face_color` alpha `0.35` and
   `edge_color` alpha `1.0`;
-- categorical columns use valid `<column>_colors` companion palettes;
+- pandas categorical, bool, and exact binary integer columns use valid
+  `<column>_colors` companion palettes;
 - missing companion palette columns report `palette_source="default_missing"`;
 - invalid companion color tokens report `palette_source="default_invalid"` and
   fall back to the default palette;
@@ -960,6 +1003,11 @@ Recommended tests:
 - non-binary integer and float columns are continuous;
 - string/object scalar columns are temporarily categorical without mutating the
   `GeoDataFrame`;
+- string/object scalar columns ignore `<column>_colors`, use the default
+  categorical palette, set `coercion_applied=True`, and report
+  `palette_source="default_missing"`;
+- high-cardinality string/object scalar columns log a warning matching the
+  styled-labels behavior;
 - the selected style source column is added to `layer.features` and repeated
   for multipolygon parts;
 - style source feature-name collisions are disambiguated without overwriting the
