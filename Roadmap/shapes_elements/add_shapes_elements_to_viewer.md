@@ -862,10 +862,17 @@ Implement:
 - keep styled shapes identity and source-row mappings in `ShapesLayerBinding`,
   not in `layer.metadata`;
 - style shapes by categorical and continuous columns:
-  - apply one color per rendered napari shape row;
-  - prefer coloring both `face_color` and `edge_color`, with a readable edge and
-    a translucent face so image data remains visible underneath;
-  - use a neutral missing color for missing values;
+  - compute one base RGB color per rendered napari shape row;
+  - for categorical columns, derive the base RGB color from the categorical
+    palette;
+  - for continuous columns, derive the base RGB color from the continuous
+    colormap;
+  - set `face_color` to the base RGB color with alpha `0.35`;
+  - set `edge_color` to the same base RGB color with alpha `1.0`;
+  - use one neutral gray base RGB color for missing values, with the same face
+    alpha `0.35` and edge alpha `1.0`;
+  - do not change this alpha rule depending on whether image or labels layers
+    are currently loaded;
 - use valid `<column>_colors` companion columns as stored categorical palettes:
   - build the category-to-color mapping from the full source shape column before
     expanding multipolygons;
@@ -913,6 +920,12 @@ Recommended tests:
 - shapes layers do not store shapes roles, style specs, source mappings, or
   source-index feature names in `layer.metadata`;
 - categorical columns produce per-shape categorical colors;
+- categorical colors are applied as translucent `face_color` alpha `0.35` and
+  opaque `edge_color` alpha `1.0` from the same base RGB value;
+- continuous colors are applied as translucent `face_color` alpha `0.35` and
+  opaque `edge_color` alpha `1.0` from the same colormap-derived RGB value;
+- missing values use neutral gray with `face_color` alpha `0.35` and
+  `edge_color` alpha `1.0`;
 - categorical columns use valid `<column>_colors` companion palettes;
 - invalid companion color values fall back to the default palette;
 - categories with conflicting companion colors fall back to the default
