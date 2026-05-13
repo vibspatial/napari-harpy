@@ -955,7 +955,36 @@ Implement:
   during Slice 2;
 - if the selected style source column name collides with the source-index
   feature column, store it in a deterministic disambiguated feature column
-  without overwriting the source-index feature;
+  without overwriting the source-index feature:
+
+  ```python
+  def disambiguate_shape_style_feature_name(
+      style_column_name: str,
+      source_index_feature_name: str,
+  ) -> str:
+      """Return the layer.features column name for a selected shape style value.
+
+      GeoPandas and SpatialData allow a shapes GeoDataFrame to have both an
+      index named, for example, ``cell_id`` and a normal column named
+      ``cell_id``. Harpy stores the source GeoDataFrame index in
+      ``layer.features`` under the index name for status display, while styled
+      shapes also store the selected style column in ``layer.features`` for
+      inspection. Coloring by the normal ``cell_id`` column would otherwise
+      collide with the source-index feature column, so the selected style value
+      is stored as ``cell_id__value``.
+      """
+      if style_column_name == source_index_feature_name:
+          return f"{style_column_name}__value"
+      return style_column_name
+  ```
+
+  This is needed because GeoPandas and SpatialData allow a shapes
+  `GeoDataFrame` to have both an index named `cell_id` and a normal column named
+  `cell_id`. Harpy uses the index name as the source-index feature column for
+  status display, so coloring by the normal `cell_id` column must not overwrite
+  that source-index identity. In that case, `layer.features["cell_id"]` stores
+  the source index and `layer.features["cell_id__value"]` stores the selected
+  style column value.
 - repeat colors and feature values for multipolygon parts by repeating the
   source row lookup;
 - provide feedback for primary vs styled load paths, created vs updated styled
@@ -1012,6 +1041,9 @@ Recommended tests:
   for multipolygon parts;
 - style source feature-name collisions are disambiguated without overwriting the
   source-index feature;
+- if the GeoDataFrame index is named `cell_id` and the selected style column is
+  also named `cell_id`, `layer.features["cell_id"]` stores the source index and
+  `layer.features["cell_id__value"]` stores the selected style column value;
 - multipolygon parts repeat the source row color via
   `ShapesLayerBinding.source_shapes_index_by_row`;
 - mixed unsupported columns are hidden from the selector;
