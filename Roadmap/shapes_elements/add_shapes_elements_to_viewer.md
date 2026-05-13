@@ -1217,6 +1217,61 @@ Recommended tests:
 - duplicate `instance_key` values within one shapes region are rejected;
 - missing shape indices receive the configured missing color.
 
+### Slice 11: Styled Shapes Fill Toggle
+
+Status: proposed
+
+Purpose:
+
+Let users choose whether a styled shapes layer is rendered as filled polygons
+or as colored outlines only. This is useful for shape elements where filled
+polygons hide holes, neighboring outlines, or underlying image/label context.
+
+Current behavior:
+
+- styled shapes always use `SHAPES_FACE_ALPHA = 0.35`;
+- styled shapes always use `SHAPES_EDGE_ALPHA = 1.0`;
+- primary shapes remain outline-only with transparent faces;
+- the fill behavior is not user-configurable.
+
+UI contract:
+
+- add a `Fill` checkbox next to the `Shape column` input in the shapes card;
+- show the checkbox only, or at least enable it only, when
+  `Color source = Shape column`;
+- default should be checked to preserve the current behavior;
+- when checked, styled shapes use face alpha `SHAPES_FACE_ALPHA`;
+- when unchecked, styled shapes use face alpha `0.0`;
+- edge alpha remains `SHAPES_EDGE_ALPHA` in both modes.
+
+Implementation notes:
+
+- extend `ShapesLoadRequest` with a styled-shapes fill flag;
+- pass the fill flag through `ViewerWidget._add_or_update_styled_shapes_layer`
+  into `ViewerAdapter.ensure_styled_shapes_loaded(...)`;
+- extend the shape styling path so `_apply_rendered_row_colors_to_shapes_layer`
+  accepts a face alpha instead of always using `SHAPES_FACE_ALPHA`;
+- preserve the existing default by using `SHAPES_FACE_ALPHA` when no explicit
+  fill flag is provided;
+- make styled layer identity include the fill mode, otherwise toggling fill on
+  and off would reuse the same styled layer variant and silently overwrite the
+  previous display mode;
+- consider a stable layer name suffix such as
+  `cell_boundaries[shape:cell_type]` for filled and
+  `cell_boundaries[shape:cell_type:outline]` for outline-only, or keep the
+  current name and rely on one reused variant if we decide fill should behave
+  like an update rather than a separate variant.
+
+Recommended tests:
+
+- shapes card exposes a `Fill` checkbox for shape-column coloring;
+- checkbox defaults to checked;
+- checked styled shapes have face alpha `SHAPES_FACE_ALPHA`;
+- unchecked styled shapes have face alpha `0.0`;
+- edge alpha remains unchanged for both modes;
+- toggling fill produces the intended layer reuse/variant behavior;
+- action feedback remains clear for filled and outline-only styled shapes.
+
 ## Shape Annotation And Write-Back
 
 Shape annotation and write-back are tracked in
