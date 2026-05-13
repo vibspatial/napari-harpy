@@ -162,7 +162,7 @@ x: string
 y: string
 gene: string
 transcript_id: string | null
-n_transcripts: int
+source_n_transcripts: int
 n_genes: int
 target_rows_per_row_group: int
 default_max_points: int
@@ -277,6 +277,41 @@ sample_key = pandas.util.hash_pandas_object(..., index=False, hash_key=<fixed 16
 ```
 
 If cross-language stability becomes important, switch to a named stable hash such as xxhash64 or BLAKE2b-64.
+
+## Cache Availability And Staleness Checks
+
+The viewer should not allow transcript visualization directly from `sdata.points[points_name]`.
+
+Instead, the transcript UI should follow this flow:
+
+1. The user selects the points element and index-label column.
+2. The user clicks `Create cache` or `Rebuild cache`.
+3. Harpy builds `transcripts_gene_index/`, including `genes.parquet`.
+4. The label search box is enabled only when a valid cache is available.
+5. The label search box reads available labels from `genes.parquet`, not from the source points dataframe.
+
+This avoids offering labels that are not present in the cache and avoids expensive source-data scans during interactive use.
+
+For the MVP, use cheap validation checks only. Do not compute a source Parquet footer digest, full content hash, or fresh source `value_counts` when opening the viewer.
+
+Required cache checks before enabling visualization:
+
+```text
+cache exists
+metadata.json exists
+genes.parquet exists
+gene_index.parquet exists
+metadata schema_version matches
+metadata source_element_path matches selected points element
+metadata x/y/index column names match current UI selection
+metadata source_n_transcripts == sum(genes.n_transcripts)
+metadata source_n_transcripts == sum(gene_index.n_points)
+metadata n_genes == len(genes.parquet)
+```
+
+If any check fails, mark the cache as missing or stale, disable the label search box and transcript visualization button, and ask the user to build or rebuild the cache.
+
+These checks mostly validate that the selected points element and UI column choices match the cache, and that the cache is internally consistent. They are not a cryptographic guarantee that the source points table has not changed. That stronger source fingerprint can be added later if stale-cache bugs become common, but it is intentionally out of scope for the MVP.
 
 ## Row Group Size
 
@@ -573,7 +608,6 @@ A first implementation is successful when:
 Questions to answer during implementation:
 
 - Should missing selected labels be warnings only, or should strict mode raise an error?
-- Should cache staleness detection compare source file metadata, source row count, or a stronger fingerprint?
 - Is one row group per rare gene acceptable for the datasets we care about?
 
 The only question that should block the MVP is the row-group invariant. Without gene-organized row groups, the index will not deliver the intended speedup.
