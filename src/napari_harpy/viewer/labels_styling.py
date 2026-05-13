@@ -27,15 +27,13 @@ if TYPE_CHECKING:
     from anndata import AnnData
     from spatialdata import SpatialData
 
-StyledLabelsPaletteSource = StyledPaletteSource
-
 
 @dataclass(frozen=True)
 class StyledLabelsStyleResult:
     """Describe how one styled labels overlay was colored."""
 
     value_kind: TableColorValueKind
-    palette_source: StyledLabelsPaletteSource | None
+    palette_source: StyledPaletteSource | None
     coercion_applied: bool
 
 
@@ -278,7 +276,7 @@ def _resolve_categorical_palette(
     table: AnnData,
     column_name: str,
     categories: list[object],
-) -> tuple[StyledLabelsPaletteSource, list[str]]:
+) -> tuple[StyledPaletteSource, list[str]]:
     colors_key = f"{column_name}_colors"
     stored_colors = normalize_color_sequence(table.uns.get(colors_key))
     if stored_colors is None:

@@ -24,7 +24,6 @@ from napari_harpy.viewer._styling import (
 if TYPE_CHECKING:
     import geopandas as gpd
 
-StyledShapesPaletteSource = StyledPaletteSource
 SHAPES_MISSING_BASE_COLOR = "#808080"
 SHAPES_FACE_ALPHA = 0.35
 SHAPES_EDGE_ALPHA = 1.0
@@ -35,7 +34,7 @@ class StyledShapesStyleResult:
     """Describe how one styled shapes layer was colored."""
 
     value_kind: ShapeColorValueKind
-    palette_source: StyledShapesPaletteSource | None
+    palette_source: StyledPaletteSource | None
     coercion_applied: bool
 
 
@@ -229,7 +228,7 @@ def _resolve_shape_categorical_palette(
     column_name: str,
     full_values: pd.Series,
     categories: Sequence[object],
-) -> tuple[StyledShapesPaletteSource, list[Any]]:
+) -> tuple[StyledPaletteSource, list[Any]]:
     colors_column_name = f"{column_name}_colors"
     if colors_column_name not in shapes_element.columns:
         logger.info(
