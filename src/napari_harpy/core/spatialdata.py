@@ -12,7 +12,12 @@ from spatialdata.models import TableModel, get_axes_names
 from spatialdata.transformations import get_transformation
 from xarray import DataArray
 
-from napari_harpy.core._color_source import ColorValueKind, TableColorSourceSpec
+from napari_harpy.core._color_source import (
+    ShapeColorSourceSpec,
+    ShapeColorValueKind,
+    TableColorSourceSpec,
+    TableColorValueKind,
+)
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -305,6 +310,32 @@ def get_table_color_source_options(sdata: SpatialData, table_name: str) -> list[
     return get_table_obs_color_source_options(sdata, table_name) + get_table_x_var_color_source_options(
         sdata, table_name
     )
+
+
+def get_shape_column_color_source_options(sdata: SpatialData, shapes_name: str) -> list[ShapeColorSourceSpec]:
+    """Return colorable direct columns for one shapes element."""
+    shapes = sdata.shapes[shapes_name]
+    geometry_column_name = _get_geometry_column_name(shapes)
+
+    options: list[ShapeColorSourceSpec] = []
+    for column_name in shapes.columns:
+        column_key = str(column_name)
+        if column_name == geometry_column_name or _is_shape_color_helper_column(column_key):
+            continue
+
+        value_kind = _classify_shape_column_color_source(shapes[column_name])
+        if value_kind is None:
+            continue
+
+        options.append(
+            ShapeColorSourceSpec(
+                source_kind="shape_column",
+                value_key=column_key,
+                value_kind=value_kind,
+            )
+        )
+
+    return options
 
 
 def get_spatialdata_labels_options_from_sdata(sdata: SpatialData) -> list[SpatialDataLabelsOption]:
@@ -611,7 +642,15 @@ def _flatten_string_values(value: Any) -> list[str]:
     return [str(value)]
 
 
-def _classify_obs_color_source(column: pd.Series) -> ColorValueKind | None:
+def _classify_obs_color_source(column: pd.Series) -> TableColorValueKind | None:
+    return _classify_scalar_column_color_source(column)
+
+
+def _classify_shape_column_color_source(column: pd.Series) -> ShapeColorValueKind | None:
+    return _classify_scalar_column_color_source(column)
+
+
+def _classify_scalar_column_color_source(column: pd.Series) -> ShapeColorValueKind | None:
     if isinstance(column.dtype, pd.CategoricalDtype):
         return "categorical"
 
@@ -633,7 +672,7 @@ def _classify_obs_color_source(column: pd.Series) -> ColorValueKind | None:
 
 def _classify_scalar_values_as_color_source(
     values: Sequence[Any],
-) -> ColorValueKind | None:
+) -> ShapeColorValueKind | None:
     if all(_is_bool_scalar(value) for value in values):
         return "categorical"
 
@@ -652,6 +691,14 @@ def _classify_scalar_values_as_color_source(
 def _has_exact_binary_zero_one_values(values: Sequence[Any]) -> bool:
     unique_values = {int(value) for value in values}
     return unique_values == {0, 1}
+
+
+def _get_geometry_column_name(shapes_element: Any) -> Any:
+    return getattr(getattr(shapes_element, "geometry", None), "name", "geometry")
+
+
+def _is_shape_color_helper_column(column_name: str) -> bool:
+    return column_name.endswith(("_colors", "_color", ".color"))
 
 
 def _is_bool_scalar(value: Any) -> bool:

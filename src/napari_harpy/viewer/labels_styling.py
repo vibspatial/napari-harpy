@@ -9,7 +9,7 @@ from loguru import logger
 from napari.layers import Labels
 from napari.utils.colormaps import DirectLabelColormap, label_colormap
 
-from napari_harpy.core._color_source import ColorValueKind, TableColorSourceSpec
+from napari_harpy.core._color_source import TableColorSourceSpec, TableColorValueKind
 from napari_harpy.core.class_palette import normalize_color_sequence
 from napari_harpy.core.spatialdata import get_table, get_table_metadata
 from napari_harpy.viewer._styling import (
@@ -34,7 +34,7 @@ StyledLabelsPaletteSource = StyledPaletteSource
 class StyledLabelsStyleResult:
     """Describe how one styled labels overlay was colored."""
 
-    value_kind: ColorValueKind
+    value_kind: TableColorValueKind
     palette_source: StyledLabelsPaletteSource | None
     coercion_applied: bool
 
