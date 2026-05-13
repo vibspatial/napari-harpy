@@ -37,8 +37,7 @@ if TYPE_CHECKING:
 ImageDisplayMode = Literal["stack", "overlay"]
 ElementType = Literal["labels", "image", "shapes"]
 ShapesLayerShapeType = Literal["polygon", "ellipse"]
-# Name of the layer.features column that _HarpyShapes reads to display the
-# source GeoDataFrame index in napari's status bar.
+# Name of the layer.features column that stores the source GeoDataFrame index.
 DEFAULT_SHAPES_INDEX_FEATURE_NAME = "index"
 DEFAULT_OVERLAY_COLORS = (
     "#00FFFF",  # cyan
@@ -56,8 +55,8 @@ class _HarpyShapes(Shapes):
     """Napari ``Shapes`` layer with Harpy-specific status-bar text.
 
     This subclass only customizes display behavior: when the cursor is over a
-    rendered shape, it reads the configured source-index feature column from
-    ``layer.features`` and appends that value to napari's status bar.
+    rendered shape, it reads the feature row from ``layer.features`` and
+    appends non-missing values to napari's status bar.
     """
 
     def __init__(
@@ -94,13 +93,21 @@ class _HarpyShapes(Shapes):
             dims_displayed=dims_displayed,
             world=world,
         )
-        source_index_status = self._get_source_index_status(shape_value)
-        if source_index_status:
-            status["coordinates"] += f"; {source_index_status}"
-            status["value"] += f"; {source_index_status}"
+        feature_status = self._get_feature_status(shape_value)
+        if feature_status:
+            status["coordinates"] += f"; {feature_status}"
+            status["value"] += f"; {feature_status}"
         return status
 
-    def _get_source_index_status(self, value: Any) -> str | None:
+    def _get_feature_status(self, value: Any) -> str | None:
+        """Return status text for the picked rendered shape row.
+
+        Harpy keeps the source GeoDataFrame index in ``layer.features`` so a
+        rendered napari row can be traced back to its original source row, even
+        when one source geometry expands into multiple rendered rows. That
+        source index is shown first, followed by any other non-missing feature
+        values such as the selected styled shape column.
+        """
         if not isinstance(value, tuple) or not value:
             return None
 
@@ -113,15 +120,19 @@ class _HarpyShapes(Shapes):
         except (IndexError, TypeError, ValueError):
             return None
 
+        status_parts: list[str] = []
         index_feature_name = self._source_shapes_index_feature_name
-        if index_feature_name not in feature_row:
-            return None
+        if index_feature_name in feature_row:
+            source_index = feature_row[index_feature_name]
+            if not self._is_missing_feature_value(source_index):
+                status_parts.append(f"{index_feature_name}: {source_index}")
 
-        source_index = feature_row[index_feature_name]
-        if self._is_missing_feature_value(source_index):
-            return None
+        for feature_name, feature_value in feature_row.items():
+            if feature_name == index_feature_name or self._is_missing_feature_value(feature_value):
+                continue
+            status_parts.append(f"{feature_name}: {feature_value}")
 
-        return f"{index_feature_name}: {source_index}"
+        return "; ".join(status_parts) or None
 
     @staticmethod
     def _is_missing_feature_value(value: Any) -> bool:

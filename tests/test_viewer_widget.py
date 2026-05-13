@@ -4,15 +4,20 @@ from collections.abc import Callable
 from html import unescape
 from types import SimpleNamespace
 
+import geopandas as gpd
 import numpy as np
+import pandas as pd
 from napari.layers import Image, Shapes
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import QComboBox
+from shapely.geometry import LineString, Polygon
+from spatialdata.models import ShapesModel
+from spatialdata.transformations import Identity
 
 import napari_harpy._app_state as app_state_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
-from napari_harpy.core._color_source import TableColorSourceSpec
+from napari_harpy.core._color_source import ShapeColorSourceSpec, TableColorSourceSpec
 from napari_harpy.widgets.viewer.widget import ViewerWidget
 
 
@@ -73,6 +78,43 @@ def _patch_coordinate_system_names(monkeypatch, coordinate_systems: list[str]) -
         "get_coordinate_system_names_from_sdata",
         lambda sdata: list(coordinate_systems),
     )
+
+
+def _make_shapes_sdata(geodataframe: gpd.GeoDataFrame, shapes_name: str = "cells") -> SimpleNamespace:
+    shapes = ShapesModel.parse(geodataframe, transformations={"global": Identity()})
+    return SimpleNamespace(shapes={shapes_name: shapes})
+
+
+def _make_colorable_shapes_sdata(
+    *,
+    shapes_name: str = "cells",
+    cell_type_colors: list[str] | None = None,
+    duplicate_index: bool = False,
+    include_unsupported_geometry: bool = False,
+) -> SimpleNamespace:
+    geometries = [
+        Polygon([(0, 0), (4, 0), (4, 4), (0, 4), (0, 0)]),
+        Polygon([(5, 0), (9, 0), (9, 4), (5, 4), (5, 0)]),
+    ]
+    if include_unsupported_geometry:
+        geometries[1] = LineString([(5, 0), (9, 4)])
+
+    data: dict[str, object] = {
+        "cell_type": pd.Categorical(["T", "B"], categories=["T", "B"]),
+        "score": [0.0, 1.0],
+        "free_text": ["alpha", "beta"],
+    }
+    if cell_type_colors is not None:
+        data["cell_type_colors"] = cell_type_colors
+
+    index = ["cell_1", "cell_1"] if duplicate_index else ["cell_1", "cell_2"]
+    geodataframe = gpd.GeoDataFrame(data, geometry=geometries, index=index)
+    return _make_shapes_sdata(geodataframe, shapes_name=shapes_name)
+
+
+def _select_shape_column(card: object, value_key: str) -> None:
+    card.color_source_kind_combo.setCurrentIndex(1)
+    card.color_source_value_input.setText(value_key)
 
 
 def test_viewer_widget_can_be_instantiated(qtbot) -> None:
@@ -216,7 +258,7 @@ def test_viewer_widget_refreshes_cards_when_shared_sdata_changes(qtbot, sdata_bl
     assert widget.image_rows[0].detail_widget.isHidden()
     assert widget.labels_rows[0].detail_widget.isHidden()
     assert widget.shape_rows[0].detail_widget.isHidden()
-    assert widget.shape_cards[0].action_status_label.text() == "Action: add/update shapes layer"
+    assert widget.shape_cards[0].action_status_label.text() == "Action: add/update primary shapes layer"
     assert widget.shape_cards[0].add_update_button.isEnabled()
     assert widget.labels_cards[0].linked_table_combo.count() == 1
     assert widget.labels_cards[0].linked_table_combo.itemText(0) == "table"
@@ -577,6 +619,7 @@ def test_viewer_widget_filters_cards_by_selected_coordinate_system(qtbot, monkey
         "_get_shapes_in_coordinate_system",
         lambda sdata, coordinate_system: ["shape_global"] if coordinate_system == "global" else ["shape_local"],
     )
+    monkeypatch.setattr(viewer_widget_module, "get_shape_column_color_source_options", lambda sdata, shapes_name: [])
     monkeypatch.setattr(
         viewer_widget_module, "get_image_channel_names_from_sdata", lambda sdata, image_name: ["c0", "c1"]
     )
@@ -635,6 +678,7 @@ def test_viewer_widget_refreshes_from_shared_coordinate_system_changes(qtbot, mo
         "_get_shapes_in_coordinate_system",
         lambda sdata, coordinate_system: ["shape_global"] if coordinate_system == "global" else ["shape_local"],
     )
+    monkeypatch.setattr(viewer_widget_module, "get_shape_column_color_source_options", lambda sdata, shapes_name: [])
     monkeypatch.setattr(
         viewer_widget_module, "get_image_channel_names_from_sdata", lambda sdata, image_name: ["c0", "c1"]
     )
@@ -1153,6 +1197,206 @@ def test_viewer_widget_add_update_image_uses_selected_coordinate_system(qtbot, m
     assert activated_layers == [fake_layer]
 
 
+def test_viewer_widget_shapes_card_exposes_shape_column_controls(qtbot) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    sdata = _make_colorable_shapes_sdata(cell_type_colors=["red", "blue"])
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata)
+
+    card = widget.shape_cards[0]
+
+    assert [card.color_source_kind_combo.itemText(index) for index in range(card.color_source_kind_combo.count())] == [
+        "None",
+        "Shape column",
+    ]
+    assert card.color_source_value_label.text() == "Shape column"
+    assert not card.color_source_value_input.isEnabled()
+    assert card.action_status_label.text() == "Action: add/update primary shapes layer"
+
+    card.color_source_kind_combo.setCurrentIndex(1)
+
+    assert card.color_source_value_input.isEnabled()
+    assert card.color_source_value_input.placeholderText() == "Search shape columns"
+    assert card._color_source_completer_model.stringList() == ["cell_type", "score", "free_text"]
+    assert card.action_status_label.text() == 'Action: add/update styled shapes layer for shape["cell_type"]'
+
+
+def test_viewer_widget_shape_column_selector_hides_geometry_and_palette_columns(qtbot) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    sdata = _make_colorable_shapes_sdata(cell_type_colors=["red", "blue"])
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata)
+
+    card = widget.shape_cards[0]
+    card.color_source_kind_combo.setCurrentIndex(1)
+
+    assert "geometry" not in card._color_source_completer_model.stringList()
+    assert "cell_type_colors" not in card._color_source_completer_model.stringList()
+
+
+def test_viewer_widget_add_update_shapes_with_shape_column_dispatches_to_styled_path(qtbot, monkeypatch) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    sdata = _make_colorable_shapes_sdata(cell_type_colors=["red", "blue"])
+    recorded_requests: list[viewer_widget_module.ShapesLoadRequest] = []
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata)
+
+    monkeypatch.setattr(widget, "_add_or_update_styled_shapes_layer", lambda request: recorded_requests.append(request))
+    card = widget.shape_cards[0]
+    _select_shape_column(card, "score")
+
+    card.add_update_button.click()
+
+    assert len(recorded_requests) == 1
+    request = recorded_requests[0]
+    assert request.shapes_name == "cells"
+    assert request.selected_source_kind == "shape_column"
+    assert request.selected_color_source == ShapeColorSourceSpec(
+        source_kind="shape_column",
+        value_key="score",
+        value_kind="continuous",
+    )
+
+
+def test_viewer_widget_add_update_styled_shapes_creates_and_updates_layer(qtbot) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    sdata = _make_colorable_shapes_sdata(cell_type_colors=["red", "blue"])
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata)
+
+    card = widget.shape_cards[0]
+    _select_shape_column(card, "cell_type")
+
+    card.add_update_button.click()
+
+    assert len(viewer.layers) == 1
+    layer = viewer.layers[0]
+    assert layer.name == "cells[shape:cell_type]"
+    binding = widget.app_state.viewer_adapter.layer_bindings.get_binding(layer)
+    assert binding is not None
+    assert binding.element_type == "shapes"
+    assert binding.shapes_role == "styled"
+    assert binding.style_spec == ShapeColorSourceSpec(
+        source_kind="shape_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+    _assert_action_feedback_card(widget, title="Styled Shapes Created", kind="success")
+    assert 'Created styled shapes layer for shape["cell_type"]' in widget.action_feedback_label.text()
+    assert "Used the stored categorical palette." in widget.action_feedback_label.text()
+
+    card.add_update_button.click()
+
+    assert len(viewer.layers) == 1
+    assert viewer.layers[0] is layer
+    _assert_action_feedback_card(widget, title="Styled Shapes Updated", kind="success")
+    assert 'Updated styled shapes layer for shape["cell_type"]' in widget.action_feedback_label.text()
+
+
+def test_viewer_widget_styled_shapes_feedback_reports_missing_palette(qtbot) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    sdata = _make_colorable_shapes_sdata(cell_type_colors=None)
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata)
+
+    _select_shape_column(widget.shape_cards[0], "cell_type")
+    widget.shape_cards[0].add_update_button.click()
+
+    _assert_action_feedback_card(widget, title="Styled Shapes Created", kind="info")
+    assert "no stored palette was present" in widget.action_feedback_label.text()
+
+
+def test_viewer_widget_styled_shapes_feedback_reports_invalid_palette(qtbot) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    sdata = _make_colorable_shapes_sdata(cell_type_colors=["red", "not-a-color"])
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata)
+
+    _select_shape_column(widget.shape_cards[0], "cell_type")
+    widget.shape_cards[0].add_update_button.click()
+
+    _assert_action_feedback_card(widget, title="Styled Shapes Created With Warning", kind="warning")
+    assert "stored categorical palette was invalid" in widget.action_feedback_label.text()
+
+
+def test_viewer_widget_styled_shapes_feedback_reports_string_coercion(qtbot) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    sdata = _make_colorable_shapes_sdata(cell_type_colors=["red", "blue"])
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata)
+
+    _select_shape_column(widget.shape_cards[0], "free_text")
+    widget.shape_cards[0].add_update_button.click()
+
+    _assert_action_feedback_card(widget, title="Styled Shapes Created With Warning", kind="warning")
+    assert "Coerced string values to categorical" in widget.action_feedback_label.text()
+
+
+def test_viewer_widget_styled_shapes_duplicate_index_error_is_feedback(qtbot) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    sdata = _make_colorable_shapes_sdata(cell_type_colors=["red", "blue"], duplicate_index=True)
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata)
+
+    _select_shape_column(widget.shape_cards[0], "cell_type")
+    widget.shape_cards[0].add_update_button.click()
+
+    _assert_action_feedback_card(widget, title="Styled Shapes Error", kind="error")
+    assert "requires unique source GeoDataFrame index" in widget.action_feedback_label.text()
+
+
+def test_viewer_widget_styled_shapes_feedback_reports_skipped_geometry(qtbot) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    sdata = _make_colorable_shapes_sdata(
+        cell_type_colors=["red", "blue"],
+        include_unsupported_geometry=True,
+    )
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata)
+
+    _select_shape_column(widget.shape_cards[0], "cell_type")
+    widget.shape_cards[0].add_update_button.click()
+
+    _assert_action_feedback_card(widget, title="Styled Shapes Created With Warning", kind="warning")
+    assert "Skipped 1 empty, invalid, or unsupported geometries" in widget.action_feedback_label.text()
+
+
 def test_viewer_widget_add_update_shapes_loads_layer(qtbot, sdata_blobs) -> None:
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)
@@ -1217,6 +1461,7 @@ def test_viewer_widget_add_update_shapes_uses_selected_coordinate_system(qtbot, 
         "_get_shapes_in_coordinate_system",
         lambda sdata, coordinate_system: ["shape_global"] if coordinate_system == "global" else ["shape_local"],
     )
+    monkeypatch.setattr(viewer_widget_module, "get_shape_column_color_source_options", lambda sdata, shapes_name: [])
     monkeypatch.setattr(
         widget.app_state.viewer_adapter,
         "ensure_shapes_loaded",
@@ -1253,7 +1498,10 @@ def test_viewer_widget_add_update_shapes_reports_skipped_geometry_warning(qtbot,
     _patch_coordinate_system_names(monkeypatch, ["global"])
     monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
     monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: [])
-    monkeypatch.setattr(viewer_widget_module, "_get_shapes_in_coordinate_system", lambda sdata, coordinate_system: ["cells"])
+    monkeypatch.setattr(
+        viewer_widget_module, "_get_shapes_in_coordinate_system", lambda sdata, coordinate_system: ["cells"]
+    )
+    monkeypatch.setattr(viewer_widget_module, "get_shape_column_color_source_options", lambda sdata, shapes_name: [])
     monkeypatch.setattr(
         widget.app_state.viewer_adapter,
         "ensure_shapes_loaded",

@@ -1131,7 +1131,7 @@ Recommended tests:
 
 ### Slice 9: Shapes Widget Styling UI
 
-Status: proposed
+Status: completed
 
 Purpose:
 

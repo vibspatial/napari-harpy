@@ -1158,7 +1158,9 @@ def test_viewer_adapter_ensure_shapes_loaded_preserves_polygon_holes() -> None:
 
 def test_viewer_adapter_ensure_shapes_loaded_uses_named_geodataframe_index_in_features() -> None:
     polygon = Polygon([(0, 0), (4, 0), (4, 4), (0, 4), (0, 0)])
-    geodataframe = gpd.GeoDataFrame({"cell_id": ["column_value"], "name": ["boundary"]}, geometry=[polygon], index=["cell_1"])
+    geodataframe = gpd.GeoDataFrame(
+        {"cell_id": ["column_value"], "name": ["boundary"]}, geometry=[polygon], index=["cell_1"]
+    )
     geodataframe.index.name = "cell_id"
     sdata = make_shapes_sdata(geodataframe, shapes_name="cell_boundaries")
     viewer = DummyViewer()
@@ -1238,6 +1240,24 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_creates_registered_variant_w
     assert "style_source_kind" not in result.layer.metadata
     assert "style_value_key" not in result.layer.metadata
     assert "style_value_kind" not in result.layer.metadata
+
+
+def test_viewer_adapter_styled_shapes_status_includes_selected_shape_column() -> None:
+    sdata = make_colorable_shapes_sdata()
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = ShapeColorSourceSpec(
+        source_kind="shape_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    result = adapter.ensure_styled_shapes_loaded(sdata, "cell_boundaries", "global", style_spec)
+
+    status = result.layer.get_status([1, 1], dims_displayed=[0, 1])
+
+    assert "index: cell_1" in status["value"]
+    assert "cell_type: T" in status["value"]
 
 
 def test_viewer_adapter_ensure_styled_shapes_loaded_coexists_with_primary_shapes() -> None:
