@@ -15,7 +15,7 @@ from spatialdata.transformations import Identity
 
 import napari_harpy.viewer._styling as styling_module
 from napari_harpy._app_state import get_or_create_app_state
-from napari_harpy.core.table_color_source import TableColorSourceSpec
+from napari_harpy.core._color_source import TableColorSourceSpec
 from napari_harpy.viewer.adapter import (
     ImageLayerBinding,
     LabelsLayerBinding,

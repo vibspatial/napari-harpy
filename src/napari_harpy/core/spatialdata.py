@@ -12,7 +12,7 @@ from spatialdata.models import TableModel, get_axes_names
 from spatialdata.transformations import get_transformation
 from xarray import DataArray
 
-from napari_harpy.core.table_color_source import ColorValueKind, TableColorSourceSpec
+from napari_harpy.core._color_source import ColorValueKind, TableColorSourceSpec
 
 if TYPE_CHECKING:
     from anndata import AnnData

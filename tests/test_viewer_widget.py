@@ -12,7 +12,7 @@ from qtpy.QtWidgets import QComboBox
 
 import napari_harpy._app_state as app_state_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
-from napari_harpy.core.table_color_source import TableColorSourceSpec
+from napari_harpy.core._color_source import TableColorSourceSpec
 from napari_harpy.widgets.viewer.widget import ViewerWidget
 
 

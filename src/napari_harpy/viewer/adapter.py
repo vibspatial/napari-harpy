@@ -19,7 +19,7 @@ from spatialdata.models import get_axes_names
 from spatialdata.transformations import get_transformation
 from xarray import DataArray, DataTree
 
-from napari_harpy.core.table_color_source import TableColorSourceSpec
+from napari_harpy.core._color_source import TableColorSourceSpec
 from napari_harpy.viewer.labels_styling import (
     StyledLabelsLoadResult,
     apply_table_color_source_to_labels_layer,

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-ColorSourceKind = Literal["obs_column", "x_var"]
+TableColorSourceKind = Literal["obs_column", "x_var"]
 ColorValueKind = Literal["categorical", "continuous", "instance"]
 
 
@@ -12,12 +12,12 @@ class TableColorSourceSpec:
     """Semantic description of one table-backed source used for labels coloring."""
 
     table_name: str
-    source_kind: ColorSourceKind
+    source_kind: TableColorSourceKind
     value_key: str
     value_kind: ColorValueKind
 
     @property
-    def identity(self) -> tuple[str, ColorSourceKind, str]:
+    def identity(self) -> tuple[str, TableColorSourceKind, str]:
         """Return a stable identity for preserving selection across refreshes."""
         return (self.table_name, self.source_kind, self.value_key)
 

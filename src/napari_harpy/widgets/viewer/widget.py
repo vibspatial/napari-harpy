@@ -29,6 +29,7 @@ from spatialdata import read_zarr
 from spatialdata.transformations import get_transformation
 
 from napari_harpy._app_state import CoordinateSystemChangedEvent, HarpyAppState, get_or_create_app_state
+from napari_harpy.core._color_source import TableColorSourceKind, TableColorSourceSpec
 from napari_harpy.core.spatialdata import (
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
@@ -36,7 +37,6 @@ from napari_harpy.core.spatialdata import (
     get_spatialdata_shapes_options_for_coordinate_system_from_sdata,
     get_table_color_source_options,
 )
-from napari_harpy.core.table_color_source import ColorSourceKind, TableColorSourceSpec
 from napari_harpy.viewer.adapter import DEFAULT_OVERLAY_COLORS, ShapesLayerBinding, ViewerAdapter
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,
@@ -159,7 +159,7 @@ class ImageLoadRequest:
 class LabelsLoadRequest:
     labels_name: str
     table_name: str | None
-    selected_source_kind: ColorSourceKind | None
+    selected_source_kind: TableColorSourceKind | None
     selected_color_source: TableColorSourceSpec | None
 
 
@@ -558,7 +558,7 @@ class _LabelsCardWidget(QFrame):
         return table_name if table_name in self._table_color_sources_by_table else None
 
     @property
-    def selected_source_kind(self) -> ColorSourceKind | None:
+    def selected_source_kind(self) -> TableColorSourceKind | None:
         value = self.color_source_kind_combo.currentData()
         return value if value in {"obs_column", "x_var"} else None
 
