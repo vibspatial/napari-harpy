@@ -192,7 +192,7 @@ Sort genes lexicographically for deterministic `gene_id` assignment in the first
 The reader uses this file to:
 
 - resolve selected labels to `gene_id`;
-- report unknown labels;
+- reject selected labels that are not present in the cache vocabulary;
 - estimate the selected transcript count before reading data;
 - decide whether the selection should be exact or sampled.
 
@@ -416,7 +416,9 @@ Runtime flow:
 5. If the selected count is `> max_points`, read a deterministic sample.
 6. Return coordinates and features for one napari `Points` layer.
 
-Unknown selected labels should not crash the viewer. They should be reported in a warning and skipped.
+Selected labels should already come from `genes.parquet`. If a selected label is not present in `genes.parquet`, the reader should raise an error instead of warning and skipping it. That means the UI or controller allowed stale or invalid selection state to reach the reader, which is an internal consistency bug.
+
+The UI should make this rare by only allowing selections resolved from the cache-backed label search box. If the error still happens, surface it as a cache/selection consistency problem and ask the user to refresh the selection or rebuild the cache.
 
 ## Sampling Policy
 
@@ -607,7 +609,6 @@ A first implementation is successful when:
 
 Questions to answer during implementation:
 
-- Should missing selected labels be warnings only, or should strict mode raise an error?
 - Is one row group per rare gene acceptable for the datasets we care about?
 
 The only question that should block the MVP is the row-group invariant. Without gene-organized row groups, the index will not deliver the intended speedup.
