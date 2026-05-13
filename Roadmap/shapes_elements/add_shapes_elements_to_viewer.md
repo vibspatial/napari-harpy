@@ -884,7 +884,7 @@ Recommended tests:
 
 ### Slice 7: Shapes Styling Engine
 
-Status: proposed
+Status: completed
 
 Purpose:
 
