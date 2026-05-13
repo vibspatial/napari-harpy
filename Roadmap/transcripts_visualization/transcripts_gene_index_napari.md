@@ -411,11 +411,15 @@ Showing 100,000 of 2,431,912 selected transcripts.
 
 Recommended sampling policy:
 
+The MVP default is proportional sampling by transcript count, with a minimum of one point per selected label when possible. This preserves the visual meaning of density while avoiding complete disappearance of selected rare labels in sampled previews.
+
 1. Allocate a sample quota per selected label, proportional to its transcript count.
 2. If the number of selected labels is less than `max_points`, give each selected label at least one point when possible.
 3. For each label, read the first row groups in `gene_row_group` order until at least the quota is available.
 4. If the loaded rows exceed the quota, downsample by `sample_key`.
 5. Concatenate the sampled rows across labels.
+
+Balanced sampling and user-selectable sampling modes are deferred until the UI needs an explicit comparison mode. They are useful for comparing spatial patterns across labels, but they intentionally distort abundance and should not be the default.
 
 Because rows within each gene are sorted by a stable random-looking `sample_key`, reading the first row groups gives a deterministic preview without scanning the full selected subset.
 
@@ -436,9 +440,9 @@ else:
     show sampled preview and warn
 ```
 
-For all-genes sampling, proportional quotas are a reasonable default. They preserve the global abundance distribution.
+For all-label sampling, proportional quotas are the MVP default. They preserve the global abundance distribution.
 
-A possible alternative is a more balanced per-gene sample, where rare genes get more visibility than proportional sampling would give them. That is useful for exploratory biology, but it changes the visual meaning of density. Start with proportional sampling and make balanced sampling an explicit option later.
+A possible alternative is a more balanced per-label sample, where rare labels get more visibility than proportional sampling would give them. That is useful for exploratory biology, but it changes the visual meaning of density. Start with proportional sampling and make balanced sampling an explicit option later.
 
 ## napari Integration
 
@@ -568,7 +572,6 @@ A first implementation is successful when:
 
 Questions to answer during implementation:
 
-- Should the default sample be proportional, balanced across genes, or user-selectable?
 - Should missing selected labels be warnings only, or should strict mode raise an error?
 - Should cache staleness detection compare source file metadata, source row count, or a stronger fingerprint?
 - Is one row group per rare gene acceptable for the datasets we care about?
