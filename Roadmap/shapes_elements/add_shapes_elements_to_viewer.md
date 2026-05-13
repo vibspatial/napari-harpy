@@ -287,7 +287,7 @@ Add `ViewerAdapter` methods:
 - `ensure_shapes_loaded(...)`
 - `remove_shapes_layer(...)`
 
-Shape-column coloring should choose its adapter contract in Slice 5 instead of
+Shape-column coloring should choose its adapter contract in Slice 6 instead of
 baking a styled-layer model into Slice 2.
 
 As the adapter grows, avoid extending one generic public
@@ -305,7 +305,7 @@ shared private registration helper, so insertion bookkeeping and viewer signals
 stay centralized while labels-, image-, and shapes-specific parameters remain
 readable.
 
-Slice 5 should extend this binding with `shapes_role` and `style_spec` for
+Slice 6 should extend this binding with `shapes_role` and `style_spec` for
 primary/styled layer variants.
 
 After Slice 3, `ShapesLayerBinding.source_shapes_index_by_row` is the
@@ -730,7 +730,49 @@ Recommended tests:
 - styled-label string/object coercion warnings and feedback remain unchanged;
 - labels-only colormap application still uses `DirectLabelColormap`.
 
-### Slice 5: Shape-Column Coloring
+### Slice 5: Color Source Module Refactor
+
+Status: proposed
+
+Purpose:
+
+Move shared color-source datatypes out of the table-specific module before
+adding shape-column color sources. This keeps the later `ShapeColorSourceSpec`
+addition small and avoids making `table_color_source.py` a mixed table/shapes
+module.
+
+Implement:
+
+- create `core/_color_source.py` as the shared color-source module:
+  - move the existing `TableColorSourceSpec`, `ColorValueKind`, and source-kind
+    aliases there;
+  - rename any table-only source-kind alias to an explicit
+    `TableColorSourceKind`, if needed;
+  - update all imports from `napari_harpy.core.table_color_source` to
+    `napari_harpy.core._color_source`;
+  - remove `core/table_color_source.py` instead of keeping a compatibility
+    shim;
+- keep behavior unchanged for existing table-backed labels coloring and table
+  color-source discovery;
+- keep viewer styling helpers in `viewer/_styling.py`, not in
+  `core/_color_source.py`.
+
+Out of scope:
+
+- `ShapeColorSourceSpec`;
+- shape-column source discovery;
+- styled shapes layers;
+- shape coloring.
+
+Recommended tests:
+
+- existing table color-source behavior still passes after imports move to
+  `core/_color_source.py`;
+- no imports of `napari_harpy.core.table_color_source` remain;
+- no `core/table_color_source.py` compatibility shim remains;
+- styled-label coloring behavior remains unchanged after the import move.
+
+### Slice 6: Shape-Column Coloring
 
 Status: proposed
 
@@ -766,15 +808,6 @@ Implementation reuse guidance:
 
 Implement:
 
-- create `core/_color_source.py` as the shared color-source module:
-  - move the existing `TableColorSourceSpec`, `ColorValueKind`, and source-kind
-    aliases there;
-  - rename any table-only source-kind alias to an explicit
-    `TableColorSourceKind`, if needed;
-  - update all imports from `napari_harpy.core.table_color_source` to
-    `napari_harpy.core._color_source`;
-  - remove `core/table_color_source.py` instead of keeping a compatibility
-    shim;
 - add `ShapeColorSourceSpec` in `core/_color_source.py`, modelled after
   `TableColorSourceSpec` but scoped to direct shapes columns:
   - `source_kind: Literal["shape_column"]`;
@@ -861,9 +894,6 @@ Implement:
 
 Recommended tests:
 
-- existing table color-source behavior still passes after imports move to
-  `core/_color_source.py`;
-- no `core/table_color_source.py` compatibility shim remains;
 - shapes cards expose `Color source = None | Shape column` and a `Shape column`
   autocomplete populated from the shapes element;
 - geometry and explicit color/palette columns are hidden from the shape-column
@@ -900,7 +930,7 @@ Recommended tests:
 - mixed unsupported columns are hidden from the selector;
 - styled layer identity includes the selected column and is reused on repeat.
 
-### Slice 6: Explicit Shape-Table Coloring
+### Slice 7: Explicit Shape-Table Coloring
 
 Status: not planned
 
