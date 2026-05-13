@@ -917,6 +917,12 @@ Implement:
   `GeoDataFrame`, a `ShapeColorSourceSpec`, and the rendered-row mapping from
   the shapes binding: `source_shapes_index_by_row` and
   `source_shapes_index_feature_name`;
+- styled shape coloring requires a unique source `GeoDataFrame` index. Primary
+  shapes rendering can still support duplicate index labels because it only
+  draws geometry, but styled coloring uses
+  `source_shapes_index_by_row` to look up one source attribute row per rendered
+  napari row. If the source shapes index contains duplicates, raise a clear
+  `ValueError` before applying colors;
 - style shapes by categorical and continuous columns:
   - compute one base RGB color per rendered napari shape row;
   - for categorical columns, derive the base RGB color from the categorical
@@ -1041,6 +1047,8 @@ Recommended tests:
   `ShapesLayerBinding.source_shapes_index_by_row`;
 - `build_styled_shapes_layer_name(...)` returns a stable user-facing layer
   name for one shape-column style variant.
+- duplicate source `GeoDataFrame` index labels raise a clear `ValueError` for
+  styled shape coloring, while primary shapes rendering remains unaffected.
 
 ### Slice 8: Styled Shapes Adapter Path
 
@@ -1159,7 +1167,9 @@ Implement:
   - selected shape color source -> `ViewerAdapter.ensure_styled_shapes_loaded(...)`;
 - provide feedback for primary vs styled load paths, created vs updated styled
   layers, palette source, invalid companion palettes, string coercion, and
-  skipped geometries.
+  skipped geometries;
+- catch duplicate-index styled-shapes errors and show them as clean status-card
+  feedback instead of a traceback.
 
 Out of scope:
 
@@ -1179,7 +1189,8 @@ Recommended tests:
   `ensure_styled_shapes_loaded(...)`;
 - UI feedback distinguishes created vs updated styled shapes layers;
 - UI feedback includes palette source, invalid companion palettes, string
-  coercion, and skipped geometries when applicable.
+  coercion, duplicate-index styling errors, and skipped geometries when
+  applicable.
 
 ### Slice 10: Explicit Shape-Table Coloring
 

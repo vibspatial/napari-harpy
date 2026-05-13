@@ -161,7 +161,28 @@ class ImageLayerBinding(BaseLayerBinding):
 
 @dataclass(frozen=True, kw_only=True)
 class ShapesLayerBinding(BaseLayerBinding):
-    """Binding metadata specific to shapes layers."""
+    """Binding metadata specific to shapes layers.
+
+    Parameters
+    ----------
+    source_shapes_index_by_row
+        Source GeoDataFrame index label for each rendered napari shape row.
+        This can be longer than the source GeoDataFrame row count when one
+        source row, such as a ``MultiPolygon``, expands into multiple rendered
+        napari shapes. For example, if source row ``"cell_7"`` expands into
+        three polygons and ``"cell_8"`` expands into one polygon, this mapping
+        is ``("cell_7", "cell_7", "cell_7", "cell_8")``. Styled shapes use
+        it to repeat the source row's style value for every rendered part.
+    source_shapes_index_feature_name
+        Name of the ``layer.features`` column that stores the source
+        GeoDataFrame index for napari-visible inspection and status-bar text.
+        This follows the GeoDataFrame index name, falling back to ``"index"``
+        for unnamed indexes.
+    skipped_geometry_count
+        Number of source geometry rows that could not be rendered, for example
+        empty, unsupported, or invalid geometries that could not be converted
+        into renderable polygons or ellipses.
+    """
 
     element_type: Literal["shapes"] = "shapes"
     source_shapes_index_by_row: tuple[Any, ...] = ()
