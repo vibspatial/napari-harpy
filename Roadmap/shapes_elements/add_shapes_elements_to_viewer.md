@@ -171,6 +171,10 @@ class TableColorSourceSpec:
     def identity(self) -> tuple[str, TableColorSourceKind, str]:
         return (self.table_name, self.source_kind, self.value_key)
 
+    @property
+    def display_name(self) -> str:
+        return self.value_key
+
 @dataclass(frozen=True)
 class ShapeColorSourceSpec:
     source_kind: ShapeColorSourceKind
@@ -818,6 +822,8 @@ Recommended tests:
 
 - existing table color-source behavior still passes after imports move to
   `core/_color_source.py`;
+- `TableColorSourceSpec.identity` and `TableColorSourceSpec.display_name`
+  remain unchanged after the module move;
 - no imports of `napari_harpy.core.table_color_source` remain;
 - no `core/table_color_source.py` compatibility shim remains;
 - no string/object coercion or high-cardinality viewer-styling helpers are
