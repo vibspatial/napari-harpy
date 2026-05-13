@@ -62,30 +62,30 @@ def apply_shape_color_source_to_shapes_layer(
         )
 
     # Start with one style value per source GeoDataFrame row.
-    full_values = shapes_element[style_spec.value_key]
+    source_values = shapes_element[style_spec.value_key]
     # Napari rows can outnumber source rows when a MultiPolygon expands into
     # multiple rendered polygons, so this index repeats source labels in
     # rendered-row order, e.g. ("cell_7", "cell_7", "cell_8").
-    source_index = pd.Index(source_shapes_index_by_row)
-    missing_source_indices = source_index[~source_index.isin(full_values.index)]
+    source_index_by_rendered_row = pd.Index(source_shapes_index_by_row)
+    missing_source_indices = source_index_by_rendered_row[~source_index_by_rendered_row.isin(source_values.index)]
     if len(missing_source_indices) > 0:
         preview = ", ".join(repr(value) for value in pd.unique(missing_source_indices)[:5])
         raise ValueError(f"Could not align rendered shapes back to source index label(s): {preview}.")
 
     # Reindex repeats/reorders source values so there is exactly one style
     # value per rendered napari shape row, then switch to napari row numbering.
-    row_values = full_values.reindex(source_index)
-    row_values.index = pd.RangeIndex(len(row_values))
+    rendered_row_values = source_values.reindex(source_index_by_rendered_row)
+    rendered_row_values.index = pd.RangeIndex(len(rendered_row_values))
 
     if style_spec.value_kind == "categorical":
         style_result, rendered_row_colors, feature_values = _build_categorical_shape_style(
             shapes_element=shapes_element,
             column_name=style_spec.value_key,
-            full_values=full_values,
-            row_values=row_values,
+            source_values=source_values,
+            rendered_row_values=rendered_row_values,
         )
     else:
-        style_result, rendered_row_colors, feature_values = _build_continuous_shape_style(row_values)
+        style_result, rendered_row_colors, feature_values = _build_continuous_shape_style(rendered_row_values)
 
     _apply_rendered_row_colors_to_shapes_layer(layer, rendered_row_colors)
     # Unlike styled labels, styled shapes already have a useful feature table
@@ -127,64 +127,71 @@ def _build_categorical_shape_style(
     *,
     shapes_element: gpd.GeoDataFrame,
     column_name: str,
-    full_values: pd.Series,
-    row_values: pd.Series,
+    source_values: pd.Series,
+    rendered_row_values: pd.Series,
 ) -> tuple[StyledShapesStyleResult, pd.Series, pd.Series]:
     """Build categorical colors from source-level values and rendered-row values.
 
-    ``full_values`` is the source-level truth: it is one value per source
-    GeoDataFrame row and is used for category discovery, companion palette
-    validation, and string/object coercion warnings. ``row_values`` is already
-    aligned to rendered napari shape rows, so it can repeat one source value
-    for multiple rendered polygon parts and is used for actual coloring and
-    ``layer.features``. Some source rows can be skipped before rendering
-    because their geometries are empty, invalid, or unsupported, so
-    ``row_values`` may be only a rendered subset of the source values. Category
-    and companion-palette resolution therefore use ``full_values`` instead of
-    the rendered subset.
+    Parameters
+    ----------
+    shapes_element
+        Source GeoDataFrame used to resolve optional companion palette columns.
+    column_name
+        Source column name used in warning messages and companion palette
+        lookup.
+    source_values
+        Complete source column with one value per source GeoDataFrame row.
+        Category discovery, companion palette validation, and string/object
+        coercion warnings use this complete series so styling remains stable
+        even when only a subset of source rows is rendered.
+    rendered_row_values
+        Values already aligned to rendered napari shape rows. This series can
+        repeat one source value for multiple rendered polygon parts, and can be
+        a subset of ``source_values`` when empty, invalid, or unsupported source
+        geometries were skipped before rendering.
     """
     companion_palette_allowed = True
     coercion_applied = False
 
-    if _is_categorical_dtype(full_values):
-        normalized_full_values = _normalize_category_series(full_values)
-        normalized_row_values = _normalize_category_series(row_values)
-        categories = _present_categories(normalized_full_values, full_values.cat.categories)
-    elif _is_bool_series(full_values):
-        normalized_full_values = _normalize_category_series(full_values)
-        normalized_row_values = _normalize_category_series(row_values)
-        categories = _present_categories(normalized_full_values, [False, True])
-    elif _is_exact_binary_integer_series(full_values):
-        numeric_full_values = pd.to_numeric(full_values, errors="coerce").astype("Int64")
-        numeric_row_values = pd.to_numeric(row_values, errors="coerce").astype("Int64")
-        normalized_full_values = _normalize_category_series(numeric_full_values)
-        normalized_row_values = _normalize_category_series(numeric_row_values)
-        categories = _present_categories(normalized_full_values, [0, 1])
-    elif is_string_like_series(full_values):
-        normalized_row_values, categories = build_string_categorical_values(
-            full_values=full_values,
-            row_values=row_values,
+    if _is_categorical_dtype(source_values):
+        normalized_source_values = _normalize_category_series(source_values)
+        normalized_rendered_row_values = _normalize_category_series(rendered_row_values)
+        categories = _present_categories(normalized_source_values, source_values.cat.categories)
+    elif _is_bool_series(source_values):
+        normalized_source_values = _normalize_category_series(source_values)
+        normalized_rendered_row_values = _normalize_category_series(rendered_row_values)
+        categories = _present_categories(normalized_source_values, [False, True])
+    elif _is_exact_binary_integer_series(source_values):
+        numeric_source_values = pd.to_numeric(source_values, errors="coerce").astype("Int64")
+        numeric_rendered_row_values = pd.to_numeric(rendered_row_values, errors="coerce").astype("Int64")
+        normalized_source_values = _normalize_category_series(numeric_source_values)
+        normalized_rendered_row_values = _normalize_category_series(numeric_rendered_row_values)
+        categories = _present_categories(normalized_source_values, [0, 1])
+    elif is_string_like_series(source_values):
+        normalized_rendered_row_values, categories = build_string_categorical_values(
+            full_values=source_values,
+            row_values=rendered_row_values,
             column_name=column_name,
         )
-        normalized_full_values = pd.Series(
-            [pd.NA if pd.isna(value) else str(value) for value in full_values],
-            index=full_values.index,
+        normalized_source_values = pd.Series(
+            [pd.NA if pd.isna(value) else str(value) for value in source_values],
+            index=source_values.index,
             name=column_name,
             dtype="object",
         )
         companion_palette_allowed = False
         coercion_applied = True
     else:
-        normalized_full_values = _normalize_category_series(full_values)
-        normalized_row_values = _normalize_category_series(row_values)
-        categories = list(pd.unique(normalized_full_values.dropna()))
+        normalized_source_values = _normalize_category_series(source_values)
+        normalized_rendered_row_values = _normalize_category_series(rendered_row_values)
+        categories = list(pd.unique(normalized_source_values.dropna()))
         companion_palette_allowed = False
 
     if companion_palette_allowed:
         palette_source, palette = _resolve_shape_categorical_palette(
             shapes_element=shapes_element,
             column_name=column_name,
-            full_values=normalized_full_values,
+            source_values=normalized_source_values,
             categories=categories,
         )
     else:
@@ -192,7 +199,7 @@ def _build_categorical_shape_style(
         palette = default_categorical_palette_for_categories(categories)
 
     rendered_row_colors = categorical_colors_for_values(
-        normalized_row_values,
+        normalized_rendered_row_values,
         categories=categories,
         palette=palette,
         missing_color=SHAPES_MISSING_BASE_COLOR,
@@ -204,13 +211,18 @@ def _build_categorical_shape_style(
             coercion_applied=coercion_applied,
         ),
         rendered_row_colors,
-        normalized_row_values,
+        normalized_rendered_row_values,
     )
 
 
-def _build_continuous_shape_style(row_values: pd.Series) -> tuple[StyledShapesStyleResult, pd.Series, pd.Series]:
-    numeric_row_values = pd.to_numeric(row_values, errors="coerce").astype("float64")
-    rendered_row_colors = continuous_colors_for_values(numeric_row_values, missing_color=SHAPES_MISSING_BASE_COLOR)
+def _build_continuous_shape_style(
+    rendered_row_values: pd.Series,
+) -> tuple[StyledShapesStyleResult, pd.Series, pd.Series]:
+    numeric_rendered_row_values = pd.to_numeric(rendered_row_values, errors="coerce").astype("float64")
+    rendered_row_colors = continuous_colors_for_values(
+        numeric_rendered_row_values,
+        missing_color=SHAPES_MISSING_BASE_COLOR,
+    )
     return (
         StyledShapesStyleResult(
             value_kind="continuous",
@@ -218,7 +230,7 @@ def _build_continuous_shape_style(row_values: pd.Series) -> tuple[StyledShapesSt
             coercion_applied=False,
         ),
         rendered_row_colors,
-        numeric_row_values,
+        numeric_rendered_row_values,
     )
 
 
@@ -226,7 +238,7 @@ def _resolve_shape_categorical_palette(
     *,
     shapes_element: gpd.GeoDataFrame,
     column_name: str,
-    full_values: pd.Series,
+    source_values: pd.Series,
     categories: Sequence[object],
 ) -> tuple[StyledPaletteSource, list[Any]]:
     colors_column_name = f"{column_name}_colors"
@@ -239,7 +251,7 @@ def _resolve_shape_categorical_palette(
     companion_colors = shapes_element[colors_column_name]
     color_by_category: dict[object, Any] = {}
     for category in categories:
-        category_mask = full_values == category
+        category_mask = source_values == category
         category_colors = companion_colors.loc[category_mask.fillna(False)].dropna()
         if category_colors.empty:
             logger.warning(

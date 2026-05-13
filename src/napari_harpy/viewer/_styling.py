@@ -26,7 +26,22 @@ def build_string_categorical_values(
     row_values: pd.Series,
     column_name: str,
 ) -> tuple[pd.Series, list[object]]:
-    """Return viewer-only categorical values for a plain string/object column."""
+    """Return viewer-only categorical values for a plain string/object column.
+
+    Parameters
+    ----------
+    full_values
+        Complete source column used for category discovery and cardinality
+        warnings. Deriving categories from this complete series keeps the
+        temporary categorical palette stable even when the currently rendered
+        rows contain only a subset of the source values.
+    row_values
+        Already-aligned subset or repetition used by the viewer layer, for
+        example linked labels table rows for one region or rendered shape rows
+        after a ``MultiPolygon`` expands into multiple napari rows.
+    column_name
+        Source column name used in viewer-facing warning messages.
+    """
     normalized_full_values = pd.Series(
         [normalize_string_value(value) for value in full_values],
         index=full_values.index,
