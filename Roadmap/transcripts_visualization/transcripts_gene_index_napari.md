@@ -8,7 +8,7 @@ This document proposes a narrower MVP:
 
 - start from `sdata.points["transcripts"]`;
 - validate that the points table has `x`, `y`, and `gene` columns, or another configured index column;
-- build a gene-first cache optimized for quickly loading selected genes;
+- build a label-first cache optimized for quickly loading selected genes or another configured string/categorical label;
 - visualize the selected result in one napari `Points` layer;
 - if the selected subset is too large, show a deterministic sample and warn the user.
 
@@ -77,11 +77,11 @@ The MVP supports:
 - backed `SpatialData`;
 - one points element, initially `sdata.points["transcripts"]`;
 - required coordinate columns, default `x="x"` and `y="y"`;
-- required index column, default `gene="gene"`;
+- configurable string/categorical index column, default `gene="gene"`;
 - exact visualization when the selected subset is below a render threshold;
 - sampled visualization when the selected subset exceeds the threshold;
 - one napari `Points` layer for the selected subset;
-- programmatic gene selection first, with a simple UI later.
+- programmatic label selection first, with a simple UI for choosing the index column and values later.
 
 The MVP does not support:
 
@@ -110,16 +110,34 @@ y
 gene
 ```
 
-The gene column may later be generalized to another index column, for example `feature_name`, `gene_id`, or `target`.
+The first implementation should already allow the user to choose the index column. The default is `gene`, but any eligible label column can be used.
+
+Eligible index columns:
+
+- are not the configured `x` or `y` coordinate columns;
+- have string-like values or a categorical dtype;
+- can be normalized to non-empty string labels.
+
+Examples:
+
+```text
+gene
+feature_name
+target
+probe
+```
+
+The cache can keep the existing `gene` terminology in file names and internal fields for the MVP, but it should store the actual source column name in `metadata.json`. In this document, "gene" often means "the configured index-label column".
 
 Validation should reject:
 
 - missing coordinate columns;
 - missing index column;
+- an index column that is neither string-like nor categorical;
 - non-numeric `x` or `y`;
 - non-finite `x` or `y`;
-- missing gene values;
-- gene values whose string form is empty after stripping whitespace;
+- missing index-label values;
+- index-label values whose string form is empty after stripping whitespace;
 - empty dataframes.
 
 Optional input:
@@ -173,8 +191,8 @@ Sort genes lexicographically for deterministic `gene_id` assignment in the first
 
 The reader uses this file to:
 
-- resolve selected gene names to `gene_id`;
-- report unknown genes;
+- resolve selected labels to `gene_id`;
+- report unknown labels;
 - estimate the selected transcript count before reading data;
 - decide whether the selection should be exact or sampled.
 
@@ -226,8 +244,8 @@ The data files store the displayable transcript rows.
 Required columns:
 
 ```text
-x: float32 or float64
-y: float32 or float64
+x: float32
+y: float32
 gene_id: uint32
 sample_key: uint64
 ```
@@ -238,7 +256,7 @@ Optional columns:
 transcript_id
 ```
 
-For visualization, `float32` coordinates are likely sufficient and reduce memory pressure. The canonical full-precision values remain in `points.parquet`. If we want exact coordinate preservation for picked transcripts, keep `float64` or use `transcript_id` to look up canonical rows later.
+Store display coordinates as `float32`. This is good enough for napari transcript visualization and reduces memory pressure in both the cache and the `Points` layer. The canonical full-precision values remain in `points.parquet`. If exact coordinate preservation is needed for picked transcripts later, use `transcript_id` to look up canonical rows.
 
 Rows inside each gene should be ordered by a stable random-looking `sample_key`.
 
@@ -323,7 +341,7 @@ Implementation steps:
 
 1. Validate the backed `SpatialData` object and resolve the points element path with `sdata.locate_element(...)`.
 2. Validate the points dataframe schema and data quality.
-3. Normalize gene labels by stripping whitespace and converting valid values to strings.
+3. Normalize selected index labels by stripping whitespace and converting valid values to strings.
 4. Build `genes.parquet` using a Dask `value_counts`.
 5. Assign deterministic `gene_id` values from the sorted gene table.
 6. Create a working dataframe with `x`, `y`, `gene_id`, optional `transcript_id`, and `sample_key`.
@@ -357,13 +375,13 @@ The reader should use `pyarrow`, not Dask, in the interactive path.
 Runtime flow:
 
 1. Load `metadata.json`, `genes.parquet`, and `gene_index.parquet`.
-2. Resolve selected gene names to `gene_id`.
-3. Sum `n_transcripts` for the selected genes before reading data.
-4. If the selected count is `<= max_points`, read all row groups for those genes.
+2. Resolve selected labels to `gene_id`.
+3. Sum `n_transcripts` for the selected labels before reading data.
+4. If the selected count is `<= max_points`, read all row groups for those labels.
 5. If the selected count is `> max_points`, read a deterministic sample.
 6. Return coordinates and features for one napari `Points` layer.
 
-Unknown genes should not crash the viewer. They should be reported in a warning and skipped.
+Unknown selected labels should not crash the viewer. They should be reported in a warning and skipped.
 
 ## Sampling Policy
 
@@ -373,13 +391,13 @@ The default threshold should start at:
 max_points = 100_000
 ```
 
-If the selected genes contain at most `max_points` transcripts:
+If the selected labels contain at most `max_points` transcripts:
 
 ```text
 show exact selected transcripts
 ```
 
-If the selected genes contain more than `max_points` transcripts:
+If the selected labels contain more than `max_points` transcripts:
 
 ```text
 show a deterministic sample and warn the user
@@ -393,11 +411,11 @@ Showing 100,000 of 2,431,912 selected transcripts.
 
 Recommended sampling policy:
 
-1. Allocate a sample quota per selected gene, proportional to its transcript count.
-2. If the number of selected genes is less than `max_points`, give each selected gene at least one point when possible.
-3. For each gene, read the first row groups in `gene_row_group` order until at least the quota is available.
+1. Allocate a sample quota per selected label, proportional to its transcript count.
+2. If the number of selected labels is less than `max_points`, give each selected label at least one point when possible.
+3. For each label, read the first row groups in `gene_row_group` order until at least the quota is available.
 4. If the loaded rows exceed the quota, downsample by `sample_key`.
-5. Concatenate the sampled rows across genes.
+5. Concatenate the sampled rows across labels.
 
 Because rows within each gene are sorted by a stable random-looking `sample_key`, reading the first row groups gives a deterministic preview without scanning the full selected subset.
 
@@ -430,8 +448,8 @@ Layer behavior:
 
 - layer name: `transcripts` or `transcripts: selected genes`;
 - data: `Nx2` array from `y, x` or `x, y`, matching the coordinate convention used elsewhere in Harpy;
-- features: at least `gene`;
-- face color: categorical by `gene` for small gene selections;
+- features: at least the configured index-label column;
+- face color: categorical by the configured index-label column for small selections;
 - warning: displayed when the layer is sampled.
 
 Important implementation detail:
@@ -442,7 +460,7 @@ Do not create one napari layer per gene.
 
 A single layer is easier to update, hide, remove, and later connect to a controller.
 
-For many selected genes, categorical coloring may become visually noisy. The first version can still attach the `gene` feature and use a simple color cycle, then refine the UI later.
+For many selected labels, categorical coloring may become visually noisy. The first version can still attach the configured label feature and use a simple color cycle, then refine the UI later.
 
 ## Why This Should Feel Snappy
 
@@ -452,10 +470,10 @@ This MVP avoids the current slow path:
 load full dask dataframe -> compute all rows -> filter/subsample
 ```
 
-Instead, selected-gene display becomes:
+Instead, selected-label display becomes:
 
 ```text
-selected gene names
+selected labels
 -> gene_id values
 -> row groups listed in gene_index.parquet
 -> pyarrow read of only those row groups
@@ -465,7 +483,7 @@ selected gene names
 For sampled large selections:
 
 ```text
-selected gene names
+selected labels
 -> per-gene quotas
 -> first few sample-key-sorted row groups per gene
 -> pyarrow read of a bounded number of rows
@@ -550,10 +568,8 @@ A first implementation is successful when:
 
 Questions to answer during implementation:
 
-- Should display coordinates be stored as `float32` or preserve source dtype?
-- Should the first UI expose only gene names, or any configured index column?
 - Should the default sample be proportional, balanced across genes, or user-selectable?
-- Should missing selected genes be warnings only, or should strict mode raise an error?
+- Should missing selected labels be warnings only, or should strict mode raise an error?
 - Should cache staleness detection compare source file metadata, source row count, or a stronger fingerprint?
 - Is one row group per rare gene acceptable for the datasets we care about?
 
