@@ -171,6 +171,8 @@ If present, `transcript_id` should be used for stable sampling. If absent, the b
 
 ## Cache Lifecycle
 
+Use the same staged replacement pattern as `_transcript_tiles.py`: build in a unique sibling temporary directory, validate required files, move any existing valid cache to a backup, rename the completed build into place, restore the backup on failure, and remove temporary/backup directories after completion.
+
 The builder should never write directly into the final cache directory:
 
 ```text
@@ -211,7 +213,9 @@ points element + index column
 
 Rebuilding the `gene` cache must not delete or stale the `target` cache, and rebuilding the `target` cache must not affect the `gene` cache.
 
-Only one build should run for the same cache identity at a time. If a second build is requested while another build for the same points element and index column is running, the UI should report that the cache is already building and keep the existing cache state. Builds for different index columns can be allowed independently later, but the first implementation can serialize all transcript value-index builds if that is simpler.
+Only one build should run for the same cache identity at a time. While a cache build is running, the UI should disable the build/rebuild button for that cache identity and report that the cache is building. Builds for different index columns can be allowed independently later, but the first implementation can serialize all transcript value-index builds if that is simpler.
+
+If a valid cache already exists for the selected points element and index column, clicking rebuild should show a confirmation dialog before overwriting it. If the user cancels, the existing cache should remain unchanged and no temporary build should start.
 
 ## Cache Files
 
@@ -945,11 +949,13 @@ Includes:
 - points element selector;
 - index column selector;
 - create or rebuild cache button;
+- confirmation dialog before rebuilding an existing valid cache;
 - cache status display;
 - value search and select control backed by `values.parquet`;
 - visualize selected values button;
 - all-values option;
-- disable controls when cache is missing, stale, building, or loading;
+- disable the build/rebuild button while a cache build is running;
+- disable visualization controls when cache is missing, stale, building, or loading;
 - run build and read without freezing the UI where practical.
 
 Tests:
