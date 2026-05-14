@@ -24,6 +24,7 @@ from napari_harpy.viewer.adapter import (
     ShapesLayerBinding,
     ViewerAdapter,
 )
+from napari_harpy.viewer.shapes_styling import SHAPES_FACE_ALPHA
 
 
 class DummyEventEmitter:
@@ -1234,12 +1235,35 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_creates_registered_variant_w
     assert binding.source_shapes_index_feature_name == "index"
     assert list(result.layer.features.columns) == ["index", "cell_type"]
     assert result.layer.features["cell_type"].to_list() == ["T", "B"]
-    np.testing.assert_allclose(result.layer.face_color[0], (*to_rgba("#ff0000")[:3], 0.35))
+    np.testing.assert_allclose(result.layer.face_color[0], (*to_rgba("#ff0000")[:3], 0.0))
     np.testing.assert_allclose(result.layer.edge_color[1], (*to_rgba("#00ff00")[:3], 1.0))
     assert "shapes_role" not in result.layer.metadata
     assert "style_source_kind" not in result.layer.metadata
     assert "style_value_key" not in result.layer.metadata
     assert "style_value_kind" not in result.layer.metadata
+
+
+def test_viewer_adapter_ensure_styled_shapes_loaded_updates_fill_alpha_on_existing_variant() -> None:
+    sdata = make_colorable_shapes_sdata()
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = ShapeColorSourceSpec(
+        source_kind="shape_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    first = adapter.ensure_styled_shapes_loaded(sdata, "cell_boundaries", "global", style_spec)
+
+    np.testing.assert_allclose(first.layer.face_color[:, 3], np.zeros(len(first.layer.data)))
+
+    second = adapter.ensure_styled_shapes_loaded(sdata, "cell_boundaries", "global", style_spec, fill=True)
+
+    assert second.layer is first.layer
+    assert second.created is False
+    assert len(viewer.layers) == 1
+    np.testing.assert_allclose(first.layer.face_color[:, 3], np.full(len(first.layer.data), SHAPES_FACE_ALPHA))
+    np.testing.assert_allclose(first.layer.edge_color[:, 3], np.ones(len(first.layer.data)))
 
 
 def test_viewer_adapter_styled_shapes_status_includes_selected_shape_column() -> None:

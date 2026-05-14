@@ -174,6 +174,7 @@ class ShapesLoadRequest:
     shapes_name: str
     selected_source_kind: ShapeColorSourceKind | None
     selected_color_source: ShapeColorSourceSpec | None
+    fill_shapes: bool
 
 
 class _ElidedLabel(QLabel):
@@ -945,6 +946,11 @@ class _ShapesCardWidget(QFrame):
         self.color_source_value_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.color_source_value_input.setEnabled(False)
 
+        self.fill_toggle = QCheckBox("Fill")
+        self.fill_toggle.setObjectName(f"viewer_widget_shapes_fill_toggle_{shapes_name}")
+        self.fill_toggle.setStyleSheet(_CHECKBOX_STYLESHEET)
+        self.fill_toggle.setChecked(False)
+
         self._color_source_completer_model = QStringListModel(self.color_source_value_input)
         self._color_source_completer = QCompleter(self._color_source_completer_model, self.color_source_value_input)
         self._color_source_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
@@ -966,6 +972,7 @@ class _ShapesCardWidget(QFrame):
 
         form_layout.addRow(color_source_kind_label, self.color_source_kind_combo)
         form_layout.addRow(self.color_source_value_label, self.color_source_value_input)
+        form_layout.addRow(_create_form_label("Display"), self.fill_toggle)
 
         layout.addLayout(form_layout)
         layout.addWidget(self.action_status_label)
@@ -989,6 +996,10 @@ class _ShapesCardWidget(QFrame):
             if source.display_name == current_text:
                 return source
         return None
+
+    @property
+    def fill_shapes(self) -> bool:
+        return self.fill_toggle.isChecked()
 
     def _refresh_color_source_controls(self, _index: int | None = None) -> None:
         selected_source_identity = (
@@ -1070,6 +1081,7 @@ class _ShapesCardWidget(QFrame):
                 shapes_name=self.shapes_name,
                 selected_source_kind=self.selected_source_kind,
                 selected_color_source=self.selected_color_source,
+                fill_shapes=self.fill_shapes,
             )
         )
 
@@ -1686,6 +1698,7 @@ class ViewerWidget(QWidget):
                 request.shapes_name,
                 coordinate_system,
                 request.selected_color_source,
+                fill=request.fill_shapes,
             )
         except ValueError as error:
             self._set_action_feedback(title="Styled Shapes Error", lines=[str(error)], kind="error")
@@ -1700,7 +1713,7 @@ class ViewerWidget(QWidget):
         )
         feedback_kind: StatusCardKind = "success"
         title = f"Styled Shapes {action}"
-        lines = [action_line]
+        lines = [action_line, _shape_fill_feedback_line(request.fill_shapes)]
         if result.coercion_applied:
             feedback_kind = "warning"
             title = f"{title} With Warning"
@@ -1924,6 +1937,10 @@ def _clear_layout(layout: QLayout) -> None:
 
 def _create_form_label(text: str) -> QLabel:
     return create_form_label(text)
+
+
+def _shape_fill_feedback_line(fill_shapes: bool) -> str:
+    return "Rendered filled shape faces." if fill_shapes else "Rendered outline-only shape faces."
 
 
 def _get_labels_in_coordinate_system(sdata: SpatialData, coordinate_system: str) -> list[str]:

@@ -53,6 +53,7 @@ def apply_shape_color_source_to_shapes_layer(
     style_spec: ShapeColorSourceSpec,
     source_shapes_index_by_row: tuple[Any, ...],
     source_shapes_index_feature_name: str,
+    fill: bool = False,
 ) -> StyledShapesStyleResult:
     """Apply one direct shapes-column color source to a napari ``Shapes`` layer."""
     if style_spec.source_kind != "shape_column":
@@ -95,7 +96,7 @@ def apply_shape_color_source_to_shapes_layer(
     else:
         style_result, rendered_row_colors, feature_values = _build_continuous_shape_style(rendered_row_values)
 
-    _apply_rendered_row_colors_to_shapes_layer(layer, rendered_row_colors)
+    _apply_rendered_row_colors_to_shapes_layer(layer, rendered_row_colors, fill=fill)
     # Unlike styled labels, styled shapes already have a useful feature table
     # from the geometry-loading path: the source GeoDataFrame index column used
     # for status-bar display. Preserve it and add only the selected style source
@@ -251,9 +252,7 @@ def _resolve_shape_categorical_palette(
 ) -> tuple[StyledPaletteSource, list[Any]]:
     colors_column_name = f"{column_name}_colors"
     if colors_column_name not in shapes_element.columns:
-        logger.info(
-            f"No `{colors_column_name}` companion color column found; using the default categorical palette."
-        )
+        logger.info(f"No `{colors_column_name}` companion color column found; using the default categorical palette.")
         return "default_missing", default_categorical_palette_for_categories(categories)
 
     companion_colors = shapes_element[colors_column_name]
@@ -292,14 +291,23 @@ def _resolve_shape_categorical_palette(
     return "stored", [color_by_category[normalize_category_value(category)] for category in categories]
 
 
-def _apply_rendered_row_colors_to_shapes_layer(layer: Shapes, rendered_row_colors: pd.Series) -> None:
+def _apply_rendered_row_colors_to_shapes_layer(
+    layer: Shapes,
+    rendered_row_colors: pd.Series,
+    *,
+    fill: bool = False,
+) -> None:
     if len(rendered_row_colors) != len(layer.data):
         raise ValueError("Rendered-row colors must contain one color for each rendered napari shape row.")
-    layer.face_color = _with_alpha(rendered_row_colors, SHAPES_FACE_ALPHA)
+    layer.face_color = _with_alpha(rendered_row_colors, _styled_shapes_face_alpha(fill))
     layer.edge_color = _with_alpha(rendered_row_colors, SHAPES_EDGE_ALPHA)
     refresh = getattr(layer, "refresh", None)
     if callable(refresh):
         refresh()
+
+
+def _styled_shapes_face_alpha(fill: bool) -> float:
+    return SHAPES_FACE_ALPHA if fill else 0.0
 
 
 def _set_shape_style_feature(
@@ -371,8 +379,7 @@ def _is_exact_binary_integer_series(values: pd.Series) -> bool:
     if non_null.empty:
         return False
     if not pd.api.types.is_integer_dtype(values.dtype) and not all(
-        isinstance(value, int | np.integer) and not isinstance(value, bool | np.bool_)
-        for value in non_null.tolist()
+        isinstance(value, int | np.integer) and not isinstance(value, bool | np.bool_) for value in non_null.tolist()
     ):
         return False
 

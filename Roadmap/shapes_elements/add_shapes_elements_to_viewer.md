@@ -1219,7 +1219,7 @@ Recommended tests:
 
 ### Slice 11: Styled Shapes Fill Toggle
 
-Status: proposed
+Status: completed
 
 Purpose:
 
@@ -1227,7 +1227,7 @@ Let users choose whether a styled shapes layer is rendered as filled polygons
 or as colored outlines only. This is useful for shape elements where filled
 polygons hide holes, neighboring outlines, or underlying image/label context.
 
-Current behavior:
+Previous behavior:
 
 - styled shapes always use `SHAPES_FACE_ALPHA = 0.35`;
 - styled shapes always use `SHAPES_EDGE_ALPHA = 1.0`;
@@ -1269,7 +1269,7 @@ Implementation notes:
 - keep the styled layer name stable, e.g.
   `cell_boundaries[shape:cell_type]`, regardless of fill state.
 
-Recommended tests:
+Implemented tests:
 
 - shapes card always exposes an enabled `Fill` checkbox;
 - checkbox defaults to unchecked;
