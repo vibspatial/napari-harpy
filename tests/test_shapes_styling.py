@@ -77,10 +77,10 @@ def test_apply_shape_color_source_to_shapes_layer_uses_stored_categorical_compan
         layer.face_color,
         np.asarray(
             [
-                _rgba("red", SHAPES_FACE_ALPHA),
-                _rgba("red", SHAPES_FACE_ALPHA),
-                _rgba("blue", SHAPES_FACE_ALPHA),
-                _rgba(SHAPES_MISSING_BASE_COLOR, SHAPES_FACE_ALPHA),
+                _rgba("red", 0.0),
+                _rgba("red", 0.0),
+                _rgba("blue", 0.0),
+                _rgba(SHAPES_MISSING_BASE_COLOR, 0.0),
             ]
         ),
     )
@@ -124,7 +124,7 @@ def test_apply_shape_color_source_to_shapes_layer_uses_continuous_colormap_and_m
         pd.Series([0.0, 10.0, np.nan]),
         missing_color=SHAPES_MISSING_BASE_COLOR,
     )
-    expected_face = np.asarray([_rgba(color, SHAPES_FACE_ALPHA) for color in rendered_row_colors])
+    expected_face = np.asarray([_rgba(color, 0.0) for color in rendered_row_colors])
     expected_edge = np.asarray([_rgba(color, SHAPES_EDGE_ALPHA) for color in rendered_row_colors])
 
     assert result.value_kind == "continuous"
@@ -134,6 +134,32 @@ def test_apply_shape_color_source_to_shapes_layer_uses_continuous_colormap_and_m
     np.testing.assert_allclose(layer.edge_color, expected_edge)
     assert layer.features["score"].to_list()[:2] == [0.0, 10.0]
     assert pd.isna(layer.features["score"].iloc[2])
+
+
+def test_apply_shape_color_source_to_shapes_layer_can_fill_faces() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"score": [0.0, 10.0]},
+        geometry=[_polygon(0), _polygon(2)],
+        index=["cell_1", "cell_2"],
+    )
+    layer = _make_shapes_layer(("cell_1", "cell_2"))
+    style_spec = ShapeColorSourceSpec(
+        source_kind="shape_column",
+        value_key="score",
+        value_kind="continuous",
+    )
+
+    apply_shape_color_source_to_shapes_layer(
+        layer,
+        shapes_element=geodataframe,
+        style_spec=style_spec,
+        source_shapes_index_by_row=("cell_1", "cell_2"),
+        source_shapes_index_feature_name="index",
+        fill=True,
+    )
+
+    np.testing.assert_allclose(layer.face_color[:, 3], np.full(len(layer.data), SHAPES_FACE_ALPHA))
+    np.testing.assert_allclose(layer.edge_color[:, 3], np.full(len(layer.data), SHAPES_EDGE_ALPHA))
 
 
 @pytest.mark.parametrize(

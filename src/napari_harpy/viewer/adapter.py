@@ -1055,6 +1055,8 @@ class ViewerAdapter(QObject):
         shapes_name: str,
         coordinate_system: str,
         style_spec: ShapeColorSourceSpec,
+        *,
+        fill: bool = False,
     ) -> StyledShapesLoadResult:
         """Load or update one styled shapes layer variant."""
         existing_layer = self.get_loaded_styled_shapes_layer(
@@ -1101,6 +1103,7 @@ class ViewerAdapter(QObject):
             style_spec=style_spec,
             source_shapes_index_by_row=binding.source_shapes_index_by_row,
             source_shapes_index_feature_name=binding.source_shapes_index_feature_name,
+            fill=fill,
         )
         return StyledShapesLoadResult(
             layer=layer,

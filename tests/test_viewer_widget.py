@@ -18,6 +18,7 @@ from spatialdata.transformations import Identity
 import napari_harpy._app_state as app_state_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
 from napari_harpy.core._color_source import ShapeColorSourceSpec, TableColorSourceSpec
+from napari_harpy.viewer.shapes_styling import SHAPES_FACE_ALPHA
 from napari_harpy.widgets.viewer.widget import ViewerWidget
 
 
@@ -1211,18 +1212,30 @@ def test_viewer_widget_shapes_card_exposes_shape_column_controls(qtbot) -> None:
 
     assert [card.color_source_kind_combo.itemText(index) for index in range(card.color_source_kind_combo.count())] == [
         "None",
-        "Shape column",
+        "Shapes column",
     ]
-    assert card.color_source_value_label.text() == "Shape column"
+    assert card.color_source_value_label.text() == "Shapes column"
     assert not card.color_source_value_input.isEnabled()
+    assert card.fill_toggle.text() == "Fill"
+    assert not card.fill_toggle.isEnabled()
+    assert not card.fill_toggle.isChecked()
     assert card.action_status_label.text() == "Action: add/update primary shapes layer"
 
     card.color_source_kind_combo.setCurrentIndex(1)
 
     assert card.color_source_value_input.isEnabled()
-    assert card.color_source_value_input.placeholderText() == "Search shape columns"
+    assert card.color_source_value_input.placeholderText() == "Search shapes columns"
+    assert card.fill_toggle.isEnabled()
+    assert not card.fill_toggle.isChecked()
     assert card._color_source_completer_model.stringList() == ["cell_type", "score", "free_text"]
-    assert card.action_status_label.text() == 'Action: add/update styled shapes layer for shape["cell_type"]'
+    assert card.action_status_label.text() == 'Action: add/update styled shapes layer for column "cell_type"'
+
+    card.fill_toggle.setChecked(True)
+    card.color_source_value_input.setText("not_a_shape_column")
+
+    assert not card.fill_toggle.isEnabled()
+    assert not card.fill_toggle.isChecked()
+    assert card.action_status_label.text() == "Action: select a shapes column for a styled shapes layer"
 
 
 def test_viewer_widget_shape_column_selector_hides_geometry_and_palette_columns(qtbot) -> None:
@@ -1256,6 +1269,7 @@ def test_viewer_widget_add_update_shapes_with_shape_column_dispatches_to_styled_
     monkeypatch.setattr(widget, "_add_or_update_styled_shapes_layer", lambda request: recorded_requests.append(request))
     card = widget.shape_cards[0]
     _select_shape_column(card, "score")
+    card.fill_toggle.setChecked(True)
 
     card.add_update_button.click()
 
@@ -1268,6 +1282,7 @@ def test_viewer_widget_add_update_shapes_with_shape_column_dispatches_to_styled_
         value_key="score",
         value_kind="continuous",
     )
+    assert request.fill_shapes is True
 
 
 def test_viewer_widget_add_update_styled_shapes_creates_and_updates_layer(qtbot) -> None:
@@ -1297,16 +1312,19 @@ def test_viewer_widget_add_update_styled_shapes_creates_and_updates_layer(qtbot)
         value_key="cell_type",
         value_kind="categorical",
     )
+    np.testing.assert_allclose(layer.face_color[:, 3], np.zeros(len(layer.data)))
     _assert_action_feedback_card(widget, title="Styled Shapes Created", kind="success")
-    assert 'Created styled shapes layer for shape["cell_type"]' in widget.action_feedback_label.text()
+    assert 'Created styled shapes layer for column "cell_type"' in widget.action_feedback_label.text()
     assert "Used the stored categorical palette." in widget.action_feedback_label.text()
 
+    card.fill_toggle.setChecked(True)
     card.add_update_button.click()
 
     assert len(viewer.layers) == 1
     assert viewer.layers[0] is layer
+    np.testing.assert_allclose(layer.face_color[:, 3], np.full(len(layer.data), SHAPES_FACE_ALPHA))
     _assert_action_feedback_card(widget, title="Styled Shapes Updated", kind="success")
-    assert 'Updated styled shapes layer for shape["cell_type"]' in widget.action_feedback_label.text()
+    assert 'Updated styled shapes layer for column "cell_type"' in widget.action_feedback_label.text()
 
 
 def test_viewer_widget_styled_shapes_feedback_reports_missing_palette(qtbot) -> None:
@@ -1407,6 +1425,7 @@ def test_viewer_widget_add_update_shapes_loads_layer(qtbot, sdata_blobs) -> None
         widget.app_state.set_sdata(sdata_blobs)
 
     first_card = widget.shape_cards[0]
+    first_card.fill_toggle.setChecked(True)
 
     first_card.add_update_button.click()
 
@@ -1419,6 +1438,7 @@ def test_viewer_widget_add_update_shapes_loads_layer(qtbot, sdata_blobs) -> None
     assert binding.element_name == "blobs_circles"
     assert binding.coordinate_system == "global"
     assert viewer.layers.selection.active is layer
+    np.testing.assert_allclose(layer.face_color[:, 3], np.zeros(len(layer.data)))
     _assert_action_feedback_card(widget, title="Shapes Loaded", kind="success")
     assert "Loaded shapes `blobs_circles` in coordinate system `global`." in widget.action_feedback_label.text()
 

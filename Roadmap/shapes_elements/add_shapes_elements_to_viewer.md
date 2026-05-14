@@ -116,12 +116,12 @@ rows. The first version of the card should expose:
 - shape element name;
 - color source selector:
   - `None`;
-  - `Shape column`;
-- searchable column selector when `Shape column` is selected;
+  - `Shapes column`;
+- searchable column selector when `Shapes column` is selected;
 - one `Add / Update in viewer` button;
 - concise action text, for example:
   - `Action: add/update shapes layer`;
-  - `Action: add/update colored shapes layer for shapes["leiden"]`.
+  - `Action: add/update styled shapes layer for column "leiden"`.
 
 The first version should use one shapes layer for `None`. A later coloring
 slice can decide whether styled shape variants should live in separate layers
@@ -1143,9 +1143,9 @@ UI contract:
 
 - a shapes card has a `Color source` selector;
 - `None` means `Add / Update` loads or reuses the primary shapes layer;
-- `Shape column` means `Add / Update` loads or updates a separate styled shapes
+- `Shapes column` means `Add / Update` loads or updates a separate styled shapes
   layer variant;
-- the second control should be labelled `Shape column`, not `Observations` or
+- the second control should be labelled `Shapes column`, not `Observations` or
   `Vars`, because the source is a column on `sdata.shapes[shapes_name]` itself;
 - the primary/styled distinction is required for the future
   `ShapesAnnotation()` widget: annotation should listen to and edit primary
@@ -1154,12 +1154,12 @@ UI contract:
 Implement:
 
 - extend the shapes card UI:
-  - add `Color source` with `None` and `Shape column`;
-  - add a searchable/autocompleted `Shape column` input populated from
+  - add `Color source` with `None` and `Shapes column`;
+  - add a searchable/autocompleted `Shapes column` input populated from
     `ShapeColorSourceSpec` options;
   - show `Action: add/update primary shapes layer` when `Color source = None`;
-  - show `Action: add/update styled shapes layer for shape["<column>"]` when a
-    shape column is selected;
+  - show `Action: add/update styled shapes layer for column "<column>"` when a
+    shapes column is selected;
 - extend `ShapesLoadRequest` so it can carry an optional selected
   `ShapeColorSourceSpec`;
 - dispatch from the viewer widget:
@@ -1179,7 +1179,7 @@ Out of scope:
 
 Recommended tests:
 
-- shapes cards expose `Color source = None | Shape column` and a `Shape column`
+- shapes cards expose `Color source = None | Shapes column` and a `Shapes column`
   autocomplete populated from the shapes element;
 - geometry and explicit color/palette columns are hidden from the shape-column
   selector through the Slice 6 discovery helper;
@@ -1216,6 +1216,75 @@ Recommended tests:
 - table values align by `instance_key`, not by table row order;
 - duplicate `instance_key` values within one shapes region are rejected;
 - missing shape indices receive the configured missing color.
+
+### Slice 11: Styled Shapes Fill Toggle
+
+Status: completed
+
+Purpose:
+
+Let users choose whether a styled shapes layer is rendered as filled polygons
+or as colored outlines only. This is useful for shape elements where filled
+polygons hide holes, neighboring outlines, or underlying image/label context.
+
+Previous behavior:
+
+- styled shapes always use `SHAPES_FACE_ALPHA = 0.35`;
+- styled shapes always use `SHAPES_EDGE_ALPHA = 1.0`;
+- primary shapes remain outline-only with transparent faces;
+- the fill behavior is not user-configurable.
+
+UI contract:
+
+- add a `Fill` checkbox in the shapes card;
+- always show the checkbox;
+- enable the checkbox only when a valid shape-column color source is selected;
+- default should be unchecked;
+- when `Color source = None`, the checkbox does not affect the primary shapes
+  layer; primary shapes remain outline-only;
+- when the checkbox is disabled, it should be unchecked so the UI does not show
+  an inactive fill state;
+- when `Color source = Shapes column`, the checkbox controls the styled shapes
+  layer fill mode;
+- this means styled shapes become outline-only by default, which is an
+  accepted behavioral change;
+- when checked, styled shapes use face alpha `SHAPES_FACE_ALPHA`;
+- when unchecked, styled shapes use face alpha `0.0`;
+- edge alpha remains `SHAPES_EDGE_ALPHA` for styled shapes in both modes;
+- primary shapes keep their current rendering behavior and are not changed by
+  this slice.
+
+Implementation notes:
+
+- extend `ShapesLoadRequest` with a shapes fill flag;
+- pass the fill flag through `ViewerWidget._add_or_update_styled_shapes_layer`;
+- do not pass the fill flag through `ViewerWidget._add_or_update_primary_shapes_layer`;
+- do not change `ViewerAdapter.ensure_shapes_loaded(...)` for this slice;
+- pass the fill flag into `ViewerAdapter.ensure_styled_shapes_loaded(...)`;
+- extend the shape styling path so `_apply_rendered_row_colors_to_shapes_layer`
+  accepts a fill flag instead of always using `SHAPES_FACE_ALPHA`;
+- keep the face alpha policy inside `viewer/shapes_styling.py`, translating
+  `fill=False` to `0.0` and `fill=True` to `SHAPES_FACE_ALPHA`;
+- do not include fill mode in styled layer identity: filled and outline-only
+  modes are display options for the same styled layer variant and should update
+  the existing layer instead of creating parallel layers;
+- keep the styled layer name stable, e.g.
+  `cell_boundaries[shape:cell_type]`, regardless of fill state.
+
+Implemented tests:
+
+- shapes card always exposes a `Fill` checkbox;
+- checkbox defaults to unchecked;
+- checkbox is disabled when no valid shape-column color source is selected;
+- checkbox is enabled when a valid shape-column color source is selected;
+- primary shapes ignore the checkbox and keep the existing outline-only
+  behavior;
+- styled shapes load with face alpha `0.0` by default;
+- styled shapes load with face alpha `SHAPES_FACE_ALPHA` when checked;
+- edge alpha remains unchanged for both modes;
+- toggling fill reuses the same styled layer and updates its face alpha;
+- action feedback reports creation/update and warnings without mentioning the
+  current face rendering mode.
 
 ## Shape Annotation And Write-Back
 
