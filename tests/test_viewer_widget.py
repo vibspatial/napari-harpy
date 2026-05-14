@@ -1217,7 +1217,7 @@ def test_viewer_widget_shapes_card_exposes_shape_column_controls(qtbot) -> None:
     assert card.color_source_value_label.text() == "Shape column"
     assert not card.color_source_value_input.isEnabled()
     assert card.fill_toggle.text() == "Fill"
-    assert card.fill_toggle.isEnabled()
+    assert not card.fill_toggle.isEnabled()
     assert not card.fill_toggle.isChecked()
     assert card.action_status_label.text() == "Action: add/update primary shapes layer"
 
@@ -1229,6 +1229,13 @@ def test_viewer_widget_shapes_card_exposes_shape_column_controls(qtbot) -> None:
     assert not card.fill_toggle.isChecked()
     assert card._color_source_completer_model.stringList() == ["cell_type", "score", "free_text"]
     assert card.action_status_label.text() == 'Action: add/update styled shapes layer for shape["cell_type"]'
+
+    card.fill_toggle.setChecked(True)
+    card.color_source_value_input.setText("not_a_shape_column")
+
+    assert not card.fill_toggle.isEnabled()
+    assert not card.fill_toggle.isChecked()
+    assert card.action_status_label.text() == "Action: select a shape column for a styled shapes layer"
 
 
 def test_viewer_widget_shape_column_selector_hides_geometry_and_palette_columns(qtbot) -> None:

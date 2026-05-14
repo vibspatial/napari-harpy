@@ -1237,11 +1237,13 @@ Previous behavior:
 UI contract:
 
 - add a `Fill` checkbox in the shapes card;
-- always show and enable the checkbox, regardless of the selected
-  `Color source`;
+- always show the checkbox;
+- enable the checkbox only when a valid shape-column color source is selected;
 - default should be unchecked;
 - when `Color source = None`, the checkbox does not affect the primary shapes
   layer; primary shapes remain outline-only;
+- when the checkbox is disabled, it should be unchecked so the UI does not show
+  an inactive fill state;
 - when `Color source = Shape column`, the checkbox controls the styled shapes
   layer fill mode;
 - this means styled shapes become outline-only by default, which is an
@@ -1271,8 +1273,10 @@ Implementation notes:
 
 Implemented tests:
 
-- shapes card always exposes an enabled `Fill` checkbox;
+- shapes card always exposes a `Fill` checkbox;
 - checkbox defaults to unchecked;
+- checkbox is disabled when no valid shape-column color source is selected;
+- checkbox is enabled when a valid shape-column color source is selected;
 - primary shapes ignore the checkbox and keep the existing outline-only
   behavior;
 - styled shapes load with face alpha `0.0` by default;

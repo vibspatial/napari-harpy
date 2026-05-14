@@ -1059,6 +1059,7 @@ class _ShapesCardWidget(QFrame):
     def _update_action_status(self) -> None:
         source_kind = self.selected_source_kind
         selected_source = self.selected_color_source
+        self._update_fill_toggle_enabled(selected_source is not None)
 
         if source_kind is None:
             self.action_status_label.setText("Action: add/update primary shapes layer")
@@ -1074,6 +1075,11 @@ class _ShapesCardWidget(QFrame):
         self.action_status_label.setText(
             f'Action: add/update styled shapes layer for shape["{selected_source.value_key}"]'
         )
+
+    def _update_fill_toggle_enabled(self, enabled: bool) -> None:
+        self.fill_toggle.setEnabled(enabled)
+        if not enabled:
+            self.fill_toggle.setChecked(False)
 
     def _emit_add_update_request(self, _checked: bool = False) -> None:
         self.add_update_requested.emit(
