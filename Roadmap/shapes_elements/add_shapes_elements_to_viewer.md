@@ -1236,23 +1236,30 @@ Current behavior:
 
 UI contract:
 
-- add a `Fill` checkbox next to the `Shape column` input in the shapes card;
-- show the checkbox only, or at least enable it only, when
-  `Color source = Shape column`;
-- default should be checked to preserve the current behavior;
-- when checked, styled shapes use face alpha `SHAPES_FACE_ALPHA`;
-- when unchecked, styled shapes use face alpha `0.0`;
-- edge alpha remains `SHAPES_EDGE_ALPHA` in both modes.
+- add a `Fill` checkbox in the shapes card;
+- always show and enable the checkbox, regardless of the selected
+  `Color source`;
+- default should be unchecked for both primary and styled shapes;
+- this means styled shapes become outline-only by default, which is an
+  accepted behavioral change;
+- when checked, primary and styled shapes use face alpha `SHAPES_FACE_ALPHA`;
+- when unchecked, primary and styled shapes use face alpha `0.0`;
+- edge alpha remains `SHAPES_EDGE_ALPHA` for styled shapes in both modes;
+- primary shapes keep their existing edge styling, and only their face alpha is
+  controlled by `Fill`.
 
 Implementation notes:
 
-- extend `ShapesLoadRequest` with a styled-shapes fill flag;
-- pass the fill flag through `ViewerWidget._add_or_update_styled_shapes_layer`
-  into `ViewerAdapter.ensure_styled_shapes_loaded(...)`;
+- extend `ShapesLoadRequest` with a shapes fill flag;
+- pass the fill flag through both `ViewerWidget._add_or_update_primary_shapes_layer`
+  and `ViewerWidget._add_or_update_styled_shapes_layer`;
+- extend `ViewerAdapter.ensure_shapes_loaded(...)` so repeated primary shapes
+  loads update the existing layer face alpha instead of creating a second
+  layer;
+- pass the fill flag into `ViewerAdapter.ensure_styled_shapes_loaded(...)`;
 - extend the shape styling path so `_apply_rendered_row_colors_to_shapes_layer`
   accepts a face alpha instead of always using `SHAPES_FACE_ALPHA`;
-- preserve the existing default by using `SHAPES_FACE_ALPHA` when no explicit
-  fill flag is provided;
+- use `0.0` as the default face alpha when no explicit fill flag is provided;
 - do not include fill mode in styled layer identity: filled and outline-only
   modes are display options for the same styled layer variant and should update
   the existing layer instead of creating parallel layers;
@@ -1261,12 +1268,15 @@ Implementation notes:
 
 Recommended tests:
 
-- shapes card exposes a `Fill` checkbox for shape-column coloring;
-- checkbox defaults to checked;
-- checked styled shapes have face alpha `SHAPES_FACE_ALPHA`;
-- unchecked styled shapes have face alpha `0.0`;
+- shapes card always exposes an enabled `Fill` checkbox;
+- checkbox defaults to unchecked;
+- primary shapes load with face alpha `0.0` by default;
+- primary shapes load with face alpha `SHAPES_FACE_ALPHA` when checked;
+- styled shapes load with face alpha `0.0` by default;
+- styled shapes load with face alpha `SHAPES_FACE_ALPHA` when checked;
 - edge alpha remains unchanged for both modes;
-- toggling fill reuses the same styled layer and updates its face alpha;
+- toggling fill reuses the same primary or styled layer and updates its face
+  alpha;
 - action feedback remains clear for filled and outline-only styled shapes.
 
 ## Shape Annotation And Write-Back
