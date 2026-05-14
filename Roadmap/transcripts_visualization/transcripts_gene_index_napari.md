@@ -272,10 +272,6 @@ data_file: string
 row_group: int32
 value_row_group: int32
 n_points: int64
-x_min: float64
-x_max: float64
-y_min: float64
-y_max: float64
 ```
 
 `data_file` should be relative to the cache root, for example:
@@ -296,7 +292,16 @@ Required invariant:
 Each `value_index.parquet` row points to a Parquet row group containing exactly one value_id.
 ```
 
-The bounding box columns are not needed for the first static selected-value display, but they are cheap to compute and useful for:
+Deferred optional columns:
+
+```text
+x_min: float64
+x_max: float64
+y_min: float64
+y_max: float64
+```
+
+Bounding box columns are not needed for the first static selected-value display, so they are not part of the required MVP schema. They can be added later because they are useful for:
 
 - future "zoom to selected values";
 - rough spatial extent display;
