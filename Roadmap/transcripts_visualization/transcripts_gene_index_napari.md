@@ -614,6 +614,303 @@ Those remain spatial-cache problems.
 
 The many-small-row-groups concern is acceptable for the standalone gene-index MVP. Most transcript datasets have thousands to tens of thousands of genes, not millions of genes. Rare genes should not be packed together in this MVP, because exact rare-gene reads are one of the main benefits of the cache. Packing small gene groups belongs to a future spatial plus gene layout where `(tile, gene)` row-group counts could otherwise explode.
 
+## Implementation Slices
+
+These slices split the MVP into implementation units with clear dependencies. The first slices intentionally establish contracts before the widget work begins, because the UI should depend on stable cache, validation, and reader behavior.
+
+Recommended order:
+
+```text
+0 -> 1 -> 2 -> 3 -> 5 -> 4 -> 6 -> 7 -> 8 -> 9 -> 10
+```
+
+The validator is pulled forward before the full data writer so the viewer can rely on a cache-status contract early.
+
+### Slice 0: Lock Minimal Decisions Before Code
+
+Goal: decide the few contracts that would otherwise cause rework.
+
+Includes:
+
+- cache path identity: one cache per points element versus one cache per points element plus index column;
+- generic naming: keep `gene` everywhere or introduce internal `value`;
+- coordinate order for napari: explicit `y, x` or `x, y`;
+- first-pass sampling behavior for selections above `max_points`;
+- basic cache lifecycle: temporary build path, final cache path, rebuild replacement.
+
+Done when:
+
+- the implementation has enough fixed vocabulary and paths to avoid renaming churn later.
+
+### Slice 1: Core Module Skeleton And Data Contracts
+
+Goal: create the standalone transcript gene-index module without building the full cache yet.
+
+Includes:
+
+- new module, likely `src/napari_harpy/_transcript_gene_index.py`;
+- schema version constant;
+- dataclasses or typed return objects:
+  - `TranscriptGeneIndexCache`;
+  - `TranscriptGeneIndexSelection`;
+- cache path helpers;
+- metadata read/write helpers;
+- custom errors for invalid source data, stale cache, invalid selection, and cache read failures.
+
+Tests:
+
+- metadata round trip;
+- cache path resolution;
+- basic object construction;
+- error types.
+
+Done when:
+
+- later slices can depend on stable public objects and helper functions.
+
+### Slice 2: Source Points Validation And Value Normalization
+
+Goal: validate whether a selected points element can produce a cache.
+
+Includes:
+
+- resolve `sdata.points[points_name]`;
+- require backed `SpatialData`;
+- require Dask dataframe points element;
+- validate coordinate columns;
+- validate configured index column;
+- normalize index values;
+- reject missing, empty, invalid, or unsupported values;
+- validate optional `transcript_id`.
+
+Tests:
+
+- missing `x`, `y`, index column;
+- non-numeric coordinates;
+- non-finite coordinates;
+- empty dataframe;
+- invalid index dtype;
+- missing or blank index values;
+- categorical, string, and object value handling.
+
+Done when:
+
+- the builder can fail early with clear errors before doing expensive work.
+
+### Slice 3: Vocabulary Cache
+
+Goal: build the first useful cache artifact: the selectable value vocabulary.
+
+Includes:
+
+- compute normalized value counts with Dask;
+- sort values deterministically;
+- assign stable `gene_id` or value id;
+- write `genes.parquet`;
+- write `metadata.json` last;
+- store source points name and path, selected columns, transcript id column, counts, row-group target, and sampling policy.
+
+Tests:
+
+- deterministic value id assignment;
+- correct transcript counts;
+- metadata consistency;
+- `metadata.json` written only after required cache files;
+- selected values come from `genes.parquet`, not the source dataframe.
+
+Done when:
+
+- a cache can expose searchable values, even before point loading exists.
+
+### Slice 4: Full Cache Builder With Data Shards
+
+Goal: write displayable transcript rows grouped by value.
+
+Includes:
+
+- create a working dataframe with:
+  - `x`;
+  - `y`;
+  - value id;
+  - `sample_key`;
+  - optional `transcript_id`;
+- convert display coordinates to `float32`;
+- write `data/shard-*.parquet`;
+- enforce single-value row groups;
+- split large values across row groups;
+- sort rows within each value by `sample_key`;
+- write `gene_index.parquet`;
+- finalize through staged replacement.
+
+Tests:
+
+- required data columns exist;
+- coordinates are `float32`;
+- every indexed row group contains exactly one value id;
+- row groups do not exceed target size except where explicitly allowed;
+- all row groups are listed in `gene_index.parquet`;
+- `sum(gene_index.n_points) == source_n_transcripts`.
+
+Done when:
+
+- the full on-disk cache can be built and inspected without napari.
+
+### Slice 5: Cache Validator And Staleness Checks
+
+Goal: decide whether an existing cache is usable for the current UI selection.
+
+Includes:
+
+- check required files;
+- check schema version;
+- check selected points element;
+- check selected `x`, `y`, and index column;
+- check count consistency:
+  - metadata versus `genes.parquet`;
+  - metadata versus `gene_index.parquet`;
+  - metadata `n_genes` versus `genes.parquet`;
+- return structured status instead of only raising.
+
+Tests:
+
+- valid cache passes;
+- missing files fail;
+- wrong schema fails;
+- wrong selected column fails;
+- inconsistent counts fail;
+- stale cache disables visualization state.
+
+Done when:
+
+- the viewer can safely enable or disable value selection based on cache state.
+
+### Slice 6: Exact Runtime Reader
+
+Goal: load selected values below the threshold using PyArrow only.
+
+Includes:
+
+- load metadata, `genes.parquet`, and `gene_index.parquet`;
+- resolve selected values to ids;
+- reject unknown selected values;
+- compute total selected transcript count before reading data;
+- read only listed row groups;
+- return a `TranscriptGeneIndexSelection`;
+- include coordinates, features, selected values, loaded count, total count, and sampled flag.
+
+Tests:
+
+- one selected value;
+- multiple selected values;
+- unknown value raises;
+- exact load returns all selected rows;
+- reader does not use Dask;
+- features include configured index-value column.
+
+Done when:
+
+- selected-gene loading works without napari.
+
+### Slice 7: Sampled Runtime Reader
+
+Goal: load bounded deterministic previews when selected values exceed `max_points`.
+
+Includes:
+
+- proportional quota allocation;
+- minimum one point per selected value when possible;
+- deterministic quota rounding and tie-breaking;
+- read first required row groups in `gene_row_group` order;
+- downsample excess rows by `sample_key`;
+- support `values="all"`;
+- produce warning text like:
+  - `Showing 100,000 of 2,431,912 selected transcripts.`;
+
+Tests:
+
+- sampled result has at most `max_points`;
+- sampling is deterministic;
+- rare selected values are preserved when possible;
+- all-values selection works;
+- duplicate selected values are handled predictably;
+- `max_points < number_of_selected_values` behavior is defined and tested.
+
+Done when:
+
+- large selections return fast, bounded, deterministic previews.
+
+### Slice 8: napari Points Layer Integration
+
+Goal: convert a reader result into one napari `Points` layer.
+
+Includes:
+
+- helper such as `add_transcript_gene_points_layer`;
+- create or update one existing layer;
+- use explicit coordinate order;
+- attach feature column for selected value;
+- apply categorical coloring for small selections;
+- set point size, opacity, name, and metadata;
+- surface sampled warning.
+
+Tests:
+
+- creates layer when missing;
+- updates same layer on repeated calls;
+- does not create one layer per value;
+- features are attached;
+- sampled warning metadata or status is present.
+
+Done when:
+
+- code can display exact or sampled cache-backed transcripts in napari through a thin helper.
+
+### Slice 9: Viewer UI Integration
+
+Goal: expose the workflow in the existing Harpy viewer widget.
+
+Includes:
+
+- points element selector;
+- index column selector;
+- create or rebuild cache button;
+- cache status display;
+- value search and select control backed by `genes.parquet`;
+- visualize selected values button;
+- all-values option;
+- disable controls when cache is missing, stale, building, or loading;
+- run build and read without freezing the UI where practical.
+
+Tests:
+
+- widget initializes with no cache;
+- valid cache enables value search;
+- stale cache disables visualization;
+- create or rebuild triggers builder;
+- selected values trigger reader and layer update;
+- sampled warning is visible.
+
+Done when:
+
+- the user-facing MVP workflow exists end to end.
+
+### Slice 10: Integration Tests And Hardening
+
+Goal: make the whole path reliable enough to iterate on real data.
+
+Includes:
+
+- fixture `SpatialData` with transcript points;
+- full build, validate, exact read, sampled read, and layer update flow;
+- failure cases for corrupt or partial cache;
+- rebuild behavior;
+- basic performance sanity checks on moderate synthetic data;
+- documentation updates or roadmap status notes.
+
+Done when:
+
+- the MVP has a tested end-to-end path and clear known limitations.
+
 ## Deliverables
 
 The MVP should produce these implementation pieces:
