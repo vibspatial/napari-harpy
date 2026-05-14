@@ -1253,14 +1253,11 @@ Implementation notes:
   accepts a face alpha instead of always using `SHAPES_FACE_ALPHA`;
 - preserve the existing default by using `SHAPES_FACE_ALPHA` when no explicit
   fill flag is provided;
-- make styled layer identity include the fill mode, otherwise toggling fill on
-  and off would reuse the same styled layer variant and silently overwrite the
-  previous display mode;
-- consider a stable layer name suffix such as
-  `cell_boundaries[shape:cell_type]` for filled and
-  `cell_boundaries[shape:cell_type:outline]` for outline-only, or keep the
-  current name and rely on one reused variant if we decide fill should behave
-  like an update rather than a separate variant.
+- do not include fill mode in styled layer identity: filled and outline-only
+  modes are display options for the same styled layer variant and should update
+  the existing layer instead of creating parallel layers;
+- keep the styled layer name stable, e.g.
+  `cell_boundaries[shape:cell_type]`, regardless of fill state.
 
 Recommended tests:
 
@@ -1269,7 +1266,7 @@ Recommended tests:
 - checked styled shapes have face alpha `SHAPES_FACE_ALPHA`;
 - unchecked styled shapes have face alpha `0.0`;
 - edge alpha remains unchanged for both modes;
-- toggling fill produces the intended layer reuse/variant behavior;
+- toggling fill reuses the same styled layer and updates its face alpha;
 - action feedback remains clear for filled and outline-only styled shapes.
 
 ## Shape Annotation And Write-Back
