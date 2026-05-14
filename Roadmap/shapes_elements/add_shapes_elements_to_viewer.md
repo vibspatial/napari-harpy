@@ -116,12 +116,12 @@ rows. The first version of the card should expose:
 - shape element name;
 - color source selector:
   - `None`;
-  - `Shape column`;
-- searchable column selector when `Shape column` is selected;
+  - `Shapes column`;
+- searchable column selector when `Shapes column` is selected;
 - one `Add / Update in viewer` button;
 - concise action text, for example:
   - `Action: add/update shapes layer`;
-  - `Action: add/update colored shapes layer for shapes["leiden"]`.
+  - `Action: add/update styled shapes layer for column "leiden"`.
 
 The first version should use one shapes layer for `None`. A later coloring
 slice can decide whether styled shape variants should live in separate layers
@@ -1143,9 +1143,9 @@ UI contract:
 
 - a shapes card has a `Color source` selector;
 - `None` means `Add / Update` loads or reuses the primary shapes layer;
-- `Shape column` means `Add / Update` loads or updates a separate styled shapes
+- `Shapes column` means `Add / Update` loads or updates a separate styled shapes
   layer variant;
-- the second control should be labelled `Shape column`, not `Observations` or
+- the second control should be labelled `Shapes column`, not `Observations` or
   `Vars`, because the source is a column on `sdata.shapes[shapes_name]` itself;
 - the primary/styled distinction is required for the future
   `ShapesAnnotation()` widget: annotation should listen to and edit primary
@@ -1154,12 +1154,12 @@ UI contract:
 Implement:
 
 - extend the shapes card UI:
-  - add `Color source` with `None` and `Shape column`;
-  - add a searchable/autocompleted `Shape column` input populated from
+  - add `Color source` with `None` and `Shapes column`;
+  - add a searchable/autocompleted `Shapes column` input populated from
     `ShapeColorSourceSpec` options;
   - show `Action: add/update primary shapes layer` when `Color source = None`;
-  - show `Action: add/update styled shapes layer for shape["<column>"]` when a
-    shape column is selected;
+  - show `Action: add/update styled shapes layer for column "<column>"` when a
+    shapes column is selected;
 - extend `ShapesLoadRequest` so it can carry an optional selected
   `ShapeColorSourceSpec`;
 - dispatch from the viewer widget:
@@ -1179,7 +1179,7 @@ Out of scope:
 
 Recommended tests:
 
-- shapes cards expose `Color source = None | Shape column` and a `Shape column`
+- shapes cards expose `Color source = None | Shapes column` and a `Shapes column`
   autocomplete populated from the shapes element;
 - geometry and explicit color/palette columns are hidden from the shape-column
   selector through the Slice 6 discovery helper;
@@ -1244,7 +1244,7 @@ UI contract:
   layer; primary shapes remain outline-only;
 - when the checkbox is disabled, it should be unchecked so the UI does not show
   an inactive fill state;
-- when `Color source = Shape column`, the checkbox controls the styled shapes
+- when `Color source = Shapes column`, the checkbox controls the styled shapes
   layer fill mode;
 - this means styled shapes become outline-only by default, which is an
   accepted behavioral change;
@@ -1283,7 +1283,8 @@ Implemented tests:
 - styled shapes load with face alpha `SHAPES_FACE_ALPHA` when checked;
 - edge alpha remains unchanged for both modes;
 - toggling fill reuses the same styled layer and updates its face alpha;
-- action feedback remains clear for filled and outline-only styled shapes.
+- action feedback reports creation/update and warnings without mentioning the
+  current face rendering mode.
 
 ## Shape Annotation And Write-Back
 

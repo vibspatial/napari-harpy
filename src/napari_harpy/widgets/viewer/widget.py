@@ -936,9 +936,9 @@ class _ShapesCardWidget(QFrame):
         self.color_source_kind_combo.setObjectName(f"viewer_widget_shapes_color_source_kind_combo_{shapes_name}")
         self.color_source_kind_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
         self.color_source_kind_combo.addItem("None", None)
-        self.color_source_kind_combo.addItem("Shape column", "shape_column")
+        self.color_source_kind_combo.addItem("Shapes column", "shape_column")
 
-        self.color_source_value_label = _create_form_label("Shape column")
+        self.color_source_value_label = _create_form_label("Shapes column")
         self.color_source_value_input = QLineEdit()
         self.color_source_value_input.setObjectName(f"viewer_widget_shapes_color_source_value_input_{shapes_name}")
         self.color_source_value_input.setStyleSheet(build_input_control_stylesheet("QLineEdit"))
@@ -1037,7 +1037,7 @@ class _ShapesCardWidget(QFrame):
                 else:
                     self.color_source_value_input.clear()
 
-                self.color_source_value_input.setPlaceholderText("Search shape columns")
+                self.color_source_value_input.setPlaceholderText("Search shapes columns")
 
             self._color_source_completer_model.setStringList(
                 [source.display_name for source in self._filtered_color_sources]
@@ -1067,13 +1067,13 @@ class _ShapesCardWidget(QFrame):
 
         if selected_source is None:
             if self._filtered_color_sources:
-                self.action_status_label.setText("Action: select a shape column for a styled shapes layer")
+                self.action_status_label.setText("Action: select a shapes column for a styled shapes layer")
             else:
-                self.action_status_label.setText("Action: no colorable shape columns available")
+                self.action_status_label.setText("Action: no colorable shapes columns available")
             return
 
         self.action_status_label.setText(
-            f'Action: add/update styled shapes layer for shape["{selected_source.value_key}"]'
+            f'Action: add/update styled shapes layer for column "{selected_source.value_key}"'
         )
 
     def _update_fill_toggle_enabled(self, enabled: bool) -> None:
@@ -1693,7 +1693,7 @@ class ViewerWidget(QWidget):
         if request.selected_color_source is None:
             self._set_action_feedback(
                 title="Styled Shapes Error",
-                lines=[f"Select a shape column to create a styled shapes layer for `{request.shapes_name}`."],
+                lines=[f"Select a shapes column to create a styled shapes layer for `{request.shapes_name}`."],
                 kind="error",
             )
             return
@@ -1712,14 +1712,14 @@ class ViewerWidget(QWidget):
 
         self._app_state.viewer_adapter.activate_layer(result.layer)
         action = "Created" if result.created else "Updated"
-        source_text = f'shape["{request.selected_color_source.value_key}"]'
+        source_text = f'column "{request.selected_color_source.value_key}"'
         action_line = (
             f"{action} styled shapes layer for {source_text} on shapes element `{request.shapes_name}` "
             f"in coordinate system `{coordinate_system}`."
         )
         feedback_kind: StatusCardKind = "success"
         title = f"Styled Shapes {action}"
-        lines = [action_line, _shape_fill_feedback_line(request.fill_shapes)]
+        lines = [action_line]
         if result.coercion_applied:
             feedback_kind = "warning"
             title = f"{title} With Warning"
@@ -1943,10 +1943,6 @@ def _clear_layout(layout: QLayout) -> None:
 
 def _create_form_label(text: str) -> QLabel:
     return create_form_label(text)
-
-
-def _shape_fill_feedback_line(fill_shapes: bool) -> str:
-    return "Rendered filled shape faces." if fill_shapes else "Rendered outline-only shape faces."
 
 
 def _get_labels_in_coordinate_system(sdata: SpatialData, coordinate_system: str) -> list[str]:
