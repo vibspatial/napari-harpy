@@ -733,6 +733,8 @@ The cache stores source coordinate columns as `x` and `y`, but the reader return
 - the configured index column using its source column name, for example `gene`, `target`, or `probe`;
 - `value_id`.
 
+The configured index-column feature contains the normalized string value for each point, populated by mapping `value_id` through `values.parquet`. For example, when `index_column == "gene"`, `features["gene"]` contains gene names such as `"MALAT1"`; `value_id` remains an internal/cache feature.
+
 If the cache contains `transcript_id`, the reader should include it in `features` as well.
 
 `selected_values` contains the normalized unique selected values that were resolved against `values.parquet`. Duplicate requested values are removed before quota allocation and before reading. For `values="all"`, `selected_values` contains all values in `value_id` order.
