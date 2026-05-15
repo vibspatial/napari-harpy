@@ -1740,17 +1740,84 @@ Includes:
 - helper `add_or_update_points_layer`;
 - `PointsLayerBinding` with `element_type="points"` and `index_column`;
 - no points `primary`/`styled` role split; the value-selection points layer is always the displayed, index-colored layer;
-- create or update one existing layer;
-- use the reader's `y, x` coordinates directly;
-- attach the configured index column as a pandas categorical feature, plus `value_id`;
-- register and find the layer through `LayerBindingRegistry`, not by layer name alone;
-- match the existing registered layer by source identity, coordinate system, and `index_column`;
-- reuse the same registered layer when selected values change;
-- apply categorical coloring for `2..102` selected values with `default_categorical_colors(n)`;
-- use a single solid color for one selected value or more than 102 selected values;
-- surface a status-card warning when categorical coloring is disabled above 102 selected values;
-- set point size, opacity, and name;
-- surface sampled warning.
+- concrete `ViewerAdapter` API:
+
+```python
+@dataclass(frozen=True)
+class PointsLayerUpdateResult:
+    layer: Points
+    warnings: tuple[str, ...] = ()
+
+
+def add_or_update_points_layer(
+    self,
+    selection: PointsValueSelection,
+    *,
+    points_name: str,
+    sdata: SpatialData | None = None,
+    coordinate_system: str | None = None,
+    all_values_selected: bool = False,
+) -> PointsLayerUpdateResult:
+    ...
+```
+
+- `points_name` becomes `PointsLayerBinding.element_name`;
+- `selection.index_column` becomes `PointsLayerBinding.index_column`;
+- `all_values_selected` is used only for layer naming and does not change layer identity;
+- returned warnings include `selection.warning` when sampled;
+- returned warnings include the categorical-coloring warning when selected value count exceeds 102;
+- return the created or updated layer so the controller can activate or inspect it;
+- layer lookup and update behavior:
+  - find an existing registered matching points layer through `LayerBindingRegistry`, not by layer name alone;
+  - match by source identity, coordinate system, and `index_column`;
+  - ignore unregistered same-name layers;
+  - if a matching registered layer exists, update the same layer object;
+  - if no matching registered layer exists, create a new napari `Points` layer and register it;
+  - preserve user-toggled visibility when updating;
+  - do not reset the camera;
+  - update layer data, features, name, and colors every time;
+- layer data behavior:
+  - `layer.data = selection.coordinates`;
+  - `layer.features = selection.features`;
+  - use the reader's `y, x` coordinates directly and do not reorder coordinates again;
+  - attach the configured index column as a pandas categorical feature, plus `value_id`;
+- layer naming:
+
+```text
+empty:
+  <points_name>: no <index_column> values
+
+one selected value:
+  <points_name>: <index_column>=<value>
+
+multiple selected values:
+  <points_name>: <n> <index_column> values
+
+all values:
+  <points_name>: all <index_column> values
+```
+
+- visual defaults:
+
+```text
+size: 1.0
+opacity: 0.8
+symbol: "disc"
+edge_width: 0
+solid_color: "#00FFFF"
+```
+
+- coloring behavior:
+  - `0` or `1` selected values: use `solid_color`;
+  - `2..102` selected values: color categorically by `selection.index_column`;
+  - palette: `default_categorical_colors(len(selection.selected_values))`;
+  - category and palette order follows `selection.selected_values`;
+  - more than `102` selected values: use `solid_color` and return a categorical-coloring warning;
+  - threshold is based on resolved selected values, not values that survived sampling;
+- warning behavior:
+  - include `selection.warning` when sampled;
+  - include categorical-coloring warning when selected value count exceeds 102;
+  - the helper returns warnings; Slice 6/controller is responsible for placing them in the status card.
 
 Tests:
 
@@ -1762,9 +1829,13 @@ Tests:
 - points bindings do not use primary/styled roles;
 - ignores unregistered same-name layers;
 - features are attached;
+- data uses `selection.coordinates` without coordinate reordering;
+- updating preserves visibility and does not reset the camera;
+- layer names cover empty, one-value, multi-value, and all-values selections;
+- visual defaults are applied;
 - categorical coloring is used for up to 102 selected values;
 - solid coloring is used above 102 selected values;
-- sampled warning status is present in the widget/controller state.
+- sampled and categorical-coloring warnings are returned for widget/controller status.
 
 Done when:
 
