@@ -1644,6 +1644,13 @@ Done when:
 
 Goal: load selected values directly from the Dask dataframe.
 
+Status: implemented.
+
+Implementation:
+
+- `src/napari_harpy/_points_value_index.py`;
+- `tests/test_points_value_index.py`.
+
 Includes:
 
 - public direct reader:
@@ -1760,6 +1767,24 @@ Includes:
 - explicit `PointsValueIndexUiState` enum;
 - immutable value-list and read job dataclasses for worker inputs;
 - controller-owned status message, status kind, current value table, and current selection;
+- controller-owned source state that pairs the validated points source with the current value table, rather than storing the derived value table on `_ValidatedPointsElement`;
+
+```python
+@dataclass(frozen=True)
+class PointsValueSourceState:
+    validated: _ValidatedPointsElement
+    value_table: PointsValueTable | None = None
+
+    def __post_init__(self) -> None:
+        if self.value_table is None:
+            return
+        if self.validated.index_column != self.value_table.index_column:
+            raise ValueError(
+                "`validated.index_column` and `value_table.index_column` must match. "
+                f"Got {self.validated.index_column!r} and {self.value_table.index_column!r}."
+            )
+```
+
 - points element selector;
 - index column selector;
 - numeric text-field `render_point_budget` control with default `100_000`, minimum `1_000`, and maximum `1_000_000`;
@@ -1975,6 +2000,7 @@ Suggested controller objects:
 
 ```text
 PointsValueIndexUiState
+PointsValueSourceState
 PointsValueIndexValueJob
 PointsValueIndexReadJob
 PointsValueIndexController

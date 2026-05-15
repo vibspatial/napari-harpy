@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import numbers
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import dask
 import dask.dataframe as dd
@@ -341,6 +342,95 @@ def build_points_value_table(validated: _ValidatedPointsElement) -> PointsValueT
     )
 
 
+def load_points(
+    validated: _ValidatedPointsElement,
+    value_table: PointsValueTable,
+    values: Sequence[str] | Literal["all"],
+    *,
+    render_point_budget: int = DEFAULT_RENDER_POINT_BUDGET,
+    random_state: int | None = DEFAULT_RANDOM_STATE,
+) -> PointsValueSelection:
+    """Load points for selected values using the direct no-cache path.
+
+    Parameters
+    ----------
+    validated
+        Validated source points element returned by
+        :func:`validate_points_element_for_value_selection`.
+    value_table
+        In-memory value/count table returned by :func:`build_points_value_table`.
+    values
+        Values to load. Source-form values are normalized before lookup. Use
+        ``"all"`` to select every value in ``value_table``.
+    render_point_budget
+        Maximum number of points to return for napari rendering. If the selected
+        total count exceeds this budget, rows are sampled before compute and
+        trimmed after compute.
+    random_state
+        Random seed forwarded to Dask sampling when sampling is required.
+    """
+    if not isinstance(validated, _ValidatedPointsElement):
+        raise ValueError("`validated` must be a _ValidatedPointsElement.")
+    if not isinstance(value_table, PointsValueTable):
+        raise ValueError("`value_table` must be a PointsValueTable.")
+    if validated.index_column != value_table.index_column:
+        raise ValueError(
+            "`validated.index_column` and `value_table.index_column` must match. "
+            f"Got {validated.index_column!r} and {value_table.index_column!r}."
+        )
+    _validate_positive_integer("render_point_budget", render_point_budget)
+    render_point_budget = int(render_point_budget)
+
+    selected_values_table = _resolve_selected_values(value_table, values)
+    selected_values = tuple(str(value) for value in selected_values_table[VALUE_COLUMN].to_numpy())
+    selected_value_ids = tuple(int(value_id) for value_id in selected_values_table[VALUE_ID_COLUMN].to_numpy())
+    total_count = int(selected_values_table[N_POINTS_COLUMN].sum())
+
+    if total_count == 0:
+        return _selection_from_points_frame(
+            _empty_selected_points_frame(validated),
+            validated=validated,
+            selected_values=selected_values,
+            selected_value_ids=selected_value_ids,
+            total_count=total_count,
+            render_point_budget=render_point_budget,
+            is_sampled=False,
+        )
+
+    value_id_by_value = {
+        str(row[VALUE_COLUMN]): int(row[VALUE_ID_COLUMN]) for _, row in selected_values_table.iterrows()
+    }
+    selected_points = validated.points.map_partitions(
+        _filter_points_partition,
+        x=validated.x,
+        y=validated.y,
+        index_column=validated.index_column,
+        selected_values=selected_values,
+        value_id_by_value=value_id_by_value,
+        meta=_empty_selected_points_frame(validated),
+    )
+    is_sampled = total_count > render_point_budget
+    if is_sampled:
+        selected_points = selected_points.sample(
+            frac=render_point_budget / total_count,
+            random_state=random_state,
+        )
+
+    loaded = selected_points.compute()
+    if is_sampled and len(loaded) > render_point_budget:
+        loaded = loaded.iloc[:render_point_budget]
+
+    return _selection_from_points_frame(
+        loaded,
+        validated=validated,
+        selected_values=selected_values,
+        selected_value_ids=selected_value_ids,
+        total_count=total_count,
+        render_point_budget=render_point_budget,
+        is_sampled=is_sampled,
+    )
+
+
 def normalize_index_value(value: object) -> str:
     """Normalize one index-column value for direct value selection."""
     if _is_missing_scalar(value):
@@ -365,6 +455,114 @@ def _normalize_index_value_partition(values: pd.Series) -> pd.Series:
     normalized = normalize_index_values(values)
     normalized.name = VALUE_COLUMN
     return normalized
+
+
+def _resolve_selected_values(
+    value_table: PointsValueTable,
+    values: Sequence[str] | Literal["all"],
+) -> pd.DataFrame:
+    sorted_values = value_table.values.sort_values(VALUE_ID_COLUMN).reset_index(drop=True)
+    if isinstance(values, str):
+        if values == "all":
+            return sorted_values
+        raise ValueError("`values` must be a sequence of values or the literal 'all'.")
+    if not isinstance(values, Sequence):
+        raise ValueError("`values` must be a sequence of values or the literal 'all'.")
+
+    requested_values = tuple(dict.fromkeys(normalize_index_value(value) for value in values))
+    if not requested_values:
+        return sorted_values.iloc[0:0].copy()
+
+    requested_value_set = set(requested_values)
+    selected_values = sorted_values[sorted_values[VALUE_COLUMN].isin(requested_value_set)].copy()
+    known_values = set(selected_values[VALUE_COLUMN])
+    unknown_values = [value for value in requested_values if value not in known_values]
+    if unknown_values:
+        unknown = ", ".join(repr(value) for value in unknown_values)
+        raise ValueError(f"Unknown selected point value(s): {unknown}.")
+    return selected_values
+
+
+def _filter_points_partition(
+    points: pd.DataFrame,
+    *,
+    x: str,
+    y: str,
+    index_column: str,
+    selected_values: tuple[str, ...],
+    value_id_by_value: dict[str, int],
+) -> pd.DataFrame:
+    normalized_values = normalize_index_values(points[index_column])
+    selected_mask = normalized_values.isin(selected_values)
+    if not bool(selected_mask.any()):
+        return _empty_points_frame_for_columns(points, x=x, y=y, index_column=index_column)
+
+    selected_normalized = normalized_values.loc[selected_mask].astype("object")
+    filtered = points.loc[selected_mask, [y, x]].copy()
+    filtered[index_column] = selected_normalized.to_numpy()
+    filtered[VALUE_ID_COLUMN] = selected_normalized.map(value_id_by_value).astype(VALUE_ID_DTYPE).to_numpy()
+    return filtered[[y, x, index_column, VALUE_ID_COLUMN]]
+
+
+def _selection_from_points_frame(
+    points: pd.DataFrame,
+    *,
+    validated: _ValidatedPointsElement,
+    selected_values: tuple[str, ...],
+    selected_value_ids: tuple[int, ...],
+    total_count: int,
+    render_point_budget: int,
+    is_sampled: bool,
+) -> PointsValueSelection:
+    coordinates = points[[validated.y, validated.x]].to_numpy(dtype=COORDINATE_DTYPE, copy=True)
+    features = pd.DataFrame(
+        {
+            validated.index_column: pd.Categorical(
+                points[validated.index_column].to_numpy(),
+                categories=list(selected_values),
+            ),
+            VALUE_ID_COLUMN: pd.Series(points[VALUE_ID_COLUMN].to_numpy(dtype=VALUE_ID_DTYPE), dtype=VALUE_ID_DTYPE),
+        }
+    )
+    warning = (
+        f"Showing {len(points):,} of {total_count:,} selected points "
+        f"because the render point budget is {render_point_budget:,}."
+        if is_sampled
+        else None
+    )
+    return PointsValueSelection(
+        coordinates=coordinates,
+        features=features,
+        index_column=validated.index_column,
+        selected_values=selected_values,
+        selected_value_ids=selected_value_ids,
+        total_count=total_count,
+        render_point_budget=render_point_budget,
+        is_sampled=is_sampled,
+        warning=warning,
+    )
+
+
+def _empty_selected_points_frame(validated: _ValidatedPointsElement) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            validated.y: pd.Series(dtype=validated.points._meta[validated.y].dtype),
+            validated.x: pd.Series(dtype=validated.points._meta[validated.x].dtype),
+            validated.index_column: pd.Series(dtype="object"),
+            VALUE_ID_COLUMN: pd.Series(dtype=VALUE_ID_DTYPE),
+        }
+    )[[validated.y, validated.x, validated.index_column, VALUE_ID_COLUMN]]
+
+
+def _empty_points_frame_for_columns(points: pd.DataFrame, *, x: str, y: str, index_column: str) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            y: pd.Series(dtype=points[y].dtype),
+            x: pd.Series(dtype=points[x].dtype),
+            index_column: pd.Series(dtype="object"),
+            VALUE_ID_COLUMN: pd.Series(dtype=VALUE_ID_DTYPE),
+        }
+    )[[y, x, index_column, VALUE_ID_COLUMN]]
 
 
 def _source_path_from_sdata(sdata: Any) -> Path | None:

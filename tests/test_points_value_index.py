@@ -20,6 +20,7 @@ from napari_harpy._points_value_index import (
     PointsValueTable,
     _ValidatedPointsElement,
     build_points_value_table,
+    load_points,
     normalize_index_value,
     normalize_index_values,
     validate_points_element_for_value_selection,
@@ -120,6 +121,17 @@ def _valid_points_data_for_index_values(values: object, *, index_column: str = "
     }
     data[index_column] = values
     return data
+
+
+def _validated_points_and_value_table(
+    data: dict[str, object],
+    *,
+    index_column: str = "gene",
+    npartitions: int = 1,
+) -> tuple[_ValidatedPointsElement, PointsValueTable]:
+    sdata = _sdata_with_points(data, npartitions=npartitions)
+    validated = validate_points_element_for_value_selection(sdata, "transcripts", index_column=index_column)
+    return validated, build_points_value_table(validated)
 
 
 def test_points_value_index_constants() -> None:
@@ -578,3 +590,121 @@ def test_build_points_value_table_rejects_source_count_mismatch() -> None:
 
     with pytest.raises(ValueError, match="total count"):
         build_points_value_table(validated)
+
+
+def test_load_points_loads_exact_selection_with_yx_coordinates_and_features() -> None:
+    validated, value_table = _validated_points_and_value_table(
+        _valid_points_data(
+            x=[10.0, 20.0, 30.0, 40.0],
+            y=[1.0, 2.0, 3.0, 4.0],
+            gene=[" AAMP ", "AXL", "AAMP", "MALAT1"],
+            transcript_id=["tx1", "tx2", "tx3", "tx4"],
+        )
+    )
+
+    selection = load_points(validated, value_table, ["AAMP"])
+
+    np.testing.assert_array_equal(selection.coordinates, np.asarray([[1.0, 10.0], [3.0, 30.0]], dtype="float32"))
+    assert selection.features["gene"].tolist() == ["AAMP", "AAMP"]
+    assert selection.features["value_id"].tolist() == [0, 0]
+    assert selection.selected_values == ("AAMP",)
+    assert selection.selected_value_ids == (0,)
+    assert selection.total_count == 2
+    assert selection.loaded_count == 2
+    assert selection.is_sampled is False
+    assert selection.warning is None
+    assert isinstance(selection.features["gene"].dtype, pd.CategoricalDtype)
+
+
+def test_load_points_deduplicates_and_orders_requested_values_by_value_id() -> None:
+    validated, value_table = _validated_points_and_value_table(
+        _valid_points_data_for_index_values(["AXL", " AAMP ", "MALAT1", "AXL", "AAMP"]),
+        npartitions=2,
+    )
+
+    selection = load_points(validated, value_table, ["AXL", " AAMP ", "AXL"])
+
+    assert selection.selected_values == ("AAMP", "AXL")
+    assert selection.selected_value_ids == (0, 1)
+    assert selection.total_count == 4
+    assert set(selection.features["gene"].tolist()) == {"AAMP", "AXL"}
+
+
+def test_load_points_all_selects_all_values_in_value_id_order() -> None:
+    validated, value_table = _validated_points_and_value_table(
+        _valid_points_data_for_index_values(["B", "A", "C", "B"]),
+        npartitions=2,
+    )
+
+    selection = load_points(validated, value_table, "all")
+
+    assert selection.selected_values == ("A", "B", "C")
+    assert selection.selected_value_ids == (0, 1, 2)
+    assert selection.total_count == 4
+    assert selection.loaded_count == 4
+    assert set(selection.features["gene"].tolist()) == {"A", "B", "C"}
+
+
+def test_load_points_accepts_empty_selection() -> None:
+    validated, value_table = _validated_points_and_value_table(_valid_points_data())
+
+    selection = load_points(validated, value_table, [])
+
+    assert selection.coordinates.shape == (0, 2)
+    assert selection.features.empty
+    assert selection.selected_values == ()
+    assert selection.selected_value_ids == ()
+    assert selection.total_count == 0
+    assert selection.loaded_count == 0
+    assert selection.is_sampled is False
+
+
+def test_load_points_samples_when_selection_exceeds_render_budget() -> None:
+    validated, value_table = _validated_points_and_value_table(
+        _valid_points_data_for_index_values(["AAMP"] * 100),
+        npartitions=4,
+    )
+
+    selection = load_points(validated, value_table, ["AAMP"], render_point_budget=10, random_state=42)
+
+    assert selection.total_count == 100
+    assert selection.loaded_count <= 10
+    assert selection.render_point_budget == 10
+    assert selection.is_sampled is True
+    assert selection.warning is not None
+    assert "render point budget" in selection.warning
+    assert set(selection.features["gene"].tolist()) <= {"AAMP"}
+
+
+@pytest.mark.parametrize(
+    ("values", "match"),
+    [
+        ("AAMP", "sequence"),
+        (["UNKNOWN"], "Unknown"),
+        ([1], "strings"),
+    ],
+)
+def test_load_points_rejects_invalid_requested_values(values: object, match: str) -> None:
+    validated, value_table = _validated_points_and_value_table(_valid_points_data())
+
+    with pytest.raises(ValueError, match=match):
+        load_points(validated, value_table, values)  # type: ignore[arg-type]
+
+
+def test_load_points_rejects_mismatched_value_table_index_column() -> None:
+    validated, value_table = _validated_points_and_value_table(_valid_points_data())
+    mismatched = PointsValueTable(
+        values=value_table.values.copy(),
+        index_column="target",
+        total_count=value_table.total_count,
+    )
+
+    with pytest.raises(ValueError, match="index_column"):
+        load_points(validated, mismatched, ["AAMP"])
+
+
+def test_load_points_rejects_invalid_render_point_budget() -> None:
+    validated, value_table = _validated_points_and_value_table(_valid_points_data())
+
+    with pytest.raises(ValueError, match="render_point_budget"):
+        load_points(validated, value_table, ["AAMP"], render_point_budget=0)
