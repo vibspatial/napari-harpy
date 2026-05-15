@@ -737,10 +737,12 @@ Recommended sampling policy:
 The MVP default is proportional sampling by point count, with a minimum of one point per selected value when possible. This preserves the visual meaning of density while avoiding complete disappearance of selected rare values in sampled previews.
 
 1. Allocate a sample quota per selected value, proportional to its point count.
-2. If the number of selected values is less than `render_point_budget`, give each selected value at least one point when possible.
-3. For each value, read the first row groups in `value_shard` order until at least the quota is available.
-4. If the loaded rows exceed the quota, keep the first quota rows in physical cache order.
-5. Concatenate the sampled rows across values.
+2. If `number_of_selected_values <= render_point_budget`, give every selected value at least one point when possible, then distribute the remaining budget proportionally.
+3. If `number_of_selected_values > render_point_budget`, do not guarantee one point per selected value. Allocate quotas proportionally by `n_points`; values with quota `0` are omitted from the preview.
+4. Use deterministic quota rounding. Start from floor quotas, then distribute remaining points by largest fractional remainder. Break ties by `value_id` ascending.
+5. For each value with quota `> 0`, read the first row groups in `value_shard` order until at least the quota is available.
+6. If the loaded rows exceed the quota, keep the first quota rows in physical cache order.
+7. Concatenate the sampled rows across values.
 
 Balanced sampling and user-selectable sampling modes are deferred until the UI needs an explicit comparison mode. They are useful for comparing spatial patterns across values, but they intentionally distort abundance and should not be the default.
 
@@ -1075,6 +1077,8 @@ Includes:
 - proportional quota allocation;
 - minimum one point per selected value when possible;
 - deterministic quota rounding;
+- proportional omission of values when `number_of_selected_values > render_point_budget`;
+- deterministic tie-breaking by `value_id` ascending;
 - read first required row groups in `value_shard` order;
 - trim excess loaded rows by keeping the first quota rows in physical cache order;
 - support `values="all"`;
@@ -1088,7 +1092,7 @@ Tests:
 - rare selected values are preserved when possible;
 - all-values selection works;
 - duplicate selected values are handled predictably;
-- `render_point_budget < number_of_selected_values` behavior is defined and tested.
+- when `render_point_budget < number_of_selected_values`, some selected values may receive quota `0` and be omitted from the preview.
 
 Done when:
 
