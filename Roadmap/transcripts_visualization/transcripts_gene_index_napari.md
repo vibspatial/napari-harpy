@@ -228,7 +228,7 @@ Public API names should also be generic:
 - `PointsValueTable`;
 - `build_points_value_index_cache_for_points_element`;
 - `load_points`;
-- `add_transcript_value_points_layer`;
+- `add_or_update_points_layer`;
 - `POINTS_VALUE_INDEX_SCHEMA_VERSION`.
 
 napari-visible features should use the selected source column name where possible. The reader can work with generic value data internally, but the layer should expose the semantic column selected by the user:
@@ -1019,20 +1019,28 @@ Layer identity and update behavior:
 
 Use `LayerBindingRegistry` as the authoritative way to find the existing layer, following the existing viewer adapter pattern. Do not rely on napari layer names or metadata as the primary lookup contract.
 
-Add a points value-selection points binding to the registry. The exact class name can change, but the binding should capture:
+Add a points binding to the registry:
 
-```text
-layer: Points
-element_type: "points"
-points_role: "transcript_value_selection"
-sdata_id
-points_name
-coordinate_system: string | null
-index_column
-index_column_cache_key
+```python
+@dataclass(frozen=True, kw_only=True)
+class PointsLayerBinding(BaseLayerBinding):
+    element_type: Literal["points"] = "points"
+    index_column: str
 ```
 
-The binding identity should not include `selected_values`. This is what lets repeated visualization requests replace the current selection in one layer instead of accumulating stale layers.
+Points layers in this workflow are always the displayed indexed/styled layer, so do not introduce separate primary/styled roles for points.
+
+The binding identity should include the shared source identity plus `index_column`:
+
+```text
+sdata_id
+points_name / element_name
+element_type: "points"
+coordinate_system: string | null
+index_column
+```
+
+The binding identity should not include `selected_values` or an index-column cache key. This is what lets repeated visualization requests replace the current selection in one layer instead of accumulating stale layers, and keeps the direct no-cache path independent of optional cache layout details.
 
 Layer naming:
 
@@ -1098,7 +1106,7 @@ src/napari_harpy/_points_value_index.py
 
 src/napari_harpy/viewer/adapter.py
   Points-layer binding support.
-  Add/update the points value-selection Points layer.
+  Add/update the points value-selection Points layer via `add_or_update_points_layer`.
 
 src/napari_harpy/widgets/viewer/transcript_value_index_controller.py
   UI state machine.
@@ -1729,11 +1737,14 @@ Goal: convert a reader result into one napari `Points` layer.
 
 Includes:
 
-- helper such as `add_transcript_value_points_layer`;
+- helper `add_or_update_points_layer`;
+- `PointsLayerBinding` with `element_type="points"` and `index_column`;
+- no points `primary`/`styled` role split; the value-selection points layer is always the displayed, index-colored layer;
 - create or update one existing layer;
 - use the reader's `y, x` coordinates directly;
 - attach the configured index column as a pandas categorical feature, plus `value_id`;
 - register and find the layer through `LayerBindingRegistry`, not by layer name alone;
+- match the existing registered layer by source identity, coordinate system, and `index_column`;
 - reuse the same registered layer when selected values change;
 - apply categorical coloring for `2..102` selected values with `default_categorical_colors(n)`;
 - use a single solid color for one selected value or more than 102 selected values;
@@ -1747,6 +1758,8 @@ Tests:
 - updates same layer on repeated calls;
 - changing from one selected value to another replaces the existing layer instead of creating a second layer;
 - does not create one layer per value;
+- registry uses `PointsLayerBinding` with `element_type="points"` and `index_column`;
+- points bindings do not use primary/styled roles;
 - ignores unregistered same-name layers;
 - features are attached;
 - categorical coloring is used for up to 102 selected values;
@@ -1968,10 +1981,10 @@ DEFAULT_RANDOM_STATE
 POINTS_VALUE_INDEX_SCHEMA_VERSION
 PointsValueTable
 PointsValueSelection
-PointsValueLayerBinding
+PointsLayerBinding
 load_points
 build_points_value_table
-add_transcript_value_points_layer
+add_or_update_points_layer
 ```
 
 Optional cache objects:
