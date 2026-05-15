@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 
+import dask
+import dask.dataframe as dd
 import numpy as np
 import pandas as pd
 import pytest
@@ -15,7 +18,21 @@ from napari_harpy._transcript_value_index import (
     TRANSCRIPT_VALUE_INDEX_SCHEMA_VERSION,
     TranscriptValueSelection,
     TranscriptValueVocabulary,
+    _ValidatedPointsElement,
+    normalize_index_value,
+    normalize_index_values,
+    validate_points_element_for_value_selection,
 )
+
+
+class _DummySpatialData:
+    def __init__(self, points: dict[str, object], *, path: Path | None = None, backed: bool = False) -> None:
+        self.points = points
+        self.path = path
+        self._backed = backed
+
+    def is_backed(self) -> bool:
+        return self._backed
 
 
 def _example_vocabulary(**overrides: object) -> TranscriptValueVocabulary:
@@ -59,6 +76,37 @@ def _example_selection(**overrides: object) -> TranscriptValueSelection:
     }
     values.update(overrides)
     return TranscriptValueSelection(**values)
+
+
+def _points_dataframe(data: dict[str, object], *, npartitions: int = 1) -> dd.DataFrame:
+    with dask.config.set({"dataframe.convert-string": False}):
+        return dd.from_pandas(pd.DataFrame(data), npartitions=npartitions)
+
+
+def _sdata_with_points(
+    data: dict[str, object],
+    *,
+    points_name: str = "transcripts",
+    backed: bool = False,
+    path: Path | None = None,
+    npartitions: int = 1,
+) -> _DummySpatialData:
+    return _DummySpatialData(
+        {points_name: _points_dataframe(data, npartitions=npartitions)},
+        path=path,
+        backed=backed,
+    )
+
+
+def _valid_points_data(**overrides: object) -> dict[str, object]:
+    data: dict[str, object] = {
+        "x": [0.0, 1.0, 2.0],
+        "y": [3.0, 4.0, 5.0],
+        "gene": [" AAMP ", "AXL", "MALAT1"],
+        "transcript_id": ["tx1", "tx2", "tx3"],
+    }
+    data.update(overrides)
+    return data
 
 
 def test_transcript_value_index_constants() -> None:
@@ -246,3 +294,168 @@ def test_transcript_value_selection_is_immutable() -> None:
 
     with pytest.raises(FrozenInstanceError):
         selection.loaded_count = 1
+
+
+def test_normalize_index_value_strips_edges_and_preserves_case_and_internal_whitespace() -> None:
+    assert normalize_index_value(" Act b ") == "Act b"
+    assert normalize_index_value("ACTB") == "ACTB"
+    assert normalize_index_value("actb") == "actb"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, pd.NA, b"AAMP", bytearray(b"AAMP"), 1, 1.2, True, ["AAMP"], {"gene": "AAMP"}, ("AAMP",)],
+)
+def test_normalize_index_value_rejects_invalid_values(value: object) -> None:
+    with pytest.raises(ValueError):
+        normalize_index_value(value)
+
+
+def test_normalize_index_values_normalizes_series() -> None:
+    values = pd.Series([" AAMP ", "AXL"], name="gene")
+
+    normalized = normalize_index_values(values)
+
+    assert normalized.tolist() == ["AAMP", "AXL"]
+    assert normalized.name == "gene"
+
+
+def test_normalize_index_values_rejects_non_series() -> None:
+    with pytest.raises(ValueError, match="pandas Series"):
+        normalize_index_values(["AAMP"])  # type: ignore[arg-type]
+
+
+def test_validate_points_element_for_value_selection_accepts_unbacked_points() -> None:
+    sdata = _sdata_with_points(_valid_points_data(), backed=False)
+
+    validated = validate_points_element_for_value_selection(sdata, "transcripts")
+
+    assert isinstance(validated, _ValidatedPointsElement)
+    assert validated.points is sdata.points["transcripts"]
+    assert validated.points_name == "transcripts"
+    assert validated.source_path is None
+    assert validated.is_backed is False
+    assert validated.element_path is None
+    assert validated.source_n_points == 3
+    assert validated.x == "x"
+    assert validated.y == "y"
+    assert validated.index_column == "gene"
+    assert validated.transcript_id is None
+
+
+def test_validate_points_element_for_value_selection_accepts_backed_points(tmp_path: Path) -> None:
+    path = tmp_path / "example.zarr"
+    sdata = _sdata_with_points(_valid_points_data(), backed=True, path=path)
+
+    validated = validate_points_element_for_value_selection(sdata, "transcripts", transcript_id="transcript_id")
+
+    assert validated.source_path == path
+    assert validated.is_backed is True
+    assert validated.element_path == "points/transcripts"
+    assert validated.transcript_id == "transcript_id"
+
+
+def test_validate_points_element_for_value_selection_accepts_configured_index_column() -> None:
+    sdata = _sdata_with_points(_valid_points_data(target=pd.Series([" A ", "B", "B"], dtype="string")))
+
+    validated = validate_points_element_for_value_selection(sdata, "transcripts", index_column="target")
+
+    assert validated.index_column == "target"
+
+
+def test_validate_points_element_for_value_selection_accepts_categorical_index_column() -> None:
+    sdata = _sdata_with_points(_valid_points_data(gene=pd.Categorical([" AAMP ", "AXL", "MALAT1"])))
+
+    validated = validate_points_element_for_value_selection(sdata, "transcripts")
+
+    assert validated.index_column == "gene"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"points_name": ""}, "points_name"),
+        ({"points_name": "missing"}, "not available"),
+        ({"x": ""}, "`x`"),
+        ({"y": ""}, "`y`"),
+        ({"index_column": ""}, "`index_column`"),
+        ({"transcript_id": ""}, "`transcript_id`"),
+        ({"x": "missing"}, "missing"),
+        ({"y": "missing"}, "missing"),
+        ({"index_column": "missing"}, "missing"),
+        ({"index_column": "x"}, "index_column"),
+        ({"index_column": "y"}, "index_column"),
+        ({"transcript_id": "missing"}, "missing"),
+    ],
+)
+def test_validate_points_element_for_value_selection_rejects_invalid_arguments(
+    kwargs: dict[str, object], match: str
+) -> None:
+    sdata = _sdata_with_points(_valid_points_data())
+    points_name = str(kwargs.pop("points_name", "transcripts"))
+
+    with pytest.raises(ValueError, match=match):
+        validate_points_element_for_value_selection(sdata, points_name, **kwargs)
+
+
+def test_validate_points_element_for_value_selection_rejects_non_dask_points() -> None:
+    sdata = _DummySpatialData({"transcripts": pd.DataFrame(_valid_points_data())})
+
+    with pytest.raises(ValueError, match="dask.dataframe.DataFrame"):
+        validate_points_element_for_value_selection(sdata, "transcripts")
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ({"x": ["0", "1", "2"]}, "numeric"),
+        ({"y": ["0", "1", "2"]}, "numeric"),
+        ({"x": [0.0, np.nan, 2.0]}, "x.*finite"),
+        ({"y": [0.0, np.inf, 2.0]}, "y.*finite"),
+        ({"gene": ["AAMP", None, "AXL"]}, "missing index"),
+        ({"gene": ["AAMP", "  ", "AXL"]}, "empty index"),
+        ({"gene": [1, 2, 3]}, "string-like"),
+        ({"gene": [True, False, True]}, "string-like"),
+        ({"gene": ["AAMP", b"AXL", "MALAT1"]}, "unsupported"),
+        ({"gene": ["AAMP", 1, "MALAT1"]}, "unsupported"),
+        ({"gene": ["AAMP", True, "MALAT1"]}, "unsupported"),
+        ({"gene": ["AAMP", ["AXL"], "MALAT1"]}, "unsupported"),
+        ({"gene": ["AAMP", {"gene": "AXL"}, "MALAT1"]}, "unsupported"),
+        ({"gene": ["AAMP", ("AXL",), "MALAT1"]}, "unsupported"),
+    ],
+)
+def test_validate_points_element_for_value_selection_rejects_invalid_source_values(
+    overrides: dict[str, object], match: str
+) -> None:
+    sdata = _sdata_with_points(_valid_points_data(**overrides))
+
+    with pytest.raises(ValueError, match=match):
+        validate_points_element_for_value_selection(sdata, "transcripts")
+
+
+def test_validate_points_element_for_value_selection_rejects_empty_points() -> None:
+    data = {
+        "x": pd.Series([], dtype="float64"),
+        "y": pd.Series([], dtype="float64"),
+        "gene": pd.Series([], dtype="object"),
+    }
+    sdata = _sdata_with_points(data)
+
+    with pytest.raises(ValueError, match="empty"):
+        validate_points_element_for_value_selection(sdata, "transcripts")
+
+
+@pytest.mark.parametrize(
+    ("transcript_id_values", "match"),
+    [
+        (["tx1", None, "tx3"], "missing transcript_id"),
+        (["tx1", "tx1", "tx3"], "unique transcript_id"),
+    ],
+)
+def test_validate_points_element_for_value_selection_rejects_invalid_transcript_id_values(
+    transcript_id_values: list[str | None], match: str
+) -> None:
+    sdata = _sdata_with_points(_valid_points_data(transcript_id=transcript_id_values))
+
+    with pytest.raises(ValueError, match=match):
+        validate_points_element_for_value_selection(sdata, "transcripts", transcript_id="transcript_id")

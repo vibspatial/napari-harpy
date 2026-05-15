@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import numbers
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
+import dask
+import dask.dataframe as dd
 import numpy as np
 import pandas as pd
-from pandas.api.types import is_bool_dtype, is_integer_dtype
+from pandas.api.types import is_bool_dtype, is_integer_dtype, is_numeric_dtype, is_object_dtype, is_string_dtype
 
 TRANSCRIPT_VALUE_INDEX_SCHEMA_VERSION = "harpy-transcripts-value-index-0.1"
 DEFAULT_X = "x"
@@ -21,6 +25,28 @@ VALUE_VOCABULARY_COLUMNS = (VALUE_ID_COLUMN, VALUE_COLUMN, N_POINTS_COLUMN)
 VALUE_ID_DTYPE = np.dtype("uint32")
 N_POINTS_DTYPE = np.dtype("uint64")
 COORDINATE_DTYPE = np.dtype("float32")
+
+
+@dataclass(frozen=True)
+class _ValidatedPointsElement:
+    points: dd.DataFrame
+    points_name: str
+    source_path: Path | None
+    source_n_points: int
+    x: str
+    y: str
+    index_column: str
+    transcript_id: str | None
+
+    @property
+    def is_backed(self) -> bool:
+        return self.source_path is not None
+
+    @property
+    def element_path(self) -> str | None:
+        if self.source_path is None:
+            return None
+        return f"points/{self.points_name}"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -50,8 +76,7 @@ class TranscriptValueVocabulary:
             raise ValueError("Transcript value vocabulary `values` must be a pandas DataFrame.")
         if tuple(self.values.columns) != VALUE_VOCABULARY_COLUMNS:
             raise ValueError(
-                "Transcript value vocabulary `values` must contain exactly "
-                "`value_id`, `value`, and `n_points` columns."
+                "Transcript value vocabulary `values` must contain exactly `value_id`, `value`, and `n_points` columns."
             )
         if not isinstance(self.index_column, str) or not self.index_column:
             raise ValueError("Transcript value vocabulary `index_column` must be a non-empty string.")
@@ -134,8 +159,7 @@ class TranscriptValueSelection:
             raise ValueError("Transcript value selection `index_column` must not be `value_id`.")
         if set(self.features.columns) != {self.index_column, VALUE_ID_COLUMN}:
             raise ValueError(
-                "Transcript value selection `features` must contain exactly the configured index column "
-                "and `value_id`."
+                "Transcript value selection `features` must contain exactly the configured index column and `value_id`."
             )
         if not isinstance(self.features[self.index_column].dtype, pd.CategoricalDtype):
             raise ValueError("Transcript value selection index feature must be categorical.")
@@ -150,7 +174,9 @@ class TranscriptValueSelection:
         if not isinstance(self.selected_value_ids, tuple) or not all(
             _is_non_negative_integral(value) for value in self.selected_value_ids
         ):
-            raise ValueError("Transcript value selection `selected_value_ids` must be a tuple of non-negative integers.")
+            raise ValueError(
+                "Transcript value selection `selected_value_ids` must be a tuple of non-negative integers."
+            )
         if len(self.selected_values) != len(self.selected_value_ids):
             raise ValueError("Transcript value selection selected values and ids must have the same length.")
         if len(set(self.selected_values)) != len(self.selected_values):
@@ -196,3 +222,200 @@ def _validate_non_negative_integer(name: str, value: object) -> None:
 def _validate_positive_integer(name: str, value: object) -> None:
     if isinstance(value, bool) or not isinstance(value, numbers.Integral) or value <= 0:
         raise ValueError(f"`{name}` must be a positive integer.")
+
+
+def validate_points_element_for_value_selection(
+    sdata: Any,
+    points_name: str,
+    *,
+    x: str = DEFAULT_X,
+    y: str = DEFAULT_Y,
+    index_column: str = DEFAULT_INDEX_COLUMN,
+    transcript_id: str | None = None,
+) -> _ValidatedPointsElement:
+    """Validate a SpatialData points element for direct value selection."""
+    points_name = _validate_column_name(points_name, "points_name")
+
+    points_collection = getattr(sdata, "points", None)
+    if points_collection is None or points_name not in points_collection:
+        raise ValueError(f"Points element `{points_name}` is not available in the SpatialData object.")
+
+    points = points_collection[points_name]
+    if not isinstance(points, dd.DataFrame):
+        raise ValueError(f"Points element `{points_name}` must resolve to a dask.dataframe.DataFrame.")
+
+    x = _validate_column_name(x, "x")
+    y = _validate_column_name(y, "y")
+    index_column = _validate_column_name(index_column, "index_column")
+    if transcript_id is not None:
+        transcript_id = _validate_column_name(transcript_id, "transcript_id")
+
+    if index_column in {x, y}:
+        raise ValueError("`index_column` must be different from the configured coordinate columns.")
+
+    _validate_required_columns(points, [x, y, index_column])
+    if transcript_id is not None:
+        _validate_required_columns(points, [transcript_id])
+
+    _validate_numeric_column(points, x)
+    _validate_numeric_column(points, y)
+    _validate_index_column_dtype(points, index_column)
+
+    row_count, invalid_x, invalid_y, missing_index, empty_index, invalid_index, *transcript_checks = dask.compute(
+        points.map_partitions(len, meta=("row_count", "int64")).sum(),
+        points[x].map_partitions(_count_nonfinite_values, meta=("invalid_x", "int64")).sum(),
+        points[y].map_partitions(_count_nonfinite_values, meta=("invalid_y", "int64")).sum(),
+        points[index_column].map_partitions(_count_missing_values, meta=("missing_index", "int64")).sum(),
+        points[index_column].map_partitions(_count_empty_index_values, meta=("empty_index", "int64")).sum(),
+        points[index_column].map_partitions(_count_invalid_index_values, meta=("invalid_index", "int64")).sum(),
+        *(
+            (
+                points[transcript_id]
+                .map_partitions(_count_missing_values, meta=("missing_transcript_id", "int64"))
+                .sum(),
+                points[transcript_id].nunique(dropna=True),
+            )
+            if transcript_id is not None
+            else ()
+        ),
+    )
+
+    source_n_points = int(row_count)
+    if source_n_points == 0:
+        raise ValueError("`points` must not be empty.")
+    if int(invalid_x) > 0:
+        raise ValueError(f"Column `{x}` contains missing, NaN, or infinite coordinate values.")
+    if int(invalid_y) > 0:
+        raise ValueError(f"Column `{y}` contains missing, NaN, or infinite coordinate values.")
+    if int(missing_index) > 0:
+        raise ValueError(f"Column `{index_column}` contains missing index values.")
+    if int(empty_index) > 0:
+        raise ValueError(f"Column `{index_column}` contains empty index values after stripping whitespace.")
+    if int(invalid_index) > 0:
+        raise ValueError(f"Column `{index_column}` contains unsupported index values.")
+
+    if transcript_id is not None:
+        missing_transcript_id, unique_transcript_id_count = transcript_checks
+        if int(missing_transcript_id) > 0:
+            raise ValueError(f"Column `{transcript_id}` contains missing transcript_id values.")
+        if int(unique_transcript_id_count) != source_n_points:
+            raise ValueError(f"Column `{transcript_id}` must contain unique transcript_id values.")
+
+    return _ValidatedPointsElement(
+        points=points,
+        points_name=points_name,
+        source_path=_source_path_from_sdata(sdata),
+        source_n_points=source_n_points,
+        x=x,
+        y=y,
+        index_column=index_column,
+        transcript_id=transcript_id,
+    )
+
+
+def normalize_index_value(value: object) -> str:
+    """Normalize one index-column value for direct value selection."""
+    if _is_missing_scalar(value):
+        raise ValueError("Index values must not be missing.")
+    if _is_unsupported_index_value(value):
+        raise ValueError("Index values must be strings.")
+
+    normalized = str(value).strip()
+    if not normalized:
+        raise ValueError("Index values must not be empty after stripping whitespace.")
+    return normalized
+
+
+def normalize_index_values(values: pd.Series) -> pd.Series:
+    """Normalize a pandas Series of index-column values."""
+    if not isinstance(values, pd.Series):
+        raise ValueError("`values` must be a pandas Series.")
+    return values.map(normalize_index_value)
+
+
+def _source_path_from_sdata(sdata: Any) -> Path | None:
+    is_backed = getattr(sdata, "is_backed", None)
+    path = getattr(sdata, "path", None)
+    if callable(is_backed) and is_backed() and path is not None:
+        return Path(path)
+    return None
+
+
+def _validate_column_name(column: Any, parameter_name: str) -> str:
+    if not isinstance(column, str) or not column:
+        raise ValueError(f"`{parameter_name}` must be a non-empty string.")
+    return column
+
+
+def _validate_required_columns(points: dd.DataFrame, columns: list[str]) -> None:
+    missing = [column for column in columns if column not in points.columns]
+    if missing:
+        missing_columns = ", ".join(f"`{column}`" for column in missing)
+        raise ValueError(f"`points` is missing required column(s): {missing_columns}.")
+
+
+def _validate_numeric_column(points: dd.DataFrame, column: str) -> None:
+    if not is_numeric_dtype(points._meta[column].dtype):
+        raise ValueError(f"Column `{column}` must be numeric.")
+
+
+def _validate_index_column_dtype(points: dd.DataFrame, column: str) -> None:
+    dtype = points._meta[column].dtype
+    if is_bool_dtype(dtype) or is_numeric_dtype(dtype):
+        raise ValueError(f"Column `{column}` must contain string-like or categorical values.")
+    if isinstance(dtype, pd.CategoricalDtype) or is_string_dtype(dtype) or is_object_dtype(dtype):
+        return
+    raise ValueError(f"Column `{column}` must contain string-like or categorical values.")
+
+
+def _count_nonfinite_values(values: pd.Series) -> int:
+    numeric_values = pd.to_numeric(values, errors="coerce").to_numpy(dtype="float64", na_value=np.nan)
+    return int((~np.isfinite(numeric_values)).sum())
+
+
+def _count_missing_values(values: pd.Series) -> int:
+    return int(values.isna().sum())
+
+
+def _count_empty_index_values(values: pd.Series) -> int:
+    count = 0
+    for value in values:
+        if _is_missing_scalar(value) or _is_unsupported_index_value(value):
+            continue
+        if not str(value).strip():
+            count += 1
+    return count
+
+
+def _count_invalid_index_values(values: pd.Series) -> int:
+    count = 0
+    for value in values:
+        if _is_missing_scalar(value):
+            continue
+        if _is_unsupported_index_value(value):
+            count += 1
+    return count
+
+
+def _is_missing_scalar(value: object) -> bool:
+    if value is None:
+        return True
+    try:
+        missing = pd.isna(value)
+    except (TypeError, ValueError):
+        return False
+    if isinstance(missing, (bool, np.bool_)):
+        return bool(missing)
+    return False
+
+
+def _is_unsupported_index_value(value: object) -> bool:
+    if isinstance(value, bytes | bytearray | memoryview):
+        return True
+    if isinstance(value, bool | np.bool_):
+        return True
+    if isinstance(value, numbers.Number):
+        return True
+    if isinstance(value, list | tuple | dict | set | frozenset):
+        return True
+    return not isinstance(value, str)
