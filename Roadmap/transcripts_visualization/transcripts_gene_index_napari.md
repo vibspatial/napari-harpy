@@ -150,6 +150,78 @@ probe
 
 The on-disk cache should use generic `value` terminology. In this document, "value" means one normalized value from the configured index column.
 
+### Value Normalization Rules
+
+Index values are normalized before building `values.parquet`.
+
+Normalization is intentionally minimal:
+
+1. Missing values are invalid.
+2. Values are converted to strings.
+3. Leading and trailing whitespace is stripped.
+4. Empty strings after stripping are invalid.
+5. Case is preserved.
+6. Internal whitespace is preserved.
+7. No Unicode normalization, lowercasing, or symbol rewriting is performed in the MVP.
+
+Examples:
+
+```text
+" Actb " -> "Actb"
+"ACTB"   -> "ACTB"
+"Actb"   -> "Actb"
+"Act b"  -> "Act b"
+```
+
+`ACTB`, `Actb`, and `actb` remain distinct values.
+
+Eligible index column dtypes:
+
+- pandas string dtype;
+- object dtype where all non-missing values are string-like;
+- categorical dtype whose categories are string-like after normalization.
+
+Object dtype handling:
+
+- object columns are accepted only if every non-missing value can be safely normalized as a string value;
+- mixed string/object columns are allowed when all observed non-missing values normalize cleanly;
+- numeric, boolean, list, dict, tuple, or other structured Python objects are rejected for the MVP.
+
+Categorical handling:
+
+- categorical values are normalized from their category labels;
+- unused categories do not appear in `values.parquet`;
+- category order is ignored;
+- normalized values are sorted lexicographically before assigning `value_id`.
+
+Bytes handling:
+
+- bytes values are not accepted by default in the MVP;
+- if bytes support is added later, bytes should be decoded explicitly as UTF-8 and undecodable values should be rejected;
+- do not use Python's default `str(bytes_value)`, because it produces values like `"b'ACTB'"`.
+
+Collision handling:
+
+If multiple source values normalize to the same string, they are treated as the same indexed value.
+
+Examples:
+
+```text
+"Actb"
+" Actb "
+"Actb\t"
+```
+
+all normalize to:
+
+```text
+"Actb"
+```
+
+and therefore produce one row in `values.parquet` with a combined `n_points`.
+
+The cache stores only normalized values. `values.parquet.value` is always the normalized value, not the raw source value.
+
 Validation should reject:
 
 - missing coordinate columns;
