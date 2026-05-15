@@ -434,6 +434,15 @@ data/shard-00003.parquet
 
 `value_shard` is the zero-based logical shard/read order for a given `value_id` after the builder has grouped rows by value and shuffled rows within the value group. This mirrors `tile_shard` in the spatial cache and keeps the physical Parquet row group index separate from the per-value preview order.
 
+`row_group` and `value_shard` answer different questions:
+
+```text
+data_file + row_group = where this chunk lives physically
+value_id + value_shard = where this chunk sits in the read/preview order for that value
+```
+
+`row_group` is local to one Parquet file, so many files can each have `row_group = 0`. `value_shard` gives the reader one continuous order across all files for a selected value. Exact reads can read all shards for a value, while sampled preview reads can read `value_shard = 0, 1, 2, ...` until enough points are loaded.
+
 This makes preview sampling simple:
 
 ```text
