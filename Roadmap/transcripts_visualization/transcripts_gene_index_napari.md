@@ -10,7 +10,7 @@ This document proposes a narrower MVP:
 - validate that the points table has `x`, `y`, and `gene` columns, or another configured index column;
 - build a value-first cache optimized for quickly loading selected genes or another configured string/categorical value;
 - visualize the selected result in one napari `Points` layer;
-- if the selected subset is too large, show a deterministic sample and warn the user.
+- if the selected subset is too large, show a best-effort shuffled preview and warn the user.
 
 The goal is not to solve every zoom level and viewport problem yet. The goal is to make selected-gene transcript visualization feel useful quickly.
 
@@ -265,6 +265,7 @@ Validation should reject:
 
 - missing coordinate columns;
 - missing index column;
+- missing `transcript_id` column when `transcript_id` is configured;
 - an index column that is neither string-like nor categorical;
 - non-numeric `x` or `y`;
 - non-finite `x` or `y`;
@@ -278,51 +279,31 @@ Optional input:
 transcript_id
 ```
 
-If present, `transcript_id` should be used as the stable row identity for deterministic sampling. If absent, the builder creates and stores `_internal_row_id` for the current build. This id is sufficient to avoid duplicate sampling keys within one build, but deterministic sampling across rebuilds is guaranteed only when the source dataframe row order and partitioning are stable.
+If present, `transcript_id` can be passed through to the data shards for future lookup of canonical source rows. It is not required for MVP sampling. The MVP does not require `transcript_id` to be non-null or unique.
 
-If `transcript_id` is provided:
+Before writing the data shards, the builder should globally group rows by the selected index column and shuffle rows within each value group:
 
-- the column must exist;
-- values must be non-null;
-- values must be unique across the selected points element;
-- values are used as row identity, not as display labels.
+```python
+def shuffle_value_group(pdf):
+    return pdf.sample(frac=1, random_state=42)
 
-If `transcript_id` is absent:
-
-- the builder creates a private `_internal_row_id: uint64`;
-- ids should be assigned from partition offsets and row position within each partition;
-- `_internal_row_id` is written to the data shards;
-- `_internal_row_id` should not be exposed as a user-facing feature unless needed for debugging.
-
-Stable row identity is the input to the build-time `sample_key`:
-
-```text
-sample_key = stable_uint64_hash(row_identity)
+shuffled = points.groupby(index_column, group_keys=False).apply(
+    shuffle_value_group,
+    meta=points._meta,
+)
 ```
 
-The MVP should store this policy in `metadata.json`:
+The implementation should use the configured `index_column`, not hard-code `gene`.
+
+This global groupby/apply is allowed to be the expensive step in the MVP. The goal is a much simpler cache contract:
 
 ```text
-row_identity_policy: "transcript_id" | "internal-row-id-from-partition-offsets-v1"
-sample_key_policy: "uint64-hash-of-row-identity-v1"
-sample_order_policy: "partition-local-sample-key-with-value-row-group-interleaving-v1"
+group rows by value
+shuffle rows within each value group as a best effort
+write row groups in that order
 ```
 
-If `target_build_partitions` is used, `_internal_row_id` must be assigned before repartitioning so the row identity remains unique and deterministic for the build.
-
-Rows should be ordered deterministically within each build partition and value by:
-
-```text
-value_id
-sample_key
-row_identity
-```
-
-The row identity tie-breaker makes ordering deterministic even if two rows produce the same `sample_key`.
-
-`sample_key` is a build-time-only column. It is used to write rows in deterministic random-looking physical order within each build partition, but it is not stored in `data/shard-*.parquet`.
-
-The MVP does not require a global shuffle or global sort by `(value_id, sample_key, row_identity)`. Sampled previews are deterministic and random-looking within partitions, but they are not guaranteed to be globally random unless the source dataframe was already globally shuffled or well mixed across partitions.
+The fixed random state is a best-effort repeatability aid, not a strict deterministic sampling contract. The MVP does not require stable sampling across rebuilds.
 
 ## Cache Lifecycle
 
@@ -391,10 +372,8 @@ source_n_points: int
 n_values: int
 target_rows_per_row_group: int
 default_max_points: int
-target_build_partitions: int | null
-row_identity_policy: string
-sample_key_policy: string
-sample_order_policy: string
+shuffle_random_state: int | null
+shuffle_policy: string
 ```
 
 Suggested schema version:
@@ -404,6 +383,15 @@ harpy-transcripts-value-index-0.1
 ```
 
 Write `metadata.json` last, or write a separate completion marker last. The cache should not look valid until all required files have been written.
+
+MVP shuffle metadata:
+
+```text
+shuffle_policy: "groupby-value-apply-sample-v1"
+shuffle_random_state: 42
+```
+
+`shuffle_random_state` may be `null` if no fixed random state was used.
 
 ### `values.parquet`
 
@@ -432,7 +420,7 @@ One row per data row group:
 value_id: uint32
 data_file: string
 row_group: int32
-value_row_group: int32
+value_shard: int32
 n_points: int64
 ```
 
@@ -442,36 +430,17 @@ n_points: int64
 data/shard-00003.parquet
 ```
 
-`value_row_group` is the preview read order within that value. For the MVP, it is assigned after build-partition-local writing by interleaving build-partition-local row groups for the same value. This makes preview sampling simple:
+`row_group` is the zero-based physical row group index within `data_file`.
+
+`value_shard` is the zero-based logical shard/read order for a given `value_id` after the builder has grouped rows by value and shuffled rows within the value group. This mirrors `tile_shard` in the spatial cache and keeps the physical Parquet row group index separate from the per-value preview order.
+
+This makes preview sampling simple:
 
 ```text
-read the first k row groups for this value
+read the first k value_shards for this value
 ```
 
-During writing, the builder should collect temporary metadata for each row group:
-
-```text
-partition_number
-local_value_row_group
-```
-
-`partition_number` is the build partition number after optional coalescing or repartitioning.
-
-`local_value_row_group` is the row-group order for one value within one build partition after sorting that partition's rows by build-time `sample_key` and row identity. These temporary fields do not need to be persisted in `value_index.parquet`.
-
-To assign the final `value_row_group`, sort row-group metadata by:
-
-```text
-value_id
-local_value_row_group
-partition_number
-data_file
-row_group
-```
-
-Then assign `value_row_group` as the zero-based row-group number within each `value_id`.
-
-This interleaving avoids reading all early preview chunks from one partition before touching the next partition, while still avoiding a global shuffle of the source dataframe.
+Assign `value_shard` as the zero-based shard number within each `value_id` in write order.
 
 Required invariant:
 
@@ -507,37 +476,27 @@ y: float32
 value_id: uint32
 ```
 
-Exactly one row identity column:
+Optional columns:
 
 ```text
 transcript_id: source dtype
-_internal_row_id: uint64
 ```
 
-If `transcript_id` was provided, store `transcript_id` using the source column dtype when possible. If `transcript_id` was absent, store `_internal_row_id: uint64`.
+If `transcript_id` was provided, store `transcript_id` using the source column dtype when possible.
 
 Store display coordinates as `float32`. This is good enough for napari transcript visualization and reduces memory pressure in both the cache and the `Points` layer. The canonical full-precision values remain in `points.parquet`. If exact coordinate preservation is needed for picked transcripts later, use `transcript_id` to look up canonical rows.
 
-Rows inside each build-partition-local value group should be physically ordered by a stable random-looking build-time `sample_key`, with row identity as the tie-breaker.
+Rows inside each value should be physically ordered by the groupby/apply shuffle output.
 
 This matters because it lets the reader build a preview without reading the full value:
 
 ```text
 rows are grouped by value_id
-within each build-partition-local value_id group, rows are physically sorted by sample_key and row identity
-value_row_group interleaves build-partition-local row groups for the same value
-first row groups for a value are therefore a deterministic partition-stratified preview
+within each value_id, rows are best-effort shuffled
+first row groups for a value are therefore a best-effort shuffled preview
 ```
 
-Do not use Python's built-in `hash`, because it is intentionally not stable across processes.
-
-Possible first implementation:
-
-```text
-sample_key = pandas.util.hash_pandas_object(row_identity, index=False, hash_key=<fixed 16 byte key>)
-```
-
-The computed `sample_key` is used for build-partition-local sorting before write and then dropped from the stored data shard schema. If cross-language stability becomes important, switch to a named stable hash such as xxhash64 or BLAKE2b-64.
+The MVP should use a fixed `random_state` for best-effort repeatability, but it does not promise exact reproducibility across Dask versions, partitioning changes, or rebuilds.
 
 ## Cache Availability And Staleness Checks
 
@@ -563,7 +522,7 @@ metadata.json exists
 values.parquet exists
 value_index.parquet exists
 metadata schema_version matches
-metadata row_identity_policy, sample_key_policy, and sample_order_policy match supported MVP values
+metadata shuffle_policy matches supported MVP value
 metadata source_element_path matches selected points element
 metadata x/y/index column names and index_column_cache_key match current UI selection
 metadata source_n_points == sum(values.n_points)
@@ -633,7 +592,7 @@ Recommended future layout:
 ```text
 write tile-major data
 within each tile, sort rows by value_id
-within each value_id, sort by sample_key or spatial key
+within each value_id, sort by sampling key or spatial key
 write row groups up to a target size
 allow multiple small values in one row group
 keep each value's rows contiguous within a row group
@@ -677,7 +636,7 @@ def build_transcript_value_index_cache_for_points_element(
     index_column: str = "gene",
     transcript_id: str | None = None,
     target_rows_per_row_group: int = 25_000,
-    target_build_partitions: int | None = None,
+    shuffle_random_state: int | None = 42,
     default_max_points: int = 100_000,
 ) -> TranscriptValueIndexCache:
     ...
@@ -690,28 +649,19 @@ Implementation steps:
 3. Normalize selected index values by stripping whitespace and converting valid values to strings.
 4. Build `values.parquet` using a Dask `value_counts`.
 5. Assign deterministic `value_id` values from the sorted value table.
-6. Create a working dataframe with `x`, `y`, `value_id`, row identity, and build-time `sample_key`.
-7. Optionally coalesce or repartition the working dataframe to reduce build partition count before writing.
-8. Process build partitions independently; the MVP should not require a global shuffle by `value_id`.
-9. Within each build partition, sort by `value_id`, build-time `sample_key`, and row identity.
-10. Write Parquet row groups so each row group contains only one `value_id`.
-11. Split very large build-partition-local values across multiple row groups of at most `target_rows_per_row_group`.
-12. Collect row-group metadata, including temporary `partition_number` and `local_value_row_group`.
-13. Assign `value_row_group` by interleaving build-partition-local row groups per value.
-14. Build `value_index.parquet` from the final row-group metadata.
-15. Finalize through staged replacement so incomplete caches are not exposed as valid.
+6. Create a working dataframe with `x`, `y`, `value_id`, and optional `transcript_id`.
+7. Globally group by `value_id` and shuffle rows within each value group using `shuffle_random_state`.
+8. Write Parquet row groups so each row group contains only one `value_id`.
+9. Split very large values across multiple row groups of at most `target_rows_per_row_group`.
+10. Assign `value_shard` as the shard order within each value.
+11. Build `value_index.parquet` from the final row-group metadata.
+12. Finalize through staged replacement so incomplete caches are not exposed as valid.
 
 For the first implementation, it is acceptable for one value to appear in multiple shard files as long as every row group is single-value and every row group is listed in `value_index.parquet`.
 
-Optional build partition coalescing is a guard against row-group explosion. With build-partition-local writing, the rough lower bound on row groups can approach:
+The MVP deliberately accepts the cost of the global groupby/apply shuffle because it makes the cache contract much simpler and avoids row-group explosion from partition-local value writing. The implementation should avoid calling `.compute()` on the full shuffled dataframe when possible; the cache writer should keep the shuffled result as a Dask dataframe and write from Dask tasks.
 
-```text
-n_build_partitions * n_values_present_per_partition
-```
-
-Reducing many small source partitions to fewer larger build partitions can make the cache much smaller without doing a full global shuffle by `value_id`.
-
-The fast MVP deliberately uses build-partition-local pseudo-random ordering rather than global pseudo-random ordering. Users who need stronger preview randomness can globally shuffle or otherwise well-mix the source points dataframe before building the cache. A future build mode can add a full global shuffle/sort by `(value_id, sample_key, row_identity)` for higher-quality previews.
+The shuffled order is best effort. It is good enough to make the first row groups for a large value useful as a preview, but it is not a strict reproducibility guarantee.
 
 ## Runtime Reader
 
@@ -737,7 +687,7 @@ Runtime flow:
 2. Resolve selected values to `value_id`.
 3. Sum `n_points` for the selected values before reading data.
 4. If the selected count is `<= max_points`, read all row groups for those values.
-5. If the selected count is `> max_points`, read a deterministic sample.
+5. If the selected count is `> max_points`, read a best-effort shuffled preview.
 6. Return coordinates and features for one napari `Points` layer.
 
 Selected values should already come from `values.parquet`. If a selected value is not present in `values.parquet`, the reader should raise an error instead of warning and skipping it. That means the UI or controller allowed stale or invalid selection state to reach the reader, which is an internal consistency bug.
@@ -761,7 +711,7 @@ show exact selected points
 If the selected values contain more than `max_points` points:
 
 ```text
-show a deterministic sample and warn the user
+show a best-effort shuffled preview and warn the user
 ```
 
 The warning should include:
@@ -776,15 +726,15 @@ The MVP default is proportional sampling by point count, with a minimum of one p
 
 1. Allocate a sample quota per selected value, proportional to its point count.
 2. If the number of selected values is less than `max_points`, give each selected value at least one point when possible.
-3. For each value, read the first row groups in `value_row_group` order until at least the quota is available.
+3. For each value, read the first row groups in `value_shard` order until at least the quota is available.
 4. If the loaded rows exceed the quota, keep the first quota rows in physical cache order.
 5. Concatenate the sampled rows across values.
 
 Balanced sampling and user-selectable sampling modes are deferred until the UI needs an explicit comparison mode. They are useful for comparing spatial patterns across values, but they intentionally distort abundance and should not be the default.
 
-Because rows within each build-partition-local value group are physically sorted by a stable random-looking build-time `sample_key`, and because `value_row_group` interleaves build-partition-local row groups, reading the first row groups gives a deterministic partition-stratified preview without scanning the full selected subset.
+Because rows within each value are shuffled before writing, reading the first row groups gives a best-effort preview without scanning the full selected subset.
 
-This is not a true global random sample unless the source dataframe was already globally shuffled or well mixed across partitions. The tradeoff is intentional for the MVP: cache building stays simpler and faster because it avoids a full global shuffle by `(value_id, sample_key, row_identity)`.
+This is not a strict reproducibility guarantee. The preview quality depends on the groupby/apply shuffle and the selected random state.
 
 This is important. If we simply read every selected row and then sample, large value selections will still be slow.
 
@@ -959,7 +909,7 @@ Includes:
 - validate configured index column;
 - normalize index values;
 - reject missing, empty, invalid, or unsupported values;
-- validate optional `transcript_id`.
+- validate optional `transcript_id` exists when requested.
 
 Tests:
 
@@ -1010,15 +960,13 @@ Includes:
   - `x`;
   - `y`;
   - value id;
-  - row identity;
-  - build-time `sample_key`;
-- optionally coalesce or repartition before writing;
+  - optional `transcript_id`;
+- globally group by value and shuffle rows within each value group;
 - convert display coordinates to `float32`;
-- write `data/shard-*.parquet` build partition by build partition;
+- write `data/shard-*.parquet`;
 - enforce single-value row groups;
-- split large build-partition-local values across row groups;
-- sort rows within each build-partition-local value group by build-time `sample_key` and row identity;
-- assign `value_row_group` by interleaving build-partition-local row groups per value;
+- split large values across row groups;
+- assign `value_shard` as the shard order within each value;
 - write `value_index.parquet`;
 - finalize through staged replacement.
 
@@ -1029,8 +977,8 @@ Tests:
 - every indexed row group contains exactly one value id;
 - row groups do not exceed target size except where explicitly allowed;
 - all row groups are listed in `value_index.parquet`;
-- optional build partition coalescing reduces row-group explosion without requiring a global value shuffle;
-- `value_row_group` interleaves build-partition-local row groups per value deterministically;
+- rows are grouped by value and shuffled within each value group before writing;
+- `value_shard` follows row-group write order within each value;
 - `sum(value_index.n_points) == source_n_points`.
 
 Done when:
@@ -1095,14 +1043,14 @@ Done when:
 
 ### Slice 7: Sampled Runtime Reader
 
-Goal: load bounded deterministic previews when selected values exceed `max_points`.
+Goal: load bounded best-effort shuffled previews when selected values exceed `max_points`.
 
 Includes:
 
 - proportional quota allocation;
 - minimum one point per selected value when possible;
-- deterministic quota rounding and tie-breaking;
-- read first required row groups in `value_row_group` order;
+- deterministic quota rounding;
+- read first required row groups in `value_shard` order;
 - trim excess loaded rows by keeping the first quota rows in physical cache order;
 - support `values="all"`;
 - produce warning text like:
@@ -1111,7 +1059,7 @@ Includes:
 Tests:
 
 - sampled result has at most `max_points`;
-- sampling is deterministic;
+- sampled reads use the cache's shuffled row-group order;
 - rare selected values are preserved when possible;
 - all-values selection works;
 - duplicate selected values are handled predictably;
@@ -1119,7 +1067,7 @@ Tests:
 
 Done when:
 
-- large selections return fast, bounded, deterministic previews.
+- large selections return fast, bounded, best-effort shuffled previews.
 
 ### Slice 8: napari Points Layer Integration
 
