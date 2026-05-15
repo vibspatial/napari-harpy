@@ -8,7 +8,7 @@ This document proposes a narrower MVP:
 
 - start from `sdata.points["transcripts"]`;
 - validate that the points table has `x`, `y`, and `gene` columns, or another configured index column;
-- build a value-first cache optimized for quickly loading selected genes or another configured string/categorical value;
+- first implement selected-value visualization directly from the Dask points dataframe, without requiring a cache;
 - visualize the selected result in one napari `Points` layer;
 - if the selected subset is too large, show a best-effort shuffled preview and warn the user.
 
@@ -16,19 +16,26 @@ The goal is not to solve every zoom level and viewport problem yet. The goal is 
 
 ## Main Recommendation
 
-Yes, a value index is worth building for this MVP if the primary interaction is:
+Start with the no-cache path.
+
+The primary interaction is still:
 
 ```text
 select one or more genes -> show those transcripts in napari
 ```
 
-The default index column is `gene`, so the first user-facing workflow can still feel like selected-gene visualization. However, the storage contract should be generic because the same mechanism can index `target`, `feature_name`, `probe`, or another eligible string/categorical column.
+The default index column is `gene`, so the first user-facing workflow can still feel like selected-gene visualization. However, the implementation should be generic because the same mechanism can select by `target`, `feature_name`, `probe`, or another eligible string/categorical column.
 
-The important part is not just the existence of an index file. The cache must also be physically organized by indexed value.
+The first implementation should:
 
-If the original `points.parquet` row groups contain a random mixture of values, a `value -> row groups` lookup will not help much. The reader would still need to scan most row groups and filter in memory.
+1. compute the selected total count first;
+2. if the selection is within `render_point_budget`, compute the exact selection;
+3. if the selection exceeds `render_point_budget`, filter first, sample/downsample before compute when possible, then final-trim in memory;
+4. return the same `TranscriptValueIndexSelection` object that a future cache-backed reader would return.
 
-For selected-value visualization to be snappy, the MVP cache should enforce this invariant:
+This keeps the first implementation much simpler and lets us test whether the direct Dask path is already good enough for common selected-gene workflows.
+
+The value-index cache remains the planned acceleration path if direct filtering is not responsive enough on real datasets or remote/backed stores. If we build that cache later, the important invariant remains:
 
 ```text
 Each data row group contains rows for exactly one value_id.
@@ -36,13 +43,13 @@ Each data row group contains rows for exactly one value_id.
 
 Large values can span many row groups. Small values can fit in one small row group. The reader can then resolve selected values to a short list of row groups, read only those row groups with `pyarrow`, and update a napari `Points` layer.
 
-This makes selected-value subsetting fast. It does not make arbitrary spatial viewport queries fast. That remains the job of the spatial tiled cache.
+That cache would make selected-value subsetting faster. It still would not make arbitrary spatial viewport queries fast. That remains the job of the spatial tiled cache.
 
 ## Relationship To The Spatial-First Cache
 
-This MVP should be treated as a separate cache, not as a replacement for `transcripts_vis/`.
+The no-cache MVP does not write any transcript visualization cache. If the optional value-index cache is implemented later, it should be treated as a separate cache, not as a replacement for `transcripts_vis/`.
 
-Recommended layout:
+Deferred value-index cache layout:
 
 ```text
 <sdata.zarr>/
@@ -62,7 +69,7 @@ Recommended layout:
 
 `points.parquet` remains the canonical exact table.
 
-`transcripts_value_index/` is a Harpy-owned visualization cache root that can be deleted and rebuilt.
+`transcripts_value_index/` would be a Harpy-owned visualization cache root that can be deleted and rebuilt.
 
 Cache identity is:
 
@@ -82,7 +89,7 @@ feature_name
 
 If a column name contains spaces, slashes, or other awkward filesystem characters, the cache key should be escaped or slugged. `metadata.json` must store both the original `index_column` and the derived `index_column_cache_key`.
 
-Why separate from `transcripts_vis/`:
+Why the deferred cache should stay separate from `transcripts_vis/`:
 
 - the spatial cache wants rows grouped by tile and level;
 - the value-index MVP wants rows grouped by selected value;
@@ -99,13 +106,15 @@ The MVP supports:
 - one points element, initially `sdata.points["transcripts"]`;
 - required coordinate columns, default `x="x"` and `y="y"`;
 - configurable string/categorical index column, default `gene="gene"`;
+- direct Dask filtering by selected values, without requiring a cache;
 - exact visualization when the selected subset is within the render budget;
 - sampled visualization when the selected subset exceeds the render budget;
 - one napari `Points` layer for the selected subset;
-- a minimal UI for choosing the points element, choosing the index-value column, building/rebuilding the cache, selecting cache-backed values, and visualizing the selected points.
+- a minimal UI for choosing the points element, choosing the index-value column, selecting values, setting `render_point_budget`, and visualizing the selected points.
 
 The MVP does not support:
 
+- requiring a prebuilt value-index cache before visualization;
 - viewport-driven loading;
 - multiscale spatial overview levels;
 - exact all-transcript rendering for huge datasets;
@@ -115,11 +124,13 @@ The MVP does not support:
 
 ## Input Contract
 
-The builder starts from a backed points element:
+The direct reader starts from a backed points element:
 
 ```python
 points = sdata.points["transcripts"]
 ```
+
+The optional cache builder, if implemented later, starts from the same points element.
 
 The selected points element must be a `dask.dataframe.DataFrame`.
 
@@ -148,7 +159,7 @@ target
 probe
 ```
 
-The on-disk cache should use generic `value` terminology. In this document, "value" means one normalized value from the configured index column.
+The implementation should use generic `value` terminology. If the optional cache is built later, the on-disk cache should use the same generic terminology. In this document, "value" means one normalized value from the configured index column.
 
 ### Terminology
 
@@ -191,7 +202,7 @@ index_column = "feature_name" -> Search feature_name values
 
 ### Value Normalization Rules
 
-Index values are normalized before building `values.parquet`.
+Index values are normalized before direct value selection and before any optional cache build.
 
 Normalization is intentionally minimal:
 
@@ -229,7 +240,7 @@ Object dtype handling:
 Categorical handling:
 
 - categorical values are normalized from their category labels;
-- unused categories do not appear in `values.parquet`;
+- unused categories do not appear in the value vocabulary or in `values.parquet` if the optional cache is built;
 - category order is ignored;
 - normalized values are sorted lexicographically before assigning `value_id`.
 
@@ -257,9 +268,9 @@ all normalize to:
 "Actb"
 ```
 
-and therefore produce one row in `values.parquet` with a combined `n_points`.
+and therefore produce one row in the value vocabulary, and in `values.parquet` if the optional cache is built, with a combined `n_points`.
 
-The cache stores only normalized values. `values.parquet.value` is always the normalized value, not the raw source value.
+The direct reader and optional cache use normalized values as their selection contract. If the cache is built later, `values.parquet.value` is always the normalized value, not the raw source value.
 
 Validation should reject:
 
@@ -281,7 +292,7 @@ transcript_id
 
 If present, `transcript_id` can be passed through to the data shards for future lookup of canonical source rows. It is not required for MVP sampling. The MVP does not require `transcript_id` to be non-null or unique.
 
-Before writing the data shards, the builder should globally group rows by the selected index column and shuffle rows within each value group:
+If the optional cache is built later, then before writing data shards the builder should globally group rows by the selected index column and shuffle rows within each value group:
 
 ```python
 def shuffle_value_group(pdf):
@@ -305,7 +316,9 @@ write row groups in that order
 
 The fixed random state is a best-effort repeatability aid, not a strict deterministic sampling contract. The MVP does not require stable sampling across rebuilds.
 
-## Cache Lifecycle
+## Optional Cache Lifecycle
+
+This section applies only if the deferred value-index cache is implemented.
 
 Use the same staged replacement pattern as `_transcript_tiles.py`: build in a unique sibling temporary directory, validate required files, move any existing valid cache to a backup, rename the completed build into place, restore the backup on failure, and remove temporary/backup directories after completion.
 
@@ -353,7 +366,7 @@ Only one build should run for the same cache identity at a time. While a cache b
 
 If a valid cache already exists for the selected points element and index column, clicking rebuild should show a confirmation dialog before overwriting it. If the user cancels, the existing cache should remain unchanged and no temporary build should start.
 
-## Cache Files
+## Optional Cache Files
 
 ### `metadata.json`
 
@@ -507,23 +520,31 @@ first row groups for a value are therefore a best-effort shuffled preview
 
 The MVP should use a fixed `random_state` for best-effort repeatability, but it does not promise exact reproducibility across Dask versions, partitioning changes, or rebuilds.
 
-## Cache Availability And Staleness Checks
+## Direct Mode And Optional Cache Availability
 
-The viewer should not allow transcript visualization directly from `sdata.points[points_name]`.
+The viewer should allow transcript visualization directly from `sdata.points[points_name]`.
 
-Instead, the transcript UI should follow this flow:
+The direct MVP flow is:
+
+1. The user selects the points element and index-value column.
+2. Harpy validates the selected points dataframe and selected index column.
+3. Harpy computes or refreshes the selectable value vocabulary directly from the source Dask dataframe.
+4. The user selects one or more values, or chooses all values.
+5. Harpy loads the direct selection, sampling before compute when the selected count exceeds `render_point_budget`.
+
+The optional cache flow can be added later:
 
 1. The user selects the points element and index-value column.
 2. The user clicks `Create cache` or `Rebuild cache`.
 3. Harpy builds the corresponding cache under `transcripts_value_index/<index_column_cache_key>/`, including `values.parquet`.
-4. The value search box is enabled only when a valid cache is available.
-5. The value search box reads available values from `values.parquet`, not from the source points dataframe.
+4. If a valid cache exists, Harpy may read selectable values from `values.parquet` and load selections through the PyArrow cache reader.
+5. If no valid cache exists, direct mode remains available.
 
-This avoids offering values that are not present in the cache and avoids expensive source-data scans during interactive use.
+Missing or stale caches must not disable direct visualization. They only disable the cache-backed acceleration path.
 
-For the MVP, use cheap validation checks only. Do not compute a source Parquet footer digest, full content hash, or fresh source `value_counts` when opening the viewer.
+For the optional cache, use cheap validation checks only. Do not compute a source Parquet footer digest, full content hash, or fresh source `value_counts` when opening the viewer.
 
-Required cache checks before enabling visualization:
+Required cache checks before enabling the cache-backed path:
 
 ```text
 cache exists
@@ -539,13 +560,13 @@ metadata source_n_points == sum(value_index.n_points)
 metadata n_values == len(values.parquet)
 ```
 
-If any check fails, mark the cache as missing or stale, disable the value search box and visualization button, and ask the user to build or rebuild the cache.
+If any check fails, mark the cache as missing or stale and use the direct source-data path instead. The UI can still offer `Create cache` or `Rebuild cache` as an optional acceleration action.
 
-These checks mostly validate that the selected points element and UI column choices match the cache, and that the cache is internally consistent. They are not a cryptographic guarantee that the source points table has not changed. That stronger source fingerprint can be added later if stale-cache bugs become common, but it is intentionally out of scope for the MVP.
+These checks mostly validate that the selected points element and UI column choices match the cache, and that the cache is internally consistent. They are not a cryptographic guarantee that the source points table has not changed. That stronger source fingerprint can be added later if stale-cache bugs become common, but it is intentionally out of scope for the direct-first MVP.
 
-## Row Group Size
+## Optional Cache Row Group Size
 
-Use this default for the value-index MVP:
+If the value-index cache is implemented, use this default:
 
 ```text
 target_rows_per_row_group = 25_000
@@ -592,7 +613,7 @@ Those are row groups inside Parquet shard files, not separate files. That scale 
 
 ## Future Spatial Plus Value Layout
 
-Do not carry the strict single-value row-group rule directly into a future spatial plus value cache.
+If the value-index cache is implemented, do not carry the strict single-value row-group rule directly into a future spatial plus value cache.
 
 A future `(tile, value)` layout should avoid creating one tiny row group for every non-empty `(tile, value_id)` pair. That could produce millions of small row groups once spatial tiling is introduced.
 
@@ -630,7 +651,9 @@ value-only MVP: keep row groups single-value
 future spatial plus value cache: use tile-major, value-contiguous indexed ranges
 ```
 
-## Build Algorithm
+## Optional Cache Build Algorithm
+
+This section is deferred until the direct no-cache path has been implemented and benchmarked.
 
 Recommended public entry point:
 
@@ -668,16 +691,56 @@ Implementation steps:
 
 For the first implementation, it is acceptable for one value to appear in multiple shard files as long as every row group is single-value and every row group is listed in `value_index.parquet`.
 
-The MVP deliberately accepts the cost of the global groupby/apply shuffle because it makes the cache contract much simpler and avoids row-group explosion from partition-local value writing. The implementation should avoid calling `.compute()` on the full shuffled dataframe when possible; the cache writer should keep the shuffled result as a Dask dataframe and write from Dask tasks.
+The optional cache design deliberately accepts the cost of the global groupby/apply shuffle because it makes the cache contract much simpler and avoids row-group explosion from partition-local value writing. The implementation should avoid calling `.compute()` on the full shuffled dataframe when possible; the cache writer should keep the shuffled result as a Dask dataframe and write from Dask tasks.
 
 The shuffled order is best effort. It is good enough to make the first row groups for a large value useful as a preview, but it is not a strict reproducibility guarantee.
 
 ## Runtime Reader
 
-Recommended reader entry point:
+Recommended direct no-cache reader entry point:
 
 ```python
-def load_transcripts_for_values(
+def load_transcripts_for_values_direct(
+    sdata: SpatialData,
+    points_name: str,
+    values: Sequence[str] | Literal["all"],
+    *,
+    x: str = "x",
+    y: str = "y",
+    index_column: str = "gene",
+    render_point_budget: int = 100_000,
+    random_state: int | None = 42,
+) -> TranscriptValueIndexSelection:
+    ...
+```
+
+The direct reader uses Dask in the interactive path. Its job is to avoid materializing the full selected subset when the selected count exceeds the render budget.
+
+Runtime flow:
+
+1. Validate the selected points element and selected index column.
+2. Normalize requested values with the same value-normalization rules used everywhere else.
+3. Build a selected Dask dataframe by filtering the configured index column. For `values="all"`, the selected dataframe is the full points dataframe.
+4. Compute the selected total count before materializing selected rows.
+5. If `total_count <= render_point_budget`, compute the exact selected dataframe with only the needed columns.
+6. If `total_count > render_point_budget`, filter first, then call Dask `sample(frac=render_point_budget / total_count, random_state=random_state)` on the selected dataframe before compute.
+7. After compute, final-trim in memory to at most `render_point_budget` rows.
+8. Return coordinates and features for one napari `Points` layer.
+
+The important direct-mode rule is:
+
+```text
+filter selected values first, then sample selected rows
+```
+
+Do not sample the full points dataframe before filtering, because that can drop rare selected values before they have a chance to appear.
+
+The direct no-cache reader should return the same `TranscriptValueIndexSelection` object shape as a future cache-backed reader. This keeps the napari layer integration independent of the read backend.
+
+Recommended optional cache-backed reader entry point:
+
+```python
+def load_transcripts_for_values_from_cache(
     cache_path: str | PathLike[str],
     values: Sequence[str] | Literal["all"],
     *,
@@ -687,20 +750,9 @@ def load_transcripts_for_values(
     ...
 ```
 
-The reader should use `pyarrow`, not Dask, in the interactive path.
+If implemented later, the cache-backed reader should use `pyarrow`, not Dask, in the interactive path.
 
-Runtime flow:
-
-1. Load `metadata.json`, `values.parquet`, and `value_index.parquet`.
-2. Resolve selected values to `value_id`.
-3. Sum `n_points` for the selected values before reading data.
-4. If the selected count is `<= render_point_budget`, read all row groups for those values.
-5. If the selected count is `> render_point_budget`, force a best-effort shuffled preview capped at `render_point_budget`.
-6. Return coordinates and features for one napari `Points` layer.
-
-Selected values should already come from `values.parquet`. If a selected value is not present in `values.parquet`, the reader should raise an error instead of warning and skipping it. That means the UI or controller allowed stale or invalid selection state to reach the reader, which is an internal consistency bug.
-
-The UI should make this rare by only allowing selections resolved from the cache-backed value search box. If the error still happens, surface it as a cache/selection consistency problem and ask the user to refresh the selection or rebuild the cache.
+For direct mode, selected values should come from the direct value vocabulary computed from the selected points dataframe. For cache mode, selected values should come from `values.parquet`. If an unknown selected value reaches either reader, raise an error instead of warning and skipping it. This means the UI or controller allowed stale or invalid selection state to reach the reader, which is an internal consistency bug. Surface it as a selection consistency problem and ask the user to refresh the value list.
 
 ## Reader Return Object
 
@@ -726,20 +778,20 @@ class TranscriptValueIndexSelection:
 y, x
 ```
 
-The cache stores source coordinate columns as `x` and `y`, but the reader returns coordinates already ordered for napari `Points`.
+The source dataframe and optional cache store coordinate columns as `x` and `y`, but the reader returns coordinates already ordered for napari `Points`.
 
 `features` is a `pandas.DataFrame` with exactly `loaded_count` rows. Its row order must match `coordinates`. It must include:
 
 - the configured index column using its source column name, for example `gene`, `target`, or `probe`;
 - `value_id`.
 
-The configured index-column feature contains the normalized string value for each point, populated by mapping `value_id` through `values.parquet`. For example, when `index_column == "gene"`, `features["gene"]` contains gene names such as `"MALAT1"`; `value_id` remains an internal/cache feature.
+The configured index-column feature contains the normalized string value for each point. In direct mode this comes from the filtered source dataframe after normalization; in cache mode this is populated by mapping `value_id` through `values.parquet`. For example, when `index_column == "gene"`, `features["gene"]` contains gene names such as `"MALAT1"`; `value_id` remains an internal/debug feature.
 
-Store the configured index-column feature as a pandas `Categorical` column whose categories are the normalized values from `values.parquet`. This keeps repeated gene, target, or probe labels compact for large render budgets.
+Store the configured index-column feature as a pandas `Categorical` column whose categories are the normalized values from the current value vocabulary. This keeps repeated gene, target, or probe labels compact for large render budgets.
 
 Do not include `transcript_id` in `features` for the MVP. If picked-point canonical lookup is needed later, use a separate lookup path rather than carrying transcript identifiers in every rendered feature row.
 
-`selected_values` contains the normalized unique selected values that were resolved against `values.parquet`. Duplicate requested values are removed before quota allocation and before reading. For `values="all"`, `selected_values` contains all values in `value_id` order.
+`selected_values` contains the normalized unique selected values that were resolved against the current value vocabulary. Duplicate requested values are removed before sampling and before reading. For `values="all"`, `selected_values` contains all values in `value_id` order.
 
 `selected_value_ids` contains the resolved `value_id` values in the same order as `selected_values`.
 
@@ -781,9 +833,9 @@ class TranscriptValueIndexReadError(TranscriptValueIndexError):
 Expected error behavior:
 
 - unknown selected value: raise `TranscriptValueIndexUnknownValueError`;
-- missing or invalid metadata, missing required files, schema mismatch, or count mismatch: raise `TranscriptValueIndexInvalidCacheError`;
+- missing or invalid optional-cache metadata, missing required cache files, schema mismatch, or count mismatch: raise `TranscriptValueIndexInvalidCacheError`;
 - invalid reader arguments, such as `render_point_budget <= 0`: raise `TranscriptValueIndexInvalidSelectionError`;
-- Parquet IO or read failure: raise `TranscriptValueIndexReadError`.
+- Dask, Parquet, or layer-read failure: raise `TranscriptValueIndexReadError`.
 
 An empty selected value list should return an empty exact selection:
 
@@ -826,9 +878,31 @@ The warning should include:
 Showing 100,000 of 2,431,912 selected points.
 ```
 
-Recommended sampling policy:
+Direct-mode sampling policy:
 
-The MVP default is proportional sampling by point count, with a minimum of one point per selected value when possible. This preserves the visual meaning of density while avoiding complete disappearance of selected rare values in sampled previews.
+The direct no-cache MVP uses simple selected-row sampling:
+
+1. Resolve and deduplicate selected values.
+2. Filter the Dask dataframe to the selected values.
+3. Compute `total_count`.
+4. If `total_count <= render_point_budget`, compute the exact selected rows.
+5. If `total_count > render_point_budget`, compute:
+
+```python
+target_fraction = render_point_budget / total_count
+sampled = selected.sample(frac=target_fraction, random_state=42)
+```
+
+6. Compute the sampled dataframe.
+7. Final-trim in memory to at most `render_point_budget` rows.
+
+This policy is intentionally simple. It does not guarantee one point per selected value, and it does not implement proportional per-value quotas. It is the fastest MVP path to test whether direct Dask filtering gives an acceptable user experience.
+
+The direct-mode rule is to filter before sampling. Calling `points.sample(frac=...)` before filtering selected values is not equivalent and can remove rare selected values before the value filter is applied.
+
+Optional cache sampling policy:
+
+If the cache path is implemented later, it can use proportional sampling by point count, with a minimum of one point per selected value when possible. That policy preserves the visual meaning of density while avoiding complete disappearance of selected rare values in sampled previews.
 
 Before quota allocation, resolve selected values to unique `value_id` values. Duplicate selected values are ignored after the first occurrence, and points are never duplicated in the returned preview.
 
@@ -842,17 +916,17 @@ Before quota allocation, resolve selected values to unique `value_id` values. Du
 
 Balanced sampling and user-selectable sampling modes are deferred until the UI needs an explicit comparison mode. They are useful for comparing spatial patterns across values, but they intentionally distort abundance and should not be the default.
 
-Because rows within each value are shuffled before writing, reading the first row groups gives a best-effort preview without scanning the full selected subset.
+Because rows within each value are shuffled before writing, the optional cache reader can read the first row groups as a best-effort preview without scanning the full selected subset.
 
-This is not a strict reproducibility guarantee. The preview quality depends on the groupby/apply shuffle and the selected random state.
+This is not a strict reproducibility guarantee. The optional cache preview quality depends on the groupby/apply shuffle and the selected random state.
 
 This is important. If we simply read every selected row and then sample, large value selections will still be slow.
 
-MVP read amplification tradeoff:
+Optional cache read amplification tradeoff:
 
 The sampled output is capped by `render_point_budget`, but the number of rows read from Parquet is not strictly capped. The reader loads whole Parquet row groups. If many selected values each have a tiny sample quota, reading the first row group for each value can load many more rows than the final displayed preview.
 
-This is accepted for the MVP to keep the cache layout simple. If this becomes a practical problem, add a small-preview-shard optimization:
+This is accepted for the optional cache design to keep the cache layout simple. If this becomes a practical problem, add a small-preview-shard optimization:
 
 ```text
 preview_rows_per_value = 512
@@ -876,9 +950,9 @@ else:
     show sampled preview and warn
 ```
 
-For all-values sampling, proportional quotas are the MVP default. They preserve the global abundance distribution.
+For all-values sampling, the direct MVP samples rows from the selected dataframe after counting. This approximates the global abundance distribution without explicit per-value quotas.
 
-A possible alternative is a more balanced per-value sample, where rare values get more visibility than proportional sampling would give them. That is useful for exploratory biology, but it changes the visual meaning of density. Start with proportional sampling and make balanced sampling an explicit option later.
+In cache mode, proportional all-values sampling can be implemented with explicit per-value quotas. A possible alternative is a more balanced per-value sample, where rare values get more visibility than proportional sampling would give them. That is useful for exploratory biology, but it changes the visual meaning of density. Start with the simple direct-mode policy and make balanced sampling an explicit option later.
 
 ## napari Integration
 
@@ -974,7 +1048,7 @@ Recommended module split:
 
 ```text
 src/napari_harpy/_transcript_value_index.py
-  Pure cache builder, validator, reader, and dataclasses.
+  Pure source validation, value normalization, direct reader, optional cache builder/validator/reader, and dataclasses.
   No QWidget logic.
 
 src/napari_harpy/viewer/adapter.py
@@ -983,14 +1057,15 @@ src/napari_harpy/viewer/adapter.py
 
 src/napari_harpy/widgets/viewer/transcript_value_index_controller.py
   UI state machine.
-  Async build/read workers.
+  Async value-list/read workers.
+  Optional async cache build/read workers.
   Status message and status kind.
-  can_build / can_rebuild / can_visualize state.
+  can_load_values / can_visualize / can_build_cache / can_rebuild_cache state.
 
 src/napari_harpy/widgets/viewer/widget.py
   Qt controls and layout.
   Status-card rendering.
-  Rebuild confirmation dialog.
+  Optional rebuild confirmation dialog.
   Calls into the controller.
 ```
 
@@ -1007,14 +1082,20 @@ NO_SDATA
 NO_POINTS_ELEMENT
   SpatialData is loaded, but no eligible points element is selected.
 
+LOADING_VALUES
+  The direct value vocabulary for the selected points element and index column is being computed.
+
+VALUES_READY
+  The selected points element and index column are valid, and direct value selection can be used.
+
 MISSING_CACHE
-  A points element and index column are selected, but no valid cache exists.
+  A points element and index column are selected, but no valid optional cache exists. Direct mode can still be used.
 
 STALE_CACHE
-  A cache exists, but validation says it does not match the current points element, index column, schema, or required files.
+  An optional cache exists, but validation says it does not match the current points element, index column, schema, or required files. Direct mode can still be used.
 
 VALID_CACHE
-  A cache exists and passes validation. Value search and selection can be enabled.
+  An optional cache exists and passes validation. The controller may use the cache-backed acceleration path.
 
 BUILDING_CACHE
   A cache build is running.
@@ -1038,6 +1119,8 @@ Represent the states with an explicit enum, for example:
 class TranscriptValueIndexUiState(Enum):
     NO_SDATA = "no_sdata"
     NO_POINTS_ELEMENT = "no_points_element"
+    LOADING_VALUES = "loading_values"
+    VALUES_READY = "values_ready"
     MISSING_CACHE = "missing_cache"
     STALE_CACHE = "stale_cache"
     VALID_CACHE = "valid_cache"
@@ -1054,9 +1137,11 @@ The controller should expose read-only state for the widget to render:
 state
 status_message
 status_kind
+can_load_values
 can_build_cache
 can_rebuild_cache
 can_visualize
+is_loading_values
 is_building
 is_loading
 cache_status
@@ -1066,7 +1151,7 @@ selection
 Async implementation should follow the existing controller worker pattern:
 
 - use `thread_worker(start_thread=False, ignore_errors=True)`;
-- create immutable build/read job dataclasses;
+- create immutable value-list, build, and read job dataclasses;
 - increment job ids for each launched job;
 - ignore stale worker results whose job id no longer matches the active job;
 - call `worker.quit()` only for shutdown or invalidation, not as a user-facing cancel feature;
@@ -1078,25 +1163,36 @@ Control behavior:
 NO_SDATA / NO_POINTS_ELEMENT
   Disable points-dependent transcript controls.
 
-MISSING_CACHE / STALE_CACHE
-  Enable Build cache.
-  Disable value search.
+LOADING_VALUES
+  Disable points element and index-column changes if simple to implement.
   Disable Visualize selected values.
+  Show value-loading status.
+
+VALUES_READY
+  Enable value search.
+  Enable Visualize selected values when at least one value is selected or the all-values option is active.
+  Enable optional Build cache when no valid cache exists.
+
+MISSING_CACHE / STALE_CACHE
+  Enable optional Build cache.
+  Keep direct value search and visualization available when direct values are loaded.
+  Show cache status as optional acceleration, not as a blocker.
 
 VALID_CACHE
   Enable Rebuild cache.
   Enable value search.
   Enable Visualize selected values when at least one value is selected or the all-values option is active.
+  Prefer the cache-backed reader if implemented; otherwise keep using direct mode.
 
 BUILDING_CACHE
   Disable Build/Rebuild cache.
-  Disable Visualize selected values.
+  Keep direct visualization available unless the first implementation chooses to serialize all transcript work.
   Disable points element and index-column changes if simple to implement.
   Show build progress/status.
 
 BUILD_FAILED
   Enable Build cache again.
-  Keep value search enabled only if an older valid cache is still available for the same cache identity.
+  Keep direct value search and visualization enabled when the direct value vocabulary is still valid.
   Show the build error in the status card.
 
 LOADING_SELECTION
@@ -1109,13 +1205,13 @@ LOADED_SELECTION
   Show loaded/sampled status in the status card.
 
 LOAD_FAILED
-  Re-enable Visualize selected values when the cache and selection are still valid.
+  Re-enable Visualize selected values when the direct value vocabulary and selection are still valid.
   Show the read or layer-update error in the status card.
 ```
 
-Cache builds must run asynchronously so the Qt UI does not freeze. Selection reads should also run asynchronously, because sampled reads can still touch large Parquet row groups. For the MVP, only one cache build should run at a time for a given cache identity, and only one selection read should run at a time for the transcript value-selection layer. The first implementation can simply disable the relevant buttons while work is running rather than queueing multiple requests.
+Direct value-list computation and selection reads must run asynchronously so the Qt UI does not freeze. Optional cache builds must also run asynchronously if implemented. For the MVP, only one value-list job and one selection read should run at a time for the transcript value-selection layer. The first implementation can simply disable the relevant buttons while work is running rather than queueing multiple requests.
 
-Build progress can be indeterminate in the MVP. Prefer clear phase text over fake percentages:
+Optional cache build progress can be indeterminate. Prefer clear phase text over fake percentages:
 
 ```text
 Preparing cache...
@@ -1138,11 +1234,13 @@ Use the existing shared status-card style for transcript cache and selection fee
 
 Status-card messages should cover:
 
-- missing cache;
-- stale cache;
+- direct value loading;
+- direct values ready;
+- missing optional cache;
+- stale optional cache;
 - build in progress;
 - build failed;
-- valid cache ready;
+- optional cache ready;
 - loading selection;
 - sampled preview warning;
 - categorical coloring disabled above 102 selected values;
@@ -1164,13 +1262,24 @@ Changing `render_point_budget` must not rebuild the cache and must not affect ca
 
 ## Why This Should Feel Snappy
 
-This MVP avoids the current slow path:
+The direct-first MVP avoids the worst current slow path:
 
 ```text
 load full dask dataframe -> compute all rows -> filter/subsample
 ```
 
-Instead, selected-value display becomes:
+Instead, direct selected-value display becomes:
+
+```text
+selected values
+-> Dask filter on the selected index column
+-> compute selected total count
+-> exact compute if within render_point_budget
+-> otherwise Dask sample before compute and final-trim in memory
+-> napari Points layer update
+```
+
+The optional cache path, if needed later, would make the same user workflow faster by replacing repeated Dask scans with indexed row-group reads:
 
 ```text
 selected values
@@ -1180,7 +1289,7 @@ selected values
 -> napari Points layer update
 ```
 
-For sampled large selections:
+For cache-backed sampled large selections:
 
 ```text
 selected values
@@ -1209,33 +1318,41 @@ Those remain spatial-cache problems.
 
 ### Benefit
 
-- Much simpler than the multiscale spatial cache.
+- Much simpler than the multiscale spatial cache and the value-index cache.
 - Gives an early user-visible transcript workflow.
 - Supports exact selected-value display when counts are modest.
-- Avoids scanning `points.parquet` for every value switch.
+- Avoids building and maintaining a cache before we know it is needed.
 - Gives predictable behavior through a hard render budget.
 
 ### Cost
 
-- Requires an offline shuffle by the selected value column.
-- Duplicates a subset of the canonical transcript data in another cache.
+- Direct mode may still scan source partitions for every value switch.
+- Direct mode depends on Dask/backing-store performance.
+- Direct mode sampled previews do not guarantee one point per selected value.
 - Does not solve pan/zoom-scaled loading.
 - Exact display is still bounded by napari `Points` performance.
-- A row-group-per-value policy can create many small row groups for rare values.
+- If the optional cache is implemented later, it will require an offline shuffle by the selected value column and duplicate a subset of the canonical transcript data.
+- If the optional cache is implemented later, a row-group-per-value policy can create many small row groups for rare values.
 
-The many-small-row-groups concern is acceptable for the standalone value-index MVP. Most transcript datasets have thousands to tens of thousands of values for typical index columns such as `gene`, not millions of values. Rare values should not be packed together in this MVP, because exact rare-value reads are one of the main benefits of the cache. Packing small value groups belongs to a future spatial plus value layout where `(tile, value)` row-group counts could otherwise explode.
+If the value-index cache is implemented, the many-small-row-groups concern is acceptable for the standalone value-index cache. Most transcript datasets have thousands to tens of thousands of values for typical index columns such as `gene`, not millions of values. Rare values should not be packed together in that cache, because exact rare-value reads are one of its main benefits. Packing small value groups belongs to a future spatial plus value layout where `(tile, value)` row-group counts could otherwise explode.
 
 ## Implementation Slices
 
-These slices split the MVP into implementation units with clear dependencies. The first slices intentionally establish contracts before the widget work begins, because the UI should depend on stable cache, validation, and reader behavior.
+These slices split the MVP into implementation units with clear dependencies. The first slices intentionally establish contracts before the widget work begins, because the UI should depend on stable validation, value vocabulary, reader, and layer-update behavior.
+
+The direct no-cache path comes first. The value-index cache is deferred until we have measured whether direct Dask filtering is not good enough for the target datasets and storage backends.
 
 Recommended order:
 
 ```text
-0 -> 1 -> 2 -> 3 -> 5 -> 4 -> 6 -> 7 -> 8 -> 9 -> 10
+0 -> 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7
 ```
 
-The validator is pulled forward before the full data writer so the viewer can rely on a cache-status contract early.
+Optional cache acceleration slices can follow after the direct workflow is working:
+
+```text
+A -> B -> C -> D
+```
 
 ### Slice 0: Lock Minimal Decisions Before Code
 
@@ -1243,35 +1360,32 @@ Goal: decide the few contracts that would otherwise cause rework.
 
 Includes:
 
-- cache path identity: one cache per points element versus one cache per points element plus index column;
+- direct no-cache path is the first implementation path;
+- optional cache path identity, if implemented later: one cache per points element plus index column;
 - generic naming: use `value` internally and on disk while keeping `gene` as the default user-facing index column;
 - coordinate order for napari: `y, x`;
 - first-pass sampling behavior for selections above `render_point_budget`;
-- basic cache lifecycle: temporary build path, final cache path, rebuild replacement.
+- shared return object for direct and optional cache readers.
 
 Done when:
 
-- the implementation has enough fixed vocabulary and paths to avoid renaming churn later.
+- the implementation has enough fixed vocabulary and API shape to avoid renaming churn later.
 
 ### Slice 1: Core Module Skeleton And Data Contracts
 
-Goal: create the standalone transcript value-index module without building the full cache yet.
+Goal: create the standalone transcript value-selection module without building a cache.
 
 Includes:
 
 - new module, likely `src/napari_harpy/_transcript_value_index.py`;
 - schema version constant;
 - dataclasses or typed return objects:
-  - `TranscriptValueIndexCache`;
   - `TranscriptValueIndexSelection`;
-- cache path helpers;
-- metadata read/write helpers;
+- direct read job/config objects if useful;
 - custom errors for invalid source data, stale cache, invalid selection, and cache read failures.
 
 Tests:
 
-- metadata round trip;
-- cache path resolution;
 - basic object construction;
 - error types.
 
@@ -1281,7 +1395,7 @@ Done when:
 
 ### Slice 2: Source Points Validation And Value Normalization
 
-Goal: validate whether a selected points element can produce a cache.
+Goal: validate whether a selected points element can be visualized directly.
 
 Includes:
 
@@ -1292,7 +1406,7 @@ Includes:
 - validate configured index column;
 - normalize index values;
 - reject missing, empty, invalid, or unsupported values;
-- validate optional `transcript_id` exists when requested.
+- validate optional `transcript_id` exists when requested by future cache code.
 
 Tests:
 
@@ -1306,109 +1420,45 @@ Tests:
 
 Done when:
 
-- the builder can fail early with clear errors before doing expensive work.
+- the direct reader can fail early with clear errors before doing expensive work.
 
-### Slice 3: Vocabulary Cache
+### Slice 3: Direct Value Vocabulary And Counts
 
-Goal: build the first useful cache artifact: the selectable value vocabulary.
+Goal: compute the selectable value vocabulary directly from the selected Dask points dataframe.
 
 Includes:
 
 - compute normalized value counts with Dask;
 - sort values deterministically;
 - assign stable `value_id`;
-- write `values.parquet`;
-- write `metadata.json` last;
-- store source points name and path, selected columns, transcript id column, counts, row-group target, and sampling policy.
+- keep the value table in controller state for search and value resolution;
+- do not require `values.parquet`;
+- rerun or invalidate the value list when the points element or index column changes.
 
 Tests:
 
 - deterministic value id assignment;
 - correct point counts;
-- metadata consistency;
-- `metadata.json` written only after required cache files;
-- selected values come from `values.parquet`, not the source dataframe.
+- selected values come from the direct value vocabulary;
+- invalidating the selected points element or index column invalidates the old vocabulary.
 
 Done when:
 
-- a cache can expose searchable values, even before point loading exists.
+- the UI can expose searchable values without requiring a cache.
 
-### Slice 4: Full Cache Builder With Data Shards
+### Slice 4: Direct Runtime Reader
 
-Goal: write displayable transcript rows grouped by value.
-
-Includes:
-
-- create a working dataframe with:
-  - `x`;
-  - `y`;
-  - value id;
-  - optional `transcript_id`;
-- globally group by value and shuffle rows within each value group;
-- convert display coordinates to `float32`;
-- write `data/shard-*.parquet`;
-- enforce single-value row groups;
-- split large values across row groups;
-- assign `value_shard` as the shard order within each value;
-- write `value_index.parquet`;
-- finalize through staged replacement.
-
-Tests:
-
-- required data columns exist;
-- coordinates are `float32`;
-- every indexed row group contains exactly one value id;
-- row groups do not exceed target size except where explicitly allowed;
-- all row groups are listed in `value_index.parquet`;
-- rows are grouped by value and shuffled within each value group before writing;
-- `value_shard` follows row-group write order within each value;
-- `sum(value_index.n_points) == source_n_points`.
-
-Done when:
-
-- the full on-disk cache can be built and inspected without napari.
-
-### Slice 5: Cache Validator And Staleness Checks
-
-Goal: decide whether an existing cache is usable for the current UI selection.
+Goal: load selected values directly from the Dask dataframe.
 
 Includes:
 
-- check required files;
-- check schema version;
-- check selected points element;
-- check selected `x`, `y`, and index column;
-- check count consistency:
-  - metadata versus `values.parquet`;
-  - metadata versus `value_index.parquet`;
-  - metadata `n_values` versus `values.parquet`;
-- return structured status instead of only raising.
-
-Tests:
-
-- valid cache passes;
-- missing files fail;
-- wrong schema fails;
-- wrong selected column fails;
-- inconsistent counts fail;
-- stale cache disables visualization state.
-
-Done when:
-
-- the viewer can safely enable or disable value selection based on cache state.
-
-### Slice 6: Exact Runtime Reader
-
-Goal: load selected values within the render budget using PyArrow only.
-
-Includes:
-
-- load metadata, `values.parquet`, and `value_index.parquet`;
-- resolve selected values to ids;
+- resolve selected values against the direct value vocabulary;
 - reject unknown selected values;
-- compute total selected point count before reading data;
-- read only listed row groups;
-- return a `TranscriptValueIndexSelection`;
+- compute total selected point count before materializing rows;
+- if `total_count <= render_point_budget`, compute exact selected rows;
+- if `total_count > render_point_budget`, filter selected rows first, then Dask-sample before compute;
+- final-trim in memory to at most `render_point_budget`;
+- return `TranscriptValueIndexSelection`;
 - include coordinates, features, selected values, selected value ids, loaded count, total count, render budget, sampled flag, and warning text.
 
 Tests:
@@ -1417,46 +1467,18 @@ Tests:
 - multiple selected values;
 - unknown value raises;
 - exact load returns all selected rows;
-- reader does not use Dask;
+- sampled load returns at most `render_point_budget`;
+- direct sampling filters before sampling;
 - coordinates are returned as `float32` in napari `y, x` order;
 - features include the configured index column and `value_id`;
-- empty selections return an empty exact result.
+- empty selections return an empty exact result;
+- `values="all"` works and samples when needed.
 
 Done when:
 
-- selected-value loading works without napari.
+- selected-value loading works without napari and without a cache.
 
-### Slice 7: Sampled Runtime Reader
-
-Goal: load bounded best-effort shuffled previews when selected values exceed `render_point_budget`.
-
-Includes:
-
-- proportional quota allocation;
-- minimum one point per selected value when possible;
-- deterministic quota rounding;
-- proportional omission of values when `number_of_selected_values > render_point_budget`;
-- deterministic tie-breaking by `value_id` ascending;
-- read first required row groups in `value_shard` order;
-- trim excess loaded rows by keeping the first quota rows in physical cache order;
-- support `values="all"`;
-- produce warning text like:
-  - `Showing 100,000 of 2,431,912 selected points.`;
-
-Tests:
-
-- sampled result has at most `render_point_budget`;
-- sampled reads use the cache's shuffled row-group order;
-- rare selected values are preserved when possible;
-- all-values selection works;
-- duplicate selected values are handled predictably;
-- when `render_point_budget < number_of_selected_values`, some selected values may receive quota `0` and be omitted from the preview.
-
-Done when:
-
-- large selections return fast, bounded, best-effort shuffled previews.
-
-### Slice 8: napari Points Layer Integration
+### Slice 5: napari Points Layer Integration
 
 Goal: convert a reader result into one napari `Points` layer.
 
@@ -1488,75 +1510,142 @@ Tests:
 
 Done when:
 
-- code can display exact or sampled cache-backed transcripts in napari through a thin helper.
+- code can display exact or sampled direct selections in napari through a thin helper.
 
-### Slice 9: Viewer UI Integration
+### Slice 6: Viewer UI Integration
 
-Goal: expose the workflow in the existing Harpy viewer widget.
+Goal: expose the direct no-cache workflow in the existing Harpy viewer widget.
 
 Includes:
 
 - controller module `src/napari_harpy/widgets/viewer/transcript_value_index_controller.py`;
 - explicit `TranscriptValueIndexUiState` enum;
-- immutable build/read job dataclasses for worker inputs;
-- controller-owned status message, status kind, cache status, and current selection;
+- immutable value-list and read job dataclasses for worker inputs;
+- controller-owned status message, status kind, current value vocabulary, and current selection;
 - points element selector;
 - index column selector;
 - numeric text-field `render_point_budget` control with default `100_000`, minimum `1_000`, and maximum `1_000_000`;
 - widget labels based on the selected index column rather than hard-coded "gene" wording;
-- create or rebuild cache button;
-- confirmation dialog before rebuilding an existing valid cache;
-- cache status display;
-- value search and select control backed by `values.parquet`;
+- direct value search and select control backed by the direct value vocabulary;
 - visualize selected values button;
 - all-values option;
-- explicit UI state machine for `NO_SDATA`, `NO_POINTS_ELEMENT`, `MISSING_CACHE`, `STALE_CACHE`, `VALID_CACHE`, `BUILDING_CACHE`, `BUILD_FAILED`, `LOADING_SELECTION`, `LOADED_SELECTION`, and `LOAD_FAILED`;
-- disable the build/rebuild button while a cache build is running;
-- disable visualization controls when cache is missing, stale, building, or loading;
-- run cache builds asynchronously;
+- explicit UI state machine for `NO_SDATA`, `NO_POINTS_ELEMENT`, `LOADING_VALUES`, `VALUES_READY`, `LOADING_SELECTION`, `LOADED_SELECTION`, and `LOAD_FAILED`;
+- optional cache status display if cache helpers already exist;
+- run value-list computation asynchronously;
 - run selection reads asynchronously;
-- ignore stale async build/read results by job id;
+- ignore stale async value/read results by job id;
 - no user-facing cancel button in the MVP;
-- progress/status phase text for build and read;
+- progress/status phase text for value loading and read;
 - status-card warning placement for sampled previews and categorical-coloring disablement;
 - keep UI/controller state as the source of truth rather than layer metadata.
 
 Tests:
 
-- widget initializes with no cache;
-- valid cache enables value search;
-- stale cache disables visualization;
-- missing cache enables build but disables value search and visualization;
-- building cache disables rebuild and visualization controls;
-- failed build reports an error and does not erase an older valid cache state;
-- stale async build/read worker results are ignored;
-- create or rebuild triggers builder;
-- rebuild of an existing valid cache requires confirmation;
-- selected values trigger reader and layer update;
+- widget initializes without requiring a cache;
+- value loading runs when points element or index column changes;
+- value search is enabled when direct values are ready;
+- selected values trigger direct reader and layer update;
 - loading selection disables duplicate visualize requests;
-- `render_point_budget` changes affect the next reader call without rebuilding the cache;
+- stale async value/read worker results are ignored;
+- `render_point_budget` changes affect the next reader call without rebuilding anything;
 - sampled warning is visible.
 
 Done when:
 
-- the user-facing MVP workflow exists end to end.
+- the user-facing direct workflow exists end to end.
 
-### Slice 10: Integration Tests And Hardening
+### Slice 7: Integration Tests And Hardening
 
-Goal: make the whole path reliable enough to iterate on real data.
+Goal: make the direct path reliable enough to iterate on real data.
 
 Includes:
 
 - fixture `SpatialData` with transcript points;
-- full build, validate, exact read, sampled read, and layer update flow;
-- failure cases for corrupt or partial cache;
-- rebuild behavior;
+- direct validate, value vocabulary, exact read, sampled read, and layer update flow;
+- failure cases for invalid source data;
 - basic performance sanity checks on moderate synthetic data;
 - documentation updates or roadmap status notes.
 
 Done when:
 
-- the MVP has a tested end-to-end path and clear known limitations.
+- the direct MVP has a tested end-to-end path and clear known limitations.
+
+### Optional Cache Slice A: Cache Validator And Vocabulary Cache
+
+Goal: add the first useful optional cache artifact: the selectable value vocabulary and cache status contract.
+
+Includes:
+
+- cache path helpers;
+- metadata read/write helpers;
+- compute normalized value counts with Dask;
+- sort values deterministically;
+- assign stable `value_id`;
+- write `values.parquet`;
+- write `metadata.json` last;
+- check required files, schema version, selected source element, selected columns, and count consistency.
+
+Done when:
+
+- the UI can choose between direct vocabulary and a valid cache vocabulary.
+
+### Optional Cache Slice B: Full Cache Builder With Data Shards
+
+Goal: write displayable transcript rows grouped by value.
+
+Includes:
+
+- create a working dataframe with `x`, `y`, value id, and optional `transcript_id`;
+- globally group by value and shuffle rows within each value group;
+- convert display coordinates to `float32`;
+- write `data/shard-*.parquet`;
+- enforce single-value row groups;
+- split large values across row groups;
+- assign `value_shard` as the shard order within each value;
+- write `value_index.parquet`;
+- finalize through staged replacement.
+
+Done when:
+
+- the full on-disk cache can be built and inspected without napari.
+
+### Optional Cache Slice C: Cache-Backed Runtime Reader
+
+Goal: load exact and sampled selected values from the optional cache using PyArrow.
+
+Includes:
+
+- load metadata, `values.parquet`, and `value_index.parquet`;
+- resolve selected values to ids;
+- reject unknown selected values;
+- compute total selected point count before reading data;
+- read only listed row groups;
+- implement proportional quota allocation for sampled reads;
+- support `values="all"`;
+- return the same `TranscriptValueIndexSelection` object as direct mode.
+
+Done when:
+
+- cache-backed loading can replace direct loading behind the same napari layer helper.
+
+### Optional Cache Slice D: UI Cache Acceleration Mode
+
+Goal: expose cache build/rebuild and cache-backed loading as an optional acceleration path.
+
+Includes:
+
+- create or rebuild cache button;
+- confirmation dialog before rebuilding an existing valid cache;
+- cache status display;
+- cache build worker and job ids;
+- prefer cache-backed reads when a valid cache exists;
+- fall back to direct reads when cache is missing or stale;
+- disable the build/rebuild button while a cache build is running;
+- show build progress/status phase text.
+
+Done when:
+
+- the user can use direct mode by default and opt into cache acceleration when needed.
 
 ### Deferred Follow-Up: Small Preview Shards
 
@@ -1583,12 +1672,19 @@ Status:
 
 The MVP should produce these implementation pieces:
 
-1. Cache builder: builds `transcripts_value_index/<index_column_cache_key>/` from a backed points element and a selected string/categorical index column.
-2. Cache validator: checks required files, schema version, selected source element, selected columns, and internal count consistency before visualization is enabled.
-3. Cache reader: loads exact or sampled selected values from `values.parquet`, `value_index.parquet`, and the data shard files using PyArrow.
-4. Viewer UI controls: lets the user choose the points element and index-value column, create or rebuild the cache, search/select values from `values.parquet`, and request visualization.
+1. Source validator: validates a backed points element, coordinate columns, and a selected string/categorical index column.
+2. Direct value vocabulary: computes selectable values and point counts from the Dask points dataframe.
+3. Direct reader: loads exact or sampled selected values from the Dask points dataframe, sampling before compute when needed.
+4. Viewer UI controls: lets the user choose the points element and index-value column, search/select values, set `render_point_budget`, and request visualization.
 5. napari layer integration: creates or updates one `Points` layer for the selected values, with sampled-state warning text when applicable.
-6. Tests: cover input validation, cache layout, staleness checks, value resolution, exact reads, sampled reads, and row-group invariants.
+6. Tests: cover input validation, direct value resolution, exact reads, sampled reads, all-values selection, async stale-result handling, and layer updates.
+
+Optional later deliverables:
+
+1. Cache builder: builds `transcripts_value_index/<index_column_cache_key>/` from a backed points element and a selected string/categorical index column.
+2. Cache validator: checks required files, schema version, selected source element, selected columns, and internal count consistency before cache-backed reads are used.
+3. Cache reader: loads exact or sampled selected values from `values.parquet`, `value_index.parquet`, and the data shard files using PyArrow.
+4. UI cache acceleration mode: lets the user create or rebuild the cache and uses it when valid, while preserving direct mode as a fallback.
 
 ## Suggested Module Shape
 
@@ -1602,7 +1698,6 @@ Suggested objects:
 
 ```text
 TRANSCRIPT_VALUE_INDEX_SCHEMA_VERSION
-TranscriptValueIndexCache
 TranscriptValueIndexSelection
 TranscriptValueIndexError
 TranscriptValueIndexInvalidCacheError
@@ -1610,16 +1705,26 @@ TranscriptValueIndexInvalidSelectionError
 TranscriptValueIndexUnknownValueError
 TranscriptValueIndexReadError
 TranscriptValuePointsLayerBinding
-build_transcript_value_index_cache_for_points_element
-load_transcripts_for_values
+load_transcripts_for_values_direct
+compute_transcript_value_vocabulary
 add_transcript_value_points_layer
 ```
 
-The build path can use Dask.
+Optional cache objects:
 
-The read path should use PyArrow.
+```text
+TranscriptValueIndexCache
+build_transcript_value_index_cache_for_points_element
+load_transcripts_for_values_from_cache
+```
 
-The napari path should be thin and should not know how the cache is built internally.
+The direct read path uses Dask.
+
+The optional cache build path can use Dask.
+
+The optional cache read path should use PyArrow.
+
+The napari path should be thin and should not know whether the selection came from direct Dask filtering or the optional cache.
 
 Add the UI controller separately from the cache module:
 
@@ -1631,9 +1736,15 @@ Suggested controller objects:
 
 ```text
 TranscriptValueIndexUiState
-TranscriptValueIndexBuildJob
+TranscriptValueIndexValueJob
 TranscriptValueIndexReadJob
 TranscriptValueIndexController
+```
+
+Optional cache controller objects:
+
+```text
+TranscriptValueIndexBuildJob
 ```
 
 The controller should own widget-facing state and async worker orchestration. The Qt widget should render controller state and forward user actions; it should not own the cache build/read state machine directly.
@@ -1642,14 +1753,19 @@ The controller should own widget-facing state and async worker orchestration. Th
 
 A first implementation is successful when:
 
-- it can build `transcripts_value_index/<index_column_cache_key>/` from a backed `sdata.points["transcripts"]`;
 - it validates `x`, `y`, and the selected index-value column;
-- it writes `values.parquet`, `value_index.parquet`, and data Parquet files;
-- it validates cache availability and staleness before enabling visualization;
-- the value search box reads selectable values from `values.parquet`;
-- every data row group listed in `value_index.parquet` contains exactly one `value_id`;
+- it computes selectable values and counts directly from a backed `sdata.points["transcripts"]`;
+- the value search box works without requiring a cache;
 - selecting values within the render budget loads exact points;
-- selecting values above the render budget loads at most `render_point_budget` points;
+- selecting values above the render budget filters selected rows first, samples before compute, and loads at most `render_point_budget` points;
 - all-values selection is allowed and sampled when needed;
 - sampled results show a user-visible warning;
 - the napari integration updates one `Points` layer rather than creating many layers.
+
+The optional cache path becomes successful later when:
+
+- it can build `transcripts_value_index/<index_column_cache_key>/` from a backed points element;
+- it writes `values.parquet`, `value_index.parquet`, and data Parquet files;
+- it validates cache availability and staleness before using the cache-backed reader;
+- every data row group listed in `value_index.parquet` contains exactly one `value_id`;
+- cache-backed reads return the same `TranscriptValueIndexSelection` object shape as direct reads.
