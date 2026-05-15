@@ -313,6 +313,40 @@ def validate_points_element_for_value_selection(
     )
 
 
+def build_direct_value_table(validated: _ValidatedPointsElement) -> TranscriptValueTable:
+    """Build an in-memory value table from a validated Dask points element."""
+    if not isinstance(validated, _ValidatedPointsElement):
+        raise ValueError("`validated` must be a _ValidatedPointsElement.")
+
+    normalized_values = validated.points[validated.index_column].map_partitions(
+        _normalize_index_value_partition,
+        meta=(VALUE_COLUMN, "object"),
+    )
+    value_counts = normalized_values.value_counts(sort=False).compute()
+    value_counts = value_counts.groupby(level=0, observed=True).sum()
+    value_counts = value_counts[value_counts > 0].sort_index()
+
+    if len(value_counts) > np.iinfo(VALUE_ID_DTYPE).max:
+        raise ValueError("Too many unique transcript values to represent with uint32 value ids.")
+
+    total_count = int(value_counts.sum())
+    if total_count != validated.source_n_points:
+        raise ValueError("Direct value table total count does not match the validated source point count.")
+
+    values = pd.DataFrame(
+        {
+            VALUE_ID_COLUMN: pd.Series(np.arange(len(value_counts), dtype=VALUE_ID_DTYPE), dtype=VALUE_ID_DTYPE),
+            VALUE_COLUMN: value_counts.index.to_list(),
+            N_POINTS_COLUMN: pd.Series(value_counts.to_numpy(dtype=N_POINTS_DTYPE), dtype=N_POINTS_DTYPE),
+        }
+    )
+    return TranscriptValueTable(
+        values=values,
+        index_column=validated.index_column,
+        total_count=total_count,
+    )
+
+
 def normalize_index_value(value: object) -> str:
     """Normalize one index-column value for direct value selection."""
     if _is_missing_scalar(value):
@@ -331,6 +365,12 @@ def normalize_index_values(values: pd.Series) -> pd.Series:
     if not isinstance(values, pd.Series):
         raise ValueError("`values` must be a pandas Series.")
     return values.map(normalize_index_value)
+
+
+def _normalize_index_value_partition(values: pd.Series) -> pd.Series:
+    normalized = normalize_index_values(values)
+    normalized.name = VALUE_COLUMN
+    return normalized
 
 
 def _source_path_from_sdata(sdata: Any) -> Path | None:

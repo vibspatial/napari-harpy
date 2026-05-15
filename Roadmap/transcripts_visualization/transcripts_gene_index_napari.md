@@ -1579,6 +1579,13 @@ Done when:
 
 Goal: compute the selectable value table directly from the selected Dask points dataframe.
 
+Status: implemented.
+
+Implementation:
+
+- `src/napari_harpy/_transcript_value_index.py`;
+- `tests/test_transcript_value_index.py`.
+
 Includes:
 
 - public value-table helper:

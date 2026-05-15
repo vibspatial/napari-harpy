@@ -19,6 +19,7 @@ from napari_harpy._transcript_value_index import (
     TranscriptValueSelection,
     TranscriptValueTable,
     _ValidatedPointsElement,
+    build_direct_value_table,
     normalize_index_value,
     normalize_index_values,
     validate_points_element_for_value_selection,
@@ -106,6 +107,18 @@ def _valid_points_data(**overrides: object) -> dict[str, object]:
         "transcript_id": ["tx1", "tx2", "tx3"],
     }
     data.update(overrides)
+    return data
+
+
+def _valid_points_data_for_index_values(values: object, *, index_column: str = "gene") -> dict[str, object]:
+    n_values = len(values)  # type: ignore[arg-type]
+    data: dict[str, object] = {
+        "x": [float(index) for index in range(n_values)],
+        "y": [float(index + n_values) for index in range(n_values)],
+        "gene": ["AAMP"] * n_values,
+        "transcript_id": [f"tx{index}" for index in range(n_values)],
+    }
+    data[index_column] = values
     return data
 
 
@@ -459,3 +472,107 @@ def test_validate_points_element_for_value_selection_rejects_invalid_transcript_
 
     with pytest.raises(ValueError, match=match):
         validate_points_element_for_value_selection(sdata, "transcripts", transcript_id="transcript_id")
+
+
+def test_build_direct_value_table_merges_normalized_values_and_sorts() -> None:
+    sdata = _sdata_with_points(
+        _valid_points_data_for_index_values([" AAMP ", "AXL", "AAMP", "actb", "ACTB", "AXL "]),
+        npartitions=3,
+    )
+    validated = validate_points_element_for_value_selection(sdata, "transcripts")
+
+    value_table = build_direct_value_table(validated)
+
+    assert value_table.index_column == "gene"
+    assert value_table.total_count == 6
+    assert value_table.values.to_dict("list") == {
+        "value_id": [0, 1, 2, 3],
+        "value": ["AAMP", "ACTB", "AXL", "actb"],
+        "n_points": [2, 1, 2, 1],
+    }
+    assert value_table.values["value_id"].dtype == np.dtype("uint32")
+    assert value_table.values["n_points"].dtype == np.dtype("uint64")
+
+
+def test_build_direct_value_table_assigns_deterministic_value_ids() -> None:
+    sdata_a = _sdata_with_points(_valid_points_data_for_index_values(["B", "A", "C", "B"]), npartitions=2)
+    sdata_b = _sdata_with_points(_valid_points_data_for_index_values(["C", "B", "B", "A"]), npartitions=2)
+    validated_a = validate_points_element_for_value_selection(sdata_a, "transcripts")
+    validated_b = validate_points_element_for_value_selection(sdata_b, "transcripts")
+
+    table_a = build_direct_value_table(validated_a)
+    table_b = build_direct_value_table(validated_b)
+
+    assert table_a.values[["value_id", "value"]].to_dict("list") == table_b.values[["value_id", "value"]].to_dict(
+        "list"
+    )
+
+
+def test_build_direct_value_table_excludes_unused_categorical_categories() -> None:
+    sdata = _sdata_with_points(
+        _valid_points_data_for_index_values(pd.Categorical(["B", "A", "B"], categories=["A", "B", "UNUSED"])),
+        npartitions=2,
+    )
+    validated = validate_points_element_for_value_selection(sdata, "transcripts")
+
+    value_table = build_direct_value_table(validated)
+
+    assert value_table.values.to_dict("list") == {
+        "value_id": [0, 1],
+        "value": ["A", "B"],
+        "n_points": [1, 2],
+    }
+
+
+def test_build_direct_value_table_accepts_configured_string_index_column() -> None:
+    sdata = _sdata_with_points(
+        _valid_points_data_for_index_values(
+            pd.Series([" probe-b ", "probe-a", "probe-b"], dtype="string"),
+            index_column="target",
+        ),
+        npartitions=2,
+    )
+    validated = validate_points_element_for_value_selection(sdata, "transcripts", index_column="target")
+
+    value_table = build_direct_value_table(validated)
+
+    assert value_table.index_column == "target"
+    assert value_table.values.to_dict("list") == {
+        "value_id": [0, 1],
+        "value": ["probe-a", "probe-b"],
+        "n_points": [1, 2],
+    }
+
+
+def test_build_direct_value_table_rejects_invalid_values_if_source_changes_after_validation() -> None:
+    points = _points_dataframe(_valid_points_data_for_index_values(["AAMP", b"AXL", "MALAT1"]))
+    validated = _ValidatedPointsElement(
+        points=points,
+        points_name="transcripts",
+        source_path=None,
+        source_n_points=3,
+        x="x",
+        y="y",
+        index_column="gene",
+        transcript_id=None,
+    )
+
+    with pytest.raises(ValueError, match="strings"):
+        build_direct_value_table(validated)
+
+
+def test_build_direct_value_table_rejects_source_count_mismatch() -> None:
+    points = _points_dataframe(_valid_points_data_for_index_values(["AAMP", "AXL", "MALAT1"]))
+    validated = _ValidatedPointsElement(
+        points=points,
+        points_name="transcripts",
+        source_path=None,
+        source_n_points=4,
+        x="x",
+        y="y",
+        index_column="gene",
+        transcript_id=None,
+    )
+
+    with pytest.raises(ValueError, match="total count"):
+        build_direct_value_table(validated)
