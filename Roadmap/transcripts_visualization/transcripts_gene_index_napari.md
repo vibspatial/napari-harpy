@@ -102,7 +102,7 @@ Later, the two directions can meet in a value-aware tiled cache, such as a `tile
 
 The MVP supports:
 
-- backed `SpatialData`;
+- backed and unbacked `SpatialData` for the direct no-cache path;
 - one points element, initially `sdata.points["transcripts"]`;
 - required coordinate columns, default `x="x"` and `y="y"`;
 - configurable string/categorical index column, default `gene="gene"`;
@@ -124,13 +124,13 @@ The MVP does not support:
 
 ## Input Contract
 
-The direct reader starts from a backed points element:
+The direct reader starts from a points element:
 
 ```python
 points = sdata.points["transcripts"]
 ```
 
-The optional cache builder, if implemented later, starts from the same points element.
+The optional cache builder, if implemented later, starts from the same points element but requires backed `SpatialData`.
 
 The selected points element must be a `dask.dataframe.DataFrame`.
 
@@ -1463,14 +1463,89 @@ Goal: validate whether a selected points element can be visualized directly.
 
 Includes:
 
+- public validation helper:
+
+```python
+def validate_points_element_for_value_selection(
+    sdata: SpatialData,
+    points_name: str,
+    *,
+    x: str = DEFAULT_X,
+    y: str = DEFAULT_Y,
+    index_column: str = DEFAULT_INDEX_COLUMN,
+    transcript_id: str | None = None,
+) -> _ValidatedPointsElement:
+    ...
+```
+
+- private validated return object:
+
+```python
+@dataclass(frozen=True)
+class _ValidatedPointsElement:
+    points: dd.DataFrame
+    points_name: str
+    source_path: Path | None
+    source_n_points: int
+    x: str
+    y: str
+    index_column: str
+    transcript_id: str | None
+
+    @property
+    def is_backed(self) -> bool:
+        return self.source_path is not None
+
+    @property
+    def element_path(self) -> str | None:
+        if self.source_path is None:
+            return None
+        return f"points/{self.points_name}"
+```
+
+`points_name` and `source_path` should be stored state. `source_path` is the root zarr store path for backed `SpatialData`, and `None` for unbacked `SpatialData`. `element_path` should be a derived property that returns `None` for unbacked data and `points/<points_name>` for backed data.
+
 - resolve `sdata.points[points_name]`;
-- require backed `SpatialData`;
+- allow backed and unbacked `SpatialData` for direct mode;
+- store `source_path = Path(sdata.path)` when the `SpatialData` object is backed, otherwise `None`;
+- require `points_name` is a non-empty string;
 - require Dask dataframe points element;
-- validate coordinate columns;
-- validate configured index column;
+- validate `x`, `y`, `index_column`, and optional `transcript_id` are non-empty strings;
+- validate `x`, `y`, and `index_column` columns exist;
+- reject `index_column == x` or `index_column == y`;
+- validate coordinate columns are numeric;
+- compute `source_n_points` and reject empty dataframes;
+- reject missing, NaN, or infinite coordinate values;
 - normalize index values;
-- reject missing, empty, invalid, or unsupported values;
-- validate optional `transcript_id` exists when requested by future cache code.
+- reject missing, empty, invalid, or unsupported index values;
+- if `transcript_id` is provided:
+  - require the column exists;
+  - reject missing `transcript_id` values;
+  - require `transcript_id` values are unique.
+
+Value normalization helpers:
+
+```python
+def normalize_index_value(value: object) -> str:
+    ...
+
+
+def normalize_index_values(values: pd.Series) -> pd.Series:
+    ...
+```
+
+Normalization rules:
+
+- reject missing values;
+- reject bytes values;
+- reject numeric and boolean values;
+- reject list, dict, tuple, and other structured Python objects;
+- accept string-like values;
+- convert accepted values to `str`;
+- strip leading and trailing whitespace;
+- reject empty strings after stripping;
+- preserve case;
+- preserve internal whitespace.
 
 Tests:
 
@@ -1481,6 +1556,13 @@ Tests:
 - invalid index dtype;
 - missing or blank index values;
 - categorical, string, and object value handling.
+- backed and unbacked SpatialData;
+- missing points element;
+- points element that is not a Dask dataframe;
+- `index_column == x` or `index_column == y`;
+- bytes, numeric, boolean, list, dict, and tuple index values are rejected;
+- normalization preserves case and internal whitespace while stripping edges;
+- optional `transcript_id` rejects missing, non-unique, and missing-column values.
 
 Done when:
 
@@ -1736,7 +1818,7 @@ Status:
 
 The MVP should produce these implementation pieces:
 
-1. Source validator: validates a backed points element, coordinate columns, and a selected string/categorical index column.
+1. Source validator: validates a points element, coordinate columns, and a selected string/categorical index column.
 2. Direct value vocabulary: computes selectable values and point counts from the Dask points dataframe.
 3. Direct reader: loads exact or sampled selected values from the Dask points dataframe, sampling before compute when needed.
 4. Viewer UI controls: lets the user choose the points element and index-value column, search/select values, set `render_point_budget`, and request visualization.
@@ -1819,7 +1901,7 @@ The controller should own widget-facing state and async worker orchestration. Th
 A first implementation is successful when:
 
 - it validates `x`, `y`, and the selected index-value column;
-- it computes selectable values and counts directly from a backed `sdata.points["transcripts"]`;
+- it computes selectable values and counts directly from `sdata.points["transcripts"]`;
 - the value search box works without requiring a cache;
 - selecting values within the render budget loads exact points;
 - selecting values above the render budget filters selected rows first, samples before compute, and loads at most `render_point_budget` points;
