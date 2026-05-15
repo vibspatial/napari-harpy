@@ -229,7 +229,7 @@ Public API names should also be generic:
 - `build_points_value_index_cache_for_points_element`;
 - `load_points`;
 - `add_transcript_value_points_layer`;
-- `TRANSCRIPT_VALUE_INDEX_SCHEMA_VERSION`.
+- `POINTS_VALUE_INDEX_SCHEMA_VERSION`.
 
 napari-visible features should use the selected source column name where possible. The reader can work with generic value data internally, but the layer should expose the semantic column selected by the user:
 
@@ -440,7 +440,7 @@ shuffle_policy: string
 Suggested schema version:
 
 ```text
-harpy-transcripts-value-index-0.1
+harpy-points-value-index-0.1
 ```
 
 Write `metadata.json` last, or write a separate completion marker last. The cache should not look valid until all required files have been written.
@@ -1092,7 +1092,7 @@ Follow the existing napari-harpy controller pattern for this workflow. The state
 Recommended module split:
 
 ```text
-src/napari_harpy/_transcript_value_index.py
+src/napari_harpy/_points_value_index.py
   Pure source validation, value normalization, direct reader, optional cache builder/validator/reader, and dataclasses.
   No QWidget logic.
 
@@ -1425,19 +1425,19 @@ Status: implemented.
 
 Implementation:
 
-- `src/napari_harpy/_transcript_value_index.py`;
-- `tests/test_transcript_value_index.py`.
+- `src/napari_harpy/_points_value_index.py`;
+- `tests/test_points_value_index.py`.
 
 Includes:
 
-- new module `src/napari_harpy/_transcript_value_index.py`;
+- new module `src/napari_harpy/_points_value_index.py`;
 - constants:
   - `DEFAULT_X = "x"`;
   - `DEFAULT_Y = "y"`;
   - `DEFAULT_INDEX_COLUMN = "gene"`;
   - `DEFAULT_RENDER_POINT_BUDGET = 100_000`;
   - `DEFAULT_RANDOM_STATE = 42`;
-  - `TRANSCRIPT_VALUE_INDEX_SCHEMA_VERSION = "harpy-transcripts-value-index-0.1"`;
+  - `POINTS_VALUE_INDEX_SCHEMA_VERSION = "harpy-points-value-index-0.1"`;
 - dataclasses or typed return objects:
   - `PointsValueTable`;
   - `PointsValueSelection`;
@@ -1465,8 +1465,8 @@ Status: implemented.
 
 Implementation:
 
-- `src/napari_harpy/_transcript_value_index.py`;
-- `tests/test_transcript_value_index.py`.
+- `src/napari_harpy/_points_value_index.py`;
+- `tests/test_points_value_index.py`.
 
 Includes:
 
@@ -1584,8 +1584,8 @@ Status: implemented.
 
 Implementation:
 
-- `src/napari_harpy/_transcript_value_index.py`;
-- `tests/test_transcript_value_index.py`.
+- `src/napari_harpy/_points_value_index.py`;
+- `tests/test_points_value_index.py`.
 
 Includes:
 
@@ -1928,7 +1928,7 @@ Optional later deliverables:
 Keep this separate from `_transcript_tiles.py` at first:
 
 ```text
-src/napari_harpy/_transcript_value_index.py
+src/napari_harpy/_points_value_index.py
 ```
 
 Suggested objects:
@@ -1939,7 +1939,7 @@ DEFAULT_Y
 DEFAULT_INDEX_COLUMN
 DEFAULT_RENDER_POINT_BUDGET
 DEFAULT_RANDOM_STATE
-TRANSCRIPT_VALUE_INDEX_SCHEMA_VERSION
+POINTS_VALUE_INDEX_SCHEMA_VERSION
 PointsValueTable
 PointsValueSelection
 PointsValueLayerBinding

@@ -9,13 +9,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from napari_harpy._transcript_value_index import (
+from napari_harpy._points_value_index import (
     DEFAULT_INDEX_COLUMN,
     DEFAULT_RANDOM_STATE,
     DEFAULT_RENDER_POINT_BUDGET,
     DEFAULT_X,
     DEFAULT_Y,
-    TRANSCRIPT_VALUE_INDEX_SCHEMA_VERSION,
+    POINTS_VALUE_INDEX_SCHEMA_VERSION,
     PointsValueSelection,
     PointsValueTable,
     _ValidatedPointsElement,
@@ -122,13 +122,13 @@ def _valid_points_data_for_index_values(values: object, *, index_column: str = "
     return data
 
 
-def test_transcript_value_index_constants() -> None:
+def test_points_value_index_constants() -> None:
     assert DEFAULT_X == "x"
     assert DEFAULT_Y == "y"
     assert DEFAULT_INDEX_COLUMN == "gene"
     assert DEFAULT_RENDER_POINT_BUDGET == 100_000
     assert DEFAULT_RANDOM_STATE == 42
-    assert TRANSCRIPT_VALUE_INDEX_SCHEMA_VERSION == "harpy-transcripts-value-index-0.1"
+    assert POINTS_VALUE_INDEX_SCHEMA_VERSION == "harpy-points-value-index-0.1"
 
 
 def test_points_value_table_records_value_table() -> None:
