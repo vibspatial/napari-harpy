@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypeGuard
 import numpy as np
 import pandas as pd
 from loguru import logger
-from napari.layers import Image, Labels, Layer, Shapes
+from napari.layers import Image, Labels, Layer, Points, Shapes
 from qtpy.QtCore import QObject, Signal
 from shapely import make_valid
 from shapely.errors import GEOSException
@@ -20,6 +20,7 @@ from spatialdata.transformations import get_transformation
 from xarray import DataArray, DataTree
 
 from napari_harpy.core._color_source import ShapeColorSourceSpec, TableColorSourceSpec
+from napari_harpy.core.class_palette import default_categorical_colors
 from napari_harpy.viewer.labels_styling import (
     StyledLabelsLoadResult,
     apply_table_color_source_to_labels_layer,
@@ -34,11 +35,15 @@ from napari_harpy.viewer.shapes_styling import (
 if TYPE_CHECKING:
     from spatialdata import SpatialData
 
+    from napari_harpy._points_value_index import PointsValueSelection
+
 ImageDisplayMode = Literal["stack", "overlay"]
-ElementType = Literal["labels", "image", "shapes"]
+ElementType = Literal["labels", "image", "shapes", "points"]
 ShapesLayerShapeType = Literal["polygon", "ellipse"]
 # Name of the layer.features column that stores the source GeoDataFrame index.
 DEFAULT_SHAPES_INDEX_FEATURE_NAME = "index"
+POINTS_SELECTION_SOLID_COLOR = "#00FFFF"
+POINTS_SELECTION_MAX_CATEGORICAL_COLORS = 102
 DEFAULT_OVERLAY_COLORS = (
     "#00FFFF",  # cyan
     "#FF00FF",  # magenta
@@ -182,6 +187,18 @@ class ImageLayerBinding(BaseLayerBinding):
 
 
 @dataclass(frozen=True, kw_only=True)
+class PointsLayerBinding(BaseLayerBinding):
+    """Binding metadata specific to points value-selection layers."""
+
+    element_type: Literal["points"] = "points"
+    index_column: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.index_column, str) or not self.index_column:
+            raise ValueError("Points layer bindings require a non-empty index column.")
+
+
+@dataclass(frozen=True, kw_only=True)
 class ShapesLayerBinding(BaseLayerBinding):
     """Binding metadata specific to shapes layers.
 
@@ -228,7 +245,36 @@ class ShapesLayerBinding(BaseLayerBinding):
             raise ValueError("Styled shapes bindings require a style specification.")
 
 
-LayerBinding = LabelsLayerBinding | ImageLayerBinding | ShapesLayerBinding
+LayerBinding = LabelsLayerBinding | ImageLayerBinding | PointsLayerBinding | ShapesLayerBinding
+
+
+@dataclass(frozen=True)
+class PointsLayerIdentity:
+    """Source identity for one points value-selection layer."""
+
+    sdata: SpatialData
+    points_name: str
+    coordinate_system: str
+    index_column: str
+
+    def __post_init__(self) -> None:
+        if self.sdata is None:
+            raise ValueError("`sdata` must not be None.")
+        if not isinstance(self.points_name, str) or not self.points_name:
+            raise ValueError("`points_name` must be a non-empty string.")
+        if not isinstance(self.coordinate_system, str) or not self.coordinate_system:
+            raise ValueError("`coordinate_system` must be a non-empty string.")
+        if not isinstance(self.index_column, str) or not self.index_column:
+            raise ValueError("`index_column` must be a non-empty string.")
+
+
+@dataclass(frozen=True)
+class PointsLayerUpdateResult:
+    """Result of applying a points value selection to a napari Points layer."""
+
+    layer: Points
+    created: bool
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -369,6 +415,26 @@ class LayerBindingRegistry:
         self._register_binding(binding)
         return binding
 
+    def register_points_layer(
+        self,
+        layer: Points,
+        *,
+        element_name: str,
+        coordinate_system: str | None = None,
+        sdata: SpatialData | None = None,
+        index_column: str,
+    ) -> PointsLayerBinding:
+        """Register a points layer binding."""
+        binding = PointsLayerBinding(
+            layer=layer,
+            element_name=element_name,
+            coordinate_system=coordinate_system,
+            sdata_id=_get_sdata_id(sdata),
+            index_column=index_column,
+        )
+        self._register_binding(binding)
+        return binding
+
     def register_shapes_layer(
         self,
         layer: Shapes,
@@ -427,6 +493,7 @@ class LayerBindingRegistry:
         image_display_mode: ImageDisplayMode | None = None,
         channel_index: int | None = None,
         channel_name: str | None = None,
+        points_index_column: str | None = None,
     ) -> list[LayerBinding]:
         """Find bindings matching the provided filters."""
         sdata_id = None if sdata is None else id(sdata)
@@ -459,6 +526,9 @@ class LayerBindingRegistry:
                     continue
             if channel_name is not None:
                 if not isinstance(binding, ImageLayerBinding) or binding.channel_name != channel_name:
+                    continue
+            if points_index_column is not None:
+                if not isinstance(binding, PointsLayerBinding) or binding.index_column != points_index_column:
                     continue
             matches.append(binding)
         return matches
@@ -551,6 +621,26 @@ class ViewerAdapter(QObject):
             image_display_mode=image_display_mode,
             channel_index=channel_index,
             channel_name=channel_name,
+        )
+        self._handle_registered_binding(binding)
+        return binding
+
+    def register_points_layer(
+        self,
+        layer: Points,
+        *,
+        points_name: str,
+        coordinate_system: str | None = None,
+        sdata: SpatialData | None = None,
+        index_column: str,
+    ) -> PointsLayerBinding:
+        """Register a points layer in the shared binding registry."""
+        binding = self._layer_bindings.register_points_layer(
+            layer,
+            element_name=points_name,
+            coordinate_system=coordinate_system,
+            sdata=sdata,
+            index_column=index_column,
         )
         self._handle_registered_binding(binding)
         return binding
@@ -834,6 +924,49 @@ class ViewerAdapter(QObject):
                 matches.append(layer)
 
         return matches
+
+    def _ensure_points_layer_from_selection(
+        self,
+        identity: PointsLayerIdentity,
+        *,
+        selection: PointsValueSelection,
+    ) -> PointsLayerUpdateResult:
+        """Create or update the points value-selection layer for an already loaded selection."""
+        if not isinstance(identity, PointsLayerIdentity):
+            raise ValueError("`identity` must be a PointsLayerIdentity.")
+        if identity.index_column != selection.index_column:
+            raise ValueError(
+                "`identity.index_column` and `selection.index_column` must match. "
+                f"Got {identity.index_column!r} and {selection.index_column!r}."
+            )
+
+        existing_layer = self._get_loaded_points_layer_for_identity(identity)
+        created = existing_layer is None
+        if existing_layer is None:
+            layer = _build_points_layer_from_selection(identity, selection)
+            _add_layer_to_viewer(self._viewer, layer)
+            self.register_points_layer(
+                layer,
+                sdata=identity.sdata,
+                points_name=identity.points_name,
+                coordinate_system=identity.coordinate_system,
+                index_column=identity.index_column,
+            )
+        else:
+            layer = existing_layer
+
+        visible = layer.visible
+        layer.name = _build_points_layer_name(identity, selection)
+        layer.data = selection.coordinates
+        layer.features = selection.features
+        _apply_points_selection_visuals(layer, selection)
+        layer.visible = visible
+
+        return PointsLayerUpdateResult(
+            layer=layer,
+            created=created,
+            warnings=_points_selection_warnings(selection),
+        )
 
     def ensure_labels_loaded(self, sdata: SpatialData, labels_name: str, coordinate_system: str) -> Labels:
         """Load a labels element into napari if it is not already present."""
@@ -1239,6 +1372,17 @@ class ViewerAdapter(QObject):
 
         return matches
 
+    def _get_loaded_points_layer_for_identity(self, identity: PointsLayerIdentity) -> Points | None:
+        for layer in self._iter_candidate_layers():
+            if not _is_points_layer(layer):
+                continue
+
+            binding = self._layer_bindings.get_binding(layer)
+            if _matches_points_binding(binding, identity=identity):
+                return layer
+
+        return None
+
     def _get_loaded_shapes_layer_for_coordinate_system(
         self,
         sdata: SpatialData,
@@ -1250,6 +1394,60 @@ class ViewerAdapter(QObject):
 
 def _get_sdata_id(sdata: SpatialData | None) -> int | None:
     return None if sdata is None else id(sdata)
+
+
+def _build_points_layer_from_selection(identity: PointsLayerIdentity, selection: PointsValueSelection) -> Points:
+    layer = Points(
+        selection.coordinates,
+        ndim=2,
+        name=_build_points_layer_name(identity, selection),
+        features=selection.features,
+        size=1.0,
+        opacity=0.8,
+        symbol="disc",
+        border_width=0,
+        face_color=POINTS_SELECTION_SOLID_COLOR,
+    )
+    _apply_points_selection_visuals(layer, selection)
+    return layer
+
+
+def _build_points_layer_name(identity: PointsLayerIdentity, selection: PointsValueSelection) -> str:
+    if len(selection.selected_values) == 0:
+        return f"{identity.points_name}: no {identity.index_column} values"
+    if selection.selection_mode == "all":
+        return f"{identity.points_name}: all {identity.index_column} values"
+    if len(selection.selected_values) == 1:
+        return f"{identity.points_name}: {identity.index_column}={selection.selected_values[0]}"
+    return f"{identity.points_name}: {len(selection.selected_values)} {identity.index_column} values"
+
+
+def _apply_points_selection_visuals(layer: Points, selection: PointsValueSelection) -> None:
+    layer.size = 1.0
+    layer.opacity = 0.8
+    layer.symbol = "disc"
+    layer.border_width = 0
+
+    selected_value_count = len(selection.selected_values)
+    if selected_value_count < 2 or selected_value_count > POINTS_SELECTION_MAX_CATEGORICAL_COLORS:
+        layer.face_color = POINTS_SELECTION_SOLID_COLOR
+        return
+
+    layer.face_color_cycle = default_categorical_colors(selected_value_count)
+    layer.face_color = selection.index_column
+
+
+def _points_selection_warnings(selection: PointsValueSelection) -> tuple[str, ...]:
+    warnings: list[str] = []
+    if selection.warning:
+        warnings.append(selection.warning)
+    selected_value_count = len(selection.selected_values)
+    if selected_value_count > POINTS_SELECTION_MAX_CATEGORICAL_COLORS:
+        warnings.append(
+            f"Selected {selected_value_count:,} {selection.index_column} values; "
+            f"categorical coloring is disabled above {POINTS_SELECTION_MAX_CATEGORICAL_COLORS} values."
+        )
+    return tuple(warnings)
 
 
 def _add_layer_to_viewer(viewer: Any | None, layer: Layer) -> None:
@@ -1700,6 +1898,21 @@ def _matches_shapes_binding(
     return True
 
 
+def _matches_points_binding(
+    binding: LayerBinding | None,
+    *,
+    identity: PointsLayerIdentity,
+) -> bool:
+    if not isinstance(binding, PointsLayerBinding):
+        return False
+    return (
+        binding.sdata_id == id(identity.sdata)
+        and binding.element_name == identity.points_name
+        and binding.coordinate_system == identity.coordinate_system
+        and binding.index_column == identity.index_column
+    )
+
+
 def _is_labels_binding(binding: LayerBinding | None) -> TypeGuard[LabelsLayerBinding]:
     return isinstance(binding, LabelsLayerBinding)
 
@@ -1710,6 +1923,10 @@ def _is_image_binding(binding: LayerBinding | None) -> TypeGuard[ImageLayerBindi
 
 def _is_shapes_binding(binding: LayerBinding | None) -> TypeGuard[ShapesLayerBinding]:
     return isinstance(binding, ShapesLayerBinding)
+
+
+def _is_points_binding(binding: LayerBinding | None) -> TypeGuard[PointsLayerBinding]:
+    return isinstance(binding, PointsLayerBinding)
 
 
 def _is_primary_labels_binding(binding: LayerBinding | None) -> TypeGuard[LabelsLayerBinding]:
@@ -1732,3 +1949,7 @@ def _is_image_layer(layer: Layer) -> bool:
 
 def _is_shapes_layer(layer: Layer) -> bool:
     return isinstance(layer, Shapes)
+
+
+def _is_points_layer(layer: Layer) -> bool:
+    return isinstance(layer, Points)

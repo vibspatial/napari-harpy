@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from matplotlib.colors import to_rgba
-from napari.layers import Image, Labels, Shapes
+from napari.layers import Image, Labels, Points, Shapes
 from napari.utils.colormaps import CyclicLabelColormap, DirectLabelColormap
 from shapely.geometry import LineString, Polygon
 from spatialdata.models import ShapesModel
@@ -16,11 +16,15 @@ from spatialdata.transformations import Identity
 
 import napari_harpy.viewer._styling as styling_module
 from napari_harpy._app_state import get_or_create_app_state
+from napari_harpy._points_value_index import PointsValueSelection
 from napari_harpy.core._color_source import ShapeColorSourceSpec, TableColorSourceSpec
+from napari_harpy.core.class_palette import default_categorical_colors
 from napari_harpy.viewer.adapter import (
     ImageLayerBinding,
     LabelsLayerBinding,
     LayerBindingRegistry,
+    PointsLayerBinding,
+    PointsLayerIdentity,
     ShapesLayerBinding,
     ViewerAdapter,
 )
@@ -95,6 +99,52 @@ def make_shapes_layer(*, name: str = "cell_boundaries", metadata: dict[str, obje
         shape_type="polygon",
         name=name,
         metadata={} if metadata is None else metadata,
+    )
+
+
+def make_points_selection(
+    row_values: list[str],
+    *,
+    selected_values: tuple[str, ...] | None = None,
+    selection_mode: str = "values",
+    total_count: int | None = None,
+    render_point_budget: int = 100_000,
+    is_sampled: bool = False,
+    warning: str | None = None,
+) -> PointsValueSelection:
+    if selected_values is None:
+        selected_values = tuple(dict.fromkeys(row_values))
+    value_id_by_value = {value: index for index, value in enumerate(selected_values)}
+    coordinates = np.asarray(
+        [[float(index), float(index + 10)] for index in range(len(row_values))],
+        dtype="float32",
+    )
+    features = pd.DataFrame(
+        {
+            "gene": pd.Categorical(row_values, categories=list(selected_values)),
+            "value_id": pd.Series([value_id_by_value[value] for value in row_values], dtype="uint32"),
+        }
+    )
+    return PointsValueSelection(
+        coordinates=coordinates,
+        features=features,
+        index_column="gene",
+        selected_values=selected_values,
+        selected_value_ids=tuple(value_id_by_value[value] for value in selected_values),
+        selection_mode=selection_mode,  # type: ignore[arg-type]
+        total_count=len(row_values) if total_count is None else total_count,
+        render_point_budget=render_point_budget,
+        is_sampled=is_sampled,
+        warning=warning,
+    )
+
+
+def make_points_identity(sdata: object, *, index_column: str = "gene") -> PointsLayerIdentity:
+    return PointsLayerIdentity(
+        sdata=sdata,
+        points_name="transcripts",
+        coordinate_system="global",
+        index_column=index_column,
     )
 
 
@@ -189,6 +239,33 @@ def test_layer_binding_registry_tracks_channel_overlay_identity() -> None:
     assert "image_display_mode" not in layer.metadata
     assert "channel_index" not in layer.metadata
     assert "channel_name" not in layer.metadata
+
+
+def test_layer_binding_registry_tracks_points_identity() -> None:
+    registry = LayerBindingRegistry()
+    layer = Points(np.asarray([[0.0, 1.0]], dtype="float32"), name="transcripts: gene=AAMP")
+
+    binding = registry.register_points_layer(
+        layer,
+        element_name="transcripts",
+        coordinate_system="global",
+        index_column="gene",
+    )
+
+    assert isinstance(binding, PointsLayerBinding)
+    assert binding.element_name == "transcripts"
+    assert binding.element_type == "points"
+    assert binding.coordinate_system == "global"
+    assert binding.index_column == "gene"
+    assert registry.find_bindings(
+        element_name="transcripts",
+        element_type="points",
+        points_index_column="gene",
+    ) == [binding]
+    assert "element_name" not in layer.metadata
+    assert "element_type" not in layer.metadata
+    assert "coordinate_system" not in layer.metadata
+    assert "index_column" not in layer.metadata
 
 
 def test_layer_binding_registry_tracks_shapes_identity() -> None:
@@ -308,6 +385,18 @@ def test_labels_layer_binding_rejects_invalid_role_style_spec_combinations() -> 
             element_name="blobs_labels",
             coordinate_system="global",
             labels_role="styled",
+        )
+
+
+def test_points_layer_binding_rejects_empty_index_column() -> None:
+    layer = Points(np.asarray([[0.0, 1.0]], dtype="float32"), name="points")
+
+    with pytest.raises(ValueError, match="index column"):
+        PointsLayerBinding(
+            layer=layer,
+            element_name="transcripts",
+            coordinate_system="global",
+            index_column="",
         )
 
 
@@ -612,6 +701,140 @@ def test_viewer_adapter_ignores_unregistered_image_layer_even_with_legacy_metada
 
     assert loaded_layers == []
     assert adapter.layer_bindings.get_binding(image_layer) is None
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_creates_registered_layer() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
+    selection = make_points_selection(["AAMP", "AAMP"], selected_values=("AAMP",))
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    result = adapter._ensure_points_layer_from_selection(identity, selection=selection)
+
+    assert result.created is True
+    assert result.warnings == ()
+    assert result.layer in viewer.layers
+    assert result.layer.name == "transcripts: gene=AAMP"
+    np.testing.assert_array_equal(result.layer.data, selection.coordinates)
+    assert result.layer.features.equals(selection.features)
+    assert np.all(result.layer.size == 1.0)
+    assert result.layer.opacity == 0.8
+    assert all(symbol.value == "disc" for symbol in result.layer.symbol)
+    assert np.all(result.layer.border_width == 0)
+    assert np.allclose(result.layer.face_color, np.asarray([to_rgba("#00FFFF")] * selection.loaded_count))
+    binding = adapter.layer_bindings.get_binding(result.layer)
+    assert isinstance(binding, PointsLayerBinding)
+    assert binding.element_name == "transcripts"
+    assert binding.element_type == "points"
+    assert binding.coordinate_system == "global"
+    assert binding.index_column == "gene"
+    assert binding.sdata_id == id(sdata)
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_updates_existing_layer_preserving_visibility() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
+    first_selection = make_points_selection(["AAMP"], selected_values=("AAMP",))
+    second_selection = make_points_selection(["AXL"], selected_values=("AXL",))
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    first = adapter._ensure_points_layer_from_selection(identity, selection=first_selection)
+    first.layer.visible = False
+
+    second = adapter._ensure_points_layer_from_selection(identity, selection=second_selection)
+
+    assert first.layer is second.layer
+    assert first.created is True
+    assert second.created is False
+    assert second.layer.visible is False
+    assert len(viewer.layers) == 1
+    assert second.layer.name == "transcripts: gene=AXL"
+    np.testing.assert_array_equal(second.layer.data, second_selection.coordinates)
+    assert second.layer.features.equals(second_selection.features)
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_ignores_unregistered_same_name_layer() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
+    selection = make_points_selection(["AAMP"], selected_values=("AAMP",))
+    external_layer = Points(selection.coordinates, name="transcripts: gene=AAMP")
+    viewer = DummyViewer([external_layer])
+    adapter = ViewerAdapter(viewer)
+
+    result = adapter._ensure_points_layer_from_selection(identity, selection=selection)
+
+    assert result.layer is not external_layer
+    assert list(viewer.layers) == [external_layer, result.layer]
+    assert adapter.layer_bindings.get_binding(external_layer) is None
+    assert isinstance(adapter.layer_bindings.get_binding(result.layer), PointsLayerBinding)
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_rejects_identity_selection_mismatch() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata, index_column="target")
+    selection = make_points_selection(["AAMP"], selected_values=("AAMP",))
+    adapter = ViewerAdapter(DummyViewer())
+
+    with pytest.raises(ValueError, match="index_column"):
+        adapter._ensure_points_layer_from_selection(identity, selection=selection)
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_uses_all_values_name() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
+    selection = make_points_selection(["AAMP", "AXL"], selected_values=("AAMP", "AXL"), selection_mode="all")
+    adapter = ViewerAdapter(DummyViewer())
+
+    result = adapter._ensure_points_layer_from_selection(identity, selection=selection)
+
+    assert result.layer.name == "transcripts: all gene values"
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_uses_categorical_colors_for_small_selections() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
+    selection = make_points_selection(["AAMP", "AXL"], selected_values=("AAMP", "AXL"))
+    adapter = ViewerAdapter(DummyViewer())
+
+    result = adapter._ensure_points_layer_from_selection(identity, selection=selection)
+
+    assert str(result.layer.face_color_mode) == "cycle"
+    expected_colors = np.asarray([to_rgba(color) for color in default_categorical_colors(2)], dtype=np.float32)
+    assert np.allclose(result.layer.face_color, expected_colors)
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_uses_solid_color_above_categorical_limit() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
+    selected_values = tuple(f"gene_{index}" for index in range(103))
+    selection = make_points_selection(list(selected_values), selected_values=selected_values)
+    adapter = ViewerAdapter(DummyViewer())
+
+    result = adapter._ensure_points_layer_from_selection(identity, selection=selection)
+
+    assert str(result.layer.face_color_mode) == "direct"
+    assert np.allclose(result.layer.face_color, np.asarray([to_rgba("#00FFFF")] * selection.loaded_count))
+    assert len(result.warnings) == 1
+    assert "categorical coloring is disabled" in result.warnings[0]
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_returns_sampled_warning() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
+    selection = make_points_selection(
+        ["AAMP", "AXL"],
+        selected_values=("AAMP", "AXL"),
+        total_count=10,
+        render_point_budget=2,
+        is_sampled=True,
+        warning="Showing 2 of 10 selected points.",
+    )
+    adapter = ViewerAdapter(DummyViewer())
+
+    result = adapter._ensure_points_layer_from_selection(identity, selection=selection)
+
+    assert result.warnings == ("Showing 2 of 10 selected points.",)
 
 
 def test_viewer_adapter_ensure_labels_loaded_adds_layer_and_registers_binding(sdata_blobs) -> None:

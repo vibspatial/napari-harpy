@@ -1747,6 +1747,13 @@ Done when:
 
 Goal: convert an already computed `PointsValueSelection` into one napari `Points` layer without doing source validation, value-table construction, or Dask reads in the adapter layer-update path.
 
+Status: implemented.
+
+Implementation:
+
+- `src/napari_harpy/viewer/adapter.py`;
+- `tests/test_viewer_adapter.py`.
+
 Includes:
 
 - `PointsLayerBinding` with `element_type="points"` and `index_column`;
