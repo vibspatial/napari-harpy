@@ -71,6 +71,7 @@ def _example_selection(**overrides: object) -> PointsValueSelection:
         "index_column": "gene",
         "selected_values": ("AAMP", "AXL"),
         "selected_value_ids": (0, 1),
+        "selection_mode": "values",
         "total_count": 3,
         "render_point_budget": 100_000,
         "is_sampled": False,
@@ -236,6 +237,7 @@ def test_points_value_selection_records_display_payload() -> None:
     assert isinstance(selection.features["gene"].dtype, pd.CategoricalDtype)
     assert selection.selected_values == ("AAMP", "AXL")
     assert selection.selected_value_ids == (0, 1)
+    assert selection.selection_mode == "values"
     assert selection.total_count == 3
     assert selection.loaded_count == 3
     assert selection.render_point_budget == 100_000
@@ -290,6 +292,7 @@ def test_points_value_selection_accepts_empty_exact_result() -> None:
         ({"selected_values": ("AAMP", "AAMP"), "selected_value_ids": (0, 1)}, "duplicates"),
         ({"selected_value_ids": (0, -1)}, "selected_value_ids"),
         ({"selected_value_ids": (0,)}, "same length"),
+        ({"selection_mode": "everything"}, "selection_mode"),
         ({"total_count": -1}, "total_count"),
         ({"features": _example_features(["AAMP"], [0])}, "loaded rows"),
         ({"render_point_budget": 0}, "render_point_budget"),
@@ -609,6 +612,7 @@ def test_load_points_loads_exact_selection_with_yx_coordinates_and_features() ->
     assert selection.features["value_id"].tolist() == [0, 0]
     assert selection.selected_values == ("AAMP",)
     assert selection.selected_value_ids == (0,)
+    assert selection.selection_mode == "values"
     assert selection.total_count == 2
     assert selection.loaded_count == 2
     assert selection.is_sampled is False
@@ -626,6 +630,7 @@ def test_load_points_deduplicates_and_orders_requested_values_by_value_id() -> N
 
     assert selection.selected_values == ("AAMP", "AXL")
     assert selection.selected_value_ids == (0, 1)
+    assert selection.selection_mode == "values"
     assert selection.total_count == 4
     assert set(selection.features["gene"].tolist()) == {"AAMP", "AXL"}
 
@@ -640,6 +645,7 @@ def test_load_points_all_selects_all_values_in_value_id_order() -> None:
 
     assert selection.selected_values == ("A", "B", "C")
     assert selection.selected_value_ids == (0, 1, 2)
+    assert selection.selection_mode == "all"
     assert selection.total_count == 4
     assert selection.loaded_count == 4
     assert set(selection.features["gene"].tolist()) == {"A", "B", "C"}
@@ -654,6 +660,7 @@ def test_load_points_accepts_empty_selection() -> None:
     assert selection.features.empty
     assert selection.selected_values == ()
     assert selection.selected_value_ids == ()
+    assert selection.selection_mode == "values"
     assert selection.total_count == 0
     assert selection.loaded_count == 0
     assert selection.is_sampled is False

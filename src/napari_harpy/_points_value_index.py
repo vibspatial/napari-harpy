@@ -124,6 +124,8 @@ class PointsValueSelection:
         Normalized selected values represented by this selection.
     selected_value_ids
         Integer value ids corresponding one-to-one with `selected_values`.
+    selection_mode
+        Whether the caller requested explicit values or all available values.
     total_count
         Number of selected source points before render-budget sampling.
     render_point_budget
@@ -140,6 +142,7 @@ class PointsValueSelection:
     index_column: str
     selected_values: tuple[str, ...]
     selected_value_ids: tuple[int, ...]
+    selection_mode: Literal["values", "all"]
     total_count: int
     render_point_budget: int
     is_sampled: bool
@@ -182,6 +185,8 @@ class PointsValueSelection:
             raise ValueError("Points value selection `selected_values` must not contain duplicates.")
         if len({int(value_id) for value_id in self.selected_value_ids}) != len(self.selected_value_ids):
             raise ValueError("Points value selection `selected_value_ids` must not contain duplicates.")
+        if self.selection_mode not in {"values", "all"}:
+            raise ValueError("Points value selection `selection_mode` must be 'values' or 'all'.")
 
         _validate_non_negative_integer("total_count", self.total_count)
         _validate_positive_integer("render_point_budget", self.render_point_budget)
@@ -381,6 +386,7 @@ def load_points(
     _validate_positive_integer("render_point_budget", render_point_budget)
     render_point_budget = int(render_point_budget)
 
+    selection_mode: Literal["values", "all"] = "all" if isinstance(values, str) and values == "all" else "values"
     selected_values_table = _resolve_selected_values(value_table, values)
     selected_values = tuple(str(value) for value in selected_values_table[VALUE_COLUMN].to_numpy())
     selected_value_ids = tuple(int(value_id) for value_id in selected_values_table[VALUE_ID_COLUMN].to_numpy())
@@ -392,6 +398,7 @@ def load_points(
             validated=validated,
             selected_values=selected_values,
             selected_value_ids=selected_value_ids,
+            selection_mode=selection_mode,
             total_count=total_count,
             render_point_budget=render_point_budget,
             is_sampled=False,
@@ -425,6 +432,7 @@ def load_points(
         validated=validated,
         selected_values=selected_values,
         selected_value_ids=selected_value_ids,
+        selection_mode=selection_mode,
         total_count=total_count,
         render_point_budget=render_point_budget,
         is_sampled=is_sampled,
@@ -510,6 +518,7 @@ def _selection_from_points_frame(
     validated: _ValidatedPointsElement,
     selected_values: tuple[str, ...],
     selected_value_ids: tuple[int, ...],
+    selection_mode: Literal["values", "all"],
     total_count: int,
     render_point_budget: int,
     is_sampled: bool,
@@ -536,6 +545,7 @@ def _selection_from_points_frame(
         index_column=validated.index_column,
         selected_values=selected_values,
         selected_value_ids=selected_value_ids,
+        selection_mode=selection_mode,
         total_count=total_count,
         render_point_budget=render_point_budget,
         is_sampled=is_sampled,
