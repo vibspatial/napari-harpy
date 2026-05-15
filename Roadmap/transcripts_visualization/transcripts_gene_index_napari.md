@@ -702,6 +702,96 @@ Selected values should already come from `values.parquet`. If a selected value i
 
 The UI should make this rare by only allowing selections resolved from the cache-backed value search box. If the error still happens, surface it as a cache/selection consistency problem and ask the user to refresh the selection or rebuild the cache.
 
+## Reader Return Object
+
+Use a generic value-index return object:
+
+```python
+@dataclass(frozen=True, kw_only=True)
+class TranscriptValueIndexSelection:
+    coordinates: np.ndarray
+    features: pd.DataFrame
+    selected_values: tuple[str, ...]
+    selected_value_ids: tuple[int, ...]
+    total_count: int
+    loaded_count: int
+    render_point_budget: int
+    is_sampled: bool
+    warning: str | None
+```
+
+`coordinates` is an `Nx2` `float32` array in napari display order:
+
+```text
+y, x
+```
+
+The cache stores source coordinate columns as `x` and `y`, but the reader returns coordinates already ordered for napari `Points`.
+
+`features` is a `pandas.DataFrame` with exactly `loaded_count` rows. Its row order must match `coordinates`. It must include:
+
+- the configured index column using its source column name, for example `gene`, `target`, or `probe`;
+- `value_id`.
+
+If the cache contains `transcript_id`, the reader should include it in `features` as well.
+
+`selected_values` contains the normalized unique selected values that were resolved against `values.parquet`. Duplicate requested values are removed before quota allocation and before reading. For `values="all"`, `selected_values` contains all values in `value_id` order.
+
+`selected_value_ids` contains the resolved `value_id` values in the same order as `selected_values`.
+
+`total_count` is the sum of `n_points` for all resolved selected values before render-budget sampling.
+
+`loaded_count` is the number of points returned. It must equal both `len(coordinates)` and `len(features)`. It is always `<= total_count`; when `is_sampled` is true, it is also `<= render_point_budget`.
+
+`is_sampled` is true when `total_count > render_point_budget`, and false when exact selected points are returned.
+
+`warning` is `None` for exact reads. For sampled reads, it should contain user-visible text such as:
+
+```text
+Showing 100,000 of 2,431,912 selected points.
+```
+
+Use small custom exception types for the reader:
+
+```python
+class TranscriptValueIndexError(Exception):
+    ...
+
+
+class TranscriptValueIndexInvalidCacheError(TranscriptValueIndexError):
+    ...
+
+
+class TranscriptValueIndexInvalidSelectionError(TranscriptValueIndexError, ValueError):
+    ...
+
+
+class TranscriptValueIndexUnknownValueError(TranscriptValueIndexInvalidSelectionError):
+    ...
+
+
+class TranscriptValueIndexReadError(TranscriptValueIndexError):
+    ...
+```
+
+Expected error behavior:
+
+- unknown selected value: raise `TranscriptValueIndexUnknownValueError`;
+- missing or invalid metadata, missing required files, schema mismatch, or count mismatch: raise `TranscriptValueIndexInvalidCacheError`;
+- invalid reader arguments, such as `render_point_budget <= 0`: raise `TranscriptValueIndexInvalidSelectionError`;
+- Parquet IO or read failure: raise `TranscriptValueIndexReadError`.
+
+An empty selected value list should return an empty exact selection:
+
+```text
+coordinates.shape == (0, 2)
+features has 0 rows
+total_count == 0
+loaded_count == 0
+is_sampled == false
+warning is None
+```
+
 ## Render Budget And Sampling Policy
 
 The default runtime render budget should start at:
@@ -735,6 +825,8 @@ Showing 100,000 of 2,431,912 selected points.
 Recommended sampling policy:
 
 The MVP default is proportional sampling by point count, with a minimum of one point per selected value when possible. This preserves the visual meaning of density while avoiding complete disappearance of selected rare values in sampled previews.
+
+Before quota allocation, resolve selected values to unique `value_id` values. Duplicate selected values are ignored after the first occurrence, and points are never duplicated in the returned preview.
 
 1. Allocate a sample quota per selected value, proportional to its point count.
 2. If `number_of_selected_values <= render_point_budget`, give every selected value at least one point when possible, then distribute the remaining budget proportionally.
@@ -791,8 +883,8 @@ The MVP should create or update one napari `Points` layer.
 Layer behavior:
 
 - layer name: `transcripts` or `transcripts: selected values`;
-- data: `Nx2` array from `y, x` or `x, y`, matching the coordinate convention used elsewhere in Harpy;
-- features: at least the configured index column and optionally `value_id`;
+- data: `Nx2` array in napari display order `y, x`;
+- features: at least the configured index column and `value_id`, plus `transcript_id` when present in the cache;
 - face color: categorical by the configured index column for small selections;
 - warning: displayed when the layer is sampled.
 
@@ -889,7 +981,7 @@ Includes:
 
 - cache path identity: one cache per points element versus one cache per points element plus index column;
 - generic naming: use `value` internally and on disk while keeping `gene` as the default user-facing index column;
-- coordinate order for napari: explicit `y, x` or `x, y`;
+- coordinate order for napari: `y, x`;
 - first-pass sampling behavior for selections above `render_point_budget`;
 - basic cache lifecycle: temporary build path, final cache path, rebuild replacement.
 
@@ -1053,7 +1145,7 @@ Includes:
 - compute total selected point count before reading data;
 - read only listed row groups;
 - return a `TranscriptValueIndexSelection`;
-- include coordinates, features, selected values, loaded count, total count, and sampled flag.
+- include coordinates, features, selected values, selected value ids, loaded count, total count, render budget, sampled flag, and warning text.
 
 Tests:
 
@@ -1062,7 +1154,9 @@ Tests:
 - unknown value raises;
 - exact load returns all selected rows;
 - reader does not use Dask;
-- features include the configured index column.
+- coordinates are returned as `float32` in napari `y, x` order;
+- features include the configured index column and `value_id`;
+- empty selections return an empty exact result.
 
 Done when:
 
@@ -1106,8 +1200,8 @@ Includes:
 
 - helper such as `add_transcript_value_points_layer`;
 - create or update one existing layer;
-- use explicit coordinate order;
-- attach the configured index column and optionally `value_id`;
+- use the reader's `y, x` coordinates directly;
+- attach the configured index column and `value_id`, plus `transcript_id` when present;
 - apply categorical coloring for small selections;
 - set point size, opacity, name, and metadata;
 - surface sampled warning.
@@ -1219,6 +1313,11 @@ Suggested objects:
 TRANSCRIPT_VALUE_INDEX_SCHEMA_VERSION
 TranscriptValueIndexCache
 TranscriptValueIndexSelection
+TranscriptValueIndexError
+TranscriptValueIndexInvalidCacheError
+TranscriptValueIndexInvalidSelectionError
+TranscriptValueIndexUnknownValueError
+TranscriptValueIndexReadError
 build_transcript_value_index_cache_for_points_element
 load_transcripts_for_values
 add_transcript_value_points_layer
