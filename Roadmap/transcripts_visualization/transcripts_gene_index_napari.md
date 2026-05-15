@@ -228,7 +228,6 @@ Public API names should also be generic:
 - `PointsValueTable`;
 - `build_points_value_index_cache_for_points_element`;
 - `load_points`;
-- `add_or_update_points_layer`;
 - `POINTS_VALUE_INDEX_SCHEMA_VERSION`.
 
 napari-visible features should use the selected source column name where possible. The reader can work with generic value data internally, but the layer should expose the semantic column selected by the user:
@@ -814,6 +813,7 @@ class PointsValueSelection:
     index_column: str
     selected_values: tuple[str, ...]
     selected_value_ids: tuple[int, ...]
+    selection_mode: Literal["values", "all"]
     total_count: int
     render_point_budget: int
     is_sampled: bool
@@ -848,6 +848,15 @@ Do not include `transcript_id` in `features` for the MVP. If picked-point canoni
 `selected_values` contains the normalized unique selected values that were resolved against the current value table. Duplicate requested values are removed before sampling and before reading. For `values="all"`, `selected_values` contains all values in `value_id` order.
 
 `selected_value_ids` contains the resolved `value_id` values in the same order as `selected_values`.
+
+`selection_mode` records whether the caller requested specific values or all values:
+
+```text
+values=[...]   -> selection_mode="values"
+values="all"  -> selection_mode="all"
+```
+
+This keeps the napari layer integration from needing the original `values` request separately. Layer naming can distinguish "all values" from "a manually selected list that happens to contain every value" by reading `selection.selection_mode`.
 
 `total_count` is the sum of `n_points` for all resolved selected values before render-budget sampling.
 
@@ -1070,7 +1079,7 @@ Point visual defaults:
 size: 1.0
 opacity: 0.8
 symbol: "disc"
-edge_width: 0
+border_width: 0
 solid_color: "#00FFFF"
 ```
 
@@ -1106,7 +1115,7 @@ src/napari_harpy/_points_value_index.py
 
 src/napari_harpy/viewer/adapter.py
   Points-layer binding support.
-  Add/update the points value-selection Points layer via `add_or_update_points_layer`.
+  Update the points value-selection Points layer from a computed `PointsValueSelection`.
 
 src/napari_harpy/widgets/viewer/transcript_value_index_controller.py
   UI state machine.
@@ -1683,6 +1692,7 @@ def load_points(
 - reject unknown selected values with `ValueError`;
 - `values="all"` selects all values in `value_id` order;
 - preserve resolved `selected_values` and `selected_value_ids` in `value_id` order;
+- set `selection_mode="all"` when `values == "all"`, otherwise `selection_mode="values"`;
 - compute `total_count` from `value_table.n_points` before materializing selected rows;
 - filter source rows before any sampling;
 - normalize source index values during filtering so rows such as `" AAMP "` match selected value `"AAMP"`;
@@ -1703,6 +1713,7 @@ result = result.iloc[:render_point_budget]
 - set `is_sampled = total_count > render_point_budget`;
 - sampled results must include user-visible warning text;
 - exact results must have `warning=None`;
+- returned `PointsValueSelection` must carry `selection_mode`;
 - returned coordinates are a NumPy `float32` array with shape `N x 2` in napari order `y, x`;
 - returned features are a pandas DataFrame with exactly:
   - configured `<index_column>` as categorical;
@@ -1725,7 +1736,8 @@ Tests:
 - coordinates are returned as `float32` in napari `y, x` order;
 - features include the configured index column as categorical and `uint32` `value_id`;
 - empty selections return an empty exact result;
-- `values="all"` works and samples when needed.
+- `values="all"` works, samples when needed, and returns `selection_mode="all"`;
+- explicit selected-value lists return `selection_mode="values"`.
 
 Done when:
 
@@ -1733,46 +1745,50 @@ Done when:
 
 ### Slice 5: napari Points Layer Integration
 
-Goal: convert a reader result into one napari `Points` layer.
+Goal: convert an already computed `PointsValueSelection` into one napari `Points` layer without doing source validation, value-table construction, or Dask reads in the adapter layer-update path.
 
 Includes:
 
-- helper `add_or_update_points_layer`;
 - `PointsLayerBinding` with `element_type="points"` and `index_column`;
 - no points `primary`/`styled` role split; the value-selection points layer is always the displayed, index-colored layer;
-- concrete `ViewerAdapter` API:
+- concrete `ViewerAdapter` layer-update API:
 
 ```python
 @dataclass(frozen=True)
 class PointsLayerUpdateResult:
     layer: Points
+    created: bool
     warnings: tuple[str, ...] = ()
 
 
-def add_or_update_points_layer(
+def _ensure_points_layer_from_selection(
     self,
-    selection: PointsValueSelection,
-    *,
+    sdata: SpatialData,
     points_name: str,
-    sdata: SpatialData | None = None,
-    coordinate_system: str | None = None,
-    all_values_selected: bool = False,
+    coordinate_system: str,
+    *,
+    selection: PointsValueSelection,
 ) -> PointsLayerUpdateResult:
     ...
 ```
 
+- this helper is adapter-internal/private because Slice 6 should own async read orchestration;
 - `points_name` becomes `PointsLayerBinding.element_name`;
 - `selection.index_column` becomes `PointsLayerBinding.index_column`;
-- `all_values_selected` is used only for layer naming and does not change layer identity;
-- returned warnings include `selection.warning` when sampled;
-- returned warnings include the categorical-coloring warning when selected value count exceeds 102;
-- return the created or updated layer so the controller can activate or inspect it;
+- `selection.selection_mode == "all"` affects layer naming directly; no separate request-mode argument is needed;
+- `_ensure_points_layer_from_selection` performs only napari-safe layer work:
+  - create or update one napari `Points` layer;
+  - register new layers with `PointsLayerBinding`;
+  - update data, features, name, and colors from the already computed `PointsValueSelection`;
+  - return `PointsLayerUpdateResult` with the layer, created flag, and warnings;
+- this helper must not call `validate_points_element_for_value_selection`, `build_points_value_table`, or `load_points`;
+- Slice 6/controller will run validation, direct value-table construction, and `load_points` asynchronously, then call this helper on the main Qt thread after stale-job checks;
 - layer lookup and update behavior:
   - find an existing registered matching points layer through `LayerBindingRegistry`, not by layer name alone;
   - match by source identity, coordinate system, and `index_column`;
   - ignore unregistered same-name layers;
-  - if a matching registered layer exists, update the same layer object;
-  - if no matching registered layer exists, create a new napari `Points` layer and register it;
+  - if a matching registered layer exists, update the same layer object and set `created=False`;
+  - if no matching registered layer exists, create a new napari `Points` layer, register it, and set `created=True`;
   - preserve user-toggled visibility when updating;
   - do not reset the camera;
   - update layer data, features, name, and colors every time;
@@ -1797,13 +1813,14 @@ all values:
   <points_name>: all <index_column> values
 ```
 
+- use the all-values name when `selection.selection_mode == "all"`;
 - visual defaults:
 
 ```text
 size: 1.0
 opacity: 0.8
 symbol: "disc"
-edge_width: 0
+border_width: 0
 solid_color: "#00FFFF"
 ```
 
@@ -1817,21 +1834,24 @@ solid_color: "#00FFFF"
 - warning behavior:
   - include `selection.warning` when sampled;
   - include categorical-coloring warning when selected value count exceeds 102;
-  - the helper returns warnings; Slice 6/controller is responsible for placing them in the status card.
+  - the adapter returns warnings; Slice 6/controller is responsible for placing them in the status card.
 
 Tests:
 
-- creates layer when missing;
-- updates same layer on repeated calls;
-- changing from one selected value to another replaces the existing layer instead of creating a second layer;
-- does not create one layer per value;
 - registry uses `PointsLayerBinding` with `element_type="points"` and `index_column`;
 - points bindings do not use primary/styled roles;
+- `_ensure_points_layer_from_selection` does not validate/build a value table/read Dask data;
+- creates layer when missing and returns `created=True`;
+- updates same layer on repeated calls and returns `created=False`;
+- changing from one selected value to another replaces the existing layer instead of creating a second layer;
+- does not create one layer per value;
 - ignores unregistered same-name layers;
+- result returns layer, created flag, and warnings;
 - features are attached;
 - data uses `selection.coordinates` without coordinate reordering;
 - updating preserves visibility and does not reset the camera;
 - layer names cover empty, one-value, multi-value, and all-values selections;
+- all-values naming is driven by `selection.selection_mode`;
 - visual defaults are applied;
 - categorical coloring is used for up to 102 selected values;
 - solid coloring is used above 102 selected values;
@@ -1839,7 +1859,7 @@ Tests:
 
 Done when:
 
-- code can display exact or sampled direct selections in napari through a thin helper.
+- code can display exact or sampled direct selections in napari through `ViewerAdapter._ensure_points_layer_from_selection`.
 
 ### Slice 6: Viewer UI Integration
 
@@ -2052,10 +2072,16 @@ DEFAULT_RANDOM_STATE
 POINTS_VALUE_INDEX_SCHEMA_VERSION
 PointsValueTable
 PointsValueSelection
-PointsLayerBinding
 load_points
 build_points_value_table
-add_or_update_points_layer
+```
+
+Adapter-side points layer objects:
+
+```text
+PointsLayerBinding
+PointsLayerUpdateResult
+ViewerAdapter._ensure_points_layer_from_selection
 ```
 
 Optional cache objects:
