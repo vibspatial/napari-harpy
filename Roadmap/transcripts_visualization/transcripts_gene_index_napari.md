@@ -227,7 +227,7 @@ Public API names should also be generic:
 - `TranscriptValueSelection`;
 - `TranscriptValueTable`;
 - `build_transcript_value_index_cache_for_points_element`;
-- `load_transcripts_for_values_direct`;
+- `load_transcripts`;
 - `add_transcript_value_points_layer`;
 - `TRANSCRIPT_VALUE_INDEX_SCHEMA_VERSION`.
 
@@ -748,7 +748,7 @@ The shuffled order is best effort. It is good enough to make the first row group
 Recommended direct no-cache reader entry point:
 
 ```python
-def load_transcripts_for_values_direct(
+def load_transcripts(
     sdata: SpatialData,
     points_name: str,
     values: Sequence[str] | Literal["all"],
@@ -1646,25 +1646,68 @@ Goal: load selected values directly from the Dask dataframe.
 
 Includes:
 
+- public direct reader:
+
+```python
+def load_transcripts(
+    validated: _ValidatedPointsElement,
+    value_table: TranscriptValueTable,
+    values: Sequence[str] | Literal["all"],
+    *,
+    render_point_budget: int = DEFAULT_RENDER_POINT_BUDGET,
+    random_state: int | None = DEFAULT_RANDOM_STATE,
+) -> TranscriptValueSelection:
+    ...
+```
+
+- `validated.index_column` must match `value_table.index_column`;
+- `render_point_budget` must be a positive integer;
+- normalize requested values with `normalize_index_value`;
+- remove duplicate requested values after normalization;
 - resolve selected values against the direct value table;
-- reject unknown selected values;
-- compute total selected point count before materializing rows;
+- reject unknown selected values with `ValueError`;
+- `values="all"` selects all values in `value_id` order;
+- preserve resolved `selected_values` and `selected_value_ids` in `value_id` order;
+- compute `total_count` from `value_table.n_points` before materializing selected rows;
+- filter source rows before any sampling;
+- normalize source index values during filtering so rows such as `" AAMP "` match selected value `"AAMP"`;
 - if `total_count <= render_point_budget`, compute exact selected rows;
-- if `total_count > render_point_budget`, filter selected rows first, then Dask-sample before compute;
+- if `total_count > render_point_budget`, filter selected rows first, then Dask-sample before compute:
+
+```python
+frac = render_point_budget / total_count
+selected = selected.sample(frac=frac, random_state=random_state)
+result = selected.compute()
+result = result.iloc[:render_point_budget]
+```
+
+- accept sampled undershoot from Dask partition rounding; the invariant is `loaded_count <= render_point_budget`, not exactly equal to the budget;
 - final-trim in memory to at most `render_point_budget`;
 - return `TranscriptValueSelection`;
-- include coordinates, features, selected values, selected value ids, loaded count, total count, render budget, sampled flag, and warning text.
+- set `is_sampled = total_count > render_point_budget`;
+- sampled results must include user-visible warning text;
+- exact results must have `warning=None`;
+- returned coordinates are a NumPy `float32` array with shape `N x 2` in napari order `y, x`;
+- returned features are a pandas DataFrame with exactly:
+  - configured `<index_column>` as categorical;
+  - `value_id` as integer, preferably `uint32`;
+- do not include `transcript_id` in returned features for the MVP.
 
 Tests:
 
 - one selected value;
 - multiple selected values;
+- duplicate requested values collapse after normalization;
+- requested values are normalized before lookup;
 - unknown value raises;
+- value-table/index-column mismatch raises;
+- `render_point_budget <= 0` raises;
 - exact load returns all selected rows;
 - sampled load returns at most `render_point_budget`;
+- sampled undershoot is accepted;
 - direct sampling filters before sampling;
 - coordinates are returned as `float32` in napari `y, x` order;
-- features include the configured index column and `value_id`;
+- features include the configured index column as categorical and `uint32` `value_id`;
 - empty selections return an empty exact result;
 - `values="all"` works and samples when needed.
 
@@ -1900,7 +1943,7 @@ TRANSCRIPT_VALUE_INDEX_SCHEMA_VERSION
 TranscriptValueTable
 TranscriptValueSelection
 TranscriptValuePointsLayerBinding
-load_transcripts_for_values_direct
+load_transcripts
 build_direct_value_table
 add_transcript_value_points_layer
 ```
