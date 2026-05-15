@@ -161,7 +161,7 @@ probe
 
 The implementation should use generic `value` terminology. If the optional cache is built later, the on-disk cache should use the same generic terminology. In this document, "value" means one normalized value from the configured index column.
 
-Direct mode should produce an in-memory value vocabulary table with the same logical schema as future `values.parquet`:
+Direct mode should produce an in-memory value table with the same logical schema as future `values.parquet`:
 
 ```text
 value_id: uint32
@@ -175,7 +175,7 @@ Represent this table with a small immutable object:
 
 ```python
 @dataclass(frozen=True, kw_only=True)
-class TranscriptValueVocabulary:
+class TranscriptValueTable:
     values: pd.DataFrame
     index_column: str
     total_count: int
@@ -189,7 +189,7 @@ value
 n_points
 ```
 
-`TranscriptValueVocabulary.__post_init__` should validate:
+`TranscriptValueTable.__post_init__` should validate:
 
 ```text
 values contains exactly value_id, value, n_points
@@ -225,7 +225,7 @@ Public API names should also be generic:
 
 - `TranscriptValueIndexCache`;
 - `TranscriptValueSelection`;
-- `TranscriptValueVocabulary`;
+- `TranscriptValueTable`;
 - `build_transcript_value_index_cache_for_points_element`;
 - `load_transcripts_for_values_direct`;
 - `add_transcript_value_points_layer`;
@@ -288,7 +288,7 @@ Object dtype handling:
 Categorical handling:
 
 - categorical values are normalized from their category labels;
-- unused categories do not appear in the value vocabulary or in `values.parquet` if the optional cache is built;
+- unused categories do not appear in the value table or in `values.parquet` if the optional cache is built;
 - category order is ignored;
 - normalized values are sorted lexicographically before assigning `value_id`.
 
@@ -316,7 +316,7 @@ all normalize to:
 "Actb"
 ```
 
-and therefore produce one row in the value vocabulary, and in `values.parquet` if the optional cache is built, with a combined `n_points`.
+and therefore produce one row in the value table, and in `values.parquet` if the optional cache is built, with a combined `n_points`.
 
 The direct reader and optional cache use normalized values as their selection contract. If the cache is built later, `values.parquet.value` is always the normalized value, not the raw source value.
 
@@ -469,7 +469,7 @@ Sort values lexicographically for deterministic `value_id` assignment in the fir
 The reader uses this file to:
 
 - resolve selected values to `value_id`;
-- reject selected values that are not present in the cache vocabulary;
+- reject selected values that are not present in the cache value table;
 - estimate the selected point count before reading data;
 - decide whether the selection should be exact or sampled.
 
@@ -576,7 +576,7 @@ The direct MVP flow is:
 
 1. The user selects the points element and index-value column.
 2. Harpy validates the selected points dataframe and selected index column.
-3. Harpy computes or refreshes the selectable value vocabulary directly from the source Dask dataframe.
+3. Harpy computes or refreshes the selectable value table directly from the source Dask dataframe.
 4. The user selects one or more values, or chooses all values.
 5. Harpy loads the direct selection, sampling before compute when the selected count exceeds `render_point_budget`.
 
@@ -800,7 +800,7 @@ def load_transcripts_for_values_from_cache(
 
 If implemented later, the cache-backed reader should use `pyarrow`, not Dask, in the interactive path.
 
-For direct mode, selected values should come from the direct value vocabulary computed from the selected points dataframe. For cache mode, selected values should come from `values.parquet`. If an unknown selected value reaches either reader, raise an error instead of warning and skipping it. This means the UI or controller allowed stale or invalid selection state to reach the reader, which is an internal consistency bug. Surface it as a selection consistency problem and ask the user to refresh the value list.
+For direct mode, selected values should come from the direct value table computed from the selected points dataframe. For cache mode, selected values should come from `values.parquet`. If an unknown selected value reaches either reader, raise an error instead of warning and skipping it. This means the UI or controller allowed stale or invalid selection state to reach the reader, which is an internal consistency bug. Surface it as a selection consistency problem and ask the user to refresh the value list.
 
 ## Reader Return Object
 
@@ -841,11 +841,11 @@ The source dataframe and optional cache store coordinate columns as `x` and `y`,
 
 The configured index-column feature contains the normalized string value for each point. In direct mode this comes from the filtered source dataframe after normalization; in cache mode this is populated by mapping `value_id` through `values.parquet`. For example, when `index_column == "gene"`, `features["gene"]` contains gene names such as `"MALAT1"`; `value_id` remains an internal/debug feature.
 
-Store the configured index-column feature as a pandas `Categorical` column whose categories are the normalized values from the current value vocabulary. This keeps repeated gene, target, or probe labels compact for large render budgets.
+Store the configured index-column feature as a pandas `Categorical` column whose categories are the normalized values from the current value table. This keeps repeated gene, target, or probe labels compact for large render budgets.
 
 Do not include `transcript_id` in `features` for the MVP. If picked-point canonical lookup is needed later, use a separate lookup path rather than carrying transcript identifiers in every rendered feature row.
 
-`selected_values` contains the normalized unique selected values that were resolved against the current value vocabulary. Duplicate requested values are removed before sampling and before reading. For `values="all"`, `selected_values` contains all values in `value_id` order.
+`selected_values` contains the normalized unique selected values that were resolved against the current value table. Duplicate requested values are removed before sampling and before reading. For `values="all"`, `selected_values` contains all values in `value_id` order.
 
 `selected_value_ids` contains the resolved `value_id` values in the same order as `selected_values`.
 
@@ -1128,7 +1128,7 @@ NO_POINTS_ELEMENT
   SpatialData is loaded, but no eligible points element is selected.
 
 LOADING_VALUES
-  The direct value vocabulary for the selected points element and index column is being computed.
+  The direct value table for the selected points element and index column is being computed.
 
 VALUES_READY
   The selected points element and index column are valid, and direct value selection can be used.
@@ -1237,7 +1237,7 @@ BUILDING_CACHE
 
 BUILD_FAILED
   Enable Build cache again.
-  Keep direct value search and visualization enabled when the direct value vocabulary is still valid.
+  Keep direct value search and visualization enabled when the direct value table is still valid.
   Show the build error in the status card.
 
 LOADING_SELECTION
@@ -1250,7 +1250,7 @@ LOADED_SELECTION
   Show loaded/sampled status in the status card.
 
 LOAD_FAILED
-  Re-enable Visualize selected values when the direct value vocabulary and selection are still valid.
+  Re-enable Visualize selected values when the direct value table and selection are still valid.
   Show the read or layer-update error in the status card.
 ```
 
@@ -1383,7 +1383,7 @@ If the value-index cache is implemented, the many-small-row-groups concern is ac
 
 ## Implementation Slices
 
-These slices split the MVP into implementation units with clear dependencies. The first slices intentionally establish contracts before the widget work begins, because the UI should depend on stable validation, value vocabulary, reader, and layer-update behavior.
+These slices split the MVP into implementation units with clear dependencies. The first slices intentionally establish contracts before the widget work begins, because the UI should depend on stable validation, value table, reader, and layer-update behavior.
 
 The direct no-cache path comes first. The value-index cache is deferred until we have measured whether direct Dask filtering is not good enough for the target datasets and storage backends.
 
@@ -1415,7 +1415,7 @@ Includes:
 
 Done when:
 
-- the implementation has enough fixed vocabulary and API shape to avoid renaming churn later.
+- the implementation has enough fixed terminology and API shape to avoid renaming churn later.
 
 ### Slice 1: Core Module Skeleton And Data Contracts
 
@@ -1439,7 +1439,7 @@ Includes:
   - `DEFAULT_RANDOM_STATE = 42`;
   - `TRANSCRIPT_VALUE_INDEX_SCHEMA_VERSION = "harpy-transcripts-value-index-0.1"`;
 - dataclasses or typed return objects:
-  - `TranscriptValueVocabulary`;
+  - `TranscriptValueTable`;
   - `TranscriptValueSelection`;
 - direct read job/config objects if useful;
 - error handling aligned with the existing codebase:
@@ -1449,7 +1449,7 @@ Includes:
 Tests:
 
 - basic object construction;
-- `TranscriptValueVocabulary` validates required columns;
+- `TranscriptValueTable` validates required columns;
 - `TranscriptValueSelection` validates coordinate shape/dtype, feature row count, required feature columns, and count invariants;
 - `ValueError` is raised for invalid dataclass inputs.
 
@@ -1575,25 +1575,58 @@ Done when:
 
 - the direct reader can fail early with clear errors before doing expensive work.
 
-### Slice 3: Direct Value Vocabulary And Counts
+### Slice 3: Direct Value Table And Counts
 
-Goal: compute the selectable value vocabulary directly from the selected Dask points dataframe.
+Goal: compute the selectable value table directly from the selected Dask points dataframe.
 
 Includes:
 
+- public value-table helper:
+
+```python
+def build_direct_value_table(
+    validated: _ValidatedPointsElement,
+) -> TranscriptValueTable:
+    ...
+```
+
+- input is a `_ValidatedPointsElement` from Slice 2;
+- use `validated.points[validated.index_column]`;
+- normalize values with the same `normalize_index_value` rules from Slice 2;
 - compute normalized value counts with Dask;
-- sort values deterministically;
-- assign stable `value_id`;
+- merge source values that normalize to the same string into one value;
+- exclude unused categorical categories;
+- raise `ValueError` if invalid values are encountered during value-table construction;
+- return a `TranscriptValueTable` with:
+
+```text
+value_id: uint32
+value: string
+n_points: uint64
+```
+
+- sort normalized values lexicographically by `value`;
+- assign `value_id` from `0..n_values-1` after sorting;
+- ensure `value_id` is deterministic for the same normalized value table;
+- ensure `total_count == sum(n_points) == validated.source_n_points`;
 - keep the value table in controller state for search and value resolution;
 - do not require `values.parquet`;
-- rerun or invalidate the value list when the points element or index column changes.
+- rerun or invalidate the value list when the selected `SpatialData` object, points element, or index column changes;
+- do not recompute the value table when only selected values change.
 
 Tests:
 
-- deterministic value id assignment;
-- correct point counts;
-- selected values come from the direct value vocabulary;
-- invalidating the selected points element or index column invalidates the old vocabulary.
+- whitespace-normalized duplicates are merged, for example `" AAMP "` and `"AAMP"`;
+- case is preserved, so `"ACTB"` and `"actb"` remain separate values;
+- counts are correct;
+- values are sorted lexicographically;
+- deterministic `value_id` assignment;
+- `value_id` has dtype `uint32`;
+- `n_points` has dtype `uint64`;
+- categorical input includes only observed values;
+- string and object input work;
+- invalid values still raise if they reach value-table construction;
+- `total_count == validated.source_n_points`.
 
 Done when:
 
@@ -1605,7 +1638,7 @@ Goal: load selected values directly from the Dask dataframe.
 
 Includes:
 
-- resolve selected values against the direct value vocabulary;
+- resolve selected values against the direct value table;
 - reject unknown selected values;
 - compute total selected point count before materializing rows;
 - if `total_count <= render_point_budget`, compute exact selected rows;
@@ -1674,12 +1707,12 @@ Includes:
 - controller module `src/napari_harpy/widgets/viewer/transcript_value_index_controller.py`;
 - explicit `TranscriptValueIndexUiState` enum;
 - immutable value-list and read job dataclasses for worker inputs;
-- controller-owned status message, status kind, current value vocabulary, and current selection;
+- controller-owned status message, status kind, current value table, and current selection;
 - points element selector;
 - index column selector;
 - numeric text-field `render_point_budget` control with default `100_000`, minimum `1_000`, and maximum `1_000_000`;
 - widget labels based on the selected index column rather than hard-coded "gene" wording;
-- direct value search and select control backed by the direct value vocabulary;
+- direct value search and select control backed by the direct value table;
 - visualize selected values button;
 - all-values option;
 - explicit UI state machine for `NO_SDATA`, `NO_POINTS_ELEMENT`, `LOADING_VALUES`, `VALUES_READY`, `LOADING_SELECTION`, `LOADED_SELECTION`, and `LOAD_FAILED`;
@@ -1714,7 +1747,7 @@ Goal: make the direct path reliable enough to iterate on real data.
 Includes:
 
 - fixture `SpatialData` with transcript points;
-- direct validate, value vocabulary, exact read, sampled read, and layer update flow;
+- direct validate, value table, exact read, sampled read, and layer update flow;
 - failure cases for invalid source data;
 - basic performance sanity checks on moderate synthetic data;
 - documentation updates or roadmap status notes.
@@ -1723,9 +1756,9 @@ Done when:
 
 - the direct MVP has a tested end-to-end path and clear known limitations.
 
-### Optional Cache Slice A: Cache Validator And Vocabulary Cache
+### Optional Cache Slice A: Cache Validator And Value Table Cache
 
-Goal: add the first useful optional cache artifact: the selectable value vocabulary and cache status contract.
+Goal: add the first useful optional cache artifact: the selectable value table and cache status contract.
 
 Includes:
 
@@ -1740,7 +1773,7 @@ Includes:
 
 Done when:
 
-- the UI can choose between direct vocabulary and a valid cache vocabulary.
+- the UI can choose between the direct value table and a valid cache value table.
 
 ### Optional Cache Slice B: Full Cache Builder With Data Shards
 
@@ -1826,7 +1859,7 @@ Status:
 The MVP should produce these implementation pieces:
 
 1. Source validator: validates a points element, coordinate columns, and a selected string/categorical index column.
-2. Direct value vocabulary: computes selectable values and point counts from the Dask points dataframe.
+2. Direct value table: computes selectable values and point counts from the Dask points dataframe.
 3. Direct reader: loads exact or sampled selected values from the Dask points dataframe, sampling before compute when needed.
 4. Viewer UI controls: lets the user choose the points element and index-value column, search/select values, set `render_point_budget`, and request visualization.
 5. napari layer integration: creates or updates one `Points` layer for the selected values, with sampled-state warning text when applicable.
@@ -1856,11 +1889,11 @@ DEFAULT_INDEX_COLUMN
 DEFAULT_RENDER_POINT_BUDGET
 DEFAULT_RANDOM_STATE
 TRANSCRIPT_VALUE_INDEX_SCHEMA_VERSION
-TranscriptValueVocabulary
+TranscriptValueTable
 TranscriptValueSelection
 TranscriptValuePointsLayerBinding
 load_transcripts_for_values_direct
-compute_transcript_value_vocabulary
+build_direct_value_table
 add_transcript_value_points_layer
 ```
 

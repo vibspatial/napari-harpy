@@ -17,7 +17,7 @@ from napari_harpy._transcript_value_index import (
     DEFAULT_Y,
     TRANSCRIPT_VALUE_INDEX_SCHEMA_VERSION,
     TranscriptValueSelection,
-    TranscriptValueVocabulary,
+    TranscriptValueTable,
     _ValidatedPointsElement,
     normalize_index_value,
     normalize_index_values,
@@ -35,7 +35,7 @@ class _DummySpatialData:
         return self._backed
 
 
-def _example_vocabulary(**overrides: object) -> TranscriptValueVocabulary:
+def _example_value_table(**overrides: object) -> TranscriptValueTable:
     values = {
         "values": pd.DataFrame(
             {
@@ -48,7 +48,7 @@ def _example_vocabulary(**overrides: object) -> TranscriptValueVocabulary:
         "total_count": 5,
     }
     values.update(overrides)
-    return TranscriptValueVocabulary(**values)
+    return TranscriptValueTable(**values)
 
 
 def _example_features(values: list[str] | None = None, value_ids: list[int] | None = None) -> pd.DataFrame:
@@ -118,14 +118,14 @@ def test_transcript_value_index_constants() -> None:
     assert TRANSCRIPT_VALUE_INDEX_SCHEMA_VERSION == "harpy-transcripts-value-index-0.1"
 
 
-def test_transcript_value_vocabulary_records_value_table() -> None:
-    vocabulary = _example_vocabulary()
+def test_transcript_value_table_records_value_table() -> None:
+    value_table = _example_value_table()
 
-    assert tuple(vocabulary.values.columns) == ("value_id", "value", "n_points")
-    assert vocabulary.values["value_id"].dtype == np.dtype("uint32")
-    assert vocabulary.values["n_points"].dtype == np.dtype("uint64")
-    assert vocabulary.index_column == "gene"
-    assert vocabulary.total_count == 5
+    assert tuple(value_table.values.columns) == ("value_id", "value", "n_points")
+    assert value_table.values["value_id"].dtype == np.dtype("uint32")
+    assert value_table.values["n_points"].dtype == np.dtype("uint64")
+    assert value_table.index_column == "gene"
+    assert value_table.total_count == 5
 
 
 @pytest.mark.parametrize(
@@ -196,9 +196,9 @@ def test_transcript_value_vocabulary_records_value_table() -> None:
         ({"index_column": ""}, "index_column"),
     ],
 )
-def test_transcript_value_vocabulary_rejects_invalid_values(overrides: dict[str, object], match: str) -> None:
+def test_transcript_value_table_rejects_invalid_values(overrides: dict[str, object], match: str) -> None:
     with pytest.raises(ValueError, match=match):
-        _example_vocabulary(**overrides)
+        _example_value_table(**overrides)
 
 
 def test_transcript_value_selection_records_display_payload() -> None:

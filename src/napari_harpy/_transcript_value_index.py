@@ -21,7 +21,7 @@ DEFAULT_RANDOM_STATE = 42
 VALUE_ID_COLUMN = "value_id"
 VALUE_COLUMN = "value"
 N_POINTS_COLUMN = "n_points"
-VALUE_VOCABULARY_COLUMNS = (VALUE_ID_COLUMN, VALUE_COLUMN, N_POINTS_COLUMN)
+VALUE_TABLE_COLUMNS = (VALUE_ID_COLUMN, VALUE_COLUMN, N_POINTS_COLUMN)
 VALUE_ID_DTYPE = np.dtype("uint32")
 N_POINTS_DTYPE = np.dtype("uint64")
 COORDINATE_DTYPE = np.dtype("float32")
@@ -50,8 +50,8 @@ class _ValidatedPointsElement:
 
 
 @dataclass(frozen=True, kw_only=True)
-class TranscriptValueVocabulary:
-    """In-memory value vocabulary for a selected transcript points column.
+class TranscriptValueTable:
+    """In-memory value table for a selected transcript points column.
 
     Parameters
     ----------
@@ -60,10 +60,10 @@ class TranscriptValueVocabulary:
         `value_id` must be `uint32`, `value` must contain unique normalized
         strings, and `n_points` must be `uint64`.
     index_column
-        Name of the source points column used to produce the value vocabulary,
+        Name of the source points column used to produce the value table,
         for example `gene`, `target`, or `probe`.
     total_count
-        Total number of source points represented by the vocabulary. Must equal
+        Total number of source points represented by the value table. Must equal
         `values["n_points"].sum()`.
     """
 
@@ -73,35 +73,35 @@ class TranscriptValueVocabulary:
 
     def __post_init__(self) -> None:
         if not isinstance(self.values, pd.DataFrame):
-            raise ValueError("Transcript value vocabulary `values` must be a pandas DataFrame.")
-        if tuple(self.values.columns) != VALUE_VOCABULARY_COLUMNS:
+            raise ValueError("Transcript value table `values` must be a pandas DataFrame.")
+        if tuple(self.values.columns) != VALUE_TABLE_COLUMNS:
             raise ValueError(
-                "Transcript value vocabulary `values` must contain exactly `value_id`, `value`, and `n_points` columns."
+                "Transcript value table `values` must contain exactly `value_id`, `value`, and `n_points` columns."
             )
         if not isinstance(self.index_column, str) or not self.index_column:
-            raise ValueError("Transcript value vocabulary `index_column` must be a non-empty string.")
+            raise ValueError("Transcript value table `index_column` must be a non-empty string.")
         _validate_non_negative_integer("total_count", self.total_count)
 
         if self.values[VALUE_ID_COLUMN].dtype != VALUE_ID_DTYPE:
-            raise ValueError("Transcript value vocabulary `value_id` column must have dtype uint32.")
+            raise ValueError("Transcript value table `value_id` column must have dtype uint32.")
         if self.values[N_POINTS_COLUMN].dtype != N_POINTS_DTYPE:
-            raise ValueError("Transcript value vocabulary `n_points` column must have dtype uint64.")
+            raise ValueError("Transcript value table `n_points` column must have dtype uint64.")
         if self.values[VALUE_ID_COLUMN].isna().any():
-            raise ValueError("Transcript value vocabulary `value_id` column must not contain missing values.")
+            raise ValueError("Transcript value table `value_id` column must not contain missing values.")
         if self.values[VALUE_COLUMN].isna().any():
-            raise ValueError("Transcript value vocabulary `value` column must not contain missing values.")
+            raise ValueError("Transcript value table `value` column must not contain missing values.")
         if self.values[N_POINTS_COLUMN].isna().any():
-            raise ValueError("Transcript value vocabulary `n_points` column must not contain missing values.")
+            raise ValueError("Transcript value table `n_points` column must not contain missing values.")
         if self.values[VALUE_ID_COLUMN].duplicated().any():
-            raise ValueError("Transcript value vocabulary `value_id` values must be unique.")
+            raise ValueError("Transcript value table `value_id` values must be unique.")
         if self.values[VALUE_COLUMN].duplicated().any():
-            raise ValueError("Transcript value vocabulary `value` values must be unique.")
+            raise ValueError("Transcript value table `value` values must be unique.")
         if not self.values[VALUE_COLUMN].map(lambda value: isinstance(value, str)).all():
-            raise ValueError("Transcript value vocabulary `value` column must contain strings.")
+            raise ValueError("Transcript value table `value` column must contain strings.")
 
         observed_total = int(self.values[N_POINTS_COLUMN].sum())
         if observed_total != self.total_count:
-            raise ValueError("Transcript value vocabulary `total_count` must equal the sum of `n_points`.")
+            raise ValueError("Transcript value table `total_count` must equal the sum of `n_points`.")
 
 
 @dataclass(frozen=True, kw_only=True)
