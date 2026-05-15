@@ -261,13 +261,11 @@ def validate_points_element_for_value_selection(
     _validate_numeric_column(points, y)
     _validate_index_column_dtype(points, index_column)
 
-    row_count, invalid_x, invalid_y, missing_index, empty_index, invalid_index, *transcript_checks = dask.compute(
+    row_count, invalid_x, invalid_y, index_value_errors, *transcript_checks = dask.compute(
         points.map_partitions(len, meta=("row_count", "int64")).sum(),
         points[x].map_partitions(_count_nonfinite_values, meta=("invalid_x", "int64")).sum(),
         points[y].map_partitions(_count_nonfinite_values, meta=("invalid_y", "int64")).sum(),
-        points[index_column].map_partitions(_count_missing_values, meta=("missing_index", "int64")).sum(),
-        points[index_column].map_partitions(_count_empty_index_values, meta=("empty_index", "int64")).sum(),
-        points[index_column].map_partitions(_count_invalid_index_values, meta=("invalid_index", "int64")).sum(),
+        points[index_column].map_partitions(_count_index_value_errors, meta=_index_value_error_meta()).sum(),
         *(
             (
                 points[transcript_id]
@@ -287,12 +285,10 @@ def validate_points_element_for_value_selection(
         raise ValueError(f"Column `{x}` contains missing, NaN, or infinite coordinate values.")
     if int(invalid_y) > 0:
         raise ValueError(f"Column `{y}` contains missing, NaN, or infinite coordinate values.")
-    if int(missing_index) > 0:
+    if int(index_value_errors["missing_index"]) > 0:
         raise ValueError(f"Column `{index_column}` contains missing index values.")
-    if int(empty_index) > 0:
-        raise ValueError(f"Column `{index_column}` contains empty index values after stripping whitespace.")
-    if int(invalid_index) > 0:
-        raise ValueError(f"Column `{index_column}` contains unsupported index values.")
+    if int(index_value_errors["invalid_index"]) > 0:
+        raise ValueError(f"Column `{index_column}` contains invalid index values.")
 
     if transcript_id is not None:
         missing_transcript_id, unique_transcript_id_count = transcript_checks
@@ -417,22 +413,39 @@ def _count_missing_values(values: pd.Series) -> int:
     return int(values.isna().sum())
 
 
-def _count_empty_index_values(values: pd.Series) -> int:
-    count = 0
-    for value in values:
-        if _is_missing_scalar(value) or _is_unsupported_index_value(value):
-            continue
-        if not str(value).strip():
-            count += 1
-    return count
+def _index_value_error_meta() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "missing_index": pd.Series(dtype="int64"),
+            "invalid_index": pd.Series(dtype="int64"),
+        }
+    )
+
+
+def _count_index_value_errors(values: pd.Series) -> pd.DataFrame:
+    missing_count = int(values.isna().sum())
+    invalid_count = _count_invalid_index_values(values)
+    return pd.DataFrame(
+        {
+            "missing_index": pd.Series([missing_count], dtype="int64"),
+            "invalid_index": pd.Series([invalid_count], dtype="int64"),
+        }
+    )
 
 
 def _count_invalid_index_values(values: pd.Series) -> int:
+    if isinstance(values.dtype, pd.CategoricalDtype):
+        categories = values.cat.remove_unused_categories().cat.categories
+        invalid_categories = [value for value in categories if _is_invalid_index_value(value)]
+        if not invalid_categories:
+            return 0
+        return int(values.isin(invalid_categories).sum())
+    if is_string_dtype(values.dtype) and not is_object_dtype(values.dtype):
+        return int(values.dropna().str.strip().eq("").sum())
+
     count = 0
     for value in values:
-        if _is_missing_scalar(value):
-            continue
-        if _is_unsupported_index_value(value):
+        if _is_invalid_index_value(value):
             count += 1
     return count
 
@@ -459,3 +472,11 @@ def _is_unsupported_index_value(value: object) -> bool:
     if isinstance(value, list | tuple | dict | set | frozenset):
         return True
     return not isinstance(value, str)
+
+
+def _is_invalid_index_value(value: object) -> bool:
+    if _is_missing_scalar(value):
+        return False
+    if _is_unsupported_index_value(value):
+        return True
+    return not str(value).strip()

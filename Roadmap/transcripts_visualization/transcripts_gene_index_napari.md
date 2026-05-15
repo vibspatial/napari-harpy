@@ -1524,7 +1524,8 @@ class _ValidatedPointsElement:
 - compute `source_n_points` and reject empty dataframes;
 - reject missing, NaN, or infinite coordinate values;
 - normalize index values;
-- reject missing, empty, invalid, or unsupported index values;
+- reject missing index values separately;
+- reject blank-after-stripping and unsupported index values as invalid index values;
 - if `transcript_id` is provided:
   - require the column exists;
   - reject missing `transcript_id` values;
