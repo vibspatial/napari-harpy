@@ -884,23 +884,85 @@ A possible alternative is a more balanced per-value sample, where rare values ge
 
 The MVP should create or update one napari `Points` layer.
 
-Layer behavior:
+Coordinate behavior:
 
-- layer name: `transcripts` or `transcripts: selected values`;
-- data: `Nx2` array in napari display order `y, x`;
-- features: the configured index column as a pandas categorical feature, plus `value_id`;
-- face color: categorical by the configured index column for small selections;
-- warning: displayed when the layer is sampled.
+- the reader returns coordinates as an `Nx2` `float32` array in napari display order `y, x`;
+- the napari helper uses `selection.coordinates` directly and must not reorder coordinates again;
+- coordinates are in the stored points coordinate system used to build the cache. Coordinate transform handling beyond that remains out of scope for the MVP.
 
-Important implementation detail:
+Layer identity and update behavior:
+
+- create or update one Harpy-owned transcript value-selection `Points` layer;
+- do not create one layer per value;
+- do not create one layer per visualization request;
+- changing the selected value set, for example from `gene=MALAT1` to `gene=TEST`, updates the same layer object by replacing its data, features, name, colors, and sampled status;
+- ignore unregistered napari layers even if they happen to have the same name.
+
+Use `LayerBindingRegistry` as the authoritative way to find the existing layer, following the existing viewer adapter pattern. Do not rely on napari layer names or metadata as the primary lookup contract.
+
+Add a transcript value-selection points binding to the registry. The exact class name can change, but the binding should capture:
 
 ```text
-Do not create one napari layer per value.
+layer: Points
+element_type: "points"
+points_role: "transcript_value_selection"
+sdata_id
+points_name
+coordinate_system: string | null
+index_column
+index_column_cache_key
 ```
 
-A single layer is easier to update, hide, remove, and later connect to a controller.
+The binding identity should not include `selected_values`. This is what lets repeated visualization requests replace the current selection in one layer instead of accumulating stale layers.
 
-For many selected values, categorical coloring may become visually noisy. The first version can still attach the configured value feature and use a simple color cycle, then refine the UI later.
+Layer naming:
+
+```text
+one selected value:
+  <points_name>: <index_column>=<value>
+
+multiple selected values:
+  <points_name>: <n> <index_column> values
+
+all values:
+  <points_name>: all <index_column> values
+```
+
+Keep sampled/exact state in the widget status card or layer metadata, not in the main layer name.
+
+Layer feature behavior:
+
+- `layer.data`: `selection.coordinates`;
+- `layer.features`: `selection.features`;
+- features contain the configured index column as a pandas categorical feature, plus `value_id`;
+- do not include `transcript_id` in layer features for the MVP.
+
+Point visual defaults:
+
+```text
+size: 1.0
+opacity: 0.8
+symbol: "disc"
+edge_width: 0
+solid_color: "#00FFFF"
+```
+
+Categorical coloring:
+
+- if `len(selection.selected_values) == 1`, use `solid_color`;
+- if `2 <= len(selection.selected_values) <= 102`, color categorically by `features[index_column]`;
+- use Harpy's existing `default_categorical_colors(n)` helper, which already falls through to Scanpy's `default_102` / `godsnot_102` palette for larger category counts;
+- category and palette order should follow `selection.selected_values`, which are ordered by `value_id`;
+- if `len(selection.selected_values) > 102`, disable categorical coloring and use `solid_color`;
+- base the categorical-coloring threshold on the number of resolved selected values, not only on values that happen to remain visible after sampling.
+
+When categorical coloring is disabled above 102 values, show a widget status-card warning such as:
+
+```text
+Selected 5,000 gene values. Categorical coloring is disabled above 102 values; point values remain available in layer features.
+```
+
+On update, preserve user-toggled visibility when possible and do not reset the camera.
 
 ## Why This Should Feel Snappy
 
@@ -1206,7 +1268,11 @@ Includes:
 - create or update one existing layer;
 - use the reader's `y, x` coordinates directly;
 - attach the configured index column as a pandas categorical feature, plus `value_id`;
-- apply categorical coloring for small selections;
+- register and find the layer through `LayerBindingRegistry`, not by layer name alone;
+- reuse the same registered layer when selected values change;
+- apply categorical coloring for `2..102` selected values with `default_categorical_colors(n)`;
+- use a single solid color for one selected value or more than 102 selected values;
+- surface a status-card warning when categorical coloring is disabled above 102 selected values;
 - set point size, opacity, name, and metadata;
 - surface sampled warning.
 
@@ -1214,8 +1280,12 @@ Tests:
 
 - creates layer when missing;
 - updates same layer on repeated calls;
+- changing from one selected value to another replaces the existing layer instead of creating a second layer;
 - does not create one layer per value;
+- ignores unregistered same-name layers;
 - features are attached;
+- categorical coloring is used for up to 102 selected values;
+- solid coloring is used above 102 selected values;
 - sampled warning metadata or status is present.
 
 Done when:
@@ -1322,6 +1392,7 @@ TranscriptValueIndexInvalidCacheError
 TranscriptValueIndexInvalidSelectionError
 TranscriptValueIndexUnknownValueError
 TranscriptValueIndexReadError
+TranscriptValuePointsLayerBinding
 build_transcript_value_index_cache_for_points_element
 load_transcripts_for_values
 add_transcript_value_points_layer
