@@ -171,6 +171,15 @@ n_points: uint64
 
 This table is a compact summary of the selected index column, not the full points dataframe. The UI uses it to populate value search, the direct reader uses it to resolve selected strings to `value_id`, and the returned layer features use it to attach compact `value_id` values. Keeping this schema aligned with future `values.parquet` lets the direct reader and optional cache reader share the same downstream napari layer path.
 
+Returned selections and napari layer features should include only the MVP feature columns:
+
+```text
+<index_column>: pandas categorical
+value_id: integer
+```
+
+Do not include `transcript_id` in returned features or layer features for the MVP.
+
 ### Terminology
 
 Use generic `value` terminology for storage, internal code, and public API names.
@@ -1375,6 +1384,7 @@ Includes:
 - generic naming: use `value` internally and on disk while keeping `gene` as the default user-facing index column;
 - coordinate order for napari: `y, x`;
 - first-pass sampling behavior for selections above `render_point_budget`;
+- returned/layer feature columns: configured `<index_column>` as categorical plus `value_id`, with no `transcript_id` for the MVP;
 - shared return object for direct and optional cache readers.
 
 Done when:
