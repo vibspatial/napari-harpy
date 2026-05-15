@@ -99,8 +99,8 @@ The MVP supports:
 - one points element, initially `sdata.points["transcripts"]`;
 - required coordinate columns, default `x="x"` and `y="y"`;
 - configurable string/categorical index column, default `gene="gene"`;
-- exact visualization when the selected subset is below a render threshold;
-- sampled visualization when the selected subset exceeds the threshold;
+- exact visualization when the selected subset is within the render budget;
+- sampled visualization when the selected subset exceeds the render budget;
 - one napari `Points` layer for the selected subset;
 - a minimal UI for choosing the points element, choosing the index-value column, building/rebuilding the cache, selecting cache-backed values, and visualizing the selected points.
 
@@ -371,7 +371,7 @@ transcript_id: string | null
 source_n_points: int
 n_values: int
 target_rows_per_row_group: int
-default_max_points: int
+default_render_point_budget: int
 shuffle_random_state: int | null
 shuffle_policy: string
 ```
@@ -564,7 +564,7 @@ Recommended tuning range:
 The default pairs well with:
 
 ```text
-max_points = 100_000
+render_point_budget = 100_000
 ```
 
 With those values, a large selected value needs about four row groups to reach the default preview size, while rare values still usually fit in one row group.
@@ -646,7 +646,7 @@ def build_transcript_value_index_cache_for_points_element(
     transcript_id: str | None = None,
     target_rows_per_row_group: int = 25_000,
     shuffle_random_state: int | None = 42,
-    default_max_points: int = 100_000,
+    default_render_point_budget: int = 100_000,
 ) -> TranscriptValueIndexCache:
     ...
 ```
@@ -681,8 +681,7 @@ def load_transcripts_for_values(
     cache_path: str | PathLike[str],
     values: Sequence[str] | Literal["all"],
     *,
-    max_points: int = 100_000,
-    sample: bool = True,
+    render_point_budget: int = 100_000,
     columns: Sequence[str] = ("x", "y", "value_id"),
 ) -> TranscriptValueIndexSelection:
     ...
@@ -695,33 +694,37 @@ Runtime flow:
 1. Load `metadata.json`, `values.parquet`, and `value_index.parquet`.
 2. Resolve selected values to `value_id`.
 3. Sum `n_points` for the selected values before reading data.
-4. If the selected count is `<= max_points`, read all row groups for those values.
-5. If the selected count is `> max_points`, read a best-effort shuffled preview.
+4. If the selected count is `<= render_point_budget`, read all row groups for those values.
+5. If the selected count is `> render_point_budget`, force a best-effort shuffled preview capped at `render_point_budget`.
 6. Return coordinates and features for one napari `Points` layer.
 
 Selected values should already come from `values.parquet`. If a selected value is not present in `values.parquet`, the reader should raise an error instead of warning and skipping it. That means the UI or controller allowed stale or invalid selection state to reach the reader, which is an internal consistency bug.
 
 The UI should make this rare by only allowing selections resolved from the cache-backed value search box. If the error still happens, surface it as a cache/selection consistency problem and ask the user to refresh the selection or rebuild the cache.
 
-## Sampling Policy
+## Render Budget And Sampling Policy
 
-The default threshold should start at:
+The default runtime render budget should start at:
 
 ```text
-max_points = 100_000
+render_point_budget = 100_000
 ```
 
-If the selected values contain at most `max_points` points:
+`render_point_budget` is the maximum number of points returned to napari for display. It is a hard runtime UI safety limit, not a physical Parquet read-size limit.
+
+If the selected values contain at most `render_point_budget` points:
 
 ```text
 show exact selected points
 ```
 
-If the selected values contain more than `max_points` points:
+If the selected values contain more than `render_point_budget` points:
 
 ```text
-show a best-effort shuffled preview and warn the user
+force a best-effort shuffled preview and warn the user
 ```
+
+The MVP should not expose `sample=False` or exact-at-any-cost loading. Selections above the render budget are always sampled before being returned to napari.
 
 The warning should include:
 
@@ -734,7 +737,7 @@ Recommended sampling policy:
 The MVP default is proportional sampling by point count, with a minimum of one point per selected value when possible. This preserves the visual meaning of density while avoiding complete disappearance of selected rare values in sampled previews.
 
 1. Allocate a sample quota per selected value, proportional to its point count.
-2. If the number of selected values is less than `max_points`, give each selected value at least one point when possible.
+2. If the number of selected values is less than `render_point_budget`, give each selected value at least one point when possible.
 3. For each value, read the first row groups in `value_shard` order until at least the quota is available.
 4. If the loaded rows exceed the quota, keep the first quota rows in physical cache order.
 5. Concatenate the sampled rows across values.
@@ -749,7 +752,7 @@ This is important. If we simply read every selected row and then sample, large v
 
 MVP read amplification tradeoff:
 
-The sampled output is capped by `max_points`, but the number of rows read from Parquet is not strictly capped. The reader loads whole Parquet row groups. If many selected values each have a tiny sample quota, reading the first row group for each value can load many more rows than the final displayed preview.
+The sampled output is capped by `render_point_budget`, but the number of rows read from Parquet is not strictly capped. The reader loads whole Parquet row groups. If many selected values each have a tiny sample quota, reading the first row group for each value can load many more rows than the final displayed preview.
 
 This is accepted for the MVP to keep the cache layout simple. If this becomes a practical problem, add a small-preview-shard optimization:
 
@@ -769,7 +772,7 @@ It should use the same count and sampling policy:
 ```text
 values = "all"
 total_count = sum(values_table.n_points)
-if total_count <= max_points:
+if total_count <= render_point_budget:
     show exact
 else:
     show sampled preview and warn
@@ -852,7 +855,7 @@ Those remain spatial-cache problems.
 - Gives an early user-visible transcript workflow.
 - Supports exact selected-value display when counts are modest.
 - Avoids scanning `points.parquet` for every value switch.
-- Gives predictable behavior through a hard render threshold.
+- Gives predictable behavior through a hard render budget.
 
 ### Cost
 
@@ -885,7 +888,7 @@ Includes:
 - cache path identity: one cache per points element versus one cache per points element plus index column;
 - generic naming: use `value` internally and on disk while keeping `gene` as the default user-facing index column;
 - coordinate order for napari: explicit `y, x` or `x, y`;
-- first-pass sampling behavior for selections above `max_points`;
+- first-pass sampling behavior for selections above `render_point_budget`;
 - basic cache lifecycle: temporary build path, final cache path, rebuild replacement.
 
 Done when:
@@ -1038,7 +1041,7 @@ Done when:
 
 ### Slice 6: Exact Runtime Reader
 
-Goal: load selected values below the threshold using PyArrow only.
+Goal: load selected values within the render budget using PyArrow only.
 
 Includes:
 
@@ -1065,7 +1068,7 @@ Done when:
 
 ### Slice 7: Sampled Runtime Reader
 
-Goal: load bounded best-effort shuffled previews when selected values exceed `max_points`.
+Goal: load bounded best-effort shuffled previews when selected values exceed `render_point_budget`.
 
 Includes:
 
@@ -1080,12 +1083,12 @@ Includes:
 
 Tests:
 
-- sampled result has at most `max_points`;
+- sampled result has at most `render_point_budget`;
 - sampled reads use the cache's shuffled row-group order;
 - rare selected values are preserved when possible;
 - all-values selection works;
 - duplicate selected values are handled predictably;
-- `max_points < number_of_selected_values` behavior is defined and tested.
+- `render_point_budget < number_of_selected_values` behavior is defined and tested.
 
 Done when:
 
@@ -1172,7 +1175,7 @@ Goal: reduce sampled-read amplification if large multi-value previews are too sl
 
 Problem:
 
-- sampled output is capped by `max_points`;
+- sampled output is capped by `render_point_budget`;
 - Parquet reads happen at row-group granularity;
 - when many selected values each need only a few points, reading one normal row group per value can load far more rows than are displayed.
 
@@ -1233,8 +1236,8 @@ A first implementation is successful when:
 - it validates cache availability and staleness before enabling visualization;
 - the value search box reads selectable values from `values.parquet`;
 - every data row group listed in `value_index.parquet` contains exactly one `value_id`;
-- selecting values below the threshold loads exact points;
-- selecting values above the threshold loads at most `max_points` points;
+- selecting values within the render budget loads exact points;
+- selecting values above the render budget loads at most `render_point_budget` points;
 - all-values selection is allowed and sampled when needed;
 - sampled results show a user-visible warning;
 - the napari integration updates one `Points` layer rather than creating many layers.
