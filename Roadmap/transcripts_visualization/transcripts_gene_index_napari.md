@@ -1461,6 +1461,13 @@ Done when:
 
 Goal: validate whether a selected points element can be visualized directly.
 
+Status: implemented.
+
+Implementation:
+
+- `src/napari_harpy/_transcript_value_index.py`;
+- `tests/test_transcript_value_index.py`.
+
 Includes:
 
 - public validation helper:
