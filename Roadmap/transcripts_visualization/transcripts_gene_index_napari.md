@@ -1156,8 +1156,9 @@ Do not expose a user-facing cancel button in the MVP. Build cancellation can be 
 default: 100_000
 minimum: 1_000
 maximum: 1_000_000
-step: 10_000
 ```
+
+Use a numeric text field with the sensible default prefilled. Validate the value before visualization; if it is missing, non-integer, or outside the allowed range, keep visualization disabled and show a status-card warning.
 
 Changing `render_point_budget` must not rebuild the cache and must not affect cache validity. It only affects the next visualization request. `metadata.json["default_render_point_budget"]` is build provenance and a suggested default, not the source of truth for the current UI setting.
 
@@ -1501,7 +1502,7 @@ Includes:
 - controller-owned status message, status kind, cache status, and current selection;
 - points element selector;
 - index column selector;
-- runtime `render_point_budget` control with default `100_000`, minimum `1_000`, maximum `1_000_000`, and step `10_000`;
+- numeric text-field `render_point_budget` control with default `100_000`, minimum `1_000`, and maximum `1_000_000`;
 - widget labels based on the selected index column rather than hard-coded "gene" wording;
 - create or rebuild cache button;
 - confirmation dialog before rebuilding an existing valid cache;
