@@ -815,10 +815,13 @@ class TranscriptValueSelection:
     selected_values: tuple[str, ...]
     selected_value_ids: tuple[int, ...]
     total_count: int
-    loaded_count: int
     render_point_budget: int
     is_sampled: bool
     warning: str | None
+
+    @property
+    def loaded_count(self) -> int:
+        return len(self.coordinates)
 ```
 
 `coordinates` is an `Nx2` `float32` array in napari display order:
@@ -848,7 +851,7 @@ Do not include `transcript_id` in `features` for the MVP. If picked-point canoni
 
 `total_count` is the sum of `n_points` for all resolved selected values before render-budget sampling.
 
-`loaded_count` is the number of points returned. It must equal both `len(coordinates)` and `len(features)`. It is always `<= total_count`; when `is_sampled` is true, it is also `<= render_point_budget`.
+`loaded_count` is a derived property, not a stored dataclass field. It is the number of points returned and should be computed from `len(coordinates)`. It must equal `len(features)`. It is always `<= total_count`; when `is_sampled` is true, it is also `<= render_point_budget`.
 
 `is_sampled` is true when `total_count > render_point_budget`, and false when exact selected points are returned.
 
@@ -1417,6 +1420,13 @@ Done when:
 ### Slice 1: Core Module Skeleton And Data Contracts
 
 Goal: create the standalone transcript value-selection module without building a cache.
+
+Status: implemented.
+
+Implementation:
+
+- `src/napari_harpy/_transcript_value_index.py`;
+- `tests/test_transcript_value_index.py`.
 
 Includes:
 
