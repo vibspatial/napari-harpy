@@ -1773,6 +1773,7 @@ def _ensure_points_layer_from_selection(
 ```
 
 - this helper is adapter-internal/private because Slice 6 should own async read orchestration;
+- `PointsLayerUpdateResult` is intentionally a layer-update result, not a data-load result: it should not include `selection` or `value_table`, because `selection` is already the input and `value_table` belongs to the controller/read state;
 - `points_name` becomes `PointsLayerBinding.element_name`;
 - `selection.index_column` becomes `PointsLayerBinding.index_column`;
 - `selection.selection_mode == "all"` affects layer naming directly; no separate request-mode argument is needed;
@@ -1870,25 +1871,32 @@ Includes:
 - controller module `src/napari_harpy/widgets/viewer/transcript_value_index_controller.py`;
 - explicit `PointsValueIndexUiState` enum;
 - immutable value-list and read job dataclasses for worker inputs;
-- controller-owned status message, status kind, current value table, and current selection;
-- controller-owned source state that pairs the validated points source with the current value table, rather than storing the derived value table on `_ValidatedPointsElement`;
+- controller-owned status message, status kind, current value-table load result, and current selection;
+- worker result dataclasses that keep Dask loading separate from napari layer updates:
 
 ```python
 @dataclass(frozen=True)
-class PointsValueSourceState:
+class PointsValueTableLoadResult:
     validated: _ValidatedPointsElement
-    value_table: PointsValueTable | None = None
+    value_table: PointsValueTable
 
     def __post_init__(self) -> None:
-        if self.value_table is None:
-            return
         if self.validated.index_column != self.value_table.index_column:
             raise ValueError(
                 "`validated.index_column` and `value_table.index_column` must match. "
                 f"Got {self.validated.index_column!r} and {self.value_table.index_column!r}."
             )
+
+
+
+@dataclass(frozen=True)
+class PointsLoadResult:
+    selection: PointsValueSelection
+    value_table: PointsValueTable
 ```
 
+- `PointsValueTableLoadResult` is the controller's cached current source/value-table state; do not store the derived value table on `_ValidatedPointsElement`;
+- `PointsLoadResult` is a controller/worker result for source data loading, while `PointsLayerUpdateResult` remains the adapter result for applying an already loaded selection to a napari layer;
 - points element selector;
 - index column selector;
 - numeric text-field `render_point_budget` control with default `100_000`, minimum `1_000`, and maximum `1_000_000`;
@@ -1898,8 +1906,11 @@ class PointsValueSourceState:
 - all-values option;
 - explicit UI state machine for `NO_SDATA`, `NO_POINTS_ELEMENT`, `LOADING_VALUES`, `VALUES_READY`, `LOADING_SELECTION`, `LOADED_SELECTION`, and `LOAD_FAILED`;
 - optional cache status display if cache helpers already exist;
-- run value-list computation asynchronously;
-- run selection reads asynchronously;
+- all Dask-heavy work must run off the Qt main thread;
+- the widget and adapter must not call `validate_points_element_for_value_selection`, `build_points_value_table`, or `load_points` directly on the main thread;
+- run value-list computation asynchronously in a worker;
+- run selection reads asynchronously in a worker;
+- after a read worker returns, call `ViewerAdapter._ensure_points_layer_from_selection` on the main Qt thread;
 - ignore stale async value/read results by job id;
 - no user-facing cancel button in the MVP;
 - progress/status phase text for value loading and read;
@@ -1910,8 +1921,11 @@ Tests:
 
 - widget initializes without requiring a cache;
 - value loading runs when points element or index column changes;
+- value loading is scheduled through a worker rather than executed synchronously by the widget;
 - value search is enabled when direct values are ready;
 - selected values trigger direct reader and layer update;
+- selection reads are scheduled through a worker rather than executed synchronously by the widget or adapter;
+- adapter layer update is called only after the selection read worker returns;
 - loading selection disables duplicate visualize requests;
 - stale async value/read worker results are ignored;
 - `render_point_budget` changes affect the next reader call without rebuilding anything;
@@ -1919,7 +1933,7 @@ Tests:
 
 Done when:
 
-- the user-facing direct workflow exists end to end.
+- the user-facing direct workflow exists end to end, with all Dask validation, value-table construction, and selected-point reads running off the Qt main thread.
 
 ### Slice 7: Integration Tests And Hardening
 
@@ -2110,7 +2124,8 @@ Suggested controller objects:
 
 ```text
 PointsValueIndexUiState
-PointsValueSourceState
+PointsValueTableLoadResult
+PointsLoadResult
 PointsValueIndexValueJob
 PointsValueIndexReadJob
 PointsValueIndexController
