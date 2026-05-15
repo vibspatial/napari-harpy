@@ -161,6 +161,16 @@ probe
 
 The implementation should use generic `value` terminology. If the optional cache is built later, the on-disk cache should use the same generic terminology. In this document, "value" means one normalized value from the configured index column.
 
+Direct mode should produce an in-memory value vocabulary table with the same logical schema as future `values.parquet`:
+
+```text
+value_id: uint32
+value: string
+n_points: uint64
+```
+
+This table is a compact summary of the selected index column, not the full points dataframe. The UI uses it to populate value search, the direct reader uses it to resolve selected strings to `value_id`, and the returned layer features use it to attach compact `value_id` values. Keeping this schema aligned with future `values.parquet` lets the direct reader and optional cache reader share the same downstream napari layer path.
+
 ### Terminology
 
 Use generic `value` terminology for storage, internal code, and public API names.
