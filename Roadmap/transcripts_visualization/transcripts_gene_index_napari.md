@@ -928,7 +928,7 @@ all values:
   <points_name>: all <index_column> values
 ```
 
-Keep sampled/exact state in the widget status card or layer metadata, not in the main layer name.
+Keep sampled/exact state in the widget status card or controller state, not in the main layer name. Do not use layer metadata as the source of truth for sampled/build/read state.
 
 Layer feature behavior:
 
@@ -964,6 +964,203 @@ Selected 5,000 gene values. Categorical coloring is disabled above 102 values; p
 
 On update, preserve user-toggled visibility when possible and do not reset the camera.
 
+## UI State Machine
+
+The transcript value-index UI should be driven by explicit states rather than ad hoc button toggles.
+
+Follow the existing napari-harpy controller pattern for this workflow. The state machine should live in a widget-local controller, not in `HarpyAppState` and not directly in the Qt widget class.
+
+Recommended module split:
+
+```text
+src/napari_harpy/_transcript_value_index.py
+  Pure cache builder, validator, reader, and dataclasses.
+  No QWidget logic.
+
+src/napari_harpy/viewer/adapter.py
+  Points-layer binding support.
+  Add/update the transcript value-selection Points layer.
+
+src/napari_harpy/widgets/viewer/transcript_value_index_controller.py
+  UI state machine.
+  Async build/read workers.
+  Status message and status kind.
+  can_build / can_rebuild / can_visualize state.
+
+src/napari_harpy/widgets/viewer/widget.py
+  Qt controls and layout.
+  Status-card rendering.
+  Rebuild confirmation dialog.
+  Calls into the controller.
+```
+
+This mirrors the existing controller split used by `FeatureExtractionController` and `ClassifierController`: the controller owns long-running work, state transitions, and status text, while the widget renders that state and forwards user actions.
+
+`HarpyAppState` should remain the shared viewer/session hub for loaded `SpatialData`, coordinate system, layer bindings, and viewer adapter. Do not put transcript value-index UI state there.
+
+Core states:
+
+```text
+NO_SDATA
+  No SpatialData object is loaded.
+
+NO_POINTS_ELEMENT
+  SpatialData is loaded, but no eligible points element is selected.
+
+MISSING_CACHE
+  A points element and index column are selected, but no valid cache exists.
+
+STALE_CACHE
+  A cache exists, but validation says it does not match the current points element, index column, schema, or required files.
+
+VALID_CACHE
+  A cache exists and passes validation. Value search and selection can be enabled.
+
+BUILDING_CACHE
+  A cache build is running.
+
+BUILD_FAILED
+  The last build failed. Any previously valid cache should remain untouched.
+
+LOADING_SELECTION
+  The reader is loading selected values and updating the napari layer.
+
+LOADED_SELECTION
+  A selection has been loaded or updated in napari.
+
+LOAD_FAILED
+  The selected values could not be read or rendered.
+```
+
+Represent the states with an explicit enum, for example:
+
+```python
+class TranscriptValueIndexUiState(Enum):
+    NO_SDATA = "no_sdata"
+    NO_POINTS_ELEMENT = "no_points_element"
+    MISSING_CACHE = "missing_cache"
+    STALE_CACHE = "stale_cache"
+    VALID_CACHE = "valid_cache"
+    BUILDING_CACHE = "building_cache"
+    BUILD_FAILED = "build_failed"
+    LOADING_SELECTION = "loading_selection"
+    LOADED_SELECTION = "loaded_selection"
+    LOAD_FAILED = "load_failed"
+```
+
+The controller should expose read-only state for the widget to render:
+
+```text
+state
+status_message
+status_kind
+can_build_cache
+can_rebuild_cache
+can_visualize
+is_building
+is_loading
+cache_status
+selection
+```
+
+Async implementation should follow the existing controller worker pattern:
+
+- use `thread_worker(start_thread=False, ignore_errors=True)`;
+- create immutable build/read job dataclasses;
+- increment job ids for each launched job;
+- ignore stale worker results whose job id no longer matches the active job;
+- call `worker.quit()` only for shutdown or invalidation, not as a user-facing cancel feature;
+- notify the widget through an `on_state_changed` callback.
+
+Control behavior:
+
+```text
+NO_SDATA / NO_POINTS_ELEMENT
+  Disable points-dependent transcript controls.
+
+MISSING_CACHE / STALE_CACHE
+  Enable Build cache.
+  Disable value search.
+  Disable Visualize selected values.
+
+VALID_CACHE
+  Enable Rebuild cache.
+  Enable value search.
+  Enable Visualize selected values when at least one value is selected or the all-values option is active.
+
+BUILDING_CACHE
+  Disable Build/Rebuild cache.
+  Disable Visualize selected values.
+  Disable points element and index-column changes if simple to implement.
+  Show build progress/status.
+
+BUILD_FAILED
+  Enable Build cache again.
+  Keep value search enabled only if an older valid cache is still available for the same cache identity.
+  Show the build error in the status card.
+
+LOADING_SELECTION
+  Disable Visualize selected values.
+  Keep value search visible.
+  Do not start another read until the current read finishes.
+
+LOADED_SELECTION
+  Re-enable Visualize selected values.
+  Show loaded/sampled status in the status card.
+
+LOAD_FAILED
+  Re-enable Visualize selected values when the cache and selection are still valid.
+  Show the read or layer-update error in the status card.
+```
+
+Cache builds must run asynchronously so the Qt UI does not freeze. Selection reads should also run asynchronously, because sampled reads can still touch large Parquet row groups. For the MVP, only one cache build should run at a time for a given cache identity, and only one selection read should run at a time for the transcript value-selection layer. The first implementation can simply disable the relevant buttons while work is running rather than queueing multiple requests.
+
+Build progress can be indeterminate in the MVP. Prefer clear phase text over fake percentages:
+
+```text
+Preparing cache...
+Normalizing values...
+Counting values...
+Shuffling rows by value...
+Writing shards...
+Writing index...
+Finalizing cache...
+```
+
+Selection read progress can also be indeterminate:
+
+```text
+Loading selected values...
+Showing 100,000 of 2,431,912 selected points.
+```
+
+Use the existing shared status-card style for transcript cache and selection feedback. Warning and error placement should be in the transcript UI section's status card, not only in logs and not only in napari layer state.
+
+Status-card messages should cover:
+
+- missing cache;
+- stale cache;
+- build in progress;
+- build failed;
+- valid cache ready;
+- loading selection;
+- sampled preview warning;
+- categorical coloring disabled above 102 selected values;
+- read or layer-update failure.
+
+Do not expose a user-facing cancel button in the MVP. Build cancellation can be added later, but it must cancel the worker, clean the temporary build directory, and leave any existing valid cache untouched. Read cancellation can also be added later if real data shows selection reads are long enough to need it.
+
+`render_point_budget` should be user-configurable as a runtime UI setting:
+
+```text
+default: 100_000
+minimum: 1_000
+maximum: 1_000_000
+step: 10_000
+```
+
+Changing `render_point_budget` must not rebuild the cache and must not affect cache validity. It only affects the next visualization request. `metadata.json["default_render_point_budget"]` is build provenance and a suggested default, not the source of truth for the current UI setting.
+
 ## Why This Should Feel Snappy
 
 This MVP avoids the current slow path:
@@ -987,7 +1184,7 @@ For sampled large selections:
 ```text
 selected values
 -> per-value quotas
--> first few build-time-sample-key-sorted row groups per value
+-> first few shuffled value_shard row groups per value
 -> pyarrow read of a bounded number of rows
 -> napari Points layer update
 ```
@@ -1273,7 +1470,7 @@ Includes:
 - apply categorical coloring for `2..102` selected values with `default_categorical_colors(n)`;
 - use a single solid color for one selected value or more than 102 selected values;
 - surface a status-card warning when categorical coloring is disabled above 102 selected values;
-- set point size, opacity, name, and metadata;
+- set point size, opacity, and name;
 - surface sampled warning.
 
 Tests:
@@ -1286,7 +1483,7 @@ Tests:
 - features are attached;
 - categorical coloring is used for up to 102 selected values;
 - solid coloring is used above 102 selected values;
-- sampled warning metadata or status is present.
+- sampled warning status is present in the widget/controller state.
 
 Done when:
 
@@ -1298,8 +1495,13 @@ Goal: expose the workflow in the existing Harpy viewer widget.
 
 Includes:
 
+- controller module `src/napari_harpy/widgets/viewer/transcript_value_index_controller.py`;
+- explicit `TranscriptValueIndexUiState` enum;
+- immutable build/read job dataclasses for worker inputs;
+- controller-owned status message, status kind, cache status, and current selection;
 - points element selector;
 - index column selector;
+- runtime `render_point_budget` control with default `100_000`, minimum `1_000`, maximum `1_000_000`, and step `10_000`;
 - widget labels based on the selected index column rather than hard-coded "gene" wording;
 - create or rebuild cache button;
 - confirmation dialog before rebuilding an existing valid cache;
@@ -1307,17 +1509,31 @@ Includes:
 - value search and select control backed by `values.parquet`;
 - visualize selected values button;
 - all-values option;
+- explicit UI state machine for `NO_SDATA`, `NO_POINTS_ELEMENT`, `MISSING_CACHE`, `STALE_CACHE`, `VALID_CACHE`, `BUILDING_CACHE`, `BUILD_FAILED`, `LOADING_SELECTION`, `LOADED_SELECTION`, and `LOAD_FAILED`;
 - disable the build/rebuild button while a cache build is running;
 - disable visualization controls when cache is missing, stale, building, or loading;
-- run build and read without freezing the UI where practical.
+- run cache builds asynchronously;
+- run selection reads asynchronously;
+- ignore stale async build/read results by job id;
+- no user-facing cancel button in the MVP;
+- progress/status phase text for build and read;
+- status-card warning placement for sampled previews and categorical-coloring disablement;
+- keep UI/controller state as the source of truth rather than layer metadata.
 
 Tests:
 
 - widget initializes with no cache;
 - valid cache enables value search;
 - stale cache disables visualization;
+- missing cache enables build but disables value search and visualization;
+- building cache disables rebuild and visualization controls;
+- failed build reports an error and does not erase an older valid cache state;
+- stale async build/read worker results are ignored;
 - create or rebuild triggers builder;
+- rebuild of an existing valid cache requires confirmation;
 - selected values trigger reader and layer update;
+- loading selection disables duplicate visualize requests;
+- `render_point_budget` changes affect the next reader call without rebuilding the cache;
 - sampled warning is visible.
 
 Done when:
@@ -1403,6 +1619,23 @@ The build path can use Dask.
 The read path should use PyArrow.
 
 The napari path should be thin and should not know how the cache is built internally.
+
+Add the UI controller separately from the cache module:
+
+```text
+src/napari_harpy/widgets/viewer/transcript_value_index_controller.py
+```
+
+Suggested controller objects:
+
+```text
+TranscriptValueIndexUiState
+TranscriptValueIndexBuildJob
+TranscriptValueIndexReadJob
+TranscriptValueIndexController
+```
+
+The controller should own widget-facing state and async worker orchestration. The Qt widget should render controller state and forward user actions; it should not own the cache build/read state machine directly.
 
 ## Minimal Acceptance Criteria
 
