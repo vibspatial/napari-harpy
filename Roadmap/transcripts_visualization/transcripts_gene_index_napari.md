@@ -1377,7 +1377,7 @@ Goal: create the standalone transcript value-selection module without building a
 
 Includes:
 
-- new module, likely `src/napari_harpy/_transcript_value_index.py`;
+- new module `src/napari_harpy/_transcript_value_index.py`;
 - schema version constant;
 - dataclasses or typed return objects:
   - `TranscriptValueSelection`;
