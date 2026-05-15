@@ -1887,8 +1887,6 @@ class PointsValueTableLoadResult:
                 f"Got {self.validated.index_column!r} and {self.value_table.index_column!r}."
             )
 
-
-
 @dataclass(frozen=True)
 class PointsLoadResult:
     selection: PointsValueSelection
@@ -1896,7 +1894,7 @@ class PointsLoadResult:
 ```
 
 - `PointsValueTableLoadResult` is the controller's cached current source/value-table state; do not store the derived value table on `_ValidatedPointsElement`;
-- `PointsLoadResult` is a controller/worker result for source data loading, while `PointsLayerUpdateResult` remains the adapter result for applying an already loaded selection to a napari layer;
+- `PointsLoadResult` is a controller/worker result for Dask selected-point reads, while `PointsLayerUpdateResult` remains the adapter result for applying an already loaded selection to a napari layer;
 - points element selector;
 - index column selector;
 - numeric text-field `render_point_budget` control with default `100_000`, minimum `1_000`, and maximum `1_000_000`;
