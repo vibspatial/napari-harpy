@@ -179,7 +179,7 @@ index_column = "gene"   -> features["gene"]
 index_column = "target" -> features["target"]
 ```
 
-The layer may also include `value_id` as an internal/debug feature. It should not expose only a generic `value` feature when a more meaningful selected column name is available.
+The layer should also include `value_id` as a compact internal/debug feature. It should not expose only a generic `value` feature when a more meaningful selected column name is available.
 
 Widget labels should not hard-code "gene" once arbitrary index columns are supported. Prefer labels based on the selected index column, for example:
 
@@ -735,7 +735,9 @@ The cache stores source coordinate columns as `x` and `y`, but the reader return
 
 The configured index-column feature contains the normalized string value for each point, populated by mapping `value_id` through `values.parquet`. For example, when `index_column == "gene"`, `features["gene"]` contains gene names such as `"MALAT1"`; `value_id` remains an internal/cache feature.
 
-If the cache contains `transcript_id`, the reader should include it in `features` as well.
+Store the configured index-column feature as a pandas `Categorical` column whose categories are the normalized values from `values.parquet`. This keeps repeated gene, target, or probe labels compact for large render budgets.
+
+Do not include `transcript_id` in `features` for the MVP. If picked-point canonical lookup is needed later, use a separate lookup path rather than carrying transcript identifiers in every rendered feature row.
 
 `selected_values` contains the normalized unique selected values that were resolved against `values.parquet`. Duplicate requested values are removed before quota allocation and before reading. For `values="all"`, `selected_values` contains all values in `value_id` order.
 
@@ -886,7 +888,7 @@ Layer behavior:
 
 - layer name: `transcripts` or `transcripts: selected values`;
 - data: `Nx2` array in napari display order `y, x`;
-- features: at least the configured index column and `value_id`, plus `transcript_id` when present in the cache;
+- features: the configured index column as a pandas categorical feature, plus `value_id`;
 - face color: categorical by the configured index column for small selections;
 - warning: displayed when the layer is sampled.
 
@@ -1203,7 +1205,7 @@ Includes:
 - helper such as `add_transcript_value_points_layer`;
 - create or update one existing layer;
 - use the reader's `y, x` coordinates directly;
-- attach the configured index column and `value_id`, plus `transcript_id` when present;
+- attach the configured index column as a pandas categorical feature, plus `value_id`;
 - apply categorical coloring for small selections;
 - set point size, opacity, name, and metadata;
 - surface sampled warning.
