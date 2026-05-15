@@ -20,11 +20,16 @@ from spatialdata.transformations import get_transformation
 from xarray import DataArray, DataTree
 
 from napari_harpy.core._color_source import ShapeColorSourceSpec, TableColorSourceSpec
-from napari_harpy.core.class_palette import default_categorical_colors
 from napari_harpy.viewer.labels_styling import (
     StyledLabelsLoadResult,
     apply_table_color_source_to_labels_layer,
     build_styled_labels_layer_name,
+)
+from napari_harpy.viewer.points_styling import (
+    POINTS_SELECTION_SOLID_COLOR,
+    PointsLayerUpdateResult,
+    apply_points_selection_style,
+    build_points_selection_layer_name,
 )
 from napari_harpy.viewer.shapes_styling import (
     StyledShapesLoadResult,
@@ -42,8 +47,6 @@ ElementType = Literal["labels", "image", "shapes", "points"]
 ShapesLayerShapeType = Literal["polygon", "ellipse"]
 # Name of the layer.features column that stores the source GeoDataFrame index.
 DEFAULT_SHAPES_INDEX_FEATURE_NAME = "index"
-POINTS_SELECTION_SOLID_COLOR = "#00FFFF"
-POINTS_SELECTION_MAX_CATEGORICAL_COLORS = 102
 DEFAULT_OVERLAY_COLORS = (
     "#00FFFF",  # cyan
     "#FF00FF",  # magenta
@@ -266,15 +269,6 @@ class PointsLayerIdentity:
             raise ValueError("`coordinate_system` must be a non-empty string.")
         if not isinstance(self.index_column, str) or not self.index_column:
             raise ValueError("`index_column` must be a non-empty string.")
-
-
-@dataclass(frozen=True)
-class PointsLayerUpdateResult:
-    """Result of applying a points value selection to a napari Points layer."""
-
-    layer: Points
-    created: bool
-    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -956,16 +950,23 @@ class ViewerAdapter(QObject):
             layer = existing_layer
 
         visible = layer.visible
-        layer.name = _build_points_layer_name(identity, selection)
+        layer.name = build_points_selection_layer_name(
+            identity.points_name,
+            identity.index_column,
+            selection,
+        )
         layer.data = selection.coordinates
         layer.features = selection.features
-        _apply_points_selection_visuals(layer, selection)
+        style_result = apply_points_selection_style(layer, selection)
         layer.visible = visible
 
         return PointsLayerUpdateResult(
             layer=layer,
             created=created,
-            warnings=_points_selection_warnings(selection),
+            color_mode=style_result.color_mode,
+            categorical_coloring_disabled=style_result.categorical_coloring_disabled,
+            selected_value_count=style_result.selected_value_count,
+            categorical_limit=style_result.categorical_limit,
         )
 
     def ensure_labels_loaded(self, sdata: SpatialData, labels_name: str, coordinate_system: str) -> Labels:
@@ -1400,7 +1401,11 @@ def _build_points_layer_from_selection(identity: PointsLayerIdentity, selection:
     layer = Points(
         selection.coordinates,
         ndim=2,
-        name=_build_points_layer_name(identity, selection),
+        name=build_points_selection_layer_name(
+            identity.points_name,
+            identity.index_column,
+            selection,
+        ),
         features=selection.features,
         size=1.0,
         opacity=0.8,
@@ -1408,46 +1413,8 @@ def _build_points_layer_from_selection(identity: PointsLayerIdentity, selection:
         border_width=0,
         face_color=POINTS_SELECTION_SOLID_COLOR,
     )
-    _apply_points_selection_visuals(layer, selection)
+    apply_points_selection_style(layer, selection)
     return layer
-
-
-def _build_points_layer_name(identity: PointsLayerIdentity, selection: PointsValueSelection) -> str:
-    if len(selection.selected_values) == 0:
-        return f"{identity.points_name}: no {identity.index_column} values"
-    if selection.selection_mode == "all":
-        return f"{identity.points_name}: all {identity.index_column} values"
-    if len(selection.selected_values) == 1:
-        return f"{identity.points_name}: {identity.index_column}={selection.selected_values[0]}"
-    return f"{identity.points_name}: {len(selection.selected_values)} {identity.index_column} values"
-
-
-def _apply_points_selection_visuals(layer: Points, selection: PointsValueSelection) -> None:
-    layer.size = 1.0
-    layer.opacity = 0.8
-    layer.symbol = "disc"
-    layer.border_width = 0
-
-    selected_value_count = len(selection.selected_values)
-    if selected_value_count < 2 or selected_value_count > POINTS_SELECTION_MAX_CATEGORICAL_COLORS:
-        layer.face_color = POINTS_SELECTION_SOLID_COLOR
-        return
-
-    layer.face_color_cycle = default_categorical_colors(selected_value_count)
-    layer.face_color = selection.index_column
-
-
-def _points_selection_warnings(selection: PointsValueSelection) -> tuple[str, ...]:
-    warnings: list[str] = []
-    if selection.warning:
-        warnings.append(selection.warning)
-    selected_value_count = len(selection.selected_values)
-    if selected_value_count > POINTS_SELECTION_MAX_CATEGORICAL_COLORS:
-        warnings.append(
-            f"Selected {selected_value_count:,} {selection.index_column} values; "
-            f"categorical coloring is disabled above {POINTS_SELECTION_MAX_CATEGORICAL_COLORS} values."
-        )
-    return tuple(warnings)
 
 
 def _add_layer_to_viewer(viewer: Any | None, layer: Layer) -> None:

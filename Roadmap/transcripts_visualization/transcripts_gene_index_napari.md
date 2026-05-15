@@ -787,7 +787,7 @@ The direct no-cache reader should return the same `PointsValueSelection` object 
 Recommended optional cache-backed reader entry point:
 
 ```python
-def load_transcripts_for_values_from_cache(
+def load_points_from_cache(
     cache_path: str | PathLike[str],
     values: Sequence[str] | Literal["all"],
     *,
@@ -1752,6 +1752,7 @@ Status: implemented.
 Implementation:
 
 - `src/napari_harpy/viewer/adapter.py`;
+- `src/napari_harpy/viewer/points_styling.py`;
 - `tests/test_viewer_adapter.py`.
 
 Includes:
@@ -1778,10 +1779,17 @@ class PointsLayerIdentity:
 
 
 @dataclass(frozen=True)
-class PointsLayerUpdateResult:
+class PointsSelectionStyleResult:
+    color_mode: Literal["solid", "categorical"]
+    categorical_coloring_disabled: bool
+    selected_value_count: int
+    categorical_limit: int
+
+
+@dataclass(frozen=True)
+class PointsLayerUpdateResult(PointsSelectionStyleResult):
     layer: Points
     created: bool
-    warnings: tuple[str, ...] = ()
 
 
 def _ensure_points_layer_from_selection(
@@ -1795,6 +1803,7 @@ def _ensure_points_layer_from_selection(
 
 - this helper is adapter-internal/private because Slice 6 should own async read orchestration;
 - `PointsLayerUpdateResult` is intentionally a layer-update result, not a data-load result: it should not include `selection` or `value_table`, because `selection` is already the input and `value_table` belongs to the controller/read state;
+- `PointsSelectionStyleResult` and `PointsLayerUpdateResult` live in `points_styling.py`, matching the labels/shapes pattern where styling modules own style/load result objects;
 - `PointsLayerIdentity` bundles the source/layer identity so the adapter does not receive loose `sdata`, `points_name`, `coordinate_system`, and `index_column` arguments that can drift out of sync with the selection;
 - `_ensure_points_layer_from_selection` must validate `identity.index_column == selection.index_column`;
 - `identity.points_name` becomes `PointsLayerBinding.element_name`;
@@ -1804,7 +1813,7 @@ def _ensure_points_layer_from_selection(
   - create or update one napari `Points` layer;
   - register new layers with `PointsLayerBinding`;
   - update data, features, name, and colors from the already computed `PointsValueSelection`;
-  - return `PointsLayerUpdateResult` with the layer, created flag, and warnings;
+  - return `PointsLayerUpdateResult` with the layer, created flag, and structured style metadata;
 - this helper must not call `validate_points_element_for_value_selection`, `build_points_value_table`, or `load_points`;
 - Slice 6/controller will run validation, direct value-table construction, and `load_points` asynchronously, then call this helper on the main Qt thread after stale-job checks;
 - layer lookup and update behavior:
@@ -1853,12 +1862,12 @@ solid_color: "#00FFFF"
   - `2..102` selected values: color categorically by `selection.index_column`;
   - palette: `default_categorical_colors(len(selection.selected_values))`;
   - category and palette order follows `selection.selected_values`;
-  - more than `102` selected values: use `solid_color` and return a categorical-coloring warning;
+  - more than `102` selected values: use `solid_color` and set `categorical_coloring_disabled=True`;
   - threshold is based on resolved selected values, not values that survived sampling;
-- warning behavior:
-  - include `selection.warning` when sampled;
-  - include categorical-coloring warning when selected value count exceeds 102;
-  - the adapter returns warnings; Slice 6/controller is responsible for placing them in the status card.
+- status-card warning behavior belongs to Slice 6/controller:
+  - sampled preview messaging comes from `PointsValueSelection.warning`;
+  - categorical-coloring warning text is derived from `PointsLayerUpdateResult.categorical_coloring_disabled`, `selected_value_count`, and `categorical_limit`;
+  - `points_styling.py` and the adapter should return structured facts, not user-facing warning strings.
 
 Tests:
 
@@ -1872,7 +1881,7 @@ Tests:
 - changing from one selected value to another replaces the existing layer instead of creating a second layer;
 - does not create one layer per value;
 - ignores unregistered same-name layers;
-- result returns layer, created flag, and warnings;
+- result returns layer, created flag, and structured style metadata;
 - features are attached;
 - data uses `selection.coordinates` without coordinate reordering;
 - updating preserves visibility and does not reset the camera;
@@ -1881,7 +1890,8 @@ Tests:
 - visual defaults are applied;
 - categorical coloring is used for up to 102 selected values;
 - solid coloring is used above 102 selected values;
-- sampled and categorical-coloring warnings are returned for widget/controller status.
+- categorical-coloring disabled state is exposed as structured metadata;
+- sampled warnings remain on `PointsValueSelection` for Slice 6/controller status handling.
 
 Done when:
 
@@ -2105,7 +2115,7 @@ The MVP should produce these implementation pieces:
 2. Direct value table: computes selectable values and point counts from the Dask points dataframe.
 3. Direct reader: loads exact or sampled selected values from the Dask points dataframe, sampling before compute when needed.
 4. Viewer UI controls: lets the user choose the points element and index-value column, search/select values, set `render_point_budget`, and request visualization.
-5. napari layer integration: creates or updates one `Points` layer for the selected values, with sampled-state warning text when applicable.
+5. napari layer integration: creates or updates one `Points` layer for the selected values and reports structured style metadata; sampled-state warning text remains on `PointsValueSelection` for the controller/status card.
 6. Tests: cover input validation, direct value resolution, exact reads, sampled reads, all-values selection, async stale-result handling, and layer updates.
 
 Optional later deliverables:
@@ -2143,6 +2153,7 @@ Adapter-side points layer objects:
 ```text
 PointsLayerBinding
 PointsLayerIdentity
+PointsSelectionStyleResult
 PointsLayerUpdateResult
 ViewerAdapter._ensure_points_layer_from_selection
 ```
@@ -2152,7 +2163,7 @@ Optional cache objects:
 ```text
 PointsValueIndexCache
 build_points_value_index_cache_for_points_element
-load_transcripts_for_values_from_cache
+load_points_from_cache
 ```
 
 The direct read path uses Dask.
@@ -2198,7 +2209,7 @@ A first implementation is successful when:
 - selecting values within the render budget loads exact points;
 - selecting values above the render budget filters selected rows first, samples before compute, and loads at most `render_point_budget` points;
 - all-values selection is allowed and sampled when needed;
-- sampled results show a user-visible warning;
+- sampled results expose warning text on `PointsValueSelection`, and the controller shows it in the widget status card;
 - the napari integration updates one `Points` layer rather than creating many layers.
 
 The optional cache path becomes successful later when:

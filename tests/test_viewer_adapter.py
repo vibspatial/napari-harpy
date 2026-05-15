@@ -713,7 +713,10 @@ def test_viewer_adapter_ensure_points_layer_from_selection_creates_registered_la
     result = adapter._ensure_points_layer_from_selection(identity, selection=selection)
 
     assert result.created is True
-    assert result.warnings == ()
+    assert result.color_mode == "solid"
+    assert result.categorical_coloring_disabled is False
+    assert result.selected_value_count == 1
+    assert result.categorical_limit == 102
     assert result.layer in viewer.layers
     assert result.layer.name == "transcripts: gene=AAMP"
     np.testing.assert_array_equal(result.layer.data, selection.coordinates)
@@ -800,6 +803,10 @@ def test_viewer_adapter_ensure_points_layer_from_selection_uses_categorical_colo
     result = adapter._ensure_points_layer_from_selection(identity, selection=selection)
 
     assert str(result.layer.face_color_mode) == "cycle"
+    assert result.color_mode == "categorical"
+    assert result.categorical_coloring_disabled is False
+    assert result.selected_value_count == 2
+    assert result.categorical_limit == 102
     expected_colors = np.asarray([to_rgba(color) for color in default_categorical_colors(2)], dtype=np.float32)
     assert np.allclose(result.layer.face_color, expected_colors)
 
@@ -814,12 +821,14 @@ def test_viewer_adapter_ensure_points_layer_from_selection_uses_solid_color_abov
     result = adapter._ensure_points_layer_from_selection(identity, selection=selection)
 
     assert str(result.layer.face_color_mode) == "direct"
+    assert result.color_mode == "solid"
+    assert result.categorical_coloring_disabled is True
+    assert result.selected_value_count == 103
+    assert result.categorical_limit == 102
     assert np.allclose(result.layer.face_color, np.asarray([to_rgba("#00FFFF")] * selection.loaded_count))
-    assert len(result.warnings) == 1
-    assert "categorical coloring is disabled" in result.warnings[0]
 
 
-def test_viewer_adapter_ensure_points_layer_from_selection_returns_sampled_warning() -> None:
+def test_viewer_adapter_ensure_points_layer_from_selection_keeps_sampling_warning_on_selection() -> None:
     sdata = SimpleNamespace()
     identity = make_points_identity(sdata)
     selection = make_points_selection(
@@ -834,7 +843,9 @@ def test_viewer_adapter_ensure_points_layer_from_selection_returns_sampled_warni
 
     result = adapter._ensure_points_layer_from_selection(identity, selection=selection)
 
-    assert result.warnings == ("Showing 2 of 10 selected points.",)
+    assert result.color_mode == "categorical"
+    assert result.categorical_coloring_disabled is False
+    assert selection.warning == "Showing 2 of 10 selected points."
 
 
 def test_viewer_adapter_ensure_labels_loaded_adds_layer_and_registers_binding(sdata_blobs) -> None:
