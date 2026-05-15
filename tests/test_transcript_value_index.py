@@ -16,10 +16,10 @@ from napari_harpy._transcript_value_index import (
     DEFAULT_X,
     DEFAULT_Y,
     TRANSCRIPT_VALUE_INDEX_SCHEMA_VERSION,
-    TranscriptValueSelection,
-    TranscriptValueTable,
+    PointsValueSelection,
+    PointsValueTable,
     _ValidatedPointsElement,
-    build_direct_value_table,
+    build_points_value_table,
     normalize_index_value,
     normalize_index_values,
     validate_points_element_for_value_selection,
@@ -36,7 +36,7 @@ class _DummySpatialData:
         return self._backed
 
 
-def _example_value_table(**overrides: object) -> TranscriptValueTable:
+def _example_value_table(**overrides: object) -> PointsValueTable:
     values = {
         "values": pd.DataFrame(
             {
@@ -49,7 +49,7 @@ def _example_value_table(**overrides: object) -> TranscriptValueTable:
         "total_count": 5,
     }
     values.update(overrides)
-    return TranscriptValueTable(**values)
+    return PointsValueTable(**values)
 
 
 def _example_features(values: list[str] | None = None, value_ids: list[int] | None = None) -> pd.DataFrame:
@@ -63,7 +63,7 @@ def _example_features(values: list[str] | None = None, value_ids: list[int] | No
     )
 
 
-def _example_selection(**overrides: object) -> TranscriptValueSelection:
+def _example_selection(**overrides: object) -> PointsValueSelection:
     values = {
         "coordinates": np.asarray([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype="float32"),
         "features": _example_features(),
@@ -76,7 +76,7 @@ def _example_selection(**overrides: object) -> TranscriptValueSelection:
         "warning": None,
     }
     values.update(overrides)
-    return TranscriptValueSelection(**values)
+    return PointsValueSelection(**values)
 
 
 def _points_dataframe(data: dict[str, object], *, npartitions: int = 1) -> dd.DataFrame:
@@ -131,7 +131,7 @@ def test_transcript_value_index_constants() -> None:
     assert TRANSCRIPT_VALUE_INDEX_SCHEMA_VERSION == "harpy-transcripts-value-index-0.1"
 
 
-def test_transcript_value_table_records_value_table() -> None:
+def test_points_value_table_records_value_table() -> None:
     value_table = _example_value_table()
 
     assert tuple(value_table.values.columns) == ("value_id", "value", "n_points")
@@ -209,12 +209,12 @@ def test_transcript_value_table_records_value_table() -> None:
         ({"index_column": ""}, "index_column"),
     ],
 )
-def test_transcript_value_table_rejects_invalid_values(overrides: dict[str, object], match: str) -> None:
+def test_points_value_table_rejects_invalid_values(overrides: dict[str, object], match: str) -> None:
     with pytest.raises(ValueError, match=match):
         _example_value_table(**overrides)
 
 
-def test_transcript_value_selection_records_display_payload() -> None:
+def test_points_value_selection_records_display_payload() -> None:
     selection = _example_selection()
 
     assert selection.coordinates.dtype == np.dtype("float32")
@@ -231,7 +231,7 @@ def test_transcript_value_selection_records_display_payload() -> None:
     assert selection.warning is None
 
 
-def test_transcript_value_selection_accepts_sampled_result() -> None:
+def test_points_value_selection_accepts_sampled_result() -> None:
     selection = _example_selection(
         coordinates=np.asarray([[1.0, 2.0], [3.0, 4.0]], dtype="float32"),
         features=_example_features(["AAMP", "AXL"], [0, 1]),
@@ -246,7 +246,7 @@ def test_transcript_value_selection_accepts_sampled_result() -> None:
     assert selection.warning == "Showing 2 of 10 selected points."
 
 
-def test_transcript_value_selection_accepts_empty_exact_result() -> None:
+def test_points_value_selection_accepts_empty_exact_result() -> None:
     selection = _example_selection(
         coordinates=np.empty((0, 2), dtype="float32"),
         features=_example_features([], []),
@@ -297,12 +297,12 @@ def test_transcript_value_selection_accepts_empty_exact_result() -> None:
         ({"warning": "not needed"}, "must not include a warning"),
     ],
 )
-def test_transcript_value_selection_rejects_invalid_values(overrides: dict[str, object], match: str) -> None:
+def test_points_value_selection_rejects_invalid_values(overrides: dict[str, object], match: str) -> None:
     with pytest.raises(ValueError, match=match):
         _example_selection(**overrides)
 
 
-def test_transcript_value_selection_is_immutable() -> None:
+def test_points_value_selection_is_immutable() -> None:
     selection = _example_selection()
 
     with pytest.raises(FrozenInstanceError):
@@ -476,14 +476,14 @@ def test_validate_points_element_for_value_selection_rejects_invalid_transcript_
         validate_points_element_for_value_selection(sdata, "transcripts", transcript_id="transcript_id")
 
 
-def test_build_direct_value_table_merges_normalized_values_and_sorts() -> None:
+def test_build_points_value_table_merges_normalized_values_and_sorts() -> None:
     sdata = _sdata_with_points(
         _valid_points_data_for_index_values([" AAMP ", "AXL", "AAMP", "actb", "ACTB", "AXL "]),
         npartitions=3,
     )
     validated = validate_points_element_for_value_selection(sdata, "transcripts")
 
-    value_table = build_direct_value_table(validated)
+    value_table = build_points_value_table(validated)
 
     assert value_table.index_column == "gene"
     assert value_table.total_count == 6
@@ -496,28 +496,28 @@ def test_build_direct_value_table_merges_normalized_values_and_sorts() -> None:
     assert value_table.values["n_points"].dtype == np.dtype("uint64")
 
 
-def test_build_direct_value_table_assigns_deterministic_value_ids() -> None:
+def test_build_points_value_table_assigns_deterministic_value_ids() -> None:
     sdata_a = _sdata_with_points(_valid_points_data_for_index_values(["B", "A", "C", "B"]), npartitions=2)
     sdata_b = _sdata_with_points(_valid_points_data_for_index_values(["C", "B", "B", "A"]), npartitions=2)
     validated_a = validate_points_element_for_value_selection(sdata_a, "transcripts")
     validated_b = validate_points_element_for_value_selection(sdata_b, "transcripts")
 
-    table_a = build_direct_value_table(validated_a)
-    table_b = build_direct_value_table(validated_b)
+    table_a = build_points_value_table(validated_a)
+    table_b = build_points_value_table(validated_b)
 
     assert table_a.values[["value_id", "value"]].to_dict("list") == table_b.values[["value_id", "value"]].to_dict(
         "list"
     )
 
 
-def test_build_direct_value_table_excludes_unused_categorical_categories() -> None:
+def test_build_points_value_table_excludes_unused_categorical_categories() -> None:
     sdata = _sdata_with_points(
         _valid_points_data_for_index_values(pd.Categorical(["B", "A", "B"], categories=["A", "B", "UNUSED"])),
         npartitions=2,
     )
     validated = validate_points_element_for_value_selection(sdata, "transcripts")
 
-    value_table = build_direct_value_table(validated)
+    value_table = build_points_value_table(validated)
 
     assert value_table.values.to_dict("list") == {
         "value_id": [0, 1],
@@ -526,7 +526,7 @@ def test_build_direct_value_table_excludes_unused_categorical_categories() -> No
     }
 
 
-def test_build_direct_value_table_accepts_configured_string_index_column() -> None:
+def test_build_points_value_table_accepts_configured_string_index_column() -> None:
     sdata = _sdata_with_points(
         _valid_points_data_for_index_values(
             pd.Series([" probe-b ", "probe-a", "probe-b"], dtype="string"),
@@ -536,7 +536,7 @@ def test_build_direct_value_table_accepts_configured_string_index_column() -> No
     )
     validated = validate_points_element_for_value_selection(sdata, "transcripts", index_column="target")
 
-    value_table = build_direct_value_table(validated)
+    value_table = build_points_value_table(validated)
 
     assert value_table.index_column == "target"
     assert value_table.values.to_dict("list") == {
@@ -546,7 +546,7 @@ def test_build_direct_value_table_accepts_configured_string_index_column() -> No
     }
 
 
-def test_build_direct_value_table_rejects_invalid_values_if_source_changes_after_validation() -> None:
+def test_build_points_value_table_rejects_invalid_values_if_source_changes_after_validation() -> None:
     points = _points_dataframe(_valid_points_data_for_index_values(["AAMP", b"AXL", "MALAT1"]))
     validated = _ValidatedPointsElement(
         points=points,
@@ -560,10 +560,10 @@ def test_build_direct_value_table_rejects_invalid_values_if_source_changes_after
     )
 
     with pytest.raises(ValueError, match="strings"):
-        build_direct_value_table(validated)
+        build_points_value_table(validated)
 
 
-def test_build_direct_value_table_rejects_source_count_mismatch() -> None:
+def test_build_points_value_table_rejects_source_count_mismatch() -> None:
     points = _points_dataframe(_valid_points_data_for_index_values(["AAMP", "AXL", "MALAT1"]))
     validated = _ValidatedPointsElement(
         points=points,
@@ -577,4 +577,4 @@ def test_build_direct_value_table_rejects_source_count_mismatch() -> None:
     )
 
     with pytest.raises(ValueError, match="total count"):
-        build_direct_value_table(validated)
+        build_points_value_table(validated)

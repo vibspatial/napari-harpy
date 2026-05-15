@@ -50,8 +50,8 @@ class _ValidatedPointsElement:
 
 
 @dataclass(frozen=True, kw_only=True)
-class TranscriptValueTable:
-    """In-memory value table for a selected transcript points column.
+class PointsValueTable:
+    """In-memory value table for a selected points column.
 
     Parameters
     ----------
@@ -73,40 +73,40 @@ class TranscriptValueTable:
 
     def __post_init__(self) -> None:
         if not isinstance(self.values, pd.DataFrame):
-            raise ValueError("Transcript value table `values` must be a pandas DataFrame.")
+            raise ValueError("Points value table `values` must be a pandas DataFrame.")
         if tuple(self.values.columns) != VALUE_TABLE_COLUMNS:
             raise ValueError(
-                "Transcript value table `values` must contain exactly `value_id`, `value`, and `n_points` columns."
+                "Points value table `values` must contain exactly `value_id`, `value`, and `n_points` columns."
             )
         if not isinstance(self.index_column, str) or not self.index_column:
-            raise ValueError("Transcript value table `index_column` must be a non-empty string.")
+            raise ValueError("Points value table `index_column` must be a non-empty string.")
         _validate_non_negative_integer("total_count", self.total_count)
 
         if self.values[VALUE_ID_COLUMN].dtype != VALUE_ID_DTYPE:
-            raise ValueError("Transcript value table `value_id` column must have dtype uint32.")
+            raise ValueError("Points value table `value_id` column must have dtype uint32.")
         if self.values[N_POINTS_COLUMN].dtype != N_POINTS_DTYPE:
-            raise ValueError("Transcript value table `n_points` column must have dtype uint64.")
+            raise ValueError("Points value table `n_points` column must have dtype uint64.")
         if self.values[VALUE_ID_COLUMN].isna().any():
-            raise ValueError("Transcript value table `value_id` column must not contain missing values.")
+            raise ValueError("Points value table `value_id` column must not contain missing values.")
         if self.values[VALUE_COLUMN].isna().any():
-            raise ValueError("Transcript value table `value` column must not contain missing values.")
+            raise ValueError("Points value table `value` column must not contain missing values.")
         if self.values[N_POINTS_COLUMN].isna().any():
-            raise ValueError("Transcript value table `n_points` column must not contain missing values.")
+            raise ValueError("Points value table `n_points` column must not contain missing values.")
         if self.values[VALUE_ID_COLUMN].duplicated().any():
-            raise ValueError("Transcript value table `value_id` values must be unique.")
+            raise ValueError("Points value table `value_id` values must be unique.")
         if self.values[VALUE_COLUMN].duplicated().any():
-            raise ValueError("Transcript value table `value` values must be unique.")
+            raise ValueError("Points value table `value` values must be unique.")
         if not self.values[VALUE_COLUMN].map(lambda value: isinstance(value, str)).all():
-            raise ValueError("Transcript value table `value` column must contain strings.")
+            raise ValueError("Points value table `value` column must contain strings.")
 
         observed_total = int(self.values[N_POINTS_COLUMN].sum())
         if observed_total != self.total_count:
-            raise ValueError("Transcript value table `total_count` must equal the sum of `n_points`.")
+            raise ValueError("Points value table `total_count` must equal the sum of `n_points`.")
 
 
 @dataclass(frozen=True, kw_only=True)
-class TranscriptValueSelection:
-    """Selected transcript points ready to be displayed as one napari Points layer.
+class PointsValueSelection:
+    """Selected points ready to be displayed as one napari Points layer.
 
     Parameters
     ----------
@@ -146,63 +146,61 @@ class TranscriptValueSelection:
 
     def __post_init__(self) -> None:
         if not isinstance(self.coordinates, np.ndarray):
-            raise ValueError("Transcript value selection `coordinates` must be a numpy array.")
+            raise ValueError("Points value selection `coordinates` must be a numpy array.")
         if self.coordinates.ndim != 2 or self.coordinates.shape[1] != 2:
-            raise ValueError("Transcript value selection `coordinates` must be an Nx2 array.")
+            raise ValueError("Points value selection `coordinates` must be an Nx2 array.")
         if self.coordinates.dtype != COORDINATE_DTYPE:
-            raise ValueError("Transcript value selection `coordinates` must have dtype float32.")
+            raise ValueError("Points value selection `coordinates` must have dtype float32.")
         if not isinstance(self.features, pd.DataFrame):
-            raise ValueError("Transcript value selection `features` must be a pandas DataFrame.")
+            raise ValueError("Points value selection `features` must be a pandas DataFrame.")
         if not isinstance(self.index_column, str) or not self.index_column:
-            raise ValueError("Transcript value selection `index_column` must be a non-empty string.")
+            raise ValueError("Points value selection `index_column` must be a non-empty string.")
         if self.index_column == VALUE_ID_COLUMN:
-            raise ValueError("Transcript value selection `index_column` must not be `value_id`.")
+            raise ValueError("Points value selection `index_column` must not be `value_id`.")
         if set(self.features.columns) != {self.index_column, VALUE_ID_COLUMN}:
             raise ValueError(
-                "Transcript value selection `features` must contain exactly the configured index column and `value_id`."
+                "Points value selection `features` must contain exactly the configured index column and `value_id`."
             )
         if not isinstance(self.features[self.index_column].dtype, pd.CategoricalDtype):
-            raise ValueError("Transcript value selection index feature must be categorical.")
+            raise ValueError("Points value selection index feature must be categorical.")
         if is_bool_dtype(self.features[VALUE_ID_COLUMN].dtype) or not is_integer_dtype(
             self.features[VALUE_ID_COLUMN].dtype
         ):
-            raise ValueError("Transcript value selection `value_id` feature must be integer typed.")
+            raise ValueError("Points value selection `value_id` feature must be integer typed.")
         if not isinstance(self.selected_values, tuple) or not all(
             isinstance(value, str) for value in self.selected_values
         ):
-            raise ValueError("Transcript value selection `selected_values` must be a tuple of strings.")
+            raise ValueError("Points value selection `selected_values` must be a tuple of strings.")
         if not isinstance(self.selected_value_ids, tuple) or not all(
             _is_non_negative_integral(value) for value in self.selected_value_ids
         ):
-            raise ValueError(
-                "Transcript value selection `selected_value_ids` must be a tuple of non-negative integers."
-            )
+            raise ValueError("Points value selection `selected_value_ids` must be a tuple of non-negative integers.")
         if len(self.selected_values) != len(self.selected_value_ids):
-            raise ValueError("Transcript value selection selected values and ids must have the same length.")
+            raise ValueError("Points value selection selected values and ids must have the same length.")
         if len(set(self.selected_values)) != len(self.selected_values):
-            raise ValueError("Transcript value selection `selected_values` must not contain duplicates.")
+            raise ValueError("Points value selection `selected_values` must not contain duplicates.")
         if len({int(value_id) for value_id in self.selected_value_ids}) != len(self.selected_value_ids):
-            raise ValueError("Transcript value selection `selected_value_ids` must not contain duplicates.")
+            raise ValueError("Points value selection `selected_value_ids` must not contain duplicates.")
 
         _validate_non_negative_integer("total_count", self.total_count)
         _validate_positive_integer("render_point_budget", self.render_point_budget)
         if not isinstance(self.is_sampled, bool):
-            raise ValueError("Transcript value selection `is_sampled` must be a boolean.")
+            raise ValueError("Points value selection `is_sampled` must be a boolean.")
         if self.warning is not None and not isinstance(self.warning, str):
-            raise ValueError("Transcript value selection `warning` must be a string or None.")
+            raise ValueError("Points value selection `warning` must be a string or None.")
 
         if len(self.features) != self.loaded_count:
-            raise ValueError("Transcript value selection loaded rows must match coordinates and features.")
+            raise ValueError("Points value selection loaded rows must match coordinates and features.")
         if self.loaded_count > self.total_count:
-            raise ValueError("Transcript value selection `loaded_count` must be <= `total_count`.")
+            raise ValueError("Points value selection `loaded_count` must be <= `total_count`.")
         if self.loaded_count > self.render_point_budget:
-            raise ValueError("Transcript value selection `loaded_count` must be <= `render_point_budget`.")
+            raise ValueError("Points value selection `loaded_count` must be <= `render_point_budget`.")
         if not self.is_sampled and self.loaded_count != self.total_count:
-            raise ValueError("Exact transcript value selections must load all selected points.")
+            raise ValueError("Exact points value selections must load all selected points.")
         if self.is_sampled and (self.warning is None or not self.warning):
-            raise ValueError("Sampled transcript value selections must include a warning.")
+            raise ValueError("Sampled points value selections must include a warning.")
         if not self.is_sampled and self.warning is not None:
-            raise ValueError("Exact transcript value selections must not include a warning.")
+            raise ValueError("Exact points value selections must not include a warning.")
 
     @property
     def loaded_count(self) -> int:
@@ -309,7 +307,7 @@ def validate_points_element_for_value_selection(
     )
 
 
-def build_direct_value_table(validated: _ValidatedPointsElement) -> TranscriptValueTable:
+def build_points_value_table(validated: _ValidatedPointsElement) -> PointsValueTable:
     """Build an in-memory value table from a validated Dask points element."""
     if not isinstance(validated, _ValidatedPointsElement):
         raise ValueError("`validated` must be a _ValidatedPointsElement.")
@@ -323,7 +321,7 @@ def build_direct_value_table(validated: _ValidatedPointsElement) -> TranscriptVa
     value_counts = value_counts[value_counts > 0].sort_index()
 
     if len(value_counts) > np.iinfo(VALUE_ID_DTYPE).max:
-        raise ValueError("Too many unique transcript values to represent with uint32 value ids.")
+        raise ValueError("Too many unique point values to represent with uint32 value ids.")
 
     total_count = int(value_counts.sum())
     if total_count != validated.source_n_points:
@@ -336,7 +334,7 @@ def build_direct_value_table(validated: _ValidatedPointsElement) -> TranscriptVa
             N_POINTS_COLUMN: pd.Series(value_counts.to_numpy(dtype=N_POINTS_DTYPE), dtype=N_POINTS_DTYPE),
         }
     )
-    return TranscriptValueTable(
+    return PointsValueTable(
         values=values,
         index_column=validated.index_column,
         total_count=total_count,

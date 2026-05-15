@@ -1,4 +1,4 @@
-# Transcript Value-Index MVP For napari
+# Points Value-Index MVP For napari
 
 This note describes a smaller first working version of transcript visualization in napari.
 
@@ -31,7 +31,7 @@ The first implementation should:
 1. compute the selected total count first;
 2. if the selection is within `render_point_budget`, compute the exact selection;
 3. if the selection exceeds `render_point_budget`, filter first, sample/downsample before compute when possible, then final-trim in memory;
-4. return the same `TranscriptValueSelection` object that a future cache-backed reader would return.
+4. return the same `PointsValueSelection` object that a future cache-backed reader would return.
 
 This keeps the first implementation much simpler and lets us test whether the direct Dask path is already good enough for common selected-gene workflows.
 
@@ -175,7 +175,7 @@ Represent this table with a small immutable object:
 
 ```python
 @dataclass(frozen=True, kw_only=True)
-class TranscriptValueTable:
+class PointsValueTable:
     values: pd.DataFrame
     index_column: str
     total_count: int
@@ -189,7 +189,7 @@ value
 n_points
 ```
 
-`TranscriptValueTable.__post_init__` should validate:
+`PointsValueTable.__post_init__` should validate:
 
 ```text
 values contains exactly value_id, value, n_points
@@ -223,11 +223,11 @@ Storage schema:
 
 Public API names should also be generic:
 
-- `TranscriptValueIndexCache`;
-- `TranscriptValueSelection`;
-- `TranscriptValueTable`;
-- `build_transcript_value_index_cache_for_points_element`;
-- `load_transcripts`;
+- `PointsValueIndexCache`;
+- `PointsValueSelection`;
+- `PointsValueTable`;
+- `build_points_value_index_cache_for_points_element`;
+- `load_points`;
 - `add_transcript_value_points_layer`;
 - `TRANSCRIPT_VALUE_INDEX_SCHEMA_VERSION`.
 
@@ -410,7 +410,7 @@ points element + index column
 
 Rebuilding the `gene` cache must not delete or stale the `target` cache, and rebuilding the `target` cache must not affect the `gene` cache.
 
-Only one build should run for the same cache identity at a time. While a cache build is running, the UI should disable the build/rebuild button for that cache identity and report that the cache is building. Builds for different index columns can be allowed independently later, but the first implementation can serialize all transcript value-index builds if that is simpler.
+Only one build should run for the same cache identity at a time. While a cache build is running, the UI should disable the build/rebuild button for that cache identity and report that the cache is building. Builds for different index columns can be allowed independently later, but the first implementation can serialize all points value-index builds if that is simpler.
 
 If a valid cache already exists for the selected points element and index column, clicking rebuild should show a confirmation dialog before overwriting it. If the user cancels, the existing cache should remain unchanged and no temporary build should start.
 
@@ -706,7 +706,7 @@ This section is deferred until the direct no-cache path has been implemented and
 Recommended public entry point:
 
 ```python
-def build_transcript_value_index_cache_for_points_element(
+def build_points_value_index_cache_for_points_element(
     sdata: SpatialData,
     points_name: str = "transcripts",
     *,
@@ -718,7 +718,7 @@ def build_transcript_value_index_cache_for_points_element(
     target_rows_per_row_group: int = 25_000,
     shuffle_random_state: int | None = 42,
     default_render_point_budget: int = 100_000,
-) -> TranscriptValueIndexCache:
+) -> PointsValueIndexCache:
     ...
 ```
 
@@ -748,7 +748,7 @@ The shuffled order is best effort. It is good enough to make the first row group
 Recommended direct no-cache reader entry point:
 
 ```python
-def load_transcripts(
+def load_points(
     sdata: SpatialData,
     points_name: str,
     values: Sequence[str] | Literal["all"],
@@ -758,7 +758,7 @@ def load_transcripts(
     index_column: str = "gene",
     render_point_budget: int = 100_000,
     random_state: int | None = 42,
-) -> TranscriptValueSelection:
+) -> PointsValueSelection:
     ...
 ```
 
@@ -783,7 +783,7 @@ filter selected values first, then sample selected rows
 
 Do not sample the full points dataframe before filtering, because that can drop rare selected values before they have a chance to appear.
 
-The direct no-cache reader should return the same `TranscriptValueSelection` object shape as a future cache-backed reader. This keeps the napari layer integration independent of the read backend.
+The direct no-cache reader should return the same `PointsValueSelection` object shape as a future cache-backed reader. This keeps the napari layer integration independent of the read backend.
 
 Recommended optional cache-backed reader entry point:
 
@@ -794,7 +794,7 @@ def load_transcripts_for_values_from_cache(
     *,
     render_point_budget: int = 100_000,
     columns: Sequence[str] = ("x", "y", "value_id"),
-) -> TranscriptValueSelection:
+) -> PointsValueSelection:
     ...
 ```
 
@@ -808,7 +808,7 @@ Use a generic value-selection return object:
 
 ```python
 @dataclass(frozen=True, kw_only=True)
-class TranscriptValueSelection:
+class PointsValueSelection:
     coordinates: np.ndarray
     features: pd.DataFrame
     index_column: str
@@ -861,7 +861,7 @@ Do not include `transcript_id` in `features` for the MVP. If picked-point canoni
 Showing 100,000 of 2,431,912 selected points.
 ```
 
-`TranscriptValueSelection.__post_init__` should validate:
+`PointsValueSelection.__post_init__` should validate:
 
 ```text
 coordinates is an Nx2 array
@@ -1011,7 +1011,7 @@ Coordinate behavior:
 
 Layer identity and update behavior:
 
-- create or update one Harpy-owned transcript value-selection `Points` layer;
+- create or update one Harpy-owned points value-selection `Points` layer;
 - do not create one layer per value;
 - do not create one layer per visualization request;
 - changing the selected value set, for example from `gene=MALAT1` to `gene=TEST`, updates the same layer object by replacing its data, features, name, colors, and sampled status;
@@ -1019,7 +1019,7 @@ Layer identity and update behavior:
 
 Use `LayerBindingRegistry` as the authoritative way to find the existing layer, following the existing viewer adapter pattern. Do not rely on napari layer names or metadata as the primary lookup contract.
 
-Add a transcript value-selection points binding to the registry. The exact class name can change, but the binding should capture:
+Add a points value-selection points binding to the registry. The exact class name can change, but the binding should capture:
 
 ```text
 layer: Points
@@ -1085,7 +1085,7 @@ On update, preserve user-toggled visibility when possible and do not reset the c
 
 ## UI State Machine
 
-The transcript value-index UI should be driven by explicit states rather than ad hoc button toggles.
+The points value-index UI should be driven by explicit states rather than ad hoc button toggles.
 
 Follow the existing napari-harpy controller pattern for this workflow. The state machine should live in a widget-local controller, not in `HarpyAppState` and not directly in the Qt widget class.
 
@@ -1098,7 +1098,7 @@ src/napari_harpy/_transcript_value_index.py
 
 src/napari_harpy/viewer/adapter.py
   Points-layer binding support.
-  Add/update the transcript value-selection Points layer.
+  Add/update the points value-selection Points layer.
 
 src/napari_harpy/widgets/viewer/transcript_value_index_controller.py
   UI state machine.
@@ -1116,7 +1116,7 @@ src/napari_harpy/widgets/viewer/widget.py
 
 This mirrors the existing controller split used by `FeatureExtractionController` and `ClassifierController`: the controller owns long-running work, state transitions, and status text, while the widget renders that state and forwards user actions.
 
-`HarpyAppState` should remain the shared viewer/session hub for loaded `SpatialData`, coordinate system, layer bindings, and viewer adapter. Do not put transcript value-index UI state there.
+`HarpyAppState` should remain the shared viewer/session hub for loaded `SpatialData`, coordinate system, layer bindings, and viewer adapter. Do not put points value-index UI state there.
 
 Core states:
 
@@ -1161,7 +1161,7 @@ LOAD_FAILED
 Represent the states with an explicit enum, for example:
 
 ```python
-class TranscriptValueIndexUiState(Enum):
+class PointsValueIndexUiState(Enum):
     NO_SDATA = "no_sdata"
     NO_POINTS_ELEMENT = "no_points_element"
     LOADING_VALUES = "loading_values"
@@ -1254,7 +1254,7 @@ LOAD_FAILED
   Show the read or layer-update error in the status card.
 ```
 
-Direct value-list computation and selection reads must run asynchronously so the Qt UI does not freeze. Optional cache builds must also run asynchronously if implemented. For the MVP, only one value-list job and one selection read should run at a time for the transcript value-selection layer. The first implementation can simply disable the relevant buttons while work is running rather than queueing multiple requests.
+Direct value-list computation and selection reads must run asynchronously so the Qt UI does not freeze. Optional cache builds must also run asynchronously if implemented. For the MVP, only one value-list job and one selection read should run at a time for the points value-selection layer. The first implementation can simply disable the relevant buttons while work is running rather than queueing multiple requests.
 
 Optional cache build progress can be indeterminate. Prefer clear phase text over fake percentages:
 
@@ -1419,7 +1419,7 @@ Done when:
 
 ### Slice 1: Core Module Skeleton And Data Contracts
 
-Goal: create the standalone transcript value-selection module without building a cache.
+Goal: create the standalone points value-selection module without building a cache.
 
 Status: implemented.
 
@@ -1439,8 +1439,8 @@ Includes:
   - `DEFAULT_RANDOM_STATE = 42`;
   - `TRANSCRIPT_VALUE_INDEX_SCHEMA_VERSION = "harpy-transcripts-value-index-0.1"`;
 - dataclasses or typed return objects:
-  - `TranscriptValueTable`;
-  - `TranscriptValueSelection`;
+  - `PointsValueTable`;
+  - `PointsValueSelection`;
 - direct read job/config objects if useful;
 - error handling aligned with the existing codebase:
   - use `ValueError` for expected validation and precondition failures;
@@ -1449,8 +1449,8 @@ Includes:
 Tests:
 
 - basic object construction;
-- `TranscriptValueTable` validates required columns;
-- `TranscriptValueSelection` validates coordinate shape/dtype, feature row count, required feature columns, and count invariants;
+- `PointsValueTable` validates required columns;
+- `PointsValueSelection` validates coordinate shape/dtype, feature row count, required feature columns, and count invariants;
 - `ValueError` is raised for invalid dataclass inputs.
 
 Done when:
@@ -1592,9 +1592,9 @@ Includes:
 - public value-table helper:
 
 ```python
-def build_direct_value_table(
+def build_points_value_table(
     validated: _ValidatedPointsElement,
-) -> TranscriptValueTable:
+) -> PointsValueTable:
     ...
 ```
 
@@ -1605,7 +1605,7 @@ def build_direct_value_table(
 - merge source values that normalize to the same string into one value;
 - exclude unused categorical categories;
 - raise `ValueError` if invalid values are encountered during value-table construction;
-- return a `TranscriptValueTable` with:
+- return a `PointsValueTable` with:
 
 ```text
 value_id: uint32
@@ -1649,14 +1649,14 @@ Includes:
 - public direct reader:
 
 ```python
-def load_transcripts(
+def load_points(
     validated: _ValidatedPointsElement,
-    value_table: TranscriptValueTable,
+    value_table: PointsValueTable,
     values: Sequence[str] | Literal["all"],
     *,
     render_point_budget: int = DEFAULT_RENDER_POINT_BUDGET,
     random_state: int | None = DEFAULT_RANDOM_STATE,
-) -> TranscriptValueSelection:
+) -> PointsValueSelection:
     ...
 ```
 
@@ -1683,7 +1683,7 @@ result = result.iloc[:render_point_budget]
 
 - accept sampled undershoot from Dask partition rounding; the invariant is `loaded_count <= render_point_budget`, not exactly equal to the budget;
 - final-trim in memory to at most `render_point_budget`;
-- return `TranscriptValueSelection`;
+- return `PointsValueSelection`;
 - set `is_sampled = total_count > render_point_budget`;
 - sampled results must include user-visible warning text;
 - exact results must have `warning=None`;
@@ -1756,7 +1756,7 @@ Goal: expose the direct no-cache workflow in the existing Harpy viewer widget.
 Includes:
 
 - controller module `src/napari_harpy/widgets/viewer/transcript_value_index_controller.py`;
-- explicit `TranscriptValueIndexUiState` enum;
+- explicit `PointsValueIndexUiState` enum;
 - immutable value-list and read job dataclasses for worker inputs;
 - controller-owned status message, status kind, current value table, and current selection;
 - points element selector;
@@ -1797,7 +1797,7 @@ Goal: make the direct path reliable enough to iterate on real data.
 
 Includes:
 
-- fixture `SpatialData` with transcript points;
+- fixture `SpatialData` with points;
 - direct validate, value table, exact read, sampled read, and layer update flow;
 - failure cases for invalid source data;
 - basic performance sanity checks on moderate synthetic data;
@@ -1859,7 +1859,7 @@ Includes:
 - read only listed row groups;
 - implement proportional quota allocation for sampled reads;
 - support `values="all"`;
-- return the same `TranscriptValueSelection` object as direct mode.
+- return the same `PointsValueSelection` object as direct mode.
 
 Done when:
 
@@ -1940,19 +1940,19 @@ DEFAULT_INDEX_COLUMN
 DEFAULT_RENDER_POINT_BUDGET
 DEFAULT_RANDOM_STATE
 TRANSCRIPT_VALUE_INDEX_SCHEMA_VERSION
-TranscriptValueTable
-TranscriptValueSelection
-TranscriptValuePointsLayerBinding
-load_transcripts
-build_direct_value_table
+PointsValueTable
+PointsValueSelection
+PointsValueLayerBinding
+load_points
+build_points_value_table
 add_transcript_value_points_layer
 ```
 
 Optional cache objects:
 
 ```text
-TranscriptValueIndexCache
-build_transcript_value_index_cache_for_points_element
+PointsValueIndexCache
+build_points_value_index_cache_for_points_element
 load_transcripts_for_values_from_cache
 ```
 
@@ -1973,16 +1973,16 @@ src/napari_harpy/widgets/viewer/transcript_value_index_controller.py
 Suggested controller objects:
 
 ```text
-TranscriptValueIndexUiState
-TranscriptValueIndexValueJob
-TranscriptValueIndexReadJob
-TranscriptValueIndexController
+PointsValueIndexUiState
+PointsValueIndexValueJob
+PointsValueIndexReadJob
+PointsValueIndexController
 ```
 
 Optional cache controller objects:
 
 ```text
-TranscriptValueIndexBuildJob
+PointsValueIndexBuildJob
 ```
 
 The controller should own widget-facing state and async worker orchestration. The Qt widget should render controller state and forward user actions; it should not own the cache build/read state machine directly.
@@ -2006,4 +2006,4 @@ The optional cache path becomes successful later when:
 - it writes `values.parquet`, `value_index.parquet`, and data Parquet files;
 - it validates cache availability and staleness before using the cache-backed reader;
 - every data row group listed in `value_index.parquet` contains exactly one `value_id`;
-- cache-backed reads return the same `TranscriptValueSelection` object shape as direct reads.
+- cache-backed reads return the same `PointsValueSelection` object shape as direct reads.
