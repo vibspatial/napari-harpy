@@ -278,7 +278,46 @@ Optional input:
 transcript_id
 ```
 
-If present, `transcript_id` should be used for stable sampling. If absent, the builder can create a best-effort internal row identity, but deterministic sampling across rebuilds is only guaranteed when the source row order and partitioning are stable.
+If present, `transcript_id` should be used as the stable row identity for deterministic sampling. If absent, the builder creates and stores `_internal_row_id` for the current build. This id is sufficient to avoid duplicate sampling keys within one build, but deterministic sampling across rebuilds is guaranteed only when the source dataframe row order and partitioning are stable.
+
+If `transcript_id` is provided:
+
+- the column must exist;
+- values must be non-null;
+- values must be unique across the selected points element;
+- values are used as row identity, not as display labels.
+
+If `transcript_id` is absent:
+
+- the builder creates a private `_internal_row_id: uint64`;
+- ids should be assigned from partition offsets and row position within each partition;
+- `_internal_row_id` is written to the data shards;
+- `_internal_row_id` should not be exposed as a user-facing feature unless needed for debugging.
+
+Stable row identity is the input to the build-time `sample_key`:
+
+```text
+sample_key = stable_uint64_hash(row_identity)
+```
+
+The MVP should store this policy in `metadata.json`:
+
+```text
+row_identity_policy: "transcript_id" | "internal-row-id-from-partition-offsets-v1"
+sample_key_policy: "uint64-hash-of-row-identity-v1"
+```
+
+Rows should be ordered deterministically within each value by:
+
+```text
+value_id
+sample_key
+row_identity
+```
+
+The row identity tie-breaker makes ordering deterministic even if two rows produce the same `sample_key`.
+
+`sample_key` is a build-time-only column. It is used to write rows in deterministic random-looking physical order, but it is not stored in `data/shard-*.parquet`.
 
 ## Cache Lifecycle
 
@@ -347,6 +386,7 @@ source_n_points: int
 n_values: int
 target_rows_per_row_group: int
 default_max_points: int
+row_identity_policy: string
 sample_key_policy: string
 ```
 
@@ -395,7 +435,7 @@ n_points: int64
 data/shard-00003.parquet
 ```
 
-`value_row_group` is the row group order within that value after sorting by the stable sample key. This makes preview sampling simple:
+`value_row_group` is the row group order within that value after sorting by the build-time stable sample key. This makes preview sampling simple:
 
 ```text
 read the first k row groups for this value
@@ -433,24 +473,26 @@ Required columns:
 x: float32
 y: float32
 value_id: uint32
-sample_key: uint64
 ```
 
-Optional columns:
+Exactly one row identity column:
 
 ```text
-transcript_id
+transcript_id: source dtype
+_internal_row_id: uint64
 ```
+
+If `transcript_id` was provided, store `transcript_id` using the source column dtype when possible. If `transcript_id` was absent, store `_internal_row_id: uint64`.
 
 Store display coordinates as `float32`. This is good enough for napari transcript visualization and reduces memory pressure in both the cache and the `Points` layer. The canonical full-precision values remain in `points.parquet`. If exact coordinate preservation is needed for picked transcripts later, use `transcript_id` to look up canonical rows.
 
-Rows inside each value should be ordered by a stable random-looking `sample_key`.
+Rows inside each value should be physically ordered by a stable random-looking build-time `sample_key`, with row identity as the tie-breaker.
 
 This matters because it lets the reader build a preview without reading the full value:
 
 ```text
 rows are grouped by value_id
-within each value_id, rows are sorted by sample_key
+within each value_id, rows are physically sorted by sample_key and row identity
 first row groups for a value are therefore a deterministic random-like preview
 ```
 
@@ -459,10 +501,10 @@ Do not use Python's built-in `hash`, because it is intentionally not stable acro
 Possible first implementation:
 
 ```text
-sample_key = pandas.util.hash_pandas_object(..., index=False, hash_key=<fixed 16 byte key>)
+sample_key = pandas.util.hash_pandas_object(row_identity, index=False, hash_key=<fixed 16 byte key>)
 ```
 
-If cross-language stability becomes important, switch to a named stable hash such as xxhash64 or BLAKE2b-64.
+The computed `sample_key` is used for sorting before write and then dropped from the stored data shard schema. If cross-language stability becomes important, switch to a named stable hash such as xxhash64 or BLAKE2b-64.
 
 ## Cache Availability And Staleness Checks
 
@@ -613,9 +655,9 @@ Implementation steps:
 3. Normalize selected index values by stripping whitespace and converting valid values to strings.
 4. Build `values.parquet` using a Dask `value_counts`.
 5. Assign deterministic `value_id` values from the sorted value table.
-6. Create a working dataframe with `x`, `y`, `value_id`, optional `transcript_id`, and `sample_key`.
+6. Create a working dataframe with `x`, `y`, `value_id`, row identity, and build-time `sample_key`.
 7. Shuffle or repartition by `value_id` so each value is written from as few partitions as practical.
-8. Within each output partition, sort by `value_id` and `sample_key`.
+8. Within each output partition, sort by `value_id`, build-time `sample_key`, and row identity.
 9. Write Parquet row groups so each row group contains only one `value_id`.
 10. Split very large values across multiple row groups of at most `target_rows_per_row_group`.
 11. Build `value_index.parquet` from the written row-group metadata.
@@ -687,12 +729,12 @@ The MVP default is proportional sampling by point count, with a minimum of one p
 1. Allocate a sample quota per selected value, proportional to its point count.
 2. If the number of selected values is less than `max_points`, give each selected value at least one point when possible.
 3. For each value, read the first row groups in `value_row_group` order until at least the quota is available.
-4. If the loaded rows exceed the quota, downsample by `sample_key`.
+4. If the loaded rows exceed the quota, keep the first quota rows in physical cache order.
 5. Concatenate the sampled rows across values.
 
 Balanced sampling and user-selectable sampling modes are deferred until the UI needs an explicit comparison mode. They are useful for comparing spatial patterns across values, but they intentionally distort abundance and should not be the default.
 
-Because rows within each value are sorted by a stable random-looking `sample_key`, reading the first row groups gives a deterministic preview without scanning the full selected subset.
+Because rows within each value are physically sorted by a stable random-looking build-time `sample_key`, reading the first row groups gives a deterministic preview without scanning the full selected subset.
 
 This is important. If we simply read every selected row and then sample, large value selections will still be slow.
 
@@ -760,7 +802,7 @@ For sampled large selections:
 ```text
 selected values
 -> per-value quotas
--> first few sample-key-sorted row groups per value
+-> first few build-time-sample-key-sorted row groups per value
 -> pyarrow read of a bounded number of rows
 -> napari Points layer update
 ```
@@ -918,13 +960,13 @@ Includes:
   - `x`;
   - `y`;
   - value id;
-  - `sample_key`;
-  - optional `transcript_id`;
+  - row identity;
+  - build-time `sample_key`;
 - convert display coordinates to `float32`;
 - write `data/shard-*.parquet`;
 - enforce single-value row groups;
 - split large values across row groups;
-- sort rows within each value by `sample_key`;
+- sort rows within each value by build-time `sample_key` and row identity;
 - write `value_index.parquet`;
 - finalize through staged replacement.
 
@@ -1007,7 +1049,7 @@ Includes:
 - minimum one point per selected value when possible;
 - deterministic quota rounding and tie-breaking;
 - read first required row groups in `value_row_group` order;
-- downsample excess rows by `sample_key`;
+- trim excess loaded rows by keeping the first quota rows in physical cache order;
 - support `values="all"`;
 - produce warning text like:
   - `Showing 100,000 of 2,431,912 selected points.`;
