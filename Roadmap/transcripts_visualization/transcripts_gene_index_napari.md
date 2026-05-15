@@ -1755,6 +1755,22 @@ Includes:
 
 ```python
 @dataclass(frozen=True)
+class PointsLayerIdentity:
+    sdata: SpatialData
+    points_name: str
+    coordinate_system: str
+    index_column: str
+
+    def __post_init__(self) -> None:
+        if not self.points_name:
+            raise ValueError("`points_name` must be a non-empty string.")
+        if not self.coordinate_system:
+            raise ValueError("`coordinate_system` must be a non-empty string.")
+        if not self.index_column:
+            raise ValueError("`index_column` must be a non-empty string.")
+
+
+@dataclass(frozen=True)
 class PointsLayerUpdateResult:
     layer: Points
     created: bool
@@ -1763,9 +1779,7 @@ class PointsLayerUpdateResult:
 
 def _ensure_points_layer_from_selection(
     self,
-    sdata: SpatialData,
-    points_name: str,
-    coordinate_system: str,
+    identity: PointsLayerIdentity,
     *,
     selection: PointsValueSelection,
 ) -> PointsLayerUpdateResult:
@@ -1774,8 +1788,10 @@ def _ensure_points_layer_from_selection(
 
 - this helper is adapter-internal/private because Slice 6 should own async read orchestration;
 - `PointsLayerUpdateResult` is intentionally a layer-update result, not a data-load result: it should not include `selection` or `value_table`, because `selection` is already the input and `value_table` belongs to the controller/read state;
-- `points_name` becomes `PointsLayerBinding.element_name`;
-- `selection.index_column` becomes `PointsLayerBinding.index_column`;
+- `PointsLayerIdentity` bundles the source/layer identity so the adapter does not receive loose `sdata`, `points_name`, `coordinate_system`, and `index_column` arguments that can drift out of sync with the selection;
+- `_ensure_points_layer_from_selection` must validate `identity.index_column == selection.index_column`;
+- `identity.points_name` becomes `PointsLayerBinding.element_name`;
+- `identity.index_column` becomes `PointsLayerBinding.index_column`;
 - `selection.selection_mode == "all"` affects layer naming directly; no separate request-mode argument is needed;
 - `_ensure_points_layer_from_selection` performs only napari-safe layer work:
   - create or update one napari `Points` layer;
@@ -1786,7 +1802,7 @@ def _ensure_points_layer_from_selection(
 - Slice 6/controller will run validation, direct value-table construction, and `load_points` asynchronously, then call this helper on the main Qt thread after stale-job checks;
 - layer lookup and update behavior:
   - find an existing registered matching points layer through `LayerBindingRegistry`, not by layer name alone;
-  - match by source identity, coordinate system, and `index_column`;
+  - match by `identity.sdata`, `identity.points_name`, `identity.coordinate_system`, and `identity.index_column`;
   - ignore unregistered same-name layers;
   - if a matching registered layer exists, update the same layer object and set `created=False`;
   - if no matching registered layer exists, create a new napari `Points` layer, register it, and set `created=True`;
@@ -1802,16 +1818,16 @@ def _ensure_points_layer_from_selection(
 
 ```text
 empty:
-  <points_name>: no <index_column> values
+  <identity.points_name>: no <identity.index_column> values
 
 one selected value:
-  <points_name>: <index_column>=<value>
+  <identity.points_name>: <identity.index_column>=<value>
 
 multiple selected values:
-  <points_name>: <n> <index_column> values
+  <identity.points_name>: <n> <identity.index_column> values
 
 all values:
-  <points_name>: all <index_column> values
+  <identity.points_name>: all <identity.index_column> values
 ```
 
 - use the all-values name when `selection.selection_mode == "all"`;
@@ -1840,6 +1856,8 @@ solid_color: "#00FFFF"
 Tests:
 
 - registry uses `PointsLayerBinding` with `element_type="points"` and `index_column`;
+- `_ensure_points_layer_from_selection` receives one `PointsLayerIdentity`, not loose source identity arguments;
+- mismatched `identity.index_column` and `selection.index_column` raises;
 - points bindings do not use primary/styled roles;
 - `_ensure_points_layer_from_selection` does not validate/build a value table/read Dask data;
 - creates layer when missing and returns `created=True`;
@@ -1877,10 +1895,21 @@ Includes:
 ```python
 @dataclass(frozen=True)
 class PointsValueTableLoadResult:
+    identity: PointsLayerIdentity
     validated: _ValidatedPointsElement
     value_table: PointsValueTable
 
     def __post_init__(self) -> None:
+        if self.identity.points_name != self.validated.points_name:
+            raise ValueError(
+                "`identity.points_name` and `validated.points_name` must match. "
+                f"Got {self.identity.points_name!r} and {self.validated.points_name!r}."
+            )
+        if self.identity.index_column != self.validated.index_column:
+            raise ValueError(
+                "`identity.index_column` and `validated.index_column` must match. "
+                f"Got {self.identity.index_column!r} and {self.validated.index_column!r}."
+            )
         if self.validated.index_column != self.value_table.index_column:
             raise ValueError(
                 "`validated.index_column` and `value_table.index_column` must match. "
@@ -1889,12 +1918,26 @@ class PointsValueTableLoadResult:
 
 @dataclass(frozen=True)
 class PointsLoadResult:
+    identity: PointsLayerIdentity
     selection: PointsValueSelection
     value_table: PointsValueTable
+
+    def __post_init__(self) -> None:
+        if self.identity.index_column != self.selection.index_column:
+            raise ValueError(
+                "`identity.index_column` and `selection.index_column` must match. "
+                f"Got {self.identity.index_column!r} and {self.selection.index_column!r}."
+            )
+        if self.selection.index_column != self.value_table.index_column:
+            raise ValueError(
+                "`selection.index_column` and `value_table.index_column` must match. "
+                f"Got {self.selection.index_column!r} and {self.value_table.index_column!r}."
+            )
 ```
 
 - `PointsValueTableLoadResult` is the controller's cached current source/value-table state; do not store the derived value table on `_ValidatedPointsElement`;
-- `PointsLoadResult` is a controller/worker result for Dask selected-point reads, while `PointsLayerUpdateResult` remains the adapter result for applying an already loaded selection to a napari layer;
+- `PointsLoadResult` is a controller/worker result for Dask selected-point reads; it carries the same `PointsLayerIdentity` so the adapter can update the intended napari layer without receiving loose source identity arguments;
+- `PointsLayerUpdateResult` remains the adapter result for applying an already loaded selection to a napari layer;
 - points element selector;
 - index column selector;
 - numeric text-field `render_point_budget` control with default `100_000`, minimum `1_000`, and maximum `1_000_000`;
@@ -2092,6 +2135,7 @@ Adapter-side points layer objects:
 
 ```text
 PointsLayerBinding
+PointsLayerIdentity
 PointsLayerUpdateResult
 ViewerAdapter._ensure_points_layer_from_selection
 ```
