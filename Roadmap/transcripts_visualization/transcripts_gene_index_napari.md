@@ -31,7 +31,7 @@ The first implementation should:
 1. compute the selected total count first;
 2. if the selection is within `render_point_budget`, compute the exact selection;
 3. if the selection exceeds `render_point_budget`, filter first, sample/downsample before compute when possible, then final-trim in memory;
-4. return the same `TranscriptValueIndexSelection` object that a future cache-backed reader would return.
+4. return the same `TranscriptValueSelection` object that a future cache-backed reader would return.
 
 This keeps the first implementation much simpler and lets us test whether the direct Dask path is already good enough for common selected-gene workflows.
 
@@ -177,7 +177,7 @@ Storage schema:
 Public API names should also be generic:
 
 - `TranscriptValueIndexCache`;
-- `TranscriptValueIndexSelection`;
+- `TranscriptValueSelection`;
 - `build_transcript_value_index_cache_for_points_element`;
 - `load_transcripts_for_values`;
 - `add_transcript_value_points_layer`;
@@ -710,7 +710,7 @@ def load_transcripts_for_values_direct(
     index_column: str = "gene",
     render_point_budget: int = 100_000,
     random_state: int | None = 42,
-) -> TranscriptValueIndexSelection:
+) -> TranscriptValueSelection:
     ...
 ```
 
@@ -735,7 +735,7 @@ filter selected values first, then sample selected rows
 
 Do not sample the full points dataframe before filtering, because that can drop rare selected values before they have a chance to appear.
 
-The direct no-cache reader should return the same `TranscriptValueIndexSelection` object shape as a future cache-backed reader. This keeps the napari layer integration independent of the read backend.
+The direct no-cache reader should return the same `TranscriptValueSelection` object shape as a future cache-backed reader. This keeps the napari layer integration independent of the read backend.
 
 Recommended optional cache-backed reader entry point:
 
@@ -746,7 +746,7 @@ def load_transcripts_for_values_from_cache(
     *,
     render_point_budget: int = 100_000,
     columns: Sequence[str] = ("x", "y", "value_id"),
-) -> TranscriptValueIndexSelection:
+) -> TranscriptValueSelection:
     ...
 ```
 
@@ -756,11 +756,11 @@ For direct mode, selected values should come from the direct value vocabulary co
 
 ## Reader Return Object
 
-Use a generic value-index return object:
+Use a generic value-selection return object:
 
 ```python
 @dataclass(frozen=True, kw_only=True)
-class TranscriptValueIndexSelection:
+class TranscriptValueSelection:
     coordinates: np.ndarray
     features: pd.DataFrame
     selected_values: tuple[str, ...]
@@ -1380,7 +1380,7 @@ Includes:
 - new module, likely `src/napari_harpy/_transcript_value_index.py`;
 - schema version constant;
 - dataclasses or typed return objects:
-  - `TranscriptValueIndexSelection`;
+  - `TranscriptValueSelection`;
 - direct read job/config objects if useful;
 - custom errors for invalid source data, stale cache, invalid selection, and cache read failures.
 
@@ -1458,7 +1458,7 @@ Includes:
 - if `total_count <= render_point_budget`, compute exact selected rows;
 - if `total_count > render_point_budget`, filter selected rows first, then Dask-sample before compute;
 - final-trim in memory to at most `render_point_budget`;
-- return `TranscriptValueIndexSelection`;
+- return `TranscriptValueSelection`;
 - include coordinates, features, selected values, selected value ids, loaded count, total count, render budget, sampled flag, and warning text.
 
 Tests:
@@ -1622,7 +1622,7 @@ Includes:
 - read only listed row groups;
 - implement proportional quota allocation for sampled reads;
 - support `values="all"`;
-- return the same `TranscriptValueIndexSelection` object as direct mode.
+- return the same `TranscriptValueSelection` object as direct mode.
 
 Done when:
 
@@ -1698,7 +1698,7 @@ Suggested objects:
 
 ```text
 TRANSCRIPT_VALUE_INDEX_SCHEMA_VERSION
-TranscriptValueIndexSelection
+TranscriptValueSelection
 TranscriptValueIndexError
 TranscriptValueIndexInvalidCacheError
 TranscriptValueIndexInvalidSelectionError
@@ -1768,4 +1768,4 @@ The optional cache path becomes successful later when:
 - it writes `values.parquet`, `value_index.parquet`, and data Parquet files;
 - it validates cache availability and staleness before using the cache-backed reader;
 - every data row group listed in `value_index.parquet` contains exactly one `value_id`;
-- cache-backed reads return the same `TranscriptValueIndexSelection` object shape as direct reads.
+- cache-backed reads return the same `TranscriptValueSelection` object shape as direct reads.
