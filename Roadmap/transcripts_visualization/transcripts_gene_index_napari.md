@@ -150,6 +150,45 @@ probe
 
 The on-disk cache should use generic `value` terminology. In this document, "value" means one normalized value from the configured index column.
 
+### Terminology
+
+Use generic `value` terminology for storage, internal code, and public API names.
+
+The default index column is still `gene`, and the first user-facing workflow can still be selected-gene visualization. However, a cache built for `index_column="target"` or `index_column="probe"` should not expose gene-specific storage or API names.
+
+Storage schema:
+
+- use `values.parquet`, not `genes.parquet`;
+- use `value_index.parquet`, not `gene_index.parquet`;
+- use `value_id`, not `gene_id`;
+- use `value`, not `gene`, for the normalized string column in `values.parquet`.
+
+Public API names should also be generic:
+
+- `TranscriptValueIndexCache`;
+- `TranscriptValueIndexSelection`;
+- `build_transcript_value_index_cache_for_points_element`;
+- `load_transcripts_for_values`;
+- `add_transcript_value_points_layer`;
+- `TRANSCRIPT_VALUE_INDEX_SCHEMA_VERSION`.
+
+napari-visible features should use the selected source column name where possible. The reader can work with generic value data internally, but the layer should expose the semantic column selected by the user:
+
+```text
+index_column = "gene"   -> features["gene"]
+index_column = "target" -> features["target"]
+```
+
+The layer may also include `value_id` as an internal/debug feature. It should not expose only a generic `value` feature when a more meaningful selected column name is available.
+
+Widget labels should not hard-code "gene" once arbitrary index columns are supported. Prefer labels based on the selected index column, for example:
+
+```text
+index_column = "gene"         -> Search gene values
+index_column = "target"       -> Search target values
+index_column = "feature_name" -> Search feature_name values
+```
+
 ### Value Normalization Rules
 
 Index values are normalized before building `values.parquet`.
@@ -684,8 +723,8 @@ Layer behavior:
 
 - layer name: `transcripts` or `transcripts: selected values`;
 - data: `Nx2` array from `y, x` or `x, y`, matching the coordinate convention used elsewhere in Harpy;
-- features: at least the configured index-value column;
-- face color: categorical by the configured index-value column for small selections;
+- features: at least the configured index column and optionally `value_id`;
+- face color: categorical by the configured index column for small selections;
 - warning: displayed when the layer is sampled.
 
 Important implementation detail:
@@ -952,7 +991,7 @@ Tests:
 - unknown value raises;
 - exact load returns all selected rows;
 - reader does not use Dask;
-- features include configured index-value column.
+- features include the configured index column.
 
 Done when:
 
@@ -995,7 +1034,7 @@ Includes:
 - helper such as `add_transcript_value_points_layer`;
 - create or update one existing layer;
 - use explicit coordinate order;
-- attach feature column for selected value;
+- attach the configured index column and optionally `value_id`;
 - apply categorical coloring for small selections;
 - set point size, opacity, name, and metadata;
 - surface sampled warning.
@@ -1020,6 +1059,7 @@ Includes:
 
 - points element selector;
 - index column selector;
+- widget labels based on the selected index column rather than hard-coded "gene" wording;
 - create or rebuild cache button;
 - confirmation dialog before rebuilding an existing valid cache;
 - cache status display;
