@@ -171,6 +171,34 @@ n_points: uint64
 
 This table is a compact summary of the selected index column, not the full points dataframe. The UI uses it to populate value search, the direct reader uses it to resolve selected strings to `value_id`, and the returned layer features use it to attach compact `value_id` values. Keeping this schema aligned with future `values.parquet` lets the direct reader and optional cache reader share the same downstream napari layer path.
 
+Represent this table with a small immutable object:
+
+```python
+@dataclass(frozen=True, kw_only=True)
+class TranscriptValueVocabulary:
+    values: pd.DataFrame
+    index_column: str
+    total_count: int
+```
+
+`values` must contain exactly:
+
+```text
+value_id
+value
+n_points
+```
+
+`TranscriptValueVocabulary.__post_init__` should validate:
+
+```text
+values contains exactly value_id, value, n_points
+value_id is unique
+value is unique
+n_points is non-negative
+total_count == sum(values.n_points)
+```
+
 Returned selections and napari layer features should include only the MVP feature columns:
 
 ```text
@@ -197,8 +225,9 @@ Public API names should also be generic:
 
 - `TranscriptValueIndexCache`;
 - `TranscriptValueSelection`;
+- `TranscriptValueVocabulary`;
 - `build_transcript_value_index_cache_for_points_element`;
-- `load_transcripts_for_values`;
+- `load_transcripts_for_values_direct`;
 - `add_transcript_value_points_layer`;
 - `TRANSCRIPT_VALUE_INDEX_SCHEMA_VERSION`.
 
@@ -782,6 +811,7 @@ Use a generic value-selection return object:
 class TranscriptValueSelection:
     coordinates: np.ndarray
     features: pd.DataFrame
+    index_column: str
     selected_values: tuple[str, ...]
     selected_value_ids: tuple[int, ...]
     total_count: int
@@ -798,6 +828,8 @@ y, x
 ```
 
 The source dataframe and optional cache store coordinate columns as `x` and `y`, but the reader returns coordinates already ordered for napari `Points`.
+
+`index_column` is the configured source column used for value selection, for example `gene`, `target`, or `probe`. Layer code should use this field to find the categorical feature column for coloring and status text.
 
 `features` is a `pandas.DataFrame` with exactly `loaded_count` rows. Its row order must match `coordinates`. It must include:
 
@@ -826,35 +858,26 @@ Do not include `transcript_id` in `features` for the MVP. If picked-point canoni
 Showing 100,000 of 2,431,912 selected points.
 ```
 
-Use small custom exception types for the reader:
+`TranscriptValueSelection.__post_init__` should validate:
 
-```python
-class TranscriptValueIndexError(Exception):
-    ...
-
-
-class TranscriptValueIndexInvalidCacheError(TranscriptValueIndexError):
-    ...
-
-
-class TranscriptValueIndexInvalidSelectionError(TranscriptValueIndexError, ValueError):
-    ...
-
-
-class TranscriptValueIndexUnknownValueError(TranscriptValueIndexInvalidSelectionError):
-    ...
-
-
-class TranscriptValueIndexReadError(TranscriptValueIndexError):
-    ...
+```text
+coordinates is an Nx2 array
+coordinates dtype is float32
+len(features) == len(coordinates) == loaded_count
+features contains index_column
+features contains value_id
+loaded_count <= total_count
+loaded_count <= render_point_budget when is_sampled
 ```
 
 Expected error behavior:
 
-- unknown selected value: raise `TranscriptValueIndexUnknownValueError`;
-- missing or invalid optional-cache metadata, missing required cache files, schema mismatch, or count mismatch: raise `TranscriptValueIndexInvalidCacheError`;
-- invalid reader arguments, such as `render_point_budget <= 0`: raise `TranscriptValueIndexInvalidSelectionError`;
-- Dask, Parquet, or layer-read failure: raise `TranscriptValueIndexReadError`.
+- follow the existing napari-harpy style and use `ValueError` for expected validation and precondition failures;
+- invalid source dataframe or source schema: raise `ValueError`;
+- unknown selected value: raise `ValueError`;
+- invalid reader arguments, such as `render_point_budget <= 0`: raise `ValueError`;
+- missing or invalid optional-cache metadata, missing required cache files, schema mismatch, or count mismatch: raise `ValueError`;
+- unexpected Dask, Parquet, or layer-update failures can propagate to the controller/worker, which converts them into an error status message.
 
 An empty selected value list should return an empty exact selection:
 
@@ -1398,16 +1421,27 @@ Goal: create the standalone transcript value-selection module without building a
 Includes:
 
 - new module `src/napari_harpy/_transcript_value_index.py`;
-- schema version constant;
+- constants:
+  - `DEFAULT_X = "x"`;
+  - `DEFAULT_Y = "y"`;
+  - `DEFAULT_INDEX_COLUMN = "gene"`;
+  - `DEFAULT_RENDER_POINT_BUDGET = 100_000`;
+  - `DEFAULT_RANDOM_STATE = 42`;
+  - `TRANSCRIPT_VALUE_INDEX_SCHEMA_VERSION = "harpy-transcripts-value-index-0.1"`;
 - dataclasses or typed return objects:
+  - `TranscriptValueVocabulary`;
   - `TranscriptValueSelection`;
 - direct read job/config objects if useful;
-- custom errors for invalid source data, stale cache, invalid selection, and cache read failures.
+- error handling aligned with the existing codebase:
+  - use `ValueError` for expected validation and precondition failures;
+  - let unexpected Dask/IO failures propagate to the controller/worker so they become error status messages.
 
 Tests:
 
 - basic object construction;
-- error types.
+- `TranscriptValueVocabulary` validates required columns;
+- `TranscriptValueSelection` validates coordinate shape/dtype, feature row count, required feature columns, and count invariants;
+- `ValueError` is raised for invalid dataclass inputs.
 
 Done when:
 
@@ -1717,13 +1751,14 @@ src/napari_harpy/_transcript_value_index.py
 Suggested objects:
 
 ```text
+DEFAULT_X
+DEFAULT_Y
+DEFAULT_INDEX_COLUMN
+DEFAULT_RENDER_POINT_BUDGET
+DEFAULT_RANDOM_STATE
 TRANSCRIPT_VALUE_INDEX_SCHEMA_VERSION
+TranscriptValueVocabulary
 TranscriptValueSelection
-TranscriptValueIndexError
-TranscriptValueIndexInvalidCacheError
-TranscriptValueIndexInvalidSelectionError
-TranscriptValueIndexUnknownValueError
-TranscriptValueIndexReadError
 TranscriptValuePointsLayerBinding
 load_transcripts_for_values_direct
 compute_transcript_value_vocabulary
