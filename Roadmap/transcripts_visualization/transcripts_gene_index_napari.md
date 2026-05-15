@@ -747,6 +747,19 @@ This is not a strict reproducibility guarantee. The preview quality depends on t
 
 This is important. If we simply read every selected row and then sample, large value selections will still be slow.
 
+MVP read amplification tradeoff:
+
+The sampled output is capped by `max_points`, but the number of rows read from Parquet is not strictly capped. The reader loads whole Parquet row groups. If many selected values each have a tiny sample quota, reading the first row group for each value can load many more rows than the final displayed preview.
+
+This is accepted for the MVP to keep the cache layout simple. If this becomes a practical problem, add a small-preview-shard optimization:
+
+```text
+preview_rows_per_value = 512
+target_rows_per_row_group = 25_000
+```
+
+For each value, write one or more initial small `value_shard`s before the normal large row groups. Sampled reads would consume those small preview shards first, while exact reads would still read all shards. This reduces read amplification for large multi-value selections such as `values="all"` without adding a separate preview cache.
+
 ## All-Values Selection
 
 Selecting all values can be allowed.
@@ -1152,6 +1165,27 @@ Includes:
 Done when:
 
 - the MVP has a tested end-to-end path and clear known limitations.
+
+### Deferred Follow-Up: Small Preview Shards
+
+Goal: reduce sampled-read amplification if large multi-value previews are too slow.
+
+Problem:
+
+- sampled output is capped by `max_points`;
+- Parquet reads happen at row-group granularity;
+- when many selected values each need only a few points, reading one normal row group per value can load far more rows than are displayed.
+
+Possible solution:
+
+- add `preview_rows_per_value`, for example `512`;
+- for each value, write initial small `value_shard`s before normal `target_rows_per_row_group` shards;
+- make sampled reads consume preview shards first;
+- keep exact reads unchanged by reading all shards for the selected values.
+
+Status:
+
+- deferred until benchmarks show read amplification is a real problem.
 
 ## Deliverables
 
