@@ -1671,6 +1671,7 @@ def load_points(
 - compute `total_count` from `value_table.n_points` before materializing selected rows;
 - filter source rows before any sampling;
 - normalize source index values during filtering so rows such as `" AAMP "` match selected value `"AAMP"`;
+- implement direct filtering with a partition-local helper that normalizes and filters in one pass, instead of materializing a normalized index column on the full Dask dataframe;
 - if `total_count <= render_point_budget`, compute exact selected rows;
 - if `total_count > render_point_budget`, filter selected rows first, then Dask-sample before compute:
 
