@@ -1178,7 +1178,7 @@ LOAD_FAILED
 Represent the states with an explicit enum, for example:
 
 ```python
-class PointsValueIndexUiState(Enum):
+class PointsControllerState(Enum):
     NO_SDATA = "no_sdata"
     NO_POINTS_ELEMENT = "no_points_element"
     LOADING_VALUES = "loading_values"
@@ -1905,8 +1905,43 @@ Goal: introduce the controller and make all Dask-heavy points value work run off
 Includes:
 
 - controller module `src/napari_harpy/widgets/viewer/points_controller.py`;
-- explicit `PointsValueIndexUiState` enum;
-- immutable value-list and read job dataclasses for worker inputs;
+- explicit `PointsControllerState` enum;
+- controller public API:
+
+```python
+class PointsController:
+    def bind_source(
+        self,
+        sdata: SpatialData | None,
+        points_name: str | None,
+        coordinate_system: str | None,
+        index_column: str | None,
+        *,
+        x: str = "x",
+        y: str = "y",
+        transcript_id: str | None = None,
+    ) -> bool:
+        ...
+
+    def load_values(self) -> bool:
+        ...
+
+    def load_selection(
+        self,
+        values: Sequence[str] | Literal["all"],
+        *,
+        render_point_budget: int,
+        random_state: int | None = DEFAULT_RANDOM_STATE,
+    ) -> bool:
+        ...
+
+    def shutdown(self) -> None:
+        ...
+```
+
+- immutable worker input dataclasses:
+  - `PointsValueSourceJob` for source validation and value-table construction;
+  - `PointsLoadJob` for selected-point reads;
 - controller-owned status message, status kind, current value source, current selection, and latest layer result;
 - worker result dataclasses that keep Dask loading separate from napari layer updates:
 
@@ -1957,12 +1992,25 @@ class PointsLoadResult:
 - `PointsLoadResult` is a controller/worker result for Dask selected-point reads; it carries the same `PointsLayerIdentity` so the adapter can update the intended napari layer without receiving loose source identity arguments;
 - `PointsLayerResult` remains the adapter result for applying an already loaded selection to a napari layer;
 - explicit UI state machine for `NO_SDATA`, `NO_POINTS_ELEMENT`, `LOADING_VALUES`, `VALUES_READY`, `LOADING_SELECTION`, `LOADED_SELECTION`, and `LOAD_FAILED`;
+- missing or invalid `index_column` is handled as `LOAD_FAILED` with an error status message;
 - all Dask-heavy work must run off the Qt main thread;
 - the widget and adapter must not call `validate_points_element_for_value_selection`, `build_points_value_table`, or `load_points` directly on the main thread;
 - run value-list computation asynchronously in a worker;
 - run selection reads asynchronously in a worker;
-- after a read worker returns, call `ViewerAdapter._ensure_points_layer_from_selection` on the main Qt thread;
+- after a read worker returns, the controller checks the job id, then calls `ViewerAdapter._ensure_points_layer_from_selection` on the main Qt thread;
 - ignore stale async value/read results by job id;
+- maintain separate worker lifecycle state for value-source loading and selected-point loading:
+  - `_latest_value_job_id`;
+  - `_active_value_worker_job_id`;
+  - `_active_value_worker`;
+  - `_latest_load_job_id`;
+  - `_active_load_worker_job_id`;
+  - `_active_load_worker`;
+- rebinding the source cancels both active value-source and selected-point workers;
+- launching a new selected-point load cancels/replaces only the active selected-point worker;
+- expose private worker factory seams for tests:
+  - `_create_value_source_worker(job: PointsValueSourceJob)`;
+  - `_create_points_load_worker(job: PointsLoadJob)`;
 - no user-facing cancel button in the MVP;
 - progress/status phase text for value loading and read;
 - status and warning message construction for sampled previews and categorical-coloring disablement;
@@ -1971,13 +2019,16 @@ class PointsLoadResult:
 Tests:
 
 - controller initializes without requiring a cache;
-- value loading can be requested for a points element and index column;
+- value loading can be requested for a points element and index column through `bind_source(...)` followed by `load_values()`;
 - value loading is scheduled through a worker rather than executed synchronously by the controller caller;
 - successful value loading stores `PointsValueSource` and enters `VALUES_READY`;
 - failed value loading stores an error status and enters `LOAD_FAILED`;
+- missing or invalid index columns enter `LOAD_FAILED`;
 - selection reads can be requested from the current `PointsValueSource`;
 - selection reads are scheduled through a worker rather than executed synchronously by the controller caller or adapter;
 - adapter layer update is called only after the selection read worker returns;
+- rebinding cancels active value-source and selected-point workers;
+- launching a new selected-point load cancels/replaces the previous selected-point worker;
 - stale async value/read worker results are ignored;
 - `render_point_budget` changes affect the next reader call without rebuilding anything;
 - sampled preview and categorical-coloring warning text can be derived from controller state.
@@ -2211,12 +2262,12 @@ src/napari_harpy/widgets/viewer/points_controller.py
 Suggested controller objects:
 
 ```text
-PointsValueIndexUiState
+PointsControllerState
 PointsValueSource
 PointsLoadResult
-PointsValueIndexValueJob
-PointsValueIndexReadJob
-PointsValueIndexController
+PointsValueSourceJob
+PointsLoadJob
+PointsController
 ```
 
 Optional cache controller objects:
