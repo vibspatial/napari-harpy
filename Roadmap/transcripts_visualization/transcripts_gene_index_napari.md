@@ -1864,9 +1864,10 @@ solid_color: "#00FFFF"
   - category and palette order follows `selection.selected_values`;
   - more than `102` selected values: use `solid_color` and set `categorical_coloring_disabled=True`;
   - threshold is based on resolved selected values, not values that survived sampling;
-- status-card warning behavior belongs to Slice 6/controller:
+- warning ownership is split across Slice 6 and Slice 7:
   - sampled preview messaging comes from `PointsValueSelection.warning`;
-  - categorical-coloring warning text is derived from `PointsLayerResult.categorical_coloring_disabled`, `selected_value_count`, and `categorical_limit`;
+  - categorical-coloring warning text is derived by the controller from `PointsLayerResult.categorical_coloring_disabled`, `selected_value_count`, and `categorical_limit`;
+  - the widget renders these warnings in the transcript UI section's status card;
   - `points_styling.py` and the adapter should return structured facts, not user-facing warning strings.
 
 Tests:
@@ -1897,16 +1898,16 @@ Done when:
 
 - code can display exact or sampled direct selections in napari through `ViewerAdapter._ensure_points_layer_from_selection`.
 
-### Slice 6: Viewer UI Integration
+### Slice 6: Points Value Controller And Async Loading
 
-Goal: expose the direct no-cache workflow in the existing Harpy viewer widget.
+Goal: introduce the controller and make all Dask-heavy points value work run off the Qt main thread.
 
 Includes:
 
 - controller module `src/napari_harpy/widgets/viewer/transcript_value_index_controller.py`;
 - explicit `PointsValueIndexUiState` enum;
 - immutable value-list and read job dataclasses for worker inputs;
-- controller-owned status message, status kind, current value-table load result, and current selection;
+- controller-owned status message, status kind, current value source, current selection, and latest layer result;
 - worker result dataclasses that keep Dask loading separate from napari layer updates:
 
 ```python
@@ -1955,15 +1956,7 @@ class PointsLoadResult:
 - `PointsValueSource` is the controller's cached current source/value-table state; do not store the derived value table on `_ValidatedPointsElement`;
 - `PointsLoadResult` is a controller/worker result for Dask selected-point reads; it carries the same `PointsLayerIdentity` so the adapter can update the intended napari layer without receiving loose source identity arguments;
 - `PointsLayerResult` remains the adapter result for applying an already loaded selection to a napari layer;
-- points element selector;
-- index column selector;
-- numeric text-field `render_point_budget` control with default `100_000`, minimum `1_000`, and maximum `1_000_000`;
-- widget labels based on the selected index column rather than hard-coded "gene" wording;
-- direct value search and select control backed by the direct value table;
-- visualize selected values button;
-- all-values option;
 - explicit UI state machine for `NO_SDATA`, `NO_POINTS_ELEMENT`, `LOADING_VALUES`, `VALUES_READY`, `LOADING_SELECTION`, `LOADED_SELECTION`, and `LOAD_FAILED`;
-- optional cache status display if cache helpers already exist;
 - all Dask-heavy work must run off the Qt main thread;
 - the widget and adapter must not call `validate_points_element_for_value_selection`, `build_points_value_table`, or `load_points` directly on the main thread;
 - run value-list computation asynchronously in a worker;
@@ -1972,28 +1965,62 @@ class PointsLoadResult:
 - ignore stale async value/read results by job id;
 - no user-facing cancel button in the MVP;
 - progress/status phase text for value loading and read;
-- status-card warning placement for sampled previews and categorical-coloring disablement;
+- status and warning message construction for sampled previews and categorical-coloring disablement;
 - keep UI/controller state as the source of truth rather than layer metadata.
+
+Tests:
+
+- controller initializes without requiring a cache;
+- value loading can be requested for a points element and index column;
+- value loading is scheduled through a worker rather than executed synchronously by the controller caller;
+- successful value loading stores `PointsValueSource` and enters `VALUES_READY`;
+- failed value loading stores an error status and enters `LOAD_FAILED`;
+- selection reads can be requested from the current `PointsValueSource`;
+- selection reads are scheduled through a worker rather than executed synchronously by the controller caller or adapter;
+- adapter layer update is called only after the selection read worker returns;
+- stale async value/read worker results are ignored;
+- `render_point_budget` changes affect the next reader call without rebuilding anything;
+- sampled preview and categorical-coloring warning text can be derived from controller state.
+
+Done when:
+
+- controller-level direct value loading and selected-point loading work asynchronously, can update a napari layer through the adapter, and can be unit-tested without the full widget UI.
+
+### Slice 7: Viewer Widget UI Integration
+
+Goal: wire the points value controller into the existing Harpy viewer widget.
+
+Includes:
+
+- points element selector;
+- index column selector;
+- numeric text-field `render_point_budget` control with default `100_000`, minimum `1_000`, and maximum `1_000_000`;
+- widget labels based on the selected index column rather than hard-coded "gene" wording;
+- direct value search and select control backed by the controller's current `PointsValueSource`;
+- visualize selected values button;
+- all-values option;
+- UI rendering for `NO_SDATA`, `NO_POINTS_ELEMENT`, `LOADING_VALUES`, `VALUES_READY`, `LOADING_SELECTION`, `LOADED_SELECTION`, and `LOAD_FAILED`;
+- loading selection disables duplicate visualize requests;
+- status-card placement for direct value loading, selected-point loading, sampled previews, categorical-coloring disablement, and read/layer-update failures;
+- optional cache status display if cache helpers already exist;
+- widget should render controller state and forward user actions; it should not own value-table/read jobs directly.
 
 Tests:
 
 - widget initializes without requiring a cache;
 - value loading runs when points element or index column changes;
-- value loading is scheduled through a worker rather than executed synchronously by the widget;
 - value search is enabled when direct values are ready;
-- selected values trigger direct reader and layer update;
-- selection reads are scheduled through a worker rather than executed synchronously by the widget or adapter;
-- adapter layer update is called only after the selection read worker returns;
+- selected values trigger the controller read flow and layer update;
 - loading selection disables duplicate visualize requests;
-- stale async value/read worker results are ignored;
-- `render_point_budget` changes affect the next reader call without rebuilding anything;
-- sampled warning is visible.
+- `render_point_budget` changes are forwarded to the next controller read request without rebuilding anything;
+- sampled warning is visible in the status card;
+- categorical-coloring disabled warning is visible in the status card.
 
 Done when:
 
-- the user-facing direct workflow exists end to end, with all Dask validation, value-table construction, and selected-point reads running off the Qt main thread.
+- the user-facing direct workflow exists end to end in the viewer widget while Dask validation, value-table construction, and selected-point reads remain owned by the controller.
 
-### Slice 7: Integration Tests And Hardening
+### Slice 8: Integration Tests And Hardening
 
 Goal: make the direct path reliable enough to iterate on real data.
 
@@ -2114,9 +2141,10 @@ The MVP should produce these implementation pieces:
 1. Source validator: validates a points element, coordinate columns, and a selected string/categorical index column.
 2. Direct value table: computes selectable values and point counts from the Dask points dataframe.
 3. Direct reader: loads exact or sampled selected values from the Dask points dataframe, sampling before compute when needed.
-4. Viewer UI controls: lets the user choose the points element and index-value column, search/select values, set `render_point_budget`, and request visualization.
-5. napari layer integration: creates or updates one `Points` layer for the selected values and reports structured style metadata; sampled-state warning text remains on `PointsValueSelection` for the controller/status card.
-6. Tests: cover input validation, direct value resolution, exact reads, sampled reads, all-values selection, async stale-result handling, and layer updates.
+4. napari layer integration: creates or updates one `Points` layer for the selected values and reports structured style metadata; sampled-state warning text remains on `PointsValueSelection` for the controller/status card.
+5. Controller and async loading: runs value-table construction and selected-point reads off the Qt main thread, tracks job ids, and ignores stale results.
+6. Viewer UI controls: lets the user choose the points element and index-value column, search/select values, set `render_point_budget`, and request visualization.
+7. Tests: cover input validation, direct value resolution, exact reads, sampled reads, all-values selection, async stale-result handling, widget integration, and layer updates.
 
 Optional later deliverables:
 
