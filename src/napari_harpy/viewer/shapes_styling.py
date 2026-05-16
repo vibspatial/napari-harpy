@@ -30,7 +30,7 @@ SHAPES_EDGE_ALPHA = 1.0
 
 
 @dataclass(frozen=True)
-class StyledShapesStyleResult:
+class ShapesStyleResult:
     """Describe how one styled shapes layer was colored."""
 
     value_kind: ShapeColorValueKind
@@ -39,7 +39,7 @@ class StyledShapesStyleResult:
 
 
 @dataclass(frozen=True)
-class StyledShapesLoadResult(StyledShapesStyleResult):
+class ShapesLoadResult(ShapesStyleResult):
     """Describe the styled shapes load/update result returned to the viewer."""
 
     layer: Shapes
@@ -54,7 +54,7 @@ def apply_shape_color_source_to_shapes_layer(
     source_shapes_index_by_row: tuple[Any, ...],
     source_shapes_index_feature_name: str,
     fill: bool = False,
-) -> StyledShapesStyleResult:
+) -> ShapesStyleResult:
     """Apply one direct shapes-column color source to a napari ``Shapes`` layer."""
     if style_spec.source_kind != "shape_column":
         raise ValueError(f"Shape color sources must use `source_kind='shape_column'`, got `{style_spec.source_kind}`.")
@@ -138,7 +138,7 @@ def _build_categorical_shape_style(
     column_name: str,
     source_values: pd.Series,
     rendered_row_values: pd.Series,
-) -> tuple[StyledShapesStyleResult, pd.Series, pd.Series]:
+) -> tuple[ShapesStyleResult, pd.Series, pd.Series]:
     """Build categorical colors from source-level values and rendered-row values.
 
     Parameters
@@ -214,7 +214,7 @@ def _build_categorical_shape_style(
         missing_color=SHAPES_MISSING_BASE_COLOR,
     )
     return (
-        StyledShapesStyleResult(
+        ShapesStyleResult(
             value_kind="categorical",
             palette_source=palette_source,
             coercion_applied=coercion_applied,
@@ -226,14 +226,14 @@ def _build_categorical_shape_style(
 
 def _build_continuous_shape_style(
     rendered_row_values: pd.Series,
-) -> tuple[StyledShapesStyleResult, pd.Series, pd.Series]:
+) -> tuple[ShapesStyleResult, pd.Series, pd.Series]:
     numeric_rendered_row_values = pd.to_numeric(rendered_row_values, errors="coerce").astype("float64")
     rendered_row_colors = continuous_colors_for_values(
         numeric_rendered_row_values,
         missing_color=SHAPES_MISSING_BASE_COLOR,
     )
     return (
-        StyledShapesStyleResult(
+        ShapesStyleResult(
             value_kind="continuous",
             palette_source=None,
             coercion_applied=False,

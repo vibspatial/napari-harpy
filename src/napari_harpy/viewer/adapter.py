@@ -21,18 +21,18 @@ from xarray import DataArray, DataTree
 
 from napari_harpy.core._color_source import ShapeColorSourceSpec, TableColorSourceSpec
 from napari_harpy.viewer.labels_styling import (
-    StyledLabelsLoadResult,
+    LabelsLoadResult,
     apply_table_color_source_to_labels_layer,
     build_styled_labels_layer_name,
 )
 from napari_harpy.viewer.points_styling import (
     POINTS_SELECTION_SOLID_COLOR,
-    PointsLayerUpdateResult,
+    PointsLayerResult,
     apply_points_selection_style,
     build_points_selection_layer_name,
 )
 from napari_harpy.viewer.shapes_styling import (
-    StyledShapesLoadResult,
+    ShapesLoadResult,
     apply_shape_color_source_to_shapes_layer,
     build_styled_shapes_layer_name,
 )
@@ -924,7 +924,7 @@ class ViewerAdapter(QObject):
         identity: PointsLayerIdentity,
         *,
         selection: PointsValueSelection,
-    ) -> PointsLayerUpdateResult:
+    ) -> PointsLayerResult:
         """Create or update the points value-selection layer for an already loaded selection."""
         if not isinstance(identity, PointsLayerIdentity):
             raise ValueError("`identity` must be a PointsLayerIdentity.")
@@ -960,7 +960,7 @@ class ViewerAdapter(QObject):
         style_result = apply_points_selection_style(layer, selection)
         layer.visible = visible
 
-        return PointsLayerUpdateResult(
+        return PointsLayerResult(
             layer=layer,
             created=created,
             color_mode=style_result.color_mode,
@@ -991,7 +991,7 @@ class ViewerAdapter(QObject):
         labels_name: str,
         coordinate_system: str,
         style_spec: TableColorSourceSpec,
-    ) -> StyledLabelsLoadResult:
+    ) -> LabelsLoadResult:
         """Load or update one styled labels overlay variant."""
         existing_layer = self.get_loaded_styled_labels_layer(
             sdata,
@@ -1026,7 +1026,7 @@ class ViewerAdapter(QObject):
             labels_name=labels_name,
             style_spec=style_spec,
         )
-        return StyledLabelsLoadResult(
+        return LabelsLoadResult(
             layer=layer,
             created=created,
             value_kind=style_result.value_kind,
@@ -1191,7 +1191,7 @@ class ViewerAdapter(QObject):
         style_spec: ShapeColorSourceSpec,
         *,
         fill: bool = False,
-    ) -> StyledShapesLoadResult:
+    ) -> ShapesLoadResult:
         """Load or update one styled shapes layer variant."""
         existing_layer = self.get_loaded_styled_shapes_layer(
             sdata,
@@ -1239,7 +1239,7 @@ class ViewerAdapter(QObject):
             source_shapes_index_feature_name=binding.source_shapes_index_feature_name,
             fill=fill,
         )
-        return StyledShapesLoadResult(
+        return ShapesLoadResult(
             layer=layer,
             created=created,
             value_kind=style_result.value_kind,

@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
-class StyledLabelsStyleResult:
+class LabelsStyleResult:
     """Describe how one styled labels overlay was colored."""
 
     value_kind: TableColorValueKind
@@ -38,7 +38,7 @@ class StyledLabelsStyleResult:
 
 
 @dataclass(frozen=True)
-class StyledLabelsLoadResult(StyledLabelsStyleResult):
+class LabelsLoadResult(LabelsStyleResult):
     """Describe the styled overlay load/update result returned to the viewer."""
 
     layer: Labels
@@ -51,7 +51,7 @@ def apply_table_color_source_to_labels_layer(
     sdata: SpatialData,
     labels_name: str,
     style_spec: TableColorSourceSpec,
-) -> StyledLabelsStyleResult:
+) -> LabelsStyleResult:
     """Apply one table-backed source to a styled labels layer."""
     table = get_table(sdata, style_spec.table_name)
     table_metadata = get_table_metadata(sdata, style_spec.table_name)
@@ -101,7 +101,7 @@ def _build_obs_column_colormap(
     table: AnnData,
     region_rows: pd.DataFrame,
     column_name: str,
-) -> tuple[StyledLabelsStyleResult, dict[int, Any], pd.DataFrame]:
+) -> tuple[LabelsStyleResult, dict[int, Any], pd.DataFrame]:
     if column_name not in table.obs:
         raise ValueError(f"Observation column `{column_name}` is not available in the selected table.")
 
@@ -116,7 +116,7 @@ def _build_obs_column_colormap(
             categories=categories,
         )
         color_dict = _build_categorical_color_dict(region_series, categories=categories, palette=palette)
-        style_result = StyledLabelsStyleResult(
+        style_result = LabelsStyleResult(
             value_kind="categorical",
             palette_source=palette_source,
             coercion_applied=False,
@@ -131,7 +131,7 @@ def _build_obs_column_colormap(
             categories=categories,
         )
         color_dict = _build_categorical_color_dict(region_series, categories=categories, palette=palette)
-        style_result = StyledLabelsStyleResult(
+        style_result = LabelsStyleResult(
             value_kind="categorical",
             palette_source=palette_source,
             coercion_applied=False,
@@ -151,7 +151,7 @@ def _build_obs_column_colormap(
             categories=categories,
         )
         color_dict = _build_categorical_color_dict(numeric_region_series, categories=categories, palette=palette)
-        style_result = StyledLabelsStyleResult(
+        style_result = LabelsStyleResult(
             value_kind="categorical",
             palette_source=palette_source,
             coercion_applied=False,
@@ -173,7 +173,7 @@ def _build_obs_column_colormap(
         # Plain string/object columns are rendered as viewer-only categorical
         # values. They do not use stored categorical palettes, so the caller
         # should report the default palette and mark that coercion happened.
-        style_result = StyledLabelsStyleResult(
+        style_result = LabelsStyleResult(
             value_kind="categorical",
             palette_source="default_missing",
             coercion_applied=True,
@@ -182,7 +182,7 @@ def _build_obs_column_colormap(
 
     numeric_region_series = pd.to_numeric(region_series, errors="coerce").astype("float64")
     color_dict = _build_continuous_color_dict(numeric_region_series)
-    style_result = StyledLabelsStyleResult(
+    style_result = LabelsStyleResult(
         value_kind="continuous",
         palette_source=None,
         coercion_applied=False,
@@ -194,13 +194,13 @@ def _build_instance_key_colormap(
     region_rows: pd.DataFrame,
     *,
     instance_key: str,
-) -> tuple[StyledLabelsStyleResult, pd.DataFrame]:
+) -> tuple[LabelsStyleResult, pd.DataFrame]:
     instance_values = pd.Series(
         region_rows.index.to_numpy(dtype=np.int64, copy=False),
         index=region_rows.index,
         name=instance_key,
     )
-    style_result = StyledLabelsStyleResult(
+    style_result = LabelsStyleResult(
         value_kind="instance",
         palette_source=None,
         coercion_applied=False,
@@ -214,7 +214,7 @@ def _build_x_var_colormap(
     region_rows: pd.DataFrame,
     obs_index: pd.Index,
     var_name: str,
-) -> tuple[StyledLabelsStyleResult, dict[int, Any], pd.DataFrame]:
+) -> tuple[LabelsStyleResult, dict[int, Any], pd.DataFrame]:
     if var_name not in table.var_names:
         raise ValueError(f"Var `{var_name}` is not available in the selected table.")
 
@@ -237,7 +237,7 @@ def _build_x_var_colormap(
         name=var_name,
     )
     color_dict = _build_continuous_color_dict(numeric_region_series)
-    style_result = StyledLabelsStyleResult(
+    style_result = LabelsStyleResult(
         value_kind="continuous",
         palette_source=None,
         coercion_applied=False,

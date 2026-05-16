@@ -1779,7 +1779,7 @@ class PointsLayerIdentity:
 
 
 @dataclass(frozen=True)
-class PointsSelectionStyleResult:
+class PointsStyleResult:
     color_mode: Literal["solid", "categorical"]
     categorical_coloring_disabled: bool
     selected_value_count: int
@@ -1787,7 +1787,7 @@ class PointsSelectionStyleResult:
 
 
 @dataclass(frozen=True)
-class PointsLayerUpdateResult(PointsSelectionStyleResult):
+class PointsLayerResult(PointsStyleResult):
     layer: Points
     created: bool
 
@@ -1797,13 +1797,13 @@ def _ensure_points_layer_from_selection(
     identity: PointsLayerIdentity,
     *,
     selection: PointsValueSelection,
-) -> PointsLayerUpdateResult:
+) -> PointsLayerResult:
     ...
 ```
 
 - this helper is adapter-internal/private because Slice 6 should own async read orchestration;
-- `PointsLayerUpdateResult` is intentionally a layer-update result, not a data-load result: it should not include `selection` or `value_table`, because `selection` is already the input and `value_table` belongs to the controller/read state;
-- `PointsSelectionStyleResult` and `PointsLayerUpdateResult` live in `points_styling.py`, matching the labels/shapes pattern where styling modules own style/load result objects;
+- `PointsLayerResult` is intentionally a layer result, not a data-load result: it should not include `selection` or `value_table`, because `selection` is already the input and `value_table` belongs to the controller/read state;
+- `PointsStyleResult` and `PointsLayerResult` live in `points_styling.py`, matching the labels/shapes pattern where styling modules own style/load result objects;
 - `PointsLayerIdentity` bundles the source/layer identity so the adapter does not receive loose `sdata`, `points_name`, `coordinate_system`, and `index_column` arguments that can drift out of sync with the selection;
 - `_ensure_points_layer_from_selection` must validate `identity.index_column == selection.index_column`;
 - `identity.points_name` becomes `PointsLayerBinding.element_name`;
@@ -1813,7 +1813,7 @@ def _ensure_points_layer_from_selection(
   - create or update one napari `Points` layer;
   - register new layers with `PointsLayerBinding`;
   - update data, features, name, and colors from the already computed `PointsValueSelection`;
-  - return `PointsLayerUpdateResult` with the layer, created flag, and structured style metadata;
+  - return `PointsLayerResult` with the layer, created flag, and structured style metadata;
 - this helper must not call `validate_points_element_for_value_selection`, `build_points_value_table`, or `load_points`;
 - Slice 6/controller will run validation, direct value-table construction, and `load_points` asynchronously, then call this helper on the main Qt thread after stale-job checks;
 - layer lookup and update behavior:
@@ -1866,7 +1866,7 @@ solid_color: "#00FFFF"
   - threshold is based on resolved selected values, not values that survived sampling;
 - status-card warning behavior belongs to Slice 6/controller:
   - sampled preview messaging comes from `PointsValueSelection.warning`;
-  - categorical-coloring warning text is derived from `PointsLayerUpdateResult.categorical_coloring_disabled`, `selected_value_count`, and `categorical_limit`;
+  - categorical-coloring warning text is derived from `PointsLayerResult.categorical_coloring_disabled`, `selected_value_count`, and `categorical_limit`;
   - `points_styling.py` and the adapter should return structured facts, not user-facing warning strings.
 
 Tests:
@@ -1911,7 +1911,7 @@ Includes:
 
 ```python
 @dataclass(frozen=True)
-class PointsValueTableLoadResult:
+class PointsValueSource:
     identity: PointsLayerIdentity
     validated: _ValidatedPointsElement
     value_table: PointsValueTable
@@ -1952,9 +1952,9 @@ class PointsLoadResult:
             )
 ```
 
-- `PointsValueTableLoadResult` is the controller's cached current source/value-table state; do not store the derived value table on `_ValidatedPointsElement`;
+- `PointsValueSource` is the controller's cached current source/value-table state; do not store the derived value table on `_ValidatedPointsElement`;
 - `PointsLoadResult` is a controller/worker result for Dask selected-point reads; it carries the same `PointsLayerIdentity` so the adapter can update the intended napari layer without receiving loose source identity arguments;
-- `PointsLayerUpdateResult` remains the adapter result for applying an already loaded selection to a napari layer;
+- `PointsLayerResult` remains the adapter result for applying an already loaded selection to a napari layer;
 - points element selector;
 - index column selector;
 - numeric text-field `render_point_budget` control with default `100_000`, minimum `1_000`, and maximum `1_000_000`;
@@ -2153,8 +2153,8 @@ Adapter-side points layer objects:
 ```text
 PointsLayerBinding
 PointsLayerIdentity
-PointsSelectionStyleResult
-PointsLayerUpdateResult
+PointsStyleResult
+PointsLayerResult
 ViewerAdapter._ensure_points_layer_from_selection
 ```
 
@@ -2184,7 +2184,7 @@ Suggested controller objects:
 
 ```text
 PointsValueIndexUiState
-PointsValueTableLoadResult
+PointsValueSource
 PointsLoadResult
 PointsValueIndexValueJob
 PointsValueIndexReadJob

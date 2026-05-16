@@ -15,7 +15,7 @@ POINTS_SELECTION_MAX_CATEGORICAL_COLORS = 102
 
 
 @dataclass(frozen=True)
-class PointsSelectionStyleResult:
+class PointsStyleResult:
     """Describe how one points value selection was styled."""
 
     color_mode: Literal["solid", "categorical"]
@@ -25,8 +25,14 @@ class PointsSelectionStyleResult:
 
 
 @dataclass(frozen=True)
-class PointsLayerUpdateResult(PointsSelectionStyleResult):
-    """Describe the points layer load/update result returned to the viewer."""
+class PointsLayerResult(PointsStyleResult):
+    """Describe applying an already loaded points selection to a viewer layer.
+
+    This is named ``PointsLayerResult`` rather than ``PointsLoadResult`` because
+    Dask-backed point loading is owned by the controller. This result only
+    describes the napari layer that was created or updated from that loaded
+    selection.
+    """
 
     layer: Points
     created: bool
@@ -50,7 +56,7 @@ def build_points_selection_layer_name(
 def apply_points_selection_style(
     layer: Points,
     selection: PointsValueSelection,
-) -> PointsSelectionStyleResult:
+) -> PointsStyleResult:
     """Apply points value-selection styling."""
     layer.size = 1.0
     layer.opacity = 0.8
@@ -60,7 +66,7 @@ def apply_points_selection_style(
     selected_value_count = len(selection.selected_values)
     if selected_value_count < 2 or selected_value_count > POINTS_SELECTION_MAX_CATEGORICAL_COLORS:
         layer.face_color = POINTS_SELECTION_SOLID_COLOR
-        return PointsSelectionStyleResult(
+        return PointsStyleResult(
             color_mode="solid",
             categorical_coloring_disabled=selected_value_count > POINTS_SELECTION_MAX_CATEGORICAL_COLORS,
             selected_value_count=selected_value_count,
@@ -70,7 +76,7 @@ def apply_points_selection_style(
         layer.face_color_cycle = default_categorical_colors(selected_value_count)
         layer.face_color = selection.index_column
 
-    return PointsSelectionStyleResult(
+    return PointsStyleResult(
         color_mode="categorical",
         categorical_coloring_disabled=False,
         selected_value_count=selected_value_count,
