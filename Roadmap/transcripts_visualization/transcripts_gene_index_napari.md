@@ -1117,7 +1117,7 @@ src/napari_harpy/viewer/adapter.py
   Points-layer binding support.
   Update the points value-selection Points layer from a computed `PointsValueSelection`.
 
-src/napari_harpy/widgets/viewer/transcript_value_index_controller.py
+src/napari_harpy/widgets/viewer/points_controller.py
   UI state machine.
   Async value-list/read workers.
   Optional async cache build/read workers.
@@ -1904,7 +1904,7 @@ Goal: introduce the controller and make all Dask-heavy points value work run off
 
 Includes:
 
-- controller module `src/napari_harpy/widgets/viewer/transcript_value_index_controller.py`;
+- controller module `src/napari_harpy/widgets/viewer/points_controller.py`;
 - explicit `PointsValueIndexUiState` enum;
 - immutable value-list and read job dataclasses for worker inputs;
 - controller-owned status message, status kind, current value source, current selection, and latest layer result;
@@ -2205,7 +2205,7 @@ The napari path should be thin and should not know whether the selection came fr
 Add the UI controller separately from the cache module:
 
 ```text
-src/napari_harpy/widgets/viewer/transcript_value_index_controller.py
+src/napari_harpy/widgets/viewer/points_controller.py
 ```
 
 Suggested controller objects:
