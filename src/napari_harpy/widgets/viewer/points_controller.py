@@ -367,7 +367,7 @@ class PointsController:
         self._update_bound_status()
         return changed
 
-    def load_values(self) -> bool:
+    def load_value_source(self) -> bool:
         """Launch async validation and direct value-table construction."""
         job = self._prepare_value_source_job()
         if job is None:

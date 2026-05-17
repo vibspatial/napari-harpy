@@ -193,7 +193,7 @@ def test_points_controller_schedules_value_loading(monkeypatch) -> None:
     monkeypatch.setattr(controller, "_create_value_source_worker", create_worker)
 
     changed = controller.bind_source(sdata, "transcripts", "global", "gene")
-    started = controller.load_values()
+    started = controller.load_value_source()
 
     assert changed is True
     assert started is True
@@ -214,7 +214,7 @@ def test_points_controller_stores_successful_value_source(monkeypatch) -> None:
     monkeypatch.setattr(controller, "_create_value_source_worker", lambda job: worker)
 
     controller.bind_source(sdata, "transcripts", "global", "gene")
-    controller.load_values()
+    controller.load_value_source()
     worker.returned.emit(value_source)
     worker.finished.emit()
 
@@ -232,7 +232,7 @@ def test_points_controller_failed_value_loading_enters_load_failed(monkeypatch) 
     monkeypatch.setattr(controller, "_create_value_source_worker", lambda job: worker)
 
     controller.bind_source(sdata, "transcripts", "global", "missing")
-    controller.load_values()
+    controller.load_value_source()
     worker.errored.emit(ValueError("Column `missing` is unavailable."))
     worker.finished.emit()
 
@@ -327,7 +327,7 @@ def test_points_controller_rebinding_cancels_active_workers(monkeypatch) -> None
     monkeypatch.setattr(controller, "_create_points_load_worker", lambda job: load_worker)
 
     controller.bind_source(sdata, "transcripts", "global", "gene")
-    controller.load_values()
+    controller.load_value_source()
     controller._current_value_source = _example_value_source(sdata)
     controller.load_selection(["AAMP"], render_point_budget=10)
     controller.bind_source(sdata, "other_transcripts", "global", "gene")
@@ -386,7 +386,7 @@ def test_points_controller_shutdown_cancels_workers(monkeypatch) -> None:
     monkeypatch.setattr(controller, "_create_points_load_worker", lambda job: load_worker)
 
     controller.bind_source(sdata, "transcripts", "global", "gene")
-    controller.load_values()
+    controller.load_value_source()
     controller._current_value_source = _example_value_source(sdata)
     controller.load_selection(["AAMP"], render_point_budget=10)
     controller.shutdown()
