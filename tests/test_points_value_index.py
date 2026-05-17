@@ -263,7 +263,12 @@ def test_points_value_selection_accepts_sampled_result() -> None:
 def test_points_value_selection_accepts_empty_exact_result() -> None:
     selection = _example_selection(
         coordinates=np.empty((0, 2), dtype="float32"),
-        features=_example_features([], []),
+        features=pd.DataFrame(
+            {
+                "gene": pd.Categorical([], categories=[]),
+                "value_id": pd.Series([], dtype="uint32"),
+            }
+        ),
         selected_values=(),
         selected_value_ids=(),
         total_count=0,
@@ -292,6 +297,32 @@ def test_points_value_selection_accepts_empty_exact_result() -> None:
         ({"selected_values": ("AAMP", "AAMP"), "selected_value_ids": (0, 1)}, "duplicates"),
         ({"selected_value_ids": (0, -1)}, "selected_value_ids"),
         ({"selected_value_ids": (0,)}, "same length"),
+        (
+            {
+                "features": pd.DataFrame(
+                    {
+                        "gene": pd.Categorical(["AAMP", "AXL"], categories=["AXL", "AAMP"]),
+                        "value_id": pd.Series([0, 1], dtype="uint32"),
+                    }
+                ),
+                "coordinates": np.asarray([[1.0, 2.0], [3.0, 4.0]], dtype="float32"),
+                "total_count": 2,
+            },
+            "categories",
+        ),
+        (
+            {
+                "features": pd.DataFrame(
+                    {
+                        "gene": pd.Categorical(["AAMP", "AXL"], categories=["AAMP", "AXL"]),
+                        "value_id": pd.Series([1, 0], dtype="uint32"),
+                    }
+                ),
+                "coordinates": np.asarray([[1.0, 2.0], [3.0, 4.0]], dtype="float32"),
+                "total_count": 2,
+            },
+            "match the categorical index",
+        ),
         ({"selection_mode": "everything"}, "selection_mode"),
         ({"total_count": -1}, "total_count"),
         ({"features": _example_features(["AAMP"], [0])}, "loaded rows"),

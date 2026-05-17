@@ -185,6 +185,15 @@ class PointsValueSelection:
             raise ValueError("Points value selection `selected_values` must not contain duplicates.")
         if len({int(value_id) for value_id in self.selected_value_ids}) != len(self.selected_value_ids):
             raise ValueError("Points value selection `selected_value_ids` must not contain duplicates.")
+        categories = tuple(str(value) for value in self.features[self.index_column].cat.categories)
+        if categories != self.selected_values:
+            raise ValueError("Points value selection index feature categories must match `selected_values`.")
+        value_id_by_value = dict(zip(self.selected_values, self.selected_value_ids, strict=True))
+        expected_value_ids = self.features[self.index_column].map(value_id_by_value)
+        if not expected_value_ids.astype(self.features[VALUE_ID_COLUMN].dtype).equals(
+            self.features[VALUE_ID_COLUMN]
+        ):
+            raise ValueError("Points value selection `value_id` feature must match the categorical index feature.")
         if self.selection_mode not in {"values", "all"}:
             raise ValueError("Points value selection `selection_mode` must be 'values' or 'all'.")
 
