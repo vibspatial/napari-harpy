@@ -2066,18 +2066,34 @@ Goal: wire the points value controller into the existing Harpy viewer widget.
 
 Includes:
 
+- add a new collapsible `Points` section to `ViewerWidget`, alongside Images, Labels, and Shapes;
+- use one section-level control panel for points value selection, not one card per value;
 - points element selector;
 - index column selector;
 - numeric text-field `render_point_budget` control with default `100_000`, minimum `1_000`, and maximum `1_000_000`;
 - widget labels based on the selected index column rather than hard-coded "gene" wording;
-- direct value search and select control backed by the controller's current `PointsValueSource`;
+- direct value search/select control backed by the controller's current `PointsValueSource`;
+- MVP value input supports comma-separated values, for example `AAMP, AXL, MALAT1`;
 - visualize selected values button;
-- all-values option;
+- all-values option that bypasses the text input and passes `values="all"` to the controller;
 - UI rendering for `NO_SDATA`, `NO_POINTS_ELEMENT`, `LOADING_VALUES`, `VALUES_READY`, `LOADING_SELECTION`, `LOADED_SELECTION`, and `LOAD_FAILED`;
 - loading selection disables duplicate visualize requests;
 - status-card placement for direct value loading, selected-point loading, sampled previews, categorical-coloring disablement, and read/layer-update failures;
 - optional cache status display if cache helpers already exist;
 - widget should render controller state and forward user actions; it should not own value-table/read jobs directly.
+- widget creates one controller:
+
+```python
+self._points_controller = PointsController(
+    on_state_changed=self._on_points_controller_state_changed,
+)
+```
+
+- widget responsibilities:
+  - call `bind_source(...)` when `sdata`, coordinate system, selected points element, or selected index column changes;
+  - call `load_value_source()` after a valid points source and index column are selected;
+  - call `load_selection(...)` when the user clicks visualize;
+  - never call `validate_points_element_for_value_selection`, `build_points_value_table`, or `load_points` directly;
 - `ViewerWidget` already owns `self._app_state`, and `HarpyAppState` already owns `self.viewer_adapter`; Slice 7 should use `self._app_state.viewer_adapter` for the layer update.
 - after the controller reaches `LOADED_SELECTION`, the widget reads `controller.current_load_result` and calls:
 
@@ -2089,13 +2105,50 @@ layer_result = self._app_state.viewer_adapter._ensure_points_layer_from_selectio
 ```
 
 - the widget activates the returned layer and combines `load_result.selection.warning` with `layer_result` style metadata for the status card.
+- points element discovery:
+  - add a helper such as `_get_points_in_coordinate_system(sdata, coordinate_system) -> list[str]`;
+  - include points elements available in the selected coordinate system, following the same transform-aware approach used for images, labels, and shapes;
+- index column discovery:
+  - inspect the selected points element's `points._meta.columns`;
+  - exclude likely coordinate columns `x` and `y`;
+  - include string-like, object, and categorical columns;
+  - default to `gene` when present, otherwise the first eligible column;
+- value search/select control:
+  - use the existing `QLineEdit` + `QCompleter` pattern;
+  - completer entries come from `controller.current_value_source.value_table.values["value"]`;
+  - parsing is comma-separated for MVP;
+  - trim whitespace and drop empty entries before calling `load_selection(...)`;
+- render point budget control:
+  - use a text field rather than a spinbox;
+  - default `100_000`;
+  - minimum accepted value `1_000`;
+  - maximum accepted value `1_000_000`;
+  - invalid text disables visualize and shows a points status-card warning;
+  - changing the budget affects only the next `load_selection(...)`;
+- UI state rendering:
+  - `NO_SDATA`: disable points controls;
+  - `NO_POINTS_ELEMENT`: show no points available or prompt to select a points element;
+  - `LOADING_VALUES`: disable source controls and show value-source loading status;
+  - `VALUES_READY`: enable value search/select and visualize;
+  - `LOADING_SELECTION`: disable visualize and show selected-point loading status;
+  - `LOADED_SELECTION`: show success or sampled-preview warning;
+  - `LOAD_FAILED`: show error status and allow source changes/retry;
+- warning/status ownership:
+  - value-source and selected-point loading status comes from `PointsController`;
+  - sampled preview text comes from `PointsValueSelection.warning`;
+  - categorical coloring disablement text is derived in the widget from `PointsLayerResult`;
+  - all points workflow messages are rendered in the points section status card, not layer metadata.
 
 Tests:
 
 - widget initializes without requiring a cache;
+- points section initializes without requiring a cache;
+- points selector populates from `sdata.points`;
+- index selector defaults to `gene` if present;
 - value loading runs when points element or index column changes;
 - value search is enabled when direct values are ready;
-- selected values trigger the controller read flow;
+- comma-separated selected values trigger the controller read flow;
+- all-values option passes `values="all"`;
 - after the controller reports a loaded selection, the widget applies it through `self._app_state.viewer_adapter._ensure_points_layer_from_selection`;
 - loading selection disables duplicate visualize requests;
 - `render_point_budget` changes are forwarded to the next controller read request without rebuilding anything;
