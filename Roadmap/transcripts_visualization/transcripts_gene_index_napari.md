@@ -2068,6 +2068,7 @@ Includes:
 
 - add a new collapsible `Points` section to `ViewerWidget`, alongside Images, Labels, and Shapes;
 - use one section-level control panel for points value selection, not one card per value;
+- introduce `src/napari_harpy/widgets/viewer/points_widget.py` for the points-specific Qt controls so `ViewerWidget` remains the coordinator;
 - points element selector;
 - index column selector;
 - numeric text-field `render_point_budget` control with default `100_000`, minimum `1_000`, and maximum `1_000_000`;
@@ -2089,6 +2090,27 @@ Includes:
 - status-card placement for direct value loading, selected-point loading, sampled previews, categorical-coloring disablement, and read/layer-update failures;
 - optional cache status display if cache helpers already exist;
 - widget should render controller state and forward user actions; it should not own value-table/read jobs directly.
+- module ownership:
+  - `points_controller.py` owns async validation, value-table construction, selected-point loading, and controller state;
+  - `points_widget.py` owns the points section controls, local UI parsing, completer contents, status-card rendering, and emits user intent;
+  - `widget.py` owns global viewer context and wires `PointsController`, `PointsValueWidget`, and `self._app_state.viewer_adapter` together;
+- `points_widget.py` should not call Dask, `SpatialData` readers, `ViewerAdapter`, `validate_points_element_for_value_selection`, `build_points_value_table`, or `load_points`;
+- `points_widget.py` should expose a small UI-facing widget, for example:
+
+```python
+class PointsValueWidget(QWidget):
+    source_changed = Signal()
+    load_value_source_requested = Signal()
+    visualize_requested = Signal(object, int)
+
+    def set_points_names(self, points_names: list[str]) -> None: ...
+    def set_index_columns(self, index_columns: list[str], *, preferred: str | None = "gene") -> None: ...
+    def set_value_source(self, value_source: PointsValueSource | None) -> None: ...
+    def set_controller_state(self, controller: PointsController) -> None: ...
+    def selected_points_name(self) -> str | None: ...
+    def selected_index_column(self) -> str | None: ...
+```
+
 - widget creates one controller:
 
 ```python
@@ -2100,6 +2122,7 @@ self._points_controller = PointsController(
 ```
 
 - widget responsibilities:
+  - create and hold one `PointsValueWidget` instance;
   - call `bind_source(...)` when `sdata`, coordinate system, selected points element, or selected index column changes;
   - call `load_value_source()` after a valid points source and index column are selected;
   - call `load_selection(...)` when the user clicks visualize;
@@ -2173,9 +2196,11 @@ Tests:
 
 - widget initializes without requiring a cache;
 - points section initializes without requiring a cache;
+- `PointsValueWidget` can be constructed without `SpatialData` or a `ViewerAdapter`;
 - points selector populates from `sdata.points`;
 - index selector defaults to `gene` if present;
 - value loading runs when points element or index column changes;
+- points widget emits source/value-load/visualize requests without calling controller methods directly;
 - when `on_value_source_loaded` fires, the widget updates the value completer/list from the loaded value table;
 - generic state repaint does not rebuild the value completer/list again when the value worker `finished` signal clears controller bookkeeping;
 - value search is enabled when direct values are ready;
