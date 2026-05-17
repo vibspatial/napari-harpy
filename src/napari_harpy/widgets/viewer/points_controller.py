@@ -162,6 +162,23 @@ def _run_points_value_source_job(job: PointsValueSourceJob) -> PointsValueSource
 
 @thread_worker(start_thread=False, ignore_errors=True)
 def _run_points_load_job(job: PointsLoadJob) -> PointsLoadResult:
+    """Load one selected points value set in a worker thread.
+
+    This is the per-selection read step. It reuses the prepared
+    ``PointsValueSource`` from value loading, filters the source points for the
+    requested values, applies the render point budget, and returns a
+    ``PointsValueSelection`` that is ready to be applied to a napari Points
+    layer by the widget.
+
+    The returned selection is fully materialized in memory: coordinates are a
+    NumPy ``float32`` array in ``y, x`` order, and features are a pandas
+    DataFrame with matching rows.
+
+    Filtering and sampling can trigger Dask computation over large points
+    elements, so this work must stay off the Qt main thread. Unlike
+    ``_run_points_value_source_job``, this job is expected to run repeatedly as
+    the user changes the selected values.
+    """
     selection = load_points(
         job.value_source.validated,
         job.value_source.value_table,

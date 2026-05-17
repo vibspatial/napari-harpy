@@ -1903,6 +1903,8 @@ Done when:
 
 Goal: introduce the controller and make all Dask-heavy points value work run off the Qt main thread.
 
+Status: implemented.
+
 Includes:
 
 - controller module `src/napari_harpy/widgets/viewer/points_controller.py`;
