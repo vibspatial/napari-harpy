@@ -67,7 +67,27 @@ class PointsValueSourceJob:
 
 @dataclass(frozen=True)
 class PointsLoadJob:
-    """Immutable payload copied on the main thread and consumed by a selected-points worker."""
+    """Immutable payload consumed by a selected-points worker.
+
+    Parameters
+    ----------
+    job_id
+        Monotonic identifier used by the controller to ignore stale worker
+        results.
+    value_source
+        Validated source produced from ``sdata.points[points_name]``, plus the
+        in-memory value table for the selected index column. This is reused
+        across repeated user selections from the same points element and index
+        column.
+    values
+        User-selected values to visualize for this one request. Use ``"all"``
+        to visualize every value in ``value_source.value_table``.
+    render_point_budget
+        Maximum number of points to materialize for napari rendering.
+    random_state
+        Random seed forwarded to Dask sampling when the selection exceeds the
+        render point budget.
+    """
 
     job_id: int
     value_source: PointsValueSource
@@ -104,7 +124,12 @@ class PointsValueSource:
 
 @dataclass(frozen=True)
 class PointsLoadResult:
-    """Selected points loaded by the controller, before napari layer application."""
+    """Materialized selected points ready for the widget to display in napari.
+
+    The contained selection has already been loaded from Dask into memory. The
+    widget can pass ``identity`` and ``selection`` to the viewer adapter to
+    create or update the matching napari Points layer.
+    """
 
     identity: PointsLayerIdentity
     selection: PointsValueSelection
