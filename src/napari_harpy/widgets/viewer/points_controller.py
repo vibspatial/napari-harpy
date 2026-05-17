@@ -62,7 +62,7 @@ class PointsValueSourceJob:
     index_column: str
     x: str = DEFAULT_X
     y: str = DEFAULT_Y
-    transcript_id: str | None = None
+    points_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -170,7 +170,7 @@ def _run_points_value_source_job(job: PointsValueSourceJob) -> PointsValueSource
         x=job.x,
         y=job.y,
         index_column=job.index_column,
-        transcript_id=job.transcript_id,
+        points_id=job.points_id,
     )
     value_table = build_points_value_table(validated)
     return PointsValueSource(
@@ -234,7 +234,7 @@ class PointsController:
         self._index_column: str | None = None
         self._x = DEFAULT_X
         self._y = DEFAULT_Y
-        self._transcript_id: str | None = None
+        self._points_id: str | None = None
 
         self._current_value_source: PointsValueSource | None = None
         self._current_load_result: PointsLoadResult | None = None
@@ -330,7 +330,7 @@ class PointsController:
         *,
         x: str = DEFAULT_X,
         y: str = DEFAULT_Y,
-        transcript_id: str | None = None,
+        points_id: str | None = None,
     ) -> bool:
         """Bind the controller to the points source selected in the widget."""
         normalized_points_name = _normalize_optional_text(points_name)
@@ -338,7 +338,7 @@ class PointsController:
         normalized_index_column = _normalize_optional_text(index_column)
         normalized_x = _normalize_required_text(x, DEFAULT_X)
         normalized_y = _normalize_required_text(y, DEFAULT_Y)
-        normalized_transcript_id = _normalize_optional_text(transcript_id)
+        normalized_points_id = _normalize_optional_text(points_id)
 
         changed = (
             sdata is not self._sdata
@@ -347,7 +347,7 @@ class PointsController:
             or normalized_index_column != self._index_column
             or normalized_x != self._x
             or normalized_y != self._y
-            or normalized_transcript_id != self._transcript_id
+            or normalized_points_id != self._points_id
         )
 
         self._sdata = sdata
@@ -356,7 +356,7 @@ class PointsController:
         self._index_column = normalized_index_column
         self._x = normalized_x
         self._y = normalized_y
-        self._transcript_id = normalized_transcript_id
+        self._points_id = normalized_points_id
 
         if changed:
             self._current_value_source = None
@@ -463,7 +463,7 @@ class PointsController:
             index_column=self._index_column,
             x=self._x,
             y=self._y,
-            transcript_id=self._transcript_id,
+            points_id=self._points_id,
         )
 
     def _prepare_load_job(

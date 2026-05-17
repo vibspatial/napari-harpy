@@ -106,7 +106,7 @@ def _valid_points_data(**overrides: object) -> dict[str, object]:
         "x": [0.0, 1.0, 2.0],
         "y": [3.0, 4.0, 5.0],
         "gene": [" AAMP ", "AXL", "MALAT1"],
-        "transcript_id": ["tx1", "tx2", "tx3"],
+        "points_id": ["pt1", "pt2", "pt3"],
     }
     data.update(overrides)
     return data
@@ -118,7 +118,7 @@ def _valid_points_data_for_index_values(values: object, *, index_column: str = "
         "x": [float(index) for index in range(n_values)],
         "y": [float(index + n_values) for index in range(n_values)],
         "gene": ["AAMP"] * n_values,
-        "transcript_id": [f"tx{index}" for index in range(n_values)],
+        "points_id": [f"pt{index}" for index in range(n_values)],
     }
     data[index_column] = values
     return data
@@ -399,19 +399,19 @@ def test_validate_points_element_for_value_selection_accepts_unbacked_points() -
     assert validated.x == "x"
     assert validated.y == "y"
     assert validated.index_column == "gene"
-    assert validated.transcript_id is None
+    assert validated.points_id is None
 
 
 def test_validate_points_element_for_value_selection_accepts_backed_points(tmp_path: Path) -> None:
     path = tmp_path / "example.zarr"
     sdata = _sdata_with_points(_valid_points_data(), backed=True, path=path)
 
-    validated = validate_points_element_for_value_selection(sdata, "transcripts", transcript_id="transcript_id")
+    validated = validate_points_element_for_value_selection(sdata, "transcripts", points_id="points_id")
 
     assert validated.source_path == path
     assert validated.is_backed is True
     assert validated.element_path == "points/transcripts"
-    assert validated.transcript_id == "transcript_id"
+    assert validated.points_id == "points_id"
 
 
 def test_validate_points_element_for_value_selection_accepts_configured_index_column() -> None:
@@ -438,13 +438,13 @@ def test_validate_points_element_for_value_selection_accepts_categorical_index_c
         ({"x": ""}, "`x`"),
         ({"y": ""}, "`y`"),
         ({"index_column": ""}, "`index_column`"),
-        ({"transcript_id": ""}, "`transcript_id`"),
+        ({"points_id": ""}, "`points_id`"),
         ({"x": "missing"}, "missing"),
         ({"y": "missing"}, "missing"),
         ({"index_column": "missing"}, "missing"),
         ({"index_column": "x"}, "index_column"),
         ({"index_column": "y"}, "index_column"),
-        ({"transcript_id": "missing"}, "missing"),
+        ({"points_id": "missing"}, "missing"),
     ],
 )
 def test_validate_points_element_for_value_selection_rejects_invalid_arguments(
@@ -507,19 +507,19 @@ def test_validate_points_element_for_value_selection_rejects_empty_points() -> N
 
 
 @pytest.mark.parametrize(
-    ("transcript_id_values", "match"),
+    ("points_id_values", "match"),
     [
-        (["tx1", None, "tx3"], "missing transcript_id"),
-        (["tx1", "tx1", "tx3"], "unique transcript_id"),
+        (["pt1", None, "pt3"], "missing points_id"),
+        (["pt1", "pt1", "pt3"], "unique points_id"),
     ],
 )
-def test_validate_points_element_for_value_selection_rejects_invalid_transcript_id_values(
-    transcript_id_values: list[str | None], match: str
+def test_validate_points_element_for_value_selection_rejects_invalid_points_id_values(
+    points_id_values: list[str | None], match: str
 ) -> None:
-    sdata = _sdata_with_points(_valid_points_data(transcript_id=transcript_id_values))
+    sdata = _sdata_with_points(_valid_points_data(points_id=points_id_values))
 
     with pytest.raises(ValueError, match=match):
-        validate_points_element_for_value_selection(sdata, "transcripts", transcript_id="transcript_id")
+        validate_points_element_for_value_selection(sdata, "transcripts", points_id="points_id")
 
 
 def test_build_points_value_table_merges_normalized_values_and_sorts() -> None:
@@ -602,7 +602,7 @@ def test_build_points_value_table_rejects_invalid_values_if_source_changes_after
         x="x",
         y="y",
         index_column="gene",
-        transcript_id=None,
+        points_id=None,
     )
 
     with pytest.raises(ValueError, match="strings"):
@@ -619,7 +619,7 @@ def test_build_points_value_table_rejects_source_count_mismatch() -> None:
         x="x",
         y="y",
         index_column="gene",
-        transcript_id=None,
+        points_id=None,
     )
 
     with pytest.raises(ValueError, match="total count"):
@@ -632,7 +632,7 @@ def test_load_points_loads_exact_selection_with_yx_coordinates_and_features() ->
             x=[10.0, 20.0, 30.0, 40.0],
             y=[1.0, 2.0, 3.0, 4.0],
             gene=[" AAMP ", "AXL", "AAMP", "MALAT1"],
-            transcript_id=["tx1", "tx2", "tx3", "tx4"],
+            points_id=["pt1", "pt2", "pt3", "pt4"],
         )
     )
 

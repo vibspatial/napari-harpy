@@ -94,7 +94,7 @@ def _example_validated(sdata: object, *, points_name: str = "transcripts") -> _V
         x="x",
         y="y",
         index_column="gene",
-        transcript_id=None,
+        points_id=None,
     )
 
 

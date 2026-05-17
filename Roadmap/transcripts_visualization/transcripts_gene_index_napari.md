@@ -206,7 +206,7 @@ Returned selections and napari layer features should include only the MVP featur
 value_id: integer
 ```
 
-Do not include `transcript_id` in returned features or layer features for the MVP.
+Do not include `points_id` in returned features or layer features for the MVP.
 
 ### Terminology
 
@@ -323,7 +323,7 @@ Validation should reject:
 
 - missing coordinate columns;
 - missing index column;
-- missing `transcript_id` column when `transcript_id` is configured;
+- missing `points_id` column when `points_id` is configured;
 - an index column that is neither string-like nor categorical;
 - non-numeric `x` or `y`;
 - non-finite `x` or `y`;
@@ -334,10 +334,12 @@ Validation should reject:
 Optional input:
 
 ```text
-transcript_id
+points_id
 ```
 
-If present, `transcript_id` can be passed through to the data shards for future lookup of canonical source rows. It is not required for MVP sampling. The MVP does not require `transcript_id` to be non-null or unique.
+If present, `points_id` can be passed through to the data shards for future lookup of canonical source rows. It is not required for MVP sampling, and callers may omit it entirely.
+
+For the direct points-value reader, `points_id` is optional. If a caller configures it, validation requires the column to exist, contain no missing values, and be unique.
 
 If the optional cache is built later, then before writing data shards the builder should globally group rows by the selected index column and shuffle rows within each value group:
 
@@ -427,7 +429,7 @@ x: string
 y: string
 index_column: string
 index_column_cache_key: string
-transcript_id: string | null
+points_id: string | null
 source_n_points: int
 n_values: int
 target_rows_per_row_group: int
@@ -548,12 +550,12 @@ value_id: uint32
 Optional columns:
 
 ```text
-transcript_id: source dtype
+points_id: source dtype
 ```
 
-If `transcript_id` was provided, store `transcript_id` using the source column dtype when possible.
+If `points_id` was provided, store `points_id` using the source column dtype when possible.
 
-Store display coordinates as `float32`. This is good enough for napari transcript visualization and reduces memory pressure in both the cache and the `Points` layer. The canonical full-precision values remain in `points.parquet`. If exact coordinate preservation is needed for picked transcripts later, use `transcript_id` to look up canonical rows.
+Store display coordinates as `float32`. This is good enough for napari points visualization and reduces memory pressure in both the cache and the `Points` layer. The canonical full-precision values remain in `points.parquet`. If exact coordinate preservation is needed for picked points later, use `points_id` to look up canonical rows.
 
 Rows inside each value should be physically ordered by the groupby/apply shuffle output.
 
@@ -713,7 +715,7 @@ def build_points_value_index_cache_for_points_element(
     x: str = "x",
     y: str = "y",
     index_column: str = "gene",
-    transcript_id: str | None = None,
+    points_id: str | None = None,
     target_rows_per_row_group: int = 25_000,
     shuffle_random_state: int | None = 42,
     default_render_point_budget: int = 100_000,
@@ -728,7 +730,7 @@ Implementation steps:
 3. Normalize selected index values by stripping whitespace and converting valid values to strings.
 4. Build `values.parquet` using a Dask `value_counts`.
 5. Assign deterministic `value_id` values from the sorted value table.
-6. Create a working dataframe with `x`, `y`, `value_id`, and optional `transcript_id`.
+6. Create a working dataframe with `x`, `y`, `value_id`, and optional `points_id`.
 7. Globally group by `value_id` and shuffle rows within each value group using `shuffle_random_state`.
 8. Write Parquet row groups so each row group contains only one `value_id`.
 9. Split very large values across multiple row groups of at most `target_rows_per_row_group`.
@@ -843,7 +845,7 @@ The configured index-column feature contains the normalized string value for eac
 
 Store the configured index-column feature as a pandas `Categorical` column whose categories are the normalized values from the current value table. This keeps repeated gene, target, or probe labels compact for large render budgets.
 
-Do not include `transcript_id` in `features` for the MVP. If picked-point canonical lookup is needed later, use a separate lookup path rather than carrying transcript identifiers in every rendered feature row.
+Do not include `points_id` in `features` for the MVP. If picked-point canonical lookup is needed later, use a separate lookup path rather than carrying point identifiers in every rendered feature row.
 
 `selected_values` contains the normalized unique selected values that were resolved against the current value table. Duplicate requested values are removed before sampling and before reading. For `values="all"`, `selected_values` contains all values in `value_id` order.
 
@@ -1071,7 +1073,7 @@ Layer feature behavior:
 - `layer.data`: `selection.coordinates`;
 - `layer.features`: `selection.features`;
 - features contain the configured index column as a pandas categorical feature, plus `value_id`;
-- do not include `transcript_id` in layer features for the MVP.
+- do not include `points_id` in layer features for the MVP.
 
 Point visual defaults:
 
@@ -1427,7 +1429,7 @@ Includes:
 - generic naming: use `value` internally and on disk while keeping `gene` as the default user-facing index column;
 - coordinate order for napari: `y, x`;
 - first-pass sampling behavior for selections above `render_point_budget`;
-- returned/layer feature columns: configured `<index_column>` as categorical plus `value_id`, with no `transcript_id` for the MVP;
+- returned/layer feature columns: configured `<index_column>` as categorical plus `value_id`, with no `points_id` for the MVP;
 - shared return object for direct and optional cache readers.
 
 Done when:
@@ -1497,7 +1499,7 @@ def validate_points_element_for_value_selection(
     x: str = DEFAULT_X,
     y: str = DEFAULT_Y,
     index_column: str = DEFAULT_INDEX_COLUMN,
-    transcript_id: str | None = None,
+    points_id: str | None = None,
 ) -> _ValidatedPointsElement:
     ...
 ```
@@ -1514,7 +1516,7 @@ class _ValidatedPointsElement:
     x: str
     y: str
     index_column: str
-    transcript_id: str | None
+    points_id: str | None
 
     @property
     def is_backed(self) -> bool:
@@ -1534,7 +1536,7 @@ class _ValidatedPointsElement:
 - store `source_path = Path(sdata.path)` when the `SpatialData` object is backed, otherwise `None`;
 - require `points_name` is a non-empty string;
 - require Dask dataframe points element;
-- validate `x`, `y`, `index_column`, and optional `transcript_id` are non-empty strings;
+- validate `x`, `y`, `index_column`, and optional `points_id` are non-empty strings;
 - validate `x`, `y`, and `index_column` columns exist;
 - reject `index_column == x` or `index_column == y`;
 - validate coordinate columns are numeric;
@@ -1543,10 +1545,10 @@ class _ValidatedPointsElement:
 - normalize index values;
 - reject missing index values separately;
 - reject blank-after-stripping and unsupported index values as invalid index values;
-- if `transcript_id` is provided:
+- if `points_id` is provided:
   - require the column exists;
-  - reject missing `transcript_id` values;
-  - require `transcript_id` values are unique.
+  - reject missing `points_id` values;
+  - require `points_id` values are unique.
 
 Value normalization helpers:
 
@@ -1587,7 +1589,7 @@ Tests:
 - `index_column == x` or `index_column == y`;
 - bytes, numeric, boolean, list, dict, and tuple index values are rejected;
 - normalization preserves case and internal whitespace while stripping edges;
-- optional `transcript_id` rejects missing, non-unique, and missing-column values.
+- optional `points_id` rejects missing, non-unique, and missing-column values.
 
 Done when:
 
@@ -1718,7 +1720,7 @@ result = result.iloc[:render_point_budget]
 - returned features are a pandas DataFrame with exactly:
   - configured `<index_column>` as categorical;
   - `value_id` as integer, preferably `uint32`;
-- do not include `transcript_id` in returned features for the MVP.
+- do not include `points_id` in returned features for the MVP.
 
 Tests:
 
@@ -1937,7 +1939,7 @@ class PointsController:
         *,
         x: str = "x",
         y: str = "y",
-        transcript_id: str | None = None,
+        points_id: str | None = None,
     ) -> bool:
         ...
 
@@ -2145,7 +2147,7 @@ Goal: write displayable transcript rows grouped by value.
 
 Includes:
 
-- create a working dataframe with `x`, `y`, value id, and optional `transcript_id`;
+- create a working dataframe with `x`, `y`, value id, and optional `points_id`;
 - globally group by value and shuffle rows within each value group;
 - convert display coordinates to `float32`;
 - write `data/shard-*.parquet`;

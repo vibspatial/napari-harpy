@@ -37,7 +37,7 @@ class _ValidatedPointsElement:
     x: str
     y: str
     index_column: str
-    transcript_id: str | None
+    points_id: str | None
 
     @property
     def is_backed(self) -> bool:
@@ -244,7 +244,7 @@ def validate_points_element_for_value_selection(
     x: str = DEFAULT_X,
     y: str = DEFAULT_Y,
     index_column: str = DEFAULT_INDEX_COLUMN,
-    transcript_id: str | None = None,
+    points_id: str | None = None,
 ) -> _ValidatedPointsElement:
     """Validate a SpatialData points element for direct value selection."""
     points_name = _validate_column_name(points_name, "points_name")
@@ -260,33 +260,33 @@ def validate_points_element_for_value_selection(
     x = _validate_column_name(x, "x")
     y = _validate_column_name(y, "y")
     index_column = _validate_column_name(index_column, "index_column")
-    if transcript_id is not None:
-        transcript_id = _validate_column_name(transcript_id, "transcript_id")
+    if points_id is not None:
+        points_id = _validate_column_name(points_id, "points_id")
 
     if index_column in {x, y}:
         raise ValueError("`index_column` must be different from the configured coordinate columns.")
 
     _validate_required_columns(points, [x, y, index_column])
-    if transcript_id is not None:
-        _validate_required_columns(points, [transcript_id])
+    if points_id is not None:
+        _validate_required_columns(points, [points_id])
 
     _validate_numeric_column(points, x)
     _validate_numeric_column(points, y)
     _validate_index_column_dtype(points, index_column)
 
-    row_count, invalid_x, invalid_y, index_value_errors, *transcript_checks = dask.compute(
+    row_count, invalid_x, invalid_y, index_value_errors, *points_id_checks = dask.compute(
         points.map_partitions(len, meta=("row_count", "int64")).sum(),
         points[x].map_partitions(_count_nonfinite_values, meta=("invalid_x", "int64")).sum(),
         points[y].map_partitions(_count_nonfinite_values, meta=("invalid_y", "int64")).sum(),
         points[index_column].map_partitions(_count_index_value_errors, meta=_index_value_error_meta()).sum(),
         *(
             (
-                points[transcript_id]
-                .map_partitions(_count_missing_values, meta=("missing_transcript_id", "int64"))
+                points[points_id]
+                .map_partitions(_count_missing_values, meta=("missing_points_id", "int64"))
                 .sum(),
-                points[transcript_id].nunique(dropna=True),
+                points[points_id].nunique(dropna=True),
             )
-            if transcript_id is not None
+            if points_id is not None
             else ()
         ),
     )
@@ -303,12 +303,12 @@ def validate_points_element_for_value_selection(
     if int(index_value_errors["invalid_index"]) > 0:
         raise ValueError(f"Column `{index_column}` contains invalid index values.")
 
-    if transcript_id is not None:
-        missing_transcript_id, unique_transcript_id_count = transcript_checks
-        if int(missing_transcript_id) > 0:
-            raise ValueError(f"Column `{transcript_id}` contains missing transcript_id values.")
-        if int(unique_transcript_id_count) != source_n_points:
-            raise ValueError(f"Column `{transcript_id}` must contain unique transcript_id values.")
+    if points_id is not None:
+        missing_points_id, unique_points_id_count = points_id_checks
+        if int(missing_points_id) > 0:
+            raise ValueError(f"Column `{points_id}` contains missing points_id values.")
+        if int(unique_points_id_count) != source_n_points:
+            raise ValueError(f"Column `{points_id}` must contain unique points_id values.")
 
     return _ValidatedPointsElement(
         points=points,
@@ -318,7 +318,7 @@ def validate_points_element_for_value_selection(
         x=x,
         y=y,
         index_column=index_column,
-        transcript_id=transcript_id,
+        points_id=points_id,
     )
 
 
