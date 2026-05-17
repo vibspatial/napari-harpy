@@ -1865,8 +1865,8 @@ solid_color: "#00FFFF"
   - more than `102` selected values: use `solid_color` and set `categorical_coloring_disabled=True`;
   - threshold is based on resolved selected values, not values that survived sampling;
 - warning ownership is split across Slice 6 and Slice 7:
-  - sampled preview messaging comes from `PointsValueSelection.warning`;
-  - categorical-coloring warning text is derived by the controller from `PointsLayerResult.categorical_coloring_disabled`, `selected_value_count`, and `categorical_limit`;
+  - sampled preview messaging comes from `PointsValueSelection.warning` and is available through the controller's current `PointsLoadResult`;
+  - categorical-coloring warning text is derived by the widget after applying the selection to napari, using `PointsLayerResult.categorical_coloring_disabled`, `selected_value_count`, and `categorical_limit`;
   - the widget renders these warnings in the transcript UI section's status card;
   - `points_styling.py` and the adapter should return structured facts, not user-facing warning strings.
 
@@ -1910,6 +1910,21 @@ Includes:
 
 ```python
 class PointsController:
+    def __init__(
+        self,
+        *,
+        on_state_changed: Callable[[], None] | None = None,
+    ) -> None:
+        ...
+
+    @property
+    def current_value_source(self) -> PointsValueSource | None:
+        ...
+
+    @property
+    def current_load_result(self) -> PointsLoadResult | None:
+        ...
+
     def bind_source(
         self,
         sdata: SpatialData | None,
@@ -1939,10 +1954,11 @@ class PointsController:
         ...
 ```
 
+- the controller does not receive or store a `ViewerAdapter`; adapter calls belong to Slice 7/widget integration;
 - immutable worker input dataclasses:
   - `PointsValueSourceJob` for source validation and value-table construction;
   - `PointsLoadJob` for selected-point reads;
-- controller-owned status message, status kind, current value source, current selection, and latest layer result;
+- controller-owned status message, status kind, current value source, and current load result;
 - worker result dataclasses that keep Dask loading separate from napari layer updates:
 
 ```python
@@ -1989,15 +2005,16 @@ class PointsLoadResult:
 ```
 
 - `PointsValueSource` is the controller's cached current source/value-table state; do not store the derived value table on `_ValidatedPointsElement`;
-- `PointsLoadResult` is a controller/worker result for Dask selected-point reads; it carries the same `PointsLayerIdentity` so the adapter can update the intended napari layer without receiving loose source identity arguments;
-- `PointsLayerResult` remains the adapter result for applying an already loaded selection to a napari layer;
+- `PointsLoadResult` is a controller/worker result for Dask selected-point reads; it carries the same `PointsLayerIdentity` so Slice 7/widget can update the intended napari layer without receiving loose source identity arguments;
+- `PointsLayerResult` remains the adapter result for applying an already loaded selection to a napari layer; it belongs to Slice 7/widget integration, not to the Slice 6 async loading controller;
 - explicit UI state machine for `NO_SDATA`, `NO_POINTS_ELEMENT`, `LOADING_VALUES`, `VALUES_READY`, `LOADING_SELECTION`, `LOADED_SELECTION`, and `LOAD_FAILED`;
 - missing or invalid `index_column` is handled as `LOAD_FAILED` with an error status message;
 - all Dask-heavy work must run off the Qt main thread;
 - the widget and adapter must not call `validate_points_element_for_value_selection`, `build_points_value_table`, or `load_points` directly on the main thread;
 - run value-list computation asynchronously in a worker;
 - run selection reads asynchronously in a worker;
-- after a read worker returns, the controller checks the job id, then calls `ViewerAdapter._ensure_points_layer_from_selection` on the main Qt thread;
+- after a read worker returns, the controller checks the job id, stores the current `PointsLoadResult`, and enters `LOADED_SELECTION`;
+- the controller must not call `ViewerAdapter._ensure_points_layer_from_selection`; Slice 7/widget owns that adapter call through `self._app_state.viewer_adapter`;
 - ignore stale async value/read results by job id;
 - maintain separate worker lifecycle state for value-source loading and selected-point loading:
   - `_latest_value_job_id`;
@@ -2013,7 +2030,8 @@ class PointsLoadResult:
   - `_create_points_load_worker(job: PointsLoadJob)`;
 - no user-facing cancel button in the MVP;
 - progress/status phase text for value loading and read;
-- status and warning message construction for sampled previews and categorical-coloring disablement;
+- status and warning message construction for value loading, selected-point loading, and sampled previews;
+- categorical-coloring disablement messaging is finalized in Slice 7/widget after it receives `PointsLayerResult` from the adapter;
 - keep UI/controller state as the source of truth rather than layer metadata.
 
 Tests:
@@ -2026,16 +2044,16 @@ Tests:
 - missing or invalid index columns enter `LOAD_FAILED`;
 - selection reads can be requested from the current `PointsValueSource`;
 - selection reads are scheduled through a worker rather than executed synchronously by the controller caller or adapter;
-- adapter layer update is called only after the selection read worker returns;
+- successful selected-point loading stores `PointsLoadResult` and enters `LOADED_SELECTION`;
 - rebinding cancels active value-source and selected-point workers;
 - launching a new selected-point load cancels/replaces the previous selected-point worker;
 - stale async value/read worker results are ignored;
 - `render_point_budget` changes affect the next reader call without rebuilding anything;
-- sampled preview and categorical-coloring warning text can be derived from controller state.
+- sampled preview warning text can be derived from controller state.
 
 Done when:
 
-- controller-level direct value loading and selected-point loading work asynchronously, can update a napari layer through the adapter, and can be unit-tested without the full widget UI.
+- controller-level direct value loading and selected-point loading work asynchronously, expose the resulting `PointsLoadResult`, and can be unit-tested without the full widget UI.
 
 ### Slice 7: Viewer Widget UI Integration
 
@@ -2055,13 +2073,25 @@ Includes:
 - status-card placement for direct value loading, selected-point loading, sampled previews, categorical-coloring disablement, and read/layer-update failures;
 - optional cache status display if cache helpers already exist;
 - widget should render controller state and forward user actions; it should not own value-table/read jobs directly.
+- `ViewerWidget` already owns `self._app_state`, and `HarpyAppState` already owns `self.viewer_adapter`; Slice 7 should use `self._app_state.viewer_adapter` for the layer update.
+- after the controller reaches `LOADED_SELECTION`, the widget reads `controller.current_load_result` and calls:
+
+```python
+layer_result = self._app_state.viewer_adapter._ensure_points_layer_from_selection(
+    load_result.identity,
+    selection=load_result.selection,
+)
+```
+
+- the widget activates the returned layer and combines `load_result.selection.warning` with `layer_result` style metadata for the status card.
 
 Tests:
 
 - widget initializes without requiring a cache;
 - value loading runs when points element or index column changes;
 - value search is enabled when direct values are ready;
-- selected values trigger the controller read flow and layer update;
+- selected values trigger the controller read flow;
+- after the controller reports a loaded selection, the widget applies it through `self._app_state.viewer_adapter._ensure_points_layer_from_selection`;
 - loading selection disables duplicate visualize requests;
 - `render_point_budget` changes are forwarded to the next controller read request without rebuilding anything;
 - sampled warning is visible in the status card;
