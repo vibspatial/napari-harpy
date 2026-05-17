@@ -1166,7 +1166,7 @@ BUILD_FAILED
   The last build failed. Any previously valid cache should remain untouched.
 
 LOADING_SELECTION
-  The reader is loading selected values and updating the napari layer.
+  The reader is loading selected values off the Qt main thread. Napari layer updates happen after a successful load.
 
 LOADED_SELECTION
   A selection has been loaded or updated in napari.
@@ -1815,7 +1815,8 @@ def _ensure_points_layer_from_selection(
   - update data, features, name, and colors from the already computed `PointsValueSelection`;
   - return `PointsLayerResult` with the layer, created flag, and structured style metadata;
 - this helper must not call `validate_points_element_for_value_selection`, `build_points_value_table`, or `load_points`;
-- Slice 6/controller will run validation, direct value-table construction, and `load_points` asynchronously, then call this helper on the main Qt thread after stale-job checks;
+- Slice 6/controller will run validation, direct value-table construction, and `load_points` asynchronously, then expose a `PointsLoadResult`;
+- Slice 7/widget will call this helper on the main Qt thread through `self._app_state.viewer_adapter` after the controller has ignored stale jobs and entered `LOADED_SELECTION`;
 - layer lookup and update behavior:
   - find an existing registered matching points layer through `LayerBindingRegistry`, not by layer name alone;
   - match by `identity.sdata`, `identity.points_name`, `identity.coordinate_system`, and `identity.index_column`;
