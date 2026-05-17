@@ -2077,6 +2077,13 @@ Includes:
 - comma-separated input is an implementation shortcut for Slice 7 so the end-to-end workflow can land first; replace it with a polished multi-select control in Slice 8;
 - visualize selected values button;
 - all-values option that bypasses the text input and passes `values="all"` to the controller;
+- all-values option is an explicit `QCheckBox("All values")`;
+- when `All values` is checked:
+  - disable the value text input;
+  - visualize calls `load_selection(values="all", ...)`;
+- when `All values` is unchecked:
+  - enable the value text input when values are ready;
+  - visualize parses the text input into explicit selected values;
 - UI rendering for `NO_SDATA`, `NO_POINTS_ELEMENT`, `LOADING_VALUES`, `VALUES_READY`, `LOADING_SELECTION`, `LOADED_SELECTION`, and `LOAD_FAILED`;
 - loading selection disables duplicate visualize requests;
 - status-card placement for direct value loading, selected-point loading, sampled previews, categorical-coloring disablement, and read/layer-update failures;
@@ -2087,6 +2094,7 @@ Includes:
 ```python
 self._points_controller = PointsController(
     on_state_changed=self._on_points_controller_state_changed,
+    on_points_loaded=self._on_points_loaded,
 )
 ```
 
@@ -2095,8 +2103,12 @@ self._points_controller = PointsController(
   - call `load_value_source()` after a valid points source and index column are selected;
   - call `load_selection(...)` when the user clicks visualize;
   - never call `validate_points_element_for_value_selection`, `build_points_value_table`, or `load_points` directly;
+- callback ownership:
+  - `on_state_changed` repaints controls, status card, and enabled/disabled state;
+  - `on_points_loaded` performs the one-time side effect of applying a newly materialized `PointsLoadResult` to the napari `Points` layer;
+  - do not apply loaded points from generic state rendering, because the controller may notify state changes again when worker bookkeeping finishes;
 - `ViewerWidget` already owns `self._app_state`, and `HarpyAppState` already owns `self.viewer_adapter`; Slice 7 should use `self._app_state.viewer_adapter` for the layer update.
-- after the controller reaches `LOADED_SELECTION`, the widget reads `controller.current_load_result` and calls:
+- when `on_points_loaded(load_result)` fires, the widget calls:
 
 ```python
 layer_result = self._app_state.viewer_adapter._ensure_points_layer_from_selection(
@@ -2107,8 +2119,22 @@ layer_result = self._app_state.viewer_adapter._ensure_points_layer_from_selectio
 
 - the widget activates the returned layer and combines `load_result.selection.warning` with `layer_result` style metadata for the status card.
 - points element discovery:
-  - add a helper such as `_get_points_in_coordinate_system(sdata, coordinate_system) -> list[str]`;
-  - include points elements available in the selected coordinate system, following the same transform-aware approach used for images, labels, and shapes;
+  - add `SpatialDataPointsOption` in `src/napari_harpy/core/spatialdata.py`;
+  - add `get_spatialdata_points_options_for_coordinate_system_from_sdata(...)`;
+  - add a viewer helper:
+
+```python
+def _get_points_in_coordinate_system(sdata: SpatialData, coordinate_system: str) -> list[str]:
+    return [
+        option.points_name
+        for option in get_spatialdata_points_options_for_coordinate_system_from_sdata(
+            sdata=sdata,
+            coordinate_system=coordinate_system,
+        )
+    ]
+```
+
+  - include points elements available in the selected coordinate system, following the same option-helper pattern now used for images, labels, and shapes;
 - index column discovery:
   - inspect the selected points element's `points._meta.columns`;
   - exclude likely coordinate columns `x` and `y`;
@@ -2150,7 +2176,9 @@ Tests:
 - value search is enabled when direct values are ready;
 - comma-separated selected values trigger the controller read flow;
 - all-values option passes `values="all"`;
-- after the controller reports a loaded selection, the widget applies it through `self._app_state.viewer_adapter._ensure_points_layer_from_selection`;
+- all-values checkbox disables value text input and passes `values="all"`;
+- when `on_points_loaded` fires, the widget applies it through `self._app_state.viewer_adapter._ensure_points_layer_from_selection`;
+- generic state repaint does not apply the same loaded selection again when the worker `finished` signal clears controller bookkeeping;
 - loading selection disables duplicate visualize requests;
 - `render_point_budget` changes are forwarded to the next controller read request without rebuilding anything;
 - sampled warning is visible in the status card;

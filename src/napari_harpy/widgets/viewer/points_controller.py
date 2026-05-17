@@ -225,8 +225,17 @@ class PointsController:
         self,
         *,
         on_state_changed: Callable[[], None] | None = None,
+        on_points_loaded: Callable[[PointsLoadResult], None] | None = None,
     ) -> None:
+        """Create the controller.
+
+        ``on_state_changed`` is for repainting widget controls, status cards,
+        and enabled/disabled state. ``on_points_loaded`` is the semantic
+        one-shot callback for applying a newly materialized points selection to
+        napari.
+        """
         self._on_state_changed = on_state_changed
+        self._on_points_loaded = on_points_loaded
 
         self._sdata: SpatialData | None = None
         self._points_name: str | None = None
@@ -554,6 +563,7 @@ class PointsController:
                 f"Points: loaded {selection.loaded_count:,} selected points.",
                 kind="success",
             )
+        self._notify_points_loaded(result)
 
     def _on_load_worker_errored(self, job_id: int, error: Exception) -> None:
         if job_id != self._latest_load_job_id or job_id != self._active_load_worker_job_id:
@@ -572,6 +582,10 @@ class PointsController:
 
         self._active_load_worker = None
         self._active_load_worker_job_id = None
+        # Keep a state notification on `finished`: clearing worker bookkeeping
+        # changes properties such as `is_loading` and `can_visualize`, so the
+        # widget needs this repaint to re-enable controls after the one-shot
+        # `on_points_loaded` side effect has already run.
         self._notify_state_changed()
 
     def _update_bound_status(self) -> None:
@@ -625,6 +639,10 @@ class PointsController:
     def _notify_state_changed(self) -> None:
         if self._on_state_changed is not None:
             self._on_state_changed()
+
+    def _notify_points_loaded(self, result: PointsLoadResult) -> None:
+        if self._on_points_loaded is not None:
+            self._on_points_loaded(result)
 
     def _cancel_value_worker(self) -> None:
         if self._active_value_worker is None:

@@ -292,6 +292,33 @@ def test_points_controller_stores_successful_load_result(monkeypatch) -> None:
     assert controller.is_loading is False
 
 
+def test_points_controller_notifies_points_loaded_once_on_load_return(monkeypatch) -> None:
+    loaded_results: list[PointsLoadResult] = []
+    state_change_count = 0
+
+    def on_state_changed() -> None:
+        nonlocal state_change_count
+        state_change_count += 1
+
+    controller = PointsController(
+        on_state_changed=on_state_changed,
+        on_points_loaded=loaded_results.append,
+    )
+    sdata = _example_sdata()
+    value_source = _example_value_source(sdata)
+    result = _example_load_result(value_source)
+    worker = _FakeWorker()
+    controller._current_value_source = value_source
+    monkeypatch.setattr(controller, "_create_points_load_worker", lambda job: worker)
+
+    controller.load_selection(["AAMP", "AXL"], render_point_budget=100_000)
+    worker.returned.emit(result)
+    worker.finished.emit()
+
+    assert loaded_results == [result]
+    assert state_change_count >= 3
+
+
 def test_points_controller_uses_warning_status_for_sampled_selection(monkeypatch) -> None:
     controller = PointsController()
     sdata = _example_sdata()
