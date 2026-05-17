@@ -26,7 +26,6 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 from spatialdata import read_zarr
-from spatialdata.transformations import get_transformation
 
 from napari_harpy._app_state import CoordinateSystemChangedEvent, HarpyAppState, get_or_create_app_state
 from napari_harpy.core._color_source import (
@@ -40,6 +39,8 @@ from napari_harpy.core.spatialdata import (
     get_coordinate_system_names_from_sdata,
     get_image_channel_names_from_sdata,
     get_shape_column_color_source_options,
+    get_spatialdata_image_options_for_coordinate_system_from_sdata,
+    get_spatialdata_labels_options_for_coordinate_system_from_sdata,
     get_spatialdata_shapes_options_for_coordinate_system_from_sdata,
     get_table_color_source_options,
 )
@@ -1946,21 +1947,23 @@ def _create_form_label(text: str) -> QLabel:
 
 
 def _get_labels_in_coordinate_system(sdata: SpatialData, coordinate_system: str) -> list[str]:
-    labels = getattr(sdata, "labels", {})
-    return sorted(
-        labels_name
-        for labels_name, element in labels.items()
-        if coordinate_system in get_transformation(element, get_all=True).keys()
-    )
+    return [
+        option.labels_name
+        for option in get_spatialdata_labels_options_for_coordinate_system_from_sdata(
+            sdata=sdata,
+            coordinate_system=coordinate_system,
+        )
+    ]
 
 
 def _get_images_in_coordinate_system(sdata: SpatialData, coordinate_system: str) -> list[str]:
-    images = getattr(sdata, "images", {})
-    return sorted(
-        image_name
-        for image_name, element in images.items()
-        if coordinate_system in get_transformation(element, get_all=True).keys()
-    )
+    return [
+        option.image_name
+        for option in get_spatialdata_image_options_for_coordinate_system_from_sdata(
+            sdata=sdata,
+            coordinate_system=coordinate_system,
+        )
+    ]
 
 
 def _get_shapes_in_coordinate_system(sdata: SpatialData, coordinate_system: str) -> list[str]:

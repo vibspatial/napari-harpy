@@ -2074,6 +2074,7 @@ Includes:
 - widget labels based on the selected index column rather than hard-coded "gene" wording;
 - direct value search/select control backed by the controller's current `PointsValueSource`;
 - MVP value input supports comma-separated values, for example `AAMP, AXL, MALAT1`;
+- comma-separated input is an implementation shortcut for Slice 7 so the end-to-end workflow can land first; replace it with a polished multi-select control in Slice 8;
 - visualize selected values button;
 - all-values option that bypasses the text input and passes `values="all"` to the controller;
 - UI rendering for `NO_SDATA`, `NO_POINTS_ELEMENT`, `LOADING_VALUES`, `VALUES_READY`, `LOADING_SELECTION`, `LOADED_SELECTION`, and `LOAD_FAILED`;
@@ -2157,9 +2158,47 @@ Tests:
 
 Done when:
 
-- the user-facing direct workflow exists end to end in the viewer widget while Dask validation, value-table construction, and selected-point reads remain owned by the controller.
+- the user-facing direct workflow exists end to end in the viewer widget while Dask validation, value-table construction, and selected-point reads remain owned by the controller;
+- the value input is functional, even if still comma-separated and intentionally marked for UI polish.
 
-### Slice 8: Integration Tests And Hardening
+### Slice 8: Points Value Selection UI Polish
+
+Goal: replace the Slice 7 comma-separated value input with a more professional multi-select value picker.
+
+Includes:
+
+- search text field with `QCompleter`/autocomplete from the loaded value table;
+- user can type a value, pick from autocomplete, and add it to the current selection;
+- selected values are shown below the search field as removable chips or compact rows;
+- each selected value can be removed individually;
+- clear action removes all selected values;
+- all-values option remains separate and disables the selected-values list while active;
+- visualize loads either:
+  - selected chip/list values; or
+  - `values="all"` when all-values mode is enabled;
+- selected values are stored in widget state as `tuple[str, ...]`;
+- duplicate selected values are prevented;
+- when the value table reloads, preserve selected values that still exist, drop invalid values, and show a status-card warning if anything was dropped;
+- keep the implementation modest:
+  - `QLineEdit + QCompleter` for search;
+  - small `QListWidget` or vertical layout of removable rows for selected values;
+  - avoid a custom token/chip framework unless it becomes necessary.
+
+Tests:
+
+- adding a value from autocomplete adds it once;
+- duplicate values are not added twice;
+- removing one selected value updates the selection;
+- clear removes all selected values;
+- all-values mode disables the selected-values list and sends `values="all"`;
+- reloading the value table preserves still-valid selected values;
+- reloading the value table drops invalid selected values and shows a warning.
+
+Done when:
+
+- selecting a few genes/targets/probes feels like a normal viewer workflow instead of a debug text input.
+
+### Slice 9: Integration Tests And Hardening
 
 Goal: make the direct path reliable enough to iterate on real data.
 
