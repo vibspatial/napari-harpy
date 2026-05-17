@@ -1941,7 +1941,7 @@ class PointsController:
     ) -> bool:
         ...
 
-    def load_values(self) -> bool:
+    def load_value_source(self) -> bool:
         ...
 
     def load_selection(
@@ -2040,7 +2040,7 @@ class PointsLoadResult:
 Tests:
 
 - controller initializes without requiring a cache;
-- value loading can be requested for a points element and index column through `bind_source(...)` followed by `load_values()`;
+- value-source loading can be requested for a points element and index column through `bind_source(...)` followed by `load_value_source()`;
 - value loading is scheduled through a worker rather than executed synchronously by the controller caller;
 - successful value loading stores `PointsValueSource` and enters `VALUES_READY`;
 - failed value loading stores an error status and enters `LOAD_FAILED`;
