@@ -136,7 +136,8 @@ def _run_points_value_source_job(job: PointsValueSourceJob) -> PointsValueSource
     The work can trigger Dask computation over the full points element, so it
     must not run on the Qt main thread. Keeping it in this worker lets the
     widget stay responsive while the controller later reuses the resulting
-    ``PointsValueSource`` for many value selections from the same source.
+    ``PointsValueSource`` for repeated value selections from the same points
+    element and index column.
     """
     validated = validate_points_element_for_value_selection(
         job.sdata,
