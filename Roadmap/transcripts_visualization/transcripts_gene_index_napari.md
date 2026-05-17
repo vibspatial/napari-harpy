@@ -2094,6 +2094,7 @@ Includes:
 ```python
 self._points_controller = PointsController(
     on_state_changed=self._on_points_controller_state_changed,
+    on_value_source_loaded=self._on_points_value_source_loaded,
     on_points_loaded=self._on_points_loaded,
 )
 ```
@@ -2105,9 +2106,11 @@ self._points_controller = PointsController(
   - never call `validate_points_element_for_value_selection`, `build_points_value_table`, or `load_points` directly;
 - callback ownership:
   - `on_state_changed` repaints controls, status card, and enabled/disabled state;
+  - `on_value_source_loaded` performs the one-time side effect of updating value-selection UI from a newly prepared `PointsValueSource`;
   - `on_points_loaded` performs the one-time side effect of applying a newly materialized `PointsLoadResult` to the napari `Points` layer;
-  - do not apply loaded points from generic state rendering, because the controller may notify state changes again when worker bookkeeping finishes;
+  - do not update value-selector/completer contents or apply loaded points from generic state rendering, because the controller may notify state changes again when worker bookkeeping finishes;
 - `ViewerWidget` already owns `self._app_state`, and `HarpyAppState` already owns `self.viewer_adapter`; Slice 7 should use `self._app_state.viewer_adapter` for the layer update.
+- when `on_value_source_loaded(value_source)` fires, the widget updates the value completer from `value_source.value_table`;
 - when `on_points_loaded(load_result)` fires, the widget calls:
 
 ```python
@@ -2173,6 +2176,8 @@ Tests:
 - points selector populates from `sdata.points`;
 - index selector defaults to `gene` if present;
 - value loading runs when points element or index column changes;
+- when `on_value_source_loaded` fires, the widget updates the value completer/list from the loaded value table;
+- generic state repaint does not rebuild the value completer/list again when the value worker `finished` signal clears controller bookkeeping;
 - value search is enabled when direct values are ready;
 - comma-separated selected values trigger the controller read flow;
 - all-values option passes `values="all"`;

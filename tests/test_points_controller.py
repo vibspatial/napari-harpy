@@ -225,6 +225,32 @@ def test_points_controller_stores_successful_value_source(monkeypatch) -> None:
     assert controller.is_loading_values is False
 
 
+def test_points_controller_notifies_value_source_loaded_once_on_value_return(monkeypatch) -> None:
+    loaded_sources: list[PointsValueSource] = []
+    state_change_count = 0
+
+    def on_state_changed() -> None:
+        nonlocal state_change_count
+        state_change_count += 1
+
+    controller = PointsController(
+        on_state_changed=on_state_changed,
+        on_value_source_loaded=loaded_sources.append,
+    )
+    sdata = _example_sdata()
+    worker = _FakeWorker()
+    value_source = _example_value_source(sdata)
+    monkeypatch.setattr(controller, "_create_value_source_worker", lambda job: worker)
+
+    controller.bind_source(sdata, "transcripts", "global", "gene")
+    controller.load_value_source()
+    worker.returned.emit(value_source)
+    worker.finished.emit()
+
+    assert loaded_sources == [value_source]
+    assert state_change_count >= 4
+
+
 def test_points_controller_failed_value_loading_enters_load_failed(monkeypatch) -> None:
     controller = PointsController()
     sdata = _example_sdata()
