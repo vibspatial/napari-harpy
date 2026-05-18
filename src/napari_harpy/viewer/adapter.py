@@ -949,7 +949,11 @@ class ViewerAdapter(QObject):
 
         layer = _build_points_layer_from_selection(identity, selection)
         layer.visible = visible
-        style_result = apply_points_selection_style(layer, selection)
+        style_result = apply_points_selection_style(
+            layer,
+            selection,
+            point_size=getattr(old_layer, "current_size", None),
+        )
 
         try:
             _add_layer_to_viewer(self._viewer, layer)

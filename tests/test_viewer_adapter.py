@@ -727,6 +727,7 @@ def test_viewer_adapter_ensure_points_layer_from_selection_creates_registered_la
     np.testing.assert_array_equal(result.layer.data, selection.coordinates)
     assert result.layer.features.equals(selection.features)
     assert np.all(result.layer.size == 5.0)
+    assert result.layer.current_size == 5.0
     assert result.layer.opacity == 0.8
     assert all(symbol.value == "disc" for symbol in result.layer.symbol)
     assert np.all(result.layer.border_width == 0)
@@ -740,6 +741,19 @@ def test_viewer_adapter_ensure_points_layer_from_selection_creates_registered_la
     assert binding.sdata_id == id(sdata)
     assert viewer.camera.center == (0.0, 0.0)
     assert viewer.camera.zoom == 1.0
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_applies_point_size_control_to_all_points() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
+    selection = make_points_selection(["AAMP", "AAMP"], selected_values=("AAMP",))
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    result = adapter._ensure_points_layer_from_selection(identity, selection=selection)
+    result.layer.current_size = 12.0
+
+    assert np.all(result.layer.size == 12.0)
 
 
 def test_viewer_adapter_ensure_points_layer_from_selection_replaces_existing_layer_preserving_visibility() -> None:
@@ -801,6 +815,22 @@ def test_viewer_adapter_ensure_points_layer_from_selection_preserves_camera_when
 
     assert viewer.camera.center == (123.0, 456.0)
     assert viewer.camera.zoom == 7.5
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_preserves_point_size_when_replacing_layer() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
+    first_selection = make_points_selection(["AAMP"], selected_values=("AAMP",))
+    second_selection = make_points_selection(["AXL", "AXL"], selected_values=("AXL",))
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    first = adapter._ensure_points_layer_from_selection(identity, selection=first_selection)
+    first.layer.current_size = 12.0
+
+    second = adapter._ensure_points_layer_from_selection(identity, selection=second_selection)
+
+    assert second.layer.current_size == 12.0
+    assert np.all(second.layer.size == 12.0)
 
 
 def test_viewer_adapter_ensure_points_layer_from_selection_ignores_unregistered_same_name_layer() -> None:

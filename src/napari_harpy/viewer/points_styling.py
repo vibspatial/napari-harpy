@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
+import numpy as np
 from napari.layers import Points
 
 from napari_harpy.core.class_palette import default_categorical_colors
@@ -12,6 +13,8 @@ if TYPE_CHECKING:
 
 POINTS_SELECTION_SOLID_COLOR = "#00FFFF"
 POINTS_SELECTION_MAX_CATEGORICAL_COLORS = 102
+POINTS_SELECTION_DEFAULT_SIZE = 5.0
+_POINTS_SIZE_SYNC_CALLBACK_ATTR = "_harpy_points_size_sync_callback"
 
 
 @dataclass(frozen=True)
@@ -56,12 +59,17 @@ def build_points_selection_layer_name(
 def apply_points_selection_style(
     layer: Points,
     selection: PointsValueSelection,
+    *,
+    point_size: Any | None = None,
 ) -> PointsStyleResult:
     """Apply points value-selection styling."""
-    layer.size = 5.0
+    resolved_point_size = _coerce_point_size(point_size, default=POINTS_SELECTION_DEFAULT_SIZE)
+    layer.current_size = resolved_point_size
+    layer.size = resolved_point_size
     layer.opacity = 0.8
     layer.symbol = "disc"
     layer.border_width = 0
+    _connect_current_size_to_global_point_size(layer)
 
     selected_value_count = len(selection.selected_values)
     if selected_value_count < 2 or selected_value_count > POINTS_SELECTION_MAX_CATEGORICAL_COLORS:
@@ -82,3 +90,35 @@ def apply_points_selection_style(
         selected_value_count=selected_value_count,
         categorical_limit=POINTS_SELECTION_MAX_CATEGORICAL_COLORS,
     )
+
+
+def _connect_current_size_to_global_point_size(layer: Points) -> None:
+    if getattr(layer, _POINTS_SIZE_SYNC_CALLBACK_ATTR, None) is not None:
+        return
+
+    def _sync_current_size_to_all_points(_event: Any | None = None) -> None:
+        point_size = _coerce_point_size(layer.current_size, default=POINTS_SELECTION_DEFAULT_SIZE)
+        layer.size = point_size
+
+    layer.events.current_size.connect(_sync_current_size_to_all_points)
+    setattr(layer, _POINTS_SIZE_SYNC_CALLBACK_ATTR, _sync_current_size_to_all_points)
+
+
+def _coerce_point_size(value: Any | None, *, default: float) -> float:
+    if value is None:
+        return default
+
+    if isinstance(value, np.ndarray):
+        if value.size == 0:
+            return default
+        value = value.reshape(-1)[-1]
+    elif isinstance(value, list | tuple):
+        if not value:
+            return default
+        value = value[-1]
+
+    try:
+        point_size = float(value)
+    except (TypeError, ValueError):
+        return default
+    return point_size if point_size > 0 else default
