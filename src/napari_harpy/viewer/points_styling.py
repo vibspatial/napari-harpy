@@ -17,6 +17,7 @@ POINTS_SELECTION_DEFAULT_SIZE = 5.0
 POINTS_SELECTION_DEFAULT_SYMBOL = "disc"
 _POINTS_SIZE_SYNC_CALLBACK_ATTR = "_harpy_points_size_sync_callback"
 _POINTS_SYMBOL_SYNC_CALLBACK_ATTR = "_harpy_points_symbol_sync_callback"
+_POINTS_FACE_COLOR_SYNC_CALLBACK_ATTR = "_harpy_points_face_color_sync_callback"
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,7 @@ def apply_points_selection_style(
     *,
     point_size: Any | None = None,
     point_symbol: Any | None = None,
+    point_face_color: Any | None = None,
 ) -> PointsStyleResult:
     """Apply points value-selection styling."""
     resolved_point_size = _coerce_point_size(point_size, default=POINTS_SELECTION_DEFAULT_SIZE)
@@ -79,7 +81,11 @@ def apply_points_selection_style(
 
     selected_value_count = len(selection.selected_values)
     if selected_value_count < 2 or selected_value_count > POINTS_SELECTION_MAX_CATEGORICAL_COLORS:
-        layer.face_color = POINTS_SELECTION_SOLID_COLOR
+        layer.current_face_color = POINTS_SELECTION_SOLID_COLOR if point_face_color is None else point_face_color
+        layer.face_color = layer.current_face_color
+        layer.current_border_color = layer.current_face_color
+        layer.border_color = layer.face_color
+        _connect_current_face_color_to_global_point_face_color(layer)
         return PointsStyleResult(
             color_mode="solid",
             categorical_coloring_disabled=selected_value_count > POINTS_SELECTION_MAX_CATEGORICAL_COLORS,
@@ -89,6 +95,7 @@ def apply_points_selection_style(
     else:
         layer.face_color_cycle = default_categorical_colors(selected_value_count)
         layer.face_color = selection.index_column
+        layer.border_color = layer.face_color
 
     return PointsStyleResult(
         color_mode="categorical",
@@ -119,6 +126,19 @@ def _connect_current_symbol_to_global_point_symbol(layer: Points) -> None:
 
     layer.events.current_symbol.connect(_sync_current_symbol_to_all_points)
     setattr(layer, _POINTS_SYMBOL_SYNC_CALLBACK_ATTR, _sync_current_symbol_to_all_points)
+
+
+def _connect_current_face_color_to_global_point_face_color(layer: Points) -> None:
+    if getattr(layer, _POINTS_FACE_COLOR_SYNC_CALLBACK_ATTR, None) is not None:
+        return
+
+    def _sync_current_face_color_to_all_points(_event: Any | None = None) -> None:
+        layer.face_color = layer.current_face_color
+        layer.current_border_color = layer.current_face_color
+        layer.border_color = layer.face_color
+
+    layer.events.current_face_color.connect(_sync_current_face_color_to_all_points)
+    setattr(layer, _POINTS_FACE_COLOR_SYNC_CALLBACK_ATTR, _sync_current_face_color_to_all_points)
 
 
 def _coerce_point_size(value: Any | None, *, default: float) -> float:

@@ -954,6 +954,7 @@ class ViewerAdapter(QObject):
             selection,
             point_size=getattr(old_layer, "current_size", None),
             point_symbol=getattr(old_layer, "current_symbol", None),
+            point_face_color=_get_preserved_solid_points_face_color(old_layer),
         )
 
         try:
@@ -1429,6 +1430,20 @@ def _build_points_layer_from_selection(identity: PointsLayerIdentity, selection:
         face_color=POINTS_SELECTION_SOLID_COLOR,
     )
     return layer
+
+
+def _get_preserved_solid_points_face_color(layer: Points | None) -> Any | None:
+    if layer is None:
+        return None
+    # Only preserve user-selected face color for solid/direct coloring.
+    # Napari's "direct" mode means `layer.face_color` is explicit RGBA colors,
+    # which is the mode Harpy uses for solid points selections. In categorical
+    # mode, napari uses "cycle": face color is mapped from a feature column
+    # through a color cycle, so preserving `current_face_color` would carry a
+    # single swatch value instead of the Harpy gene/value palette.
+    if getattr(layer, "face_color_mode", None) != "direct":
+        return None
+    return getattr(layer, "current_face_color", None)
 
 
 def _capture_viewer_camera_state(viewer: Any | None) -> _ViewerCameraState | None:

@@ -733,6 +733,7 @@ def test_viewer_adapter_ensure_points_layer_from_selection_creates_registered_la
     assert all(symbol.value == "disc" for symbol in result.layer.symbol)
     assert np.all(result.layer.border_width == 0)
     assert np.allclose(result.layer.face_color, np.asarray([to_rgba("#00FFFF")] * selection.loaded_count))
+    assert np.allclose(result.layer.border_color, result.layer.face_color)
     binding = adapter.layer_bindings.get_binding(result.layer)
     assert isinstance(binding, PointsLayerBinding)
     assert binding.element_name == "transcripts"
@@ -768,6 +769,37 @@ def test_viewer_adapter_ensure_points_layer_from_selection_applies_symbol_contro
     result.layer.current_symbol = "square"
 
     assert all(symbol.value == "square" for symbol in result.layer.symbol)
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_applies_solid_face_color_control_to_all_points() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
+    selection = make_points_selection(["AAMP", "AAMP"], selected_values=("AAMP",))
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    result = adapter._ensure_points_layer_from_selection(identity, selection=selection)
+    result.layer.current_face_color = "red"
+
+    assert np.allclose(result.layer.face_color, np.asarray([to_rgba("red")] * selection.loaded_count))
+    assert np.allclose(result.layer.border_color, result.layer.face_color)
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_keeps_categorical_face_palette_owned_by_harpy() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
+    selection = make_points_selection(["AAMP", "AXL"], selected_values=("AAMP", "AXL"))
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    result = adapter._ensure_points_layer_from_selection(identity, selection=selection)
+    face_color = result.layer.face_color.copy()
+    border_color = result.layer.border_color.copy()
+    np.testing.assert_array_equal(border_color, face_color)
+    result.layer.current_face_color = "red"
+
+    np.testing.assert_array_equal(result.layer.face_color, face_color)
+    np.testing.assert_array_equal(result.layer.border_color, border_color)
 
 
 def test_viewer_adapter_ensure_points_layer_from_selection_replaces_existing_layer_preserving_visibility() -> None:
@@ -861,6 +893,39 @@ def test_viewer_adapter_ensure_points_layer_from_selection_preserves_symbol_when
 
     assert second.layer.current_symbol.value == "square"
     assert all(symbol.value == "square" for symbol in second.layer.symbol)
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_preserves_solid_face_color_when_replacing_layer() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
+    first_selection = make_points_selection(["AAMP"], selected_values=("AAMP",))
+    second_selection = make_points_selection(["AXL", "AXL"], selected_values=("AXL",))
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    first = adapter._ensure_points_layer_from_selection(identity, selection=first_selection)
+    first.layer.current_face_color = "red"
+
+    second = adapter._ensure_points_layer_from_selection(identity, selection=second_selection)
+
+    assert second.layer.current_face_color == "red"
+    assert np.allclose(second.layer.face_color, np.asarray([to_rgba("red")] * second_selection.loaded_count))
+    assert np.allclose(second.layer.border_color, second.layer.face_color)
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_does_not_preserve_categorical_face_swatch() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
+    first_selection = make_points_selection(["AAMP", "AXL"], selected_values=("AAMP", "AXL"))
+    second_selection = make_points_selection(["AAMP", "AAMP"], selected_values=("AAMP",))
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    first = adapter._ensure_points_layer_from_selection(identity, selection=first_selection)
+    first.layer.current_face_color = "red"
+
+    second = adapter._ensure_points_layer_from_selection(identity, selection=second_selection)
+
+    assert np.allclose(second.layer.face_color, np.asarray([to_rgba("#00FFFF")] * second_selection.loaded_count))
+    assert np.allclose(second.layer.border_color, second.layer.face_color)
 
 
 def test_viewer_adapter_ensure_points_layer_from_selection_ignores_unregistered_same_name_layer() -> None:
