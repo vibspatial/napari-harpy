@@ -272,6 +272,14 @@ class PointsLayerIdentity:
 
 
 @dataclass(frozen=True)
+class _ViewerCameraState:
+    """Small snapshot of viewer camera state restored after layer replacement."""
+
+    center: Any
+    zoom: Any
+
+
+@dataclass(frozen=True)
 class _NapariShapesLayerInputs:
     """Prepared inputs for constructing one napari ``Shapes`` layer.
 
@@ -934,10 +942,16 @@ class ViewerAdapter(QObject):
                 f"Got {identity.index_column!r} and {selection.index_column!r}."
             )
 
-        existing_layer = self._get_loaded_points_layer_for_identity(identity)
-        created = existing_layer is None
-        if existing_layer is None:
-            layer = _build_points_layer_from_selection(identity, selection)
+        old_layer = self._get_loaded_points_layer_for_identity(identity)
+        created = old_layer is None
+        visible = True if old_layer is None else old_layer.visible
+        camera_state = _capture_viewer_camera_state(self._viewer) if old_layer is not None else None
+
+        layer = _build_points_layer_from_selection(identity, selection)
+        layer.visible = visible
+        style_result = apply_points_selection_style(layer, selection)
+
+        try:
             _add_layer_to_viewer(self._viewer, layer)
             self.register_points_layer(
                 layer,
@@ -946,21 +960,15 @@ class ViewerAdapter(QObject):
                 coordinate_system=identity.coordinate_system,
                 index_column=identity.index_column,
             )
-        else:
-            layer = existing_layer
-
-        visible = layer.visible
-        _reset_points_layer_transient_state(layer)
-        layer.name = build_points_selection_layer_name(
-            identity.points_name,
-            identity.index_column,
-            selection,
-        )
-        layer.data = selection.coordinates
-        layer.features = selection.features
-        layer.visible = visible
-        style_result = apply_points_selection_style(layer, selection)
-        _refresh_points_layer_view_after_replacement(layer)
+            if old_layer is not None:
+                # Replacing the napari Points object avoids mutating a live
+                # active layer while napari's hover/status thread may be
+                # reading private view caches such as `_indices_view` and
+                # `_view_size`. In-place mutation has produced stale-cache
+                # errors when switching between point selections.
+                self._remove_layer_from_viewer_and_registry(old_layer)
+        finally:
+            _restore_viewer_camera_state(self._viewer, camera_state)
 
         return PointsLayerResult(
             layer=layer,
@@ -1418,40 +1426,32 @@ def _build_points_layer_from_selection(identity: PointsLayerIdentity, selection:
     return layer
 
 
-def _reset_points_layer_transient_state(layer: Points) -> None:
-    """Clear interaction state that may refer to rows from the previous data."""
-    layer.selected_data = set()
-    if hasattr(layer, "_value"):
-        layer._value = None
-    if hasattr(layer, "_value_stored"):
-        layer._value_stored = None
+def _capture_viewer_camera_state(viewer: Any | None) -> _ViewerCameraState | None:
+    camera = getattr(viewer, "camera", None)
+    if camera is None:
+        return None
+
+    missing = object()
+    center = getattr(camera, "center", missing)
+    zoom = getattr(camera, "zoom", missing)
+    if center is missing or zoom is missing:
+        return None
+    return _ViewerCameraState(center=center, zoom=zoom)
 
 
-def _refresh_points_layer_view_after_replacement(layer: Points) -> None:
-    """Recompute napari's cached point-view indices after replacing layer data.
-
-    Updating a points layer from a large selection to a smaller one can leave
-    napari's private `_indices_view` cache pointing at rows that no longer
-    exist. Recomputing the current slice synchronously keeps hover/status
-    lookups from indexing stale rows.
-    """
-    try:
-        layer.set_view_slice()
-    except (AttributeError, IndexError, RuntimeError, ValueError):  # pragma: no cover - defensive napari fallback
-        layer.refresh(force=True)
+def _restore_viewer_camera_state(viewer: Any | None, camera_state: _ViewerCameraState | None) -> None:
+    if camera_state is None:
         return
 
-    refresh_sync = getattr(layer, "_refresh_sync", None)
-    if callable(refresh_sync):
-        refresh_sync(
-            thumbnail=True,
-            data_displayed=True,
-            highlight=True,
-            extent=False,
-            force=True,
-        )
-    else:  # pragma: no cover - defensive fallback around napari internals
-        layer.refresh(force=True)
+    camera = getattr(viewer, "camera", None)
+    if camera is None:
+        return
+
+    try:
+        camera.center = camera_state.center
+        camera.zoom = camera_state.zoom
+    except (AttributeError, RuntimeError, TypeError, ValueError):  # pragma: no cover - defensive viewer fallback
+        logger.debug("Could not restore viewer camera after replacing the points layer.", exc_info=True)
 
 
 def _add_layer_to_viewer(viewer: Any | None, layer: Layer) -> None:

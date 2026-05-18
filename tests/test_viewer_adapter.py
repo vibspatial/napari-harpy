@@ -63,12 +63,17 @@ class DummyLayers(list):
 
 
 class DummyViewer:
-    def __init__(self, layers: list[object] | None = None) -> None:
+    def __init__(self, layers: list[object] | None = None, *, reset_camera_on_layer_change: bool = False) -> None:
         self.layers = DummyLayers(layers)
+        self.camera = SimpleNamespace(center=(10.0, 20.0), zoom=3.5)
+        self._reset_camera_on_layer_change = reset_camera_on_layer_change
 
     def add_layer(self, layer: object) -> object:
         self.layers.append(layer)
         self.layers.events.inserted.emit(layer)
+        if self._reset_camera_on_layer_change:
+            self.camera.center = (0.0, 0.0)
+            self.camera.zoom = 1.0
         return layer
 
 
@@ -707,7 +712,7 @@ def test_viewer_adapter_ensure_points_layer_from_selection_creates_registered_la
     sdata = SimpleNamespace()
     identity = make_points_identity(sdata)
     selection = make_points_selection(["AAMP", "AAMP"], selected_values=("AAMP",))
-    viewer = DummyViewer()
+    viewer = DummyViewer(reset_camera_on_layer_change=True)
     adapter = ViewerAdapter(viewer)
 
     result = adapter._ensure_points_layer_from_selection(identity, selection=selection)
@@ -733,9 +738,11 @@ def test_viewer_adapter_ensure_points_layer_from_selection_creates_registered_la
     assert binding.coordinate_system == "global"
     assert binding.index_column == "gene"
     assert binding.sdata_id == id(sdata)
+    assert viewer.camera.center == (0.0, 0.0)
+    assert viewer.camera.zoom == 1.0
 
 
-def test_viewer_adapter_ensure_points_layer_from_selection_updates_existing_layer_preserving_visibility() -> None:
+def test_viewer_adapter_ensure_points_layer_from_selection_replaces_existing_layer_preserving_visibility() -> None:
     sdata = SimpleNamespace()
     identity = make_points_identity(sdata)
     first_selection = make_points_selection(["AAMP"], selected_values=("AAMP",))
@@ -747,18 +754,20 @@ def test_viewer_adapter_ensure_points_layer_from_selection_updates_existing_laye
 
     second = adapter._ensure_points_layer_from_selection(identity, selection=second_selection)
 
-    assert first.layer is second.layer
+    assert first.layer is not second.layer
     assert first.created is True
     assert second.created is False
+    assert first.layer not in viewer.layers
     assert second.layer.visible is False
     assert len(viewer.layers) == 1
     assert second.layer.name == "transcripts: gene=AXL"
     np.testing.assert_array_equal(second.layer.data, second_selection.coordinates)
     assert second.layer.features.equals(second_selection.features)
+    assert adapter.layer_bindings.get_binding(first.layer) is None
     assert isinstance(adapter.layer_bindings.get_binding(second.layer), PointsLayerBinding)
 
 
-def test_viewer_adapter_ensure_points_layer_from_selection_refreshes_stale_point_view_indices() -> None:
+def test_viewer_adapter_ensure_points_layer_from_selection_replaces_stale_point_layer_object() -> None:
     sdata = SimpleNamespace()
     identity = make_points_identity(sdata)
     first_selection = make_points_selection(["A", "B", "C", "D", "E"], selected_values=("A", "B", "C", "D", "E"))
@@ -771,10 +780,27 @@ def test_viewer_adapter_ensure_points_layer_from_selection_refreshes_stale_point
 
     second = adapter._ensure_points_layer_from_selection(identity, selection=second_selection)
 
-    assert second.layer is first.layer
-    assert second.layer.selected_data == set()
-    assert np.all(second.layer._indices_view < second_selection.loaded_count)
+    assert second.layer is not first.layer
+    assert first.layer not in viewer.layers
+    assert adapter.layer_bindings.get_binding(first.layer) is None
     np.testing.assert_array_equal(second.layer._view_data, second_selection.coordinates)
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_preserves_camera_when_replacing_layer() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
+    first_selection = make_points_selection(["AAMP"], selected_values=("AAMP",))
+    second_selection = make_points_selection(["AXL"], selected_values=("AXL",))
+    viewer = DummyViewer(reset_camera_on_layer_change=True)
+    adapter = ViewerAdapter(viewer)
+    adapter._ensure_points_layer_from_selection(identity, selection=first_selection)
+    viewer.camera.center = (123.0, 456.0)
+    viewer.camera.zoom = 7.5
+
+    adapter._ensure_points_layer_from_selection(identity, selection=second_selection)
+
+    assert viewer.camera.center == (123.0, 456.0)
+    assert viewer.camera.zoom == 7.5
 
 
 def test_viewer_adapter_ensure_points_layer_from_selection_ignores_unregistered_same_name_layer() -> None:
