@@ -6,6 +6,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from harpy.utils._keys import _FEATURE_MATRICES_KEY
+from spatialdata._core.validation import check_valid_name
 
 from napari_harpy._app_state import FeatureMatrixWriteChangeKind, FeatureMatrixWrittenEvent
 from napari_harpy.core.feature_extraction import (
@@ -225,6 +226,7 @@ class FeatureExtractionController:
             and bool(self._selected_feature_names)
             and self._selected_feature_key is not None
             and bool(self._selected_feature_key.strip())
+            and _get_feature_key_validation_error(self._selected_feature_key) is None
             and _get_triplet_channel_selection_error(self._selected_triplets, self._selected_feature_names) is None
             and (
                 not _requires_image(self._selected_feature_names)
@@ -405,6 +407,11 @@ class FeatureExtractionController:
             self._set_status("Feature extraction: choose an output feature key.", kind="warning")
             return None
 
+        feature_key_validation_error = _get_feature_key_validation_error(self._selected_feature_key)
+        if feature_key_validation_error is not None:
+            self._set_status(feature_key_validation_error, kind="warning")
+            return None
+
         channel_selection_error = _get_triplet_channel_selection_error(
             self._selected_triplets, self._selected_feature_names
         )
@@ -497,6 +504,11 @@ class FeatureExtractionController:
             self._set_status("Feature extraction: choose an output feature key.", kind="warning")
             return
 
+        feature_key_validation_error = _get_feature_key_validation_error(self._selected_feature_key)
+        if feature_key_validation_error is not None:
+            self._set_status(feature_key_validation_error, kind="warning")
+            return
+
         channel_selection_error = _get_triplet_channel_selection_error(
             self._selected_triplets, self._selected_feature_names
         )
@@ -587,3 +599,14 @@ def _normalize_feature_names(feature_names: Sequence[str] | str | None) -> tuple
         normalized.append(normalized_name)
         seen.add(normalized_name)
     return tuple(normalized)
+
+
+def _get_feature_key_validation_error(feature_key: str | None) -> str | None:
+    if feature_key is None or not feature_key.strip():
+        return "Feature extraction: choose an output feature key."
+
+    try:
+        check_valid_name(feature_key)
+    except (TypeError, ValueError) as error:
+        return f"Feature extraction: choose a valid feature matrix key. {error}"
+    return None

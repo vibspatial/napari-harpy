@@ -78,6 +78,28 @@ def test_feature_extraction_controller_bind_is_passive_and_ready_for_existing_ta
     assert controller.can_calculate is True
 
 
+def test_feature_extraction_controller_rejects_spatialdata_invalid_feature_key(
+    sdata_blobs: SpatialData,
+) -> None:
+    controller = FeatureExtractionController()
+
+    controller.bind(
+        sdata_blobs,
+        "blobs_labels",
+        None,
+        "table",
+        "global",
+        ["area"],
+        "features tst",
+    )
+
+    assert controller.can_calculate is False
+    assert controller.status_kind == "warning"
+    assert "choose a valid feature matrix key" in controller.status_message
+    assert "alphanumeric characters, underscores, dots and hyphens" in controller.status_message
+    assert controller._prepare_feature_extraction_job(8) is None
+
+
 def test_feature_extraction_controller_blocks_when_no_table_is_selected(sdata_blobs: SpatialData) -> None:
     controller = FeatureExtractionController()
 
