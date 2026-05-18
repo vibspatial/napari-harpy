@@ -404,7 +404,10 @@ def test_viewer_widget_points_add_update_request_calls_controller(qtbot, monkeyp
             status_kind="success",
         )
     )
-    widget.points_widget.value_input.setText("AAMP, AXL")
+    widget.points_widget.value_input.setText("AAMP")
+    widget.points_widget.add_value_button.click()
+    widget.points_widget.value_input.setText("AXL")
+    widget.points_widget.add_value_button.click()
     widget.points_widget.render_point_budget_input.setText("50_000")
 
     widget.points_widget.add_update_button.click()

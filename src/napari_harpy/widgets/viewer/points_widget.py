@@ -8,6 +8,7 @@ from qtpy.QtWidgets import (
     QCompleter,
     QFormLayout,
     QFrame,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
@@ -21,6 +22,9 @@ from napari_harpy.widgets.shared_styles import (
     CHECKBOX_STYLESHEET,
     WIDGET_BORDER_COLOR,
     WIDGET_PANEL_COLOR,
+    WIDGET_PANEL_SUBTLE_COLOR,
+    WIDGET_TEXT_COLOR,
+    WIDGET_TEXT_MUTED_COLOR,
     CompactComboBox,
     StatusCardKind,
     build_input_control_stylesheet,
@@ -39,6 +43,22 @@ _DETAIL_PANEL_STYLESHEET = (
     f"border: 1px solid {WIDGET_BORDER_COLOR}; "
     "border-radius: 8px;}"
 )
+_SELECTED_VALUES_SUMMARY_STYLESHEET = (
+    "QLabel {"
+    f"background-color: {WIDGET_PANEL_SUBTLE_COLOR}; "
+    "border: 0px; "
+    f"color: {WIDGET_TEXT_COLOR}; "
+    "font-weight: 500; "
+    "padding: 4px 6px;}"
+)
+_SELECTED_VALUES_EMPTY_STYLESHEET = (
+    "QLabel {"
+    f"background-color: {WIDGET_PANEL_SUBTLE_COLOR}; "
+    "border: 0px; "
+    f"color: {WIDGET_TEXT_MUTED_COLOR}; "
+    "font-weight: 500; "
+    "padding: 4px 6px;}"
+)
 
 
 class PointsValueWidget(QFrame):
@@ -56,6 +76,10 @@ class PointsValueWidget(QFrame):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._can_visualize = False
+        self._available_values: tuple[str, ...] = ()
+        self._available_values_by_casefold: dict[str, str] = {}
+        self._selected_values: list[str] = []
+        self._value_selection_warning: str | None = None
         self.setObjectName("viewer_widget_points_value_widget")
         self.setProperty("harpyViewerDetailPanel", True)
         self.setStyleSheet(_DETAIL_PANEL_STYLESHEET)
@@ -80,13 +104,44 @@ class PointsValueWidget(QFrame):
         self.value_input = QLineEdit()
         self.value_input.setObjectName("viewer_widget_points_value_input")
         self.value_input.setStyleSheet(build_input_control_stylesheet("QLineEdit"))
-        self.value_input.setPlaceholderText("AAMP, AXL, MALAT1")
+        self.value_input.setPlaceholderText("Search values")
 
         self._value_completer_model = QStringListModel(self.value_input)
         self._value_completer = QCompleter(self._value_completer_model, self.value_input)
         self._value_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self._value_completer.setFilterMode(Qt.MatchFlag.MatchContains)
         self.value_input.setCompleter(self._value_completer)
+
+        self.add_value_button = QPushButton("Add")
+        self.add_value_button.setObjectName("viewer_widget_points_add_value_button")
+        self.add_value_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.add_value_button.setMinimumHeight(28)
+        self.add_value_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
+
+        value_search_widget = QWidget()
+        value_search_layout = QHBoxLayout(value_search_widget)
+        value_search_layout.setContentsMargins(0, 0, 0, 0)
+        value_search_layout.setSpacing(6)
+        value_search_layout.addWidget(self.value_input, 1)
+        value_search_layout.addWidget(self.add_value_button)
+
+        self.selected_values_summary_label = QLabel("Selected: none")
+        self.selected_values_summary_label.setObjectName("viewer_widget_points_selected_values_summary")
+        self.selected_values_summary_label.setWordWrap(True)
+        self.selected_values_summary_label.setStyleSheet(_SELECTED_VALUES_EMPTY_STYLESHEET)
+
+        self.clear_selection_button = QPushButton("Clear selection")
+        self.clear_selection_button.setObjectName("viewer_widget_points_clear_selection_button")
+        self.clear_selection_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_selection_button.setMinimumHeight(28)
+        self.clear_selection_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
+
+        selected_values_widget = QWidget()
+        selected_values_layout = QHBoxLayout(selected_values_widget)
+        selected_values_layout.setContentsMargins(0, 0, 0, 0)
+        selected_values_layout.setSpacing(6)
+        selected_values_layout.addWidget(self.selected_values_summary_label, 1)
+        selected_values_layout.addWidget(self.clear_selection_button)
 
         self.all_values_checkbox = QCheckBox("All values")
         self.all_values_checkbox.setObjectName("viewer_widget_points_all_values_checkbox")
@@ -98,7 +153,8 @@ class PointsValueWidget(QFrame):
 
         form_layout.addRow(create_form_label("Points"), self.points_combo)
         form_layout.addRow(create_form_label("Index column"), self.index_column_combo)
-        form_layout.addRow(create_form_label("Values"), self.value_input)
+        form_layout.addRow(create_form_label("Values"), value_search_widget)
+        form_layout.addRow(create_form_label("Selected"), selected_values_widget)
         form_layout.addRow(create_form_label("Render budget"), self.render_point_budget_input)
         form_layout.addRow("", self.all_values_checkbox)
 
@@ -118,9 +174,12 @@ class PointsValueWidget(QFrame):
 
         self.points_combo.currentIndexChanged.connect(self._emit_source_changed)
         self.index_column_combo.currentIndexChanged.connect(self._emit_source_changed)
+        self.add_value_button.clicked.connect(self._add_value_from_input)
         self.add_update_button.clicked.connect(self._emit_add_update_requested)
         self.all_values_checkbox.toggled.connect(self._refresh_value_input_state)
         self.value_input.textChanged.connect(self._refresh_add_update_state)
+        self.value_input.returnPressed.connect(self._add_value_from_input)
+        self.clear_selection_button.clicked.connect(self._clear_selected_values)
         self.render_point_budget_input.textChanged.connect(self._refresh_add_update_state)
 
         self.show_status(
@@ -164,8 +223,17 @@ class PointsValueWidget(QFrame):
 
     def set_value_source(self, value_source: PointsValueSource | None) -> None:
         """Update the value completer from a prepared value source."""
-        values = [] if value_source is None else [str(value) for value in value_source.value_table.values["value"]]
+        if value_source is None:
+            values: list[str] = []
+            self._selected_values.clear()
+            self._clear_value_selection_warning()
+        else:
+            values = list(dict.fromkeys(str(value) for value in value_source.value_table.values["value"]))
+        self._available_values = tuple(values)
+        self._available_values_by_casefold = {value.casefold(): value for value in self._available_values}
         self._value_completer_model.setStringList(values)
+        self._drop_selected_values_not_in_available_values()
+        self._render_selected_values_summary()
         self._refresh_value_input_state()
 
     def render_controller_state(self, controller: PointsController) -> None:
@@ -174,6 +242,13 @@ class PointsValueWidget(QFrame):
             can_visualize=controller.can_visualize,
             is_loading=controller.is_loading or controller.is_loading_values,
         )
+        if self._value_selection_warning and controller.can_visualize and not (controller.is_loading or controller.is_loading_values):
+            self.show_status(
+                title="Points Warning",
+                lines=[self._value_selection_warning],
+                kind="warning",
+            )
+            return
         self.show_status(
             title="Points",
             lines=[controller.status_message],
@@ -194,8 +269,7 @@ class PointsValueWidget(QFrame):
         """Return parsed value selection for the next add/update request."""
         if self.all_values_checkbox.isChecked():
             return "all"
-        values = tuple(dict.fromkeys(value.strip() for value in self.value_input.text().split(",") if value.strip()))
-        return values
+        return tuple(self._selected_values)
 
     def render_point_budget(self) -> int | None:
         """Return the validated render point budget, or `None` if invalid."""
@@ -252,13 +326,91 @@ class PointsValueWidget(QFrame):
 
         self.add_update_requested.emit(values, budget)
 
+    def _add_value_from_input(self, _checked: bool = False) -> None:
+        if not self.value_input.isEnabled():
+            return
+
+        value = self._resolve_available_value(self.value_input.text())
+        if value is None:
+            typed_value = self.value_input.text().strip()
+            if typed_value:
+                self._set_value_selection_warning(f"`{typed_value}` is not in the loaded value table.")
+            return
+
+        self._add_selected_value(value)
+
+    def _add_selected_value(self, value: str) -> None:
+        if value in self._selected_values:
+            self.value_input.clear()
+            return
+
+        self._selected_values.append(value)
+        self.value_input.clear()
+        self._clear_value_selection_warning()
+        self._render_selected_values_summary()
+        self._refresh_add_update_state()
+
+    def _clear_selected_values(self) -> None:
+        if not self._selected_values:
+            return
+
+        self._selected_values.clear()
+        self._clear_value_selection_warning()
+        self._render_selected_values_summary()
+        self._refresh_add_update_state()
+
+    def _drop_selected_values_not_in_available_values(self) -> None:
+        if not self._selected_values:
+            self._clear_value_selection_warning()
+            return
+
+        available = set(self._available_values)
+        kept_values = [value for value in self._selected_values if value in available]
+        dropped_count = len(self._selected_values) - len(kept_values)
+        self._selected_values = kept_values
+        if dropped_count:
+            self._set_value_selection_warning(
+                f"Dropped {dropped_count} selected value(s) that are no longer available."
+            )
+        else:
+            self._clear_value_selection_warning()
+
+    def _render_selected_values_summary(self) -> None:
+        if self._selected_values:
+            self.selected_values_summary_label.setText(f"Selected: {', '.join(self._selected_values)}")
+            self.selected_values_summary_label.setStyleSheet(_SELECTED_VALUES_SUMMARY_STYLESHEET)
+        else:
+            self.selected_values_summary_label.setText("Selected: none")
+            self.selected_values_summary_label.setStyleSheet(_SELECTED_VALUES_EMPTY_STYLESHEET)
+        self.clear_selection_button.setEnabled(bool(self._selected_values))
+
+    def _resolve_available_value(self, value: str) -> str | None:
+        normalized_value = value.strip()
+        if not normalized_value:
+            return None
+        return self._available_values_by_casefold.get(normalized_value.casefold())
+
+    def _set_value_selection_warning(self, message: str) -> None:
+        self._value_selection_warning = message
+        self.show_status(title="Points Warning", lines=[message], kind="warning")
+
+    def _clear_value_selection_warning(self) -> None:
+        self._value_selection_warning = None
+
     def _refresh_value_input_state(self, _checked: bool | None = None) -> None:
-        self.value_input.setEnabled(
+        value_selection_enabled = (
             self._can_visualize
             and self.points_combo.isEnabled()
             and self.index_column_combo.isEnabled()
             and bool(self._value_completer_model.stringList())
             and not self.all_values_checkbox.isChecked()
+        )
+        self.value_input.setEnabled(value_selection_enabled)
+        self.add_value_button.setEnabled(
+            value_selection_enabled and self._resolve_available_value(self.value_input.text()) is not None
+        )
+        self.clear_selection_button.setEnabled(
+            value_selection_enabled and bool(self._selected_values)
         )
         self._refresh_add_update_state()
 
@@ -273,6 +425,8 @@ class PointsValueWidget(QFrame):
                 ],
                 kind="warning",
             )
+        value_can_be_added = self._resolve_available_value(self.value_input.text()) is not None
+        self.add_value_button.setEnabled(self.value_input.isEnabled() and value_can_be_added)
         self.add_update_button.setEnabled(
             self._can_visualize
             and budget_is_valid

@@ -2234,12 +2234,20 @@ Done when:
 
 Goal: replace the Slice 7 comma-separated value input with a simple search/add/clear value picker.
 
+Status: implemented.
+
+Implementation:
+
+- `src/napari_harpy/widgets/viewer/points_widget.py`;
+- `tests/test_points_widget.py`;
+- `tests/test_viewer_widget.py`.
+
 Includes:
 
 - implement the polish primarily in `src/napari_harpy/widgets/viewer/points_widget.py`;
 - keep `PointsController`, `load_points`, and `ViewerAdapter` contracts unchanged;
 - `points_widget.py` continues to emit the existing `add_update_requested` signal:
-  - `tuple[str, ...]` for explicitly selected chip values;
+  - `tuple[str, ...]` for explicitly selected values;
   - `"all"` when all-values mode is enabled;
 - test the behavior primarily in `tests/test_points_widget.py`;
 - add shared styling helpers only if needed, for example in `src/napari_harpy/widgets/shared_styles.py`;

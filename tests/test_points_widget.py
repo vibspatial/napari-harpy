@@ -32,7 +32,7 @@ def _fake_value_source(values: list[str]):
     )
 
 
-def test_points_value_widget_parses_comma_separated_values(qtbot) -> None:
+def test_points_value_widget_adds_selected_values_in_order(qtbot) -> None:
     widget = PointsValueWidget()
     recorded_requests: list[tuple[object, int]] = []
 
@@ -43,10 +43,17 @@ def test_points_value_widget_parses_comma_separated_values(qtbot) -> None:
     widget.set_index_columns(["gene"])
     widget.set_value_source(_fake_value_source(["AAMP", "AXL", "MALAT1"]))
     widget.render_controller_state(_fake_controller())
-    widget.value_input.setText(" AAMP, AXL, AAMP ")
+    widget.value_input.setText("AAMP")
+    qtbot.mouseClick(widget.add_value_button, Qt.MouseButton.LeftButton)
+    widget.value_input.setText("AXL")
+    qtbot.mouseClick(widget.add_value_button, Qt.MouseButton.LeftButton)
+    widget.value_input.setText("AAMP")
+    qtbot.mouseClick(widget.add_value_button, Qt.MouseButton.LeftButton)
     widget.render_point_budget_input.setText("25_000")
 
     assert widget.add_update_button.text() == "Add / Update in viewer"
+    assert widget.selected_values() == ("AAMP", "AXL")
+    assert widget.selected_values_summary_label.text() == "Selected: AAMP, AXL"
 
     qtbot.mouseClick(widget.add_update_button, Qt.MouseButton.LeftButton)
 
@@ -68,10 +75,74 @@ def test_points_value_widget_all_values_disables_value_input(qtbot) -> None:
     widget.all_values_checkbox.setChecked(True)
 
     assert not widget.value_input.isEnabled()
+    assert not widget.add_value_button.isEnabled()
+    assert not widget.clear_selection_button.isEnabled()
 
     qtbot.mouseClick(widget.add_update_button, Qt.MouseButton.LeftButton)
 
     assert recorded_requests == [("all", 100_000)]
+
+
+def test_points_value_widget_clear_removes_selected_values(qtbot) -> None:
+    widget = PointsValueWidget()
+
+    qtbot.addWidget(widget)
+
+    widget.set_points_names(["transcripts"])
+    widget.set_index_columns(["gene"])
+    widget.set_value_source(_fake_value_source(["AAMP", "AXL"]))
+    widget.render_controller_state(_fake_controller())
+    widget.value_input.setText("AAMP")
+    qtbot.mouseClick(widget.add_value_button, Qt.MouseButton.LeftButton)
+    widget.value_input.setText("AXL")
+    qtbot.mouseClick(widget.add_value_button, Qt.MouseButton.LeftButton)
+
+    assert widget.selected_values() == ("AAMP", "AXL")
+
+    qtbot.mouseClick(widget.clear_selection_button, Qt.MouseButton.LeftButton)
+
+    assert widget.selected_values() == ()
+    assert widget.selected_values_summary_label.text() == "Selected: none"
+
+
+def test_points_value_widget_reloading_values_preserves_valid_and_drops_invalid(qtbot) -> None:
+    widget = PointsValueWidget()
+
+    qtbot.addWidget(widget)
+
+    widget.set_points_names(["transcripts"])
+    widget.set_index_columns(["gene"])
+    widget.set_value_source(_fake_value_source(["AAMP", "AXL"]))
+    widget.render_controller_state(_fake_controller())
+    widget.value_input.setText("AAMP")
+    qtbot.mouseClick(widget.add_value_button, Qt.MouseButton.LeftButton)
+    widget.value_input.setText("AXL")
+    qtbot.mouseClick(widget.add_value_button, Qt.MouseButton.LeftButton)
+
+    widget.set_value_source(_fake_value_source(["AXL", "MALAT1"]))
+
+    assert widget.selected_values() == ("AXL",)
+    assert widget.selected_values_summary_label.text() == "Selected: AXL"
+    assert "Dropped 1 selected value" in widget.status_label.text()
+
+
+def test_points_value_widget_unknown_value_is_not_added(qtbot) -> None:
+    widget = PointsValueWidget()
+
+    qtbot.addWidget(widget)
+
+    widget.set_points_names(["transcripts"])
+    widget.set_index_columns(["gene"])
+    widget.set_value_source(_fake_value_source(["AAMP"]))
+    widget.render_controller_state(_fake_controller())
+    widget.value_input.setText("NOT_A_GENE")
+
+    assert not widget.add_value_button.isEnabled()
+
+    widget.value_input.returnPressed.emit()
+
+    assert widget.selected_values() == ()
+    assert "NOT_A_GENE" in widget.status_label.text()
 
 
 def test_points_value_widget_invalid_render_budget_disables_add_update(qtbot) -> None:
@@ -84,6 +155,7 @@ def test_points_value_widget_invalid_render_budget_disables_add_update(qtbot) ->
     widget.set_value_source(_fake_value_source(["AAMP"]))
     widget.render_controller_state(_fake_controller())
     widget.value_input.setText("AAMP")
+    qtbot.mouseClick(widget.add_value_button, Qt.MouseButton.LeftButton)
 
     assert widget.add_update_button.isEnabled()
 
@@ -91,4 +163,3 @@ def test_points_value_widget_invalid_render_budget_disables_add_update(qtbot) ->
 
     assert not widget.add_update_button.isEnabled()
     assert "Render point budget" in widget.status_label.text()
-
