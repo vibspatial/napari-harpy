@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
+import pandas as pd
+from pandas.api.types import is_bool_dtype, is_numeric_dtype, is_object_dtype, is_string_dtype
 from qtpy.QtCore import QPointF, QSignalBlocker, QSize, QStringListModel, Qt, Signal
 from qtpy.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from qtpy.QtWidgets import (
@@ -41,10 +44,12 @@ from napari_harpy.core.spatialdata import (
     get_shape_column_color_source_options,
     get_spatialdata_image_options_for_coordinate_system_from_sdata,
     get_spatialdata_labels_options_for_coordinate_system_from_sdata,
+    get_spatialdata_points_options_for_coordinate_system_from_sdata,
     get_spatialdata_shapes_options_for_coordinate_system_from_sdata,
     get_table_color_source_options,
 )
 from napari_harpy.viewer.adapter import DEFAULT_OVERLAY_COLORS, ShapesLayerBinding, ViewerAdapter
+from napari_harpy.viewer.points_styling import PointsLayerResult
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,
 )
@@ -74,6 +79,8 @@ from napari_harpy.widgets.shared_styles import (
 from napari_harpy.widgets.shared_styles import (
     WIDGET_MIN_WIDTH as _WIDGET_MIN_WIDTH,
 )
+from napari_harpy.widgets.viewer.points_controller import PointsController, PointsLoadResult, PointsValueSource
+from napari_harpy.widgets.viewer.points_widget import PointsValueWidget
 
 if TYPE_CHECKING:
     import napari
@@ -1103,6 +1110,13 @@ class ViewerWidget(QWidget):
         self.setMinimumWidth(_WIDGET_MIN_WIDTH)
         self._viewer = napari_viewer
         self._app_state = get_or_create_app_state(napari_viewer)
+        self._points_controller = PointsController(
+            on_state_changed=self._on_points_controller_state_changed,
+            on_value_source_loaded=self._on_points_value_source_loaded,
+            on_points_loaded=self._on_points_loaded,
+        )
+        self._last_points_load_result: PointsLoadResult | None = None
+        self._last_points_layer_result: PointsLayerResult | None = None
         self._labels_cards: list[_LabelsCardWidget] = []
         self._image_cards: list[_ImageCardWidget] = []
         self._shape_cards: list[_ShapesCardWidget] = []
@@ -1237,6 +1251,25 @@ class ViewerWidget(QWidget):
         self.shapes_section_toggle = self.shapes_group.toggle_button
         self.shapes_section_title = self.shapes_section_toggle
 
+        self.points_empty_label = QLabel("No points available in the selected coordinate system.")
+        self.points_empty_label.setObjectName("viewer_widget_points_empty_state")
+        self.points_empty_label.setWordWrap(True)
+        self.points_empty_label.setStyleSheet(_EMPTY_STATE_STYLESHEET)
+
+        self.points_widget = PointsValueWidget()
+        self.points_widget.source_changed.connect(self._on_points_source_changed)
+        self.points_widget.visualize_requested.connect(self._visualize_points_selection)
+        self.points_group = _CollapsibleSectionWidget(
+            title="Points",
+            object_name="viewer_widget_points_group",
+            toggle_object_name="viewer_widget_points_section_toggle",
+            expanded=False,
+        )
+        self.points_group.content_layout.addWidget(self.points_empty_label)
+        self.points_group.content_layout.addWidget(self.points_widget)
+        self.points_section_toggle = self.points_group.toggle_button
+        self.points_section_title = self.points_section_toggle
+
         self.content_layout.addWidget(header_logo)
         self.content_layout.addWidget(title)
         self.content_layout.addWidget(self.open_sdata_button)
@@ -1247,6 +1280,7 @@ class ViewerWidget(QWidget):
         self.content_layout.addWidget(self.images_group)
         self.content_layout.addWidget(self.labels_group)
         self.content_layout.addWidget(self.shapes_group)
+        self.content_layout.addWidget(self.points_group)
         self.content_layout.addStretch(1)
 
         self.scroll_area.setWidget(self.scroll_content)
@@ -1343,7 +1377,7 @@ class ViewerWidget(QWidget):
                 self.summary_label.setText("No SpatialData loaded.")
                 self.coordinate_system_combo.setEnabled(False)
                 self._clear_cards()
-                self._update_section_empty_states([], [], [])
+                self._update_section_empty_states([], [], [], [])
                 return
 
             coordinate_systems = get_coordinate_system_names_from_sdata(sdata)
@@ -1362,7 +1396,7 @@ class ViewerWidget(QWidget):
 
         if sdata is None or not coordinate_system:
             self._clear_cards()
-            self._update_section_empty_states([], [], [])
+            self._update_section_empty_states([], [], [], [])
             if sdata is None:
                 self.summary_label.setText("No SpatialData loaded.")
             else:
@@ -1372,16 +1406,18 @@ class ViewerWidget(QWidget):
         labels_names = _get_labels_in_coordinate_system(sdata, coordinate_system)
         image_names = _get_images_in_coordinate_system(sdata, coordinate_system)
         shapes_names = _get_shapes_in_coordinate_system(sdata, coordinate_system)
+        points_names = _get_points_in_coordinate_system(sdata, coordinate_system)
 
         self.summary_label.setText(
             f"In coordinate system `{coordinate_system}`: "
             f"{len(image_names)} image element(s), {len(labels_names)} labels element(s), "
-            f"and {len(shapes_names)} shapes element(s)."
+            f"{len(shapes_names)} shapes element(s), and {len(points_names)} points element(s)."
         )
         self._rebuild_image_cards(sdata, image_names)
         self._rebuild_labels_cards(sdata, labels_names)
         self._rebuild_shapes_cards(sdata, shapes_names)
-        self._update_section_empty_states(image_names, labels_names, shapes_names)
+        self._refresh_points_section(sdata, points_names)
+        self._update_section_empty_states(image_names, labels_names, shapes_names, points_names)
 
     def _rebuild_image_cards(self, sdata: SpatialData, image_names: list[str]) -> None:
         _clear_layout(self.images_section_layout)
@@ -1481,6 +1517,105 @@ class ViewerWidget(QWidget):
             self.shapes_section_layout.addWidget(row)
             self._shape_cards.append(card)
             self._shape_rows.append(row)
+
+    def _refresh_points_section(self, sdata: SpatialData, points_names: list[str]) -> None:
+        self.points_widget.set_points_names(points_names)
+        self._refresh_points_index_columns(sdata)
+        self._bind_points_source()
+
+    def _refresh_points_index_columns(self, sdata: SpatialData | None) -> None:
+        points_name = self.points_widget.selected_points_name()
+        index_columns = [] if sdata is None or points_name is None else _get_points_index_columns(sdata, points_name)
+        self.points_widget.set_index_columns(index_columns)
+
+    def _on_points_source_changed(self) -> None:
+        sdata = self._app_state.sdata
+        self._refresh_points_index_columns(sdata)
+        self._bind_points_source()
+
+    def _bind_points_source(self) -> None:
+        sdata = self._app_state.sdata
+        coordinate_system = self._app_state.coordinate_system
+        points_name = self.points_widget.selected_points_name()
+        index_column = self.points_widget.selected_index_column()
+
+        changed = self._points_controller.bind_source(
+            sdata,
+            points_name,
+            coordinate_system,
+            index_column,
+        )
+        if changed:
+            self._last_points_load_result = None
+            self._last_points_layer_result = None
+        if changed and self._points_controller.can_load_values:
+            self._points_controller.load_value_source()
+        else:
+            self.points_widget.render_controller_state(self._points_controller)
+
+    def _visualize_points_selection(self, values: Sequence[str] | Literal["all"], render_point_budget: int) -> None:
+        self._last_points_load_result = None
+        self._last_points_layer_result = None
+        self._points_controller.load_selection(
+            values,
+            render_point_budget=render_point_budget,
+        )
+
+    def _on_points_controller_state_changed(self) -> None:
+        self.points_widget.render_controller_state(self._points_controller)
+        if self._last_points_load_result is not None and self._last_points_layer_result is not None:
+            self._render_points_loaded_status(self._last_points_load_result, self._last_points_layer_result)
+
+    def _on_points_value_source_loaded(self, value_source: PointsValueSource) -> None:
+        self.points_widget.set_value_source(value_source)
+
+    def _on_points_loaded(self, load_result: PointsLoadResult) -> None:
+        try:
+            layer_result = self._app_state.viewer_adapter._ensure_points_layer_from_selection(
+                load_result.identity,
+                selection=load_result.selection,
+            )
+        except ValueError as error:
+            self.points_widget.show_status(
+                title="Points Layer Error",
+                lines=[str(error)],
+                kind="error",
+            )
+            return
+
+        self._last_points_load_result = load_result
+        self._last_points_layer_result = layer_result
+        self._app_state.viewer_adapter.activate_layer(layer_result.layer)
+        self._render_points_loaded_status(load_result, layer_result)
+
+    def _render_points_loaded_status(
+        self,
+        load_result: PointsLoadResult,
+        layer_result: PointsLayerResult,
+    ) -> None:
+        selection = load_result.selection
+        action = "Created" if layer_result.created else "Updated"
+        lines = [
+            (
+                f"{action} points layer for `{load_result.identity.points_name}` "
+                f"by `{selection.index_column}` with {selection.loaded_count:,} point(s)."
+            )
+        ]
+        kind: StatusCardKind = "success"
+        title = f"Points Layer {action}"
+        if selection.warning:
+            kind = "warning"
+            title = f"{title} With Warning"
+            lines.append(selection.warning)
+        if layer_result.categorical_coloring_disabled:
+            kind = "warning"
+            if not title.endswith(" With Warning"):
+                title = f"{title} With Warning"
+            lines.append(
+                f"Categorical coloring is disabled for {layer_result.selected_value_count:,} selected values; "
+                f"using one solid color because the categorical limit is {layer_result.categorical_limit:,}."
+            )
+        self.points_widget.show_status(title=title, lines=lines, kind=kind)
 
     def _on_image_row_expanded(
         self,
@@ -1847,16 +1982,20 @@ class ViewerWidget(QWidget):
         image_names: list[str],
         labels_names: list[str],
         shapes_names: list[str],
+        points_names: list[str],
     ) -> None:
         self.images_group.set_count(len(image_names))
         self.labels_group.set_count(len(labels_names))
         self.shapes_group.set_count(len(shapes_names))
+        self.points_group.set_count(len(points_names))
         self.images_empty_label.setVisible(not image_names)
         self.labels_empty_label.setVisible(not labels_names)
         self.shapes_empty_label.setVisible(not shapes_names)
+        self.points_empty_label.setVisible(not points_names)
         self.images_section.setVisible(bool(image_names))
         self.labels_section.setVisible(bool(labels_names))
         self.shapes_section.setVisible(bool(shapes_names))
+        self.points_widget.setVisible(bool(points_names))
 
     def _clear_cards(self) -> None:
         _clear_layout(self.images_section_layout)
@@ -1871,6 +2010,12 @@ class ViewerWidget(QWidget):
         self._expanded_image_names.clear()
         self._expanded_labels_names.clear()
         self._expanded_shapes_names.clear()
+        self.points_widget.set_points_names([])
+        self.points_widget.set_index_columns([])
+        self.points_widget.set_value_source(None)
+        self._last_points_load_result = None
+        self._last_points_layer_result = None
+        self._points_controller.bind_source(None, None, None, None)
 
     def _set_action_feedback(
         self,
@@ -1974,6 +2119,38 @@ def _get_shapes_in_coordinate_system(sdata: SpatialData, coordinate_system: str)
             coordinate_system=coordinate_system,
         )
     ]
+
+
+def _get_points_in_coordinate_system(sdata: SpatialData, coordinate_system: str) -> list[str]:
+    return [
+        option.points_name
+        for option in get_spatialdata_points_options_for_coordinate_system_from_sdata(
+            sdata=sdata,
+            coordinate_system=coordinate_system,
+        )
+    ]
+
+
+def _get_points_index_columns(sdata: SpatialData, points_name: str) -> list[str]:
+    points = getattr(sdata, "points", {}).get(points_name)
+    if points is None:
+        return []
+
+    meta = getattr(points, "_meta", points)
+    columns = list(getattr(meta, "columns", ()))
+    index_columns: list[str] = []
+    for column in columns:
+        column_name = str(column)
+        if column_name in {"x", "y"}:
+            continue
+
+        dtype = getattr(meta[column], "dtype", None)
+        if dtype is None or is_bool_dtype(dtype) or is_numeric_dtype(dtype):
+            continue
+        if isinstance(dtype, pd.CategoricalDtype) or is_string_dtype(dtype) or is_object_dtype(dtype):
+            index_columns.append(column_name)
+
+    return index_columns
 
 
 def _get_layer_skipped_geometry_count(viewer_adapter: ViewerAdapter, layer: object) -> int:

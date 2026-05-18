@@ -79,6 +79,21 @@ class SpatialDataShapesOption:
 
 
 @dataclass(frozen=True)
+class SpatialDataPointsOption:
+    """A selectable points element discovered from a loaded SpatialData object."""
+
+    points_name: str
+    display_name: str
+    sdata: SpatialData
+    coordinate_systems: tuple[str, ...]
+
+    @property
+    def identity(self) -> tuple[int, str]:
+        """Return a stable identity for preserving widget selection across refreshes."""
+        return (id(self.sdata), self.points_name)
+
+
+@dataclass(frozen=True)
 class SpatialDataFeatureExtractionLabelDiscovery:
     """Feature-extraction label discovery summary for one coordinate system."""
 
@@ -364,6 +379,19 @@ def get_spatialdata_shapes_options_from_sdata(sdata: SpatialData) -> list[Spatia
     ]
 
 
+def get_spatialdata_points_options_from_sdata(sdata: SpatialData) -> list[SpatialDataPointsOption]:
+    """Return selectable points elements directly from a loaded SpatialData object."""
+    return [
+        SpatialDataPointsOption(
+            points_name=points_name,
+            display_name=points_name,
+            sdata=sdata,
+            coordinate_systems=_get_element_coordinate_systems(sdata.points[points_name]),
+        )
+        for points_name in _get_points_names(sdata)
+    ]
+
+
 def get_coordinate_system_names_from_sdata(sdata: SpatialData) -> list[str]:
     """Return all coordinate-system names exposed by spatial elements in a loaded `SpatialData`."""
     coordinate_systems: set[str] = set()
@@ -376,6 +404,9 @@ def get_coordinate_system_names_from_sdata(sdata: SpatialData) -> list[str]:
 
     for shapes_name in _get_shapes_names(sdata):
         coordinate_systems.update(_get_element_coordinate_systems(sdata.shapes[shapes_name]))
+
+    for points_name in _get_points_names(sdata):
+        coordinate_systems.update(_get_element_coordinate_systems(sdata.points[points_name]))
 
     return sorted(coordinate_systems)
 
@@ -499,6 +530,24 @@ def get_spatialdata_shapes_options_for_coordinate_system_from_sdata(
         )
         for shapes_name in _get_shapes_names(sdata)
         if coordinate_system in _get_element_coordinate_systems(sdata.shapes[shapes_name])
+    ]
+
+
+def get_spatialdata_points_options_for_coordinate_system_from_sdata(
+    *,
+    sdata: SpatialData,
+    coordinate_system: str,
+) -> list[SpatialDataPointsOption]:
+    """Return points options restricted to a selected coordinate system."""
+    return [
+        SpatialDataPointsOption(
+            points_name=points_name,
+            display_name=points_name,
+            sdata=sdata,
+            coordinate_systems=_get_element_coordinate_systems(sdata.points[points_name]),
+        )
+        for points_name in _get_points_names(sdata)
+        if coordinate_system in _get_element_coordinate_systems(sdata.points[points_name])
     ]
 
 
@@ -737,6 +786,11 @@ def _get_image_names(sdata: SpatialData) -> list[str]:
 def _get_shapes_names(sdata: SpatialData) -> list[str]:
     shapes = getattr(sdata, "shapes", {})
     return sorted(shapes.keys())
+
+
+def _get_points_names(sdata: SpatialData) -> list[str]:
+    points = getattr(sdata, "points", {})
+    return sorted(points.keys())
 
 
 def _normalize_requested_labels_names(labels_names: Sequence[str]) -> list[str]:

@@ -58,7 +58,7 @@ def apply_points_selection_style(
     selection: PointsValueSelection,
 ) -> PointsStyleResult:
     """Apply points value-selection styling."""
-    layer.size = 1.0
+    layer.size = 5.0
     layer.opacity = 0.8
     layer.symbol = "disc"
     layer.border_width = 0
