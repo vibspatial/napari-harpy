@@ -729,6 +729,7 @@ def test_viewer_adapter_ensure_points_layer_from_selection_creates_registered_la
     assert np.all(result.layer.size == 5.0)
     assert result.layer.current_size == 5.0
     assert result.layer.opacity == 0.8
+    assert result.layer.current_symbol.value == "disc"
     assert all(symbol.value == "disc" for symbol in result.layer.symbol)
     assert np.all(result.layer.border_width == 0)
     assert np.allclose(result.layer.face_color, np.asarray([to_rgba("#00FFFF")] * selection.loaded_count))
@@ -754,6 +755,19 @@ def test_viewer_adapter_ensure_points_layer_from_selection_applies_point_size_co
     result.layer.current_size = 12.0
 
     assert np.all(result.layer.size == 12.0)
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_applies_symbol_control_to_all_points() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
+    selection = make_points_selection(["AAMP", "AAMP"], selected_values=("AAMP",))
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    result = adapter._ensure_points_layer_from_selection(identity, selection=selection)
+    result.layer.current_symbol = "square"
+
+    assert all(symbol.value == "square" for symbol in result.layer.symbol)
 
 
 def test_viewer_adapter_ensure_points_layer_from_selection_replaces_existing_layer_preserving_visibility() -> None:
@@ -831,6 +845,22 @@ def test_viewer_adapter_ensure_points_layer_from_selection_preserves_point_size_
 
     assert second.layer.current_size == 12.0
     assert np.all(second.layer.size == 12.0)
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_preserves_symbol_when_replacing_layer() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
+    first_selection = make_points_selection(["AAMP"], selected_values=("AAMP",))
+    second_selection = make_points_selection(["AXL", "AXL"], selected_values=("AXL",))
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    first = adapter._ensure_points_layer_from_selection(identity, selection=first_selection)
+    first.layer.current_symbol = "square"
+
+    second = adapter._ensure_points_layer_from_selection(identity, selection=second_selection)
+
+    assert second.layer.current_symbol.value == "square"
+    assert all(symbol.value == "square" for symbol in second.layer.symbol)
 
 
 def test_viewer_adapter_ensure_points_layer_from_selection_ignores_unregistered_same_name_layer() -> None:

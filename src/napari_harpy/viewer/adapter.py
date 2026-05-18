@@ -953,6 +953,7 @@ class ViewerAdapter(QObject):
             layer,
             selection,
             point_size=getattr(old_layer, "current_size", None),
+            point_symbol=getattr(old_layer, "current_symbol", None),
         )
 
         try:

@@ -14,7 +14,9 @@ if TYPE_CHECKING:
 POINTS_SELECTION_SOLID_COLOR = "#00FFFF"
 POINTS_SELECTION_MAX_CATEGORICAL_COLORS = 102
 POINTS_SELECTION_DEFAULT_SIZE = 5.0
+POINTS_SELECTION_DEFAULT_SYMBOL = "disc"
 _POINTS_SIZE_SYNC_CALLBACK_ATTR = "_harpy_points_size_sync_callback"
+_POINTS_SYMBOL_SYNC_CALLBACK_ATTR = "_harpy_points_symbol_sync_callback"
 
 
 @dataclass(frozen=True)
@@ -61,15 +63,19 @@ def apply_points_selection_style(
     selection: PointsValueSelection,
     *,
     point_size: Any | None = None,
+    point_symbol: Any | None = None,
 ) -> PointsStyleResult:
     """Apply points value-selection styling."""
     resolved_point_size = _coerce_point_size(point_size, default=POINTS_SELECTION_DEFAULT_SIZE)
+    resolved_point_symbol = POINTS_SELECTION_DEFAULT_SYMBOL if point_symbol is None else point_symbol
     layer.current_size = resolved_point_size
     layer.size = resolved_point_size
     layer.opacity = 0.8
-    layer.symbol = "disc"
+    layer.current_symbol = resolved_point_symbol
+    layer.symbol = layer.current_symbol
     layer.border_width = 0
     _connect_current_size_to_global_point_size(layer)
+    _connect_current_symbol_to_global_point_symbol(layer)
 
     selected_value_count = len(selection.selected_values)
     if selected_value_count < 2 or selected_value_count > POINTS_SELECTION_MAX_CATEGORICAL_COLORS:
@@ -102,6 +108,17 @@ def _connect_current_size_to_global_point_size(layer: Points) -> None:
 
     layer.events.current_size.connect(_sync_current_size_to_all_points)
     setattr(layer, _POINTS_SIZE_SYNC_CALLBACK_ATTR, _sync_current_size_to_all_points)
+
+
+def _connect_current_symbol_to_global_point_symbol(layer: Points) -> None:
+    if getattr(layer, _POINTS_SYMBOL_SYNC_CALLBACK_ATTR, None) is not None:
+        return
+
+    def _sync_current_symbol_to_all_points(_event: Any | None = None) -> None:
+        layer.symbol = layer.current_symbol
+
+    layer.events.current_symbol.connect(_sync_current_symbol_to_all_points)
+    setattr(layer, _POINTS_SYMBOL_SYNC_CALLBACK_ATTR, _sync_current_symbol_to_all_points)
 
 
 def _coerce_point_size(value: Any | None, *, default: float) -> float:
