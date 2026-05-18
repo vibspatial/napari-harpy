@@ -2064,6 +2064,17 @@ Done when:
 
 Goal: wire the points value controller into the existing Harpy viewer widget.
 
+Status: implemented.
+
+Implementation:
+
+- `src/napari_harpy/core/spatialdata.py`;
+- `src/napari_harpy/widgets/viewer/points_widget.py`;
+- `src/napari_harpy/widgets/viewer/widget.py`;
+- `tests/test_spatialdata.py`;
+- `tests/test_points_widget.py`;
+- `tests/test_viewer_widget.py`.
+
 Includes:
 
 - add a new collapsible `Points` section to `ViewerWidget`, alongside Images, Labels, and Shapes;
