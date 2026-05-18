@@ -37,7 +37,7 @@ def test_points_value_widget_parses_comma_separated_values(qtbot) -> None:
     recorded_requests: list[tuple[object, int]] = []
 
     qtbot.addWidget(widget)
-    widget.visualize_requested.connect(lambda values, budget: recorded_requests.append((values, budget)))
+    widget.add_update_requested.connect(lambda values, budget: recorded_requests.append((values, budget)))
 
     widget.set_points_names(["transcripts"])
     widget.set_index_columns(["gene"])
@@ -46,7 +46,9 @@ def test_points_value_widget_parses_comma_separated_values(qtbot) -> None:
     widget.value_input.setText(" AAMP, AXL, AAMP ")
     widget.render_point_budget_input.setText("25_000")
 
-    qtbot.mouseClick(widget.visualize_button, Qt.MouseButton.LeftButton)
+    assert widget.add_update_button.text() == "Add / Update in viewer"
+
+    qtbot.mouseClick(widget.add_update_button, Qt.MouseButton.LeftButton)
 
     assert recorded_requests == [(("AAMP", "AXL"), 25_000)]
 
@@ -56,7 +58,7 @@ def test_points_value_widget_all_values_disables_value_input(qtbot) -> None:
     recorded_requests: list[tuple[object, int]] = []
 
     qtbot.addWidget(widget)
-    widget.visualize_requested.connect(lambda values, budget: recorded_requests.append((values, budget)))
+    widget.add_update_requested.connect(lambda values, budget: recorded_requests.append((values, budget)))
 
     widget.set_points_names(["transcripts"])
     widget.set_index_columns(["gene"])
@@ -67,12 +69,12 @@ def test_points_value_widget_all_values_disables_value_input(qtbot) -> None:
 
     assert not widget.value_input.isEnabled()
 
-    qtbot.mouseClick(widget.visualize_button, Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(widget.add_update_button, Qt.MouseButton.LeftButton)
 
     assert recorded_requests == [("all", 100_000)]
 
 
-def test_points_value_widget_invalid_render_budget_disables_visualize(qtbot) -> None:
+def test_points_value_widget_invalid_render_budget_disables_add_update(qtbot) -> None:
     widget = PointsValueWidget()
 
     qtbot.addWidget(widget)
@@ -83,9 +85,9 @@ def test_points_value_widget_invalid_render_budget_disables_visualize(qtbot) -> 
     widget.render_controller_state(_fake_controller())
     widget.value_input.setText("AAMP")
 
-    assert widget.visualize_button.isEnabled()
+    assert widget.add_update_button.isEnabled()
 
     widget.render_point_budget_input.setText("10")
 
-    assert not widget.visualize_button.isEnabled()
+    assert not widget.add_update_button.isEnabled()
     assert "Render point budget" in widget.status_label.text()

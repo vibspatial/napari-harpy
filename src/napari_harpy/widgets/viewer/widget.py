@@ -1258,7 +1258,7 @@ class ViewerWidget(QWidget):
 
         self.points_widget = PointsValueWidget()
         self.points_widget.source_changed.connect(self._on_points_source_changed)
-        self.points_widget.visualize_requested.connect(self._visualize_points_selection)
+        self.points_widget.add_update_requested.connect(self._add_or_update_points_selection)
         self.points_group = _CollapsibleSectionWidget(
             title="Points",
             object_name="viewer_widget_points_group",
@@ -1553,7 +1553,7 @@ class ViewerWidget(QWidget):
         else:
             self.points_widget.render_controller_state(self._points_controller)
 
-    def _visualize_points_selection(self, values: Sequence[str] | Literal["all"], render_point_budget: int) -> None:
+    def _add_or_update_points_selection(self, values: Sequence[str] | Literal["all"], render_point_budget: int) -> None:
         self._last_points_load_result = None
         self._last_points_layer_result = None
         self._points_controller.load_selection(

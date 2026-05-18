@@ -377,7 +377,7 @@ def test_viewer_widget_points_section_populates_and_starts_value_loading(qtbot, 
     assert load_value_calls == 1
 
 
-def test_viewer_widget_points_visualize_request_calls_controller(qtbot, monkeypatch) -> None:
+def test_viewer_widget_points_add_update_request_calls_controller(qtbot, monkeypatch) -> None:
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)
     recorded_requests: list[tuple[object, int]] = []
@@ -407,7 +407,7 @@ def test_viewer_widget_points_visualize_request_calls_controller(qtbot, monkeypa
     widget.points_widget.value_input.setText("AAMP, AXL")
     widget.points_widget.render_point_budget_input.setText("50_000")
 
-    widget.points_widget.visualize_button.click()
+    widget.points_widget.add_update_button.click()
 
     assert recorded_requests == [(("AAMP", "AXL"), 50_000)]
 

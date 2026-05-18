@@ -1229,12 +1229,12 @@ NO_SDATA / NO_POINTS_ELEMENT
 
 LOADING_VALUES
   Disable points element and index-column changes if simple to implement.
-  Disable Visualize selected values.
+  Disable Add / Update selected values.
   Show value-loading status.
 
 VALUES_READY
   Enable value search.
-  Enable Visualize selected values when at least one value is selected or the all-values option is active.
+  Enable Add / Update selected values when at least one value is selected or the all-values option is active.
   Enable optional Build cache when no valid cache exists.
 
 MISSING_CACHE / STALE_CACHE
@@ -1245,7 +1245,7 @@ MISSING_CACHE / STALE_CACHE
 VALID_CACHE
   Enable Rebuild cache.
   Enable value search.
-  Enable Visualize selected values when at least one value is selected or the all-values option is active.
+  Enable Add / Update selected values when at least one value is selected or the all-values option is active.
   Prefer the cache-backed reader if implemented; otherwise keep using direct mode.
 
 BUILDING_CACHE
@@ -1260,16 +1260,16 @@ BUILD_FAILED
   Show the build error in the status card.
 
 LOADING_SELECTION
-  Disable Visualize selected values.
+  Disable Add / Update selected values.
   Keep value search visible.
   Do not start another read until the current read finishes.
 
 LOADED_SELECTION
-  Re-enable Visualize selected values.
+  Re-enable Add / Update selected values.
   Show loaded/sampled status in the status card.
 
 LOAD_FAILED
-  Re-enable Visualize selected values when the direct value table and selection are still valid.
+  Re-enable Add / Update selected values when the direct value table and selection are still valid.
   Show the read or layer-update error in the status card.
 ```
 
@@ -2087,15 +2087,15 @@ Includes:
 - direct value search/select control backed by the controller's current `PointsValueSource`;
 - MVP value input supports comma-separated values, for example `AAMP, AXL, MALAT1`;
 - comma-separated input is an implementation shortcut for Slice 7 so the end-to-end workflow can land first; replace it with a polished multi-select control in Slice 8;
-- visualize selected values button;
+- Add / Update in viewer button for selected values;
 - all-values option that bypasses the text input and passes `values="all"` to the controller;
 - all-values option is an explicit `QCheckBox("All values")`;
 - when `All values` is checked:
   - disable the value text input;
-  - visualize calls `load_selection(values="all", ...)`;
+  - Add / Update calls `load_selection(values="all", ...)`;
 - when `All values` is unchecked:
   - enable the value text input when values are ready;
-  - visualize parses the text input into explicit selected values;
+  - Add / Update parses the text input into explicit selected values;
 - UI rendering for `NO_SDATA`, `NO_POINTS_ELEMENT`, `LOADING_VALUES`, `VALUES_READY`, `LOADING_SELECTION`, `LOADED_SELECTION`, and `LOAD_FAILED`;
 - loading selection disables duplicate visualize requests;
 - status-card placement for direct value loading, selected-point loading, sampled previews, categorical-coloring disablement, and read/layer-update failures;
@@ -2111,7 +2111,7 @@ Includes:
 ```python
 class PointsValueWidget(QWidget):
     source_changed = Signal()
-    visualize_requested = Signal(object, int)
+    add_update_requested = Signal(object, int)
 
     def set_points_names(self, points_names: list[str]) -> None: ...
     def set_index_columns(self, index_columns: list[str], *, preferred: str | None = "gene") -> None: ...
@@ -2135,7 +2135,7 @@ self._points_controller = PointsController(
   - create and hold one `PointsValueWidget` instance;
   - call `bind_source(...)` when `sdata`, coordinate system, selected points element, or selected index column changes;
   - call `load_value_source()` after a valid points source and index column are selected;
-  - call `load_selection(...)` when the user clicks visualize;
+  - call `load_selection(...)` when the user clicks Add / Update in viewer;
   - never call `validate_points_element_for_value_selection`, `build_points_value_table`, or `load_points` directly;
 - callback ownership:
   - `on_state_changed` repaints controls, status card, and enabled/disabled state;
@@ -2210,7 +2210,7 @@ Tests:
 - points selector populates from `sdata.points`;
 - index selector defaults to `gene` if present;
 - value loading runs when points element or index column changes;
-- points widget emits source/value-load/visualize requests without calling controller methods directly;
+- points widget emits source/add-update requests without calling controller methods directly;
 - when `on_value_source_loaded` fires, the widget updates the value completer/list from the loaded value table;
 - generic state repaint does not rebuild the value completer/list again when the value worker `finished` signal clears controller bookkeeping;
 - value search is enabled when direct values are ready;
@@ -2241,7 +2241,7 @@ Includes:
 - each selected value can be removed individually;
 - clear action removes all selected values;
 - all-values option remains separate and disables the selected-values list while active;
-- visualize loads either:
+- Add / Update in viewer loads either:
   - selected chip/list values; or
   - `values="all"` when all-values mode is enabled;
 - selected values are stored in widget state as `tuple[str, ...]`;
@@ -2281,6 +2281,38 @@ Includes:
 Done when:
 
 - the direct MVP has a tested end-to-end path and clear known limitations.
+
+### Slice 10: Tiled Cache Feature Contract Revisit
+
+Goal: revisit the napari layer feature contract before introducing spatial or tiled cache-backed point loading.
+
+Context:
+
+- direct mode currently materializes one bounded in-memory `PointsValueSelection`;
+- direct mode assigns `layer.data = selection.coordinates` and `layer.features = selection.features`;
+- `selection.features` contains only the selected index column as categorical plus `value_id`;
+- this is acceptable for the direct MVP because the rendered layer is one stable selected-point result.
+
+The tiled or spatial cache path may need a different contract because:
+
+- points may be loaded incrementally by viewport, zoom level, or tile;
+- layer data and features may be replaced frequently;
+- the rendered point set may no longer represent one stable logical selection;
+- carrying a per-point features dataframe through every tile update may become expensive;
+- picked-point lookup may need a separate lookup path using tile identity, row index, `value_id`, or a stable `points_id`.
+
+For the tiled/cache implementation, explicitly decide:
+
+- whether `layer.features` remains `{<index_column>, value_id}` for only the currently rendered tile/window points;
+- whether `layer.features` should be reduced further for rendering and a separate lookup API should resolve picked-point details;
+- how a clicked point maps back to the canonical source row or cache row;
+- how sampled or viewport-limited tile reads report selected values and warning/status text;
+- whether the same `PointsValueSelection` object remains the right return type, or whether tiled rendering needs a distinct runtime object.
+
+Done when:
+
+- the cache/tiled path has an explicit picked-point and layer-feature strategy before implementation;
+- the direct-mode feature contract is either reused intentionally or replaced by a cache-specific contract.
 
 ### Optional Cache Slice A: Cache Validator And Value Table Cache
 

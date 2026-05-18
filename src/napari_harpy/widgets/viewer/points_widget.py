@@ -51,7 +51,7 @@ class PointsValueWidget(QFrame):
     """
 
     source_changed = Signal()
-    visualize_requested = Signal(object, int)
+    add_update_requested = Signal(object, int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -106,22 +106,22 @@ class PointsValueWidget(QFrame):
         self.status_label.setObjectName("viewer_widget_points_status")
         self.status_label.setWordWrap(True)
 
-        self.visualize_button = QPushButton("Visualize")
-        self.visualize_button.setObjectName("viewer_widget_points_visualize_button")
-        self.visualize_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.visualize_button.setMinimumHeight(28)
-        self.visualize_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
+        self.add_update_button = QPushButton("Add / Update in viewer")
+        self.add_update_button.setObjectName("viewer_widget_points_add_update_button")
+        self.add_update_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.add_update_button.setMinimumHeight(28)
+        self.add_update_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
 
         layout.addLayout(form_layout)
         layout.addWidget(self.status_label)
-        layout.addWidget(self.visualize_button)
+        layout.addWidget(self.add_update_button)
 
         self.points_combo.currentIndexChanged.connect(self._emit_source_changed)
         self.index_column_combo.currentIndexChanged.connect(self._emit_source_changed)
-        self.visualize_button.clicked.connect(self._emit_visualize_requested)
+        self.add_update_button.clicked.connect(self._emit_add_update_requested)
         self.all_values_checkbox.toggled.connect(self._refresh_value_input_state)
-        self.value_input.textChanged.connect(self._refresh_visualize_state)
-        self.render_point_budget_input.textChanged.connect(self._refresh_visualize_state)
+        self.value_input.textChanged.connect(self._refresh_add_update_state)
+        self.render_point_budget_input.textChanged.connect(self._refresh_add_update_state)
 
         self.show_status(
             title="Points",
@@ -191,7 +191,7 @@ class PointsValueWidget(QFrame):
         return text or None
 
     def selected_values(self) -> tuple[str, ...] | str:
-        """Return parsed value selection for the next visualize request."""
+        """Return parsed value selection for the next add/update request."""
         if self.all_values_checkbox.isChecked():
             return "all"
         values = tuple(dict.fromkeys(value.strip() for value in self.value_input.text().split(",") if value.strip()))
@@ -228,7 +228,7 @@ class PointsValueWidget(QFrame):
     def _emit_source_changed(self, _index: int | None = None) -> None:
         self.source_changed.emit()
 
-    def _emit_visualize_requested(self, _checked: bool = False) -> None:
+    def _emit_add_update_requested(self, _checked: bool = False) -> None:
         budget = self.render_point_budget()
         if budget is None:
             self.show_status(
@@ -250,7 +250,7 @@ class PointsValueWidget(QFrame):
             )
             return
 
-        self.visualize_requested.emit(values, budget)
+        self.add_update_requested.emit(values, budget)
 
     def _refresh_value_input_state(self, _checked: bool | None = None) -> None:
         self.value_input.setEnabled(
@@ -260,9 +260,9 @@ class PointsValueWidget(QFrame):
             and bool(self._value_completer_model.stringList())
             and not self.all_values_checkbox.isChecked()
         )
-        self._refresh_visualize_state()
+        self._refresh_add_update_state()
 
-    def _refresh_visualize_state(self, _text: str | None = None) -> None:
+    def _refresh_add_update_state(self, _text: str | None = None) -> None:
         budget_is_valid = self.render_point_budget() is not None
         if self._can_visualize and not budget_is_valid:
             self.show_status(
@@ -273,7 +273,7 @@ class PointsValueWidget(QFrame):
                 ],
                 kind="warning",
             )
-        self.visualize_button.setEnabled(
+        self.add_update_button.setEnabled(
             self._can_visualize
             and budget_is_valid
             and (self.all_values_checkbox.isChecked() or bool(self.selected_values()))
