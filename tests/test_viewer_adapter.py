@@ -982,6 +982,23 @@ def test_viewer_adapter_ensure_points_layer_from_selection_uses_categorical_colo
     assert np.allclose(result.layer.face_color, expected_colors)
 
 
+def test_viewer_adapter_ensure_points_layer_from_selection_uses_explicit_categorical_colors() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
+    selection = make_points_selection(["AXL", "AAMP"], selected_values=("AAMP", "AXL"))
+    adapter = ViewerAdapter(DummyViewer())
+
+    result = adapter._ensure_points_layer_from_selection(
+        identity,
+        selection=selection,
+        categorical_colors=("#ff0000", "#00ff00"),
+    )
+
+    expected_colors = np.asarray([to_rgba("#00ff00"), to_rgba("#ff0000")], dtype=np.float32)
+    assert np.allclose(result.layer.face_color, expected_colors)
+    assert np.allclose(result.layer.border_color, result.layer.face_color)
+
+
 def test_viewer_adapter_ensure_points_layer_from_selection_uses_solid_color_above_categorical_limit() -> None:
     sdata = SimpleNamespace()
     identity = make_points_identity(sdata)

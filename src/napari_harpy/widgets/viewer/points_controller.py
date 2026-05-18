@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
@@ -18,7 +18,9 @@ from napari_harpy._points_value_index import (
     load_points,
     validate_points_element_for_value_selection,
 )
+from napari_harpy.core.class_palette import default_labeled_class_color
 from napari_harpy.viewer.adapter import PointsLayerIdentity
+from napari_harpy.viewer.points_styling import POINTS_SELECTION_MAX_CATEGORICAL_COLORS
 
 if TYPE_CHECKING:
     from spatialdata import SpatialData
@@ -129,11 +131,17 @@ class PointsLoadResult:
     The contained selection has already been loaded from Dask into memory. The
     widget can pass ``identity`` and ``selection`` to the viewer adapter to
     create or update the matching napari Points layer.
+
+    ``selected_value_colors`` is aligned one-to-one with
+    ``selection.selected_values`` when categorical coloring is active. It is
+    owned by the controller so colors can remain stable as the user adds or
+    removes selected values.
     """
 
     identity: PointsLayerIdentity
     selection: PointsValueSelection
     value_table: PointsValueTable
+    selected_value_colors: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.identity.index_column != self.selection.index_column:
@@ -146,6 +154,8 @@ class PointsLoadResult:
                 "`selection.index_column` and `value_table.index_column` must match. "
                 f"Got {self.selection.index_column!r} and {self.value_table.index_column!r}."
             )
+        if self.selected_value_colors and len(self.selected_value_colors) != len(self.selection.selected_values):
+            raise ValueError("`selected_value_colors` must match the number of selected values when provided.")
 
 
 @thread_worker(start_thread=False, ignore_errors=True)
@@ -250,6 +260,7 @@ class PointsController:
 
         self._current_value_source: PointsValueSource | None = None
         self._current_load_result: PointsLoadResult | None = None
+        self._value_color_by_value: dict[str, str] = {}
 
         self._latest_value_job_id = 0
         self._active_value_worker_job_id: int | None = None
@@ -373,6 +384,7 @@ class PointsController:
         if changed:
             self._current_value_source = None
             self._current_load_result = None
+            self._value_color_by_value.clear()
             self._cancel_value_worker()
             self._cancel_load_worker()
 
@@ -388,6 +400,7 @@ class PointsController:
         self._latest_value_job_id = job.job_id
         self._current_value_source = None
         self._current_load_result = None
+        self._value_color_by_value.clear()
         self._cancel_value_worker()
         self._cancel_load_worker()
 
@@ -557,6 +570,7 @@ class PointsController:
         if job_id != self._latest_load_job_id or job_id != self._active_load_worker_job_id:
             return
 
+        result = self._with_stable_value_colors(result)
         self._current_load_result = result
         selection = result.selection
         if selection.is_sampled and selection.warning:
@@ -656,6 +670,26 @@ class PointsController:
         if self._on_points_loaded is not None:
             self._on_points_loaded(result)
 
+    def _with_stable_value_colors(self, result: PointsLoadResult) -> PointsLoadResult:
+        """Attach stable value colors for the current points source.
+
+        The controller owns this mapping so values keep their colors as users
+        add or remove selections. The returned colors are aligned to
+        ``selection.selected_values`` and later passed to napari as an explicit
+        ``{value: color}`` mapping to avoid row-order-dependent color jumps.
+        """
+        selected_value_count = len(result.selection.selected_values)
+        if selected_value_count < 2 or selected_value_count > POINTS_SELECTION_MAX_CATEGORICAL_COLORS:
+            return replace(result, selected_value_colors=())
+
+        colors: list[str] = []
+        for value in result.selection.selected_values:
+            if value not in self._value_color_by_value:
+                self._value_color_by_value[value] = _default_points_value_color(len(self._value_color_by_value))
+            colors.append(self._value_color_by_value[value])
+
+        return replace(result, selected_value_colors=tuple(colors))
+
     def _cancel_value_worker(self) -> None:
         if self._active_value_worker is None:
             return
@@ -689,3 +723,8 @@ def _normalize_required_text(value: str, default: str) -> str:
     if not isinstance(value, str):
         return default
     return value.strip() or default
+
+
+def _default_points_value_color(color_index: int) -> str:
+    palette_index = color_index % POINTS_SELECTION_MAX_CATEGORICAL_COLORS
+    return default_labeled_class_color(palette_index + 1)

@@ -932,6 +932,7 @@ class ViewerAdapter(QObject):
         identity: PointsLayerIdentity,
         *,
         selection: PointsValueSelection,
+        categorical_colors: Sequence[str] | None = None,
     ) -> PointsLayerResult:
         """Create or update the points value-selection layer for an already loaded selection."""
         if not isinstance(identity, PointsLayerIdentity):
@@ -955,6 +956,7 @@ class ViewerAdapter(QObject):
             point_size=getattr(old_layer, "current_size", None),
             point_symbol=getattr(old_layer, "current_symbol", None),
             point_face_color=_get_preserved_solid_points_face_color(old_layer),
+            categorical_colors=categorical_colors,
         )
 
         try:

@@ -1574,6 +1574,7 @@ class ViewerWidget(QWidget):
             layer_result = self._app_state.viewer_adapter._ensure_points_layer_from_selection(
                 load_result.identity,
                 selection=load_result.selection,
+                categorical_colors=load_result.selected_value_colors or None,
             )
         except ValueError as error:
             self._set_action_feedback(
