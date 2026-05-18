@@ -16,6 +16,7 @@ from napari_harpy.core.annotation import UNLABELED_CLASS
 from napari_harpy.core.class_palette import set_class_annotation_state
 from napari_harpy.core.classifier_export import ClassifierExportBundle, normalize_feature_columns
 from napari_harpy.core.spatialdata import get_table, get_table_metadata
+from napari_harpy.core.validation import normalize_spatialdata_dataframe_column_name
 
 try:
     from scipy.sparse import issparse
@@ -70,8 +71,11 @@ def apply_classifier(
     resolved_feature_key = (
         bundle.feature_key if feature_key is None else _normalize_nonempty_str(feature_key, "feature_key")
     )
-    resolved_pred_class_column = _normalize_nonempty_str(pred_class_column, "pred_class_column")
-    resolved_pred_confidence_column = _normalize_nonempty_str(pred_confidence_column, "pred_confidence_column")
+    resolved_pred_class_column = normalize_spatialdata_dataframe_column_name(pred_class_column, "pred_class_column")
+    resolved_pred_confidence_column = normalize_spatialdata_dataframe_column_name(
+        pred_confidence_column,
+        "pred_confidence_column",
+    )
     if resolved_pred_class_column == resolved_pred_confidence_column:
         raise ValueError("pred_class_column and pred_confidence_column must be different.")
 

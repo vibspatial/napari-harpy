@@ -11,8 +11,8 @@ from matplotlib.colors import to_rgba
 from napari.layers import Image, Labels, Points, Shapes
 from napari.utils.colormaps import CyclicLabelColormap, DirectLabelColormap
 from shapely.geometry import LineString, Polygon
-from spatialdata.models import ShapesModel
-from spatialdata.transformations import Identity
+from spatialdata.models import PointsModel, ShapesModel
+from spatialdata.transformations import Affine, Identity
 
 import napari_harpy.viewer._styling as styling_module
 from napari_harpy._app_state import get_or_create_app_state
@@ -144,11 +144,16 @@ def make_points_selection(
     )
 
 
-def make_points_identity(sdata: object, *, index_column: str = "gene") -> PointsLayerIdentity:
+def make_points_identity(
+    sdata: object,
+    *,
+    index_column: str = "gene",
+    coordinate_system: str = "global",
+) -> PointsLayerIdentity:
     return PointsLayerIdentity(
         sdata=sdata,
         points_name="transcripts",
-        coordinate_system="global",
+        coordinate_system=coordinate_system,
         index_column=index_column,
     )
 
@@ -745,6 +750,30 @@ def test_viewer_adapter_ensure_points_layer_from_selection_creates_registered_la
     assert viewer.camera.zoom == 1.0
 
 
+def test_viewer_adapter_ensure_points_layer_from_selection_applies_points_affine() -> None:
+    points = PointsModel.parse(
+        pd.DataFrame({"x": [10.0], "y": [5.0], "gene": ["AAMP"]}),
+        transformations={
+            "translated": Affine(
+                [[1.0, 0.0, 10.0], [0.0, 1.0, 20.0], [0.0, 0.0, 1.0]],
+                input_axes=("x", "y"),
+                output_axes=("x", "y"),
+            )
+        },
+    )
+    sdata = SimpleNamespace(points={"transcripts": points})
+    identity = make_points_identity(sdata, coordinate_system="translated")
+    selection = make_points_selection(["AAMP"], selected_values=("AAMP",))
+    adapter = ViewerAdapter(DummyViewer())
+
+    result = adapter._ensure_points_layer_from_selection(identity, selection=selection)
+
+    np.testing.assert_allclose(
+        result.layer.affine.affine_matrix,
+        np.asarray([[1.0, 0.0, 20.0], [0.0, 1.0, 10.0], [0.0, 0.0, 1.0]]),
+    )
+
+
 def test_viewer_adapter_ensure_points_layer_from_selection_applies_point_size_control_to_all_points() -> None:
     sdata = SimpleNamespace()
     identity = make_points_identity(sdata)
@@ -980,6 +1009,23 @@ def test_viewer_adapter_ensure_points_layer_from_selection_uses_categorical_colo
     assert result.categorical_limit == 102
     expected_colors = np.asarray([to_rgba(color) for color in default_categorical_colors(2)], dtype=np.float32)
     assert np.allclose(result.layer.face_color, expected_colors)
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_uses_explicit_categorical_colors() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
+    selection = make_points_selection(["AXL", "AAMP"], selected_values=("AAMP", "AXL"))
+    adapter = ViewerAdapter(DummyViewer())
+
+    result = adapter._ensure_points_layer_from_selection(
+        identity,
+        selection=selection,
+        categorical_colors=("#ff0000", "#00ff00"),
+    )
+
+    expected_colors = np.asarray([to_rgba("#00ff00"), to_rgba("#ff0000")], dtype=np.float32)
+    assert np.allclose(result.layer.face_color, expected_colors)
+    assert np.allclose(result.layer.border_color, result.layer.face_color)
 
 
 def test_viewer_adapter_ensure_points_layer_from_selection_uses_solid_color_above_categorical_limit() -> None:

@@ -14,6 +14,7 @@ from napari_harpy._points_value_index import (
     PointsValueTable,
     _ValidatedPointsElement,
 )
+from napari_harpy.core.class_palette import default_labeled_class_color
 from napari_harpy.viewer.adapter import PointsLayerIdentity
 from napari_harpy.widgets.viewer.points_controller import (
     PointsController,
@@ -312,7 +313,14 @@ def test_points_controller_stores_successful_load_result(monkeypatch) -> None:
     worker.returned.emit(result)
     worker.finished.emit()
 
-    assert controller.current_load_result == result
+    assert controller.current_load_result is not None
+    assert controller.current_load_result.identity == result.identity
+    assert controller.current_load_result.selection == result.selection
+    assert controller.current_load_result.value_table == result.value_table
+    assert controller.current_load_result.selected_value_colors == (
+        default_labeled_class_color(1),
+        default_labeled_class_color(2),
+    )
     assert controller.state is PointsControllerState.LOADED_SELECTION
     assert controller.status_kind == "success"
     assert controller.is_loading is False
@@ -341,8 +349,51 @@ def test_points_controller_notifies_points_loaded_once_on_load_return(monkeypatc
     worker.returned.emit(result)
     worker.finished.emit()
 
-    assert loaded_results == [result]
+    assert len(loaded_results) == 1
+    assert loaded_results[0].identity == result.identity
+    assert loaded_results[0].selection == result.selection
+    assert loaded_results[0].value_table == result.value_table
+    assert loaded_results[0].selected_value_colors == (
+        default_labeled_class_color(1),
+        default_labeled_class_color(2),
+    )
     assert state_change_count >= 3
+
+
+def test_points_controller_assigns_stable_value_colors_across_selection_changes(monkeypatch) -> None:
+    controller = PointsController()
+    sdata = _example_sdata()
+    value_source = _example_value_source(sdata)
+    first_worker = _FakeWorker()
+    second_worker = _FakeWorker()
+    workers = [first_worker, second_worker]
+    controller._current_value_source = value_source
+    monkeypatch.setattr(controller, "_create_points_load_worker", lambda job: workers.pop(0))
+
+    controller.load_selection(["AXL", "MALAT1"], render_point_budget=100_000)
+    first_result = _example_load_result(value_source, _example_selection(["AXL", "MALAT1"]))
+    first_worker.returned.emit(first_result)
+    first_loaded = controller.current_load_result
+    first_worker.finished.emit()
+
+    controller.load_selection(["AAMP", "AXL", "MALAT1"], render_point_budget=100_000)
+    second_result = _example_load_result(value_source, _example_selection(["AAMP", "AXL", "MALAT1"]))
+    second_worker.returned.emit(second_result)
+
+    assert first_loaded is not None
+    assert controller.current_load_result is not None
+    assert first_loaded.selected_value_colors == (
+        default_labeled_class_color(1),
+        default_labeled_class_color(2),
+    )
+    assert controller.current_load_result.selected_value_colors == (
+        default_labeled_class_color(3),
+        default_labeled_class_color(1),
+        default_labeled_class_color(2),
+    )
+    assert controller._value_color_by_value["AXL"] == default_labeled_class_color(1)
+    assert controller._value_color_by_value["MALAT1"] == default_labeled_class_color(2)
+    assert controller._value_color_by_value["AAMP"] == default_labeled_class_color(3)
 
 
 def test_points_controller_uses_warning_status_for_sampled_selection(monkeypatch) -> None:

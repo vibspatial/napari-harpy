@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -66,6 +67,7 @@ def apply_points_selection_style(
     point_size: Any | None = None,
     point_symbol: Any | None = None,
     point_face_color: Any | None = None,
+    categorical_colors: Sequence[str] | None = None,
 ) -> PointsStyleResult:
     """Apply points value-selection styling."""
     resolved_point_size = _coerce_point_size(point_size, default=POINTS_SELECTION_DEFAULT_SIZE)
@@ -93,7 +95,11 @@ def apply_points_selection_style(
             categorical_limit=POINTS_SELECTION_MAX_CATEGORICAL_COLORS,
         )
     else:
-        layer.face_color_cycle = default_categorical_colors(selected_value_count)
+        layer.face_color_cycle = _resolve_points_categorical_color_mapping(
+            selection,
+            selected_value_count=selected_value_count,
+            categorical_colors=categorical_colors,
+        )
         layer.face_color = selection.index_column
         layer.border_color = layer.face_color
 
@@ -139,6 +145,21 @@ def _connect_current_face_color_to_global_point_face_color(layer: Points) -> Non
 
     layer.events.current_face_color.connect(_sync_current_face_color_to_all_points)
     setattr(layer, _POINTS_FACE_COLOR_SYNC_CALLBACK_ATTR, _sync_current_face_color_to_all_points)
+
+
+def _resolve_points_categorical_color_mapping(
+    selection: PointsValueSelection,
+    *,
+    selected_value_count: int,
+    categorical_colors: Sequence[str] | None,
+) -> list[str] | dict[str, str]:
+    if categorical_colors is None:
+        return default_categorical_colors(selected_value_count)
+
+    colors = list(categorical_colors)
+    if len(colors) != selected_value_count:
+        raise ValueError("`categorical_colors` must match the number of selected values.")
+    return dict(zip(selection.selected_values, colors, strict=True))
 
 
 def _coerce_point_size(value: Any | None, *, default: float) -> float:

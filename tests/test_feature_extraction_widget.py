@@ -1390,6 +1390,29 @@ def test_feature_extraction_widget_enables_calculate_for_valid_morphology_batch(
     assert "ready to calculate." in controller_feedback_text.lower()
 
 
+def test_feature_extraction_widget_blocks_spatialdata_invalid_feature_key(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    check_coordinate_system(widget, "global")
+    select_segmentation(widget, "global", 0)
+    widget.findChild(QCheckBox, "feature_checkbox_area").setChecked(True)
+    widget.output_key_line_edit.setText("features tst")
+
+    assert widget.calculate_button.isEnabled() is False
+    tooltip = unescape(widget.calculate_button.toolTip())
+    assert "choose a valid feature matrix key" in tooltip
+    assert "alphanumeric characters, underscores, dots and hyphens" in tooltip
+    feedback_text = unescape(widget.controller_feedback.text())
+    assert "Feature Extraction Warning" in feedback_text
+    assert "choose a valid feature matrix key" in feedback_text
+
+
 def test_feature_extraction_widget_keeps_calculate_disabled_for_intensity_features_without_image(
     qtbot,
     sdata_blobs: SpatialData,

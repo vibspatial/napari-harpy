@@ -932,6 +932,7 @@ class ViewerAdapter(QObject):
         identity: PointsLayerIdentity,
         *,
         selection: PointsValueSelection,
+        categorical_colors: Sequence[str] | None = None,
     ) -> PointsLayerResult:
         """Create or update the points value-selection layer for an already loaded selection."""
         if not isinstance(identity, PointsLayerIdentity):
@@ -955,6 +956,7 @@ class ViewerAdapter(QObject):
             point_size=getattr(old_layer, "current_size", None),
             point_symbol=getattr(old_layer, "current_symbol", None),
             point_face_color=_get_preserved_solid_points_face_color(old_layer),
+            categorical_colors=categorical_colors,
         )
 
         try:
@@ -1422,6 +1424,7 @@ def _build_points_layer_from_selection(identity: PointsLayerIdentity, selection:
             identity.index_column,
             selection,
         ),
+        affine=_get_points_affine_transform(identity.sdata, identity.points_name, identity.coordinate_system),
         features=selection.features,
         size=1.0,
         opacity=0.8,
@@ -1430,6 +1433,22 @@ def _build_points_layer_from_selection(identity: PointsLayerIdentity, selection:
         face_color=POINTS_SELECTION_SOLID_COLOR,
     )
     return layer
+
+
+def _get_points_affine_transform(
+    sdata: SpatialData,
+    points_name: str,
+    coordinate_system: str,
+) -> np.ndarray | None:
+    points = getattr(sdata, "points", {}).get(points_name)
+    if points is None:
+        return None
+
+    transform = get_transformation(points, get_all=True).get(coordinate_system)
+    if transform is None:
+        return None
+
+    return transform.to_affine_matrix(input_axes=("y", "x"), output_axes=("y", "x"))
 
 
 def _get_preserved_solid_points_face_color(layer: Points | None) -> Any | None:

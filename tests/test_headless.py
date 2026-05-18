@@ -253,6 +253,28 @@ def test_apply_classifier_can_write_custom_prediction_columns(sdata_blobs: Spati
     assert table.uns[CLASSIFIER_APPLY_CONFIG_KEY]["pred_class_column"] == "headless_class"
 
 
+def test_apply_classifier_rejects_spatialdata_invalid_prediction_column_names(sdata_blobs: SpatialData) -> None:
+    _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(sdata_blobs)
+    classifier = _make_classifier_bundle(sdata_blobs)
+
+    with pytest.raises(ValueError, match="pred_class_column must be a valid SpatialData dataframe column name"):
+        headless.apply_classifier(
+            sdata_blobs,
+            classifier=classifier,
+            table_name="table",
+            pred_class_column="headless class",
+        )
+
+    with pytest.raises(ValueError, match="Name cannot be '_index'"):
+        headless.apply_classifier(
+            sdata_blobs,
+            classifier=classifier,
+            table_name="table",
+            pred_class_column="_index",
+        )
+
+
 def test_compute_features_for_classifier_uses_target_mapping(
     monkeypatch: pytest.MonkeyPatch,
     sdata_blobs: SpatialData,
@@ -288,6 +310,29 @@ def test_compute_features_for_classifier_uses_target_mapping(
     assert captured_kwargs["features"] == list(classifier.feature_names)
     assert captured_kwargs["overwrite_feature_key"] is False
     assert "computed_features" in sdata_blobs["table"].obsm
+
+
+def test_compute_features_for_classifier_rejects_spatialdata_invalid_feature_key(
+    monkeypatch: pytest.MonkeyPatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(sdata_blobs)
+    classifier = _make_classifier_bundle(sdata_blobs)
+    captured_kwargs = _install_fake_feature_extraction(monkeypatch)
+
+    with pytest.raises(ValueError, match="target\\.feature_key must be a valid SpatialData name"):
+        headless.compute_features_for_classifier(
+            sdata_blobs,
+            classifier=classifier,
+            target=headless.HeadlessFeatureTarget(
+                table_name="table",
+                feature_key="features tst",
+                triplets=(headless.FeatureExtractionTriplet("global", "blobs_labels", None),),
+            ),
+        )
+
+    assert captured_kwargs == {}
 
 
 def test_compute_features_for_classifier_returns_normalized_target(
