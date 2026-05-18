@@ -5,8 +5,8 @@ Date: 2026-05-18
 ## Goal
 
 Introduce a dedicated viewer status-card module, matching the pattern already
-used by object classification and feature extraction, so that viewer status
-copy and severity decisions are no longer embedded throughout
+used by object classification and feature extraction, so that viewer global
+action-feedback copy and severity decisions are no longer embedded throughout
 `src/napari_harpy/widgets/viewer/widget.py`.
 
 The first implementation should be behavior-preserving. It should not change
@@ -82,8 +82,26 @@ tooltips.
 
 ### Current viewer status-card state
 
-`src/napari_harpy/widgets/viewer/widget.py` currently mixes UI construction,
-viewer actions, adapter calls, and feedback copy.
+The viewer widget has since been split into smaller modules:
+
+- `src/napari_harpy/widgets/viewer/widget.py` now owns parent widget
+  orchestration, shared app-state synchronization, adapter calls, layer
+  activation, and global action feedback.
+- `src/napari_harpy/widgets/viewer/image_widget.py` owns image-card UI and
+  `ImageLoadRequest`.
+- `src/napari_harpy/widgets/viewer/labels_widget.py` owns labels-card UI and
+  `LabelsLoadRequest`.
+- `src/napari_harpy/widgets/viewer/shapes_widget.py` owns shapes-card UI and
+  `ShapesLoadRequest`.
+- `src/napari_harpy/widgets/viewer/disclosure.py` owns disclosure sections,
+  disclosure rows, and elided label/button helpers.
+- `src/napari_harpy/widgets/viewer/styles.py` owns viewer-local style constants
+  shared by the split modules.
+
+That refactor removes much of the UI-construction noise from `widget.py`, but
+the parent widget still owns the global action-feedback copy and severity
+decisions because those messages depend on adapter results and layer side
+effects.
 
 Existing real status cards:
 
@@ -104,6 +122,12 @@ Existing plain helper/status text:
 - `_ImageCardWidget.channel_warning_label` is a styled warning label, but not a
   shared status card.
 
+These card-local preview/status labels now live in their element-specific
+modules. They should remain there during the first status-card extraction. The
+first pass should not try to move action-preview text into `status_card.py`,
+because those strings describe local control state rather than the global
+action-feedback card.
+
 Viewer feedback copy currently lives inside action methods:
 
 - points layer success/warning copy in `_render_points_loaded_status(...)`
@@ -120,6 +144,20 @@ The tests in `tests/test_viewer_widget.py` already assert many of these status
 titles, severities, style colors, and message fragments. That is good coverage
 for a behavior-preserving extraction, but it also means the refactor should
 avoid accidental copy changes.
+
+### Post-split implementation boundary
+
+After the viewer-widget split, the clean first boundary is:
+
+- move global action-feedback spec construction out of `widget.py`
+- keep adapter calls, layer activation, skipped-geometry lookup, and request
+  dispatching in `widget.py`
+- keep image/labels/shapes control widgets focused on local UI state and
+  request emission
+- leave `labels_widget.py` and `shapes_widget.py` action-preview strings in
+  place unless a later ticket explicitly redesigns card-local feedback
+- leave `PointsValueWidget.show_status(...)` in place for points section status
+  unless points section status is intentionally included in a broader pass
 
 ## Recommendation
 
@@ -138,8 +176,9 @@ Recommended first-pass scope:
 - extract global viewer action feedback specs
 - preserve the current global `action_feedback_label`
 - preserve existing message wording and severities
-- leave card-local feedback placement for a follow-up ticket, but make the spec
-  reusable for any target `QLabel`
+- do not route action feedback to local image/labels/shapes cards
+- leave card-local action-preview labels in `labels_widget.py` and
+  `shapes_widget.py`
 - leave `PointsValueWidget.show_status(...)` in place unless points feedback is
   being refactored in the same pass
 
@@ -174,13 +213,9 @@ Keep generic error builders boring. The more valuable extraction is the
 success/warning/info decision logic currently repeated in the labels, shapes,
 image, and points action paths.
 
-Optionally add plain text builders for action previews:
-
-- `build_labels_action_preview_text(...) -> str`
-- `build_shapes_action_preview_text(...) -> str`
-
-Those previews are not shared status cards today, so they can be moved later if
-the first pass should stay narrower.
+Do not add plain text builders for labels/shapes action previews in the first
+pass. Those previews are now close to the controls they describe and are not
+shared status cards. Revisit them only if card-local feedback is redesigned.
 
 ## Implementation Plan
 
@@ -202,7 +237,7 @@ the first pass should stay narrower.
    Then make `_set_action_feedback(...)` either delegate to that helper or
    replace it with `_set_action_feedback_spec(...)`.
 
-3. Refactor action methods one family at a time.
+3. Refactor global action-feedback paths one family at a time.
 
    Suggested order:
 
@@ -221,6 +256,15 @@ the first pass should stay narrower.
    Qt labels, or know about layout. It should receive already-computed facts
    such as `created`, `palette_source`, `coercion_applied`, selected color
    source, and skipped geometry count.
+
+   The status module may import request dataclasses from the split widget
+   modules if that keeps builder signatures readable:
+
+   - `ImageLoadRequest` from `image_widget.py`
+   - `LabelsLoadRequest` from `labels_widget.py`
+   - `ShapesLoadRequest` from `shapes_widget.py`
+
+   It should still avoid importing Qt widgets or the parent `ViewerWidget`.
 
 5. Preserve all current title/kind combinations.
 
@@ -262,23 +306,21 @@ the first pass should stay narrower.
    controls renders the expected status card. Once the builder tests exist,
    the widget tests can focus on plumbing and fewer exact message combinations.
 
-## Follow-Up: Card-Local Feedback
+## Non-Goal: Card-Local Action Feedback
 
-`Roadmap/viewer_widget/tickets.md` already describes moving viewer card actions
-to card-local feedback. A dedicated `viewer/status_card.py` makes that easier:
-the same spec builders can render into either the global
-`action_feedback_label` or a local card label.
+Do not move viewer action feedback into image, labels, or shapes cards.
+Action feedback should stay in the global `ViewerWidget.action_feedback_label`.
 
-For that follow-up, add card methods such as:
+Local card labels are reserved for local card state, such as:
 
-```python
-def set_feedback(self, spec: _ViewerStatusCardSpec | None) -> None: ...
-def clear_feedback(self) -> None: ...
-```
+- action previews like `Action: add/update primary labels layer`
+- local validation or preparation state
+- section-specific readiness, such as the existing points preparation/status
+  card
 
-Then route image, labels, and shapes action feedback to the card that emitted
-the request while keeping global feedback for SpatialData loading and other
-dataset-level failures.
+This keeps local cards focused on the state needed before an action, while the
+global viewer feedback card reports the outcome of actions that mutate napari
+layers or shared viewer state.
 
 ## Acceptance Criteria
 
@@ -286,9 +328,10 @@ dataset-level failures.
 - [ ] Viewer status-card copy and severity decisions are built by that module.
 - [ ] `ViewerWidget` keeps responsibility for state collection, adapter calls,
       layer activation, and rendering specs into labels.
+- [ ] Image, labels, and shapes card widgets keep responsibility for local
+      controls, request emission, and action-preview labels.
 - [ ] Existing viewer feedback titles, severities, and tooltips are preserved.
 - [ ] Builder-level tests cover success, info, warning, and error variants.
 - [ ] Existing `tests/test_viewer_widget.py` feedback assertions still pass.
-- [ ] The implementation does not change feedback placement unless the
-      card-local feedback follow-up is intentionally included.
-
+- [ ] Action feedback remains global and is not rendered into local
+      image/labels/shapes cards.
