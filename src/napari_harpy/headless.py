@@ -32,6 +32,7 @@ from napari_harpy.core.feature_extraction import (
 )
 from napari_harpy.core.persistence import write_table_prediction_state
 from napari_harpy.core.spatialdata import _get_element_coordinate_systems, get_table
+from napari_harpy.core.validation import normalize_spatialdata_name
 
 if TYPE_CHECKING:
     from spatialdata import SpatialData
@@ -357,8 +358,9 @@ def _build_headless_feature_target(
     coordinate_systems = _resolve_coordinate_systems_for_labels(sdata, normalized_labels, coordinate_system)
     image_names = _normalize_optional_parallel_names(image_name, len(normalized_labels), "image_name")
     normalized_channels = _normalize_channels(channels)
-    resolved_feature_key = (
-        classifier.feature_key if feature_key is None else _normalize_nonempty_str(feature_key, "feature_key")
+    resolved_feature_key = normalize_spatialdata_name(
+        classifier.feature_key if feature_key is None else feature_key,
+        "feature_key",
     )
 
     triplets = tuple(
@@ -386,7 +388,7 @@ def _build_headless_feature_target(
 
 def _normalize_headless_feature_target(target: HeadlessFeatureTarget) -> HeadlessFeatureTarget:
     normalized_table_name = _normalize_nonempty_str(target.table_name, "target.table_name")
-    normalized_feature_key = _normalize_nonempty_str(target.feature_key, "target.feature_key")
+    normalized_feature_key = normalize_spatialdata_name(target.feature_key, "target.feature_key")
     normalized_triplets = _normalize_triplets(target.triplets)
     if not normalized_triplets:
         raise ValueError("target.triplets must contain at least one feature-extraction triplet.")

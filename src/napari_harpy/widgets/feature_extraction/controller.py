@@ -6,7 +6,6 @@ from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from harpy.utils._keys import _FEATURE_MATRICES_KEY
-from spatialdata._core.validation import check_valid_name
 
 from napari_harpy._app_state import FeatureMatrixWriteChangeKind, FeatureMatrixWrittenEvent
 from napari_harpy.core.feature_extraction import (
@@ -22,6 +21,7 @@ from napari_harpy.core.feature_extraction import (
     _resolve_harpy_labels_name_parameter,
 )
 from napari_harpy.core.spatialdata import get_table
+from napari_harpy.core.validation import normalize_spatialdata_name
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -606,7 +606,7 @@ def _get_feature_key_validation_error(feature_key: str | None) -> str | None:
         return "Feature extraction: choose an output feature key."
 
     try:
-        check_valid_name(feature_key)
-    except (TypeError, ValueError) as error:
+        normalize_spatialdata_name(feature_key, "feature matrix key")
+    except ValueError as error:
         return f"Feature extraction: choose a valid feature matrix key. {error}"
     return None
