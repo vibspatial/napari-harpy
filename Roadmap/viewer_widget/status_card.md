@@ -210,8 +210,7 @@ class _ViewerStatusCardSpec:
 
 Then add focused builders. Suggested first set:
 
-- `build_viewer_error_card_spec(title: str, error: str) -> _ViewerStatusCardSpec`
-- `build_missing_context_card_spec(title: str) -> _ViewerStatusCardSpec`
+- `build_viewer_error_card_spec(title: str, lines: Sequence[str]) -> _ViewerStatusCardSpec`
 - `build_points_layer_card_spec(load_result, layer_result) -> _ViewerStatusCardSpec`
 - `build_primary_labels_loaded_card_spec(labels_name, coordinate_system) -> _ViewerStatusCardSpec`
 - `build_styled_labels_card_spec(request, result, coordinate_system) -> _ViewerStatusCardSpec`
@@ -219,9 +218,11 @@ Then add focused builders. Suggested first set:
 - `build_styled_shapes_card_spec(request, result, coordinate_system, skipped_geometry_count) -> _ViewerStatusCardSpec`
 - `build_image_loaded_card_spec(image_name, coordinate_system, mode, channels=None) -> _ViewerStatusCardSpec`
 
-Keep generic error builders boring. The more valuable extraction is the
-success/warning/info decision logic currently repeated in the labels, shapes,
-image, and points action paths.
+Keep the generic error/precondition builder boring. It can cover both real
+operation errors and predictable missing-context messages by accepting the exact
+lines to display. The more valuable extraction is the success/warning/info
+decision logic currently repeated in the labels, shapes, image, and points
+action paths.
 
 Do not add plain text builders for labels/shapes action previews in the first
 pass. Those previews are now close to the controls they describe and are not
