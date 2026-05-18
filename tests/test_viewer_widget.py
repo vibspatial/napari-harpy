@@ -23,7 +23,10 @@ from napari_harpy._points_value_index import PointsValueSelection, PointsValueTa
 from napari_harpy.core._color_source import ShapeColorSourceSpec, TableColorSourceSpec
 from napari_harpy.viewer.adapter import PointsLayerIdentity
 from napari_harpy.viewer.shapes_styling import SHAPES_FACE_ALPHA
+from napari_harpy.widgets.viewer.disclosure import _ElidedLabel, _ElidedToolButton
+from napari_harpy.widgets.viewer.image_widget import QColorDialog, _OverlayColorButton
 from napari_harpy.widgets.viewer.points_controller import PointsLoadResult
+from napari_harpy.widgets.viewer.shapes_widget import ShapesLoadRequest
 from napari_harpy.widgets.viewer.widget import ViewerWidget
 
 
@@ -203,7 +206,7 @@ def test_viewer_widget_can_be_instantiated(qtbot) -> None:
 
 
 def test_elided_label_only_shows_tooltip_when_text_is_truncated(qtbot, monkeypatch) -> None:
-    label = viewer_widget_module._ElidedLabel("blobs_multiscale_image")
+    label = _ElidedLabel("blobs_multiscale_image")
 
     qtbot.addWidget(label)
 
@@ -234,7 +237,7 @@ def test_elided_label_only_shows_tooltip_when_text_is_truncated(qtbot, monkeypat
 
 
 def test_elided_tool_button_only_shows_tooltip_when_text_is_truncated(qtbot, monkeypatch) -> None:
-    button = viewer_widget_module._ElidedToolButton("blobs_image_long_name_blobs_image_long_name")
+    button = _ElidedToolButton("blobs_image_long_name_blobs_image_long_name")
 
     qtbot.addWidget(button)
 
@@ -266,12 +269,12 @@ def test_elided_tool_button_only_shows_tooltip_when_text_is_truncated(qtbot, mon
 
 
 def test_overlay_color_button_uses_color_dialog_selection(qtbot, monkeypatch) -> None:
-    button = viewer_widget_module._OverlayColorButton("#00FFFF")
+    button = _OverlayColorButton("#00FFFF")
 
     qtbot.addWidget(button)
 
     monkeypatch.setattr(
-        viewer_widget_module.QColorDialog,
+        QColorDialog,
         "getColor",
         lambda *args, **kwargs: QColor("#123456"),
     )
@@ -393,7 +396,9 @@ def test_viewer_widget_points_add_update_request_calls_controller(qtbot, monkeyp
     )
     widget.points_widget.set_points_names(["transcripts"])
     widget.points_widget.set_index_columns(["gene"])
-    widget.points_widget.set_value_source(SimpleNamespace(value_table=SimpleNamespace(values=pd.DataFrame({"value": ["AAMP", "AXL"]}))))
+    widget.points_widget.set_value_source(
+        SimpleNamespace(value_table=SimpleNamespace(values=pd.DataFrame({"value": ["AAMP", "AXL"]})))
+    )
     widget.points_widget.render_controller_state(
         SimpleNamespace(
             can_load_values=True,
@@ -1421,7 +1426,7 @@ def test_viewer_widget_add_update_shapes_with_shape_column_dispatches_to_styled_
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)
     sdata = _make_colorable_shapes_sdata(cell_type_colors=["red", "blue"])
-    recorded_requests: list[viewer_widget_module.ShapesLoadRequest] = []
+    recorded_requests: list[ShapesLoadRequest] = []
 
     qtbot.addWidget(widget)
 

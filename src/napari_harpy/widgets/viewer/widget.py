@@ -1,42 +1,28 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import pandas as pd
 from pandas.api.types import is_bool_dtype, is_numeric_dtype, is_object_dtype, is_string_dtype
-from qtpy.QtCore import QPointF, QSignalBlocker, QSize, QStringListModel, Qt, Signal
-from qtpy.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+from qtpy.QtCore import QSignalBlocker, Qt
+from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import (
-    QCheckBox,
-    QColorDialog,
     QComboBox,
-    QCompleter,
     QFileDialog,
     QFormLayout,
     QFrame,
-    QHBoxLayout,
     QLabel,
     QLayout,
-    QLineEdit,
     QPushButton,
     QScrollArea,
-    QSizePolicy,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 from spatialdata import read_zarr
 
 from napari_harpy._app_state import CoordinateSystemChangedEvent, HarpyAppState, get_or_create_app_state
-from napari_harpy.core._color_source import (
-    ShapeColorSourceKind,
-    ShapeColorSourceSpec,
-    TableColorSourceKind,
-    TableColorSourceSpec,
-)
 from napari_harpy.core.spatialdata import (
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
@@ -48,1056 +34,33 @@ from napari_harpy.core.spatialdata import (
     get_spatialdata_shapes_options_for_coordinate_system_from_sdata,
     get_table_color_source_options,
 )
-from napari_harpy.viewer.adapter import DEFAULT_OVERLAY_COLORS, ShapesLayerBinding, ViewerAdapter
+from napari_harpy.viewer.adapter import ShapesLayerBinding, ViewerAdapter
 from napari_harpy.viewer.points_styling import PointsLayerResult
 from napari_harpy.widgets.shared_styles import (
-    ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,
-)
-from napari_harpy.widgets.shared_styles import (
-    CHECKBOX_STYLESHEET as _CHECKBOX_STYLESHEET,
-)
-from napari_harpy.widgets.shared_styles import (
-    WIDGET_ACCENT_BORDER_COLOR,
-    WIDGET_ACCENT_SOFT_COLOR,
-    WIDGET_BORDER_COLOR,
-    WIDGET_BORDER_STRONG_COLOR,
-    WIDGET_PANEL_COLOR,
-    WIDGET_PANEL_MUTED_COLOR,
-    WIDGET_PANEL_SUBTLE_COLOR,
-    WIDGET_TEXT_COLOR,
-    WIDGET_TEXT_SECONDARY_COLOR,
-    CompactComboBox,
+    ACTION_BUTTON_STYLESHEET,
+    WIDGET_MIN_WIDTH,
     StatusCardKind,
     apply_scroll_content_surface,
     apply_widget_surface,
-    build_input_control_stylesheet,
     create_form_label,
     format_feedback_identifier,
-    format_tooltip,
     set_status_card,
 )
-from napari_harpy.widgets.shared_styles import (
-    WIDGET_MIN_WIDTH as _WIDGET_MIN_WIDTH,
-)
+from napari_harpy.widgets.viewer.disclosure import _CollapsibleSectionWidget, _DisclosureElementWidget
+from napari_harpy.widgets.viewer.image_widget import ImageLoadRequest, _ImageCardWidget
+from napari_harpy.widgets.viewer.labels_widget import LabelsLoadRequest, _LabelsCardWidget
 from napari_harpy.widgets.viewer.points_controller import PointsController, PointsLoadResult, PointsValueSource
 from napari_harpy.widgets.viewer.points_widget import PointsValueWidget
+from napari_harpy.widgets.viewer.shapes_widget import ShapesLoadRequest, _ShapesCardWidget
+from napari_harpy.widgets.viewer.styles import (
+    EMPTY_STATE_STYLESHEET,
+    INPUT_CONTROL_STYLESHEET,
+    SUMMARY_LABEL_STYLESHEET,
+)
 
 if TYPE_CHECKING:
     import napari
     from spatialdata import SpatialData
-
-
-_INPUT_CONTROL_STYLESHEET = build_input_control_stylesheet("QComboBox")
-_DETAIL_PANEL_STYLESHEET = (
-    "QFrame[harpyViewerDetailPanel='true'] {"
-    f"background-color: {WIDGET_PANEL_COLOR}; "
-    f"border: 1px solid {WIDGET_BORDER_COLOR}; "
-    "border-radius: 8px;}"
-)
-_CARD_TITLE_STYLESHEET = (
-    "QLabel {"
-    f"background-color: {WIDGET_ACCENT_SOFT_COLOR}; "
-    f"border: 1px solid {WIDGET_ACCENT_BORDER_COLOR}; "
-    "border-radius: 8px; "
-    f"color: {WIDGET_TEXT_SECONDARY_COLOR}; "
-    "font-weight: 700; "
-    "padding: 6px 10px;}"
-)
-_SECTION_GROUP_STYLESHEET = (
-    "QFrame[harpyViewerDisclosureSection='true'] {"
-    f"background-color: {WIDGET_PANEL_MUTED_COLOR}; "
-    f"border: 1px solid {WIDGET_BORDER_COLOR}; "
-    "border-radius: 12px;}"
-)
-_DISCLOSURE_BUTTON_STYLESHEET = (
-    "QToolButton {"
-    f"background-color: {WIDGET_PANEL_COLOR}; "
-    f"border: 1px solid {WIDGET_BORDER_COLOR}; "
-    "border-radius: 8px; "
-    f"color: {WIDGET_TEXT_COLOR}; "
-    "font-size: 13px; "
-    "font-weight: 600; "
-    "padding: 4px 10px; "
-    "min-height: 30px; "
-    "text-align: left;}"
-    f"QToolButton:hover {{ background-color: {WIDGET_PANEL_MUTED_COLOR}; border-color: {WIDGET_BORDER_STRONG_COLOR}; }}"
-    f"QToolButton:checked {{ background-color: {WIDGET_ACCENT_SOFT_COLOR}; border-color: {WIDGET_ACCENT_BORDER_COLOR}; }}"
-)
-_ELEMENT_DISCLOSURE_STYLESHEET = (
-    "QFrame[harpyViewerDisclosureRow='true'] {"
-    f"background-color: {WIDGET_PANEL_SUBTLE_COLOR}; "
-    f"border: 1px solid {WIDGET_BORDER_COLOR}; "
-    "border-radius: 10px;}"
-)
-_SUMMARY_LABEL_STYLESHEET = f"color: {WIDGET_TEXT_SECONDARY_COLOR}; font-weight: 500;"
-_EMPTY_STATE_STYLESHEET = "color: #64748b; font-weight: 500;"
-_CHANNEL_WARNING_STYLESHEET = "color: #b45309; font-weight: 600;"
-_CHANNEL_PANEL_STYLESHEET = "QWidget { background: transparent; }"
-_SUBSECTION_LABEL_STYLESHEET = "color: #64748b; font-size: 11px; font-weight: 600;"
-_MAX_VISIBLE_OVERLAY_CHANNELS = 5
-_DISCLOSURE_CHEVRON_SIZE = 14
-_OVERLAY_COLOR_BUTTON_WIDTH = 34
-_OVERLAY_COLOR_BUTTON_HEIGHT = 22
-_OVERLAY_COLOR_BUTTON_RADIUS = 6
-_OVERLAY_COLOR_NAMES_BY_HEX = {
-    "#00FFFF": "Cyan",
-    "#FF00FF": "Magenta",
-    "#FFFF00": "Yellow",
-    "#00FF7F": "Green",
-    "#FF5050": "Red",
-    "#1E90FF": "Blue",
-    "#FFA500": "Orange",
-    "#9370DB": "Purple",
-    "#ADFF2F": "Green-yellow",
-    "#7B68EE": "Slate blue",
-    "#FF1493": "Deep pink",
-    "#20B2AA": "Teal",
-    "#FFD700": "Gold",
-    "#FF7F50": "Coral",
-    "#87CEFA": "Sky blue",
-    "#32CD32": "Lime green",
-    "#FF69B4": "Hot pink",
-    "#DDA0DD": "Plum",
-}
-
-
-@dataclass(frozen=True)
-class ImageLoadRequest:
-    image_name: str
-    mode: str
-    channels: list[int]
-    channel_colors: list[str]
-
-
-@dataclass(frozen=True)
-class LabelsLoadRequest:
-    labels_name: str
-    table_name: str | None
-    selected_source_kind: TableColorSourceKind | None
-    selected_color_source: TableColorSourceSpec | None
-
-
-@dataclass(frozen=True)
-class ShapesLoadRequest:
-    shapes_name: str
-    selected_source_kind: ShapeColorSourceKind | None
-    selected_color_source: ShapeColorSourceSpec | None
-    fill_shapes: bool
-
-
-class _ElidedLabel(QLabel):
-    """Single-line label that shows a tooltip only when the text is elided."""
-
-    def __init__(self, text: str, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._full_text = text
-        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self.setMinimumWidth(0)
-        self.setMinimumHeight(36)
-        self.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self._update_elided_text()
-
-    def set_full_text(self, text: str) -> None:
-        self._full_text = text
-        self._update_elided_text()
-
-    def resizeEvent(self, event: object) -> None:
-        super().resizeEvent(event)
-        self._update_elided_text()
-
-    def _update_elided_text(self) -> None:
-        available_width = max(0, self.contentsRect().width())
-        elided_text = self.fontMetrics().elidedText(self._full_text, Qt.TextElideMode.ElideRight, available_width)
-        super().setText(elided_text)
-        self.setToolTip(format_tooltip(self._full_text) if elided_text != self._full_text else "")
-
-
-def _create_disclosure_chevron_icon(*, expanded: bool, color: str = WIDGET_TEXT_COLOR) -> QIcon:
-    pixmap = QPixmap(_DISCLOSURE_CHEVRON_SIZE, _DISCLOSURE_CHEVRON_SIZE)
-    pixmap.fill(Qt.GlobalColor.transparent)
-
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    pen = QPen(QColor(color))
-    pen.setWidthF(2.0)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    painter.setPen(pen)
-
-    if expanded:
-        painter.drawLine(QPointF(3.5, 5.0), QPointF(7.0, 8.5))
-        painter.drawLine(QPointF(7.0, 8.5), QPointF(10.5, 5.0))
-    else:
-        painter.drawLine(QPointF(5.0, 3.5), QPointF(8.5, 7.0))
-        painter.drawLine(QPointF(8.5, 7.0), QPointF(5.0, 10.5))
-
-    painter.end()
-    return QIcon(pixmap)
-
-
-def _overlay_color_label(color: str) -> str:
-    return _OVERLAY_COLOR_NAMES_BY_HEX.get(color.upper(), color)
-
-
-def _normalize_hex_color(color: str) -> str:
-    normalized_color = QColor(color)
-    if not normalized_color.isValid():
-        return color.upper()
-    return normalized_color.name(QColor.NameFormat.HexRgb).upper()
-
-
-class _OverlayColorButton(QPushButton):
-    """Button that shows the current channel color and opens a color picker on click."""
-
-    def __init__(self, color: str, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._color = ""
-        self.setText("")
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedSize(_OVERLAY_COLOR_BUTTON_WIDTH, _OVERLAY_COLOR_BUTTON_HEIGHT)
-        self.clicked.connect(self.choose_color)
-        self.set_color(color)
-
-    @property
-    def current_color(self) -> str:
-        return self._color
-
-    def set_color(self, color: str) -> None:
-        self._color = _normalize_hex_color(color)
-        label = _overlay_color_label(self._color)
-        self.setAccessibleName(f"Channel color {label} {self._color}")
-        self.setToolTip(format_tooltip(f"Click to choose channel color. Current color: {label} ({self._color})."))
-        self.setStyleSheet(
-            "QPushButton {"
-            f"background-color: {self._color}; "
-            f"border: 1px solid {WIDGET_BORDER_STRONG_COLOR}; "
-            f"border-radius: {_OVERLAY_COLOR_BUTTON_RADIUS}px; "
-            f"min-height: {_OVERLAY_COLOR_BUTTON_HEIGHT}px; "
-            f"max-height: {_OVERLAY_COLOR_BUTTON_HEIGHT}px; "
-            f"min-width: {_OVERLAY_COLOR_BUTTON_WIDTH}px; "
-            f"max-width: {_OVERLAY_COLOR_BUTTON_WIDTH}px; "
-            "padding: 0px;}"
-            f"QPushButton:hover {{ border: 2px solid {WIDGET_ACCENT_BORDER_COLOR}; }}"
-            f"QPushButton:focus {{ border: 2px solid {WIDGET_ACCENT_BORDER_COLOR}; }}"
-        )
-
-    def choose_color(self) -> None:
-        selected_color = QColorDialog.getColor(QColor(self._color), self, "Select channel color")
-        if selected_color.isValid():
-            self.set_color(selected_color.name(QColor.NameFormat.HexRgb))
-
-
-class _ElidedToolButton(QToolButton):
-    """Tool button that elides visible text and only shows a tooltip when shortened."""
-
-    def __init__(
-        self,
-        text: str = "",
-        parent: QWidget | None = None,
-        *,
-        max_size_hint_width: int = 320,
-    ) -> None:
-        super().__init__(parent)
-        self._full_text = text
-        self._max_size_hint_width = max_size_hint_width
-        self.setMinimumWidth(0)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.setIconSize(QSize(_DISCLOSURE_CHEVRON_SIZE, _DISCLOSURE_CHEVRON_SIZE))
-        self.set_chevron_expanded(False)
-        self._update_elided_text()
-
-    def full_text(self) -> str:
-        return self._full_text
-
-    def set_full_text(self, text: str) -> None:
-        self._full_text = text
-        self._update_elided_text()
-
-    def sizeHint(self) -> QSize:
-        return self._capped_size(super().sizeHint())
-
-    def minimumSizeHint(self) -> QSize:
-        hint = super().minimumSizeHint()
-        return QSize(min(hint.width(), 48), hint.height())
-
-    def resizeEvent(self, event: object) -> None:
-        super().resizeEvent(event)
-        self._update_elided_text()
-
-    def refresh_elision(self) -> None:
-        self._update_elided_text()
-
-    def set_chevron_expanded(self, expanded: bool) -> None:
-        self.setIcon(_create_disclosure_chevron_icon(expanded=expanded))
-
-    def _capped_size(self, hint: QSize) -> QSize:
-        return QSize(min(hint.width(), self._max_size_hint_width), hint.height())
-
-    def _update_elided_text(self) -> None:
-        available_width = self.contentsRect().width()
-        if available_width <= 0:
-            available_width = self._max_size_hint_width
-        available_width = min(available_width, self._max_size_hint_width)
-        text_width = max(0, available_width - 42)
-        elided_text = self.fontMetrics().elidedText(
-            self._full_text,
-            Qt.TextElideMode.ElideRight,
-            text_width,
-        )
-        if self.text() != elided_text:
-            super().setText(elided_text)
-        self.setToolTip(format_tooltip(self._full_text) if elided_text != self._full_text else "")
-
-
-class _CollapsibleSectionWidget(QFrame):
-    """Top-level collapsible section for viewer element categories."""
-
-    def __init__(
-        self,
-        *,
-        title: str,
-        object_name: str,
-        toggle_object_name: str,
-        expanded: bool = False,
-    ) -> None:
-        super().__init__()
-        self._title = title
-        self.setObjectName(object_name)
-        self.setProperty("harpyViewerDisclosureSection", True)
-        self.setStyleSheet(_SECTION_GROUP_STYLESHEET)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
-
-        self.toggle_button = _ElidedToolButton()
-        self.toggle_button.setObjectName(toggle_object_name)
-        self.toggle_button.setCheckable(True)
-        self.toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.toggle_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.toggle_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.toggle_button.setStyleSheet(_DISCLOSURE_BUTTON_STYLESHEET)
-        self.toggle_button.toggled.connect(self._on_toggled)
-
-        self.content_widget = QWidget()
-        self.content_widget.setObjectName(f"{object_name}_content")
-        self.content_layout = QVBoxLayout(self.content_widget)
-        self.content_layout.setContentsMargins(0, 0, 0, 0)
-        self.content_layout.setSpacing(8)
-
-        layout.addWidget(self.toggle_button)
-        layout.addWidget(self.content_widget)
-        self.set_expanded(expanded)
-
-    def is_expanded(self) -> bool:
-        return self.toggle_button.isChecked()
-
-    def set_count(self, count: int) -> None:
-        self.toggle_button.set_full_text(f"{self._title} ({count})")
-        self._update_accessible_text()
-
-    def set_expanded(self, expanded: bool) -> None:
-        with QSignalBlocker(self.toggle_button):
-            self.toggle_button.setChecked(expanded)
-        self._sync_expanded_state(expanded)
-
-    def _on_toggled(self, expanded: bool) -> None:
-        self._sync_expanded_state(expanded)
-
-    def _sync_expanded_state(self, expanded: bool) -> None:
-        self.content_widget.setVisible(expanded)
-        self.toggle_button.set_chevron_expanded(expanded)
-        self.toggle_button.refresh_elision()
-        self._update_accessible_text()
-
-    def _update_accessible_text(self) -> None:
-        state = "expanded" if self.is_expanded() else "collapsed"
-        self.toggle_button.setAccessibleName(f"{self.toggle_button.full_text()} section, {state}")
-
-
-class _DisclosureElementWidget(QFrame):
-    """Compact element row with an expandable detail widget."""
-
-    expanded_changed = Signal(bool)
-
-    def __init__(
-        self,
-        *,
-        title: str,
-        object_name: str,
-        toggle_object_name: str,
-        detail_widget: QWidget,
-        expanded: bool = False,
-    ) -> None:
-        super().__init__()
-        self.title = title
-        self.detail_widget = detail_widget
-        self.setObjectName(object_name)
-        self.setProperty("harpyViewerDisclosureRow", True)
-        self.setStyleSheet(_ELEMENT_DISCLOSURE_STYLESHEET)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
-
-        self.toggle_button = _ElidedToolButton(title)
-        self.toggle_button.setObjectName(toggle_object_name)
-        self.toggle_button.setCheckable(True)
-        self.toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.toggle_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.toggle_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.toggle_button.setStyleSheet(_DISCLOSURE_BUTTON_STYLESHEET)
-        self.toggle_button.toggled.connect(self._on_toggled)
-
-        layout.addWidget(self.toggle_button)
-        layout.addWidget(self.detail_widget)
-        self.set_expanded(expanded)
-
-    def is_expanded(self) -> bool:
-        return self.toggle_button.isChecked()
-
-    def set_expanded(self, expanded: bool) -> None:
-        with QSignalBlocker(self.toggle_button):
-            self.toggle_button.setChecked(expanded)
-        self._sync_expanded_state(expanded)
-
-    def _on_toggled(self, expanded: bool) -> None:
-        self._sync_expanded_state(expanded)
-        self.expanded_changed.emit(expanded)
-
-    def _sync_expanded_state(self, expanded: bool) -> None:
-        self.detail_widget.setVisible(expanded)
-        self.toggle_button.set_chevron_expanded(expanded)
-        self.toggle_button.refresh_elision()
-        state = "expanded" if expanded else "collapsed"
-        self.toggle_button.setAccessibleName(f"{self.title} element, {state}")
-
-
-class _LabelsCardWidget(QFrame):
-    """Card UI for one labels element in the selected coordinate system."""
-
-    add_update_requested = Signal(object)
-
-    def __init__(
-        self,
-        *,
-        labels_name: str,
-        table_names: list[str],
-        table_color_sources_by_table: dict[str, list[TableColorSourceSpec]],
-    ) -> None:
-        super().__init__()
-        self.labels_name = labels_name
-        self._table_color_sources_by_table = table_color_sources_by_table
-        self._filtered_color_sources: list[TableColorSourceSpec] = []
-        self.setObjectName(f"viewer_widget_labels_card_{labels_name}")
-        self.setProperty("harpyViewerDetailPanel", True)
-        self.setStyleSheet(_DETAIL_PANEL_STYLESHEET)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
-
-        self.title_label = _ElidedLabel(labels_name, self)
-        self.title_label.setObjectName(f"viewer_widget_labels_card_title_{labels_name}")
-        self.title_label.setStyleSheet(_CARD_TITLE_STYLESHEET)
-        self.title_label.hide()
-
-        form_layout = QFormLayout()
-        form_layout.setContentsMargins(0, 0, 0, 0)
-        form_layout.setHorizontalSpacing(8)
-        form_layout.setVerticalSpacing(6)
-
-        linked_table_label = _create_form_label("Linked table")
-        self.linked_table_combo = CompactComboBox()
-        self.linked_table_combo.setObjectName(f"viewer_widget_linked_table_combo_{labels_name}")
-        self.linked_table_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
-        if table_names:
-            self.linked_table_combo.addItems(table_names)
-        else:
-            self.linked_table_combo.addItem("No linked tables")
-            self.linked_table_combo.setEnabled(False)
-
-        color_source_kind_label = _create_form_label("Color source")
-        self.color_source_kind_combo = CompactComboBox()
-        self.color_source_kind_combo.setObjectName(f"viewer_widget_color_source_kind_combo_{labels_name}")
-        self.color_source_kind_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
-        self.color_source_kind_combo.addItem("None", None)
-        self.color_source_kind_combo.addItem("Observations", "obs_column")
-        self.color_source_kind_combo.addItem("Vars", "x_var")
-
-        self.color_source_value_label = _create_form_label("Value source")
-        self.color_source_value_input = QLineEdit()
-        self.color_source_value_input.setObjectName(f"viewer_widget_color_source_value_input_{labels_name}")
-        self.color_source_value_input.setStyleSheet(build_input_control_stylesheet("QLineEdit"))
-        self.color_source_value_input.setMinimumWidth(0)
-        self.color_source_value_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.color_source_value_input.setEnabled(False)
-
-        self._color_source_completer_model = QStringListModel(self.color_source_value_input)
-        self._color_source_completer = QCompleter(self._color_source_completer_model, self.color_source_value_input)
-        self._color_source_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-        self._color_source_completer.setFilterMode(Qt.MatchFlag.MatchContains)
-        self.color_source_value_input.setCompleter(self._color_source_completer)
-
-        self.action_status_label = QLabel()
-        self.action_status_label.setObjectName(f"viewer_widget_action_status_{labels_name}")
-        self.action_status_label.setWordWrap(True)
-        self.action_status_label.setStyleSheet(_SUMMARY_LABEL_STYLESHEET)
-
-        self.add_update_button = QPushButton("Add / Update in viewer")
-        self.add_update_button.setObjectName(f"viewer_widget_add_update_labels_button_{labels_name}")
-        self.add_update_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.add_update_button.setMinimumHeight(28)
-        self.add_update_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
-        self.add_update_button.clicked.connect(self._emit_add_update_request)
-
-        form_layout.addRow(linked_table_label, self.linked_table_combo)
-        form_layout.addRow(color_source_kind_label, self.color_source_kind_combo)
-        form_layout.addRow(self.color_source_value_label, self.color_source_value_input)
-
-        layout.addLayout(form_layout)
-        layout.addWidget(self.action_status_label)
-        layout.addWidget(self.add_update_button)
-
-        self.linked_table_combo.currentIndexChanged.connect(self._refresh_color_source_controls)
-        self.color_source_kind_combo.currentIndexChanged.connect(self._refresh_color_source_controls)
-        self.color_source_value_input.textChanged.connect(self._update_action_status)
-        self.color_source_value_input.editingFinished.connect(self._sync_current_source_selection)
-
-        self._refresh_color_source_controls()
-
-    @property
-    def selected_table_name(self) -> str | None:
-        if not self.linked_table_combo.isEnabled():
-            return None
-
-        table_name = self.linked_table_combo.currentText()
-        return table_name if table_name in self._table_color_sources_by_table else None
-
-    @property
-    def selected_source_kind(self) -> TableColorSourceKind | None:
-        value = self.color_source_kind_combo.currentData()
-        return value if value in {"obs_column", "x_var"} else None
-
-    @property
-    def selected_color_source(self) -> TableColorSourceSpec | None:
-        current_text = self.color_source_value_input.text().strip()
-        for source in self._filtered_color_sources:
-            if source.display_name == current_text:
-                return source
-        return None
-
-    def _refresh_color_source_controls(self, _index: int | None = None) -> None:
-        selected_source_identity = (
-            self.selected_color_source.identity if self.selected_color_source is not None else None
-        )
-        source_kind = self.selected_source_kind
-        table_name = self.selected_table_name
-
-        if source_kind == "obs_column":
-            self.color_source_value_label.setText("Observation")
-        elif source_kind == "x_var":
-            self.color_source_value_label.setText("Var")
-        else:
-            self.color_source_value_label.setText("Value source")
-
-        available_sources = (
-            list(self._table_color_sources_by_table.get(table_name, ())) if table_name is not None else []
-        )
-        self._filtered_color_sources = [
-            source for source in available_sources if source_kind is None or source.source_kind == source_kind
-        ]
-
-        with QSignalBlocker(self.color_source_value_input):
-            if source_kind is None:
-                self.color_source_value_input.setEnabled(False)
-                self.color_source_value_input.clear()
-                self.color_source_value_input.setPlaceholderText("Select a color source kind first")
-            else:
-                self.color_source_value_input.setEnabled(bool(self._filtered_color_sources))
-                if selected_source_identity is not None:
-                    matching_source = next(
-                        (
-                            source
-                            for source in self._filtered_color_sources
-                            if source.identity == selected_source_identity
-                        ),
-                        None,
-                    )
-                    if matching_source is not None:
-                        self.color_source_value_input.setText(matching_source.display_name)
-                    elif self._filtered_color_sources:
-                        self.color_source_value_input.setText(self._filtered_color_sources[0].display_name)
-                    else:
-                        self.color_source_value_input.clear()
-                elif self._filtered_color_sources:
-                    self.color_source_value_input.setText(self._filtered_color_sources[0].display_name)
-                else:
-                    self.color_source_value_input.clear()
-
-                if source_kind == "obs_column":
-                    self.color_source_value_input.setPlaceholderText("Search observations")
-                else:
-                    self.color_source_value_input.setPlaceholderText("Search vars")
-
-            self._color_source_completer_model.setStringList(
-                [source.display_name for source in self._filtered_color_sources]
-            )
-
-        self._update_action_status()
-
-    def _sync_current_source_selection(self) -> None:
-        if not self.color_source_value_input.isEnabled():
-            return
-
-        current_text = self.color_source_value_input.text().strip()
-        for source in self._filtered_color_sources:
-            if source.display_name == current_text:
-                self.color_source_value_input.setText(source.display_name)
-                break
-        self._update_action_status()
-
-    def _update_action_status(self) -> None:
-        source_kind = self.selected_source_kind
-        table_name = self.selected_table_name
-        selected_source = self.selected_color_source
-
-        if source_kind is None:
-            self.action_status_label.setText("Action: add/update primary labels layer")
-            return
-
-        if table_name is None:
-            self.action_status_label.setText("Action: colored overlays require a linked table")
-            return
-
-        if source_kind == "obs_column":
-            if selected_source is None:
-                if self._filtered_color_sources:
-                    self.action_status_label.setText("Action: select an observation column for a colored overlay")
-                else:
-                    self.action_status_label.setText("Action: no colorable observation columns available")
-                return
-            self.action_status_label.setText(
-                f'Action: add/update colored overlay for obs["{selected_source.value_key}"]'
-            )
-            return
-
-        if selected_source is None:
-            if self._filtered_color_sources:
-                self.action_status_label.setText("Action: select a var for a colored overlay")
-            else:
-                self.action_status_label.setText("Action: no vars available for a colored overlay")
-            return
-
-        self.action_status_label.setText(f'Action: add/update colored overlay for X[:, "{selected_source.value_key}"]')
-
-    def _emit_add_update_request(self, _checked: bool = False) -> None:
-        self.add_update_requested.emit(
-            LabelsLoadRequest(
-                labels_name=self.labels_name,
-                table_name=self.selected_table_name,
-                selected_source_kind=self.selected_source_kind,
-                selected_color_source=self.selected_color_source,
-            )
-        )
-
-
-class _ImageCardWidget(QFrame):
-    """Card UI for one image element in the selected coordinate system."""
-
-    add_update_requested = Signal(object)
-
-    def __init__(
-        self,
-        *,
-        image_name: str,
-        channel_names: list[str],
-        channel_error: str | None = None,
-    ) -> None:
-        super().__init__()
-        self.image_name = image_name
-        self.channel_names = channel_names
-        self.channel_error = channel_error
-        self.setObjectName(f"viewer_widget_image_card_{image_name}")
-        self.setProperty("harpyViewerDetailPanel", True)
-        self.setStyleSheet(_DETAIL_PANEL_STYLESHEET)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
-
-        self.title_label = _ElidedLabel(image_name, self)
-        self.title_label.setObjectName(f"viewer_widget_image_card_title_{image_name}")
-        self.title_label.setStyleSheet(_CARD_TITLE_STYLESHEET)
-        self.title_label.hide()
-
-        mode_layout = QHBoxLayout()
-        mode_layout.setContentsMargins(0, 0, 0, 0)
-        mode_layout.setSpacing(16)
-
-        self.stack_toggle = QCheckBox("stack")
-        self.stack_toggle.setObjectName(f"viewer_widget_stack_toggle_{image_name}")
-        self.stack_toggle.setStyleSheet(_CHECKBOX_STYLESHEET)
-        self.stack_toggle.setChecked(True)
-
-        self.overlay_toggle = QCheckBox("overlay")
-        self.overlay_toggle.setObjectName(f"viewer_widget_overlay_toggle_{image_name}")
-        self.overlay_toggle.setStyleSheet(_CHECKBOX_STYLESHEET)
-
-        mode_layout.addWidget(self.stack_toggle)
-        mode_layout.addWidget(self.overlay_toggle)
-        mode_layout.addStretch(1)
-
-        self.channel_warning_label = QLabel()
-        self.channel_warning_label.setObjectName(f"viewer_widget_channel_warning_{image_name}")
-        self.channel_warning_label.setWordWrap(True)
-        self.channel_warning_label.setStyleSheet(_CHANNEL_WARNING_STYLESHEET)
-        self.channel_warning_label.hide()
-
-        self.channel_panel = QWidget()
-        self.channel_panel.setObjectName(f"viewer_widget_channel_panel_{image_name}")
-        self.channel_panel.setStyleSheet(_CHANNEL_PANEL_STYLESHEET)
-        self.channel_panel.setVisible(False)
-        channel_layout = QVBoxLayout(self.channel_panel)
-        channel_layout.setContentsMargins(24, 10, 0, 0)
-        channel_layout.setSpacing(8)
-
-        self.channel_section_label = QLabel("Channels")
-        self.channel_section_label.setObjectName(f"viewer_widget_channel_section_label_{image_name}")
-        self.channel_section_label.setStyleSheet(_SUBSECTION_LABEL_STYLESHEET)
-        channel_layout.addWidget(self.channel_section_label)
-
-        self.channel_scroll_area = QScrollArea()
-        self.channel_scroll_area.setObjectName(f"viewer_widget_channel_scroll_area_{image_name}")
-        self.channel_scroll_area.setWidgetResizable(True)
-        self.channel_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.channel_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.channel_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        self.channel_scroll_area.setStyleSheet("QScrollArea { border: 0px; background: transparent; }")
-
-        self.channel_list_widget = QWidget()
-        self.channel_list_widget.setObjectName(f"viewer_widget_channel_list_{image_name}")
-        self.channel_list_widget.setStyleSheet(_CHANNEL_PANEL_STYLESHEET)
-        self.channel_list_layout = QVBoxLayout(self.channel_list_widget)
-        self.channel_list_layout.setContentsMargins(0, 0, 0, 0)
-        self.channel_list_layout.setSpacing(6)
-        self.channel_scroll_area.setWidget(self.channel_list_widget)
-        channel_layout.addWidget(self.channel_scroll_area)
-
-        self.channel_checkboxes: list[QCheckBox] = []
-        self.channel_color_buttons: list[_OverlayColorButton] = []
-        channel_rows: list[QWidget] = []
-
-        if channel_error is not None:
-            self.overlay_toggle.setEnabled(False)
-            self.overlay_toggle.setToolTip(format_tooltip(channel_error))
-            self.channel_warning_label.setText(
-                "Overlay is unavailable because this image has duplicate channel names. "
-                "Use `sdata.set_channel_names(...)` to rename them."
-            )
-            self.channel_warning_label.setToolTip(format_tooltip(channel_error))
-        elif channel_names:
-            for index, channel_name in enumerate(channel_names):
-                row = QWidget()
-                row_layout = QHBoxLayout(row)
-                row_layout.setContentsMargins(0, 0, 0, 0)
-                row_layout.setSpacing(8)
-
-                checkbox = QCheckBox(channel_name)
-                checkbox.setObjectName(f"viewer_widget_channel_checkbox_{image_name}_{channel_name}")
-                checkbox.setStyleSheet(_CHECKBOX_STYLESHEET)
-
-                color_button = _OverlayColorButton(DEFAULT_OVERLAY_COLORS[index % len(DEFAULT_OVERLAY_COLORS)])
-                color_button.setObjectName(f"viewer_widget_channel_color_button_{image_name}_{channel_name}")
-
-                row_layout.addWidget(checkbox, 1)
-                row_layout.addWidget(color_button)
-
-                self.channel_list_layout.addWidget(row)
-                self.channel_checkboxes.append(checkbox)
-                self.channel_color_buttons.append(color_button)
-                channel_rows.append(row)
-        else:
-            no_channels_label = QLabel("No channel axis available for this image.")
-            no_channels_label.setObjectName(f"viewer_widget_no_channels_label_{image_name}")
-            no_channels_label.setWordWrap(True)
-            no_channels_label.setStyleSheet(_EMPTY_STATE_STYLESHEET)
-            self.channel_list_layout.addWidget(no_channels_label)
-            channel_rows.append(no_channels_label)
-
-        self._set_channel_scroll_height(channel_rows)
-
-        self.add_update_button = QPushButton("Add / Update in viewer")
-        self.add_update_button.setObjectName(f"viewer_widget_add_update_image_button_{image_name}")
-        self.add_update_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.add_update_button.setMinimumHeight(28)
-        self.add_update_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
-        self.add_update_button.clicked.connect(self._emit_add_update_request)
-        self.add_update_button.setToolTip("")
-
-        self.stack_toggle.toggled.connect(self._on_stack_toggled)
-        self.overlay_toggle.toggled.connect(self._on_overlay_toggled)
-
-        layout.addLayout(mode_layout)
-        layout.addWidget(self.channel_warning_label)
-        layout.addWidget(self.channel_panel)
-        layout.addWidget(self.add_update_button)
-        self.channel_warning_label.setVisible(channel_error is not None)
-
-    def _on_stack_toggled(self, checked: bool) -> None:
-        if checked:
-            with QSignalBlocker(self.overlay_toggle):
-                self.overlay_toggle.setChecked(False)
-            self.channel_panel.setVisible(False)
-            return
-
-        if not self.overlay_toggle.isChecked():
-            with QSignalBlocker(self.stack_toggle):
-                self.stack_toggle.setChecked(True)
-
-    def _on_overlay_toggled(self, checked: bool) -> None:
-        if checked:
-            with QSignalBlocker(self.stack_toggle):
-                self.stack_toggle.setChecked(False)
-            self.channel_panel.setVisible(True)
-            return
-
-        self.channel_panel.setVisible(False)
-        if not self.stack_toggle.isChecked():
-            with QSignalBlocker(self.stack_toggle):
-                self.stack_toggle.setChecked(True)
-
-    def display_mode(self) -> str:
-        return "overlay" if self.overlay_toggle.isChecked() else "stack"
-
-    def get_selected_overlay_channels(self) -> list[int]:
-        return [index for index, checkbox in enumerate(self.channel_checkboxes) if checkbox.isChecked()]
-
-    def get_selected_overlay_channel_names(self) -> list[str]:
-        return [checkbox.text() for checkbox in self.channel_checkboxes if checkbox.isChecked()]
-
-    def get_selected_overlay_colors(self) -> list[str]:
-        return [
-            color_button.current_color
-            for checkbox, color_button in zip(self.channel_checkboxes, self.channel_color_buttons, strict=False)
-            if checkbox.isChecked()
-        ]
-
-    def _emit_add_update_request(self, _checked: bool = False) -> None:
-        self.add_update_requested.emit(
-            ImageLoadRequest(
-                image_name=self.image_name,
-                mode=self.display_mode(),
-                channels=self.get_selected_overlay_channels(),
-                channel_colors=self.get_selected_overlay_colors(),
-            )
-        )
-
-    def _set_channel_scroll_height(self, channel_rows: list[QWidget]) -> None:
-        visible_rows = channel_rows[:_MAX_VISIBLE_OVERLAY_CHANNELS]
-        if not visible_rows:
-            return
-
-        visible_height = sum(row.sizeHint().height() for row in visible_rows)
-        visible_height += self.channel_list_layout.spacing() * max(0, len(visible_rows) - 1)
-        margins = self.channel_list_layout.contentsMargins()
-        visible_height += margins.top() + margins.bottom()
-        visible_height += self.channel_scroll_area.frameWidth() * 2
-        self.channel_scroll_area.setMaximumHeight(visible_height)
-
-
-class _ShapesCardWidget(QFrame):
-    """Card UI shell for one shapes element in the selected coordinate system."""
-
-    add_update_requested = Signal(object)
-
-    def __init__(
-        self,
-        *,
-        shapes_name: str,
-        shape_color_sources: list[ShapeColorSourceSpec],
-    ) -> None:
-        super().__init__()
-        self.shapes_name = shapes_name
-        self._shape_color_sources = shape_color_sources
-        self._filtered_color_sources: list[ShapeColorSourceSpec] = []
-        self.setObjectName(f"viewer_widget_shapes_card_{shapes_name}")
-        self.setProperty("harpyViewerDetailPanel", True)
-        self.setStyleSheet(_DETAIL_PANEL_STYLESHEET)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
-
-        self.title_label = _ElidedLabel(shapes_name, self)
-        self.title_label.setObjectName(f"viewer_widget_shapes_card_title_{shapes_name}")
-        self.title_label.setStyleSheet(_CARD_TITLE_STYLESHEET)
-        self.title_label.hide()
-
-        form_layout = QFormLayout()
-        form_layout.setContentsMargins(0, 0, 0, 0)
-        form_layout.setHorizontalSpacing(8)
-        form_layout.setVerticalSpacing(6)
-
-        color_source_kind_label = _create_form_label("Color source")
-        self.color_source_kind_combo = CompactComboBox()
-        self.color_source_kind_combo.setObjectName(f"viewer_widget_shapes_color_source_kind_combo_{shapes_name}")
-        self.color_source_kind_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
-        self.color_source_kind_combo.addItem("None", None)
-        self.color_source_kind_combo.addItem("Shapes column", "shape_column")
-
-        self.color_source_value_label = _create_form_label("Shapes column")
-        self.color_source_value_input = QLineEdit()
-        self.color_source_value_input.setObjectName(f"viewer_widget_shapes_color_source_value_input_{shapes_name}")
-        self.color_source_value_input.setStyleSheet(build_input_control_stylesheet("QLineEdit"))
-        self.color_source_value_input.setMinimumWidth(0)
-        self.color_source_value_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.color_source_value_input.setEnabled(False)
-
-        self.fill_toggle = QCheckBox("Fill")
-        self.fill_toggle.setObjectName(f"viewer_widget_shapes_fill_toggle_{shapes_name}")
-        self.fill_toggle.setStyleSheet(_CHECKBOX_STYLESHEET)
-        self.fill_toggle.setChecked(False)
-
-        self._color_source_completer_model = QStringListModel(self.color_source_value_input)
-        self._color_source_completer = QCompleter(self._color_source_completer_model, self.color_source_value_input)
-        self._color_source_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-        self._color_source_completer.setFilterMode(Qt.MatchFlag.MatchContains)
-        self.color_source_value_input.setCompleter(self._color_source_completer)
-
-        self.action_status_label = QLabel()
-        self.action_status_label.setObjectName(f"viewer_widget_shapes_action_status_{shapes_name}")
-        self.action_status_label.setWordWrap(True)
-        self.action_status_label.setStyleSheet(_SUMMARY_LABEL_STYLESHEET)
-
-        self.add_update_button = QPushButton("Add / Update in viewer")
-        self.add_update_button.setObjectName(f"viewer_widget_add_update_shapes_button_{shapes_name}")
-        self.add_update_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.add_update_button.setMinimumHeight(28)
-        self.add_update_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
-        self.add_update_button.clicked.connect(self._emit_add_update_request)
-        self.add_update_button.setToolTip("")
-
-        form_layout.addRow(color_source_kind_label, self.color_source_kind_combo)
-        form_layout.addRow(self.color_source_value_label, self.color_source_value_input)
-        form_layout.addRow(_create_form_label("Display"), self.fill_toggle)
-
-        layout.addLayout(form_layout)
-        layout.addWidget(self.action_status_label)
-        layout.addWidget(self.add_update_button)
-
-        self.color_source_kind_combo.currentIndexChanged.connect(self._refresh_color_source_controls)
-        self.color_source_value_input.textChanged.connect(self._update_action_status)
-        self.color_source_value_input.editingFinished.connect(self._sync_current_source_selection)
-
-        self._refresh_color_source_controls()
-
-    @property
-    def selected_source_kind(self) -> ShapeColorSourceKind | None:
-        value = self.color_source_kind_combo.currentData()
-        return value if value == "shape_column" else None
-
-    @property
-    def selected_color_source(self) -> ShapeColorSourceSpec | None:
-        current_text = self.color_source_value_input.text().strip()
-        for source in self._filtered_color_sources:
-            if source.display_name == current_text:
-                return source
-        return None
-
-    @property
-    def fill_shapes(self) -> bool:
-        return self.fill_toggle.isChecked()
-
-    def _refresh_color_source_controls(self, _index: int | None = None) -> None:
-        selected_source_identity = (
-            self.selected_color_source.identity if self.selected_color_source is not None else None
-        )
-        source_kind = self.selected_source_kind
-        self._filtered_color_sources = [
-            source for source in self._shape_color_sources if source_kind is None or source.source_kind == source_kind
-        ]
-
-        with QSignalBlocker(self.color_source_value_input):
-            if source_kind is None:
-                self.color_source_value_input.setEnabled(False)
-                self.color_source_value_input.clear()
-                self.color_source_value_input.setPlaceholderText("Select a color source kind first")
-            else:
-                self.color_source_value_input.setEnabled(bool(self._filtered_color_sources))
-                if selected_source_identity is not None:
-                    matching_source = next(
-                        (
-                            source
-                            for source in self._filtered_color_sources
-                            if source.identity == selected_source_identity
-                        ),
-                        None,
-                    )
-                    if matching_source is not None:
-                        self.color_source_value_input.setText(matching_source.display_name)
-                    elif self._filtered_color_sources:
-                        self.color_source_value_input.setText(self._filtered_color_sources[0].display_name)
-                    else:
-                        self.color_source_value_input.clear()
-                elif self._filtered_color_sources:
-                    self.color_source_value_input.setText(self._filtered_color_sources[0].display_name)
-                else:
-                    self.color_source_value_input.clear()
-
-                self.color_source_value_input.setPlaceholderText("Search shapes columns")
-
-            self._color_source_completer_model.setStringList(
-                [source.display_name for source in self._filtered_color_sources]
-            )
-
-        self._update_action_status()
-
-    def _sync_current_source_selection(self) -> None:
-        if not self.color_source_value_input.isEnabled():
-            return
-
-        current_text = self.color_source_value_input.text().strip()
-        for source in self._filtered_color_sources:
-            if source.display_name == current_text:
-                self.color_source_value_input.setText(source.display_name)
-                break
-        self._update_action_status()
-
-    def _update_action_status(self) -> None:
-        source_kind = self.selected_source_kind
-        selected_source = self.selected_color_source
-        self._update_fill_toggle_enabled(selected_source is not None)
-
-        if source_kind is None:
-            self.action_status_label.setText("Action: add/update primary shapes layer")
-            return
-
-        if selected_source is None:
-            if self._filtered_color_sources:
-                self.action_status_label.setText("Action: select a shapes column for a styled shapes layer")
-            else:
-                self.action_status_label.setText("Action: no colorable shapes columns available")
-            return
-
-        self.action_status_label.setText(
-            f'Action: add/update styled shapes layer for column "{selected_source.value_key}"'
-        )
-
-    def _update_fill_toggle_enabled(self, enabled: bool) -> None:
-        self.fill_toggle.setEnabled(enabled)
-        if not enabled:
-            self.fill_toggle.setChecked(False)
-
-    def _emit_add_update_request(self, _checked: bool = False) -> None:
-        self.add_update_requested.emit(
-            ShapesLoadRequest(
-                shapes_name=self.shapes_name,
-                selected_source_kind=self.selected_source_kind,
-                selected_color_source=self.selected_color_source,
-                fill_shapes=self.fill_shapes,
-            )
-        )
 
 
 class ViewerWidget(QWidget):
@@ -1107,7 +70,7 @@ class ViewerWidget(QWidget):
         super().__init__()
         self.setObjectName("viewer_widget")
         apply_widget_surface(self)
-        self.setMinimumWidth(_WIDGET_MIN_WIDTH)
+        self.setMinimumWidth(WIDGET_MIN_WIDTH)
         self._viewer = napari_viewer
         self._app_state = get_or_create_app_state(napari_viewer)
         self._points_controller = PointsController(
@@ -1157,7 +120,7 @@ class ViewerWidget(QWidget):
         self.open_sdata_button.setObjectName("viewer_widget_open_sdata_button")
         self.open_sdata_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.open_sdata_button.setMinimumHeight(28)
-        self.open_sdata_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
+        self.open_sdata_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
         self.open_sdata_button.clicked.connect(self._open_spatialdata)
 
         self.empty_state_label = QLabel(
@@ -1165,12 +128,12 @@ class ViewerWidget(QWidget):
         )
         self.empty_state_label.setObjectName("viewer_widget_empty_state")
         self.empty_state_label.setWordWrap(True)
-        self.empty_state_label.setStyleSheet(_EMPTY_STATE_STYLESHEET)
+        self.empty_state_label.setStyleSheet(EMPTY_STATE_STYLESHEET)
 
         self.summary_label = QLabel("No SpatialData loaded.")
         self.summary_label.setObjectName("viewer_widget_summary")
         self.summary_label.setWordWrap(True)
-        self.summary_label.setStyleSheet(_SUMMARY_LABEL_STYLESHEET)
+        self.summary_label.setStyleSheet(SUMMARY_LABEL_STYLESHEET)
 
         selector_layout = QFormLayout()
         selector_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
@@ -1180,8 +143,8 @@ class ViewerWidget(QWidget):
         self.coordinate_system_combo = QComboBox()
         self.coordinate_system_combo.setObjectName("viewer_widget_coordinate_system_combo")
         self.coordinate_system_combo.currentIndexChanged.connect(self._on_coordinate_system_changed)
-        self.coordinate_system_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
-        selector_layout.addRow(_create_form_label("Coordinate system"), self.coordinate_system_combo)
+        self.coordinate_system_combo.setStyleSheet(INPUT_CONTROL_STYLESHEET)
+        selector_layout.addRow(create_form_label("Coordinate system"), self.coordinate_system_combo)
 
         self.action_feedback_label = QLabel("")
         self.action_feedback_label.setObjectName("viewer_widget_action_feedback")
@@ -1191,7 +154,7 @@ class ViewerWidget(QWidget):
         self.images_empty_label = QLabel("No images available in the selected coordinate system.")
         self.images_empty_label.setObjectName("viewer_widget_images_empty_state")
         self.images_empty_label.setWordWrap(True)
-        self.images_empty_label.setStyleSheet(_EMPTY_STATE_STYLESHEET)
+        self.images_empty_label.setStyleSheet(EMPTY_STATE_STYLESHEET)
 
         self.images_section = QWidget()
         self.images_section.setObjectName("viewer_widget_images_section")
@@ -1212,7 +175,7 @@ class ViewerWidget(QWidget):
         self.labels_empty_label = QLabel("No labels available in the selected coordinate system.")
         self.labels_empty_label.setObjectName("viewer_widget_labels_empty_state")
         self.labels_empty_label.setWordWrap(True)
-        self.labels_empty_label.setStyleSheet(_EMPTY_STATE_STYLESHEET)
+        self.labels_empty_label.setStyleSheet(EMPTY_STATE_STYLESHEET)
 
         self.labels_section = QWidget()
         self.labels_section.setObjectName("viewer_widget_labels_section")
@@ -1233,7 +196,7 @@ class ViewerWidget(QWidget):
         self.shapes_empty_label = QLabel("No shapes available in the selected coordinate system.")
         self.shapes_empty_label.setObjectName("viewer_widget_shapes_empty_state")
         self.shapes_empty_label.setWordWrap(True)
-        self.shapes_empty_label.setStyleSheet(_EMPTY_STATE_STYLESHEET)
+        self.shapes_empty_label.setStyleSheet(EMPTY_STATE_STYLESHEET)
 
         self.shapes_section = QWidget()
         self.shapes_section.setObjectName("viewer_widget_shapes_section")
@@ -1254,7 +217,7 @@ class ViewerWidget(QWidget):
         self.points_empty_label = QLabel("No points available in the selected coordinate system.")
         self.points_empty_label.setObjectName("viewer_widget_points_empty_state")
         self.points_empty_label.setWordWrap(True)
-        self.points_empty_label.setStyleSheet(_EMPTY_STATE_STYLESHEET)
+        self.points_empty_label.setStyleSheet(EMPTY_STATE_STYLESHEET)
 
         self.points_widget = PointsValueWidget()
         self.points_widget.source_changed.connect(self._on_points_source_changed)
@@ -2086,10 +1049,6 @@ def _clear_layout(layout: QLayout) -> None:
             widget.deleteLater()
         elif child_layout is not None:
             _clear_layout(child_layout)
-
-
-def _create_form_label(text: str) -> QLabel:
-    return create_form_label(text)
 
 
 def _get_labels_in_coordinate_system(sdata: SpatialData, coordinate_system: str) -> list[str]:
