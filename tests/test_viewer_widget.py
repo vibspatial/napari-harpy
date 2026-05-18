@@ -426,8 +426,9 @@ def test_viewer_widget_on_points_loaded_applies_layer_and_status(qtbot) -> None:
     layer = viewer.layers[0]
     assert layer.name == "transcripts: gene=AAMP"
     assert viewer.layers.selection.active is layer
-    assert "Points Layer Created" in widget.points_widget.status_label.text()
-    assert "2 point" in widget.points_widget.status_label.text()
+    assert "Points Layer Created" in widget.action_feedback_label.text()
+    assert "2 point" in widget.action_feedback_label.text()
+    assert not widget.action_feedback_label.isHidden()
 
 
 def test_viewer_widget_progressive_disclosure_expands_sections_and_elements(qtbot, sdata_blobs) -> None:

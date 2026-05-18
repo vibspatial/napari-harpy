@@ -958,9 +958,9 @@ class ViewerAdapter(QObject):
         )
         layer.data = selection.coordinates
         layer.features = selection.features
+        layer.visible = visible
         style_result = apply_points_selection_style(layer, selection)
         _refresh_points_layer_view_after_replacement(layer)
-        layer.visible = visible
 
         return PointsLayerResult(
             layer=layer,
@@ -1415,11 +1415,11 @@ def _build_points_layer_from_selection(identity: PointsLayerIdentity, selection:
         border_width=0,
         face_color=POINTS_SELECTION_SOLID_COLOR,
     )
-    apply_points_selection_style(layer, selection)
     return layer
 
 
 def _reset_points_layer_transient_state(layer: Points) -> None:
+    """Clear interaction state that may refer to rows from the previous data."""
     layer.selected_data = set()
     if hasattr(layer, "_value"):
         layer._value = None
@@ -1432,8 +1432,8 @@ def _refresh_points_layer_view_after_replacement(layer: Points) -> None:
 
     Updating a points layer from a large selection to a smaller one can leave
     napari's private `_indices_view` cache pointing at rows that no longer
-    exist, especially while async slicing is enabled. Recomputing the current
-    slice synchronously keeps hover/status lookups from indexing stale rows.
+    exist. Recomputing the current slice synchronously keeps hover/status
+    lookups from indexing stale rows.
     """
     try:
         layer.set_view_slice()

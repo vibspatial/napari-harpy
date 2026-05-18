@@ -1012,7 +1012,7 @@ In cache mode, proportional all-values sampling can be implemented with explicit
 
 ## napari Integration
 
-The MVP should create or update one napari `Points` layer.
+The MVP should maintain one logical napari `Points` layer for each points source and index column.
 
 Coordinate behavior:
 
@@ -1828,6 +1828,7 @@ def _ensure_points_layer_from_selection(
   - preserve user-toggled visibility when updating;
   - do not reset the camera;
   - update layer data, features, name, and colors every time;
+  - clear transient point interaction state and force a view refresh after replacing `layer.data`, because napari can keep private point-view indices from the previous data size when switching between all values and a small selected value;
 - layer data behavior:
   - `layer.data = selection.coordinates`;
   - `layer.features = selection.features`;
@@ -1882,7 +1883,7 @@ Tests:
 - `_ensure_points_layer_from_selection` does not validate/build a value table/read Dask data;
 - creates layer when missing and returns `created=True`;
 - updates same layer on repeated calls and returns `created=False`;
-- changing from one selected value to another replaces the existing layer instead of creating a second layer;
+- changing from one selected value to another replaces the existing layer data instead of creating a second layer;
 - does not create one layer per value;
 - ignores unregistered same-name layers;
 - result returns layer, created flag, and structured style metadata;

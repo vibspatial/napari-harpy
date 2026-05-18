@@ -1576,7 +1576,7 @@ class ViewerWidget(QWidget):
                 selection=load_result.selection,
             )
         except ValueError as error:
-            self.points_widget.show_status(
+            self._set_action_feedback(
                 title="Points Layer Error",
                 lines=[str(error)],
                 kind="error",
@@ -1615,7 +1615,7 @@ class ViewerWidget(QWidget):
                 f"Categorical coloring is disabled for {layer_result.selected_value_count:,} selected values; "
                 f"using one solid color because the categorical limit is {layer_result.categorical_limit:,}."
             )
-        self.points_widget.show_status(title=title, lines=lines, kind=kind)
+        self._set_action_feedback(title=title, lines=lines, kind=kind)
 
     def _on_image_row_expanded(
         self,

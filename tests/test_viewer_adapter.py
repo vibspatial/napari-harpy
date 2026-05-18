@@ -755,6 +755,7 @@ def test_viewer_adapter_ensure_points_layer_from_selection_updates_existing_laye
     assert second.layer.name == "transcripts: gene=AXL"
     np.testing.assert_array_equal(second.layer.data, second_selection.coordinates)
     assert second.layer.features.equals(second_selection.features)
+    assert isinstance(adapter.layer_bindings.get_binding(second.layer), PointsLayerBinding)
 
 
 def test_viewer_adapter_ensure_points_layer_from_selection_refreshes_stale_point_view_indices() -> None:
