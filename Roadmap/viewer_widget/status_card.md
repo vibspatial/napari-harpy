@@ -105,13 +105,22 @@ effects.
 
 Existing real status cards:
 
-- `ViewerWidget.action_feedback_label` is created near the top of the widget and
-  rendered by `_set_action_feedback(...)`.
+- `ViewerWidget.action_feedback_label` is currently created near the top of the
+  widget and rendered by `_set_action_feedback(...)`.
 - `_set_action_feedback(...)` is a small wrapper around `set_status_card(...)`.
 - `_clear_action_feedback(...)` manually clears text, tooltip, style, and
   visibility.
 - `PointsValueWidget` in `src/napari_harpy/widgets/viewer/points_widget.py`
   renders its section-local status with `set_status_card(...)` directly.
+
+Recommended naming cleanup:
+
+- rename the Python attribute from `self.action_feedback_label` to
+  `self.global_action_feedback_label`
+- keep the Qt object name `viewer_widget_action_feedback` unless there is a
+  separate reason to update selectors
+- use the new name to clarify that this status card reports global viewer
+  action outcomes, not local card preparation state
 
 Existing plain helper/status text:
 
@@ -174,7 +183,8 @@ import Qt widgets or render anything directly.
 Recommended first-pass scope:
 
 - extract global viewer action feedback specs
-- preserve the current global `action_feedback_label`
+- rename `self.action_feedback_label` to `self.global_action_feedback_label`
+  while preserving the current Qt object name and visual placement
 - preserve existing message wording and severities
 - do not route action feedback to local image/labels/shapes cards
 - leave card-local action-preview labels in `labels_widget.py` and
@@ -234,8 +244,17 @@ shared status cards. Revisit them only if card-local feedback is redesigned.
        ...
    ```
 
-   Then make `_set_action_feedback(...)` either delegate to that helper or
-   replace it with `_set_action_feedback_spec(...)`.
+   Prefer the feature-extraction pattern: build a spec, then apply it with
+   `_apply_status_card_spec(...)`.
+
+   The current `_set_action_feedback(...)` helper can stay temporarily while
+   migrating simple call sites, but it should not be the long-term status-card
+   abstraction. The target shape is:
+
+   ```python
+   spec = build_viewer_..._card_spec(...)
+   self._apply_status_card_spec(self.global_action_feedback_label, spec)
+   ```
 
 3. Refactor global action-feedback paths one family at a time.
 
@@ -309,7 +328,8 @@ shared status cards. Revisit them only if card-local feedback is redesigned.
 ## Non-Goal: Card-Local Action Feedback
 
 Do not move viewer action feedback into image, labels, or shapes cards.
-Action feedback should stay in the global `ViewerWidget.action_feedback_label`.
+Action feedback should stay in the global
+`ViewerWidget.global_action_feedback_label`.
 
 Local card labels are reserved for local card state, such as:
 
@@ -325,6 +345,9 @@ layers or shared viewer state.
 ## Acceptance Criteria
 
 - [ ] `src/napari_harpy/widgets/viewer/status_card.py` exists and is Qt-free.
+- [ ] `ViewerWidget.action_feedback_label` is renamed to
+      `ViewerWidget.global_action_feedback_label` without changing the Qt object
+      name or visual placement.
 - [ ] Viewer status-card copy and severity decisions are built by that module.
 - [ ] `ViewerWidget` keeps responsibility for state collection, adapter calls,
       layer activation, and rendering specs into labels.
