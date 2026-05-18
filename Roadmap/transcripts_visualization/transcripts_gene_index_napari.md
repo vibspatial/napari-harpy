@@ -1,4 +1,4 @@
-# Transcript Value-Index MVP For napari
+# Points Value-Index MVP For napari
 
 This note describes a smaller first working version of transcript visualization in napari.
 
@@ -31,7 +31,7 @@ The first implementation should:
 1. compute the selected total count first;
 2. if the selection is within `render_point_budget`, compute the exact selection;
 3. if the selection exceeds `render_point_budget`, filter first, sample/downsample before compute when possible, then final-trim in memory;
-4. return the same `TranscriptValueSelection` object that a future cache-backed reader would return.
+4. return the same `PointsValueSelection` object that a future cache-backed reader would return.
 
 This keeps the first implementation much simpler and lets us test whether the direct Dask path is already good enough for common selected-gene workflows.
 
@@ -102,7 +102,7 @@ Later, the two directions can meet in a value-aware tiled cache, such as a `tile
 
 The MVP supports:
 
-- backed `SpatialData`;
+- backed and unbacked `SpatialData` for the direct no-cache path;
 - one points element, initially `sdata.points["transcripts"]`;
 - required coordinate columns, default `x="x"` and `y="y"`;
 - configurable string/categorical index column, default `gene="gene"`;
@@ -124,13 +124,13 @@ The MVP does not support:
 
 ## Input Contract
 
-The direct reader starts from a backed points element:
+The direct reader starts from a points element:
 
 ```python
 points = sdata.points["transcripts"]
 ```
 
-The optional cache builder, if implemented later, starts from the same points element.
+The optional cache builder, if implemented later, starts from the same points element but requires backed `SpatialData`.
 
 The selected points element must be a `dask.dataframe.DataFrame`.
 
@@ -161,7 +161,7 @@ probe
 
 The implementation should use generic `value` terminology. If the optional cache is built later, the on-disk cache should use the same generic terminology. In this document, "value" means one normalized value from the configured index column.
 
-Direct mode should produce an in-memory value vocabulary table with the same logical schema as future `values.parquet`:
+Direct mode should produce an in-memory value table with the same logical schema as future `values.parquet`:
 
 ```text
 value_id: uint32
@@ -171,6 +171,34 @@ n_points: uint64
 
 This table is a compact summary of the selected index column, not the full points dataframe. The UI uses it to populate value search, the direct reader uses it to resolve selected strings to `value_id`, and the returned layer features use it to attach compact `value_id` values. Keeping this schema aligned with future `values.parquet` lets the direct reader and optional cache reader share the same downstream napari layer path.
 
+Represent this table with a small immutable object:
+
+```python
+@dataclass(frozen=True, kw_only=True)
+class PointsValueTable:
+    values: pd.DataFrame
+    index_column: str
+    total_count: int
+```
+
+`values` must contain exactly:
+
+```text
+value_id
+value
+n_points
+```
+
+`PointsValueTable.__post_init__` should validate:
+
+```text
+values contains exactly value_id, value, n_points
+value_id is unique
+value is unique
+n_points is non-negative
+total_count == sum(values.n_points)
+```
+
 Returned selections and napari layer features should include only the MVP feature columns:
 
 ```text
@@ -178,7 +206,7 @@ Returned selections and napari layer features should include only the MVP featur
 value_id: integer
 ```
 
-Do not include `transcript_id` in returned features or layer features for the MVP.
+Do not include `points_id` in returned features or layer features for the MVP.
 
 ### Terminology
 
@@ -195,12 +223,12 @@ Storage schema:
 
 Public API names should also be generic:
 
-- `TranscriptValueIndexCache`;
-- `TranscriptValueSelection`;
-- `build_transcript_value_index_cache_for_points_element`;
-- `load_transcripts_for_values`;
-- `add_transcript_value_points_layer`;
-- `TRANSCRIPT_VALUE_INDEX_SCHEMA_VERSION`.
+- `PointsValueIndexCache`;
+- `PointsValueSelection`;
+- `PointsValueTable`;
+- `build_points_value_index_cache_for_points_element`;
+- `load_points`;
+- `POINTS_VALUE_INDEX_SCHEMA_VERSION`.
 
 napari-visible features should use the selected source column name where possible. The reader can work with generic value data internally, but the layer should expose the semantic column selected by the user:
 
@@ -259,7 +287,7 @@ Object dtype handling:
 Categorical handling:
 
 - categorical values are normalized from their category labels;
-- unused categories do not appear in the value vocabulary or in `values.parquet` if the optional cache is built;
+- unused categories do not appear in the value table or in `values.parquet` if the optional cache is built;
 - category order is ignored;
 - normalized values are sorted lexicographically before assigning `value_id`.
 
@@ -287,7 +315,7 @@ all normalize to:
 "Actb"
 ```
 
-and therefore produce one row in the value vocabulary, and in `values.parquet` if the optional cache is built, with a combined `n_points`.
+and therefore produce one row in the value table, and in `values.parquet` if the optional cache is built, with a combined `n_points`.
 
 The direct reader and optional cache use normalized values as their selection contract. If the cache is built later, `values.parquet.value` is always the normalized value, not the raw source value.
 
@@ -295,7 +323,7 @@ Validation should reject:
 
 - missing coordinate columns;
 - missing index column;
-- missing `transcript_id` column when `transcript_id` is configured;
+- missing `points_id` column when `points_id` is configured;
 - an index column that is neither string-like nor categorical;
 - non-numeric `x` or `y`;
 - non-finite `x` or `y`;
@@ -306,10 +334,12 @@ Validation should reject:
 Optional input:
 
 ```text
-transcript_id
+points_id
 ```
 
-If present, `transcript_id` can be passed through to the data shards for future lookup of canonical source rows. It is not required for MVP sampling. The MVP does not require `transcript_id` to be non-null or unique.
+If present, `points_id` can be passed through to the data shards for future lookup of canonical source rows. It is not required for MVP sampling, and callers may omit it entirely.
+
+For the direct points-value reader, `points_id` is optional. If a caller configures it, validation requires the column to exist, contain no missing values, and be unique.
 
 If the optional cache is built later, then before writing data shards the builder should globally group rows by the selected index column and shuffle rows within each value group:
 
@@ -381,7 +411,7 @@ points element + index column
 
 Rebuilding the `gene` cache must not delete or stale the `target` cache, and rebuilding the `target` cache must not affect the `gene` cache.
 
-Only one build should run for the same cache identity at a time. While a cache build is running, the UI should disable the build/rebuild button for that cache identity and report that the cache is building. Builds for different index columns can be allowed independently later, but the first implementation can serialize all transcript value-index builds if that is simpler.
+Only one build should run for the same cache identity at a time. While a cache build is running, the UI should disable the build/rebuild button for that cache identity and report that the cache is building. Builds for different index columns can be allowed independently later, but the first implementation can serialize all points value-index builds if that is simpler.
 
 If a valid cache already exists for the selected points element and index column, clicking rebuild should show a confirmation dialog before overwriting it. If the user cancels, the existing cache should remain unchanged and no temporary build should start.
 
@@ -399,7 +429,7 @@ x: string
 y: string
 index_column: string
 index_column_cache_key: string
-transcript_id: string | null
+points_id: string | null
 source_n_points: int
 n_values: int
 target_rows_per_row_group: int
@@ -411,7 +441,7 @@ shuffle_policy: string
 Suggested schema version:
 
 ```text
-harpy-transcripts-value-index-0.1
+harpy-points-value-index-0.1
 ```
 
 Write `metadata.json` last, or write a separate completion marker last. The cache should not look valid until all required files have been written.
@@ -440,7 +470,7 @@ Sort values lexicographically for deterministic `value_id` assignment in the fir
 The reader uses this file to:
 
 - resolve selected values to `value_id`;
-- reject selected values that are not present in the cache vocabulary;
+- reject selected values that are not present in the cache value table;
 - estimate the selected point count before reading data;
 - decide whether the selection should be exact or sampled.
 
@@ -520,12 +550,12 @@ value_id: uint32
 Optional columns:
 
 ```text
-transcript_id: source dtype
+points_id: source dtype
 ```
 
-If `transcript_id` was provided, store `transcript_id` using the source column dtype when possible.
+If `points_id` was provided, store `points_id` using the source column dtype when possible.
 
-Store display coordinates as `float32`. This is good enough for napari transcript visualization and reduces memory pressure in both the cache and the `Points` layer. The canonical full-precision values remain in `points.parquet`. If exact coordinate preservation is needed for picked transcripts later, use `transcript_id` to look up canonical rows.
+Store display coordinates as `float32`. This is good enough for napari points visualization and reduces memory pressure in both the cache and the `Points` layer. The canonical full-precision values remain in `points.parquet`. If exact coordinate preservation is needed for picked points later, use `points_id` to look up canonical rows.
 
 Rows inside each value should be physically ordered by the groupby/apply shuffle output.
 
@@ -547,7 +577,7 @@ The direct MVP flow is:
 
 1. The user selects the points element and index-value column.
 2. Harpy validates the selected points dataframe and selected index column.
-3. Harpy computes or refreshes the selectable value vocabulary directly from the source Dask dataframe.
+3. Harpy computes or refreshes the selectable value table directly from the source Dask dataframe.
 4. The user selects one or more values, or chooses all values.
 5. Harpy loads the direct selection, sampling before compute when the selected count exceeds `render_point_budget`.
 
@@ -677,7 +707,7 @@ This section is deferred until the direct no-cache path has been implemented and
 Recommended public entry point:
 
 ```python
-def build_transcript_value_index_cache_for_points_element(
+def build_points_value_index_cache_for_points_element(
     sdata: SpatialData,
     points_name: str = "transcripts",
     *,
@@ -685,11 +715,11 @@ def build_transcript_value_index_cache_for_points_element(
     x: str = "x",
     y: str = "y",
     index_column: str = "gene",
-    transcript_id: str | None = None,
+    points_id: str | None = None,
     target_rows_per_row_group: int = 25_000,
     shuffle_random_state: int | None = 42,
     default_render_point_budget: int = 100_000,
-) -> TranscriptValueIndexCache:
+) -> PointsValueIndexCache:
     ...
 ```
 
@@ -700,7 +730,7 @@ Implementation steps:
 3. Normalize selected index values by stripping whitespace and converting valid values to strings.
 4. Build `values.parquet` using a Dask `value_counts`.
 5. Assign deterministic `value_id` values from the sorted value table.
-6. Create a working dataframe with `x`, `y`, `value_id`, and optional `transcript_id`.
+6. Create a working dataframe with `x`, `y`, `value_id`, and optional `points_id`.
 7. Globally group by `value_id` and shuffle rows within each value group using `shuffle_random_state`.
 8. Write Parquet row groups so each row group contains only one `value_id`.
 9. Split very large values across multiple row groups of at most `target_rows_per_row_group`.
@@ -719,7 +749,7 @@ The shuffled order is best effort. It is good enough to make the first row group
 Recommended direct no-cache reader entry point:
 
 ```python
-def load_transcripts_for_values_direct(
+def load_points(
     sdata: SpatialData,
     points_name: str,
     values: Sequence[str] | Literal["all"],
@@ -729,7 +759,7 @@ def load_transcripts_for_values_direct(
     index_column: str = "gene",
     render_point_budget: int = 100_000,
     random_state: int | None = 42,
-) -> TranscriptValueSelection:
+) -> PointsValueSelection:
     ...
 ```
 
@@ -754,24 +784,24 @@ filter selected values first, then sample selected rows
 
 Do not sample the full points dataframe before filtering, because that can drop rare selected values before they have a chance to appear.
 
-The direct no-cache reader should return the same `TranscriptValueSelection` object shape as a future cache-backed reader. This keeps the napari layer integration independent of the read backend.
+The direct no-cache reader should return the same `PointsValueSelection` object shape as a future cache-backed reader. This keeps the napari layer integration independent of the read backend.
 
 Recommended optional cache-backed reader entry point:
 
 ```python
-def load_transcripts_for_values_from_cache(
+def load_points_from_cache(
     cache_path: str | PathLike[str],
     values: Sequence[str] | Literal["all"],
     *,
     render_point_budget: int = 100_000,
     columns: Sequence[str] = ("x", "y", "value_id"),
-) -> TranscriptValueSelection:
+) -> PointsValueSelection:
     ...
 ```
 
 If implemented later, the cache-backed reader should use `pyarrow`, not Dask, in the interactive path.
 
-For direct mode, selected values should come from the direct value vocabulary computed from the selected points dataframe. For cache mode, selected values should come from `values.parquet`. If an unknown selected value reaches either reader, raise an error instead of warning and skipping it. This means the UI or controller allowed stale or invalid selection state to reach the reader, which is an internal consistency bug. Surface it as a selection consistency problem and ask the user to refresh the value list.
+For direct mode, selected values should come from the direct value table computed from the selected points dataframe. For cache mode, selected values should come from `values.parquet`. If an unknown selected value reaches either reader, raise an error instead of warning and skipping it. This means the UI or controller allowed stale or invalid selection state to reach the reader, which is an internal consistency bug. Surface it as a selection consistency problem and ask the user to refresh the value list.
 
 ## Reader Return Object
 
@@ -779,16 +809,21 @@ Use a generic value-selection return object:
 
 ```python
 @dataclass(frozen=True, kw_only=True)
-class TranscriptValueSelection:
+class PointsValueSelection:
     coordinates: np.ndarray
     features: pd.DataFrame
+    index_column: str
     selected_values: tuple[str, ...]
     selected_value_ids: tuple[int, ...]
+    selection_mode: Literal["values", "all"]
     total_count: int
-    loaded_count: int
     render_point_budget: int
     is_sampled: bool
     warning: str | None
+
+    @property
+    def loaded_count(self) -> int:
+        return len(self.coordinates)
 ```
 
 `coordinates` is an `Nx2` `float32` array in napari display order:
@@ -799,6 +834,8 @@ y, x
 
 The source dataframe and optional cache store coordinate columns as `x` and `y`, but the reader returns coordinates already ordered for napari `Points`.
 
+`index_column` is the configured source column used for value selection, for example `gene`, `target`, or `probe`. Layer code should use this field to find the categorical feature column for coloring and status text.
+
 `features` is a `pandas.DataFrame` with exactly `loaded_count` rows. Its row order must match `coordinates`. It must include:
 
 - the configured index column using its source column name, for example `gene`, `target`, or `probe`;
@@ -806,17 +843,26 @@ The source dataframe and optional cache store coordinate columns as `x` and `y`,
 
 The configured index-column feature contains the normalized string value for each point. In direct mode this comes from the filtered source dataframe after normalization; in cache mode this is populated by mapping `value_id` through `values.parquet`. For example, when `index_column == "gene"`, `features["gene"]` contains gene names such as `"MALAT1"`; `value_id` remains an internal/debug feature.
 
-Store the configured index-column feature as a pandas `Categorical` column whose categories are the normalized values from the current value vocabulary. This keeps repeated gene, target, or probe labels compact for large render budgets.
+Store the configured index-column feature as a pandas `Categorical` column whose categories are the normalized values from the current value table. This keeps repeated gene, target, or probe labels compact for large render budgets.
 
-Do not include `transcript_id` in `features` for the MVP. If picked-point canonical lookup is needed later, use a separate lookup path rather than carrying transcript identifiers in every rendered feature row.
+Do not include `points_id` in `features` for the MVP. If picked-point canonical lookup is needed later, use a separate lookup path rather than carrying point identifiers in every rendered feature row.
 
-`selected_values` contains the normalized unique selected values that were resolved against the current value vocabulary. Duplicate requested values are removed before sampling and before reading. For `values="all"`, `selected_values` contains all values in `value_id` order.
+`selected_values` contains the normalized unique selected values that were resolved against the current value table. Duplicate requested values are removed before sampling and before reading. For `values="all"`, `selected_values` contains all values in `value_id` order.
 
 `selected_value_ids` contains the resolved `value_id` values in the same order as `selected_values`.
 
+`selection_mode` records whether the caller requested specific values or all values:
+
+```text
+values=[...]   -> selection_mode="values"
+values="all"  -> selection_mode="all"
+```
+
+This keeps the napari layer integration from needing the original `values` request separately. Layer naming can distinguish "all values" from "a manually selected list that happens to contain every value" by reading `selection.selection_mode`.
+
 `total_count` is the sum of `n_points` for all resolved selected values before render-budget sampling.
 
-`loaded_count` is the number of points returned. It must equal both `len(coordinates)` and `len(features)`. It is always `<= total_count`; when `is_sampled` is true, it is also `<= render_point_budget`.
+`loaded_count` is a derived property, not a stored dataclass field. It is the number of points returned and should be computed from `len(coordinates)`. It must equal `len(features)`. It is always `<= total_count`; when `is_sampled` is true, it is also `<= render_point_budget`.
 
 `is_sampled` is true when `total_count > render_point_budget`, and false when exact selected points are returned.
 
@@ -826,35 +872,26 @@ Do not include `transcript_id` in `features` for the MVP. If picked-point canoni
 Showing 100,000 of 2,431,912 selected points.
 ```
 
-Use small custom exception types for the reader:
+`PointsValueSelection.__post_init__` should validate:
 
-```python
-class TranscriptValueIndexError(Exception):
-    ...
-
-
-class TranscriptValueIndexInvalidCacheError(TranscriptValueIndexError):
-    ...
-
-
-class TranscriptValueIndexInvalidSelectionError(TranscriptValueIndexError, ValueError):
-    ...
-
-
-class TranscriptValueIndexUnknownValueError(TranscriptValueIndexInvalidSelectionError):
-    ...
-
-
-class TranscriptValueIndexReadError(TranscriptValueIndexError):
-    ...
+```text
+coordinates is an Nx2 array
+coordinates dtype is float32
+len(features) == len(coordinates) == loaded_count
+features contains index_column
+features contains value_id
+loaded_count <= total_count
+loaded_count <= render_point_budget when is_sampled
 ```
 
 Expected error behavior:
 
-- unknown selected value: raise `TranscriptValueIndexUnknownValueError`;
-- missing or invalid optional-cache metadata, missing required cache files, schema mismatch, or count mismatch: raise `TranscriptValueIndexInvalidCacheError`;
-- invalid reader arguments, such as `render_point_budget <= 0`: raise `TranscriptValueIndexInvalidSelectionError`;
-- Dask, Parquet, or layer-read failure: raise `TranscriptValueIndexReadError`.
+- follow the existing napari-harpy style and use `ValueError` for expected validation and precondition failures;
+- invalid source dataframe or source schema: raise `ValueError`;
+- unknown selected value: raise `ValueError`;
+- invalid reader arguments, such as `render_point_budget <= 0`: raise `ValueError`;
+- missing or invalid optional-cache metadata, missing required cache files, schema mismatch, or count mismatch: raise `ValueError`;
+- unexpected Dask, Parquet, or layer-update failures can propagate to the controller/worker, which converts them into an error status message.
 
 An empty selected value list should return an empty exact selection:
 
@@ -975,7 +1012,7 @@ In cache mode, proportional all-values sampling can be implemented with explicit
 
 ## napari Integration
 
-The MVP should create or update one napari `Points` layer.
+The MVP should maintain one logical napari `Points` layer for each points source and index column.
 
 Coordinate behavior:
 
@@ -985,7 +1022,7 @@ Coordinate behavior:
 
 Layer identity and update behavior:
 
-- create or update one Harpy-owned transcript value-selection `Points` layer;
+- create or update one Harpy-owned points value-selection `Points` layer;
 - do not create one layer per value;
 - do not create one layer per visualization request;
 - changing the selected value set, for example from `gene=MALAT1` to `gene=TEST`, updates the same layer object by replacing its data, features, name, colors, and sampled status;
@@ -993,20 +1030,28 @@ Layer identity and update behavior:
 
 Use `LayerBindingRegistry` as the authoritative way to find the existing layer, following the existing viewer adapter pattern. Do not rely on napari layer names or metadata as the primary lookup contract.
 
-Add a transcript value-selection points binding to the registry. The exact class name can change, but the binding should capture:
+Add a points binding to the registry:
 
-```text
-layer: Points
-element_type: "points"
-points_role: "transcript_value_selection"
-sdata_id
-points_name
-coordinate_system: string | null
-index_column
-index_column_cache_key
+```python
+@dataclass(frozen=True, kw_only=True)
+class PointsLayerBinding(BaseLayerBinding):
+    element_type: Literal["points"] = "points"
+    index_column: str
 ```
 
-The binding identity should not include `selected_values`. This is what lets repeated visualization requests replace the current selection in one layer instead of accumulating stale layers.
+Points layers in this workflow are always the displayed indexed/styled layer, so do not introduce separate primary/styled roles for points.
+
+The binding identity should include the shared source identity plus `index_column`:
+
+```text
+sdata_id
+points_name / element_name
+element_type: "points"
+coordinate_system: string | null
+index_column
+```
+
+The binding identity should not include `selected_values` or an index-column cache key. This is what lets repeated visualization requests replace the current selection in one layer instead of accumulating stale layers, and keeps the direct no-cache path independent of optional cache layout details.
 
 Layer naming:
 
@@ -1028,7 +1073,7 @@ Layer feature behavior:
 - `layer.data`: `selection.coordinates`;
 - `layer.features`: `selection.features`;
 - features contain the configured index column as a pandas categorical feature, plus `value_id`;
-- do not include `transcript_id` in layer features for the MVP.
+- do not include `points_id` in layer features for the MVP.
 
 Point visual defaults:
 
@@ -1036,7 +1081,7 @@ Point visual defaults:
 size: 1.0
 opacity: 0.8
 symbol: "disc"
-edge_width: 0
+border_width: 0
 solid_color: "#00FFFF"
 ```
 
@@ -1059,22 +1104,22 @@ On update, preserve user-toggled visibility when possible and do not reset the c
 
 ## UI State Machine
 
-The transcript value-index UI should be driven by explicit states rather than ad hoc button toggles.
+The points value-index UI should be driven by explicit states rather than ad hoc button toggles.
 
 Follow the existing napari-harpy controller pattern for this workflow. The state machine should live in a widget-local controller, not in `HarpyAppState` and not directly in the Qt widget class.
 
 Recommended module split:
 
 ```text
-src/napari_harpy/_transcript_value_index.py
+src/napari_harpy/_points_value_index.py
   Pure source validation, value normalization, direct reader, optional cache builder/validator/reader, and dataclasses.
   No QWidget logic.
 
 src/napari_harpy/viewer/adapter.py
   Points-layer binding support.
-  Add/update the transcript value-selection Points layer.
+  Update the points value-selection Points layer from a computed `PointsValueSelection`.
 
-src/napari_harpy/widgets/viewer/transcript_value_index_controller.py
+src/napari_harpy/widgets/viewer/points_controller.py
   UI state machine.
   Async value-list/read workers.
   Optional async cache build/read workers.
@@ -1090,7 +1135,7 @@ src/napari_harpy/widgets/viewer/widget.py
 
 This mirrors the existing controller split used by `FeatureExtractionController` and `ClassifierController`: the controller owns long-running work, state transitions, and status text, while the widget renders that state and forwards user actions.
 
-`HarpyAppState` should remain the shared viewer/session hub for loaded `SpatialData`, coordinate system, layer bindings, and viewer adapter. Do not put transcript value-index UI state there.
+`HarpyAppState` should remain the shared viewer/session hub for loaded `SpatialData`, coordinate system, layer bindings, and viewer adapter. Do not put points value-index UI state there.
 
 Core states:
 
@@ -1102,7 +1147,7 @@ NO_POINTS_ELEMENT
   SpatialData is loaded, but no eligible points element is selected.
 
 LOADING_VALUES
-  The direct value vocabulary for the selected points element and index column is being computed.
+  The direct value table for the selected points element and index column is being computed.
 
 VALUES_READY
   The selected points element and index column are valid, and direct value selection can be used.
@@ -1123,7 +1168,7 @@ BUILD_FAILED
   The last build failed. Any previously valid cache should remain untouched.
 
 LOADING_SELECTION
-  The reader is loading selected values and updating the napari layer.
+  The reader is loading selected values off the Qt main thread. Napari layer updates happen after a successful load.
 
 LOADED_SELECTION
   A selection has been loaded or updated in napari.
@@ -1135,7 +1180,7 @@ LOAD_FAILED
 Represent the states with an explicit enum, for example:
 
 ```python
-class TranscriptValueIndexUiState(Enum):
+class PointsControllerState(Enum):
     NO_SDATA = "no_sdata"
     NO_POINTS_ELEMENT = "no_points_element"
     LOADING_VALUES = "loading_values"
@@ -1184,12 +1229,12 @@ NO_SDATA / NO_POINTS_ELEMENT
 
 LOADING_VALUES
   Disable points element and index-column changes if simple to implement.
-  Disable Visualize selected values.
+  Disable Add / Update selected values.
   Show value-loading status.
 
 VALUES_READY
   Enable value search.
-  Enable Visualize selected values when at least one value is selected or the all-values option is active.
+  Enable Add / Update selected values when at least one value is selected or the all-values option is active.
   Enable optional Build cache when no valid cache exists.
 
 MISSING_CACHE / STALE_CACHE
@@ -1200,7 +1245,7 @@ MISSING_CACHE / STALE_CACHE
 VALID_CACHE
   Enable Rebuild cache.
   Enable value search.
-  Enable Visualize selected values when at least one value is selected or the all-values option is active.
+  Enable Add / Update selected values when at least one value is selected or the all-values option is active.
   Prefer the cache-backed reader if implemented; otherwise keep using direct mode.
 
 BUILDING_CACHE
@@ -1211,24 +1256,24 @@ BUILDING_CACHE
 
 BUILD_FAILED
   Enable Build cache again.
-  Keep direct value search and visualization enabled when the direct value vocabulary is still valid.
+  Keep direct value search and visualization enabled when the direct value table is still valid.
   Show the build error in the status card.
 
 LOADING_SELECTION
-  Disable Visualize selected values.
+  Disable Add / Update selected values.
   Keep value search visible.
   Do not start another read until the current read finishes.
 
 LOADED_SELECTION
-  Re-enable Visualize selected values.
+  Re-enable Add / Update selected values.
   Show loaded/sampled status in the status card.
 
 LOAD_FAILED
-  Re-enable Visualize selected values when the direct value vocabulary and selection are still valid.
+  Re-enable Add / Update selected values when the direct value table and selection are still valid.
   Show the read or layer-update error in the status card.
 ```
 
-Direct value-list computation and selection reads must run asynchronously so the Qt UI does not freeze. Optional cache builds must also run asynchronously if implemented. For the MVP, only one value-list job and one selection read should run at a time for the transcript value-selection layer. The first implementation can simply disable the relevant buttons while work is running rather than queueing multiple requests.
+Direct value-list computation and selection reads must run asynchronously so the Qt UI does not freeze. Optional cache builds must also run asynchronously if implemented. For the MVP, only one value-list job and one selection read should run at a time for the points value-selection layer. The first implementation can simply disable the relevant buttons while work is running rather than queueing multiple requests.
 
 Optional cache build progress can be indeterminate. Prefer clear phase text over fake percentages:
 
@@ -1357,7 +1402,7 @@ If the value-index cache is implemented, the many-small-row-groups concern is ac
 
 ## Implementation Slices
 
-These slices split the MVP into implementation units with clear dependencies. The first slices intentionally establish contracts before the widget work begins, because the UI should depend on stable validation, value vocabulary, reader, and layer-update behavior.
+These slices split the MVP into implementation units with clear dependencies. The first slices intentionally establish contracts before the widget work begins, because the UI should depend on stable validation, value table, reader, and layer-update behavior.
 
 The direct no-cache path comes first. The value-index cache is deferred until we have measured whether direct Dask filtering is not good enough for the target datasets and storage backends.
 
@@ -1384,30 +1429,48 @@ Includes:
 - generic naming: use `value` internally and on disk while keeping `gene` as the default user-facing index column;
 - coordinate order for napari: `y, x`;
 - first-pass sampling behavior for selections above `render_point_budget`;
-- returned/layer feature columns: configured `<index_column>` as categorical plus `value_id`, with no `transcript_id` for the MVP;
+- returned/layer feature columns: configured `<index_column>` as categorical plus `value_id`, with no `points_id` for the MVP;
 - shared return object for direct and optional cache readers.
 
 Done when:
 
-- the implementation has enough fixed vocabulary and API shape to avoid renaming churn later.
+- the implementation has enough fixed terminology and API shape to avoid renaming churn later.
 
 ### Slice 1: Core Module Skeleton And Data Contracts
 
-Goal: create the standalone transcript value-selection module without building a cache.
+Goal: create the standalone points value-selection module without building a cache.
+
+Status: implemented.
+
+Implementation:
+
+- `src/napari_harpy/_points_value_index.py`;
+- `tests/test_points_value_index.py`.
 
 Includes:
 
-- new module `src/napari_harpy/_transcript_value_index.py`;
-- schema version constant;
+- new module `src/napari_harpy/_points_value_index.py`;
+- constants:
+  - `DEFAULT_X = "x"`;
+  - `DEFAULT_Y = "y"`;
+  - `DEFAULT_INDEX_COLUMN = "gene"`;
+  - `DEFAULT_RENDER_POINT_BUDGET = 100_000`;
+  - `DEFAULT_RANDOM_STATE = 42`;
+  - `POINTS_VALUE_INDEX_SCHEMA_VERSION = "harpy-points-value-index-0.1"`;
 - dataclasses or typed return objects:
-  - `TranscriptValueSelection`;
+  - `PointsValueTable`;
+  - `PointsValueSelection`;
 - direct read job/config objects if useful;
-- custom errors for invalid source data, stale cache, invalid selection, and cache read failures.
+- error handling aligned with the existing codebase:
+  - use `ValueError` for expected validation and precondition failures;
+  - let unexpected Dask/IO failures propagate to the controller/worker so they become error status messages.
 
 Tests:
 
 - basic object construction;
-- error types.
+- `PointsValueTable` validates required columns;
+- `PointsValueSelection` validates coordinate shape/dtype, feature row count, required feature columns, and count invariants;
+- `ValueError` is raised for invalid dataclass inputs.
 
 Done when:
 
@@ -1417,16 +1480,99 @@ Done when:
 
 Goal: validate whether a selected points element can be visualized directly.
 
+Status: implemented.
+
+Implementation:
+
+- `src/napari_harpy/_points_value_index.py`;
+- `tests/test_points_value_index.py`.
+
 Includes:
 
+- public validation helper:
+
+```python
+def validate_points_element_for_value_selection(
+    sdata: SpatialData,
+    points_name: str,
+    *,
+    x: str = DEFAULT_X,
+    y: str = DEFAULT_Y,
+    index_column: str = DEFAULT_INDEX_COLUMN,
+    points_id: str | None = None,
+) -> _ValidatedPointsElement:
+    ...
+```
+
+- private validated return object:
+
+```python
+@dataclass(frozen=True)
+class _ValidatedPointsElement:
+    points: dd.DataFrame
+    points_name: str
+    source_path: Path | None
+    source_n_points: int
+    x: str
+    y: str
+    index_column: str
+    points_id: str | None
+
+    @property
+    def is_backed(self) -> bool:
+        return self.source_path is not None
+
+    @property
+    def element_path(self) -> str | None:
+        if self.source_path is None:
+            return None
+        return f"points/{self.points_name}"
+```
+
+`points_name` and `source_path` should be stored state. `source_path` is the root zarr store path for backed `SpatialData`, and `None` for unbacked `SpatialData`. `element_path` should be a derived property that returns `None` for unbacked data and `points/<points_name>` for backed data.
+
 - resolve `sdata.points[points_name]`;
-- require backed `SpatialData`;
+- allow backed and unbacked `SpatialData` for direct mode;
+- store `source_path = Path(sdata.path)` when the `SpatialData` object is backed, otherwise `None`;
+- require `points_name` is a non-empty string;
 - require Dask dataframe points element;
-- validate coordinate columns;
-- validate configured index column;
+- validate `x`, `y`, `index_column`, and optional `points_id` are non-empty strings;
+- validate `x`, `y`, and `index_column` columns exist;
+- reject `index_column == x` or `index_column == y`;
+- validate coordinate columns are numeric;
+- compute `source_n_points` and reject empty dataframes;
+- reject missing, NaN, or infinite coordinate values;
 - normalize index values;
-- reject missing, empty, invalid, or unsupported values;
-- validate optional `transcript_id` exists when requested by future cache code.
+- reject missing index values separately;
+- reject blank-after-stripping and unsupported index values as invalid index values;
+- if `points_id` is provided:
+  - require the column exists;
+  - reject missing `points_id` values;
+  - require `points_id` values are unique.
+
+Value normalization helpers:
+
+```python
+def normalize_index_value(value: object) -> str:
+    ...
+
+
+def normalize_index_values(values: pd.Series) -> pd.Series:
+    ...
+```
+
+Normalization rules:
+
+- reject missing values;
+- reject bytes values;
+- reject numeric and boolean values;
+- reject list, dict, tuple, and other structured Python objects;
+- accept string-like values;
+- convert accepted values to `str`;
+- strip leading and trailing whitespace;
+- reject empty strings after stripping;
+- preserve case;
+- preserve internal whitespace.
 
 Tests:
 
@@ -1437,30 +1583,77 @@ Tests:
 - invalid index dtype;
 - missing or blank index values;
 - categorical, string, and object value handling.
+- backed and unbacked SpatialData;
+- missing points element;
+- points element that is not a Dask dataframe;
+- `index_column == x` or `index_column == y`;
+- bytes, numeric, boolean, list, dict, and tuple index values are rejected;
+- normalization preserves case and internal whitespace while stripping edges;
+- optional `points_id` rejects missing, non-unique, and missing-column values.
 
 Done when:
 
 - the direct reader can fail early with clear errors before doing expensive work.
 
-### Slice 3: Direct Value Vocabulary And Counts
+### Slice 3: Direct Value Table And Counts
 
-Goal: compute the selectable value vocabulary directly from the selected Dask points dataframe.
+Goal: compute the selectable value table directly from the selected Dask points dataframe.
+
+Status: implemented.
+
+Implementation:
+
+- `src/napari_harpy/_points_value_index.py`;
+- `tests/test_points_value_index.py`.
 
 Includes:
 
+- public value-table helper:
+
+```python
+def build_points_value_table(
+    validated: _ValidatedPointsElement,
+) -> PointsValueTable:
+    ...
+```
+
+- input is a `_ValidatedPointsElement` from Slice 2;
+- use `validated.points[validated.index_column]`;
+- normalize values with the same `normalize_index_value` rules from Slice 2;
 - compute normalized value counts with Dask;
-- sort values deterministically;
-- assign stable `value_id`;
+- merge source values that normalize to the same string into one value;
+- exclude unused categorical categories;
+- raise `ValueError` if invalid values are encountered during value-table construction;
+- return a `PointsValueTable` with:
+
+```text
+value_id: uint32
+value: string
+n_points: uint64
+```
+
+- sort normalized values lexicographically by `value`;
+- assign `value_id` from `0..n_values-1` after sorting;
+- ensure `value_id` is deterministic for the same normalized value table;
+- ensure `total_count == sum(n_points) == validated.source_n_points`;
 - keep the value table in controller state for search and value resolution;
 - do not require `values.parquet`;
-- rerun or invalidate the value list when the points element or index column changes.
+- rerun or invalidate the value list when the selected `SpatialData` object, points element, or index column changes;
+- do not recompute the value table when only selected values change.
 
 Tests:
 
-- deterministic value id assignment;
-- correct point counts;
-- selected values come from the direct value vocabulary;
-- invalidating the selected points element or index column invalidates the old vocabulary.
+- whitespace-normalized duplicates are merged, for example `" AAMP "` and `"AAMP"`;
+- case is preserved, so `"ACTB"` and `"actb"` remain separate values;
+- counts are correct;
+- values are sorted lexicographically;
+- deterministic `value_id` assignment;
+- `value_id` has dtype `uint32`;
+- `n_points` has dtype `uint64`;
+- categorical input includes only observed values;
+- string and object input work;
+- invalid values still raise if they reach value-table construction;
+- `total_count == validated.source_n_points`.
 
 Done when:
 
@@ -1470,29 +1663,83 @@ Done when:
 
 Goal: load selected values directly from the Dask dataframe.
 
+Status: implemented.
+
+Implementation:
+
+- `src/napari_harpy/_points_value_index.py`;
+- `tests/test_points_value_index.py`.
+
 Includes:
 
-- resolve selected values against the direct value vocabulary;
-- reject unknown selected values;
-- compute total selected point count before materializing rows;
+- public direct reader:
+
+```python
+def load_points(
+    validated: _ValidatedPointsElement,
+    value_table: PointsValueTable,
+    values: Sequence[str] | Literal["all"],
+    *,
+    render_point_budget: int = DEFAULT_RENDER_POINT_BUDGET,
+    random_state: int | None = DEFAULT_RANDOM_STATE,
+) -> PointsValueSelection:
+    ...
+```
+
+- `validated.index_column` must match `value_table.index_column`;
+- `render_point_budget` must be a positive integer;
+- normalize requested values with `normalize_index_value`;
+- remove duplicate requested values after normalization;
+- resolve selected values against the direct value table;
+- reject unknown selected values with `ValueError`;
+- `values="all"` selects all values in `value_id` order;
+- preserve resolved `selected_values` and `selected_value_ids` in `value_id` order;
+- set `selection_mode="all"` when `values == "all"`, otherwise `selection_mode="values"`;
+- compute `total_count` from `value_table.n_points` before materializing selected rows;
+- filter source rows before any sampling;
+- normalize source index values during filtering so rows such as `" AAMP "` match selected value `"AAMP"`;
+- implement direct filtering with a partition-local helper that normalizes and filters in one pass, instead of materializing a normalized index column on the full Dask dataframe;
 - if `total_count <= render_point_budget`, compute exact selected rows;
-- if `total_count > render_point_budget`, filter selected rows first, then Dask-sample before compute;
+- if `total_count > render_point_budget`, filter selected rows first, then Dask-sample before compute:
+
+```python
+frac = render_point_budget / total_count
+selected = selected.sample(frac=frac, random_state=random_state)
+result = selected.compute()
+result = result.iloc[:render_point_budget]
+```
+
+- accept sampled undershoot from Dask partition rounding; the invariant is `loaded_count <= render_point_budget`, not exactly equal to the budget;
 - final-trim in memory to at most `render_point_budget`;
-- return `TranscriptValueSelection`;
-- include coordinates, features, selected values, selected value ids, loaded count, total count, render budget, sampled flag, and warning text.
+- return `PointsValueSelection`;
+- set `is_sampled = total_count > render_point_budget`;
+- sampled results must include user-visible warning text;
+- exact results must have `warning=None`;
+- returned `PointsValueSelection` must carry `selection_mode`;
+- returned coordinates are a NumPy `float32` array with shape `N x 2` in napari order `y, x`;
+- returned features are a pandas DataFrame with exactly:
+  - configured `<index_column>` as categorical;
+  - `value_id` as integer, preferably `uint32`;
+- do not include `points_id` in returned features for the MVP.
 
 Tests:
 
 - one selected value;
 - multiple selected values;
+- duplicate requested values collapse after normalization;
+- requested values are normalized before lookup;
 - unknown value raises;
+- value-table/index-column mismatch raises;
+- `render_point_budget <= 0` raises;
 - exact load returns all selected rows;
 - sampled load returns at most `render_point_budget`;
+- sampled undershoot is accepted;
 - direct sampling filters before sampling;
 - coordinates are returned as `float32` in napari `y, x` order;
-- features include the configured index column and `value_id`;
+- features include the configured index column as categorical and `uint32` `value_id`;
 - empty selections return an empty exact result;
-- `values="all"` works and samples when needed.
+- `values="all"` works, samples when needed, and returns `selection_mode="all"`;
+- explicit selected-value lists return `selection_mode="values"`.
 
 Done when:
 
@@ -1500,88 +1747,552 @@ Done when:
 
 ### Slice 5: napari Points Layer Integration
 
-Goal: convert a reader result into one napari `Points` layer.
+Goal: convert an already computed `PointsValueSelection` into one napari `Points` layer without doing source validation, value-table construction, or Dask reads in the adapter layer-update path.
+
+Status: implemented.
+
+Implementation:
+
+- `src/napari_harpy/viewer/adapter.py`;
+- `src/napari_harpy/viewer/points_styling.py`;
+- `tests/test_viewer_adapter.py`.
 
 Includes:
 
-- helper such as `add_transcript_value_points_layer`;
-- create or update one existing layer;
-- use the reader's `y, x` coordinates directly;
-- attach the configured index column as a pandas categorical feature, plus `value_id`;
-- register and find the layer through `LayerBindingRegistry`, not by layer name alone;
-- reuse the same registered layer when selected values change;
-- apply categorical coloring for `2..102` selected values with `default_categorical_colors(n)`;
-- use a single solid color for one selected value or more than 102 selected values;
-- surface a status-card warning when categorical coloring is disabled above 102 selected values;
-- set point size, opacity, and name;
-- surface sampled warning.
+- `PointsLayerBinding` with `element_type="points"` and `index_column`;
+- no points `primary`/`styled` role split; the value-selection points layer is always the displayed, index-colored layer;
+- concrete `ViewerAdapter` layer-update API:
+
+```python
+@dataclass(frozen=True)
+class PointsLayerIdentity:
+    sdata: SpatialData
+    points_name: str
+    coordinate_system: str
+    index_column: str
+
+    def __post_init__(self) -> None:
+        if not self.points_name:
+            raise ValueError("`points_name` must be a non-empty string.")
+        if not self.coordinate_system:
+            raise ValueError("`coordinate_system` must be a non-empty string.")
+        if not self.index_column:
+            raise ValueError("`index_column` must be a non-empty string.")
+
+
+@dataclass(frozen=True)
+class PointsStyleResult:
+    color_mode: Literal["solid", "categorical"]
+    categorical_coloring_disabled: bool
+    selected_value_count: int
+    categorical_limit: int
+
+
+@dataclass(frozen=True)
+class PointsLayerResult(PointsStyleResult):
+    layer: Points
+    created: bool
+
+
+def _ensure_points_layer_from_selection(
+    self,
+    identity: PointsLayerIdentity,
+    *,
+    selection: PointsValueSelection,
+) -> PointsLayerResult:
+    ...
+```
+
+- this helper is adapter-internal/private because Slice 6 should own async read orchestration;
+- `PointsLayerResult` is intentionally a layer result, not a data-load result: it should not include `selection` or `value_table`, because `selection` is already the input and `value_table` belongs to the controller/read state;
+- `PointsStyleResult` and `PointsLayerResult` live in `points_styling.py`, matching the labels/shapes pattern where styling modules own style/load result objects;
+- `PointsLayerIdentity` bundles the source/layer identity so the adapter does not receive loose `sdata`, `points_name`, `coordinate_system`, and `index_column` arguments that can drift out of sync with the selection;
+- `_ensure_points_layer_from_selection` must validate `identity.index_column == selection.index_column`;
+- `identity.points_name` becomes `PointsLayerBinding.element_name`;
+- `identity.index_column` becomes `PointsLayerBinding.index_column`;
+- `selection.selection_mode == "all"` affects layer naming directly; no separate request-mode argument is needed;
+- `_ensure_points_layer_from_selection` performs only napari-safe layer work:
+  - create or update one napari `Points` layer;
+  - register new layers with `PointsLayerBinding`;
+  - update data, features, name, and colors from the already computed `PointsValueSelection`;
+  - return `PointsLayerResult` with the layer, created flag, and structured style metadata;
+- this helper must not call `validate_points_element_for_value_selection`, `build_points_value_table`, or `load_points`;
+- Slice 6/controller will run validation, direct value-table construction, and `load_points` asynchronously, then expose a `PointsLoadResult`;
+- Slice 7/widget will call this helper on the main Qt thread through `self._app_state.viewer_adapter` after the controller has ignored stale jobs and entered `LOADED_SELECTION`;
+- layer lookup and update behavior:
+  - find an existing registered matching points layer through `LayerBindingRegistry`, not by layer name alone;
+  - match by `identity.sdata`, `identity.points_name`, `identity.coordinate_system`, and `identity.index_column`;
+  - ignore unregistered same-name layers;
+  - if a matching registered layer exists, update the same layer object and set `created=False`;
+  - if no matching registered layer exists, create a new napari `Points` layer, register it, and set `created=True`;
+  - preserve user-toggled visibility when updating;
+  - do not reset the camera;
+  - update layer data, features, name, and colors every time;
+  - clear transient point interaction state and force a view refresh after replacing `layer.data`, because napari can keep private point-view indices from the previous data size when switching between all values and a small selected value;
+- layer data behavior:
+  - `layer.data = selection.coordinates`;
+  - `layer.features = selection.features`;
+  - use the reader's `y, x` coordinates directly and do not reorder coordinates again;
+  - attach the configured index column as a pandas categorical feature, plus `value_id`;
+- layer naming:
+
+```text
+empty:
+  <identity.points_name>: no <identity.index_column> values
+
+one selected value:
+  <identity.points_name>: <identity.index_column>=<value>
+
+multiple selected values:
+  <identity.points_name>: <n> <identity.index_column> values
+
+all values:
+  <identity.points_name>: all <identity.index_column> values
+```
+
+- use the all-values name when `selection.selection_mode == "all"`;
+- visual defaults:
+
+```text
+size: 1.0
+opacity: 0.8
+symbol: "disc"
+border_width: 0
+solid_color: "#00FFFF"
+```
+
+- coloring behavior:
+  - `0` or `1` selected values: use `solid_color`;
+  - `2..102` selected values: color categorically by `selection.index_column`;
+  - palette: `default_categorical_colors(len(selection.selected_values))`;
+  - category and palette order follows `selection.selected_values`;
+  - more than `102` selected values: use `solid_color` and set `categorical_coloring_disabled=True`;
+  - threshold is based on resolved selected values, not values that survived sampling;
+- warning ownership is split across Slice 6 and Slice 7:
+  - sampled preview messaging comes from `PointsValueSelection.warning` and is available through the controller's current `PointsLoadResult`;
+  - categorical-coloring warning text is derived by the widget after applying the selection to napari, using `PointsLayerResult.categorical_coloring_disabled`, `selected_value_count`, and `categorical_limit`;
+  - the widget renders these warnings in the transcript UI section's status card;
+  - `points_styling.py` and the adapter should return structured facts, not user-facing warning strings.
 
 Tests:
 
-- creates layer when missing;
-- updates same layer on repeated calls;
-- changing from one selected value to another replaces the existing layer instead of creating a second layer;
+- registry uses `PointsLayerBinding` with `element_type="points"` and `index_column`;
+- `_ensure_points_layer_from_selection` receives one `PointsLayerIdentity`, not loose source identity arguments;
+- mismatched `identity.index_column` and `selection.index_column` raises;
+- points bindings do not use primary/styled roles;
+- `_ensure_points_layer_from_selection` does not validate/build a value table/read Dask data;
+- creates layer when missing and returns `created=True`;
+- updates same layer on repeated calls and returns `created=False`;
+- changing from one selected value to another replaces the existing layer data instead of creating a second layer;
 - does not create one layer per value;
 - ignores unregistered same-name layers;
+- result returns layer, created flag, and structured style metadata;
 - features are attached;
+- data uses `selection.coordinates` without coordinate reordering;
+- updating preserves visibility and does not reset the camera;
+- layer names cover empty, one-value, multi-value, and all-values selections;
+- all-values naming is driven by `selection.selection_mode`;
+- visual defaults are applied;
 - categorical coloring is used for up to 102 selected values;
 - solid coloring is used above 102 selected values;
-- sampled warning status is present in the widget/controller state.
+- categorical-coloring disabled state is exposed as structured metadata;
+- sampled warnings remain on `PointsValueSelection` for Slice 6/controller status handling.
 
 Done when:
 
-- code can display exact or sampled direct selections in napari through a thin helper.
+- code can display exact or sampled direct selections in napari through `ViewerAdapter._ensure_points_layer_from_selection`.
 
-### Slice 6: Viewer UI Integration
+### Slice 6: Points Value Controller And Async Loading
 
-Goal: expose the direct no-cache workflow in the existing Harpy viewer widget.
+Goal: introduce the controller and make all Dask-heavy points value work run off the Qt main thread.
+
+Status: implemented.
 
 Includes:
 
-- controller module `src/napari_harpy/widgets/viewer/transcript_value_index_controller.py`;
-- explicit `TranscriptValueIndexUiState` enum;
-- immutable value-list and read job dataclasses for worker inputs;
-- controller-owned status message, status kind, current value vocabulary, and current selection;
-- points element selector;
-- index column selector;
-- numeric text-field `render_point_budget` control with default `100_000`, minimum `1_000`, and maximum `1_000_000`;
-- widget labels based on the selected index column rather than hard-coded "gene" wording;
-- direct value search and select control backed by the direct value vocabulary;
-- visualize selected values button;
-- all-values option;
+- controller module `src/napari_harpy/widgets/viewer/points_controller.py`;
+- explicit `PointsControllerState` enum;
+- controller public API:
+
+```python
+class PointsController:
+    def __init__(
+        self,
+        *,
+        on_state_changed: Callable[[], None] | None = None,
+    ) -> None:
+        ...
+
+    @property
+    def current_value_source(self) -> PointsValueSource | None:
+        ...
+
+    @property
+    def current_load_result(self) -> PointsLoadResult | None:
+        ...
+
+    def bind_source(
+        self,
+        sdata: SpatialData | None,
+        points_name: str | None,
+        coordinate_system: str | None,
+        index_column: str | None,
+        *,
+        x: str = "x",
+        y: str = "y",
+        points_id: str | None = None,
+    ) -> bool:
+        ...
+
+    def load_value_source(self) -> bool:
+        ...
+
+    def load_selection(
+        self,
+        values: Sequence[str] | Literal["all"],
+        *,
+        render_point_budget: int,
+        random_state: int | None = DEFAULT_RANDOM_STATE,
+    ) -> bool:
+        ...
+
+    def shutdown(self) -> None:
+        ...
+```
+
+- the controller does not receive or store a `ViewerAdapter`; adapter calls belong to Slice 7/widget integration;
+- immutable worker input dataclasses:
+  - `PointsValueSourceJob` for source validation and value-table construction;
+  - `PointsLoadJob` for selected-point reads;
+- controller-owned status message, status kind, current value source, and current load result;
+- worker result dataclasses that keep Dask loading separate from napari layer updates:
+
+```python
+@dataclass(frozen=True)
+class PointsValueSource:
+    identity: PointsLayerIdentity
+    validated: _ValidatedPointsElement
+    value_table: PointsValueTable
+
+    def __post_init__(self) -> None:
+        if self.identity.points_name != self.validated.points_name:
+            raise ValueError(
+                "`identity.points_name` and `validated.points_name` must match. "
+                f"Got {self.identity.points_name!r} and {self.validated.points_name!r}."
+            )
+        if self.identity.index_column != self.validated.index_column:
+            raise ValueError(
+                "`identity.index_column` and `validated.index_column` must match. "
+                f"Got {self.identity.index_column!r} and {self.validated.index_column!r}."
+            )
+        if self.validated.index_column != self.value_table.index_column:
+            raise ValueError(
+                "`validated.index_column` and `value_table.index_column` must match. "
+                f"Got {self.validated.index_column!r} and {self.value_table.index_column!r}."
+            )
+
+@dataclass(frozen=True)
+class PointsLoadResult:
+    identity: PointsLayerIdentity
+    selection: PointsValueSelection
+    value_table: PointsValueTable
+
+    def __post_init__(self) -> None:
+        if self.identity.index_column != self.selection.index_column:
+            raise ValueError(
+                "`identity.index_column` and `selection.index_column` must match. "
+                f"Got {self.identity.index_column!r} and {self.selection.index_column!r}."
+            )
+        if self.selection.index_column != self.value_table.index_column:
+            raise ValueError(
+                "`selection.index_column` and `value_table.index_column` must match. "
+                f"Got {self.selection.index_column!r} and {self.value_table.index_column!r}."
+            )
+```
+
+- `PointsValueSource` is the controller's cached current source/value-table state; do not store the derived value table on `_ValidatedPointsElement`;
+- `PointsLoadResult` is a controller/worker result for Dask selected-point reads; it carries the same `PointsLayerIdentity` so Slice 7/widget can update the intended napari layer without receiving loose source identity arguments;
+- `PointsLayerResult` remains the adapter result for applying an already loaded selection to a napari layer; it belongs to Slice 7/widget integration, not to the Slice 6 async loading controller;
 - explicit UI state machine for `NO_SDATA`, `NO_POINTS_ELEMENT`, `LOADING_VALUES`, `VALUES_READY`, `LOADING_SELECTION`, `LOADED_SELECTION`, and `LOAD_FAILED`;
-- optional cache status display if cache helpers already exist;
-- run value-list computation asynchronously;
-- run selection reads asynchronously;
+- missing or invalid `index_column` is handled as `LOAD_FAILED` with an error status message;
+- all Dask-heavy work must run off the Qt main thread;
+- the widget and adapter must not call `validate_points_element_for_value_selection`, `build_points_value_table`, or `load_points` directly on the main thread;
+- run value-list computation asynchronously in a worker;
+- run selection reads asynchronously in a worker;
+- after a read worker returns, the controller checks the job id, stores the current `PointsLoadResult`, and enters `LOADED_SELECTION`;
+- the controller must not call `ViewerAdapter._ensure_points_layer_from_selection`; Slice 7/widget owns that adapter call through `self._app_state.viewer_adapter`;
 - ignore stale async value/read results by job id;
+- maintain separate worker lifecycle state for value-source loading and selected-point loading:
+  - `_latest_value_job_id`;
+  - `_active_value_worker_job_id`;
+  - `_active_value_worker`;
+  - `_latest_load_job_id`;
+  - `_active_load_worker_job_id`;
+  - `_active_load_worker`;
+- rebinding the source cancels both active value-source and selected-point workers;
+- launching a new selected-point load cancels/replaces only the active selected-point worker;
+- expose private worker factory seams for tests:
+  - `_create_value_source_worker(job: PointsValueSourceJob)`;
+  - `_create_points_load_worker(job: PointsLoadJob)`;
 - no user-facing cancel button in the MVP;
 - progress/status phase text for value loading and read;
-- status-card warning placement for sampled previews and categorical-coloring disablement;
+- status and warning message construction for value loading, selected-point loading, and sampled previews;
+- categorical-coloring disablement messaging is finalized in Slice 7/widget after it receives `PointsLayerResult` from the adapter;
 - keep UI/controller state as the source of truth rather than layer metadata.
 
 Tests:
 
-- widget initializes without requiring a cache;
-- value loading runs when points element or index column changes;
-- value search is enabled when direct values are ready;
-- selected values trigger direct reader and layer update;
-- loading selection disables duplicate visualize requests;
+- controller initializes without requiring a cache;
+- value-source loading can be requested for a points element and index column through `bind_source(...)` followed by `load_value_source()`;
+- value loading is scheduled through a worker rather than executed synchronously by the controller caller;
+- successful value loading stores `PointsValueSource` and enters `VALUES_READY`;
+- failed value loading stores an error status and enters `LOAD_FAILED`;
+- missing or invalid index columns enter `LOAD_FAILED`;
+- selection reads can be requested from the current `PointsValueSource`;
+- selection reads are scheduled through a worker rather than executed synchronously by the controller caller or adapter;
+- successful selected-point loading stores `PointsLoadResult` and enters `LOADED_SELECTION`;
+- rebinding cancels active value-source and selected-point workers;
+- launching a new selected-point load cancels/replaces the previous selected-point worker;
 - stale async value/read worker results are ignored;
 - `render_point_budget` changes affect the next reader call without rebuilding anything;
-- sampled warning is visible.
+- sampled preview warning text can be derived from controller state.
 
 Done when:
 
-- the user-facing direct workflow exists end to end.
+- controller-level direct value loading and selected-point loading work asynchronously, expose the resulting `PointsLoadResult`, and can be unit-tested without the full widget UI.
 
-### Slice 7: Integration Tests And Hardening
+### Slice 7: Viewer Widget UI Integration
+
+Goal: wire the points value controller into the existing Harpy viewer widget.
+
+Status: implemented.
+
+Implementation:
+
+- `src/napari_harpy/core/spatialdata.py`;
+- `src/napari_harpy/widgets/viewer/points_widget.py`;
+- `src/napari_harpy/widgets/viewer/widget.py`;
+- `tests/test_spatialdata.py`;
+- `tests/test_points_widget.py`;
+- `tests/test_viewer_widget.py`.
+
+Includes:
+
+- add a new collapsible `Points` section to `ViewerWidget`, alongside Images, Labels, and Shapes;
+- use one section-level control panel for points value selection, not one card per value;
+- introduce `src/napari_harpy/widgets/viewer/points_widget.py` for the points-specific Qt controls so `ViewerWidget` remains the coordinator;
+- points element selector;
+- index column selector;
+- numeric text-field `render_point_budget` control with default `100_000`, minimum `1_000`, and maximum `1_000_000`;
+- widget labels based on the selected index column rather than hard-coded "gene" wording;
+- direct value search/select control backed by the controller's current `PointsValueSource`;
+- MVP value input supports comma-separated values, for example `AAMP, AXL, MALAT1`;
+- comma-separated input is an implementation shortcut for Slice 7 so the end-to-end workflow can land first; replace it with a polished multi-select control in Slice 8;
+- Add / Update in viewer button for selected values;
+- all-values option that bypasses the text input and passes `values="all"` to the controller;
+- all-values option is an explicit `QCheckBox("All values")`;
+- when `All values` is checked:
+  - disable the value text input;
+  - Add / Update calls `load_selection(values="all", ...)`;
+- when `All values` is unchecked:
+  - enable the value text input when values are ready;
+  - Add / Update parses the text input into explicit selected values;
+- UI rendering for `NO_SDATA`, `NO_POINTS_ELEMENT`, `LOADING_VALUES`, `VALUES_READY`, `LOADING_SELECTION`, `LOADED_SELECTION`, and `LOAD_FAILED`;
+- loading selection disables duplicate visualize requests;
+- status-card placement for direct value loading, selected-point loading, sampled previews, categorical-coloring disablement, and read/layer-update failures;
+- optional cache status display if cache helpers already exist;
+- widget should render controller state and forward user actions; it should not own value-table/read jobs directly.
+- module ownership:
+  - `points_controller.py` owns async validation, value-table construction, selected-point loading, and controller state;
+  - `points_widget.py` owns the points section controls, local UI parsing, completer contents, status-card rendering, and emits user intent;
+  - `widget.py` owns global viewer context and wires `PointsController`, `PointsValueWidget`, and `self._app_state.viewer_adapter` together;
+- `points_widget.py` should not call Dask, `SpatialData` readers, `ViewerAdapter`, `validate_points_element_for_value_selection`, `build_points_value_table`, or `load_points`;
+- `points_widget.py` should expose a small UI-facing widget, for example:
+
+```python
+class PointsValueWidget(QWidget):
+    source_changed = Signal()
+    add_update_requested = Signal(object, int)
+
+    def set_points_names(self, points_names: list[str]) -> None: ...
+    def set_index_columns(self, index_columns: list[str], *, preferred: str | None = "gene") -> None: ...
+    def set_value_source(self, value_source: PointsValueSource | None) -> None: ...
+    def render_controller_state(self, controller: PointsController) -> None: ...
+    def selected_points_name(self) -> str | None: ...
+    def selected_index_column(self) -> str | None: ...
+```
+
+- widget creates one controller:
+
+```python
+self._points_controller = PointsController(
+    on_state_changed=self._on_points_controller_state_changed,
+    on_value_source_loaded=self._on_points_value_source_loaded,
+    on_points_loaded=self._on_points_loaded,
+)
+```
+
+- widget responsibilities:
+  - create and hold one `PointsValueWidget` instance;
+  - call `bind_source(...)` when `sdata`, coordinate system, selected points element, or selected index column changes;
+  - call `load_value_source()` after a valid points source and index column are selected;
+  - call `load_selection(...)` when the user clicks Add / Update in viewer;
+  - never call `validate_points_element_for_value_selection`, `build_points_value_table`, or `load_points` directly;
+- callback ownership:
+  - `on_state_changed` repaints controls, status card, and enabled/disabled state;
+  - `on_value_source_loaded` performs the one-time side effect of updating value-selection UI from a newly prepared `PointsValueSource`;
+  - `on_points_loaded` performs the one-time side effect of applying a newly materialized `PointsLoadResult` to the napari `Points` layer;
+  - do not update value-selector/completer contents or apply loaded points from generic state rendering, because the controller may notify state changes again when worker bookkeeping finishes;
+- `ViewerWidget` already owns `self._app_state`, and `HarpyAppState` already owns `self.viewer_adapter`; Slice 7 should use `self._app_state.viewer_adapter` for the layer update.
+- when `on_value_source_loaded(value_source)` fires, the widget updates the value completer from `value_source.value_table`;
+- when `on_points_loaded(load_result)` fires, the widget calls:
+
+```python
+layer_result = self._app_state.viewer_adapter._ensure_points_layer_from_selection(
+    load_result.identity,
+    selection=load_result.selection,
+)
+```
+
+- the widget activates the returned layer and combines `load_result.selection.warning` with `layer_result` style metadata for the status card.
+- points element discovery:
+  - add `SpatialDataPointsOption` in `src/napari_harpy/core/spatialdata.py`;
+  - add `get_spatialdata_points_options_for_coordinate_system_from_sdata(...)`;
+  - add a viewer helper:
+
+```python
+def _get_points_in_coordinate_system(sdata: SpatialData, coordinate_system: str) -> list[str]:
+    return [
+        option.points_name
+        for option in get_spatialdata_points_options_for_coordinate_system_from_sdata(
+            sdata=sdata,
+            coordinate_system=coordinate_system,
+        )
+    ]
+```
+
+  - include points elements available in the selected coordinate system, following the same option-helper pattern now used for images, labels, and shapes;
+- index column discovery:
+  - inspect the selected points element's `points._meta.columns`;
+  - exclude likely coordinate columns `x` and `y`;
+  - include string-like, object, and categorical columns;
+  - default to `gene` when present, otherwise the first eligible column;
+- value search/select control:
+  - use the existing `QLineEdit` + `QCompleter` pattern;
+  - completer entries come from `controller.current_value_source.value_table.values["value"]`;
+  - parsing is comma-separated for MVP;
+  - trim whitespace and drop empty entries before calling `load_selection(...)`;
+- render point budget control:
+  - use a text field rather than a spinbox;
+  - default `100_000`;
+  - minimum accepted value `1_000`;
+  - maximum accepted value `1_000_000`;
+  - invalid text disables visualize and shows a points status-card warning;
+  - changing the budget affects only the next `load_selection(...)`;
+- UI state rendering:
+  - `NO_SDATA`: disable points controls;
+  - `NO_POINTS_ELEMENT`: show no points available or prompt to select a points element;
+  - `LOADING_VALUES`: disable source controls and show value-source loading status;
+  - `VALUES_READY`: enable value search/select and visualize;
+  - `LOADING_SELECTION`: disable visualize and show selected-point loading status;
+  - `LOADED_SELECTION`: show success or sampled-preview warning;
+  - `LOAD_FAILED`: show error status and allow source changes/retry;
+- warning/status ownership:
+  - value-source and selected-point loading status comes from `PointsController`;
+  - sampled preview text comes from `PointsValueSelection.warning`;
+  - categorical coloring disablement text is derived in the widget from `PointsLayerResult`;
+  - all points workflow messages are rendered in the points section status card, not layer metadata.
+
+Tests:
+
+- widget initializes without requiring a cache;
+- points section initializes without requiring a cache;
+- `PointsValueWidget` can be constructed without `SpatialData` or a `ViewerAdapter`;
+- points selector populates from `sdata.points`;
+- index selector defaults to `gene` if present;
+- value loading runs when points element or index column changes;
+- points widget emits source/add-update requests without calling controller methods directly;
+- when `on_value_source_loaded` fires, the widget updates the value completer/list from the loaded value table;
+- generic state repaint does not rebuild the value completer/list again when the value worker `finished` signal clears controller bookkeeping;
+- value search is enabled when direct values are ready;
+- comma-separated selected values trigger the controller read flow;
+- all-values option passes `values="all"`;
+- all-values checkbox disables value text input and passes `values="all"`;
+- when `on_points_loaded` fires, the widget applies it through `self._app_state.viewer_adapter._ensure_points_layer_from_selection`;
+- generic state repaint does not apply the same loaded selection again when the worker `finished` signal clears controller bookkeeping;
+- loading selection disables duplicate visualize requests;
+- `render_point_budget` changes are forwarded to the next controller read request without rebuilding anything;
+- sampled warning is visible in the status card;
+- categorical-coloring disabled warning is visible in the status card.
+
+Done when:
+
+- the user-facing direct workflow exists end to end in the viewer widget while Dask validation, value-table construction, and selected-point reads remain owned by the controller;
+- the value input is functional, even if still comma-separated and intentionally marked for UI polish.
+
+### Slice 8: Points Value Selection UI Polish
+
+Goal: replace the Slice 7 comma-separated value input with a simple search/add/clear value picker.
+
+Status: implemented.
+
+Implementation:
+
+- `src/napari_harpy/widgets/viewer/points_widget.py`;
+- `tests/test_points_widget.py`;
+- `tests/test_viewer_widget.py`.
+
+Includes:
+
+- implement the polish primarily in `src/napari_harpy/widgets/viewer/points_widget.py`;
+- keep `PointsController`, `load_points`, and `ViewerAdapter` contracts unchanged;
+- `points_widget.py` continues to emit the existing `add_update_requested` signal:
+  - `tuple[str, ...]` for explicitly selected values;
+  - `"all"` when all-values mode is enabled;
+- test the behavior primarily in `tests/test_points_widget.py`;
+- add shared styling helpers only if needed, for example in `src/napari_harpy/widgets/shared_styles.py`;
+- search text field with `QCompleter`/autocomplete from the loaded value table;
+- `Add` button next to the search field adds one resolved value at a time to the current selection;
+- selected values are shown below the search field as simple text, for example `Selected: MALAT1, AAMP, AXL`;
+- clear selection action removes all selected values;
+- all-values option remains separate and disables the search field, Add button, and clear selection action while active;
+- Add / Update in viewer loads either:
+  - selected values; or
+  - `values="all"` when all-values mode is enabled;
+- selected values are stored in widget state as an ordered tuple/list and exposed as `tuple[str, ...]`;
+- selected value order follows the order in which the user added values;
+- duplicate selected values are prevented;
+- when the value table reloads, preserve selected values that still exist, drop invalid values, and show a status-card warning if anything was dropped;
+- implementation approach:
+  - `QLineEdit + QCompleter` for search;
+  - compact `QPushButton("Add")` beside the search field;
+  - `QLabel` for the selected-values summary;
+  - compact `QPushButton("Clear selection")`;
+  - avoid custom chip widgets in this slice;
+  - chips or per-value remove controls can be revisited later if the simple UI feels limiting.
+
+Tests:
+
+- adding a value from autocomplete/search adds it once;
+- duplicate values are not added twice;
+- selected-values summary renders values in the order they were added;
+- clear removes all selected values;
+- all-values mode disables search/add/clear and sends `values="all"`;
+- reloading the value table preserves still-valid selected values;
+- reloading the value table drops invalid selected values and shows a warning.
+
+Done when:
+
+- selecting a few genes/targets/probes feels like a normal viewer workflow instead of a debug text input.
+
+### Slice 9: Integration Tests And Hardening
 
 Goal: make the direct path reliable enough to iterate on real data.
 
 Includes:
 
-- fixture `SpatialData` with transcript points;
-- direct validate, value vocabulary, exact read, sampled read, and layer update flow;
+- fixture `SpatialData` with points;
+- direct validate, value table, exact read, sampled read, and layer update flow;
 - failure cases for invalid source data;
 - basic performance sanity checks on moderate synthetic data;
 - documentation updates or roadmap status notes.
@@ -1590,9 +2301,41 @@ Done when:
 
 - the direct MVP has a tested end-to-end path and clear known limitations.
 
-### Optional Cache Slice A: Cache Validator And Vocabulary Cache
+### Slice 10: Tiled Cache Feature Contract Revisit
 
-Goal: add the first useful optional cache artifact: the selectable value vocabulary and cache status contract.
+Goal: revisit the napari layer feature contract before introducing spatial or tiled cache-backed point loading.
+
+Context:
+
+- direct mode currently materializes one bounded in-memory `PointsValueSelection`;
+- direct mode assigns `layer.data = selection.coordinates` and `layer.features = selection.features`;
+- `selection.features` contains only the selected index column as categorical plus `value_id`;
+- this is acceptable for the direct MVP because the rendered layer is one stable selected-point result.
+
+The tiled or spatial cache path may need a different contract because:
+
+- points may be loaded incrementally by viewport, zoom level, or tile;
+- layer data and features may be replaced frequently;
+- the rendered point set may no longer represent one stable logical selection;
+- carrying a per-point features dataframe through every tile update may become expensive;
+- picked-point lookup may need a separate lookup path using tile identity, row index, `value_id`, or a stable `points_id`.
+
+For the tiled/cache implementation, explicitly decide:
+
+- whether `layer.features` remains `{<index_column>, value_id}` for only the currently rendered tile/window points;
+- whether `layer.features` should be reduced further for rendering and a separate lookup API should resolve picked-point details;
+- how a clicked point maps back to the canonical source row or cache row;
+- how sampled or viewport-limited tile reads report selected values and warning/status text;
+- whether the same `PointsValueSelection` object remains the right return type, or whether tiled rendering needs a distinct runtime object.
+
+Done when:
+
+- the cache/tiled path has an explicit picked-point and layer-feature strategy before implementation;
+- the direct-mode feature contract is either reused intentionally or replaced by a cache-specific contract.
+
+### Optional Cache Slice A: Cache Validator And Value Table Cache
+
+Goal: add the first useful optional cache artifact: the selectable value table and cache status contract.
 
 Includes:
 
@@ -1607,7 +2350,7 @@ Includes:
 
 Done when:
 
-- the UI can choose between direct vocabulary and a valid cache vocabulary.
+- the UI can choose between the direct value table and a valid cache value table.
 
 ### Optional Cache Slice B: Full Cache Builder With Data Shards
 
@@ -1615,7 +2358,7 @@ Goal: write displayable transcript rows grouped by value.
 
 Includes:
 
-- create a working dataframe with `x`, `y`, value id, and optional `transcript_id`;
+- create a working dataframe with `x`, `y`, value id, and optional `points_id`;
 - globally group by value and shuffle rows within each value group;
 - convert display coordinates to `float32`;
 - write `data/shard-*.parquet`;
@@ -1642,7 +2385,7 @@ Includes:
 - read only listed row groups;
 - implement proportional quota allocation for sampled reads;
 - support `values="all"`;
-- return the same `TranscriptValueSelection` object as direct mode.
+- return the same `PointsValueSelection` object as direct mode.
 
 Done when:
 
@@ -1692,12 +2435,13 @@ Status:
 
 The MVP should produce these implementation pieces:
 
-1. Source validator: validates a backed points element, coordinate columns, and a selected string/categorical index column.
-2. Direct value vocabulary: computes selectable values and point counts from the Dask points dataframe.
+1. Source validator: validates a points element, coordinate columns, and a selected string/categorical index column.
+2. Direct value table: computes selectable values and point counts from the Dask points dataframe.
 3. Direct reader: loads exact or sampled selected values from the Dask points dataframe, sampling before compute when needed.
-4. Viewer UI controls: lets the user choose the points element and index-value column, search/select values, set `render_point_budget`, and request visualization.
-5. napari layer integration: creates or updates one `Points` layer for the selected values, with sampled-state warning text when applicable.
-6. Tests: cover input validation, direct value resolution, exact reads, sampled reads, all-values selection, async stale-result handling, and layer updates.
+4. napari layer integration: creates or updates one `Points` layer for the selected values and reports structured style metadata; sampled-state warning text remains on `PointsValueSelection` for the controller/status card.
+5. Controller and async loading: runs value-table construction and selected-point reads off the Qt main thread, tracks job ids, and ignores stale results.
+6. Viewer UI controls: lets the user choose the points element and index-value column, search/select values, set `render_point_budget`, and request visualization.
+7. Tests: cover input validation, direct value resolution, exact reads, sampled reads, all-values selection, async stale-result handling, widget integration, and layer updates.
 
 Optional later deliverables:
 
@@ -1711,31 +2455,40 @@ Optional later deliverables:
 Keep this separate from `_transcript_tiles.py` at first:
 
 ```text
-src/napari_harpy/_transcript_value_index.py
+src/napari_harpy/_points_value_index.py
 ```
 
 Suggested objects:
 
 ```text
-TRANSCRIPT_VALUE_INDEX_SCHEMA_VERSION
-TranscriptValueSelection
-TranscriptValueIndexError
-TranscriptValueIndexInvalidCacheError
-TranscriptValueIndexInvalidSelectionError
-TranscriptValueIndexUnknownValueError
-TranscriptValueIndexReadError
-TranscriptValuePointsLayerBinding
-load_transcripts_for_values_direct
-compute_transcript_value_vocabulary
-add_transcript_value_points_layer
+DEFAULT_X
+DEFAULT_Y
+DEFAULT_INDEX_COLUMN
+DEFAULT_RENDER_POINT_BUDGET
+DEFAULT_RANDOM_STATE
+POINTS_VALUE_INDEX_SCHEMA_VERSION
+PointsValueTable
+PointsValueSelection
+load_points
+build_points_value_table
+```
+
+Adapter-side points layer objects:
+
+```text
+PointsLayerBinding
+PointsLayerIdentity
+PointsStyleResult
+PointsLayerResult
+ViewerAdapter._ensure_points_layer_from_selection
 ```
 
 Optional cache objects:
 
 ```text
-TranscriptValueIndexCache
-build_transcript_value_index_cache_for_points_element
-load_transcripts_for_values_from_cache
+PointsValueIndexCache
+build_points_value_index_cache_for_points_element
+load_points_from_cache
 ```
 
 The direct read path uses Dask.
@@ -1749,22 +2502,24 @@ The napari path should be thin and should not know whether the selection came fr
 Add the UI controller separately from the cache module:
 
 ```text
-src/napari_harpy/widgets/viewer/transcript_value_index_controller.py
+src/napari_harpy/widgets/viewer/points_controller.py
 ```
 
 Suggested controller objects:
 
 ```text
-TranscriptValueIndexUiState
-TranscriptValueIndexValueJob
-TranscriptValueIndexReadJob
-TranscriptValueIndexController
+PointsControllerState
+PointsValueSource
+PointsLoadResult
+PointsValueSourceJob
+PointsLoadJob
+PointsController
 ```
 
 Optional cache controller objects:
 
 ```text
-TranscriptValueIndexBuildJob
+PointsValueIndexBuildJob
 ```
 
 The controller should own widget-facing state and async worker orchestration. The Qt widget should render controller state and forward user actions; it should not own the cache build/read state machine directly.
@@ -1774,12 +2529,12 @@ The controller should own widget-facing state and async worker orchestration. Th
 A first implementation is successful when:
 
 - it validates `x`, `y`, and the selected index-value column;
-- it computes selectable values and counts directly from a backed `sdata.points["transcripts"]`;
+- it computes selectable values and counts directly from `sdata.points["transcripts"]`;
 - the value search box works without requiring a cache;
 - selecting values within the render budget loads exact points;
 - selecting values above the render budget filters selected rows first, samples before compute, and loads at most `render_point_budget` points;
 - all-values selection is allowed and sampled when needed;
-- sampled results show a user-visible warning;
+- sampled results expose warning text on `PointsValueSelection`, and the controller shows it in the widget status card;
 - the napari integration updates one `Points` layer rather than creating many layers.
 
 The optional cache path becomes successful later when:
@@ -1788,4 +2543,4 @@ The optional cache path becomes successful later when:
 - it writes `values.parquet`, `value_index.parquet`, and data Parquet files;
 - it validates cache availability and staleness before using the cache-backed reader;
 - every data row group listed in `value_index.parquet` contains exactly one `value_id`;
-- cache-backed reads return the same `TranscriptValueSelection` object shape as direct reads.
+- cache-backed reads return the same `PointsValueSelection` object shape as direct reads.

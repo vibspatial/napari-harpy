@@ -4,6 +4,8 @@ from collections.abc import Callable
 from html import unescape
 from types import SimpleNamespace
 
+import dask
+import dask.dataframe as dd
 import geopandas as gpd
 import numpy as np
 import pandas as pd
@@ -17,8 +19,11 @@ from spatialdata.transformations import Identity
 
 import napari_harpy._app_state as app_state_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
+from napari_harpy._points_value_index import PointsValueSelection, PointsValueTable
 from napari_harpy.core._color_source import ShapeColorSourceSpec, TableColorSourceSpec
+from napari_harpy.viewer.adapter import PointsLayerIdentity
 from napari_harpy.viewer.shapes_styling import SHAPES_FACE_ALPHA
+from napari_harpy.widgets.viewer.points_controller import PointsLoadResult
 from napari_harpy.widgets.viewer.widget import ViewerWidget
 
 
@@ -86,6 +91,27 @@ def _make_shapes_sdata(geodataframe: gpd.GeoDataFrame, shapes_name: str = "cells
     return SimpleNamespace(shapes={shapes_name: shapes})
 
 
+def _points_dataframe(data: dict[str, object]) -> dd.DataFrame:
+    with dask.config.set({"dataframe.convert-string": False}):
+        return dd.from_pandas(pd.DataFrame(data), npartitions=1)
+
+
+def _make_points_sdata(points_name: str = "transcripts") -> SimpleNamespace:
+    return SimpleNamespace(
+        points={
+            points_name: _points_dataframe(
+                {
+                    "x": [0.0, 1.0, 2.0],
+                    "y": [3.0, 4.0, 5.0],
+                    "gene": ["AAMP", "AXL", "MALAT1"],
+                    "target": ["T1", "T2", "T3"],
+                    "score": [0.1, 0.2, 0.3],
+                }
+            )
+        }
+    )
+
+
 def _make_colorable_shapes_sdata(
     *,
     shapes_name: str = "cells",
@@ -116,6 +142,47 @@ def _make_colorable_shapes_sdata(
 def _select_shape_column(card: object, value_key: str) -> None:
     card.color_source_kind_combo.setCurrentIndex(1)
     card.color_source_value_input.setText(value_key)
+
+
+def _make_points_load_result(sdata: object) -> PointsLoadResult:
+    value_table = PointsValueTable(
+        values=pd.DataFrame(
+            {
+                "value_id": pd.Series([0], dtype="uint32"),
+                "value": ["AAMP"],
+                "n_points": pd.Series([2], dtype="uint64"),
+            }
+        ),
+        index_column="gene",
+        total_count=2,
+    )
+    selection = PointsValueSelection(
+        coordinates=np.asarray([[3.0, 0.0], [4.0, 1.0]], dtype="float32"),
+        features=pd.DataFrame(
+            {
+                "gene": pd.Categorical(["AAMP", "AAMP"], categories=["AAMP"]),
+                "value_id": pd.Series([0, 0], dtype="uint32"),
+            }
+        ),
+        index_column="gene",
+        selected_values=("AAMP",),
+        selected_value_ids=(0,),
+        selection_mode="values",
+        total_count=2,
+        render_point_budget=100_000,
+        is_sampled=False,
+        warning=None,
+    )
+    return PointsLoadResult(
+        identity=PointsLayerIdentity(
+            sdata=sdata,
+            points_name="transcripts",
+            coordinate_system="global",
+            index_column="gene",
+        ),
+        selection=selection,
+        value_table=value_table,
+    )
 
 
 def test_viewer_widget_can_be_instantiated(qtbot) -> None:
@@ -270,6 +337,101 @@ def test_viewer_widget_refreshes_cards_when_shared_sdata_changes(qtbot, sdata_bl
     assert widget.labels_cards[1].linked_table_combo.itemText(0) == "No linked tables"
     assert not widget.labels_cards[1].linked_table_combo.isEnabled()
     assert "In coordinate system `global`" in widget.summary_label.text()
+
+
+def test_viewer_widget_points_section_populates_and_starts_value_loading(qtbot, monkeypatch) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    fake_sdata = _make_points_sdata()
+    load_value_calls = 0
+
+    qtbot.addWidget(widget)
+
+    _patch_coordinate_system_names(monkeypatch, ["global"])
+    monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(viewer_widget_module, "_get_shapes_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(
+        viewer_widget_module, "_get_points_in_coordinate_system", lambda sdata, coordinate_system: ["transcripts"]
+    )
+
+    def record_value_loading() -> bool:
+        nonlocal load_value_calls
+        load_value_calls += 1
+        return True
+
+    monkeypatch.setattr(widget._points_controller, "load_value_source", record_value_loading)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(fake_sdata)
+
+    assert widget.points_section_toggle.text() == "Points (1)"
+    assert widget.points_empty_label.isHidden()
+    assert not widget.points_widget.isHidden()
+    assert widget.points_widget.selected_points_name() == "transcripts"
+    assert widget.points_widget.selected_index_column() == "gene"
+    assert [
+        widget.points_widget.index_column_combo.itemText(index)
+        for index in range(widget.points_widget.index_column_combo.count())
+    ] == ["gene", "target"]
+    assert load_value_calls == 1
+
+
+def test_viewer_widget_points_add_update_request_calls_controller(qtbot, monkeypatch) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    recorded_requests: list[tuple[object, int]] = []
+
+    qtbot.addWidget(widget)
+
+    monkeypatch.setattr(
+        widget._points_controller,
+        "load_selection",
+        lambda values, *, render_point_budget, random_state=42: (
+            recorded_requests.append((values, render_point_budget)) or True
+        ),
+    )
+    widget.points_widget.set_points_names(["transcripts"])
+    widget.points_widget.set_index_columns(["gene"])
+    widget.points_widget.set_value_source(SimpleNamespace(value_table=SimpleNamespace(values=pd.DataFrame({"value": ["AAMP", "AXL"]}))))
+    widget.points_widget.render_controller_state(
+        SimpleNamespace(
+            can_load_values=True,
+            can_visualize=True,
+            is_loading=False,
+            is_loading_values=False,
+            status_message="Points: ready.",
+            status_kind="success",
+        )
+    )
+    widget.points_widget.value_input.setText("AAMP")
+    widget.points_widget.add_value_button.click()
+    widget.points_widget.value_input.setText("AXL")
+    widget.points_widget.add_value_button.click()
+    widget.points_widget.render_point_budget_input.setText("50_000")
+
+    widget.points_widget.add_update_button.click()
+
+    assert recorded_requests == [(("AAMP", "AXL"), 50_000)]
+
+
+def test_viewer_widget_on_points_loaded_applies_layer_and_status(qtbot) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    fake_sdata = object()
+    load_result = _make_points_load_result(fake_sdata)
+
+    qtbot.addWidget(widget)
+
+    widget._on_points_loaded(load_result)
+
+    assert len(viewer.layers) == 1
+    layer = viewer.layers[0]
+    assert layer.name == "transcripts: gene=AAMP"
+    assert viewer.layers.selection.active is layer
+    assert "Points Layer Created" in widget.action_feedback_label.text()
+    assert "2 point" in widget.action_feedback_label.text()
+    assert not widget.action_feedback_label.isHidden()
 
 
 def test_viewer_widget_progressive_disclosure_expands_sections_and_elements(qtbot, sdata_blobs) -> None:

@@ -23,6 +23,8 @@ from napari_harpy.core.spatialdata import (
     get_spatialdata_image_options_for_coordinate_system_from_sdata,
     get_spatialdata_labels_options_for_coordinate_system_from_sdata,
     get_spatialdata_labels_options_from_sdata,
+    get_spatialdata_points_options_for_coordinate_system_from_sdata,
+    get_spatialdata_points_options_from_sdata,
     get_spatialdata_shapes_options_for_coordinate_system_from_sdata,
     get_spatialdata_shapes_options_from_sdata,
     get_table,
@@ -40,10 +42,11 @@ from napari_harpy.core.spatialdata import (
 
 
 class DummySpatialData:
-    def __init__(self, *, labels=None, images=None, shapes=None, tables=None) -> None:
+    def __init__(self, *, labels=None, images=None, shapes=None, points=None, tables=None) -> None:
         self.labels = {} if labels is None else labels
         self.images = {} if images is None else images
         self.shapes = {} if shapes is None else shapes
+        self.points = {} if points is None else points
         self._tables = {} if tables is None else tables
 
     def __getitem__(self, key: str):
@@ -398,6 +401,29 @@ def test_get_spatialdata_shapes_options_from_sdata_returns_all_shapes(sdata_blob
     assert all(option.sdata is sdata_blobs for option in options)
 
 
+def test_get_spatialdata_points_options_from_sdata_returns_all_points(monkeypatch) -> None:
+    points_a = object()
+    points_b = object()
+    fake_sdata = DummySpatialData(points={"points_a": points_a, "points_b": points_b})
+    transformation_by_id = {
+        id(points_a): {"global": object()},
+        id(points_b): {"local": object(), "global": object()},
+    }
+
+    def _fake_get_transformation(element, get_all: bool = False):
+        del get_all
+        return transformation_by_id[id(element)]
+
+    monkeypatch.setattr(spatialdata_module, "get_transformation", _fake_get_transformation)
+
+    options = get_spatialdata_points_options_from_sdata(fake_sdata)
+
+    assert [option.points_name for option in options] == ["points_a", "points_b"]
+    assert [option.display_name for option in options] == ["points_a", "points_b"]
+    assert [option.coordinate_systems for option in options] == [("global",), ("global", "local")]
+    assert all(option.sdata is fake_sdata for option in options)
+
+
 def test_get_coordinate_system_names_from_sdata_returns_sorted_union(
     monkeypatch,
     sdata_blobs: SpatialData,
@@ -411,6 +437,7 @@ def test_get_coordinate_system_names_from_sdata_returns_sorted_union(
         id(sdata_blobs.shapes[shapes_names[0]]): {"shape_space": object()},
         id(sdata_blobs.shapes[shapes_names[1]]): {"global": object()},
         id(sdata_blobs.shapes[shapes_names[2]]): {"global": object()},
+        id(sdata_blobs.points["blobs_points"]): {"global": object()},
     }
 
     def _fake_get_transformation(element, get_all: bool = False):
@@ -434,6 +461,20 @@ def test_get_coordinate_system_names_from_sdata_includes_shapes_only_data(monkey
     monkeypatch.setattr(spatialdata_module, "get_transformation", _fake_get_transformation)
 
     assert get_coordinate_system_names_from_sdata(fake_sdata) == ["shape_space"]
+
+
+def test_get_coordinate_system_names_from_sdata_includes_points_only_data(monkeypatch) -> None:
+    points_element = object()
+    fake_sdata = DummySpatialData(points={"transcripts": points_element})
+
+    def _fake_get_transformation(element, get_all: bool = False):
+        del get_all
+        assert element is points_element
+        return {"points_space": object()}
+
+    monkeypatch.setattr(spatialdata_module, "get_transformation", _fake_get_transformation)
+
+    assert get_coordinate_system_names_from_sdata(fake_sdata) == ["points_space"]
 
 
 def test_get_image_channel_names_from_sdata_returns_channel_axis_names(sdata_blobs: SpatialData) -> None:
@@ -503,6 +544,30 @@ def test_get_spatialdata_shapes_options_for_coordinate_system_from_sdata_filters
     )
 
     assert [option.shapes_name for option in options] == ["global_shape"]
+    assert options[0].coordinate_systems == ("aligned", "global")
+
+
+def test_get_spatialdata_points_options_for_coordinate_system_from_sdata_filters_points(monkeypatch) -> None:
+    global_points = object()
+    local_points = object()
+    fake_sdata = DummySpatialData(points={"global_points": global_points, "local_points": local_points})
+    transformation_by_id = {
+        id(global_points): {"global": object(), "aligned": object()},
+        id(local_points): {"local": object()},
+    }
+
+    def _fake_get_transformation(element, get_all: bool = False):
+        del get_all
+        return transformation_by_id[id(element)]
+
+    monkeypatch.setattr(spatialdata_module, "get_transformation", _fake_get_transformation)
+
+    options = get_spatialdata_points_options_for_coordinate_system_from_sdata(
+        sdata=fake_sdata,
+        coordinate_system="aligned",
+    )
+
+    assert [option.points_name for option in options] == ["global_points"]
     assert options[0].coordinate_systems == ("aligned", "global")
 
 
