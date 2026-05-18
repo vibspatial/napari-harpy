@@ -950,6 +950,7 @@ class ViewerAdapter(QObject):
             layer = existing_layer
 
         visible = layer.visible
+        _reset_points_layer_transient_state(layer)
         layer.name = build_points_selection_layer_name(
             identity.points_name,
             identity.index_column,
@@ -958,6 +959,7 @@ class ViewerAdapter(QObject):
         layer.data = selection.coordinates
         layer.features = selection.features
         style_result = apply_points_selection_style(layer, selection)
+        _refresh_points_layer_view_after_replacement(layer)
         layer.visible = visible
 
         return PointsLayerResult(
@@ -1415,6 +1417,41 @@ def _build_points_layer_from_selection(identity: PointsLayerIdentity, selection:
     )
     apply_points_selection_style(layer, selection)
     return layer
+
+
+def _reset_points_layer_transient_state(layer: Points) -> None:
+    layer.selected_data = set()
+    if hasattr(layer, "_value"):
+        layer._value = None
+    if hasattr(layer, "_value_stored"):
+        layer._value_stored = None
+
+
+def _refresh_points_layer_view_after_replacement(layer: Points) -> None:
+    """Recompute napari's cached point-view indices after replacing layer data.
+
+    Updating a points layer from a large selection to a smaller one can leave
+    napari's private `_indices_view` cache pointing at rows that no longer
+    exist, especially while async slicing is enabled. Recomputing the current
+    slice synchronously keeps hover/status lookups from indexing stale rows.
+    """
+    try:
+        layer.set_view_slice()
+    except (AttributeError, IndexError, RuntimeError, ValueError):  # pragma: no cover - defensive napari fallback
+        layer.refresh(force=True)
+        return
+
+    refresh_sync = getattr(layer, "_refresh_sync", None)
+    if callable(refresh_sync):
+        refresh_sync(
+            thumbnail=True,
+            data_displayed=True,
+            highlight=True,
+            extent=False,
+            force=True,
+        )
+    else:  # pragma: no cover - defensive fallback around napari internals
+        layer.refresh(force=True)
 
 
 def _add_layer_to_viewer(viewer: Any | None, layer: Layer) -> None:

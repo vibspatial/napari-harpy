@@ -91,3 +91,4 @@ def test_points_value_widget_invalid_render_budget_disables_add_update(qtbot) ->
 
     assert not widget.add_update_button.isEnabled()
     assert "Render point budget" in widget.status_label.text()
+

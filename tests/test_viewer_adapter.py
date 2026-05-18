@@ -721,7 +721,7 @@ def test_viewer_adapter_ensure_points_layer_from_selection_creates_registered_la
     assert result.layer.name == "transcripts: gene=AAMP"
     np.testing.assert_array_equal(result.layer.data, selection.coordinates)
     assert result.layer.features.equals(selection.features)
-    assert np.all(result.layer.size == 1.0)
+    assert np.all(result.layer.size == 5.0)
     assert result.layer.opacity == 0.8
     assert all(symbol.value == "disc" for symbol in result.layer.symbol)
     assert np.all(result.layer.border_width == 0)
@@ -755,6 +755,25 @@ def test_viewer_adapter_ensure_points_layer_from_selection_updates_existing_laye
     assert second.layer.name == "transcripts: gene=AXL"
     np.testing.assert_array_equal(second.layer.data, second_selection.coordinates)
     assert second.layer.features.equals(second_selection.features)
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_refreshes_stale_point_view_indices() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
+    first_selection = make_points_selection(["A", "B", "C", "D", "E"], selected_values=("A", "B", "C", "D", "E"))
+    second_selection = make_points_selection(["A", "A"], selected_values=("A",))
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    first = adapter._ensure_points_layer_from_selection(identity, selection=first_selection)
+    first.layer._slicing_state._indices_view = np.arange(first_selection.loaded_count, dtype=int)
+    first.layer.selected_data = {first_selection.loaded_count - 1}
+
+    second = adapter._ensure_points_layer_from_selection(identity, selection=second_selection)
+
+    assert second.layer is first.layer
+    assert second.layer.selected_data == set()
+    assert np.all(second.layer._indices_view < second_selection.loaded_count)
+    np.testing.assert_array_equal(second.layer._view_data, second_selection.coordinates)
 
 
 def test_viewer_adapter_ensure_points_layer_from_selection_ignores_unregistered_same_name_layer() -> None:
