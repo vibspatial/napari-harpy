@@ -121,6 +121,8 @@ Recommended naming cleanup:
   separate reason to update selectors
 - use the new name to clarify that this status card reports global viewer
   action outcomes, not local card preparation state
+- update tests and internal references from `widget.action_feedback_label` to
+  `widget.global_action_feedback_label`
 
 Existing plain helper/status text:
 
@@ -325,6 +327,8 @@ shared status cards. Revisit them only if card-local feedback is redesigned.
    `tests/test_viewer_widget.py` should continue to assert that clicking viewer
    controls renders the expected status card. Once the builder tests exist,
    the widget tests can focus on plumbing and fewer exact message combinations.
+   As part of the attribute rename, update test references from
+   `widget.action_feedback_label` to `widget.global_action_feedback_label`.
 
 ## Non-Goal: Card-Local Action Feedback
 
