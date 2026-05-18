@@ -109,11 +109,6 @@ class ViewerWidget(QWidget):
         self.content_layout.setContentsMargins(12, 12, 12, 12)
         self.content_layout.setSpacing(10)
 
-        title = QLabel("Viewer")
-        title.setObjectName("viewer_widget_title")
-        title.setStyleSheet("color: #111827; font-size: 18px; font-weight: 700;")
-        title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-
         header_logo = self._create_header_logo()
 
         self.open_sdata_button = QPushButton("Load SpatialData")
@@ -234,7 +229,6 @@ class ViewerWidget(QWidget):
         self.points_section_title = self.points_section_toggle
 
         self.content_layout.addWidget(header_logo)
-        self.content_layout.addWidget(title)
         self.content_layout.addWidget(self.open_sdata_button)
         self.content_layout.addWidget(self.empty_state_label)
         self.content_layout.addWidget(self.summary_label)
