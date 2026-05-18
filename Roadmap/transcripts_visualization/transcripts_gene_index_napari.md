@@ -2236,30 +2236,44 @@ Goal: replace the Slice 7 comma-separated value input with a more professional m
 
 Includes:
 
+- implement the polish primarily in `src/napari_harpy/widgets/viewer/points_widget.py`;
+- keep `PointsController`, `load_points`, and `ViewerAdapter` contracts unchanged;
+- `points_widget.py` continues to emit the existing `add_update_requested` signal:
+  - `tuple[str, ...]` for explicitly selected chip values;
+  - `"all"` when all-values mode is enabled;
+- test the behavior primarily in `tests/test_points_widget.py`;
+- add shared styling helpers only if needed, for example in `src/napari_harpy/widgets/shared_styles.py`;
 - search text field with `QCompleter`/autocomplete from the loaded value table;
 - user can type a value, pick from autocomplete, and add it to the current selection;
-- selected values are shown below the search field as removable chips or compact rows;
+- selected values are shown below the search field as chip-like removable widgets, for example `[MALAT1 ×] [AAMP ×] [AXL ×]`;
+- chips are the intended Slice 8 UI, not a deferred nice-to-have;
+- each chip shows one selected value and a small remove action;
 - each selected value can be removed individually;
 - clear action removes all selected values;
-- all-values option remains separate and disables the selected-values list while active;
+- all-values option remains separate and disables the search field and chip area while active;
 - Add / Update in viewer loads either:
-  - selected chip/list values; or
+  - selected chip values; or
   - `values="all"` when all-values mode is enabled;
-- selected values are stored in widget state as `tuple[str, ...]`;
+- selected values are stored in widget state as an ordered tuple/list and exposed as `tuple[str, ...]`;
+- chip order follows the order in which the user added values;
 - duplicate selected values are prevented;
 - when the value table reloads, preserve selected values that still exist, drop invalid values, and show a status-card warning if anything was dropped;
-- keep the implementation modest:
+- implementation approach:
   - `QLineEdit + QCompleter` for search;
-  - small `QListWidget` or vertical layout of removable rows for selected values;
-  - avoid a custom token/chip framework unless it becomes necessary.
+  - a wrapping chip container below the search field;
+  - each chip can be a small `QFrame`/`QWidget` with a label and a compact remove `QToolButton`;
+  - use existing shared widget styling tokens where possible so the chips match napari-harpy controls;
+  - keep the chip implementation local to `points_widget.py` unless it becomes useful elsewhere.
 
 Tests:
 
 - adding a value from autocomplete adds it once;
 - duplicate values are not added twice;
+- selected chips render in the order values were added;
 - removing one selected value updates the selection;
+- removing one chip removes the corresponding value from the emitted request;
 - clear removes all selected values;
-- all-values mode disables the selected-values list and sends `values="all"`;
+- all-values mode disables search/chips and sends `values="all"`;
 - reloading the value table preserves still-valid selected values;
 - reloading the value table drops invalid selected values and shows a warning.
 
