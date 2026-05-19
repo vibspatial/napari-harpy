@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import numpy as np
 import pandas as pd
@@ -12,12 +12,22 @@ from matplotlib.colors import to_rgba
 from napari_harpy.core.class_palette import default_categorical_colors
 
 StyledPaletteSource = Literal["stored", "default_missing", "default_invalid"]
+STYLED_PALETTE_SOURCES: tuple[StyledPaletteSource, ...] = ("stored", "default_missing", "default_invalid")
 
 MISSING_CATEGORICAL_COLOR = "#80808099"
 MISSING_CONTINUOUS_COLOR = "#80808099"
 OVERLAY_CONTINUOUS_COLORMAP = "viridis"
 STRING_CATEGORICAL_WARNING_MIN_UNIQUE_COUNT = 20
 STRING_CATEGORICAL_WARNING_ROW_COUNT_DIVISOR = 100
+
+
+def validate_styled_palette_source(source: str) -> StyledPaletteSource:
+    """Return a validated styled palette source."""
+    if source not in STYLED_PALETTE_SOURCES:
+        allowed = ", ".join(repr(allowed_source) for allowed_source in STYLED_PALETTE_SOURCES)
+        raise ValueError(f"Invalid styled palette source {source!r}. Expected one of: {allowed}.")
+
+    return cast(StyledPaletteSource, source)
 
 
 def build_string_categorical_values(
@@ -67,8 +77,7 @@ def build_string_categorical_values(
         )
     else:
         logger.warning(
-            f"Coercing plain string/object column `{column_name}` to temporary categorical values "
-            "for viewer coloring."
+            f"Coercing plain string/object column `{column_name}` to temporary categorical values for viewer coloring."
         )
 
     categories = list(pd.unique(normalized_full_values.dropna()))
@@ -113,10 +122,7 @@ def categorical_colors_for_values(
     palette: Sequence[str],
     missing_color: Any = MISSING_CATEGORICAL_COLOR,
 ) -> pd.Series:
-    lookup = {
-        normalize_category_value(category): color
-        for category, color in zip(categories, palette, strict=False)
-    }
+    lookup = {normalize_category_value(category): color for category, color in zip(categories, palette, strict=False)}
     colors = {}
     for index, value in values.items():
         if pd.isna(value):
@@ -146,8 +152,7 @@ def continuous_colors_for_values(
         normalized_values = dict.fromkeys(non_missing.index, 0.5)
     else:
         normalized_values = {
-            index: float((value - min_value) / (max_value - min_value))
-            for index, value in non_missing.items()
+            index: float((value - min_value) / (max_value - min_value)) for index, value in non_missing.items()
         }
 
     for index in values.index:

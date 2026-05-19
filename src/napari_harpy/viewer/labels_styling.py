@@ -25,6 +25,7 @@ from napari_harpy.viewer._styling import (
     is_string_like_series,
     is_valid_color,
     normalize_category_value,
+    validate_styled_palette_source,
 )
 
 if TYPE_CHECKING:
@@ -43,6 +44,8 @@ class LabelsStyleResult:
     def __post_init__(self) -> None:
         if self.value_kind is not None:
             validate_table_color_value_kind(self.value_kind)
+        if self.palette_source is not None:
+            validate_styled_palette_source(self.palette_source)
 
 
 @dataclass(frozen=True)

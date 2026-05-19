@@ -19,6 +19,7 @@ from napari_harpy.viewer._styling import (
     default_categorical_palette_for_categories,
     is_string_like_series,
     normalize_category_value,
+    validate_styled_palette_source,
 )
 
 if TYPE_CHECKING:
@@ -36,6 +37,10 @@ class ShapesStyleResult:
     value_kind: ShapeColorValueKind
     palette_source: StyledPaletteSource | None
     coercion_applied: bool
+
+    def __post_init__(self) -> None:
+        if self.palette_source is not None:
+            validate_styled_palette_source(self.palette_source)
 
 
 @dataclass(frozen=True)

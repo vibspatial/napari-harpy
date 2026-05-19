@@ -4,6 +4,7 @@ import pytest
 
 from napari_harpy.core._color_source import ShapeColorSourceSpec, TableColorSourceSpec
 from napari_harpy.viewer.labels_styling import LabelsStyleResult
+from napari_harpy.viewer.shapes_styling import ShapesStyleResult
 
 
 def test_table_color_source_spec_rejects_invalid_source_kind() -> None:
@@ -59,5 +60,23 @@ def test_labels_style_result_rejects_invalid_value_kind() -> None:
         LabelsStyleResult(
             value_kind="ordinal",
             palette_source=None,
+            coercion_applied=False,
+        )
+
+
+def test_labels_style_result_rejects_invalid_palette_source() -> None:
+    with pytest.raises(ValueError, match="Invalid styled palette source"):
+        LabelsStyleResult(
+            value_kind="categorical",
+            palette_source="generated",
+            coercion_applied=False,
+        )
+
+
+def test_shapes_style_result_rejects_invalid_palette_source() -> None:
+    with pytest.raises(ValueError, match="Invalid styled palette source"):
+        ShapesStyleResult(
+            value_kind="categorical",
+            palette_source="generated",
             coercion_applied=False,
         )
