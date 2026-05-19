@@ -10,7 +10,8 @@ y
 gene
 ```
 
-The goal is to visualize these points efficiently in **napari**, without loading all points into a `Points` layer at once.
+The goal is to visualize these points efficiently in **napari**, without
+loading an over-budget point selection into a `Points` layer at once.
 
 The recommended design is inspired by Neuroglancer's annotation rendering model:
 
@@ -25,9 +26,11 @@ The recommended design is inspired by Neuroglancer's annotation rendering model:
 
 ## Core Principle
 
-Do **not** pass the full SpatialData points table directly to napari.
+Do **not** pass an over-budget SpatialData points selection directly to napari.
+Exact direct rendering is still the preferred path when the selected points fit
+within the user's render budget.
 
-Instead:
+For over-budget selections, use:
 
 ```text
 SpatialData points element
@@ -42,6 +45,64 @@ ordinary napari Points layer
 ```
 
 The napari `Points` layer should only contain the currently visible subset.
+
+---
+
+## Hybrid Rendering Policy
+
+Users keep the existing render-budget workflow:
+
+```text
+user chooses render budget
+user selects genes, a few genes, or all/no genes
+user clicks Add / Update in viewer
+```
+
+On each `Add / Update in viewer` click, compute the total selected source-point
+count before deciding how to render:
+
+```text
+selected_total_count <= render_budget
+  -> exact/direct mode
+  -> reuse the current direct implementation
+  -> create a fresh static napari Points layer with all selected points
+  -> no viewport-driven updates
+
+selected_total_count > render_budget
+  -> tiled/live mode
+  -> query the persistent tile cache with max_visible_points = render_budget
+  -> create a fresh live napari Points layer for the render request
+  -> update that layer on debounced viewport changes
+```
+
+For no gene filter / all genes, `selected_total_count` is the total number of
+points in the points element. This means small datasets still render exactly,
+while large datasets automatically use the tiled path.
+
+Mode selection happens only when the user changes the selection or render
+budget and clicks `Add / Update in viewer`. Camera movement must not switch
+between exact/direct and tiled/live mode. Camera movement only updates the
+current tiled/live layer.
+
+Once a selection enters tiled/live mode because its global count exceeds the
+render budget, zoomed-in views can still become exact when the finest visible
+tiles fit within the viewport budget. In other words, multiscale rendering does
+not mean "always sampled"; it means "sampled when needed, exact when locally
+affordable."
+
+Layer lifecycle should stay simple:
+
+```text
+each Add / Update click creates a new napari Points layer object
+the previous Harpy-managed points render layer for the same source is retired
+any previous live tiled query controller/listener is stopped
+the new request is either exact/static or tiled/live
+```
+
+This matches the current direct points adapter behavior, which replaces the old
+Harpy-managed points layer with a fresh layer object for the same source
+identity. The tiled/live implementation should keep that same lifecycle rule
+and additionally retire any old viewport-update worker/controller.
 
 ---
 
@@ -614,7 +675,7 @@ Because tile rows are sorted by `gene_code`, each gene occupies a contiguous ran
 
 ---
 
-## Choosing a Level at Query Time
+## Choosing a Tiled Level at Query Time
 
 Given:
 
@@ -661,7 +722,7 @@ If all levels exceed the limit, pick the coarsest level and apply a final determ
 
 ---
 
-## Query Path
+## Tiled Query Path
 
 Given a napari viewport and selected genes:
 
@@ -748,7 +809,19 @@ features = {"gene": gene_names}
 
 ## napari Integration
 
-Create one `Points` layer:
+On each `Add / Update in viewer` click, create a fresh `Points` layer for the
+new render request.
+
+In exact/direct mode, use the current direct path:
+
+```text
+_points_value_index.load_points(...)
+  -> fully materialized selected points
+  -> fresh static napari Points layer
+  -> no camera listener
+```
+
+In tiled/live mode, create one fresh live `Points` layer for the request:
 
 ```python
 layer = viewer.add_points(
@@ -759,7 +832,7 @@ layer = viewer.add_points(
 )
 ```
 
-On viewport or gene-filter change:
+On viewport changes, query the tile source and update that same live layer:
 
 ```python
 visible = tile_source.query(
@@ -774,6 +847,11 @@ update_live_points_layer(
     features={"gene": visible.gene_names},
 )
 ```
+
+When the user clicks `Add / Update in viewer` again, the new request should
+create a new `Points` layer object and retire the previous Harpy-managed points
+render layer for the same source. If the previous request was tiled/live, also
+stop its debounced camera listener and ignore any stale query results.
 
 ### Safe In-Place Points Layer Updates
 
@@ -994,15 +1072,20 @@ An R-tree is optional. It is not necessary for the main case.
 
 Build the simplest useful version first:
 
-1. Encode genes into `gene_code`.
-2. Build one finest-level tiled cache.
-3. Write one Parquet file per tile.
-4. Write `manifest.parquet`.
-5. Implement viewport query.
-6. Add the guarded live `Points` layer update helper and async-slicing regression test.
-7. Add `gene_tile_counts.parquet`.
-8. Add coarser sampled levels.
-9. Replace tile files with sharded Parquet row groups.
+1. Preserve the current exact/direct path for selections whose total count is
+   within the render budget.
+2. Add the render-mode decision on `Add / Update in viewer`.
+3. Encode genes into `gene_code`.
+4. Build one finest-level tiled cache.
+5. Write one Parquet file per tile.
+6. Write `manifest.parquet`.
+7. Implement tiled viewport query.
+8. Add the guarded live `Points` layer update helper and async-slicing regression test.
+9. Add live tiled layer lifecycle management: fresh layer per request, retire
+   previous layer, stop stale viewport listeners.
+10. Add `gene_tile_counts.parquet`.
+11. Add coarser sampled levels.
+12. Replace tile files with sharded Parquet row groups.
 
 ---
 
@@ -1114,10 +1197,15 @@ fine levels = complete
 At runtime:
 
 ```text
-viewport
+Add / Update in viewer
+  -> compute selected_total_count
+  -> if selected_total_count <= render_budget: exact/direct static layer
+  -> otherwise: tiled/live layer
+
+tiled/live viewport update
   -> tile range -> manifest lookup -> optional gene index lookup -> load tile chunks
   -> exact bbox/gene filter
-  -> update napari Points layer
+  -> guarded in-place update of the live napari Points layer
 ```
 
 This gives you a Neuroglancer-like point visualization system while still using an ordinary napari `Points` layer for rendering.
