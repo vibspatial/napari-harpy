@@ -6,7 +6,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/napari-harpy.svg)](https://pypi.org/project/napari-harpy/)
 
-Built around [`SpatialData`](https://spatialdata.scverse.org/en/stable/) for interactive exploration, feature extraction, and object classification.
+Built around [`SpatialData`](https://spatialdata.scverse.org/en/stable/) and [`Harpy`](https://harpy.readthedocs.io/en/latest/) for interactive exploration, feature extraction, and object classification.
 
 `napari-harpy` is a napari plugin for viewing, exploring, and analyzing
 `SpatialData` datasets. It includes its own viewer for loading and
@@ -15,7 +15,7 @@ object classification workflows.
 
 ## Installation
 
-Install from PyPI:
+Install from [PyPI](https://pypi.org/project/napari-harpy/):
 
 ```bash
 pip install napari-harpy
