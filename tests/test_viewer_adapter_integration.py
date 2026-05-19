@@ -16,7 +16,7 @@ def test_viewer_adapter_real_viewer_overlay_load_activate_and_remove(
     viewer = make_napari_viewer(show=False)
     adapter = ViewerAdapter(viewer)
 
-    layers = adapter.ensure_image_loaded(
+    result = adapter.ensure_image_loaded(
         sdata_blobs,
         "blobs_image",
         "global",
@@ -24,7 +24,10 @@ def test_viewer_adapter_real_viewer_overlay_load_activate_and_remove(
         channels=[0, 1],
         channel_colors=["blue", "red"],
     )
+    layers = result.layers
 
+    assert result.mode == "overlay"
+    assert result.channels == (0, 1)
     assert len(layers) == 2
     assert all(layer in viewer.layers for layer in layers)
     assert [layer.name for layer in layers] == ["blobs_image[0]", "blobs_image[1]"]

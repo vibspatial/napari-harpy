@@ -2,15 +2,17 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from napari_harpy.widgets.shared_styles import StatusCardKind, format_feedback_identifier, validate_status_card_kind
 
 if TYPE_CHECKING:
     from napari_harpy.core._color_source import TableColorSourceSpec
+    from napari_harpy.viewer.adapter import ImageLoadResult
     from napari_harpy.viewer.labels_styling import LabelsLoadResult
     from napari_harpy.viewer.points_styling import PointsLayerResult
     from napari_harpy.viewer.shapes_styling import ShapesLoadResult
+    from napari_harpy.widgets.viewer.image_widget import ImageLoadRequest
     from napari_harpy.widgets.viewer.labels_widget import LabelsLoadRequest
     from napari_harpy.widgets.viewer.points_controller import PointsLoadResult
     from napari_harpy.widgets.viewer.shapes_widget import ShapesLoadRequest
@@ -183,22 +185,22 @@ def build_styled_shapes_card_spec(
 
 
 def build_image_loaded_card_spec(
-    image_name: str,
+    request: ImageLoadRequest,
+    result: ImageLoadResult,
     coordinate_system: str,
-    mode: Literal["stack", "overlay"],
-    channels: Sequence[int] | None = None,
 ) -> _ViewerStatusCardSpec:
+    image_name = request.image_name
     display_name, was_shortened = format_feedback_identifier(image_name)
-    if mode == "stack":
+    if result.mode == "stack":
         line = f"Loaded image `{display_name}` in stack mode for coordinate system `{coordinate_system}`."
         tooltip_line = f"Loaded image `{image_name}` in stack mode for coordinate system `{coordinate_system}`."
     else:
         line = (
-            f"Loaded image `{display_name}` in overlay mode for channels {list(channels or [])} "
+            f"Loaded image `{display_name}` in overlay mode for channels {list(result.channels)} "
             f"in coordinate system `{coordinate_system}`."
         )
         tooltip_line = (
-            f"Loaded image `{image_name}` in overlay mode for channels {list(channels or [])} "
+            f"Loaded image `{image_name}` in overlay mode for channels {list(result.channels)} "
             f"in coordinate system `{coordinate_system}`."
         )
 

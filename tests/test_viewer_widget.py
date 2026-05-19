@@ -1237,7 +1237,13 @@ def test_viewer_widget_add_update_image_overlay_passes_selected_channels_and_col
         widget.app_state.viewer_adapter,
         "ensure_image_loaded",
         lambda sdata, image_name, coordinate_system, *, mode, channels=None, channel_colors=None: (
-            recorded_calls.append((sdata, image_name, coordinate_system, mode, channels, channel_colors)) or fake_layers
+            recorded_calls.append((sdata, image_name, coordinate_system, mode, channels, channel_colors))
+            or SimpleNamespace(
+                layers=tuple(fake_layers),
+                primary_layer=fake_layers[0],
+                mode=mode,
+                channels=tuple(channels or ()),
+            )
         ),
     )
     monkeypatch.setattr(
@@ -1344,7 +1350,13 @@ def test_viewer_widget_add_update_image_uses_selected_coordinate_system(qtbot, m
         widget.app_state.viewer_adapter,
         "ensure_image_loaded",
         lambda sdata, image_name, coordinate_system, *, mode, channels=None, channel_colors=None: (
-            recorded_calls.append((sdata, image_name, coordinate_system, mode)) or fake_layer
+            recorded_calls.append((sdata, image_name, coordinate_system, mode))
+            or SimpleNamespace(
+                layers=(fake_layer,),
+                primary_layer=fake_layer,
+                mode=mode,
+                channels=tuple(channels or ()),
+            )
         ),
     )
     monkeypatch.setattr(

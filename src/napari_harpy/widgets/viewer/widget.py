@@ -772,7 +772,7 @@ class ViewerWidget(QWidget):
             return
 
         try:
-            layer_or_layers = self._app_state.viewer_adapter.ensure_image_loaded(
+            result = self._app_state.viewer_adapter.ensure_image_loaded(
                 sdata,
                 image_name,
                 coordinate_system,
@@ -784,41 +784,10 @@ class ViewerWidget(QWidget):
             self._set_action_feedback(title="Image Load Error", lines=[str(error)], kind="error")
             return
 
-        if mode == "stack":
-            if isinstance(layer_or_layers, list):
-                self._set_action_feedback(
-                    title="Image Load Error",
-                    lines=[f"Expected one stack image layer for `{image_name}`, but received multiple layers."],
-                    kind="error",
-                )
-                return
-
-            self._app_state.viewer_adapter.activate_layer(layer_or_layers)
-            self._apply_status_card_spec(
-                self.global_action_feedback_label,
-                build_image_loaded_card_spec(image_name, coordinate_system, "stack"),
-            )
-            return
-
-        if not isinstance(layer_or_layers, list):
-            self._set_action_feedback(
-                title="Image Load Error",
-                lines=[f"Expected overlay image layers for `{image_name}`, but received a single layer."],
-                kind="error",
-            )
-            return
-        if not layer_or_layers:
-            self._set_action_feedback(
-                title="Image Load Error",
-                lines=[f"No overlay layers were returned for image `{image_name}`."],
-                kind="error",
-            )
-            return
-
-        self._app_state.viewer_adapter.activate_layer(layer_or_layers[0])
+        self._app_state.viewer_adapter.activate_layer(result.primary_layer)
         self._apply_status_card_spec(
             self.global_action_feedback_label,
-            build_image_loaded_card_spec(image_name, coordinate_system, "overlay", request.channels),
+            build_image_loaded_card_spec(request, result, coordinate_system),
         )
 
     def _update_section_empty_states(

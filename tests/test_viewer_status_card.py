@@ -164,7 +164,14 @@ def test_build_styled_shapes_card_spec_combines_palette_and_geometry_warnings() 
 
 
 def test_build_image_loaded_card_spec_reports_overlay_channels() -> None:
-    spec = build_image_loaded_card_spec("blobs_image", "global", "overlay", [0, 2])
+    request = SimpleNamespace(image_name="blobs_image")
+    result = SimpleNamespace(
+        layers=(object(), object()),
+        mode="overlay",
+        channels=(0, 2),
+    )
+
+    spec = build_image_loaded_card_spec(request, result, "global")
 
     assert spec.title == "Image Loaded"
     assert spec.kind == "success"

@@ -59,6 +59,20 @@ DEFAULT_OVERLAY_COLORS = (
 )
 
 
+@dataclass(frozen=True)
+class ImageLoadResult:
+    """Describe one image load/update result returned to the viewer."""
+
+    layers: tuple[Image, ...]
+    mode: ImageDisplayMode
+    channels: tuple[int, ...] = ()
+
+    @property
+    def primary_layer(self) -> Image:
+        """Return the layer that should become active after loading."""
+        return self.layers[0]
+
+
 class _HarpyShapes(Shapes):
     """Napari ``Shapes`` layer with Harpy-specific status-bar text.
 
@@ -1073,7 +1087,7 @@ class ViewerAdapter(QObject):
         mode: ImageDisplayMode = "stack",
         channels: Sequence[int | str] | None = None,
         channel_colors: Sequence[str] | None = None,
-    ) -> Image | list[Image]:
+    ) -> ImageLoadResult:
         """Load an image element into napari if it is not already present."""
         images = getattr(sdata, "images", {})
         if image_name not in images:
@@ -1104,7 +1118,10 @@ class ViewerAdapter(QObject):
             )
             existing_layer = layers[0] if layers else None
             if existing_layer is not None:
-                return existing_layer
+                return ImageLoadResult(
+                    layers=(existing_layer,),
+                    mode=mode,
+                )
 
             image_data, rgb = _get_stack_image_layer_data(image_element)
             layer = Image(
@@ -1121,7 +1138,10 @@ class ViewerAdapter(QObject):
                 coordinate_system=coordinate_system,
                 image_display_mode=mode,
             )
-            return layer
+            return ImageLoadResult(
+                layers=(layer,),
+                mode=mode,
+            )
 
         if mode != "overlay":
             raise NotImplementedError(f"Image display mode `{mode}` is not implemented yet.")
@@ -1191,7 +1211,11 @@ class ViewerAdapter(QObject):
 
             loaded_overlay_layers.append(layer)
 
-        return loaded_overlay_layers
+        return ImageLoadResult(
+            layers=tuple(loaded_overlay_layers),
+            mode="overlay",
+            channels=tuple(channel_index for channel_index, _ in resolved_channels),
+        )
 
     def ensure_shapes_loaded(self, sdata: SpatialData, shapes_name: str, coordinate_system: str) -> ShapesLoadResult:
         """Load a shapes element into napari if it is not already present."""
