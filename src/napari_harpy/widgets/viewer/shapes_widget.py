@@ -99,10 +99,10 @@ class _ShapesCardWidget(QFrame):
         self._color_source_completer.setFilterMode(Qt.MatchFlag.MatchContains)
         self.color_source_value_input.setCompleter(self._color_source_completer)
 
-        self.action_status_label = QLabel()
-        self.action_status_label.setObjectName(f"viewer_widget_shapes_action_status_{shapes_name}")
-        self.action_status_label.setWordWrap(True)
-        self.action_status_label.setStyleSheet(SUMMARY_LABEL_STYLESHEET)
+        self.action_hint_label = QLabel()
+        self.action_hint_label.setObjectName(f"viewer_widget_shapes_action_hint_{shapes_name}")
+        self.action_hint_label.setWordWrap(True)
+        self.action_hint_label.setStyleSheet(SUMMARY_LABEL_STYLESHEET)
 
         self.add_update_button = QPushButton("Add / Update in viewer")
         self.add_update_button.setObjectName(f"viewer_widget_add_update_shapes_button_{shapes_name}")
@@ -117,7 +117,7 @@ class _ShapesCardWidget(QFrame):
         form_layout.addRow(create_form_label("Display"), self.fill_toggle)
 
         layout.addLayout(form_layout)
-        layout.addWidget(self.action_status_label)
+        layout.addWidget(self.action_hint_label)
         layout.addWidget(self.add_update_button)
 
         self.color_source_kind_combo.currentIndexChanged.connect(self._refresh_color_source_controls)
@@ -204,17 +204,17 @@ class _ShapesCardWidget(QFrame):
         self._update_fill_toggle_enabled(selected_source is not None)
 
         if source_kind is None:
-            self.action_status_label.setText("Action: add/update primary shapes layer")
+            self.action_hint_label.setText("Action: add/update primary shapes layer")
             return
 
         if selected_source is None:
             if self._filtered_color_sources:
-                self.action_status_label.setText("Action: select a shapes column for a styled shapes layer")
+                self.action_hint_label.setText("Action: select a shapes column for a styled shapes layer")
             else:
-                self.action_status_label.setText("Action: no colorable shapes columns available")
+                self.action_hint_label.setText("Action: no colorable shapes columns available")
             return
 
-        self.action_status_label.setText(
+        self.action_hint_label.setText(
             f'Action: add/update styled shapes layer for column "{selected_source.value_key}"'
         )
 

@@ -30,10 +30,36 @@ class _ViewerStatusCardSpec:
 
 
 def build_viewer_error_card_spec(title: str, lines: Sequence[str]) -> _ViewerStatusCardSpec:
+    return build_viewer_feedback_card_spec(
+        title=title,
+        lines=lines,
+        kind="error",
+    )
+
+
+def build_viewer_feedback_card_spec(
+    message: str | None = None,
+    *,
+    title: str | None = None,
+    lines: Sequence[str] | None = None,
+    kind: StatusCardKind | None = None,
+    is_error: bool | None = None,
+    tooltip_message: str | None = None,
+) -> _ViewerStatusCardSpec:
+    if lines is None:
+        resolved_lines = () if message is None else (message,)
+    else:
+        resolved_lines = tuple(lines)
+    if kind is None:
+        kind = "error" if is_error else "success"
+    if title is None:
+        title = "Viewer Error" if kind == "error" else "Viewer Updated"
+
     return _ViewerStatusCardSpec(
         title=title,
-        lines=tuple(lines),
-        kind="error",
+        lines=resolved_lines,
+        kind=kind,
+        tooltip_message=tooltip_message,
     )
 
 

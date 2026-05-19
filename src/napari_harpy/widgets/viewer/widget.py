@@ -58,6 +58,7 @@ from napari_harpy.widgets.viewer.status_card import (
     build_primary_shapes_loaded_card_spec,
     build_styled_labels_card_spec,
     build_styled_shapes_card_spec,
+    build_viewer_feedback_card_spec,
 )
 from napari_harpy.widgets.viewer.styles import (
     EMPTY_STATE_STYLESHEET,
@@ -841,22 +842,14 @@ class ViewerWidget(QWidget):
         tooltip_message: str | None = None,
     ) -> None:
         """Render viewer action feedback as the shared status-card pattern."""
-        if lines is None:
-            if message is None:
-                lines = []
-            else:
-                lines = [message]
-        if kind is None:
-            kind = "error" if is_error else "success"
-        if title is None:
-            title = "Viewer Error" if kind == "error" else "Viewer Updated"
-
         self._apply_status_card_spec(
             self.global_action_feedback_label,
-            _ViewerStatusCardSpec(
+            build_viewer_feedback_card_spec(
+                message,
                 title=title,
-                lines=tuple(lines),
+                lines=lines,
                 kind=kind,
+                is_error=is_error,
                 tooltip_message=tooltip_message,
             ),
         )

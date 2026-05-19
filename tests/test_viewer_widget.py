@@ -329,7 +329,7 @@ def test_viewer_widget_refreshes_cards_when_shared_sdata_changes(qtbot, sdata_bl
     assert widget.image_rows[0].detail_widget.isHidden()
     assert widget.labels_rows[0].detail_widget.isHidden()
     assert widget.shape_rows[0].detail_widget.isHidden()
-    assert widget.shape_cards[0].action_status_label.text() == "Action: add/update primary shapes layer"
+    assert widget.shape_cards[0].action_hint_label.text() == "Action: add/update primary shapes layer"
     assert widget.shape_cards[0].add_update_button.isEnabled()
     assert widget.labels_cards[0].linked_table_combo.count() == 1
     assert widget.labels_cards[0].linked_table_combo.itemText(0) == "table"
@@ -593,12 +593,12 @@ def test_viewer_widget_labels_cards_expose_table_driven_coloring_controls(qtbot,
     ]
     assert first_card.color_source_value_input.completer() is not None
     assert not first_card.color_source_value_input.isEnabled()
-    assert first_card.action_status_label.text() == "Action: add/update primary labels layer"
+    assert first_card.action_hint_label.text() == "Action: add/update primary labels layer"
 
     first_card.color_source_kind_combo.setCurrentIndex(1)
     assert first_card.color_source_value_input.isEnabled()
     assert first_card.color_source_value_input.completer().model().stringList() == ["instance_id"]
-    assert first_card.action_status_label.text() == 'Action: add/update colored overlay for obs["instance_id"]'
+    assert first_card.action_hint_label.text() == 'Action: add/update colored overlay for obs["instance_id"]'
 
     first_card.color_source_kind_combo.setCurrentIndex(2)
     assert first_card.color_source_value_input.isEnabled()
@@ -607,10 +607,10 @@ def test_viewer_widget_labels_cards_expose_table_driven_coloring_controls(qtbot,
         "channel_1_sum",
         "channel_2_sum",
     ]
-    assert first_card.action_status_label.text() == 'Action: add/update colored overlay for X[:, "channel_0_sum"]'
+    assert first_card.action_hint_label.text() == 'Action: add/update colored overlay for X[:, "channel_0_sum"]'
 
     second_card.color_source_kind_combo.setCurrentIndex(2)
-    assert second_card.action_status_label.text() == "Action: colored overlays require a linked table"
+    assert second_card.action_hint_label.text() == "Action: colored overlays require a linked table"
 
 
 def test_viewer_widget_labels_card_repopulates_color_sources_when_linked_table_changes(qtbot, monkeypatch) -> None:
@@ -654,16 +654,16 @@ def test_viewer_widget_labels_card_repopulates_color_sources_when_linked_table_c
     card.color_source_kind_combo.setCurrentIndex(1)
     assert card.color_source_value_input.isEnabled()
     assert card.color_source_value_input.completer().model().stringList() == ["cell_type"]
-    assert card.action_status_label.text() == 'Action: add/update colored overlay for obs["cell_type"]'
+    assert card.action_hint_label.text() == 'Action: add/update colored overlay for obs["cell_type"]'
 
     card.linked_table_combo.setCurrentIndex(1)
     assert not card.color_source_value_input.isEnabled()
-    assert card.action_status_label.text() == "Action: no colorable observation columns available"
+    assert card.action_hint_label.text() == "Action: no colorable observation columns available"
 
     card.color_source_kind_combo.setCurrentIndex(2)
     assert card.color_source_value_input.isEnabled()
     assert card.color_source_value_input.completer().model().stringList() == ["GeneA"]
-    assert card.action_status_label.text() == 'Action: add/update colored overlay for X[:, "GeneA"]'
+    assert card.action_hint_label.text() == 'Action: add/update colored overlay for X[:, "GeneA"]'
 
 
 def test_viewer_widget_image_mode_toggles_are_mutually_exclusive(qtbot, sdata_blobs) -> None:
@@ -1400,7 +1400,7 @@ def test_viewer_widget_shapes_card_exposes_shape_column_controls(qtbot) -> None:
     assert card.fill_toggle.text() == "Fill"
     assert not card.fill_toggle.isEnabled()
     assert not card.fill_toggle.isChecked()
-    assert card.action_status_label.text() == "Action: add/update primary shapes layer"
+    assert card.action_hint_label.text() == "Action: add/update primary shapes layer"
 
     card.color_source_kind_combo.setCurrentIndex(1)
 
@@ -1409,14 +1409,14 @@ def test_viewer_widget_shapes_card_exposes_shape_column_controls(qtbot) -> None:
     assert card.fill_toggle.isEnabled()
     assert not card.fill_toggle.isChecked()
     assert card._color_source_completer_model.stringList() == ["cell_type", "score", "free_text"]
-    assert card.action_status_label.text() == 'Action: add/update styled shapes layer for column "cell_type"'
+    assert card.action_hint_label.text() == 'Action: add/update styled shapes layer for column "cell_type"'
 
     card.fill_toggle.setChecked(True)
     card.color_source_value_input.setText("not_a_shape_column")
 
     assert not card.fill_toggle.isEnabled()
     assert not card.fill_toggle.isChecked()
-    assert card.action_status_label.text() == "Action: select a shapes column for a styled shapes layer"
+    assert card.action_hint_label.text() == "Action: select a shapes column for a styled shapes layer"
 
 
 def test_viewer_widget_shape_column_selector_hides_geometry_and_palette_columns(qtbot) -> None:

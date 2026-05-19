@@ -13,6 +13,7 @@ from napari_harpy.widgets.viewer.status_card import (
     build_styled_labels_card_spec,
     build_styled_shapes_card_spec,
     build_viewer_error_card_spec,
+    build_viewer_feedback_card_spec,
 )
 
 
@@ -32,6 +33,14 @@ def test_build_viewer_error_card_spec() -> None:
     assert spec.lines == ("Overlay mode requires a channel.",)
     assert spec.kind == "error"
     assert spec.tooltip_message is None
+
+
+def test_build_viewer_feedback_card_spec_defaults_error_title_from_legacy_flag() -> None:
+    spec = build_viewer_feedback_card_spec("Old error", is_error=True)
+
+    assert spec.title == "Viewer Error"
+    assert spec.lines == ("Old error",)
+    assert spec.kind == "error"
 
 
 def test_build_points_layer_card_spec_reports_warnings() -> None:
