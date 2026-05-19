@@ -36,7 +36,7 @@ def test_build_viewer_error_card_spec() -> None:
 
 def test_build_points_layer_card_spec_reports_warnings() -> None:
     request = SimpleNamespace(
-        identity=SimpleNamespace(points_name="cells"),
+        identity=SimpleNamespace(points_name="cells", coordinate_system="global"),
         selection=SimpleNamespace(
             index_column="cell_type",
             loaded_count=1250,
@@ -54,9 +54,39 @@ def test_build_points_layer_card_spec_reports_warnings() -> None:
 
     assert spec.title == "Points Layer Created With Warning"
     assert spec.kind == "warning"
-    assert spec.lines[0] == "Created points layer for `cells` by `cell_type` with 1,250 point(s)."
+    assert (
+        spec.lines[0]
+        == "Created points layer for `cells` by `cell_type` in coordinate system `global` with 1,250 point(s)."
+    )
     assert "Only rendered a sampled subset." in spec.lines
     assert "Categorical coloring is disabled for 200 selected values" in spec.lines[-1]
+
+
+def test_build_points_layer_card_spec_uses_tooltip_for_shortened_names() -> None:
+    points_name = "points_" + "x" * 80
+    request = SimpleNamespace(
+        identity=SimpleNamespace(points_name=points_name, coordinate_system="global"),
+        selection=SimpleNamespace(
+            index_column="gene",
+            loaded_count=12,
+            warning=None,
+        ),
+    )
+    result = SimpleNamespace(
+        created=False,
+        selected_value_count=1,
+        categorical_limit=102,
+        categorical_coloring_disabled=False,
+    )
+
+    spec = build_points_layer_card_spec(request, result)
+
+    assert spec.title == "Points Layer Updated"
+    assert points_name not in spec.lines[0]
+    assert (
+        spec.tooltip_message
+        == f"Updated points layer for `{points_name}` by `gene` in coordinate system `global` with 12 point(s)."
+    )
 
 
 def test_build_primary_labels_loaded_card_spec_uses_tooltip_for_shortened_names() -> None:
@@ -96,6 +126,28 @@ def test_build_styled_labels_card_spec_reports_stored_palette() -> None:
     assert spec.lines == (
         'Created colored overlay for obs["cell_type"] on labels element `blobs_labels` in coordinate system `global`.',
         "Used the stored categorical palette.",
+    )
+
+
+def test_build_styled_labels_card_spec_uses_tooltip_for_shortened_names() -> None:
+    labels_name = "labels_" + "x" * 80
+    request = SimpleNamespace(
+        labels_name=labels_name,
+        selected_color_source=SimpleNamespace(source_kind="obs_column", value_key="cell_type"),
+    )
+    result = SimpleNamespace(
+        created=True,
+        value_kind="categorical",
+        palette_source="stored",
+        coercion_applied=False,
+    )
+
+    spec = build_styled_labels_card_spec(request, result, "global")
+
+    assert labels_name not in spec.lines[0]
+    assert (
+        spec.tooltip_message == f'Created colored overlay for obs["cell_type"] on labels element `{labels_name}` '
+        "in coordinate system `global`."
     )
 
 
@@ -160,6 +212,29 @@ def test_build_styled_shapes_card_spec_combines_palette_and_geometry_warnings() 
         "in coordinate system `global`.",
         "Used the default categorical palette because no stored palette was present.",
         "Skipped 1 empty, invalid, or unsupported geometries while loading renderable shapes.",
+    )
+
+
+def test_build_styled_shapes_card_spec_uses_tooltip_for_shortened_names() -> None:
+    shapes_name = "shapes_" + "x" * 80
+    request = SimpleNamespace(
+        shapes_name=shapes_name,
+        selected_color_source=SimpleNamespace(value_key="cell_type"),
+    )
+    result = SimpleNamespace(
+        created=True,
+        value_kind="continuous",
+        palette_source=None,
+        coercion_applied=False,
+        skipped_geometry_count=0,
+    )
+
+    spec = build_styled_shapes_card_spec(request, result, "global")
+
+    assert shapes_name not in spec.lines[0]
+    assert (
+        spec.tooltip_message == f'Created styled shapes layer for column "cell_type" on shapes element `{shapes_name}` '
+        "in coordinate system `global`."
     )
 
 

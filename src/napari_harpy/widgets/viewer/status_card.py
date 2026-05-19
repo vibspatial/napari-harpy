@@ -43,12 +43,21 @@ def build_points_layer_card_spec(
 ) -> _ViewerStatusCardSpec:
     selection = request.selection
     action = "Created" if result.created else "Updated"
+    points_name = request.identity.points_name
+    display_name, was_shortened = format_feedback_identifier(points_name)
     lines = [
         (
-            f"{action} points layer for `{request.identity.points_name}` "
-            f"by `{selection.index_column}` with {selection.loaded_count:,} point(s)."
+            f"{action} points layer for `{display_name}` "
+            f"by `{selection.index_column}` in coordinate system `{request.identity.coordinate_system}` "
+            f"with {selection.loaded_count:,} point(s)."
         )
     ]
+    tooltip_message = (
+        f"{action} points layer for `{points_name}` by `{selection.index_column}` "
+        f"in coordinate system `{request.identity.coordinate_system}` with {selection.loaded_count:,} point(s)."
+        if was_shortened
+        else None
+    )
     kind: StatusCardKind = "success"
     title = f"Points Layer {action}"
     if selection.warning:
@@ -67,6 +76,7 @@ def build_points_layer_card_spec(
         title=title,
         lines=tuple(lines),
         kind=kind,
+        tooltip_message=tooltip_message,
     )
 
 
@@ -102,12 +112,20 @@ def build_styled_labels_card_spec(
 
     action = "Created" if result.created else "Updated"
     source_text = _format_table_color_source(selected_color_source)
+    labels_name = request.labels_name
+    display_name, was_shortened = format_feedback_identifier(labels_name)
     lines = [
         (
-            f"{action} colored overlay for {source_text} on labels element `{request.labels_name}` "
+            f"{action} colored overlay for {source_text} on labels element `{display_name}` "
             f"in coordinate system `{coordinate_system}`."
         )
     ]
+    tooltip_message = (
+        f"{action} colored overlay for {source_text} on labels element `{labels_name}` "
+        f"in coordinate system `{coordinate_system}`."
+        if was_shortened
+        else None
+    )
     title = f"Colored Overlay {action}"
     kind = _append_palette_status_lines(
         lines,
@@ -118,6 +136,7 @@ def build_styled_labels_card_spec(
         title=_palette_status_title(title, result, include_instance_message=True),
         lines=tuple(lines),
         kind=kind,
+        tooltip_message=tooltip_message,
     )
 
 
@@ -159,12 +178,20 @@ def build_styled_shapes_card_spec(
         )
 
     action = "Created" if result.created else "Updated"
+    shapes_name = request.shapes_name
+    display_name, was_shortened = format_feedback_identifier(shapes_name)
     lines = [
         (
             f'{action} styled shapes layer for column "{selected_color_source.value_key}" '
-            f"on shapes element `{request.shapes_name}` in coordinate system `{coordinate_system}`."
+            f"on shapes element `{display_name}` in coordinate system `{coordinate_system}`."
         )
     ]
+    tooltip_message = (
+        f'{action} styled shapes layer for column "{selected_color_source.value_key}" '
+        f"on shapes element `{shapes_name}` in coordinate system `{coordinate_system}`."
+        if was_shortened
+        else None
+    )
     title = f"Styled Shapes {action}"
     kind = _append_palette_status_lines(
         lines,
@@ -181,6 +208,7 @@ def build_styled_shapes_card_spec(
         title=title,
         lines=tuple(lines),
         kind=kind,
+        tooltip_message=tooltip_message,
     )
 
 
