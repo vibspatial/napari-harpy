@@ -100,10 +100,7 @@ def build_styled_labels_card_spec(
 ) -> _ViewerStatusCardSpec:
     selected_color_source = request.selected_color_source
     if selected_color_source is None:
-        return build_viewer_error_card_spec(
-            "Colored Overlay Error",
-            (f"Select a color source to create a colored overlay for `{request.labels_name}`.",),
-        )
+        raise ValueError("Styled labels status requires a selected color source.")
 
     action = "Created" if result.created else "Updated"
     source_text = _format_table_color_source(selected_color_source)
@@ -155,10 +152,7 @@ def build_styled_shapes_card_spec(
 ) -> _ViewerStatusCardSpec:
     selected_color_source = request.selected_color_source
     if selected_color_source is None:
-        return build_viewer_error_card_spec(
-            "Styled Shapes Error",
-            (f"Select a shapes column to create a styled shapes layer for `{request.shapes_name}`.",),
-        )
+        raise ValueError("Styled shapes status requires a selected color source.")
 
     action = "Created" if result.created else "Updated"
     shapes_name = request.shapes_name

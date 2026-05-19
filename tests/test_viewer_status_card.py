@@ -161,6 +161,22 @@ def test_build_styled_labels_card_spec_reports_instance_coloring() -> None:
     assert spec.lines[-1] == "Used instance label colors."
 
 
+def test_build_styled_labels_card_spec_rejects_missing_color_source() -> None:
+    request = SimpleNamespace(
+        labels_name="blobs_labels",
+        selected_color_source=None,
+    )
+    result = SimpleNamespace(
+        created=True,
+        value_kind="categorical",
+        palette_source="stored",
+        coercion_applied=False,
+    )
+
+    with pytest.raises(ValueError, match="Styled labels status requires a selected color source"):
+        build_styled_labels_card_spec(request, result)
+
+
 def test_build_primary_shapes_loaded_card_spec_reports_skipped_geometries() -> None:
     request = SimpleNamespace(shapes_name="blobs_circles")
     result = SimpleNamespace(
@@ -225,6 +241,23 @@ def test_build_styled_shapes_card_spec_uses_tooltip_for_shortened_names() -> Non
     assert (
         spec.tooltip_message == f'Created styled shapes layer for column "cell_type" on shapes element `{shapes_name}`.'
     )
+
+
+def test_build_styled_shapes_card_spec_rejects_missing_color_source() -> None:
+    request = SimpleNamespace(
+        shapes_name="blobs_circles",
+        selected_color_source=None,
+    )
+    result = SimpleNamespace(
+        created=True,
+        value_kind="categorical",
+        palette_source="stored",
+        coercion_applied=False,
+        skipped_geometry_count=0,
+    )
+
+    with pytest.raises(ValueError, match="Styled shapes status requires a selected color source"):
+        build_styled_shapes_card_spec(request, result)
 
 
 def test_build_image_loaded_card_spec_reports_overlay_channels() -> None:
