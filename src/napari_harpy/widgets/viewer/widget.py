@@ -34,7 +34,6 @@ from napari_harpy.core.spatialdata import (
     get_spatialdata_shapes_options_for_coordinate_system_from_sdata,
     get_table_color_source_options,
 )
-from napari_harpy.viewer.adapter import ShapesLayerBinding, ViewerAdapter
 from napari_harpy.viewer.points_styling import PointsLayerResult
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
@@ -681,14 +680,15 @@ class ViewerWidget(QWidget):
 
     def _add_or_update_shapes_layer(self, request: ShapesLoadRequest) -> None:
         if request.selected_source_kind is None:
-            self._add_or_update_primary_shapes_layer(request.shapes_name)
+            self._add_or_update_primary_shapes_layer(request)
             return
 
         self._add_or_update_styled_shapes_layer(request)
 
-    def _add_or_update_primary_shapes_layer(self, shapes_name: str) -> None:
+    def _add_or_update_primary_shapes_layer(self, request: ShapesLoadRequest) -> None:
         sdata = self._app_state.sdata
         coordinate_system = self._app_state.coordinate_system
+        shapes_name = request.shapes_name
 
         if sdata is None or not coordinate_system:
             self._set_action_feedback(
@@ -699,16 +699,15 @@ class ViewerWidget(QWidget):
             return
 
         try:
-            layer = self._app_state.viewer_adapter.ensure_shapes_loaded(sdata, shapes_name, coordinate_system)
+            result = self._app_state.viewer_adapter.ensure_shapes_loaded(sdata, shapes_name, coordinate_system)
         except ValueError as error:
             self._set_action_feedback(title="Shapes Load Error", lines=[str(error)], kind="error")
             return
 
-        self._app_state.viewer_adapter.activate_layer(layer)
-        skipped_geometry_count = _get_layer_skipped_geometry_count(self._app_state.viewer_adapter, layer)
+        self._app_state.viewer_adapter.activate_layer(result.layer)
         self._apply_status_card_spec(
             self.global_action_feedback_label,
-            build_primary_shapes_loaded_card_spec(shapes_name, coordinate_system, skipped_geometry_count),
+            build_primary_shapes_loaded_card_spec(request, result, coordinate_system),
         )
 
     def _add_or_update_styled_shapes_layer(self, request: ShapesLoadRequest) -> None:
@@ -744,10 +743,9 @@ class ViewerWidget(QWidget):
             return
 
         self._app_state.viewer_adapter.activate_layer(result.layer)
-        skipped_geometry_count = _get_layer_skipped_geometry_count(self._app_state.viewer_adapter, result.layer)
         self._apply_status_card_spec(
             self.global_action_feedback_label,
-            build_styled_shapes_card_spec(request, result, coordinate_system, skipped_geometry_count),
+            build_styled_shapes_card_spec(request, result, coordinate_system),
         )
 
     def _add_or_update_image_layer(self, request: ImageLoadRequest) -> None:
@@ -1008,14 +1006,3 @@ def _get_points_index_columns(sdata: SpatialData, points_name: str) -> list[str]
             index_columns.append(column_name)
 
     return index_columns
-
-
-def _get_layer_skipped_geometry_count(viewer_adapter: ViewerAdapter, layer: object) -> int:
-    binding = viewer_adapter.layer_bindings.get_binding(layer)
-    if not isinstance(binding, ShapesLayerBinding):
-        return 0
-
-    try:
-        return int(binding.skipped_geometry_count)
-    except (TypeError, ValueError):
-        return 0

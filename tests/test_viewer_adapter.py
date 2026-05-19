@@ -1524,8 +1524,14 @@ def test_viewer_adapter_ensure_shapes_loaded_adds_polygon_layer_and_registers_bi
 
     adapter.primary_labels_layers_changed.connect(lambda: labels_events.append("changed"))
 
-    layer = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
+    result = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
+    layer = result.layer
 
+    assert result.created is True
+    assert result.value_kind is None
+    assert result.palette_source is None
+    assert result.coercion_applied is False
+    assert result.skipped_geometry_count == 0
     assert layer in viewer.layers
     assert layer.name == "blobs_polygons"
     assert layer.shape_type == ["polygon"] * len(sdata_blobs.shapes["blobs_polygons"])
@@ -1554,7 +1560,8 @@ def test_viewer_adapter_ensure_shapes_loaded_expands_multipolygons_with_source_m
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
 
-    layer = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_multipolygons", "global")
+    result = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_multipolygons", "global")
+    layer = result.layer
 
     expected_indices: list[object] = []
     for source_index, geometry in sdata_blobs.shapes["blobs_multipolygons"].geometry.items():
@@ -1571,7 +1578,8 @@ def test_viewer_adapter_ensure_shapes_loaded_renders_circles_as_ellipses(sdata_b
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
 
-    layer = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_circles", "global")
+    result = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_circles", "global")
+    layer = result.layer
 
     circles = sdata_blobs.shapes["blobs_circles"]
     first_circle = circles.iloc[0]
@@ -1605,7 +1613,8 @@ def test_viewer_adapter_ensure_shapes_loaded_preserves_polygon_holes() -> None:
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
 
-    layer = adapter.ensure_shapes_loaded(sdata, "donuts", "global")
+    result = adapter.ensure_shapes_loaded(sdata, "donuts", "global")
+    layer = result.layer
     labels = layer.to_labels(labels_shape=(12, 12))
 
     binding = get_shapes_binding(adapter, layer)
@@ -1627,7 +1636,8 @@ def test_viewer_adapter_ensure_shapes_loaded_uses_named_geodataframe_index_in_fe
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
 
-    layer = adapter.ensure_shapes_loaded(sdata, "cell_boundaries", "global")
+    result = adapter.ensure_shapes_loaded(sdata, "cell_boundaries", "global")
+    layer = result.layer
 
     binding = get_shapes_binding(adapter, layer)
     assert binding.source_shapes_index_by_row == ("cell_1",)
@@ -1650,8 +1660,10 @@ def test_viewer_adapter_ensure_shapes_loaded_skips_empty_invalid_or_unsupported_
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
 
-    layer = adapter.ensure_shapes_loaded(sdata, "mixed_shapes", "global")
+    result = adapter.ensure_shapes_loaded(sdata, "mixed_shapes", "global")
+    layer = result.layer
 
+    assert result.skipped_geometry_count == 2
     assert layer.shape_type == ["polygon", "polygon", "polygon"]
     binding = get_shapes_binding(adapter, layer)
     assert binding.source_shapes_index_by_row == ("valid", "bowtie", "bowtie")
@@ -1665,7 +1677,9 @@ def test_viewer_adapter_ensure_shapes_loaded_reuses_matching_existing_layer(sdat
     first = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
     second = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
 
-    assert first is second
+    assert first.layer is second.layer
+    assert first.created is True
+    assert second.created is False
     assert len(viewer.layers) == 1
 
 
@@ -1754,11 +1768,11 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_coexists_with_primary_shapes
         value_kind="categorical",
     )
 
-    primary_layer = adapter.ensure_shapes_loaded(sdata, "cell_boundaries", "global")
+    primary_layer = adapter.ensure_shapes_loaded(sdata, "cell_boundaries", "global").layer
     styled_result = adapter.ensure_styled_shapes_loaded(sdata, "cell_boundaries", "global", style_spec)
 
     assert primary_layer is not styled_result.layer
-    assert adapter.ensure_shapes_loaded(sdata, "cell_boundaries", "global") is primary_layer
+    assert adapter.ensure_shapes_loaded(sdata, "cell_boundaries", "global").layer is primary_layer
     assert adapter.get_loaded_primary_shapes_layer(sdata, "cell_boundaries", "global") is primary_layer
     assert adapter.get_loaded_styled_shapes_layer(sdata, "cell_boundaries", style_spec, "global") is styled_result.layer
     assert adapter.get_loaded_styled_shapes_layers(sdata, "cell_boundaries", "global") == [styled_result.layer]
@@ -1825,7 +1839,7 @@ def test_viewer_adapter_remove_shapes_layer_removes_only_primary_shapes_layer() 
         value_key="cell_type",
         value_kind="categorical",
     )
-    primary_layer = adapter.ensure_shapes_loaded(sdata, "cell_boundaries", "global")
+    primary_layer = adapter.ensure_shapes_loaded(sdata, "cell_boundaries", "global").layer
     styled_layer = adapter.ensure_styled_shapes_loaded(sdata, "cell_boundaries", "global", style_spec).layer
 
     removed_layer = adapter.remove_shapes_layer(sdata, "cell_boundaries", "global")
@@ -1845,7 +1859,7 @@ def test_viewer_adapter_remove_layers_outside_coordinate_system_removes_primary_
         value_key="cell_type",
         value_kind="categorical",
     )
-    primary_layer = adapter.ensure_shapes_loaded(sdata, "cell_boundaries", "global")
+    primary_layer = adapter.ensure_shapes_loaded(sdata, "cell_boundaries", "global").layer
     styled_layer = adapter.ensure_styled_shapes_loaded(sdata, "cell_boundaries", "global", style_spec).layer
 
     removed_bindings = adapter.remove_layers_outside_coordinate_system(sdata=sdata, coordinate_system="local")
@@ -1859,7 +1873,7 @@ def test_viewer_adapter_remove_layers_outside_coordinate_system_removes_primary_
 def test_viewer_adapter_remove_shapes_layer_removes_registered_layer(sdata_blobs) -> None:
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
-    layer = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
+    layer = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global").layer
 
     removed_layer = adapter.remove_shapes_layer(sdata_blobs, "blobs_polygons", "global")
 

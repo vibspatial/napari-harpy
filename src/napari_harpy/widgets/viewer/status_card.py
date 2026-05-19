@@ -120,18 +120,19 @@ def build_styled_labels_card_spec(
 
 
 def build_primary_shapes_loaded_card_spec(
-    shapes_name: str,
+    request: ShapesLoadRequest,
+    result: ShapesLoadResult,
     coordinate_system: str,
-    skipped_geometry_count: int,
 ) -> _ViewerStatusCardSpec:
+    shapes_name = request.shapes_name
     display_name, was_shortened = format_feedback_identifier(shapes_name)
     title = "Shapes Loaded"
     kind: StatusCardKind = "success"
     lines = [f"Loaded shapes `{display_name}` in coordinate system `{coordinate_system}`."]
-    if skipped_geometry_count:
+    if result.skipped_geometry_count:
         title = "Shapes Loaded With Warning"
         kind = "warning"
-        lines.append(_format_skipped_geometry_line(skipped_geometry_count))
+        lines.append(_format_skipped_geometry_line(result.skipped_geometry_count))
 
     return _ViewerStatusCardSpec(
         title=title,
@@ -147,7 +148,6 @@ def build_styled_shapes_card_spec(
     request: ShapesLoadRequest,
     result: ShapesLoadResult,
     coordinate_system: str,
-    skipped_geometry_count: int,
 ) -> _ViewerStatusCardSpec:
     selected_color_source = request.selected_color_source
     if selected_color_source is None:
@@ -170,10 +170,10 @@ def build_styled_shapes_card_spec(
         include_instance_message=False,
     )
     title = _palette_status_title(title, result, include_instance_message=False)
-    if skipped_geometry_count:
+    if result.skipped_geometry_count:
         kind = "warning"
         title = _with_warning_suffix(title)
-        lines.append(_format_skipped_geometry_line(skipped_geometry_count))
+        lines.append(_format_skipped_geometry_line(result.skipped_geometry_count))
 
     return _ViewerStatusCardSpec(
         title=title,

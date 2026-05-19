@@ -80,3 +80,22 @@ def test_shapes_style_result_rejects_invalid_palette_source() -> None:
             palette_source="generated",
             coercion_applied=False,
         )
+
+
+def test_shapes_style_result_accepts_no_style_metadata() -> None:
+    result = ShapesStyleResult(
+        value_kind=None,
+        palette_source=None,
+        coercion_applied=False,
+    )
+
+    assert result.value_kind is None
+
+
+def test_shapes_style_result_rejects_invalid_value_kind() -> None:
+    with pytest.raises(ValueError, match="Invalid shape color value kind"):
+        ShapesStyleResult(
+            value_kind="instance",
+            palette_source=None,
+            coercion_applied=False,
+        )

@@ -119,7 +119,16 @@ def test_build_styled_labels_card_spec_reports_instance_coloring() -> None:
 
 
 def test_build_primary_shapes_loaded_card_spec_reports_skipped_geometries() -> None:
-    spec = build_primary_shapes_loaded_card_spec("blobs_circles", "global", 2)
+    request = SimpleNamespace(shapes_name="blobs_circles")
+    result = SimpleNamespace(
+        created=True,
+        value_kind=None,
+        palette_source=None,
+        coercion_applied=False,
+        skipped_geometry_count=2,
+    )
+
+    spec = build_primary_shapes_loaded_card_spec(request, result, "global")
 
     assert spec.title == "Shapes Loaded With Warning"
     assert spec.kind == "warning"
@@ -139,9 +148,10 @@ def test_build_styled_shapes_card_spec_combines_palette_and_geometry_warnings() 
         value_kind="categorical",
         palette_source="default_missing",
         coercion_applied=False,
+        skipped_geometry_count=1,
     )
 
-    spec = build_styled_shapes_card_spec(request, result, "global", 1)
+    spec = build_styled_shapes_card_spec(request, result, "global")
 
     assert spec.title == "Styled Shapes Updated With Warning"
     assert spec.kind == "warning"

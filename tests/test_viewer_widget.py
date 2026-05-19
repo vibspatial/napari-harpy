@@ -1653,7 +1653,15 @@ def test_viewer_widget_add_update_shapes_uses_selected_coordinate_system(qtbot, 
         widget.app_state.viewer_adapter,
         "ensure_shapes_loaded",
         lambda sdata, shapes_name, coordinate_system: (
-            recorded_calls.append((sdata, shapes_name, coordinate_system)) or fake_layer
+            recorded_calls.append((sdata, shapes_name, coordinate_system))
+            or SimpleNamespace(
+                layer=fake_layer,
+                created=True,
+                value_kind=None,
+                palette_source=None,
+                coercion_applied=False,
+                skipped_geometry_count=0,
+            )
         ),
     )
     monkeypatch.setattr(
@@ -1692,7 +1700,14 @@ def test_viewer_widget_add_update_shapes_reports_skipped_geometry_warning(qtbot,
     monkeypatch.setattr(
         widget.app_state.viewer_adapter,
         "ensure_shapes_loaded",
-        lambda sdata, shapes_name, coordinate_system: fake_layer,
+        lambda sdata, shapes_name, coordinate_system: SimpleNamespace(
+            layer=fake_layer,
+            created=True,
+            value_kind=None,
+            palette_source=None,
+            coercion_applied=False,
+            skipped_geometry_count=2,
+        ),
     )
     monkeypatch.setattr(widget.app_state.viewer_adapter, "activate_layer", lambda layer: True)
     widget.app_state.viewer_adapter.register_shapes_layer(

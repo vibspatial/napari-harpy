@@ -1193,11 +1193,20 @@ class ViewerAdapter(QObject):
 
         return loaded_overlay_layers
 
-    def ensure_shapes_loaded(self, sdata: SpatialData, shapes_name: str, coordinate_system: str) -> Shapes:
+    def ensure_shapes_loaded(self, sdata: SpatialData, shapes_name: str, coordinate_system: str) -> ShapesLoadResult:
         """Load a shapes element into napari if it is not already present."""
         existing_layer = self._get_loaded_shapes_layer_for_coordinate_system(sdata, shapes_name, coordinate_system)
         if existing_layer is not None:
-            return existing_layer
+            binding = self._layer_bindings.get_binding(existing_layer)
+            skipped_geometry_count = binding.skipped_geometry_count if isinstance(binding, ShapesLayerBinding) else 0
+            return ShapesLoadResult(
+                layer=existing_layer,
+                created=False,
+                value_kind=None,
+                palette_source=None,
+                coercion_applied=False,
+                skipped_geometry_count=skipped_geometry_count,
+            )
 
         built_layer = _build_shapes_layer(sdata, shapes_name, coordinate_system, name=shapes_name)
         layer = built_layer.layer
@@ -1211,7 +1220,14 @@ class ViewerAdapter(QObject):
             source_shapes_index_feature_name=built_layer.source_shapes_index_feature_name,
             skipped_geometry_count=built_layer.skipped_geometry_count,
         )
-        return layer
+        return ShapesLoadResult(
+            layer=layer,
+            created=True,
+            value_kind=None,
+            palette_source=None,
+            coercion_applied=False,
+            skipped_geometry_count=built_layer.skipped_geometry_count,
+        )
 
     def ensure_styled_shapes_loaded(
         self,
@@ -1275,6 +1291,7 @@ class ViewerAdapter(QObject):
             value_kind=style_result.value_kind,
             palette_source=style_result.palette_source,
             coercion_applied=style_result.coercion_applied,
+            skipped_geometry_count=binding.skipped_geometry_count,
         )
 
     def remove_labels_layer(self, sdata: SpatialData, labels_name: str, coordinate_system: str) -> Labels | None:
