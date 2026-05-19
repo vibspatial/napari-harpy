@@ -78,7 +78,11 @@ Today the plugin supports:
 Example napari-harpy session:
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/vibspatial/napari-harpy/main/docs/_static/Screenshot%202026-05-09%20at%2021.31.53.png" alt="napari-harpy example session screenshot" width="900">
+  <img src="https://raw.githubusercontent.com/vibspatial/napari-harpy/main/docs/_static/Screenshot%202026-05-19%20at%2014.25.23.png" alt="napari-harpy viewer example screenshot" width="900">
+</p>
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/vibspatial/napari-harpy/main/docs/_static/Screenshot%202026-05-09%20at%2021.31.53.png" alt="napari-harpy object classification example screenshot" width="900">
 </p>
 
 ## Headless and Multi-Sample Workflows
