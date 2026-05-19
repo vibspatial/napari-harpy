@@ -349,17 +349,17 @@ layers or shared viewer state.
 
 ## Acceptance Criteria
 
-- [ ] `src/napari_harpy/widgets/viewer/status_card.py` exists and is Qt-free.
-- [ ] `ViewerWidget.action_feedback_label` is renamed to
+- [x] `src/napari_harpy/widgets/viewer/status_card.py` exists and is Qt-free.
+- [x] `ViewerWidget.action_feedback_label` is renamed to
       `ViewerWidget.global_action_feedback_label` without changing the Qt object
       name or visual placement.
-- [ ] Viewer status-card copy and severity decisions are built by that module.
-- [ ] `ViewerWidget` keeps responsibility for state collection, adapter calls,
+- [x] Viewer status-card copy and severity decisions are built by that module.
+- [x] `ViewerWidget` keeps responsibility for state collection, adapter calls,
       layer activation, and rendering specs into labels.
-- [ ] Image, labels, and shapes card widgets keep responsibility for local
+- [x] Image, labels, and shapes card widgets keep responsibility for local
       controls, request emission, and action-preview labels.
-- [ ] Existing viewer feedback titles, severities, and tooltips are preserved.
-- [ ] Builder-level tests cover success, info, warning, and error variants.
-- [ ] Existing `tests/test_viewer_widget.py` feedback assertions still pass.
-- [ ] Action feedback remains global and is not rendered into local
+- [x] Existing viewer feedback titles, severities, and tooltips are preserved.
+- [x] Builder-level tests cover success, info, warning, and error variants.
+- [x] Existing `tests/test_viewer_widget.py` feedback assertions still pass.
+- [x] Action feedback remains global and is not rendered into local
       image/labels/shapes cards.
