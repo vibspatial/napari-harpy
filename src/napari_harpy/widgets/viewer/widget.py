@@ -599,14 +599,15 @@ class ViewerWidget(QWidget):
 
     def _add_or_update_labels_layer(self, request: LabelsLoadRequest) -> None:
         if request.selected_source_kind is None:
-            self._add_or_update_primary_labels_layer(request.labels_name)
+            self._add_or_update_primary_labels_layer(request)
             return
 
         self._add_or_update_styled_labels_layer(request)
 
-    def _add_or_update_primary_labels_layer(self, labels_name: str) -> None:
+    def _add_or_update_primary_labels_layer(self, request: LabelsLoadRequest) -> None:
         sdata = self._app_state.sdata
         coordinate_system = self._app_state.coordinate_system
+        labels_name = request.labels_name
 
         if sdata is None or not coordinate_system:
             self._set_action_feedback(
@@ -625,7 +626,7 @@ class ViewerWidget(QWidget):
         self._app_state.viewer_adapter.activate_layer(layer)
         self._apply_status_card_spec(
             self.global_action_feedback_label,
-            build_primary_labels_loaded_card_spec(labels_name, coordinate_system),
+            build_primary_labels_loaded_card_spec(request, coordinate_system),
         )
 
     def _add_or_update_styled_labels_layer(self, request: LabelsLoadRequest) -> None:
