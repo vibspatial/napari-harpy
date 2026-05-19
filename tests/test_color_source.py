@@ -1,0 +1,63 @@
+from __future__ import annotations
+
+import pytest
+
+from napari_harpy.core._color_source import ShapeColorSourceSpec, TableColorSourceSpec
+from napari_harpy.viewer.labels_styling import LabelsStyleResult
+
+
+def test_table_color_source_spec_rejects_invalid_source_kind() -> None:
+    with pytest.raises(ValueError, match="Invalid table color source kind"):
+        TableColorSourceSpec(
+            table_name="table",
+            source_kind="layer",
+            value_key="cell_type",
+            value_kind="categorical",
+        )
+
+
+def test_table_color_source_spec_rejects_invalid_value_kind() -> None:
+    with pytest.raises(ValueError, match="Invalid table color value kind"):
+        TableColorSourceSpec(
+            table_name="table",
+            source_kind="obs_column",
+            value_key="cell_type",
+            value_kind="ordinal",
+        )
+
+
+def test_shape_color_source_spec_rejects_invalid_source_kind() -> None:
+    with pytest.raises(ValueError, match="Invalid shape color source kind"):
+        ShapeColorSourceSpec(
+            source_kind="obs_column",
+            value_key="cell_type",
+            value_kind="categorical",
+        )
+
+
+def test_shape_color_source_spec_rejects_invalid_value_kind() -> None:
+    with pytest.raises(ValueError, match="Invalid shape color value kind"):
+        ShapeColorSourceSpec(
+            source_kind="shape_column",
+            value_key="cell_type",
+            value_kind="instance",
+        )
+
+
+def test_labels_style_result_accepts_no_style_metadata() -> None:
+    result = LabelsStyleResult(
+        value_kind=None,
+        palette_source=None,
+        coercion_applied=False,
+    )
+
+    assert result.value_kind is None
+
+
+def test_labels_style_result_rejects_invalid_value_kind() -> None:
+    with pytest.raises(ValueError, match="Invalid table color value kind"):
+        LabelsStyleResult(
+            value_kind="ordinal",
+            palette_source=None,
+            coercion_applied=False,
+        )
