@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from html import escape
-from typing import Literal
+from typing import Literal, cast
 
 from qtpy.QtCore import QSize, Qt
 from qtpy.QtGui import QColor, QPalette
@@ -67,6 +67,16 @@ CHECKBOX_STYLESHEET = (
     f"background-color: {WIDGET_PANEL_MUTED_COLOR};}}"
 )
 StatusCardKind = Literal["info", "warning", "success", "error"]
+STATUS_CARD_KINDS: tuple[StatusCardKind, ...] = ("info", "warning", "success", "error")
+
+
+def validate_status_card_kind(kind: str) -> StatusCardKind:
+    """Return a validated status-card kind, or fail loudly for invalid input."""
+    if kind not in STATUS_CARD_KINDS:
+        allowed_kinds = ", ".join(repr(allowed_kind) for allowed_kind in STATUS_CARD_KINDS)
+        raise ValueError(f"Invalid status card kind {kind!r}. Expected one of: {allowed_kinds}.")
+
+    return cast(StatusCardKind, kind)
 
 
 def build_input_control_stylesheet(control_selector: str) -> str:

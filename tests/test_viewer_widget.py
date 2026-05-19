@@ -23,9 +23,10 @@ from napari_harpy._points_value_index import PointsValueSelection, PointsValueTa
 from napari_harpy.core._color_source import ShapeColorSourceSpec, TableColorSourceSpec
 from napari_harpy.viewer.adapter import PointsLayerIdentity
 from napari_harpy.viewer.shapes_styling import SHAPES_FACE_ALPHA
+from napari_harpy.widgets.shared_styles import WIDGET_MIN_WIDTH
 from napari_harpy.widgets.viewer.disclosure import _ElidedLabel, _ElidedToolButton
 from napari_harpy.widgets.viewer.image_widget import QColorDialog, _OverlayColorButton
-from napari_harpy.widgets.viewer.points_controller import PointsLoadResult
+from napari_harpy.widgets.viewer.points_controller import PointsLoadRequest
 from napari_harpy.widgets.viewer.shapes_widget import ShapesLoadRequest
 from napari_harpy.widgets.viewer.widget import ViewerWidget
 
@@ -71,9 +72,9 @@ _FEEDBACK_BACKGROUND_BY_KIND = {
 
 
 def _assert_action_feedback_card(widget: ViewerWidget, *, title: str, kind: str) -> None:
-    assert title in widget.action_feedback_label.text()
-    assert f"background-color: {_FEEDBACK_BACKGROUND_BY_KIND[kind]}" in widget.action_feedback_label.styleSheet()
-    assert not widget.action_feedback_label.isHidden()
+    assert title in widget.global_action_feedback_label.text()
+    assert f"background-color: {_FEEDBACK_BACKGROUND_BY_KIND[kind]}" in widget.global_action_feedback_label.styleSheet()
+    assert not widget.global_action_feedback_label.isHidden()
 
 
 def _patch_coordinate_system_names(monkeypatch, coordinate_systems: list[str]) -> None:
@@ -147,7 +148,7 @@ def _select_shape_column(card: object, value_key: str) -> None:
     card.color_source_value_input.setText(value_key)
 
 
-def _make_points_load_result(sdata: object) -> PointsLoadResult:
+def _make_points_load_request(sdata: object) -> PointsLoadRequest:
     value_table = PointsValueTable(
         values=pd.DataFrame(
             {
@@ -176,7 +177,7 @@ def _make_points_load_result(sdata: object) -> PointsLoadResult:
         is_sampled=False,
         warning=None,
     )
-    return PointsLoadResult(
+    return PointsLoadRequest(
         identity=PointsLayerIdentity(
             sdata=sdata,
             points_name="transcripts",
@@ -329,7 +330,7 @@ def test_viewer_widget_refreshes_cards_when_shared_sdata_changes(qtbot, sdata_bl
     assert widget.image_rows[0].detail_widget.isHidden()
     assert widget.labels_rows[0].detail_widget.isHidden()
     assert widget.shape_rows[0].detail_widget.isHidden()
-    assert widget.shape_cards[0].action_status_label.text() == "Action: add/update primary shapes layer"
+    assert widget.shape_cards[0].action_hint_label.text() == "Action: add/update primary shapes layer"
     assert widget.shape_cards[0].add_update_button.isEnabled()
     assert widget.labels_cards[0].linked_table_combo.count() == 1
     assert widget.labels_cards[0].linked_table_combo.itemText(0) == "table"
@@ -424,19 +425,19 @@ def test_viewer_widget_on_points_loaded_applies_layer_and_status(qtbot) -> None:
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)
     fake_sdata = object()
-    load_result = _make_points_load_result(fake_sdata)
+    load_request = _make_points_load_request(fake_sdata)
 
     qtbot.addWidget(widget)
 
-    widget._on_points_loaded(load_result)
+    widget._on_points_loaded(load_request)
 
     assert len(viewer.layers) == 1
     layer = viewer.layers[0]
     assert layer.name == "transcripts: gene=AAMP"
     assert viewer.layers.selection.active is layer
-    assert "Points Layer Created" in widget.action_feedback_label.text()
-    assert "2 point" in widget.action_feedback_label.text()
-    assert not widget.action_feedback_label.isHidden()
+    assert "Points Layer Created" in widget.global_action_feedback_label.text()
+    assert "2 point" in widget.global_action_feedback_label.text()
+    assert not widget.global_action_feedback_label.isHidden()
 
 
 def test_viewer_widget_progressive_disclosure_expands_sections_and_elements(qtbot, sdata_blobs) -> None:
@@ -496,6 +497,46 @@ def test_viewer_widget_progressive_disclosure_expands_sections_and_elements(qtbo
     assert first_shape_row.is_expanded()
     assert not first_shape_row.detail_widget.isHidden()
     assert widget.shape_cards[0].add_update_button.isEnabled()
+
+
+def test_viewer_widget_expanded_detail_panels_fit_current_minimum_width(qtbot, monkeypatch, sdata_blobs) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    monkeypatch.setattr(widget._points_controller, "load_value_source", lambda: None)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata_blobs)
+
+    scrollbar_width = widget.scroll_area.verticalScrollBar().sizeHint().width()
+    content_margins = widget.content_layout.contentsMargins()
+    content_width = WIDGET_MIN_WIDTH - scrollbar_width - content_margins.left() - content_margins.right()
+
+    for group, row, card in (
+        (widget.images_group, widget.image_rows[0], widget.image_cards[0]),
+        (widget.labels_group, widget.labels_rows[0], widget.labels_cards[0]),
+        (widget.shapes_group, widget.shape_rows[0], widget.shape_cards[0]),
+    ):
+        group_margins = group.layout().contentsMargins()
+        row_margins = row.layout().contentsMargins()
+        available_detail_width = (
+            content_width
+            - group_margins.left()
+            - group_margins.right()
+            - row_margins.left()
+            - row_margins.right()
+        )
+
+        assert card.minimumSizeHint().width() <= available_detail_width
+        assert card.sizeHint().width() <= available_detail_width
+
+    points_group_margins = widget.points_group.layout().contentsMargins()
+    available_points_width = content_width - points_group_margins.left() - points_group_margins.right()
+
+    assert widget.points_widget.minimumSizeHint().width() <= available_points_width
+    assert widget.points_widget.sizeHint().width() <= available_points_width
 
 
 def test_viewer_widget_progressive_disclosure_actions_still_load_layers(qtbot, sdata_blobs) -> None:
@@ -593,12 +634,12 @@ def test_viewer_widget_labels_cards_expose_table_driven_coloring_controls(qtbot,
     ]
     assert first_card.color_source_value_input.completer() is not None
     assert not first_card.color_source_value_input.isEnabled()
-    assert first_card.action_status_label.text() == "Action: add/update primary labels layer"
+    assert first_card.action_hint_label.text() == "Action: add/update primary labels layer"
 
     first_card.color_source_kind_combo.setCurrentIndex(1)
     assert first_card.color_source_value_input.isEnabled()
     assert first_card.color_source_value_input.completer().model().stringList() == ["instance_id"]
-    assert first_card.action_status_label.text() == 'Action: add/update colored overlay for obs["instance_id"]'
+    assert first_card.action_hint_label.text() == 'Action: add/update colored overlay for obs["instance_id"]'
 
     first_card.color_source_kind_combo.setCurrentIndex(2)
     assert first_card.color_source_value_input.isEnabled()
@@ -607,10 +648,10 @@ def test_viewer_widget_labels_cards_expose_table_driven_coloring_controls(qtbot,
         "channel_1_sum",
         "channel_2_sum",
     ]
-    assert first_card.action_status_label.text() == 'Action: add/update colored overlay for X[:, "channel_0_sum"]'
+    assert first_card.action_hint_label.text() == 'Action: add/update colored overlay for X[:, "channel_0_sum"]'
 
     second_card.color_source_kind_combo.setCurrentIndex(2)
-    assert second_card.action_status_label.text() == "Action: colored overlays require a linked table"
+    assert second_card.action_hint_label.text() == "Action: colored overlays require a linked table"
 
 
 def test_viewer_widget_labels_card_repopulates_color_sources_when_linked_table_changes(qtbot, monkeypatch) -> None:
@@ -654,16 +695,16 @@ def test_viewer_widget_labels_card_repopulates_color_sources_when_linked_table_c
     card.color_source_kind_combo.setCurrentIndex(1)
     assert card.color_source_value_input.isEnabled()
     assert card.color_source_value_input.completer().model().stringList() == ["cell_type"]
-    assert card.action_status_label.text() == 'Action: add/update colored overlay for obs["cell_type"]'
+    assert card.action_hint_label.text() == 'Action: add/update colored overlay for obs["cell_type"]'
 
     card.linked_table_combo.setCurrentIndex(1)
     assert not card.color_source_value_input.isEnabled()
-    assert card.action_status_label.text() == "Action: no colorable observation columns available"
+    assert card.action_hint_label.text() == "Action: no colorable observation columns available"
 
     card.color_source_kind_combo.setCurrentIndex(2)
     assert card.color_source_value_input.isEnabled()
     assert card.color_source_value_input.completer().model().stringList() == ["GeneA"]
-    assert card.action_status_label.text() == 'Action: add/update colored overlay for X[:, "GeneA"]'
+    assert card.action_hint_label.text() == 'Action: add/update colored overlay for X[:, "GeneA"]'
 
 
 def test_viewer_widget_image_mode_toggles_are_mutually_exclusive(qtbot, sdata_blobs) -> None:
@@ -900,8 +941,8 @@ def test_viewer_widget_coordinate_system_switch_prunes_old_harpy_layers(qtbot, m
         coordinate_system="local",
     )
     widget._set_action_feedback(
-        title="Labels Loaded",
-        lines=["Loaded labels `global_image` in coordinate system `global`."],
+        title="Labels Layer Created",
+        lines=["Created labels layer for `global_image`."],
         kind="success",
     )
 
@@ -909,8 +950,8 @@ def test_viewer_widget_coordinate_system_switch_prunes_old_harpy_layers(qtbot, m
         widget.coordinate_system_combo.setCurrentIndex(1)
 
     assert widget.app_state.coordinate_system == "local"
-    assert widget.action_feedback_label.text() == ""
-    assert widget.action_feedback_label.isHidden()
+    assert widget.global_action_feedback_label.text() == ""
+    assert widget.global_action_feedback_label.isHidden()
     assert list(viewer.layers) == [local_layer, external_layer]
     assert widget.app_state.viewer_adapter.layer_bindings.get_binding(global_layer) is None
     assert widget.app_state.viewer_adapter.layer_bindings.get_binding(local_layer) is not None
@@ -952,8 +993,8 @@ def test_viewer_widget_open_spatialdata_loads_selected_store(qtbot, monkeypatch,
     assert widget.app_state.sdata is sdata_blobs
     assert widget.coordinate_system_combo.count() == 1
     assert widget.coordinate_system_combo.itemText(0) == "global"
-    assert widget.action_feedback_label.text() == ""
-    assert widget.action_feedback_label.isHidden()
+    assert widget.global_action_feedback_label.text() == ""
+    assert widget.global_action_feedback_label.isHidden()
 
 
 def test_viewer_widget_open_spatialdata_shows_error_when_loading_fails(qtbot, monkeypatch) -> None:
@@ -976,9 +1017,9 @@ def test_viewer_widget_open_spatialdata_shows_error_when_loading_fails(qtbot, mo
     widget.open_sdata_button.click()
 
     assert widget.app_state.sdata is None
-    assert "Could not load SpatialData store" in widget.action_feedback_label.text()
-    assert "bad store at /tmp/example.zarr" in widget.action_feedback_label.text()
-    assert not widget.action_feedback_label.isHidden()
+    assert "Could not load SpatialData store" in widget.global_action_feedback_label.text()
+    assert "bad store at /tmp/example.zarr" in widget.global_action_feedback_label.text()
+    assert not widget.global_action_feedback_label.isHidden()
 
 
 def test_viewer_widget_add_update_labels_loads_and_activates_layer(qtbot, sdata_blobs) -> None:
@@ -995,8 +1036,8 @@ def test_viewer_widget_add_update_labels_loads_and_activates_layer(qtbot, sdata_
     first_card.add_update_button.click()
 
     assert len(viewer.layers) == 1
-    _assert_action_feedback_card(widget, title="Labels Loaded", kind="success")
-    assert "Loaded labels `blobs_labels`" in widget.action_feedback_label.text()
+    _assert_action_feedback_card(widget, title="Labels Layer Created", kind="success")
+    assert "Created labels layer for `blobs_labels`" in widget.global_action_feedback_label.text()
 
 
 def test_viewer_widget_add_update_labels_dispatches_to_styled_overlay_path(qtbot, monkeypatch, sdata_blobs) -> None:
@@ -1050,15 +1091,15 @@ def test_viewer_widget_add_update_labels_creates_and_updates_styled_overlay(qtbo
     assert binding is not None
     assert binding.labels_role == "styled"
     _assert_action_feedback_card(widget, title="Colored Overlay Created", kind="success")
-    assert 'Created colored overlay for obs["cell_type"]' in widget.action_feedback_label.text()
-    assert "stored categorical palette" in widget.action_feedback_label.text()
+    assert 'Created colored overlay for obs["cell_type"]' in widget.global_action_feedback_label.text()
+    assert "stored categorical palette" in widget.global_action_feedback_label.text()
 
     first_card.add_update_button.click()
 
     assert len(viewer.layers) == 1
     assert viewer.layers[0] is layer
     _assert_action_feedback_card(widget, title="Colored Overlay Updated", kind="success")
-    assert 'Updated colored overlay for obs["cell_type"]' in widget.action_feedback_label.text()
+    assert 'Updated colored overlay for obs["cell_type"]' in widget.global_action_feedback_label.text()
 
 
 def test_viewer_widget_styled_overlay_missing_palette_uses_info_card(qtbot, sdata_blobs) -> None:
@@ -1080,7 +1121,7 @@ def test_viewer_widget_styled_overlay_missing_palette_uses_info_card(qtbot, sdat
     first_card.add_update_button.click()
 
     _assert_action_feedback_card(widget, title="Colored Overlay Created", kind="info")
-    assert "no stored palette was present" in widget.action_feedback_label.text()
+    assert "no stored palette was present" in widget.global_action_feedback_label.text()
 
 
 def test_viewer_widget_styled_overlay_instance_key_uses_success_card(qtbot, sdata_blobs) -> None:
@@ -1098,8 +1139,8 @@ def test_viewer_widget_styled_overlay_instance_key_uses_success_card(qtbot, sdat
     first_card.add_update_button.click()
 
     _assert_action_feedback_card(widget, title="Colored Overlay Created", kind="success")
-    assert 'Created colored overlay for obs["instance_id"]' in widget.action_feedback_label.text()
-    assert "Used instance label colors." in widget.action_feedback_label.text()
+    assert 'Created colored overlay for obs["instance_id"]' in widget.global_action_feedback_label.text()
+    assert "Used instance label colors." in widget.global_action_feedback_label.text()
     binding = widget.app_state.viewer_adapter.layer_bindings.get_binding(viewer.layers[0])
     assert binding is not None
     assert binding.style_spec is not None
@@ -1126,7 +1167,7 @@ def test_viewer_widget_styled_overlay_invalid_palette_uses_warning_card(qtbot, s
     first_card.add_update_button.click()
 
     _assert_action_feedback_card(widget, title="Colored Overlay Created With Warning", kind="warning")
-    assert "stored categorical palette was invalid" in widget.action_feedback_label.text()
+    assert "stored categorical palette was invalid" in widget.global_action_feedback_label.text()
 
 
 def test_viewer_widget_styled_overlay_string_coercion_uses_warning_card(qtbot, sdata_blobs) -> None:
@@ -1147,7 +1188,7 @@ def test_viewer_widget_styled_overlay_string_coercion_uses_warning_card(qtbot, s
     first_card.add_update_button.click()
 
     _assert_action_feedback_card(widget, title="Colored Overlay Created With Warning", kind="warning")
-    assert "Coerced string values to categorical" in widget.action_feedback_label.text()
+    assert "Coerced string values to categorical" in widget.global_action_feedback_label.text()
 
 
 def test_viewer_widget_styled_overlay_precondition_error_uses_error_card(qtbot, sdata_blobs) -> None:
@@ -1166,7 +1207,7 @@ def test_viewer_widget_styled_overlay_precondition_error_uses_error_card(qtbot, 
     first_card.add_update_button.click()
 
     _assert_action_feedback_card(widget, title="Colored Overlay Error", kind="error")
-    assert "Select an observation column" in widget.action_feedback_label.text()
+    assert "Select an observation column" in widget.global_action_feedback_label.text()
 
 
 def test_viewer_widget_add_update_image_loads_stack_layer(qtbot, sdata_blobs) -> None:
@@ -1189,8 +1230,8 @@ def test_viewer_widget_add_update_image_loads_stack_layer(qtbot, sdata_blobs) ->
     assert binding is not None
     assert binding.image_display_mode == "stack"
     assert viewer.layers.selection.active is layer
-    _assert_action_feedback_card(widget, title="Image Loaded", kind="success")
-    assert "Loaded image `blobs_image` in stack mode" in widget.action_feedback_label.text()
+    _assert_action_feedback_card(widget, title="Image Layer Created", kind="success")
+    assert "Created image layer for `blobs_image` in stack mode" in widget.global_action_feedback_label.text()
 
 
 def test_viewer_widget_add_update_image_reuses_existing_stack_layer(qtbot, sdata_blobs) -> None:
@@ -1237,7 +1278,14 @@ def test_viewer_widget_add_update_image_overlay_passes_selected_channels_and_col
         widget.app_state.viewer_adapter,
         "ensure_image_loaded",
         lambda sdata, image_name, coordinate_system, *, mode, channels=None, channel_colors=None: (
-            recorded_calls.append((sdata, image_name, coordinate_system, mode, channels, channel_colors)) or fake_layers
+            recorded_calls.append((sdata, image_name, coordinate_system, mode, channels, channel_colors))
+            or SimpleNamespace(
+                layers=tuple(fake_layers),
+                primary_layer=fake_layers[0],
+                mode=mode,
+                created=True,
+                channels=tuple(channels or ()),
+            )
         ),
     )
     monkeypatch.setattr(
@@ -1282,7 +1330,7 @@ def test_viewer_widget_add_update_image_overlay_loads_reuses_and_replaces_layers
     first_layers = list(viewer.layers)
     assert [layer.name for layer in first_layers] == ["blobs_image[0]", "blobs_image[2]"]
     assert viewer.layers.selection.active is first_layers[0]
-    assert "Loaded image `blobs_image` in overlay mode" in widget.action_feedback_label.text()
+    assert "Created image overlay for `blobs_image`" in widget.global_action_feedback_label.text()
 
     image_card.add_update_button.click()
 
@@ -1316,8 +1364,8 @@ def test_viewer_widget_empty_overlay_selection_removes_existing_image_layers(qtb
     image_card.add_update_button.click()
 
     assert list(viewer.layers) == []
-    assert "Overlay mode requires at least one selected channel." in widget.action_feedback_label.text()
-    assert not widget.action_feedback_label.isHidden()
+    assert "Overlay mode requires at least one selected channel." in widget.global_action_feedback_label.text()
+    assert not widget.global_action_feedback_label.isHidden()
 
 
 def test_viewer_widget_add_update_image_uses_selected_coordinate_system(qtbot, monkeypatch) -> None:
@@ -1344,7 +1392,14 @@ def test_viewer_widget_add_update_image_uses_selected_coordinate_system(qtbot, m
         widget.app_state.viewer_adapter,
         "ensure_image_loaded",
         lambda sdata, image_name, coordinate_system, *, mode, channels=None, channel_colors=None: (
-            recorded_calls.append((sdata, image_name, coordinate_system, mode)) or fake_layer
+            recorded_calls.append((sdata, image_name, coordinate_system, mode))
+            or SimpleNamespace(
+                layers=(fake_layer,),
+                primary_layer=fake_layer,
+                mode=mode,
+                created=True,
+                channels=tuple(channels or ()),
+            )
         ),
     )
     monkeypatch.setattr(
@@ -1386,7 +1441,7 @@ def test_viewer_widget_shapes_card_exposes_shape_column_controls(qtbot) -> None:
     assert card.fill_toggle.text() == "Fill"
     assert not card.fill_toggle.isEnabled()
     assert not card.fill_toggle.isChecked()
-    assert card.action_status_label.text() == "Action: add/update primary shapes layer"
+    assert card.action_hint_label.text() == "Action: add/update primary shapes layer"
 
     card.color_source_kind_combo.setCurrentIndex(1)
 
@@ -1395,14 +1450,14 @@ def test_viewer_widget_shapes_card_exposes_shape_column_controls(qtbot) -> None:
     assert card.fill_toggle.isEnabled()
     assert not card.fill_toggle.isChecked()
     assert card._color_source_completer_model.stringList() == ["cell_type", "score", "free_text"]
-    assert card.action_status_label.text() == 'Action: add/update styled shapes layer for column "cell_type"'
+    assert card.action_hint_label.text() == 'Action: add/update styled shapes layer for column "cell_type"'
 
     card.fill_toggle.setChecked(True)
     card.color_source_value_input.setText("not_a_shape_column")
 
     assert not card.fill_toggle.isEnabled()
     assert not card.fill_toggle.isChecked()
-    assert card.action_status_label.text() == "Action: select a shapes column for a styled shapes layer"
+    assert card.action_hint_label.text() == "Action: select a shapes column for a styled shapes layer"
 
 
 def test_viewer_widget_shape_column_selector_hides_geometry_and_palette_columns(qtbot) -> None:
@@ -1481,8 +1536,8 @@ def test_viewer_widget_add_update_styled_shapes_creates_and_updates_layer(qtbot)
     )
     np.testing.assert_allclose(layer.face_color[:, 3], np.zeros(len(layer.data)))
     _assert_action_feedback_card(widget, title="Styled Shapes Created", kind="success")
-    assert 'Created styled shapes layer for column "cell_type"' in widget.action_feedback_label.text()
-    assert "Used the stored categorical palette." in widget.action_feedback_label.text()
+    assert 'Created styled shapes layer for column "cell_type"' in widget.global_action_feedback_label.text()
+    assert "Used the stored categorical palette." in widget.global_action_feedback_label.text()
 
     card.fill_toggle.setChecked(True)
     card.add_update_button.click()
@@ -1491,7 +1546,7 @@ def test_viewer_widget_add_update_styled_shapes_creates_and_updates_layer(qtbot)
     assert viewer.layers[0] is layer
     np.testing.assert_allclose(layer.face_color[:, 3], np.full(len(layer.data), SHAPES_FACE_ALPHA))
     _assert_action_feedback_card(widget, title="Styled Shapes Updated", kind="success")
-    assert 'Updated styled shapes layer for column "cell_type"' in widget.action_feedback_label.text()
+    assert 'Updated styled shapes layer for column "cell_type"' in widget.global_action_feedback_label.text()
 
 
 def test_viewer_widget_styled_shapes_feedback_reports_missing_palette(qtbot) -> None:
@@ -1508,7 +1563,7 @@ def test_viewer_widget_styled_shapes_feedback_reports_missing_palette(qtbot) -> 
     widget.shape_cards[0].add_update_button.click()
 
     _assert_action_feedback_card(widget, title="Styled Shapes Created", kind="info")
-    assert "no stored palette was present" in widget.action_feedback_label.text()
+    assert "no stored palette was present" in widget.global_action_feedback_label.text()
 
 
 def test_viewer_widget_styled_shapes_feedback_reports_invalid_palette(qtbot) -> None:
@@ -1525,7 +1580,7 @@ def test_viewer_widget_styled_shapes_feedback_reports_invalid_palette(qtbot) -> 
     widget.shape_cards[0].add_update_button.click()
 
     _assert_action_feedback_card(widget, title="Styled Shapes Created With Warning", kind="warning")
-    assert "stored categorical palette was invalid" in widget.action_feedback_label.text()
+    assert "stored categorical palette was invalid" in widget.global_action_feedback_label.text()
 
 
 def test_viewer_widget_styled_shapes_feedback_reports_string_coercion(qtbot) -> None:
@@ -1542,7 +1597,7 @@ def test_viewer_widget_styled_shapes_feedback_reports_string_coercion(qtbot) -> 
     widget.shape_cards[0].add_update_button.click()
 
     _assert_action_feedback_card(widget, title="Styled Shapes Created With Warning", kind="warning")
-    assert "Coerced string values to categorical" in widget.action_feedback_label.text()
+    assert "Coerced string values to categorical" in widget.global_action_feedback_label.text()
 
 
 def test_viewer_widget_styled_shapes_duplicate_index_error_is_feedback(qtbot) -> None:
@@ -1559,7 +1614,7 @@ def test_viewer_widget_styled_shapes_duplicate_index_error_is_feedback(qtbot) ->
     widget.shape_cards[0].add_update_button.click()
 
     _assert_action_feedback_card(widget, title="Styled Shapes Error", kind="error")
-    assert "requires unique source GeoDataFrame index" in widget.action_feedback_label.text()
+    assert "requires unique source GeoDataFrame index" in widget.global_action_feedback_label.text()
 
 
 def test_viewer_widget_styled_shapes_feedback_reports_skipped_geometry(qtbot) -> None:
@@ -1579,7 +1634,7 @@ def test_viewer_widget_styled_shapes_feedback_reports_skipped_geometry(qtbot) ->
     widget.shape_cards[0].add_update_button.click()
 
     _assert_action_feedback_card(widget, title="Styled Shapes Created With Warning", kind="warning")
-    assert "Skipped 1 empty, invalid, or unsupported geometries" in widget.action_feedback_label.text()
+    assert "Skipped 1 empty, invalid, or unsupported geometries" in widget.global_action_feedback_label.text()
 
 
 def test_viewer_widget_add_update_shapes_loads_layer(qtbot, sdata_blobs) -> None:
@@ -1606,8 +1661,8 @@ def test_viewer_widget_add_update_shapes_loads_layer(qtbot, sdata_blobs) -> None
     assert binding.coordinate_system == "global"
     assert viewer.layers.selection.active is layer
     np.testing.assert_allclose(layer.face_color[:, 3], np.zeros(len(layer.data)))
-    _assert_action_feedback_card(widget, title="Shapes Loaded", kind="success")
-    assert "Loaded shapes `blobs_circles` in coordinate system `global`." in widget.action_feedback_label.text()
+    _assert_action_feedback_card(widget, title="Shapes Layer Created", kind="success")
+    assert "Created shapes layer for `blobs_circles`." in widget.global_action_feedback_label.text()
 
 
 def test_viewer_widget_add_update_shapes_reuses_existing_layer(qtbot, sdata_blobs) -> None:
@@ -1653,7 +1708,15 @@ def test_viewer_widget_add_update_shapes_uses_selected_coordinate_system(qtbot, 
         widget.app_state.viewer_adapter,
         "ensure_shapes_loaded",
         lambda sdata, shapes_name, coordinate_system: (
-            recorded_calls.append((sdata, shapes_name, coordinate_system)) or fake_layer
+            recorded_calls.append((sdata, shapes_name, coordinate_system))
+            or SimpleNamespace(
+                layer=fake_layer,
+                created=True,
+                value_kind=None,
+                palette_source=None,
+                coercion_applied=False,
+                skipped_geometry_count=0,
+            )
         ),
     )
     monkeypatch.setattr(
@@ -1692,7 +1755,14 @@ def test_viewer_widget_add_update_shapes_reports_skipped_geometry_warning(qtbot,
     monkeypatch.setattr(
         widget.app_state.viewer_adapter,
         "ensure_shapes_loaded",
-        lambda sdata, shapes_name, coordinate_system: fake_layer,
+        lambda sdata, shapes_name, coordinate_system: SimpleNamespace(
+            layer=fake_layer,
+            created=True,
+            value_kind=None,
+            palette_source=None,
+            coercion_applied=False,
+            skipped_geometry_count=2,
+        ),
     )
     monkeypatch.setattr(widget.app_state.viewer_adapter, "activate_layer", lambda layer: True)
     widget.app_state.viewer_adapter.register_shapes_layer(
@@ -1708,8 +1778,8 @@ def test_viewer_widget_add_update_shapes_reports_skipped_geometry_warning(qtbot,
 
     widget.shape_cards[0].add_update_button.click()
 
-    _assert_action_feedback_card(widget, title="Shapes Loaded With Warning", kind="warning")
-    assert "Skipped 2 empty, invalid, or unsupported geometries" in widget.action_feedback_label.text()
+    _assert_action_feedback_card(widget, title="Shapes Layer Created With Warning", kind="warning")
+    assert "Skipped 2 empty, invalid, or unsupported geometries" in widget.global_action_feedback_label.text()
 
 
 def test_viewer_widget_shares_app_state_for_same_viewer(qtbot) -> None:

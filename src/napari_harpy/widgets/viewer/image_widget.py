@@ -16,7 +16,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from napari_harpy.viewer.adapter import DEFAULT_OVERLAY_COLORS
+from napari_harpy.viewer.image_styling import DEFAULT_OVERLAY_COLORS, ImageDisplayMode
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     CHECKBOX_STYLESHEET,
@@ -59,7 +59,7 @@ _OVERLAY_COLOR_NAMES_BY_HEX = {
 @dataclass(frozen=True)
 class ImageLoadRequest:
     image_name: str
-    mode: str
+    mode: ImageDisplayMode
     channels: list[int]
     channel_colors: list[str]
 
@@ -137,7 +137,7 @@ class _ImageCardWidget(QFrame):
         self.setStyleSheet(DETAIL_PANEL_STYLESHEET)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
         self.title_label = _ElidedLabel(image_name, self)

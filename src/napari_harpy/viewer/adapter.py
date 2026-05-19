@@ -20,6 +20,7 @@ from spatialdata.transformations import get_transformation
 from xarray import DataArray, DataTree
 
 from napari_harpy.core._color_source import ShapeColorSourceSpec, TableColorSourceSpec
+from napari_harpy.viewer.image_styling import DEFAULT_OVERLAY_COLORS, ImageDisplayMode, ImageLoadResult
 from napari_harpy.viewer.labels_styling import (
     LabelsLoadResult,
     apply_table_color_source_to_labels_layer,
@@ -27,7 +28,7 @@ from napari_harpy.viewer.labels_styling import (
 )
 from napari_harpy.viewer.points_styling import (
     POINTS_SELECTION_SOLID_COLOR,
-    PointsLayerResult,
+    PointsLoadResult,
     apply_points_selection_style,
     build_points_selection_layer_name,
 )
@@ -42,21 +43,10 @@ if TYPE_CHECKING:
 
     from napari_harpy._points_value_index import PointsValueSelection
 
-ImageDisplayMode = Literal["stack", "overlay"]
 ElementType = Literal["labels", "image", "shapes", "points"]
 ShapesLayerShapeType = Literal["polygon", "ellipse"]
 # Name of the layer.features column that stores the source GeoDataFrame index.
 DEFAULT_SHAPES_INDEX_FEATURE_NAME = "index"
-DEFAULT_OVERLAY_COLORS = (
-    "#00FFFF",  # cyan
-    "#FF00FF",  # magenta
-    "#FFFF00",  # yellow
-    "#00FF7F",  # green
-    "#FF5050",  # red
-    "#1E90FF",  # blue
-    "#FFA500",  # orange
-    "#9370DB",  # purple
-)
 
 
 class _HarpyShapes(Shapes):
@@ -933,7 +923,7 @@ class ViewerAdapter(QObject):
         *,
         selection: PointsValueSelection,
         categorical_colors: Sequence[str] | None = None,
-    ) -> PointsLayerResult:
+    ) -> PointsLoadResult:
         """Create or update the points value-selection layer for an already loaded selection."""
         if not isinstance(identity, PointsLayerIdentity):
             raise ValueError("`identity` must be a PointsLayerIdentity.")
@@ -978,7 +968,7 @@ class ViewerAdapter(QObject):
         finally:
             _restore_viewer_camera_state(self._viewer, camera_state)
 
-        return PointsLayerResult(
+        return PointsLoadResult(
             layer=layer,
             created=created,
             color_mode=style_result.color_mode,
@@ -987,11 +977,17 @@ class ViewerAdapter(QObject):
             categorical_limit=style_result.categorical_limit,
         )
 
-    def ensure_labels_loaded(self, sdata: SpatialData, labels_name: str, coordinate_system: str) -> Labels:
+    def ensure_labels_loaded(self, sdata: SpatialData, labels_name: str, coordinate_system: str) -> LabelsLoadResult:
         """Load a labels element into napari if it is not already present."""
         existing_layer = self._get_loaded_labels_layer_for_coordinate_system(sdata, labels_name, coordinate_system)
         if existing_layer is not None:
-            return existing_layer
+            return LabelsLoadResult(
+                layer=existing_layer,
+                created=False,
+                value_kind=None,
+                palette_source=None,
+                coercion_applied=False,
+            )
 
         layer = _build_labels_layer(sdata, labels_name, coordinate_system, name=labels_name)
         _add_layer_to_viewer(self._viewer, layer)
@@ -1001,7 +997,13 @@ class ViewerAdapter(QObject):
             labels_name=labels_name,
             coordinate_system=coordinate_system,
         )
-        return layer
+        return LabelsLoadResult(
+            layer=layer,
+            created=True,
+            value_kind=None,
+            palette_source=None,
+            coercion_applied=False,
+        )
 
     def ensure_styled_labels_loaded(
         self,
@@ -1061,7 +1063,7 @@ class ViewerAdapter(QObject):
         mode: ImageDisplayMode = "stack",
         channels: Sequence[int | str] | None = None,
         channel_colors: Sequence[str] | None = None,
-    ) -> Image | list[Image]:
+    ) -> ImageLoadResult:
         """Load an image element into napari if it is not already present."""
         images = getattr(sdata, "images", {})
         if image_name not in images:
@@ -1092,7 +1094,11 @@ class ViewerAdapter(QObject):
             )
             existing_layer = layers[0] if layers else None
             if existing_layer is not None:
-                return existing_layer
+                return ImageLoadResult(
+                    layers=(existing_layer,),
+                    mode=mode,
+                    created=False,
+                )
 
             image_data, rgb = _get_stack_image_layer_data(image_element)
             layer = Image(
@@ -1109,7 +1115,11 @@ class ViewerAdapter(QObject):
                 coordinate_system=coordinate_system,
                 image_display_mode=mode,
             )
-            return layer
+            return ImageLoadResult(
+                layers=(layer,),
+                mode=mode,
+                created=True,
+            )
 
         if mode != "overlay":
             raise NotImplementedError(f"Image display mode `{mode}` is not implemented yet.")
@@ -1119,6 +1129,7 @@ class ViewerAdapter(QObject):
         affine = _get_affine_transform(image_element, coordinate_system)
 
         loaded_overlay_layers: list[Image] = []
+        created = False
         desired_channel_indices = {channel_index for channel_index, _ in resolved_channels}
 
         layers = self._get_loaded_image_layer_for_coordinate_system(
@@ -1154,6 +1165,7 @@ class ViewerAdapter(QObject):
             )
             existing_layer = layers[0] if layers else None
             if existing_layer is None:
+                created = True
                 layer = Image(
                     _get_overlay_channel_layer_data(image_element, channel_index),
                     name=f"{image_name}[{channel_name}]",
@@ -1179,13 +1191,27 @@ class ViewerAdapter(QObject):
 
             loaded_overlay_layers.append(layer)
 
-        return loaded_overlay_layers
+        return ImageLoadResult(
+            layers=tuple(loaded_overlay_layers),
+            mode="overlay",
+            created=created,
+            channels=tuple(channel_index for channel_index, _ in resolved_channels),
+        )
 
-    def ensure_shapes_loaded(self, sdata: SpatialData, shapes_name: str, coordinate_system: str) -> Shapes:
+    def ensure_shapes_loaded(self, sdata: SpatialData, shapes_name: str, coordinate_system: str) -> ShapesLoadResult:
         """Load a shapes element into napari if it is not already present."""
         existing_layer = self._get_loaded_shapes_layer_for_coordinate_system(sdata, shapes_name, coordinate_system)
         if existing_layer is not None:
-            return existing_layer
+            binding = self._layer_bindings.get_binding(existing_layer)
+            skipped_geometry_count = binding.skipped_geometry_count if isinstance(binding, ShapesLayerBinding) else 0
+            return ShapesLoadResult(
+                layer=existing_layer,
+                created=False,
+                value_kind=None,
+                palette_source=None,
+                coercion_applied=False,
+                skipped_geometry_count=skipped_geometry_count,
+            )
 
         built_layer = _build_shapes_layer(sdata, shapes_name, coordinate_system, name=shapes_name)
         layer = built_layer.layer
@@ -1199,7 +1225,14 @@ class ViewerAdapter(QObject):
             source_shapes_index_feature_name=built_layer.source_shapes_index_feature_name,
             skipped_geometry_count=built_layer.skipped_geometry_count,
         )
-        return layer
+        return ShapesLoadResult(
+            layer=layer,
+            created=True,
+            value_kind=None,
+            palette_source=None,
+            coercion_applied=False,
+            skipped_geometry_count=built_layer.skipped_geometry_count,
+        )
 
     def ensure_styled_shapes_loaded(
         self,
@@ -1263,6 +1296,7 @@ class ViewerAdapter(QObject):
             value_kind=style_result.value_kind,
             palette_source=style_result.palette_source,
             coercion_applied=style_result.coercion_applied,
+            skipped_geometry_count=binding.skipped_geometry_count,
         )
 
     def remove_labels_layer(self, sdata: SpatialData, labels_name: str, coordinate_system: str) -> Labels | None:

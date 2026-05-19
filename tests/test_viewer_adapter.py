@@ -1072,8 +1072,13 @@ def test_viewer_adapter_ensure_labels_loaded_adds_layer_and_registers_binding(sd
 
     adapter.primary_labels_layers_changed.connect(lambda: labels_events.append("changed"))
 
-    layer = adapter.ensure_labels_loaded(sdata_blobs, "blobs_labels", "global")
+    result = adapter.ensure_labels_loaded(sdata_blobs, "blobs_labels", "global")
+    layer = result.layer
 
+    assert result.created is True
+    assert result.value_kind is None
+    assert result.palette_source is None
+    assert result.coercion_applied is False
     assert layer in viewer.layers
     assert layer.name == "blobs_labels"
     assert layer.affine is not None
@@ -1469,7 +1474,9 @@ def test_viewer_adapter_ensure_labels_loaded_reuses_matching_existing_layer(sdat
     first = adapter.ensure_labels_loaded(sdata_blobs, "blobs_labels", "global")
     second = adapter.ensure_labels_loaded(sdata_blobs, "blobs_labels", "global")
 
-    assert first is second
+    assert first.layer is second.layer
+    assert first.created is True
+    assert second.created is False
     assert len(viewer.layers) == 1
 
 
@@ -1477,7 +1484,8 @@ def test_viewer_adapter_unregisters_binding_when_user_removes_labels_layer(sdata
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
 
-    layer = adapter.ensure_labels_loaded(sdata_blobs, "blobs_labels", "global")
+    result = adapter.ensure_labels_loaded(sdata_blobs, "blobs_labels", "global")
+    layer = result.layer
 
     viewer.layers.remove(layer)
 
@@ -1489,7 +1497,8 @@ def test_viewer_adapter_ensure_labels_loaded_supports_multiscale_labels(sdata_bl
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
 
-    layer = adapter.ensure_labels_loaded(sdata_blobs, "blobs_multiscale_labels", "global")
+    result = adapter.ensure_labels_loaded(sdata_blobs, "blobs_multiscale_labels", "global")
+    layer = result.layer
 
     assert layer.multiscale is True
     assert len(layer.data) == 3
@@ -1515,8 +1524,14 @@ def test_viewer_adapter_ensure_shapes_loaded_adds_polygon_layer_and_registers_bi
 
     adapter.primary_labels_layers_changed.connect(lambda: labels_events.append("changed"))
 
-    layer = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
+    result = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
+    layer = result.layer
 
+    assert result.created is True
+    assert result.value_kind is None
+    assert result.palette_source is None
+    assert result.coercion_applied is False
+    assert result.skipped_geometry_count == 0
     assert layer in viewer.layers
     assert layer.name == "blobs_polygons"
     assert layer.shape_type == ["polygon"] * len(sdata_blobs.shapes["blobs_polygons"])
@@ -1545,7 +1560,8 @@ def test_viewer_adapter_ensure_shapes_loaded_expands_multipolygons_with_source_m
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
 
-    layer = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_multipolygons", "global")
+    result = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_multipolygons", "global")
+    layer = result.layer
 
     expected_indices: list[object] = []
     for source_index, geometry in sdata_blobs.shapes["blobs_multipolygons"].geometry.items():
@@ -1562,7 +1578,8 @@ def test_viewer_adapter_ensure_shapes_loaded_renders_circles_as_ellipses(sdata_b
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
 
-    layer = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_circles", "global")
+    result = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_circles", "global")
+    layer = result.layer
 
     circles = sdata_blobs.shapes["blobs_circles"]
     first_circle = circles.iloc[0]
@@ -1596,7 +1613,8 @@ def test_viewer_adapter_ensure_shapes_loaded_preserves_polygon_holes() -> None:
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
 
-    layer = adapter.ensure_shapes_loaded(sdata, "donuts", "global")
+    result = adapter.ensure_shapes_loaded(sdata, "donuts", "global")
+    layer = result.layer
     labels = layer.to_labels(labels_shape=(12, 12))
 
     binding = get_shapes_binding(adapter, layer)
@@ -1618,7 +1636,8 @@ def test_viewer_adapter_ensure_shapes_loaded_uses_named_geodataframe_index_in_fe
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
 
-    layer = adapter.ensure_shapes_loaded(sdata, "cell_boundaries", "global")
+    result = adapter.ensure_shapes_loaded(sdata, "cell_boundaries", "global")
+    layer = result.layer
 
     binding = get_shapes_binding(adapter, layer)
     assert binding.source_shapes_index_by_row == ("cell_1",)
@@ -1641,8 +1660,10 @@ def test_viewer_adapter_ensure_shapes_loaded_skips_empty_invalid_or_unsupported_
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
 
-    layer = adapter.ensure_shapes_loaded(sdata, "mixed_shapes", "global")
+    result = adapter.ensure_shapes_loaded(sdata, "mixed_shapes", "global")
+    layer = result.layer
 
+    assert result.skipped_geometry_count == 2
     assert layer.shape_type == ["polygon", "polygon", "polygon"]
     binding = get_shapes_binding(adapter, layer)
     assert binding.source_shapes_index_by_row == ("valid", "bowtie", "bowtie")
@@ -1656,7 +1677,9 @@ def test_viewer_adapter_ensure_shapes_loaded_reuses_matching_existing_layer(sdat
     first = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
     second = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
 
-    assert first is second
+    assert first.layer is second.layer
+    assert first.created is True
+    assert second.created is False
     assert len(viewer.layers) == 1
 
 
@@ -1745,11 +1768,11 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_coexists_with_primary_shapes
         value_kind="categorical",
     )
 
-    primary_layer = adapter.ensure_shapes_loaded(sdata, "cell_boundaries", "global")
+    primary_layer = adapter.ensure_shapes_loaded(sdata, "cell_boundaries", "global").layer
     styled_result = adapter.ensure_styled_shapes_loaded(sdata, "cell_boundaries", "global", style_spec)
 
     assert primary_layer is not styled_result.layer
-    assert adapter.ensure_shapes_loaded(sdata, "cell_boundaries", "global") is primary_layer
+    assert adapter.ensure_shapes_loaded(sdata, "cell_boundaries", "global").layer is primary_layer
     assert adapter.get_loaded_primary_shapes_layer(sdata, "cell_boundaries", "global") is primary_layer
     assert adapter.get_loaded_styled_shapes_layer(sdata, "cell_boundaries", style_spec, "global") is styled_result.layer
     assert adapter.get_loaded_styled_shapes_layers(sdata, "cell_boundaries", "global") == [styled_result.layer]
@@ -1816,7 +1839,7 @@ def test_viewer_adapter_remove_shapes_layer_removes_only_primary_shapes_layer() 
         value_key="cell_type",
         value_kind="categorical",
     )
-    primary_layer = adapter.ensure_shapes_loaded(sdata, "cell_boundaries", "global")
+    primary_layer = adapter.ensure_shapes_loaded(sdata, "cell_boundaries", "global").layer
     styled_layer = adapter.ensure_styled_shapes_loaded(sdata, "cell_boundaries", "global", style_spec).layer
 
     removed_layer = adapter.remove_shapes_layer(sdata, "cell_boundaries", "global")
@@ -1836,7 +1859,7 @@ def test_viewer_adapter_remove_layers_outside_coordinate_system_removes_primary_
         value_key="cell_type",
         value_kind="categorical",
     )
-    primary_layer = adapter.ensure_shapes_loaded(sdata, "cell_boundaries", "global")
+    primary_layer = adapter.ensure_shapes_loaded(sdata, "cell_boundaries", "global").layer
     styled_layer = adapter.ensure_styled_shapes_loaded(sdata, "cell_boundaries", "global", style_spec).layer
 
     removed_bindings = adapter.remove_layers_outside_coordinate_system(sdata=sdata, coordinate_system="local")
@@ -1850,7 +1873,7 @@ def test_viewer_adapter_remove_layers_outside_coordinate_system_removes_primary_
 def test_viewer_adapter_remove_shapes_layer_removes_registered_layer(sdata_blobs) -> None:
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
-    layer = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
+    layer = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global").layer
 
     removed_layer = adapter.remove_shapes_layer(sdata_blobs, "blobs_polygons", "global")
 
@@ -1875,8 +1898,13 @@ def test_viewer_adapter_ensure_image_loaded_adds_stack_layer_and_registers_bindi
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
 
-    layer = adapter.ensure_image_loaded(sdata_blobs, "blobs_image", "global", mode="stack")
+    result = adapter.ensure_image_loaded(sdata_blobs, "blobs_image", "global", mode="stack")
+    layer = result.primary_layer
 
+    assert result.layers == (layer,)
+    assert result.mode == "stack"
+    assert result.created is True
+    assert result.channels == ()
     assert layer in viewer.layers
     assert layer.name == "blobs_image"
     assert layer.affine is not None
@@ -1897,7 +1925,9 @@ def test_viewer_adapter_ensure_image_loaded_reuses_matching_existing_stack_layer
     first = adapter.ensure_image_loaded(sdata_blobs, "blobs_image", "global", mode="stack")
     second = adapter.ensure_image_loaded(sdata_blobs, "blobs_image", "global", mode="stack")
 
-    assert first is second
+    assert first.primary_layer is second.primary_layer
+    assert first.created is True
+    assert second.created is False
     assert len(viewer.layers) == 1
 
 
@@ -1905,7 +1935,8 @@ def test_viewer_adapter_ensure_image_loaded_supports_multiscale_images(sdata_blo
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
 
-    layer = adapter.ensure_image_loaded(sdata_blobs, "blobs_multiscale_image", "global", mode="stack")
+    result = adapter.ensure_image_loaded(sdata_blobs, "blobs_multiscale_image", "global", mode="stack")
+    layer = result.primary_layer
 
     assert layer.multiscale is True
     assert len(layer.data) == 3
@@ -1931,7 +1962,7 @@ def test_viewer_adapter_ensure_image_loaded_overlay_adds_one_layer_per_selected_
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
 
-    layers = adapter.ensure_image_loaded(
+    result = adapter.ensure_image_loaded(
         sdata_blobs,
         "blobs_image",
         "global",
@@ -1939,8 +1970,11 @@ def test_viewer_adapter_ensure_image_loaded_overlay_adds_one_layer_per_selected_
         channels=[0, 2],
         channel_colors=["blue", "magenta"],
     )
+    layers = result.layers
 
-    assert isinstance(layers, list)
+    assert result.mode == "overlay"
+    assert result.created is True
+    assert result.channels == (0, 2)
     assert len(layers) == 2
     assert [layer.name for layer in layers] == ["blobs_image[0]", "blobs_image[2]"]
     assert [layer.blending for layer in layers] == ["additive", "additive"]
@@ -1975,16 +2009,18 @@ def test_viewer_adapter_ensure_image_loaded_overlay_reuses_existing_channel_laye
         channel_colors=["cyan", "yellow"],
     )
 
-    assert first == second
+    assert first.layers == second.layers
+    assert first.created is True
+    assert second.created is False
     assert len(viewer.layers) == 2
-    assert [str(layer.colormap).lower() for layer in second] != []
+    assert [str(layer.colormap).lower() for layer in second.layers] != []
 
 
 def test_viewer_adapter_unregisters_binding_when_user_removes_overlay_layer(sdata_blobs) -> None:
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
 
-    layers = adapter.ensure_image_loaded(
+    result = adapter.ensure_image_loaded(
         sdata_blobs,
         "blobs_image",
         "global",
@@ -1992,6 +2028,7 @@ def test_viewer_adapter_unregisters_binding_when_user_removes_overlay_layer(sdat
         channels=[0, 1],
         channel_colors=["blue", "red"],
     )
+    layers = result.layers
 
     viewer.layers.remove(layers[0])
 
@@ -2004,7 +2041,7 @@ def test_viewer_adapter_ensure_image_loaded_overlay_removes_existing_stack_layer
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
 
-    stack_layer = adapter.ensure_image_loaded(sdata_blobs, "blobs_image", "global", mode="stack")
+    stack_layer = adapter.ensure_image_loaded(sdata_blobs, "blobs_image", "global", mode="stack").primary_layer
     overlay_layers = adapter.ensure_image_loaded(
         sdata_blobs,
         "blobs_image",
@@ -2012,7 +2049,7 @@ def test_viewer_adapter_ensure_image_loaded_overlay_removes_existing_stack_layer
         mode="overlay",
         channels=[0, 1],
         channel_colors=["blue", "red"],
-    )
+    ).layers
 
     assert stack_layer not in viewer.layers
     assert adapter.layer_bindings.get_binding(stack_layer) is None
@@ -2032,7 +2069,7 @@ def test_viewer_adapter_ensure_image_loaded_overlay_removes_stale_channel_layers
         channels=[0, 1],
         channel_colors=["blue", "red"],
     )
-    layers = adapter.ensure_image_loaded(
+    result = adapter.ensure_image_loaded(
         sdata_blobs,
         "blobs_image",
         "global",
@@ -2040,12 +2077,28 @@ def test_viewer_adapter_ensure_image_loaded_overlay_removes_stale_channel_layers
         channels=[1],
         channel_colors=["green"],
     )
+    layers = result.layers
 
+    assert result.created is False
     assert len(layers) == 1
     assert len(viewer.layers) == 1
     binding = adapter.layer_bindings.get_binding(layers[0])
     assert binding is not None
     assert binding.channel_index == 1
+
+    mixed_result = adapter.ensure_image_loaded(
+        sdata_blobs,
+        "blobs_image",
+        "global",
+        mode="overlay",
+        channels=[1, 2],
+        channel_colors=["green", "magenta"],
+    )
+
+    assert mixed_result.created is True
+    assert mixed_result.channels == (1, 2)
+    assert mixed_result.layers[0] is layers[0]
+    assert len(viewer.layers) == 2
 
 
 def test_viewer_adapter_ensure_image_loaded_stack_removes_existing_overlay_layers(sdata_blobs) -> None:
@@ -2059,8 +2112,8 @@ def test_viewer_adapter_ensure_image_loaded_stack_removes_existing_overlay_layer
         mode="overlay",
         channels=[0, 1],
         channel_colors=["blue", "red"],
-    )
-    stack_layer = adapter.ensure_image_loaded(sdata_blobs, "blobs_image", "global", mode="stack")
+    ).layers
+    stack_layer = adapter.ensure_image_loaded(sdata_blobs, "blobs_image", "global", mode="stack").primary_layer
 
     assert all(layer not in viewer.layers for layer in overlay_layers)
     assert all(adapter.layer_bindings.get_binding(layer) is None for layer in overlay_layers)
@@ -2072,7 +2125,7 @@ def test_viewer_adapter_ensure_image_loaded_overlay_accepts_channel_names(sdata_
     adapter = ViewerAdapter(viewer)
 
     sdata_blobs.images["blobs_image"] = sdata_blobs.images["blobs_image"].assign_coords(c=["DAPI", "CD3", "CD8"])
-    layers = adapter.ensure_image_loaded(
+    result = adapter.ensure_image_loaded(
         sdata_blobs,
         "blobs_image",
         "global",
@@ -2080,7 +2133,9 @@ def test_viewer_adapter_ensure_image_loaded_overlay_accepts_channel_names(sdata_
         channels=["CD3", "CD8"],
         channel_colors=["green", "magenta"],
     )
+    layers = result.layers
 
+    assert result.channels == (1, 2)
     assert [layer.name for layer in layers] == ["blobs_image[CD3]", "blobs_image[CD8]"]
     assert [adapter.layer_bindings.get_binding(layer).channel_name for layer in layers] == ["CD3", "CD8"]
 
@@ -2089,14 +2144,16 @@ def test_viewer_adapter_ensure_image_loaded_overlay_supports_multiscale_images(s
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
 
-    layers = adapter.ensure_image_loaded(
+    result = adapter.ensure_image_loaded(
         sdata_blobs,
         "blobs_multiscale_image",
         "global",
         mode="overlay",
         channels=[0, 2],
     )
+    layers = result.layers
 
+    assert result.channels == (0, 2)
     assert len(layers) == 2
     assert all(layer.multiscale is True for layer in layers)
     assert all(len(layer.data) == 3 for layer in layers)

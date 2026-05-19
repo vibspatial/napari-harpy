@@ -125,8 +125,8 @@ class PointsValueSource:
 
 
 @dataclass(frozen=True)
-class PointsLoadResult:
-    """Materialized selected points ready for the widget to display in napari.
+class PointsLoadRequest:
+    """Materialized selected points requested for display in napari.
 
     The contained selection has already been loaded from Dask into memory. The
     widget can pass ``identity`` and ``selection`` to the viewer adapter to
@@ -196,7 +196,7 @@ def _run_points_value_source_job(job: PointsValueSourceJob) -> PointsValueSource
 
 
 @thread_worker(start_thread=False, ignore_errors=True)
-def _run_points_load_job(job: PointsLoadJob) -> PointsLoadResult:
+def _run_points_load_job(job: PointsLoadJob) -> PointsLoadRequest:
     """Load one selected points value set in a worker thread.
 
     This is the per-selection read step. It reuses the prepared
@@ -221,7 +221,7 @@ def _run_points_load_job(job: PointsLoadJob) -> PointsLoadResult:
         render_point_budget=job.render_point_budget,
         random_state=job.random_state,
     )
-    return PointsLoadResult(
+    return PointsLoadRequest(
         identity=job.value_source.identity,
         selection=selection,
         value_table=job.value_source.value_table,
@@ -236,7 +236,7 @@ class PointsController:
         *,
         on_state_changed: Callable[[], None] | None = None,
         on_value_source_loaded: Callable[[PointsValueSource], None] | None = None,
-        on_points_loaded: Callable[[PointsLoadResult], None] | None = None,
+        on_points_loaded: Callable[[PointsLoadRequest], None] | None = None,
     ) -> None:
         """Create the controller.
 
@@ -259,7 +259,7 @@ class PointsController:
         self._points_id: str | None = None
 
         self._current_value_source: PointsValueSource | None = None
-        self._current_load_result: PointsLoadResult | None = None
+        self._current_load_request: PointsLoadRequest | None = None
         self._value_color_by_value: dict[str, str] = {}
 
         self._latest_value_job_id = 0
@@ -294,9 +294,9 @@ class PointsController:
         return self._current_value_source
 
     @property
-    def current_load_result(self) -> PointsLoadResult | None:
-        """Return the latest selected-points load result, if available."""
-        return self._current_load_result
+    def current_load_request(self) -> PointsLoadRequest | None:
+        """Return the latest selected-points load request, if available."""
+        return self._current_load_request
 
     @property
     def is_loading_values(self) -> bool:
@@ -383,7 +383,7 @@ class PointsController:
 
         if changed:
             self._current_value_source = None
-            self._current_load_result = None
+            self._current_load_request = None
             self._value_color_by_value.clear()
             self._cancel_value_worker()
             self._cancel_load_worker()
@@ -399,7 +399,7 @@ class PointsController:
 
         self._latest_value_job_id = job.job_id
         self._current_value_source = None
-        self._current_load_result = None
+        self._current_load_request = None
         self._value_color_by_value.clear()
         self._cancel_value_worker()
         self._cancel_load_worker()
@@ -435,7 +435,7 @@ class PointsController:
             return False
 
         self._latest_load_job_id = job.job_id
-        self._current_load_result = None
+        self._current_load_request = None
         self._cancel_load_worker()
 
         worker = self._create_points_load_worker(job)
@@ -506,7 +506,11 @@ class PointsController:
                 kind="error",
             )
             return None
-        if isinstance(render_point_budget, bool) or not isinstance(render_point_budget, int) or render_point_budget <= 0:
+        if (
+            isinstance(render_point_budget, bool)
+            or not isinstance(render_point_budget, int)
+            or render_point_budget <= 0
+        ):
             self._set_state_status(
                 PointsControllerState.LOAD_FAILED,
                 "Points: render point budget must be a positive integer.",
@@ -533,7 +537,7 @@ class PointsController:
             return
 
         self._current_value_source = result
-        self._current_load_result = None
+        self._current_load_request = None
         value_count = len(result.value_table.values)
         self._set_state_status(
             PointsControllerState.VALUES_READY,
@@ -547,7 +551,7 @@ class PointsController:
             return
 
         self._current_value_source = None
-        self._current_load_result = None
+        self._current_load_request = None
         self._set_state_status(
             PointsControllerState.LOAD_FAILED,
             f"Points: value loading failed: {error}",
@@ -566,12 +570,12 @@ class PointsController:
         # one-shot `on_value_source_loaded` side effect has already run.
         self._notify_state_changed()
 
-    def _on_load_worker_returned(self, job_id: int, result: PointsLoadResult) -> None:
+    def _on_load_worker_returned(self, job_id: int, result: PointsLoadRequest) -> None:
         if job_id != self._latest_load_job_id or job_id != self._active_load_worker_job_id:
             return
 
         result = self._with_stable_value_colors(result)
-        self._current_load_result = result
+        self._current_load_request = result
         selection = result.selection
         if selection.is_sampled and selection.warning:
             self._set_state_status(
@@ -591,7 +595,7 @@ class PointsController:
         if job_id != self._latest_load_job_id or job_id != self._active_load_worker_job_id:
             return
 
-        self._current_load_result = None
+        self._current_load_request = None
         self._set_state_status(
             PointsControllerState.LOAD_FAILED,
             f"Points: selection loading failed: {error}",
@@ -666,11 +670,11 @@ class PointsController:
         if self._on_value_source_loaded is not None:
             self._on_value_source_loaded(result)
 
-    def _notify_points_loaded(self, result: PointsLoadResult) -> None:
+    def _notify_points_loaded(self, request: PointsLoadRequest) -> None:
         if self._on_points_loaded is not None:
-            self._on_points_loaded(result)
+            self._on_points_loaded(request)
 
-    def _with_stable_value_colors(self, result: PointsLoadResult) -> PointsLoadResult:
+    def _with_stable_value_colors(self, request: PointsLoadRequest) -> PointsLoadRequest:
         """Attach stable value colors for the current points source.
 
         The controller owns this mapping so values keep their colors as users
@@ -678,17 +682,17 @@ class PointsController:
         ``selection.selected_values`` and later passed to napari as an explicit
         ``{value: color}`` mapping to avoid row-order-dependent color jumps.
         """
-        selected_value_count = len(result.selection.selected_values)
+        selected_value_count = len(request.selection.selected_values)
         if selected_value_count < 2 or selected_value_count > POINTS_SELECTION_MAX_CATEGORICAL_COLORS:
-            return replace(result, selected_value_colors=())
+            return replace(request, selected_value_colors=())
 
         colors: list[str] = []
-        for value in result.selection.selected_values:
+        for value in request.selection.selected_values:
             if value not in self._value_color_by_value:
                 self._value_color_by_value[value] = _default_points_value_color(len(self._value_color_by_value))
             colors.append(self._value_color_by_value[value])
 
-        return replace(result, selected_value_colors=tuple(colors))
+        return replace(request, selected_value_colors=tuple(colors))
 
     def _cancel_value_worker(self) -> None:
         if self._active_value_worker is None:

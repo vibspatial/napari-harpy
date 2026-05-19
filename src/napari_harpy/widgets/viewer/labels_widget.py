@@ -59,7 +59,7 @@ class _LabelsCardWidget(QFrame):
         self.setStyleSheet(DETAIL_PANEL_STYLESHEET)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
         self.title_label = _ElidedLabel(labels_name, self)
@@ -73,7 +73,7 @@ class _LabelsCardWidget(QFrame):
         form_layout.setVerticalSpacing(6)
 
         linked_table_label = create_form_label("Linked table")
-        self.linked_table_combo = CompactComboBox()
+        self.linked_table_combo = CompactComboBox(minimum_contents_length=8)
         self.linked_table_combo.setObjectName(f"viewer_widget_linked_table_combo_{labels_name}")
         self.linked_table_combo.setStyleSheet(INPUT_CONTROL_STYLESHEET)
         if table_names:
@@ -83,7 +83,7 @@ class _LabelsCardWidget(QFrame):
             self.linked_table_combo.setEnabled(False)
 
         color_source_kind_label = create_form_label("Color source")
-        self.color_source_kind_combo = CompactComboBox()
+        self.color_source_kind_combo = CompactComboBox(minimum_contents_length=8)
         self.color_source_kind_combo.setObjectName(f"viewer_widget_color_source_kind_combo_{labels_name}")
         self.color_source_kind_combo.setStyleSheet(INPUT_CONTROL_STYLESHEET)
         self.color_source_kind_combo.addItem("None", None)
@@ -104,10 +104,10 @@ class _LabelsCardWidget(QFrame):
         self._color_source_completer.setFilterMode(Qt.MatchFlag.MatchContains)
         self.color_source_value_input.setCompleter(self._color_source_completer)
 
-        self.action_status_label = QLabel()
-        self.action_status_label.setObjectName(f"viewer_widget_action_status_{labels_name}")
-        self.action_status_label.setWordWrap(True)
-        self.action_status_label.setStyleSheet(SUMMARY_LABEL_STYLESHEET)
+        self.action_hint_label = QLabel()
+        self.action_hint_label.setObjectName(f"viewer_widget_action_hint_{labels_name}")
+        self.action_hint_label.setWordWrap(True)
+        self.action_hint_label.setStyleSheet(SUMMARY_LABEL_STYLESHEET)
 
         self.add_update_button = QPushButton("Add / Update in viewer")
         self.add_update_button.setObjectName(f"viewer_widget_add_update_labels_button_{labels_name}")
@@ -121,7 +121,7 @@ class _LabelsCardWidget(QFrame):
         form_layout.addRow(self.color_source_value_label, self.color_source_value_input)
 
         layout.addLayout(form_layout)
-        layout.addWidget(self.action_status_label)
+        layout.addWidget(self.action_hint_label)
         layout.addWidget(self.add_update_button)
 
         self.linked_table_combo.currentIndexChanged.connect(self._refresh_color_source_controls)
@@ -228,33 +228,31 @@ class _LabelsCardWidget(QFrame):
         selected_source = self.selected_color_source
 
         if source_kind is None:
-            self.action_status_label.setText("Action: add/update primary labels layer")
+            self.action_hint_label.setText("Action: add/update primary labels layer")
             return
 
         if table_name is None:
-            self.action_status_label.setText("Action: colored overlays require a linked table")
+            self.action_hint_label.setText("Action: colored overlays require a linked table")
             return
 
         if source_kind == "obs_column":
             if selected_source is None:
                 if self._filtered_color_sources:
-                    self.action_status_label.setText("Action: select an observation column for a colored overlay")
+                    self.action_hint_label.setText("Action: select an observation column for a colored overlay")
                 else:
-                    self.action_status_label.setText("Action: no colorable observation columns available")
+                    self.action_hint_label.setText("Action: no colorable observation columns available")
                 return
-            self.action_status_label.setText(
-                f'Action: add/update colored overlay for obs["{selected_source.value_key}"]'
-            )
+            self.action_hint_label.setText(f'Action: add/update colored overlay for obs["{selected_source.value_key}"]')
             return
 
         if selected_source is None:
             if self._filtered_color_sources:
-                self.action_status_label.setText("Action: select a var for a colored overlay")
+                self.action_hint_label.setText("Action: select a var for a colored overlay")
             else:
-                self.action_status_label.setText("Action: no vars available for a colored overlay")
+                self.action_hint_label.setText("Action: no vars available for a colored overlay")
             return
 
-        self.action_status_label.setText(f'Action: add/update colored overlay for X[:, "{selected_source.value_key}"]')
+        self.action_hint_label.setText(f'Action: add/update colored overlay for X[:, "{selected_source.value_key}"]')
 
     def _emit_add_update_request(self, _checked: bool = False) -> None:
         self.add_update_requested.emit(

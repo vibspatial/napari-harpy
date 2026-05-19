@@ -32,11 +32,10 @@ class PointsStyleResult:
 
 
 @dataclass(frozen=True)
-class PointsLayerResult(PointsStyleResult):
+class PointsLoadResult(PointsStyleResult):
     """Describe applying an already loaded points selection to a viewer layer.
 
-    This is named ``PointsLayerResult`` rather than ``PointsLoadResult`` because
-    Dask-backed point loading is owned by the controller. This result only
+    Dask-backed point selection loading is owned by the controller. This result
     describes the napari layer that was created or updated from that loaded
     selection.
     """

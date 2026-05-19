@@ -9,7 +9,11 @@ from loguru import logger
 from napari.layers import Labels
 from napari.utils.colormaps import DirectLabelColormap, label_colormap
 
-from napari_harpy.core._color_source import TableColorSourceSpec, TableColorValueKind
+from napari_harpy.core._color_source import (
+    TableColorSourceSpec,
+    TableColorValueKind,
+    validate_table_color_value_kind,
+)
 from napari_harpy.core.class_palette import normalize_color_sequence
 from napari_harpy.core.spatialdata import get_table, get_table_metadata
 from napari_harpy.viewer._styling import (
@@ -21,6 +25,7 @@ from napari_harpy.viewer._styling import (
     is_string_like_series,
     is_valid_color,
     normalize_category_value,
+    validate_styled_palette_source,
 )
 
 if TYPE_CHECKING:
@@ -30,16 +35,22 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class LabelsStyleResult:
-    """Describe how one styled labels overlay was colored."""
+    """Describe labels styling metadata, if styling was applied."""
 
-    value_kind: TableColorValueKind
+    value_kind: TableColorValueKind | None
     palette_source: StyledPaletteSource | None
     coercion_applied: bool
+
+    def __post_init__(self) -> None:
+        if self.value_kind is not None:
+            validate_table_color_value_kind(self.value_kind)
+        if self.palette_source is not None:
+            validate_styled_palette_source(self.palette_source)
 
 
 @dataclass(frozen=True)
 class LabelsLoadResult(LabelsStyleResult):
-    """Describe the styled overlay load/update result returned to the viewer."""
+    """Describe a primary or styled labels layer load/update result."""
 
     layer: Labels
     created: bool

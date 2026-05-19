@@ -286,7 +286,7 @@ class ObjectClassificationWidget(QWidget):
         persistence_action_layout = QHBoxLayout(self.persistence_action_row)
         persistence_action_layout.setContentsMargins(0, 0, 0, 0)
         persistence_action_layout.setSpacing(8)
-        self.auto_train_checkbox = QCheckBox("Auto train")
+        self.auto_train_checkbox = QCheckBox("Auto-train classifier")
         self.auto_train_checkbox.setObjectName("auto_train_checkbox")
         self.auto_train_checkbox.setChecked(False)
         self.auto_train_checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -357,7 +357,6 @@ class ObjectClassificationWidget(QWidget):
         class_action_layout.addWidget(self.apply_class_button, 1)
         class_action_layout.addWidget(self.clear_class_button, 1)
         class_editor_layout.addWidget(self.class_action_row)
-        retrain_action_layout.addWidget(self.auto_train_checkbox)
         retrain_action_layout.addWidget(self.retrain_button, 1)
         retrain_action_layout.addWidget(self.export_classifier_button, 1)
         persistence_action_layout.addWidget(self.sync_button, 1)
@@ -395,6 +394,7 @@ class ObjectClassificationWidget(QWidget):
 
         content_layout.addWidget(title)
         content_layout.addLayout(selector_layout)
+        content_layout.addWidget(self.auto_train_checkbox)
         content_layout.addWidget(self.retrain_action_row)
         content_layout.addWidget(self.classifier_preparation_status)
         content_layout.addWidget(self.persistence_action_row)
@@ -781,7 +781,7 @@ class ObjectClassificationWidget(QWidget):
                 return self._labels_layer_preparation_result
 
             try:
-                layer = self._app_state.viewer_adapter.ensure_labels_loaded(
+                result = self._app_state.viewer_adapter.ensure_labels_loaded(
                     self.selected_spatialdata,
                     self.selected_segmentation_name,
                     self.selected_coordinate_system,
@@ -790,7 +790,7 @@ class ObjectClassificationWidget(QWidget):
                 self._labels_layer_preparation_result = _LabelsLayerPreparationResult(kind="error", error=str(error))
                 return self._labels_layer_preparation_result
 
-            self._app_state.viewer_adapter.activate_layer(layer)
+            self._app_state.viewer_adapter.activate_layer(result.layer)
             self._labels_layer_preparation_result = _LabelsLayerPreparationResult(
                 kind="loaded",
                 labels_name=self.selected_segmentation_name,

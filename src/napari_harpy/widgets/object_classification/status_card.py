@@ -5,7 +5,7 @@ from typing import Literal
 
 from napari_harpy.core.annotation import UNLABELED_CLASS
 from napari_harpy.widgets.object_classification.controller import ClassifierPreparationSummary
-from napari_harpy.widgets.shared_styles import StatusCardKind, format_feedback_identifier
+from napari_harpy.widgets.shared_styles import StatusCardKind, format_feedback_identifier, validate_status_card_kind
 
 _LabelsLayerPreparationKind = Literal["none", "loaded", "activated", "error"]
 
@@ -24,6 +24,9 @@ class _ObjectClassificationStatusCardSpec:
     lines: tuple[str, ...]
     kind: StatusCardKind
     tooltip_message: str | None = None
+
+    def __post_init__(self) -> None:
+        validate_status_card_kind(self.kind)
 
 
 def build_object_classification_selection_status_card_spec(

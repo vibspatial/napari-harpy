@@ -10,7 +10,11 @@ from loguru import logger
 from matplotlib.colors import to_rgba
 from napari.layers import Shapes
 
-from napari_harpy.core._color_source import ShapeColorSourceSpec, ShapeColorValueKind
+from napari_harpy.core._color_source import (
+    ShapeColorSourceSpec,
+    ShapeColorValueKind,
+    validate_shape_color_value_kind,
+)
 from napari_harpy.viewer._styling import (
     StyledPaletteSource,
     build_string_categorical_values,
@@ -19,6 +23,7 @@ from napari_harpy.viewer._styling import (
     default_categorical_palette_for_categories,
     is_string_like_series,
     normalize_category_value,
+    validate_styled_palette_source,
 )
 
 if TYPE_CHECKING:
@@ -31,19 +36,26 @@ SHAPES_EDGE_ALPHA = 1.0
 
 @dataclass(frozen=True)
 class ShapesStyleResult:
-    """Describe how one styled shapes layer was colored."""
+    """Describe shapes styling metadata, if styling was applied."""
 
-    value_kind: ShapeColorValueKind
+    value_kind: ShapeColorValueKind | None
     palette_source: StyledPaletteSource | None
     coercion_applied: bool
+
+    def __post_init__(self) -> None:
+        if self.value_kind is not None:
+            validate_shape_color_value_kind(self.value_kind)
+        if self.palette_source is not None:
+            validate_styled_palette_source(self.palette_source)
 
 
 @dataclass(frozen=True)
 class ShapesLoadResult(ShapesStyleResult):
-    """Describe the styled shapes load/update result returned to the viewer."""
+    """Describe a primary or styled shapes layer load/update result."""
 
     layer: Shapes
     created: bool
+    skipped_geometry_count: int = 0
 
 
 def apply_shape_color_source_to_shapes_layer(

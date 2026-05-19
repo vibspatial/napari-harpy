@@ -175,7 +175,7 @@ class _CollapsibleSectionWidget(QFrame):
         self.setStyleSheet(_SECTION_GROUP_STYLESHEET)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(10)
 
         self.toggle_button = _ElidedToolButton()
@@ -245,7 +245,7 @@ class _DisclosureElementWidget(QFrame):
         self.setStyleSheet(_ELEMENT_DISCLOSURE_STYLESHEET)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(8)
 
         self.toggle_button = _ElidedToolButton(title)

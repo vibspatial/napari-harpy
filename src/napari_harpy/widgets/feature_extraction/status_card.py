@@ -4,7 +4,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from napari_harpy.widgets.shared_styles import StatusCardKind, format_feedback_identifier
+from napari_harpy.widgets.shared_styles import StatusCardKind, format_feedback_identifier, validate_status_card_kind
 
 _FeatureExtractionTableBlocker = Literal["choose_table", "no_eligible", "invalid"] | None
 
@@ -27,6 +27,9 @@ class _FeatureExtractionStatusCardSpec:
     lines: tuple[str, ...]
     kind: StatusCardKind
     tooltip_message: str | None = None
+
+    def __post_init__(self) -> None:
+        validate_status_card_kind(self.kind)
 
 
 def build_feature_extraction_status_card_entries(
