@@ -59,7 +59,7 @@ class _LabelsCardWidget(QFrame):
         self.setStyleSheet(DETAIL_PANEL_STYLESHEET)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
         self.title_label = _ElidedLabel(labels_name, self)
@@ -73,7 +73,7 @@ class _LabelsCardWidget(QFrame):
         form_layout.setVerticalSpacing(6)
 
         linked_table_label = create_form_label("Linked table")
-        self.linked_table_combo = CompactComboBox()
+        self.linked_table_combo = CompactComboBox(minimum_contents_length=8)
         self.linked_table_combo.setObjectName(f"viewer_widget_linked_table_combo_{labels_name}")
         self.linked_table_combo.setStyleSheet(INPUT_CONTROL_STYLESHEET)
         if table_names:
@@ -83,7 +83,7 @@ class _LabelsCardWidget(QFrame):
             self.linked_table_combo.setEnabled(False)
 
         color_source_kind_label = create_form_label("Color source")
-        self.color_source_kind_combo = CompactComboBox()
+        self.color_source_kind_combo = CompactComboBox(minimum_contents_length=8)
         self.color_source_kind_combo.setObjectName(f"viewer_widget_color_source_kind_combo_{labels_name}")
         self.color_source_kind_combo.setStyleSheet(INPUT_CONTROL_STYLESHEET)
         self.color_source_kind_combo.addItem("None", None)

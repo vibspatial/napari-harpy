@@ -23,6 +23,7 @@ from napari_harpy._points_value_index import PointsValueSelection, PointsValueTa
 from napari_harpy.core._color_source import ShapeColorSourceSpec, TableColorSourceSpec
 from napari_harpy.viewer.adapter import PointsLayerIdentity
 from napari_harpy.viewer.shapes_styling import SHAPES_FACE_ALPHA
+from napari_harpy.widgets.shared_styles import WIDGET_MIN_WIDTH
 from napari_harpy.widgets.viewer.disclosure import _ElidedLabel, _ElidedToolButton
 from napari_harpy.widgets.viewer.image_widget import QColorDialog, _OverlayColorButton
 from napari_harpy.widgets.viewer.points_controller import PointsLoadRequest
@@ -496,6 +497,46 @@ def test_viewer_widget_progressive_disclosure_expands_sections_and_elements(qtbo
     assert first_shape_row.is_expanded()
     assert not first_shape_row.detail_widget.isHidden()
     assert widget.shape_cards[0].add_update_button.isEnabled()
+
+
+def test_viewer_widget_expanded_detail_panels_fit_current_minimum_width(qtbot, monkeypatch, sdata_blobs) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    monkeypatch.setattr(widget._points_controller, "load_value_source", lambda: None)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata_blobs)
+
+    scrollbar_width = widget.scroll_area.verticalScrollBar().sizeHint().width()
+    content_margins = widget.content_layout.contentsMargins()
+    content_width = WIDGET_MIN_WIDTH - scrollbar_width - content_margins.left() - content_margins.right()
+
+    for group, row, card in (
+        (widget.images_group, widget.image_rows[0], widget.image_cards[0]),
+        (widget.labels_group, widget.labels_rows[0], widget.labels_cards[0]),
+        (widget.shapes_group, widget.shape_rows[0], widget.shape_cards[0]),
+    ):
+        group_margins = group.layout().contentsMargins()
+        row_margins = row.layout().contentsMargins()
+        available_detail_width = (
+            content_width
+            - group_margins.left()
+            - group_margins.right()
+            - row_margins.left()
+            - row_margins.right()
+        )
+
+        assert card.minimumSizeHint().width() <= available_detail_width
+        assert card.sizeHint().width() <= available_detail_width
+
+    points_group_margins = widget.points_group.layout().contentsMargins()
+    available_points_width = content_width - points_group_margins.left() - points_group_margins.right()
+
+    assert widget.points_widget.minimumSizeHint().width() <= available_points_width
+    assert widget.points_widget.sizeHint().width() <= available_points_width
 
 
 def test_viewer_widget_progressive_disclosure_actions_still_load_layers(qtbot, sdata_blobs) -> None:

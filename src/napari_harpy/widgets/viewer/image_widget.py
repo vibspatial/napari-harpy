@@ -137,7 +137,7 @@ class _ImageCardWidget(QFrame):
         self.setStyleSheet(DETAIL_PANEL_STYLESHEET)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
         self.title_label = _ElidedLabel(image_name, self)

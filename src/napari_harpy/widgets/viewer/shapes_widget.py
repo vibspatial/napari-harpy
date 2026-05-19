@@ -60,7 +60,7 @@ class _ShapesCardWidget(QFrame):
         self.setStyleSheet(DETAIL_PANEL_STYLESHEET)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
         self.title_label = _ElidedLabel(shapes_name, self)
@@ -74,7 +74,7 @@ class _ShapesCardWidget(QFrame):
         form_layout.setVerticalSpacing(6)
 
         color_source_kind_label = create_form_label("Color source")
-        self.color_source_kind_combo = CompactComboBox()
+        self.color_source_kind_combo = CompactComboBox(minimum_contents_length=8)
         self.color_source_kind_combo.setObjectName(f"viewer_widget_shapes_color_source_kind_combo_{shapes_name}")
         self.color_source_kind_combo.setStyleSheet(INPUT_CONTROL_STYLESHEET)
         self.color_source_kind_combo.addItem("None", None)

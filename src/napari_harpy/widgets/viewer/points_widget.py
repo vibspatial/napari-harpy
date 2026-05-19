@@ -85,7 +85,7 @@ class PointsValueWidget(QFrame):
         self.setStyleSheet(_DETAIL_PANEL_STYLESHEET)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
         form_layout = QFormLayout()
@@ -93,11 +93,11 @@ class PointsValueWidget(QFrame):
         form_layout.setHorizontalSpacing(8)
         form_layout.setVerticalSpacing(6)
 
-        self.points_combo = CompactComboBox()
+        self.points_combo = CompactComboBox(minimum_contents_length=8)
         self.points_combo.setObjectName("viewer_widget_points_combo")
         self.points_combo.setStyleSheet(build_input_control_stylesheet("QComboBox"))
 
-        self.index_column_combo = CompactComboBox()
+        self.index_column_combo = CompactComboBox(minimum_contents_length=8)
         self.index_column_combo.setObjectName("viewer_widget_points_index_column_combo")
         self.index_column_combo.setStyleSheet(build_input_control_stylesheet("QComboBox"))
 
@@ -130,11 +130,13 @@ class PointsValueWidget(QFrame):
         self.selected_values_summary_label.setWordWrap(True)
         self.selected_values_summary_label.setStyleSheet(_SELECTED_VALUES_EMPTY_STYLESHEET)
 
-        self.clear_selection_button = QPushButton("Clear selection")
+        self.clear_selection_button = QPushButton("Clear")
         self.clear_selection_button.setObjectName("viewer_widget_points_clear_selection_button")
+        self.clear_selection_button.setAccessibleName("Clear selected point values")
         self.clear_selection_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.clear_selection_button.setMinimumHeight(28)
         self.clear_selection_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
+        self.clear_selection_button.setToolTip("Clear selected point values")
 
         selected_values_widget = QWidget()
         selected_values_layout = QHBoxLayout(selected_values_widget)

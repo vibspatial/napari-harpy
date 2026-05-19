@@ -2,6 +2,12 @@
   <img src="docs/_static/logo.png" alt="Harpy logo" width="200">
 </p>
 
+# napari-harpy
+
+**A spatial omics interface for napari.**
+
+Built around `SpatialData` for interactive exploration, feature extraction, and object classification.
+
 `napari-harpy` is a napari plugin for viewing, exploring, and analyzing
 `SpatialData` datasets. It includes its own viewer for loading and
 browsing data inside napari, alongside feature extraction and interactive
