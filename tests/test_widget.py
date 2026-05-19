@@ -38,6 +38,7 @@ from napari_harpy.widgets.object_classification.controller import (
 from napari_harpy.widgets.object_classification.widget import (
     ObjectClassificationWidget as HarpyWidget,
 )
+from napari_harpy.widgets.shared_styles import WIDGET_MIN_WIDTH
 from napari_harpy.widgets.viewer.widget import ViewerWidget
 
 
@@ -262,7 +263,7 @@ def test_widget_can_be_instantiated(qtbot) -> None:
     assert widget.selected_color_by == "user_class"
     assert widget.auto_train_checkbox.objectName() == "auto_train_checkbox"
     assert widget.findChild(QCheckBox, "auto_train_checkbox") is widget.auto_train_checkbox
-    assert widget.auto_train_checkbox.text() == "Auto train"
+    assert widget.auto_train_checkbox.text() == "Auto-train classifier"
     assert widget.auto_train_checkbox.isChecked() is False
     assert "QCheckBox" in widget.auto_train_checkbox.styleSheet()
     assert widget._auto_train_enabled is False
@@ -280,6 +281,23 @@ def test_widget_can_be_instantiated(qtbot) -> None:
     )
     assert widget.training_scope_combo.currentData() == classifier_module.DEFAULT_TRAINING_SCOPE
     assert widget.prediction_scope_combo.currentData() == classifier_module.DEFAULT_PREDICTION_SCOPE
+
+
+def test_widget_initial_action_rows_fit_current_minimum_width(qtbot) -> None:
+    viewer = DummyViewer(seed_shared_sdata=False)
+    widget = HarpyWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    scrollbar_width = widget.scroll_area.verticalScrollBar().sizeHint().width()
+    scroll_content_margins = widget.scroll_content.layout().contentsMargins()
+    viewport_width = WIDGET_MIN_WIDTH - scrollbar_width
+    available_content_width = viewport_width - scroll_content_margins.left() - scroll_content_margins.right()
+
+    assert widget.scroll_content.sizeHint().width() <= viewport_width
+    assert widget.auto_train_checkbox.minimumSizeHint().width() <= available_content_width
+    assert widget.retrain_action_row.minimumSizeHint().width() <= available_content_width
+    assert widget.persistence_action_row.minimumSizeHint().width() <= available_content_width
 
 
 def test_widget_refreshes_when_shared_sdata_changes(qtbot, sdata_blobs: SpatialData) -> None:
