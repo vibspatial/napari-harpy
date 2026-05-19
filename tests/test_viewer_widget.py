@@ -901,7 +901,7 @@ def test_viewer_widget_coordinate_system_switch_prunes_old_harpy_layers(qtbot, m
     )
     widget._set_action_feedback(
         title="Labels Loaded",
-        lines=["Loaded labels `global_image` in coordinate system `global`."],
+        lines=["Loaded labels `global_image`."],
         kind="success",
     )
 
@@ -1621,7 +1621,7 @@ def test_viewer_widget_add_update_shapes_loads_layer(qtbot, sdata_blobs) -> None
     assert viewer.layers.selection.active is layer
     np.testing.assert_allclose(layer.face_color[:, 3], np.zeros(len(layer.data)))
     _assert_action_feedback_card(widget, title="Shapes Loaded", kind="success")
-    assert "Loaded shapes `blobs_circles` in coordinate system `global`." in widget.global_action_feedback_label.text()
+    assert "Loaded shapes `blobs_circles`." in widget.global_action_feedback_label.text()
 
 
 def test_viewer_widget_add_update_shapes_reuses_existing_layer(qtbot, sdata_blobs) -> None:

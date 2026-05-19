@@ -47,14 +47,13 @@ def build_points_layer_card_spec(
     display_name, was_shortened = format_feedback_identifier(points_name)
     lines = [
         (
-            f"{action} points layer for `{display_name}` "
-            f"by `{selection.index_column}` in coordinate system `{request.identity.coordinate_system}` "
+            f"{action} points layer for `{display_name}` by `{selection.index_column}` "
             f"with {selection.loaded_count:,} point(s)."
         )
     ]
     tooltip_message = (
         f"{action} points layer for `{points_name}` by `{selection.index_column}` "
-        f"in coordinate system `{request.identity.coordinate_system}` with {selection.loaded_count:,} point(s)."
+        f"with {selection.loaded_count:,} point(s)."
         if was_shortened
         else None
     )
@@ -83,25 +82,21 @@ def build_points_layer_card_spec(
 def build_primary_labels_loaded_card_spec(
     request: LabelsLoadRequest,
     result: LabelsLoadResult,
-    coordinate_system: str,
 ) -> _ViewerStatusCardSpec:
     del result
     labels_name = request.labels_name
     display_name, was_shortened = format_feedback_identifier(labels_name)
     return _ViewerStatusCardSpec(
         title="Labels Loaded",
-        lines=(f"Loaded labels `{display_name}` in coordinate system `{coordinate_system}`.",),
+        lines=(f"Loaded labels `{display_name}`.",),
         kind="success",
-        tooltip_message=f"Loaded labels `{labels_name}` in coordinate system `{coordinate_system}`."
-        if was_shortened
-        else None,
+        tooltip_message=f"Loaded labels `{labels_name}`." if was_shortened else None,
     )
 
 
 def build_styled_labels_card_spec(
     request: LabelsLoadRequest,
     result: LabelsLoadResult,
-    coordinate_system: str,
 ) -> _ViewerStatusCardSpec:
     selected_color_source = request.selected_color_source
     if selected_color_source is None:
@@ -114,17 +109,9 @@ def build_styled_labels_card_spec(
     source_text = _format_table_color_source(selected_color_source)
     labels_name = request.labels_name
     display_name, was_shortened = format_feedback_identifier(labels_name)
-    lines = [
-        (
-            f"{action} colored overlay for {source_text} on labels element `{display_name}` "
-            f"in coordinate system `{coordinate_system}`."
-        )
-    ]
+    lines = [(f"{action} colored overlay for {source_text} on labels element `{display_name}`.")]
     tooltip_message = (
-        f"{action} colored overlay for {source_text} on labels element `{labels_name}` "
-        f"in coordinate system `{coordinate_system}`."
-        if was_shortened
-        else None
+        f"{action} colored overlay for {source_text} on labels element `{labels_name}`." if was_shortened else None
     )
     title = f"Colored Overlay {action}"
     kind = _append_palette_status_lines(
@@ -143,13 +130,12 @@ def build_styled_labels_card_spec(
 def build_primary_shapes_loaded_card_spec(
     request: ShapesLoadRequest,
     result: ShapesLoadResult,
-    coordinate_system: str,
 ) -> _ViewerStatusCardSpec:
     shapes_name = request.shapes_name
     display_name, was_shortened = format_feedback_identifier(shapes_name)
     title = "Shapes Loaded"
     kind: StatusCardKind = "success"
-    lines = [f"Loaded shapes `{display_name}` in coordinate system `{coordinate_system}`."]
+    lines = [f"Loaded shapes `{display_name}`."]
     if result.skipped_geometry_count:
         title = "Shapes Loaded With Warning"
         kind = "warning"
@@ -159,16 +145,13 @@ def build_primary_shapes_loaded_card_spec(
         title=title,
         lines=tuple(lines),
         kind=kind,
-        tooltip_message=f"Loaded shapes `{shapes_name}` in coordinate system `{coordinate_system}`."
-        if was_shortened
-        else None,
+        tooltip_message=f"Loaded shapes `{shapes_name}`." if was_shortened else None,
     )
 
 
 def build_styled_shapes_card_spec(
     request: ShapesLoadRequest,
     result: ShapesLoadResult,
-    coordinate_system: str,
 ) -> _ViewerStatusCardSpec:
     selected_color_source = request.selected_color_source
     if selected_color_source is None:
@@ -183,12 +166,12 @@ def build_styled_shapes_card_spec(
     lines = [
         (
             f'{action} styled shapes layer for column "{selected_color_source.value_key}" '
-            f"on shapes element `{display_name}` in coordinate system `{coordinate_system}`."
+            f"on shapes element `{display_name}`."
         )
     ]
     tooltip_message = (
         f'{action} styled shapes layer for column "{selected_color_source.value_key}" '
-        f"on shapes element `{shapes_name}` in coordinate system `{coordinate_system}`."
+        f"on shapes element `{shapes_name}`."
         if was_shortened
         else None
     )
@@ -215,22 +198,15 @@ def build_styled_shapes_card_spec(
 def build_image_loaded_card_spec(
     request: ImageLoadRequest,
     result: ImageLoadResult,
-    coordinate_system: str,
 ) -> _ViewerStatusCardSpec:
     image_name = request.image_name
     display_name, was_shortened = format_feedback_identifier(image_name)
     if result.mode == "stack":
-        line = f"Loaded image `{display_name}` in stack mode for coordinate system `{coordinate_system}`."
-        tooltip_line = f"Loaded image `{image_name}` in stack mode for coordinate system `{coordinate_system}`."
+        line = f"Loaded image `{display_name}` in stack mode."
+        tooltip_line = f"Loaded image `{image_name}` in stack mode."
     else:
-        line = (
-            f"Loaded image `{display_name}` in overlay mode for channels {list(result.channels)} "
-            f"in coordinate system `{coordinate_system}`."
-        )
-        tooltip_line = (
-            f"Loaded image `{image_name}` in overlay mode for channels {list(result.channels)} "
-            f"in coordinate system `{coordinate_system}`."
-        )
+        line = f"Loaded image `{display_name}` in overlay mode for channels {list(result.channels)}."
+        tooltip_line = f"Loaded image `{image_name}` in overlay mode for channels {list(result.channels)}."
 
     return _ViewerStatusCardSpec(
         title="Image Loaded",

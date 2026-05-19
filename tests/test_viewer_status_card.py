@@ -54,10 +54,7 @@ def test_build_points_layer_card_spec_reports_warnings() -> None:
 
     assert spec.title == "Points Layer Created With Warning"
     assert spec.kind == "warning"
-    assert (
-        spec.lines[0]
-        == "Created points layer for `cells` by `cell_type` in coordinate system `global` with 1,250 point(s)."
-    )
+    assert spec.lines[0] == "Created points layer for `cells` by `cell_type` with 1,250 point(s)."
     assert "Only rendered a sampled subset." in spec.lines
     assert "Categorical coloring is disabled for 200 selected values" in spec.lines[-1]
 
@@ -83,10 +80,7 @@ def test_build_points_layer_card_spec_uses_tooltip_for_shortened_names() -> None
 
     assert spec.title == "Points Layer Updated"
     assert points_name not in spec.lines[0]
-    assert (
-        spec.tooltip_message
-        == f"Updated points layer for `{points_name}` by `gene` in coordinate system `global` with 12 point(s)."
-    )
+    assert spec.tooltip_message == f"Updated points layer for `{points_name}` by `gene` with 12 point(s)."
 
 
 def test_build_primary_labels_loaded_card_spec_uses_tooltip_for_shortened_names() -> None:
@@ -99,12 +93,12 @@ def test_build_primary_labels_loaded_card_spec_uses_tooltip_for_shortened_names(
         coercion_applied=False,
     )
 
-    spec = build_primary_labels_loaded_card_spec(request, result, "global")
+    spec = build_primary_labels_loaded_card_spec(request, result)
 
     assert spec.title == "Labels Loaded"
     assert spec.kind == "success"
     assert labels_name not in spec.lines[0]
-    assert spec.tooltip_message == f"Loaded labels `{labels_name}` in coordinate system `global`."
+    assert spec.tooltip_message == f"Loaded labels `{labels_name}`."
 
 
 def test_build_styled_labels_card_spec_reports_stored_palette() -> None:
@@ -119,12 +113,12 @@ def test_build_styled_labels_card_spec_reports_stored_palette() -> None:
         coercion_applied=False,
     )
 
-    spec = build_styled_labels_card_spec(request, result, "global")
+    spec = build_styled_labels_card_spec(request, result)
 
     assert spec.title == "Colored Overlay Created"
     assert spec.kind == "success"
     assert spec.lines == (
-        'Created colored overlay for obs["cell_type"] on labels element `blobs_labels` in coordinate system `global`.',
+        'Created colored overlay for obs["cell_type"] on labels element `blobs_labels`.',
         "Used the stored categorical palette.",
     )
 
@@ -142,13 +136,10 @@ def test_build_styled_labels_card_spec_uses_tooltip_for_shortened_names() -> Non
         coercion_applied=False,
     )
 
-    spec = build_styled_labels_card_spec(request, result, "global")
+    spec = build_styled_labels_card_spec(request, result)
 
     assert labels_name not in spec.lines[0]
-    assert (
-        spec.tooltip_message == f'Created colored overlay for obs["cell_type"] on labels element `{labels_name}` '
-        "in coordinate system `global`."
-    )
+    assert spec.tooltip_message == f'Created colored overlay for obs["cell_type"] on labels element `{labels_name}`.'
 
 
 def test_build_styled_labels_card_spec_reports_instance_coloring() -> None:
@@ -163,7 +154,7 @@ def test_build_styled_labels_card_spec_reports_instance_coloring() -> None:
         coercion_applied=False,
     )
 
-    spec = build_styled_labels_card_spec(request, result, "global")
+    spec = build_styled_labels_card_spec(request, result)
 
     assert spec.title == "Colored Overlay Created"
     assert spec.kind == "success"
@@ -180,12 +171,12 @@ def test_build_primary_shapes_loaded_card_spec_reports_skipped_geometries() -> N
         skipped_geometry_count=2,
     )
 
-    spec = build_primary_shapes_loaded_card_spec(request, result, "global")
+    spec = build_primary_shapes_loaded_card_spec(request, result)
 
     assert spec.title == "Shapes Loaded With Warning"
     assert spec.kind == "warning"
     assert spec.lines == (
-        "Loaded shapes `blobs_circles` in coordinate system `global`.",
+        "Loaded shapes `blobs_circles`.",
         "Skipped 2 empty, invalid, or unsupported geometries while loading renderable shapes.",
     )
 
@@ -203,13 +194,12 @@ def test_build_styled_shapes_card_spec_combines_palette_and_geometry_warnings() 
         skipped_geometry_count=1,
     )
 
-    spec = build_styled_shapes_card_spec(request, result, "global")
+    spec = build_styled_shapes_card_spec(request, result)
 
     assert spec.title == "Styled Shapes Updated With Warning"
     assert spec.kind == "warning"
     assert spec.lines == (
-        'Updated styled shapes layer for column "cell_type" on shapes element `blobs_circles` '
-        "in coordinate system `global`.",
+        'Updated styled shapes layer for column "cell_type" on shapes element `blobs_circles`.',
         "Used the default categorical palette because no stored palette was present.",
         "Skipped 1 empty, invalid, or unsupported geometries while loading renderable shapes.",
     )
@@ -229,12 +219,11 @@ def test_build_styled_shapes_card_spec_uses_tooltip_for_shortened_names() -> Non
         skipped_geometry_count=0,
     )
 
-    spec = build_styled_shapes_card_spec(request, result, "global")
+    spec = build_styled_shapes_card_spec(request, result)
 
     assert shapes_name not in spec.lines[0]
     assert (
-        spec.tooltip_message == f'Created styled shapes layer for column "cell_type" on shapes element `{shapes_name}` '
-        "in coordinate system `global`."
+        spec.tooltip_message == f'Created styled shapes layer for column "cell_type" on shapes element `{shapes_name}`.'
     )
 
 
@@ -246,10 +235,8 @@ def test_build_image_loaded_card_spec_reports_overlay_channels() -> None:
         channels=(0, 2),
     )
 
-    spec = build_image_loaded_card_spec(request, result, "global")
+    spec = build_image_loaded_card_spec(request, result)
 
     assert spec.title == "Image Loaded"
     assert spec.kind == "success"
-    assert spec.lines == (
-        "Loaded image `blobs_image` in overlay mode for channels [0, 2] in coordinate system `global`.",
-    )
+    assert spec.lines == ("Loaded image `blobs_image` in overlay mode for channels [0, 2].",)

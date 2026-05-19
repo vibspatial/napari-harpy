@@ -625,7 +625,7 @@ class ViewerWidget(QWidget):
         self._app_state.viewer_adapter.activate_layer(result.layer)
         self._apply_status_card_spec(
             self.global_action_feedback_label,
-            build_primary_labels_loaded_card_spec(request, result, coordinate_system),
+            build_primary_labels_loaded_card_spec(request, result),
         )
 
     def _add_or_update_styled_labels_layer(self, request: LabelsLoadRequest) -> None:
@@ -675,7 +675,7 @@ class ViewerWidget(QWidget):
         self._app_state.viewer_adapter.activate_layer(result.layer)
         self._apply_status_card_spec(
             self.global_action_feedback_label,
-            build_styled_labels_card_spec(request, result, coordinate_system),
+            build_styled_labels_card_spec(request, result),
         )
 
     def _add_or_update_shapes_layer(self, request: ShapesLoadRequest) -> None:
@@ -707,7 +707,7 @@ class ViewerWidget(QWidget):
         self._app_state.viewer_adapter.activate_layer(result.layer)
         self._apply_status_card_spec(
             self.global_action_feedback_label,
-            build_primary_shapes_loaded_card_spec(request, result, coordinate_system),
+            build_primary_shapes_loaded_card_spec(request, result),
         )
 
     def _add_or_update_styled_shapes_layer(self, request: ShapesLoadRequest) -> None:
@@ -745,7 +745,7 @@ class ViewerWidget(QWidget):
         self._app_state.viewer_adapter.activate_layer(result.layer)
         self._apply_status_card_spec(
             self.global_action_feedback_label,
-            build_styled_shapes_card_spec(request, result, coordinate_system),
+            build_styled_shapes_card_spec(request, result),
         )
 
     def _add_or_update_image_layer(self, request: ImageLoadRequest) -> None:
@@ -787,7 +787,7 @@ class ViewerWidget(QWidget):
         self._app_state.viewer_adapter.activate_layer(result.primary_layer)
         self._apply_status_card_spec(
             self.global_action_feedback_label,
-            build_image_loaded_card_spec(request, result, coordinate_system),
+            build_image_loaded_card_spec(request, result),
         )
 
     def _update_section_empty_states(
