@@ -618,15 +618,15 @@ class ViewerWidget(QWidget):
             return
 
         try:
-            layer = self._app_state.viewer_adapter.ensure_labels_loaded(sdata, labels_name, coordinate_system)
+            result = self._app_state.viewer_adapter.ensure_labels_loaded(sdata, labels_name, coordinate_system)
         except ValueError as error:
             self._set_action_feedback(title="Labels Load Error", lines=[str(error)], kind="error")
             return
 
-        self._app_state.viewer_adapter.activate_layer(layer)
+        self._app_state.viewer_adapter.activate_layer(result.layer)
         self._apply_status_card_spec(
             self.global_action_feedback_label,
-            build_primary_labels_loaded_card_spec(request, coordinate_system),
+            build_primary_labels_loaded_card_spec(request, result, coordinate_system),
         )
 
     def _add_or_update_styled_labels_layer(self, request: LabelsLoadRequest) -> None:

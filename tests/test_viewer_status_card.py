@@ -62,8 +62,14 @@ def test_build_points_layer_card_spec_reports_warnings() -> None:
 def test_build_primary_labels_loaded_card_spec_uses_tooltip_for_shortened_names() -> None:
     labels_name = "labels_" + "x" * 80
     request = SimpleNamespace(labels_name=labels_name)
+    result = SimpleNamespace(
+        created=True,
+        value_kind=None,
+        palette_source=None,
+        coercion_applied=False,
+    )
 
-    spec = build_primary_labels_loaded_card_spec(request, "global")
+    spec = build_primary_labels_loaded_card_spec(request, result, "global")
 
     assert spec.title == "Labels Loaded"
     assert spec.kind == "success"

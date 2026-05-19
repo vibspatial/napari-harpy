@@ -781,7 +781,7 @@ class ObjectClassificationWidget(QWidget):
                 return self._labels_layer_preparation_result
 
             try:
-                layer = self._app_state.viewer_adapter.ensure_labels_loaded(
+                result = self._app_state.viewer_adapter.ensure_labels_loaded(
                     self.selected_spatialdata,
                     self.selected_segmentation_name,
                     self.selected_coordinate_system,
@@ -790,7 +790,7 @@ class ObjectClassificationWidget(QWidget):
                 self._labels_layer_preparation_result = _LabelsLayerPreparationResult(kind="error", error=str(error))
                 return self._labels_layer_preparation_result
 
-            self._app_state.viewer_adapter.activate_layer(layer)
+            self._app_state.viewer_adapter.activate_layer(result.layer)
             self._labels_layer_preparation_result = _LabelsLayerPreparationResult(
                 kind="loaded",
                 labels_name=self.selected_segmentation_name,

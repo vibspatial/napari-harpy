@@ -987,11 +987,17 @@ class ViewerAdapter(QObject):
             categorical_limit=style_result.categorical_limit,
         )
 
-    def ensure_labels_loaded(self, sdata: SpatialData, labels_name: str, coordinate_system: str) -> Labels:
+    def ensure_labels_loaded(self, sdata: SpatialData, labels_name: str, coordinate_system: str) -> LabelsLoadResult:
         """Load a labels element into napari if it is not already present."""
         existing_layer = self._get_loaded_labels_layer_for_coordinate_system(sdata, labels_name, coordinate_system)
         if existing_layer is not None:
-            return existing_layer
+            return LabelsLoadResult(
+                layer=existing_layer,
+                created=False,
+                value_kind=None,
+                palette_source=None,
+                coercion_applied=False,
+            )
 
         layer = _build_labels_layer(sdata, labels_name, coordinate_system, name=labels_name)
         _add_layer_to_viewer(self._viewer, layer)
@@ -1001,7 +1007,13 @@ class ViewerAdapter(QObject):
             labels_name=labels_name,
             coordinate_system=coordinate_system,
         )
-        return layer
+        return LabelsLoadResult(
+            layer=layer,
+            created=True,
+            value_kind=None,
+            palette_source=None,
+            coercion_applied=False,
+        )
 
     def ensure_styled_labels_loaded(
         self,

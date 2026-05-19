@@ -70,8 +70,10 @@ def build_points_layer_card_spec(
 
 def build_primary_labels_loaded_card_spec(
     request: LabelsLoadRequest,
+    result: LabelsLoadResult,
     coordinate_system: str,
 ) -> _ViewerStatusCardSpec:
+    del result
     labels_name = request.labels_name
     display_name, was_shortened = format_feedback_identifier(labels_name)
     return _ViewerStatusCardSpec(

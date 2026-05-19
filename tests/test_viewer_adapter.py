@@ -1072,8 +1072,13 @@ def test_viewer_adapter_ensure_labels_loaded_adds_layer_and_registers_binding(sd
 
     adapter.primary_labels_layers_changed.connect(lambda: labels_events.append("changed"))
 
-    layer = adapter.ensure_labels_loaded(sdata_blobs, "blobs_labels", "global")
+    result = adapter.ensure_labels_loaded(sdata_blobs, "blobs_labels", "global")
+    layer = result.layer
 
+    assert result.created is True
+    assert result.value_kind is None
+    assert result.palette_source is None
+    assert result.coercion_applied is False
     assert layer in viewer.layers
     assert layer.name == "blobs_labels"
     assert layer.affine is not None
@@ -1469,7 +1474,9 @@ def test_viewer_adapter_ensure_labels_loaded_reuses_matching_existing_layer(sdat
     first = adapter.ensure_labels_loaded(sdata_blobs, "blobs_labels", "global")
     second = adapter.ensure_labels_loaded(sdata_blobs, "blobs_labels", "global")
 
-    assert first is second
+    assert first.layer is second.layer
+    assert first.created is True
+    assert second.created is False
     assert len(viewer.layers) == 1
 
 
@@ -1477,7 +1484,8 @@ def test_viewer_adapter_unregisters_binding_when_user_removes_labels_layer(sdata
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
 
-    layer = adapter.ensure_labels_loaded(sdata_blobs, "blobs_labels", "global")
+    result = adapter.ensure_labels_loaded(sdata_blobs, "blobs_labels", "global")
+    layer = result.layer
 
     viewer.layers.remove(layer)
 
@@ -1489,7 +1497,8 @@ def test_viewer_adapter_ensure_labels_loaded_supports_multiscale_labels(sdata_bl
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
 
-    layer = adapter.ensure_labels_loaded(sdata_blobs, "blobs_multiscale_labels", "global")
+    result = adapter.ensure_labels_loaded(sdata_blobs, "blobs_multiscale_labels", "global")
+    layer = result.layer
 
     assert layer.multiscale is True
     assert len(layer.data) == 3
