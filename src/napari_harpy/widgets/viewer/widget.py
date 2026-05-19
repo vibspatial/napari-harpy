@@ -43,7 +43,6 @@ from napari_harpy.widgets.shared_styles import (
     apply_scroll_content_surface,
     apply_widget_surface,
     create_form_label,
-    format_feedback_identifier,
     set_status_card,
 )
 from napari_harpy.widgets.viewer.disclosure import _CollapsibleSectionWidget, _DisclosureElementWidget
@@ -52,6 +51,15 @@ from napari_harpy.widgets.viewer.labels_widget import LabelsLoadRequest, _Labels
 from napari_harpy.widgets.viewer.points_controller import PointsController, PointsLoadResult, PointsValueSource
 from napari_harpy.widgets.viewer.points_widget import PointsValueWidget
 from napari_harpy.widgets.viewer.shapes_widget import ShapesLoadRequest, _ShapesCardWidget
+from napari_harpy.widgets.viewer.status_card import (
+    _ViewerStatusCardSpec,
+    build_image_loaded_card_spec,
+    build_points_layer_card_spec,
+    build_primary_labels_loaded_card_spec,
+    build_primary_shapes_loaded_card_spec,
+    build_styled_labels_card_spec,
+    build_styled_shapes_card_spec,
+)
 from napari_harpy.widgets.viewer.styles import (
     EMPTY_STATE_STYLESHEET,
     INPUT_CONTROL_STYLESHEET,
@@ -141,10 +149,10 @@ class ViewerWidget(QWidget):
         self.coordinate_system_combo.setStyleSheet(INPUT_CONTROL_STYLESHEET)
         selector_layout.addRow(create_form_label("Coordinate system"), self.coordinate_system_combo)
 
-        self.action_feedback_label = QLabel("")
-        self.action_feedback_label.setObjectName("viewer_widget_action_feedback")
-        self.action_feedback_label.setWordWrap(True)
-        self.action_feedback_label.hide()
+        self.global_action_feedback_label = QLabel("")
+        self.global_action_feedback_label.setObjectName("viewer_widget_action_feedback")
+        self.global_action_feedback_label.setWordWrap(True)
+        self.global_action_feedback_label.hide()
 
         self.images_empty_label = QLabel("No images available in the selected coordinate system.")
         self.images_empty_label.setObjectName("viewer_widget_images_empty_state")
@@ -233,7 +241,7 @@ class ViewerWidget(QWidget):
         self.content_layout.addWidget(self.empty_state_label)
         self.content_layout.addWidget(self.summary_label)
         self.content_layout.addLayout(selector_layout)
-        self.content_layout.addWidget(self.action_feedback_label)
+        self.content_layout.addWidget(self.global_action_feedback_label)
         self.content_layout.addWidget(self.images_group)
         self.content_layout.addWidget(self.labels_group)
         self.content_layout.addWidget(self.shapes_group)
@@ -551,29 +559,10 @@ class ViewerWidget(QWidget):
         load_result: PointsLoadResult,
         layer_result: PointsLayerResult,
     ) -> None:
-        selection = load_result.selection
-        action = "Created" if layer_result.created else "Updated"
-        lines = [
-            (
-                f"{action} points layer for `{load_result.identity.points_name}` "
-                f"by `{selection.index_column}` with {selection.loaded_count:,} point(s)."
-            )
-        ]
-        kind: StatusCardKind = "success"
-        title = f"Points Layer {action}"
-        if selection.warning:
-            kind = "warning"
-            title = f"{title} With Warning"
-            lines.append(selection.warning)
-        if layer_result.categorical_coloring_disabled:
-            kind = "warning"
-            if not title.endswith(" With Warning"):
-                title = f"{title} With Warning"
-            lines.append(
-                f"Categorical coloring is disabled for {layer_result.selected_value_count:,} selected values; "
-                f"using one solid color because the categorical limit is {layer_result.categorical_limit:,}."
-            )
-        self._set_action_feedback(title=title, lines=lines, kind=kind)
+        self._apply_status_card_spec(
+            self.global_action_feedback_label,
+            build_points_layer_card_spec(load_result, layer_result),
+        )
 
     def _on_image_row_expanded(
         self,
@@ -634,14 +623,9 @@ class ViewerWidget(QWidget):
             return
 
         self._app_state.viewer_adapter.activate_layer(layer)
-        display_name, was_shortened = format_feedback_identifier(labels_name)
-        self._set_action_feedback(
-            title="Labels Loaded",
-            lines=[f"Loaded labels `{display_name}` in coordinate system `{coordinate_system}`."],
-            kind="success",
-            tooltip_message=(
-                f"Loaded labels `{labels_name}` in coordinate system `{coordinate_system}`." if was_shortened else None
-            ),
+        self._apply_status_card_spec(
+            self.global_action_feedback_label,
+            build_primary_labels_loaded_card_spec(labels_name, coordinate_system),
         )
 
     def _add_or_update_styled_labels_layer(self, request: LabelsLoadRequest) -> None:
@@ -689,39 +673,9 @@ class ViewerWidget(QWidget):
             return
 
         self._app_state.viewer_adapter.activate_layer(result.layer)
-        action = "Created" if result.created else "Updated"
-        if request.selected_color_source.source_kind == "obs_column":
-            source_text = f'obs["{request.selected_color_source.value_key}"]'
-        else:
-            source_text = f'X[:, "{request.selected_color_source.value_key}"]'
-
-        action_line = (
-            f"{action} colored overlay for {source_text} on labels element `{request.labels_name}` "
-            f"in coordinate system `{coordinate_system}`."
-        )
-        feedback_kind: StatusCardKind = "success"
-        title = f"Colored Overlay {action}"
-        lines = [action_line]
-        if result.value_kind == "instance":
-            lines.append("Used instance label colors.")
-        elif result.coercion_applied:
-            feedback_kind = "warning"
-            title = f"{title} With Warning"
-            lines.append("Coerced string values to categorical and used the default categorical palette.")
-        elif result.palette_source == "stored":
-            lines.append("Used the stored categorical palette.")
-        elif result.palette_source == "default_invalid":
-            feedback_kind = "warning"
-            title = f"{title} With Warning"
-            lines.append("The stored categorical palette was invalid, so Harpy used the default categorical palette.")
-        elif result.palette_source == "default_missing":
-            feedback_kind = "info"
-            lines.append("Used the default categorical palette because no stored palette was present.")
-
-        self._set_action_feedback(
-            title=title,
-            lines=lines,
-            kind=feedback_kind,
+        self._apply_status_card_spec(
+            self.global_action_feedback_label,
+            build_styled_labels_card_spec(request, result, coordinate_system),
         )
 
     def _add_or_update_shapes_layer(self, request: ShapesLoadRequest) -> None:
@@ -750,26 +704,10 @@ class ViewerWidget(QWidget):
             return
 
         self._app_state.viewer_adapter.activate_layer(layer)
-        display_name, was_shortened = format_feedback_identifier(shapes_name)
         skipped_geometry_count = _get_layer_skipped_geometry_count(self._app_state.viewer_adapter, layer)
-        feedback_kind: StatusCardKind = "success"
-        title = "Shapes Loaded"
-        lines = [f"Loaded shapes `{display_name}` in coordinate system `{coordinate_system}`."]
-        if skipped_geometry_count:
-            feedback_kind = "warning"
-            title = "Shapes Loaded With Warning"
-            lines.append(
-                f"Skipped {skipped_geometry_count} empty, invalid, or unsupported "
-                "geometries while loading renderable shapes."
-            )
-
-        self._set_action_feedback(
-            title=title,
-            lines=lines,
-            kind=feedback_kind,
-            tooltip_message=(
-                f"Loaded shapes `{shapes_name}` in coordinate system `{coordinate_system}`." if was_shortened else None
-            ),
+        self._apply_status_card_spec(
+            self.global_action_feedback_label,
+            build_primary_shapes_loaded_card_spec(shapes_name, coordinate_system, skipped_geometry_count),
         )
 
     def _add_or_update_styled_shapes_layer(self, request: ShapesLoadRequest) -> None:
@@ -805,43 +743,10 @@ class ViewerWidget(QWidget):
             return
 
         self._app_state.viewer_adapter.activate_layer(result.layer)
-        action = "Created" if result.created else "Updated"
-        source_text = f'column "{request.selected_color_source.value_key}"'
-        action_line = (
-            f"{action} styled shapes layer for {source_text} on shapes element `{request.shapes_name}` "
-            f"in coordinate system `{coordinate_system}`."
-        )
-        feedback_kind: StatusCardKind = "success"
-        title = f"Styled Shapes {action}"
-        lines = [action_line]
-        if result.coercion_applied:
-            feedback_kind = "warning"
-            title = f"{title} With Warning"
-            lines.append("Coerced string values to categorical and used the default categorical palette.")
-        elif result.palette_source == "stored":
-            lines.append("Used the stored categorical palette.")
-        elif result.palette_source == "default_invalid":
-            feedback_kind = "warning"
-            title = f"{title} With Warning"
-            lines.append("The stored categorical palette was invalid, so Harpy used the default categorical palette.")
-        elif result.palette_source == "default_missing":
-            feedback_kind = "info"
-            lines.append("Used the default categorical palette because no stored palette was present.")
-
         skipped_geometry_count = _get_layer_skipped_geometry_count(self._app_state.viewer_adapter, result.layer)
-        if skipped_geometry_count:
-            feedback_kind = "warning"
-            if not title.endswith(" With Warning"):
-                title = f"{title} With Warning"
-            lines.append(
-                f"Skipped {skipped_geometry_count} empty, invalid, or unsupported "
-                "geometries while loading renderable shapes."
-            )
-
-        self._set_action_feedback(
-            title=title,
-            lines=lines,
-            kind=feedback_kind,
+        self._apply_status_card_spec(
+            self.global_action_feedback_label,
+            build_styled_shapes_card_spec(request, result, coordinate_system, skipped_geometry_count),
         )
 
     def _add_or_update_image_layer(self, request: ImageLoadRequest) -> None:
@@ -890,16 +795,9 @@ class ViewerWidget(QWidget):
                 return
 
             self._app_state.viewer_adapter.activate_layer(layer_or_layers)
-            display_name, was_shortened = format_feedback_identifier(image_name)
-            self._set_action_feedback(
-                title="Image Loaded",
-                lines=[f"Loaded image `{display_name}` in stack mode for coordinate system `{coordinate_system}`."],
-                kind="success",
-                tooltip_message=(
-                    f"Loaded image `{image_name}` in stack mode for coordinate system `{coordinate_system}`."
-                    if was_shortened
-                    else None
-                ),
+            self._apply_status_card_spec(
+                self.global_action_feedback_label,
+                build_image_loaded_card_spec(image_name, coordinate_system, "stack"),
             )
             return
 
@@ -919,20 +817,9 @@ class ViewerWidget(QWidget):
             return
 
         self._app_state.viewer_adapter.activate_layer(layer_or_layers[0])
-        display_name, was_shortened = format_feedback_identifier(image_name)
-        self._set_action_feedback(
-            title="Image Loaded",
-            lines=[
-                f"Loaded image `{display_name}` in overlay mode for channels {request.channels} "
-                f"in coordinate system `{coordinate_system}`."
-            ],
-            kind="success",
-            tooltip_message=(
-                f"Loaded image `{image_name}` in overlay mode for channels {request.channels} "
-                f"in coordinate system `{coordinate_system}`."
-                if was_shortened
-                else None
-            ),
+        self._apply_status_card_spec(
+            self.global_action_feedback_label,
+            build_image_loaded_card_spec(image_name, coordinate_system, "overlay", request.channels),
         )
 
     def _update_section_empty_states(
@@ -996,19 +883,34 @@ class ViewerWidget(QWidget):
         if title is None:
             title = "Viewer Error" if kind == "error" else "Viewer Updated"
 
+        self._apply_status_card_spec(
+            self.global_action_feedback_label,
+            _ViewerStatusCardSpec(
+                title=title,
+                lines=tuple(lines),
+                kind=kind,
+                tooltip_message=tooltip_message,
+            ),
+        )
+
+    def _apply_status_card_spec(self, label: QLabel, spec: _ViewerStatusCardSpec | None) -> None:
+        if spec is None:
+            label.clear()
+            label.setToolTip("")
+            label.setStyleSheet("")
+            label.hide()
+            return
+
         set_status_card(
-            self.action_feedback_label,
-            title=title,
-            lines=lines,
-            kind=kind,
-            tooltip_message=tooltip_message,
+            label,
+            title=spec.title,
+            lines=list(spec.lines),
+            kind=spec.kind,
+            tooltip_message=spec.tooltip_message,
         )
 
     def _clear_action_feedback(self) -> None:
-        self.action_feedback_label.clear()
-        self.action_feedback_label.setToolTip("")
-        self.action_feedback_label.setStyleSheet("")
-        self.action_feedback_label.hide()
+        self._apply_status_card_spec(self.global_action_feedback_label, None)
 
     def _sync_coordinate_system_combo_selection(self, coordinate_system: str | None) -> None:
         with QSignalBlocker(self.coordinate_system_combo):
