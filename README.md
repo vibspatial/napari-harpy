@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="docs/_static/logo.png" alt="Harpy logo" width="200">
+  <img src="https://raw.githubusercontent.com/vibspatial/napari-harpy/main/docs/_static/logo.png" alt="Harpy logo" width="200">
 </p>
 
-# napari-harpy
+<h1 align="center">napari-harpy: a spatial omics interface for napari.</h1>
 
-**A spatial omics interface for napari.**
+[![PyPI](https://img.shields.io/pypi/v/napari-harpy.svg)](https://pypi.org/project/napari-harpy/)
 
-Built around `SpatialData` for interactive exploration, feature extraction, and object classification.
+Built around [`SpatialData`](https://spatialdata.scverse.org/en/stable/) for interactive exploration, feature extraction, and object classification.
 
 `napari-harpy` is a napari plugin for viewing, exploring, and analyzing
 `SpatialData` datasets. It includes its own viewer for loading and
@@ -15,12 +15,10 @@ object classification workflows.
 
 ## Installation
 
-Install the latest version from the `main` branch:
-
-PyPI release coming soon.
+Install from PyPI:
 
 ```bash
-python -m pip install "git+https://github.com/vibspatial/napari-harpy.git@main"
+pip install napari-harpy
 ```
 
 ## Quickstart
@@ -80,7 +78,7 @@ Today the plugin supports:
 Example napari-harpy session:
 
 <p align="center">
-  <img src="docs/_static/Screenshot%202026-05-09%20at%2021.31.53.png" alt="napari-harpy example session screenshot" width="900">
+  <img src="https://raw.githubusercontent.com/vibspatial/napari-harpy/main/docs/_static/Screenshot%202026-05-09%20at%2021.31.53.png" alt="napari-harpy example session screenshot" width="900">
 </p>
 
 ## Headless and Multi-Sample Workflows
