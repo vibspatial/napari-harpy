@@ -8,7 +8,7 @@ from napari_harpy.widgets.shared_styles import StatusCardKind, format_feedback_i
 
 if TYPE_CHECKING:
     from napari_harpy.core._color_source import TableColorSourceSpec
-    from napari_harpy.viewer.adapter import ImageLoadResult
+    from napari_harpy.viewer.image_styling import ImageLoadResult
     from napari_harpy.viewer.labels_styling import LabelsLoadResult
     from napari_harpy.viewer.points_styling import PointsLayerResult
     from napari_harpy.viewer.shapes_styling import ShapesLoadResult

@@ -20,6 +20,7 @@ from spatialdata.transformations import get_transformation
 from xarray import DataArray, DataTree
 
 from napari_harpy.core._color_source import ShapeColorSourceSpec, TableColorSourceSpec
+from napari_harpy.viewer.image_styling import DEFAULT_OVERLAY_COLORS, ImageDisplayMode, ImageLoadResult
 from napari_harpy.viewer.labels_styling import (
     LabelsLoadResult,
     apply_table_color_source_to_labels_layer,
@@ -42,35 +43,10 @@ if TYPE_CHECKING:
 
     from napari_harpy._points_value_index import PointsValueSelection
 
-ImageDisplayMode = Literal["stack", "overlay"]
 ElementType = Literal["labels", "image", "shapes", "points"]
 ShapesLayerShapeType = Literal["polygon", "ellipse"]
 # Name of the layer.features column that stores the source GeoDataFrame index.
 DEFAULT_SHAPES_INDEX_FEATURE_NAME = "index"
-DEFAULT_OVERLAY_COLORS = (
-    "#00FFFF",  # cyan
-    "#FF00FF",  # magenta
-    "#FFFF00",  # yellow
-    "#00FF7F",  # green
-    "#FF5050",  # red
-    "#1E90FF",  # blue
-    "#FFA500",  # orange
-    "#9370DB",  # purple
-)
-
-
-@dataclass(frozen=True)
-class ImageLoadResult:
-    """Describe one image load/update result returned to the viewer."""
-
-    layers: tuple[Image, ...]
-    mode: ImageDisplayMode
-    channels: tuple[int, ...] = ()
-
-    @property
-    def primary_layer(self) -> Image:
-        """Return the layer that should become active after loading."""
-        return self.layers[0]
 
 
 class _HarpyShapes(Shapes):

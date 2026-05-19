@@ -16,7 +16,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from napari_harpy.viewer.adapter import DEFAULT_OVERLAY_COLORS, ImageDisplayMode
+from napari_harpy.viewer.image_styling import DEFAULT_OVERLAY_COLORS, ImageDisplayMode
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     CHECKBOX_STYLESHEET,
