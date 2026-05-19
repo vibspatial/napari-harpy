@@ -42,7 +42,7 @@ def build_points_layer_card_spec(
     result: PointsLoadResult,
 ) -> _ViewerStatusCardSpec:
     selection = request.selection
-    action = "Created" if result.created else "Updated"
+    action = _created_updated_action(result.created)
     points_name = request.identity.points_name
     display_name, was_shortened = format_feedback_identifier(points_name)
     lines = [
@@ -83,14 +83,14 @@ def build_primary_labels_loaded_card_spec(
     request: LabelsLoadRequest,
     result: LabelsLoadResult,
 ) -> _ViewerStatusCardSpec:
-    del result
+    action = _created_updated_action(result.created)
     labels_name = request.labels_name
     display_name, was_shortened = format_feedback_identifier(labels_name)
     return _ViewerStatusCardSpec(
-        title="Labels Loaded",
-        lines=(f"Loaded labels `{display_name}`.",),
+        title=f"Labels Layer {action}",
+        lines=(f"{action} labels layer for `{display_name}`.",),
         kind="success",
-        tooltip_message=f"Loaded labels `{labels_name}`." if was_shortened else None,
+        tooltip_message=f"{action} labels layer for `{labels_name}`." if was_shortened else None,
     )
 
 
@@ -102,7 +102,7 @@ def build_styled_labels_card_spec(
     if selected_color_source is None:
         raise ValueError("Styled labels status requires a selected color source.")
 
-    action = "Created" if result.created else "Updated"
+    action = _created_updated_action(result.created)
     source_text = _format_table_color_source(selected_color_source)
     labels_name = request.labels_name
     display_name, was_shortened = format_feedback_identifier(labels_name)
@@ -128,13 +128,14 @@ def build_primary_shapes_loaded_card_spec(
     request: ShapesLoadRequest,
     result: ShapesLoadResult,
 ) -> _ViewerStatusCardSpec:
+    action = _created_updated_action(result.created)
     shapes_name = request.shapes_name
     display_name, was_shortened = format_feedback_identifier(shapes_name)
-    title = "Shapes Loaded"
+    title = f"Shapes Layer {action}"
     kind: StatusCardKind = "success"
-    lines = [f"Loaded shapes `{display_name}`."]
+    lines = [f"{action} shapes layer for `{display_name}`."]
     if result.skipped_geometry_count:
-        title = "Shapes Loaded With Warning"
+        title = _with_warning_suffix(title)
         kind = "warning"
         lines.append(_format_skipped_geometry_line(result.skipped_geometry_count))
 
@@ -142,7 +143,7 @@ def build_primary_shapes_loaded_card_spec(
         title=title,
         lines=tuple(lines),
         kind=kind,
-        tooltip_message=f"Loaded shapes `{shapes_name}`." if was_shortened else None,
+        tooltip_message=f"{action} shapes layer for `{shapes_name}`." if was_shortened else None,
     )
 
 
@@ -154,7 +155,7 @@ def build_styled_shapes_card_spec(
     if selected_color_source is None:
         raise ValueError("Styled shapes status requires a selected color source.")
 
-    action = "Created" if result.created else "Updated"
+    action = _created_updated_action(result.created)
     shapes_name = request.shapes_name
     display_name, was_shortened = format_feedback_identifier(shapes_name)
     lines = [
@@ -195,15 +196,16 @@ def build_image_loaded_card_spec(
 ) -> _ViewerStatusCardSpec:
     image_name = request.image_name
     display_name, was_shortened = format_feedback_identifier(image_name)
+    action = _created_updated_action(result.created)
     if result.mode == "stack":
-        line = f"Loaded image `{display_name}` in stack mode."
-        tooltip_line = f"Loaded image `{image_name}` in stack mode."
+        line = f"{action} image layer for `{display_name}` in stack mode."
+        tooltip_line = f"{action} image layer for `{image_name}` in stack mode."
     else:
-        line = f"Loaded image `{display_name}` in overlay mode for channels {list(result.channels)}."
-        tooltip_line = f"Loaded image `{image_name}` in overlay mode for channels {list(result.channels)}."
+        line = f"{action} image overlay for `{display_name}` with channels {list(result.channels)}."
+        tooltip_line = f"{action} image overlay for `{image_name}` with channels {list(result.channels)}."
 
     return _ViewerStatusCardSpec(
-        title="Image Loaded",
+        title=f"Image Layer {action}",
         lines=(line,),
         kind="success",
         tooltip_message=tooltip_line if was_shortened else None,
@@ -214,6 +216,10 @@ def _format_table_color_source(color_source: TableColorSourceSpec) -> str:
     if color_source.source_kind == "obs_column":
         return f'obs["{color_source.value_key}"]'
     return f'X[:, "{color_source.value_key}"]'
+
+
+def _created_updated_action(created: bool) -> str:
+    return "Created" if created else "Updated"
 
 
 def _append_palette_status_lines(

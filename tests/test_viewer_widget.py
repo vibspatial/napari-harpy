@@ -900,8 +900,8 @@ def test_viewer_widget_coordinate_system_switch_prunes_old_harpy_layers(qtbot, m
         coordinate_system="local",
     )
     widget._set_action_feedback(
-        title="Labels Loaded",
-        lines=["Loaded labels `global_image`."],
+        title="Labels Layer Created",
+        lines=["Created labels layer for `global_image`."],
         kind="success",
     )
 
@@ -995,8 +995,8 @@ def test_viewer_widget_add_update_labels_loads_and_activates_layer(qtbot, sdata_
     first_card.add_update_button.click()
 
     assert len(viewer.layers) == 1
-    _assert_action_feedback_card(widget, title="Labels Loaded", kind="success")
-    assert "Loaded labels `blobs_labels`" in widget.global_action_feedback_label.text()
+    _assert_action_feedback_card(widget, title="Labels Layer Created", kind="success")
+    assert "Created labels layer for `blobs_labels`" in widget.global_action_feedback_label.text()
 
 
 def test_viewer_widget_add_update_labels_dispatches_to_styled_overlay_path(qtbot, monkeypatch, sdata_blobs) -> None:
@@ -1189,8 +1189,8 @@ def test_viewer_widget_add_update_image_loads_stack_layer(qtbot, sdata_blobs) ->
     assert binding is not None
     assert binding.image_display_mode == "stack"
     assert viewer.layers.selection.active is layer
-    _assert_action_feedback_card(widget, title="Image Loaded", kind="success")
-    assert "Loaded image `blobs_image` in stack mode" in widget.global_action_feedback_label.text()
+    _assert_action_feedback_card(widget, title="Image Layer Created", kind="success")
+    assert "Created image layer for `blobs_image` in stack mode" in widget.global_action_feedback_label.text()
 
 
 def test_viewer_widget_add_update_image_reuses_existing_stack_layer(qtbot, sdata_blobs) -> None:
@@ -1289,7 +1289,7 @@ def test_viewer_widget_add_update_image_overlay_loads_reuses_and_replaces_layers
     first_layers = list(viewer.layers)
     assert [layer.name for layer in first_layers] == ["blobs_image[0]", "blobs_image[2]"]
     assert viewer.layers.selection.active is first_layers[0]
-    assert "Loaded image `blobs_image` in overlay mode" in widget.global_action_feedback_label.text()
+    assert "Created image overlay for `blobs_image`" in widget.global_action_feedback_label.text()
 
     image_card.add_update_button.click()
 
@@ -1620,8 +1620,8 @@ def test_viewer_widget_add_update_shapes_loads_layer(qtbot, sdata_blobs) -> None
     assert binding.coordinate_system == "global"
     assert viewer.layers.selection.active is layer
     np.testing.assert_allclose(layer.face_color[:, 3], np.zeros(len(layer.data)))
-    _assert_action_feedback_card(widget, title="Shapes Loaded", kind="success")
-    assert "Loaded shapes `blobs_circles`." in widget.global_action_feedback_label.text()
+    _assert_action_feedback_card(widget, title="Shapes Layer Created", kind="success")
+    assert "Created shapes layer for `blobs_circles`." in widget.global_action_feedback_label.text()
 
 
 def test_viewer_widget_add_update_shapes_reuses_existing_layer(qtbot, sdata_blobs) -> None:
@@ -1737,7 +1737,7 @@ def test_viewer_widget_add_update_shapes_reports_skipped_geometry_warning(qtbot,
 
     widget.shape_cards[0].add_update_button.click()
 
-    _assert_action_feedback_card(widget, title="Shapes Loaded With Warning", kind="warning")
+    _assert_action_feedback_card(widget, title="Shapes Layer Created With Warning", kind="warning")
     assert "Skipped 2 empty, invalid, or unsupported geometries" in widget.global_action_feedback_label.text()
 
 

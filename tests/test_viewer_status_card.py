@@ -95,10 +95,10 @@ def test_build_primary_labels_loaded_card_spec_uses_tooltip_for_shortened_names(
 
     spec = build_primary_labels_loaded_card_spec(request, result)
 
-    assert spec.title == "Labels Loaded"
+    assert spec.title == "Labels Layer Created"
     assert spec.kind == "success"
     assert labels_name not in spec.lines[0]
-    assert spec.tooltip_message == f"Loaded labels `{labels_name}`."
+    assert spec.tooltip_message == f"Created labels layer for `{labels_name}`."
 
 
 def test_build_styled_labels_card_spec_reports_stored_palette() -> None:
@@ -189,10 +189,10 @@ def test_build_primary_shapes_loaded_card_spec_reports_skipped_geometries() -> N
 
     spec = build_primary_shapes_loaded_card_spec(request, result)
 
-    assert spec.title == "Shapes Loaded With Warning"
+    assert spec.title == "Shapes Layer Created With Warning"
     assert spec.kind == "warning"
     assert spec.lines == (
-        "Loaded shapes `blobs_circles`.",
+        "Created shapes layer for `blobs_circles`.",
         "Skipped 2 empty, invalid, or unsupported geometries while loading renderable shapes.",
     )
 
@@ -265,11 +265,12 @@ def test_build_image_loaded_card_spec_reports_overlay_channels() -> None:
     result = SimpleNamespace(
         layers=(object(), object()),
         mode="overlay",
+        created=True,
         channels=(0, 2),
     )
 
     spec = build_image_loaded_card_spec(request, result)
 
-    assert spec.title == "Image Loaded"
+    assert spec.title == "Image Layer Created"
     assert spec.kind == "success"
-    assert spec.lines == ("Loaded image `blobs_image` in overlay mode for channels [0, 2].",)
+    assert spec.lines == ("Created image overlay for `blobs_image` with channels [0, 2].",)
