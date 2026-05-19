@@ -5,7 +5,7 @@ requires = [ "hatchling" ]
 [project]
 name = "napari-harpy"
 version = "0.0.1"
-description = "A napari plugin for interactive object classification on SpatialData datasets."
+description = "A spatial omics interface for napari."
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
 license = { file = "LICENSE" }
@@ -41,12 +41,11 @@ classifiers = [
 
 dependencies = [
     "dask[dataframe]",
-    "harpy-analysis @ git+https://github.com/saeyslab/harpy.git@main",
+    "harpy>=0.4.0",
     "joblib",
     "lazy-loader>=0.4",
     "loguru",
     "napari[all]>=0.4.18",
-    "napari-spatialdata>=0.2.6",
     "pandas<3.0",
     "pyarrow",
 ]
@@ -54,7 +53,6 @@ dependencies = [
 # TODO: change to dependency-groups once pip has support https://github.com/pypa/pip/issues/12963
 [project.optional-dependencies]
 test = [
-    "opencv-python-headless",
     "pytest",
     "pytest-cov",
     "pytest-qt", # only necessary for unit testing deprecated plugin
@@ -81,11 +79,11 @@ dev = [
 napari-harpy = "napari_harpy:napari.yaml"
 
 [project.urls]
-Homepage = "https://github.com/saeyslab/harpy"
-Documentation = "https://harpy.readthedocs.io/en/latest/"
-Repository = "https://github.com/saeyslab/harpy"
-Issues = "https://github.com/saeyslab/harpy/issues"
-Changelog = "https://github.com/saeyslab/harpy/releases"
+Homepage = "https://github.com/vibspatial/napari-harpy"
+Documentation = "https://github.com/vibspatial/napari-harpy#readme"
+Repository = "https://github.com/vibspatial/napari-harpy"
+Issues = "https://github.com/vibspatial/napari-harpy/issues"
+Changelog = "https://github.com/vibspatial/napari-harpy/releases"
 Paper = "https://doi.org/10.1093/bioinformatics/btag122"
 SaeysLab = "https://saeyslab.sites.vib.be/en"
 VIBSpatialCatalyst = "https://vib.be/en/technologies/technology-portfolio/spatial-catalyst"
