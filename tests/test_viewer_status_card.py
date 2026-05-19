@@ -35,7 +35,7 @@ def test_build_viewer_error_card_spec() -> None:
 
 
 def test_build_points_layer_card_spec_reports_warnings() -> None:
-    load_result = SimpleNamespace(
+    request = SimpleNamespace(
         identity=SimpleNamespace(points_name="cells"),
         selection=SimpleNamespace(
             index_column="cell_type",
@@ -43,14 +43,14 @@ def test_build_points_layer_card_spec_reports_warnings() -> None:
             warning="Only rendered a sampled subset.",
         ),
     )
-    layer_result = SimpleNamespace(
+    result = SimpleNamespace(
         created=True,
         selected_value_count=200,
         categorical_limit=102,
         categorical_coloring_disabled=True,
     )
 
-    spec = build_points_layer_card_spec(load_result, layer_result)
+    spec = build_points_layer_card_spec(request, result)
 
     assert spec.title == "Points Layer Created With Warning"
     assert spec.kind == "warning"

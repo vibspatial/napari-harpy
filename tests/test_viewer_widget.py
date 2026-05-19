@@ -25,7 +25,7 @@ from napari_harpy.viewer.adapter import PointsLayerIdentity
 from napari_harpy.viewer.shapes_styling import SHAPES_FACE_ALPHA
 from napari_harpy.widgets.viewer.disclosure import _ElidedLabel, _ElidedToolButton
 from napari_harpy.widgets.viewer.image_widget import QColorDialog, _OverlayColorButton
-from napari_harpy.widgets.viewer.points_controller import PointsLoadResult
+from napari_harpy.widgets.viewer.points_controller import PointsLoadRequest
 from napari_harpy.widgets.viewer.shapes_widget import ShapesLoadRequest
 from napari_harpy.widgets.viewer.widget import ViewerWidget
 
@@ -147,7 +147,7 @@ def _select_shape_column(card: object, value_key: str) -> None:
     card.color_source_value_input.setText(value_key)
 
 
-def _make_points_load_result(sdata: object) -> PointsLoadResult:
+def _make_points_load_request(sdata: object) -> PointsLoadRequest:
     value_table = PointsValueTable(
         values=pd.DataFrame(
             {
@@ -176,7 +176,7 @@ def _make_points_load_result(sdata: object) -> PointsLoadResult:
         is_sampled=False,
         warning=None,
     )
-    return PointsLoadResult(
+    return PointsLoadRequest(
         identity=PointsLayerIdentity(
             sdata=sdata,
             points_name="transcripts",
@@ -424,11 +424,11 @@ def test_viewer_widget_on_points_loaded_applies_layer_and_status(qtbot) -> None:
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)
     fake_sdata = object()
-    load_result = _make_points_load_result(fake_sdata)
+    load_request = _make_points_load_request(fake_sdata)
 
     qtbot.addWidget(widget)
 
-    widget._on_points_loaded(load_result)
+    widget._on_points_loaded(load_request)
 
     assert len(viewer.layers) == 1
     layer = viewer.layers[0]

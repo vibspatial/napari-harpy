@@ -10,11 +10,11 @@ if TYPE_CHECKING:
     from napari_harpy.core._color_source import TableColorSourceSpec
     from napari_harpy.viewer.image_styling import ImageLoadResult
     from napari_harpy.viewer.labels_styling import LabelsLoadResult
-    from napari_harpy.viewer.points_styling import PointsLayerResult
+    from napari_harpy.viewer.points_styling import PointsLoadResult
     from napari_harpy.viewer.shapes_styling import ShapesLoadResult
     from napari_harpy.widgets.viewer.image_widget import ImageLoadRequest
     from napari_harpy.widgets.viewer.labels_widget import LabelsLoadRequest
-    from napari_harpy.widgets.viewer.points_controller import PointsLoadResult
+    from napari_harpy.widgets.viewer.points_controller import PointsLoadRequest
     from napari_harpy.widgets.viewer.shapes_widget import ShapesLoadRequest
 
 
@@ -38,14 +38,14 @@ def build_viewer_error_card_spec(title: str, lines: Sequence[str]) -> _ViewerSta
 
 
 def build_points_layer_card_spec(
-    load_result: PointsLoadResult,
-    layer_result: PointsLayerResult,
+    request: PointsLoadRequest,
+    result: PointsLoadResult,
 ) -> _ViewerStatusCardSpec:
-    selection = load_result.selection
-    action = "Created" if layer_result.created else "Updated"
+    selection = request.selection
+    action = "Created" if result.created else "Updated"
     lines = [
         (
-            f"{action} points layer for `{load_result.identity.points_name}` "
+            f"{action} points layer for `{request.identity.points_name}` "
             f"by `{selection.index_column}` with {selection.loaded_count:,} point(s)."
         )
     ]
@@ -55,12 +55,12 @@ def build_points_layer_card_spec(
         kind = "warning"
         title = _with_warning_suffix(title)
         lines.append(selection.warning)
-    if layer_result.categorical_coloring_disabled:
+    if result.categorical_coloring_disabled:
         kind = "warning"
         title = _with_warning_suffix(title)
         lines.append(
-            f"Categorical coloring is disabled for {layer_result.selected_value_count:,} selected values; "
-            f"using one solid color because the categorical limit is {layer_result.categorical_limit:,}."
+            f"Categorical coloring is disabled for {result.selected_value_count:,} selected values; "
+            f"using one solid color because the categorical limit is {result.categorical_limit:,}."
         )
 
     return _ViewerStatusCardSpec(

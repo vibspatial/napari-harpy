@@ -34,7 +34,7 @@ from napari_harpy.core.spatialdata import (
     get_spatialdata_shapes_options_for_coordinate_system_from_sdata,
     get_table_color_source_options,
 )
-from napari_harpy.viewer.points_styling import PointsLayerResult
+from napari_harpy.viewer.points_styling import PointsLoadResult
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     WIDGET_MIN_WIDTH,
@@ -47,7 +47,7 @@ from napari_harpy.widgets.shared_styles import (
 from napari_harpy.widgets.viewer.disclosure import _CollapsibleSectionWidget, _DisclosureElementWidget
 from napari_harpy.widgets.viewer.image_widget import ImageLoadRequest, _ImageCardWidget
 from napari_harpy.widgets.viewer.labels_widget import LabelsLoadRequest, _LabelsCardWidget
-from napari_harpy.widgets.viewer.points_controller import PointsController, PointsLoadResult, PointsValueSource
+from napari_harpy.widgets.viewer.points_controller import PointsController, PointsLoadRequest, PointsValueSource
 from napari_harpy.widgets.viewer.points_widget import PointsValueWidget
 from napari_harpy.widgets.viewer.shapes_widget import ShapesLoadRequest, _ShapesCardWidget
 from napari_harpy.widgets.viewer.status_card import (
@@ -85,8 +85,8 @@ class ViewerWidget(QWidget):
             on_value_source_loaded=self._on_points_value_source_loaded,
             on_points_loaded=self._on_points_loaded,
         )
+        self._last_points_load_request: PointsLoadRequest | None = None
         self._last_points_load_result: PointsLoadResult | None = None
-        self._last_points_layer_result: PointsLayerResult | None = None
         self._labels_cards: list[_LabelsCardWidget] = []
         self._image_cards: list[_ImageCardWidget] = []
         self._shape_cards: list[_ShapesCardWidget] = []
@@ -510,16 +510,16 @@ class ViewerWidget(QWidget):
             index_column,
         )
         if changed:
+            self._last_points_load_request = None
             self._last_points_load_result = None
-            self._last_points_layer_result = None
         if changed and self._points_controller.can_load_values:
             self._points_controller.load_value_source()
         else:
             self.points_widget.render_controller_state(self._points_controller)
 
     def _add_or_update_points_selection(self, values: Sequence[str] | Literal["all"], render_point_budget: int) -> None:
+        self._last_points_load_request = None
         self._last_points_load_result = None
-        self._last_points_layer_result = None
         self._points_controller.load_selection(
             values,
             render_point_budget=render_point_budget,
@@ -527,18 +527,18 @@ class ViewerWidget(QWidget):
 
     def _on_points_controller_state_changed(self) -> None:
         self.points_widget.render_controller_state(self._points_controller)
-        if self._last_points_load_result is not None and self._last_points_layer_result is not None:
-            self._render_points_loaded_status(self._last_points_load_result, self._last_points_layer_result)
+        if self._last_points_load_request is not None and self._last_points_load_result is not None:
+            self._render_points_loaded_status(self._last_points_load_request, self._last_points_load_result)
 
     def _on_points_value_source_loaded(self, value_source: PointsValueSource) -> None:
         self.points_widget.set_value_source(value_source)
 
-    def _on_points_loaded(self, load_result: PointsLoadResult) -> None:
+    def _on_points_loaded(self, request: PointsLoadRequest) -> None:
         try:
-            layer_result = self._app_state.viewer_adapter._ensure_points_layer_from_selection(
-                load_result.identity,
-                selection=load_result.selection,
-                categorical_colors=load_result.selected_value_colors or None,
+            result = self._app_state.viewer_adapter._ensure_points_layer_from_selection(
+                request.identity,
+                selection=request.selection,
+                categorical_colors=request.selected_value_colors or None,
             )
         except ValueError as error:
             self._set_action_feedback(
@@ -548,19 +548,19 @@ class ViewerWidget(QWidget):
             )
             return
 
-        self._last_points_load_result = load_result
-        self._last_points_layer_result = layer_result
-        self._app_state.viewer_adapter.activate_layer(layer_result.layer)
-        self._render_points_loaded_status(load_result, layer_result)
+        self._last_points_load_request = request
+        self._last_points_load_result = result
+        self._app_state.viewer_adapter.activate_layer(result.layer)
+        self._render_points_loaded_status(request, result)
 
     def _render_points_loaded_status(
         self,
-        load_result: PointsLoadResult,
-        layer_result: PointsLayerResult,
+        request: PointsLoadRequest,
+        result: PointsLoadResult,
     ) -> None:
         self._apply_status_card_spec(
             self.global_action_feedback_label,
-            build_points_layer_card_spec(load_result, layer_result),
+            build_points_layer_card_spec(request, result),
         )
 
     def _on_image_row_expanded(
@@ -826,8 +826,8 @@ class ViewerWidget(QWidget):
         self.points_widget.set_points_names([])
         self.points_widget.set_index_columns([])
         self.points_widget.set_value_source(None)
+        self._last_points_load_request = None
         self._last_points_load_result = None
-        self._last_points_layer_result = None
         self._points_controller.bind_source(None, None, None, None)
 
     def _set_action_feedback(

@@ -28,7 +28,7 @@ from napari_harpy.viewer.labels_styling import (
 )
 from napari_harpy.viewer.points_styling import (
     POINTS_SELECTION_SOLID_COLOR,
-    PointsLayerResult,
+    PointsLoadResult,
     apply_points_selection_style,
     build_points_selection_layer_name,
 )
@@ -923,7 +923,7 @@ class ViewerAdapter(QObject):
         *,
         selection: PointsValueSelection,
         categorical_colors: Sequence[str] | None = None,
-    ) -> PointsLayerResult:
+    ) -> PointsLoadResult:
         """Create or update the points value-selection layer for an already loaded selection."""
         if not isinstance(identity, PointsLayerIdentity):
             raise ValueError("`identity` must be a PointsLayerIdentity.")
@@ -968,7 +968,7 @@ class ViewerAdapter(QObject):
         finally:
             _restore_viewer_camera_state(self._viewer, camera_state)
 
-        return PointsLayerResult(
+        return PointsLoadResult(
             layer=layer,
             created=created,
             color_mode=style_result.color_mode,

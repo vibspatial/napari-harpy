@@ -19,7 +19,7 @@ from napari_harpy.viewer.adapter import PointsLayerIdentity
 from napari_harpy.widgets.viewer.points_controller import (
     PointsController,
     PointsControllerState,
-    PointsLoadResult,
+    PointsLoadRequest,
     PointsValueSource,
     PointsValueSourceJob,
 )
@@ -160,8 +160,11 @@ def _example_selection(
     )
 
 
-def _example_load_result(value_source: PointsValueSource, selection: PointsValueSelection | None = None) -> PointsLoadResult:
-    return PointsLoadResult(
+def _example_load_request(
+    value_source: PointsValueSource,
+    selection: PointsValueSelection | None = None,
+) -> PointsLoadRequest:
+    return PointsLoadRequest(
         identity=value_source.identity,
         selection=_example_selection() if selection is None else selection,
         value_table=value_source.value_table,
@@ -173,7 +176,7 @@ def test_points_controller_initializes_without_cache() -> None:
 
     assert controller.state is PointsControllerState.NO_SDATA
     assert controller.current_value_source is None
-    assert controller.current_load_result is None
+    assert controller.current_load_request is None
     assert controller.can_build_cache is False
     assert controller.can_rebuild_cache is False
     assert controller.cache_status == "not_available"
@@ -220,7 +223,7 @@ def test_points_controller_stores_successful_value_source(monkeypatch) -> None:
     worker.finished.emit()
 
     assert controller.current_value_source == value_source
-    assert controller.current_load_result is None
+    assert controller.current_load_request is None
     assert controller.state is PointsControllerState.VALUES_READY
     assert controller.status_kind == "success"
     assert controller.is_loading_values is False
@@ -300,11 +303,11 @@ def test_points_controller_schedules_selection_loading(monkeypatch) -> None:
     assert worker.start_count == 1
 
 
-def test_points_controller_stores_successful_load_result(monkeypatch) -> None:
+def test_points_controller_stores_successful_load_request(monkeypatch) -> None:
     controller = PointsController()
     sdata = _example_sdata()
     value_source = _example_value_source(sdata)
-    result = _example_load_result(value_source)
+    result = _example_load_request(value_source)
     worker = _FakeWorker()
     controller._current_value_source = value_source
     monkeypatch.setattr(controller, "_create_points_load_worker", lambda job: worker)
@@ -313,11 +316,11 @@ def test_points_controller_stores_successful_load_result(monkeypatch) -> None:
     worker.returned.emit(result)
     worker.finished.emit()
 
-    assert controller.current_load_result is not None
-    assert controller.current_load_result.identity == result.identity
-    assert controller.current_load_result.selection == result.selection
-    assert controller.current_load_result.value_table == result.value_table
-    assert controller.current_load_result.selected_value_colors == (
+    assert controller.current_load_request is not None
+    assert controller.current_load_request.identity == result.identity
+    assert controller.current_load_request.selection == result.selection
+    assert controller.current_load_request.value_table == result.value_table
+    assert controller.current_load_request.selected_value_colors == (
         default_labeled_class_color(1),
         default_labeled_class_color(2),
     )
@@ -327,7 +330,7 @@ def test_points_controller_stores_successful_load_result(monkeypatch) -> None:
 
 
 def test_points_controller_notifies_points_loaded_once_on_load_return(monkeypatch) -> None:
-    loaded_results: list[PointsLoadResult] = []
+    loaded_results: list[PointsLoadRequest] = []
     state_change_count = 0
 
     def on_state_changed() -> None:
@@ -340,7 +343,7 @@ def test_points_controller_notifies_points_loaded_once_on_load_return(monkeypatc
     )
     sdata = _example_sdata()
     value_source = _example_value_source(sdata)
-    result = _example_load_result(value_source)
+    result = _example_load_request(value_source)
     worker = _FakeWorker()
     controller._current_value_source = value_source
     monkeypatch.setattr(controller, "_create_points_load_worker", lambda job: worker)
@@ -371,22 +374,22 @@ def test_points_controller_assigns_stable_value_colors_across_selection_changes(
     monkeypatch.setattr(controller, "_create_points_load_worker", lambda job: workers.pop(0))
 
     controller.load_selection(["AXL", "MALAT1"], render_point_budget=100_000)
-    first_result = _example_load_result(value_source, _example_selection(["AXL", "MALAT1"]))
+    first_result = _example_load_request(value_source, _example_selection(["AXL", "MALAT1"]))
     first_worker.returned.emit(first_result)
-    first_loaded = controller.current_load_result
+    first_loaded = controller.current_load_request
     first_worker.finished.emit()
 
     controller.load_selection(["AAMP", "AXL", "MALAT1"], render_point_budget=100_000)
-    second_result = _example_load_result(value_source, _example_selection(["AAMP", "AXL", "MALAT1"]))
+    second_result = _example_load_request(value_source, _example_selection(["AAMP", "AXL", "MALAT1"]))
     second_worker.returned.emit(second_result)
 
     assert first_loaded is not None
-    assert controller.current_load_result is not None
+    assert controller.current_load_request is not None
     assert first_loaded.selected_value_colors == (
         default_labeled_class_color(1),
         default_labeled_class_color(2),
     )
-    assert controller.current_load_result.selected_value_colors == (
+    assert controller.current_load_request.selected_value_colors == (
         default_labeled_class_color(3),
         default_labeled_class_color(1),
         default_labeled_class_color(2),
@@ -407,7 +410,7 @@ def test_points_controller_uses_warning_status_for_sampled_selection(monkeypatch
         is_sampled=True,
         warning="Showing 1 of 10 selected points.",
     )
-    result = _example_load_result(value_source, selection)
+    result = _example_load_request(value_source, selection)
     worker = _FakeWorker()
     controller._current_value_source = value_source
     monkeypatch.setattr(controller, "_create_points_load_worker", lambda job: worker)
@@ -415,7 +418,7 @@ def test_points_controller_uses_warning_status_for_sampled_selection(monkeypatch
     controller.load_selection(["AAMP"], render_point_budget=1)
     worker.returned.emit(result)
 
-    assert controller.current_load_result == result
+    assert controller.current_load_request == result
     assert controller.state is PointsControllerState.LOADED_SELECTION
     assert controller.status_kind == "warning"
     assert "Showing 1 of 10" in controller.status_message
@@ -439,7 +442,7 @@ def test_points_controller_rebinding_cancels_active_workers(monkeypatch) -> None
     assert value_worker.quit_count == 1
     assert load_worker.quit_count == 1
     assert controller.current_value_source is None
-    assert controller.current_load_result is None
+    assert controller.current_load_request is None
 
 
 def test_points_controller_new_selection_load_replaces_active_load_worker(monkeypatch) -> None:
@@ -459,7 +462,7 @@ def test_points_controller_new_selection_load_replaces_active_load_worker(monkey
     assert controller._active_load_worker is not first_worker
 
 
-def test_points_controller_ignores_stale_load_results(monkeypatch) -> None:
+def test_points_controller_ignores_stale_load_requests(monkeypatch) -> None:
     controller = PointsController()
     sdata = _example_sdata()
     value_source = _example_value_source(sdata)
@@ -471,13 +474,13 @@ def test_points_controller_ignores_stale_load_results(monkeypatch) -> None:
 
     controller.load_selection(["AAMP"], render_point_budget=10)
     controller.load_selection(["AXL"], render_point_budget=10)
-    second_result = _example_load_result(value_source, _example_selection(["AXL"]))
-    first_result = _example_load_result(value_source, _example_selection(["AAMP"]))
+    second_result = _example_load_request(value_source, _example_selection(["AXL"]))
+    first_result = _example_load_request(value_source, _example_selection(["AAMP"]))
 
     first_worker.returned.emit(first_result)
     second_worker.returned.emit(second_result)
 
-    assert controller.current_load_result == second_result
+    assert controller.current_load_request == second_result
 
 
 def test_points_controller_shutdown_cancels_workers(monkeypatch) -> None:
