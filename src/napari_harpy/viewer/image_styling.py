@@ -25,6 +25,7 @@ class ImageLoadResult:
 
     layers: tuple[Image, ...]
     mode: ImageDisplayMode
+    created: bool
     channels: tuple[int, ...] = ()
 
     @property

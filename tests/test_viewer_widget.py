@@ -1242,6 +1242,7 @@ def test_viewer_widget_add_update_image_overlay_passes_selected_channels_and_col
                 layers=tuple(fake_layers),
                 primary_layer=fake_layers[0],
                 mode=mode,
+                created=True,
                 channels=tuple(channels or ()),
             )
         ),
@@ -1355,6 +1356,7 @@ def test_viewer_widget_add_update_image_uses_selected_coordinate_system(qtbot, m
                 layers=(fake_layer,),
                 primary_layer=fake_layer,
                 mode=mode,
+                created=True,
                 channels=tuple(channels or ()),
             )
         ),

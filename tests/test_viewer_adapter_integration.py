@@ -27,6 +27,7 @@ def test_viewer_adapter_real_viewer_overlay_load_activate_and_remove(
     layers = result.layers
 
     assert result.mode == "overlay"
+    assert result.created is True
     assert result.channels == (0, 1)
     assert len(layers) == 2
     assert all(layer in viewer.layers for layer in layers)

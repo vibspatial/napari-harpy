@@ -1097,6 +1097,7 @@ class ViewerAdapter(QObject):
                 return ImageLoadResult(
                     layers=(existing_layer,),
                     mode=mode,
+                    created=False,
                 )
 
             image_data, rgb = _get_stack_image_layer_data(image_element)
@@ -1117,6 +1118,7 @@ class ViewerAdapter(QObject):
             return ImageLoadResult(
                 layers=(layer,),
                 mode=mode,
+                created=True,
             )
 
         if mode != "overlay":
@@ -1127,6 +1129,7 @@ class ViewerAdapter(QObject):
         affine = _get_affine_transform(image_element, coordinate_system)
 
         loaded_overlay_layers: list[Image] = []
+        created = False
         desired_channel_indices = {channel_index for channel_index, _ in resolved_channels}
 
         layers = self._get_loaded_image_layer_for_coordinate_system(
@@ -1162,6 +1165,7 @@ class ViewerAdapter(QObject):
             )
             existing_layer = layers[0] if layers else None
             if existing_layer is None:
+                created = True
                 layer = Image(
                     _get_overlay_channel_layer_data(image_element, channel_index),
                     name=f"{image_name}[{channel_name}]",
@@ -1190,6 +1194,7 @@ class ViewerAdapter(QObject):
         return ImageLoadResult(
             layers=tuple(loaded_overlay_layers),
             mode="overlay",
+            created=created,
             channels=tuple(channel_index for channel_index, _ in resolved_channels),
         )
 

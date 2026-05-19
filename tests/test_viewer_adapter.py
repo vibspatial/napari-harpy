@@ -1903,6 +1903,7 @@ def test_viewer_adapter_ensure_image_loaded_adds_stack_layer_and_registers_bindi
 
     assert result.layers == (layer,)
     assert result.mode == "stack"
+    assert result.created is True
     assert result.channels == ()
     assert layer in viewer.layers
     assert layer.name == "blobs_image"
@@ -1925,6 +1926,8 @@ def test_viewer_adapter_ensure_image_loaded_reuses_matching_existing_stack_layer
     second = adapter.ensure_image_loaded(sdata_blobs, "blobs_image", "global", mode="stack")
 
     assert first.primary_layer is second.primary_layer
+    assert first.created is True
+    assert second.created is False
     assert len(viewer.layers) == 1
 
 
@@ -1970,6 +1973,7 @@ def test_viewer_adapter_ensure_image_loaded_overlay_adds_one_layer_per_selected_
     layers = result.layers
 
     assert result.mode == "overlay"
+    assert result.created is True
     assert result.channels == (0, 2)
     assert len(layers) == 2
     assert [layer.name for layer in layers] == ["blobs_image[0]", "blobs_image[2]"]
@@ -2006,6 +2010,8 @@ def test_viewer_adapter_ensure_image_loaded_overlay_reuses_existing_channel_laye
     )
 
     assert first.layers == second.layers
+    assert first.created is True
+    assert second.created is False
     assert len(viewer.layers) == 2
     assert [str(layer.colormap).lower() for layer in second.layers] != []
 
@@ -2073,11 +2079,26 @@ def test_viewer_adapter_ensure_image_loaded_overlay_removes_stale_channel_layers
     )
     layers = result.layers
 
+    assert result.created is False
     assert len(layers) == 1
     assert len(viewer.layers) == 1
     binding = adapter.layer_bindings.get_binding(layers[0])
     assert binding is not None
     assert binding.channel_index == 1
+
+    mixed_result = adapter.ensure_image_loaded(
+        sdata_blobs,
+        "blobs_image",
+        "global",
+        mode="overlay",
+        channels=[1, 2],
+        channel_colors=["green", "magenta"],
+    )
+
+    assert mixed_result.created is True
+    assert mixed_result.channels == (1, 2)
+    assert mixed_result.layers[0] is layers[0]
+    assert len(viewer.layers) == 2
 
 
 def test_viewer_adapter_ensure_image_loaded_stack_removes_existing_overlay_layers(sdata_blobs) -> None:
