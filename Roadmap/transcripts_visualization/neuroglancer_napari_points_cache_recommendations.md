@@ -956,11 +956,95 @@ visible = tile_source.query(
     max_visible_points=100_000,
 )
 
-layer.data = visible.coords_yx
-layer.features = {"gene": visible.gene_names}
-layer.face_color = "gene"
+update_live_points_layer(
+    layer,
+    coords_yx=visible.coords_yx,
+    features={"gene": visible.gene_names},
+)
+```
+
+### Safe In-Place Points Layer Updates
+
+The live tiled mode should keep one persistent napari `Points` layer and update
+its payload in place. Replacing the layer on every pan or zoom would reset
+viewer state and is unlikely to feel snappy.
+
+However, plain in-place updates are not always safe:
+
+```python
+layer.data = coords_yx
+layer.features = features
 layer.refresh()
 ```
+
+In napari 0.7.0, this can leave stale private view indices during the update
+when experimental async slicing is enabled. If the new data array is shorter
+than the old one, hover/status/render callbacks can temporarily read old
+`_indices_view` values against the new shorter `data` array and raise an
+`IndexError`.
+
+Use a guarded update sequence:
+
+```python
+from contextlib import ExitStack
+
+
+def update_live_points_layer(layer, *, coords_yx, features) -> None:
+    with ExitStack() as stack:
+        stack.enter_context(layer.events.blocker_all())
+        stack.enter_context(layer._face.events.blocker_all())
+        stack.enter_context(layer._border.events.blocker_all())
+        stack.enter_context(layer.text.events.blocker_all())
+
+        layer.selected_data = set()
+        layer._value = None
+        layer.data = coords_yx
+        layer.features = features
+
+    layer.set_view_slice()
+    layer._refresh_sync(
+        thumbnail=False,
+        data_displayed=True,
+        highlight=False,
+        extent=False,
+        force=True,
+    )
+```
+
+Important details:
+
+```text
+block layer, face-color, border-color, and text events while the layer payload
+is internally inconsistent
+
+assign data before features, because napari validates feature length against
+the current data length
+
+clear transient selection/hover state before the payload swap
+
+force a synchronous set_view_slice() before emitting the single visual update
+
+do not reset face_color on every viewport update; configure the color mode once
+when creating the live layer, then update data/features only
+```
+
+This uses napari private APIs (`_face`, `_border`, `_value`, `_refresh_sync`),
+so it should be isolated in one Harpy helper and covered by regression tests.
+The minimum regression test should enable napari async slicing, update a points
+layer from many rows to fewer rows, and assert that `_view_data`, `_view_size`,
+and `get_status(...)` do not raise after the helper returns.
+
+Layer-model timing measured locally was roughly:
+
+```text
+10k points:   ~5 ms
+50k points:   ~23 ms
+100k points:  ~44 ms
+200k points:  ~88 ms
+```
+
+These numbers exclude real GPU upload cost, but they suggest that a 50-150 ms
+camera debounce and a ~100k visible point budget are plausible starting points.
 
 Use debouncing:
 
@@ -1137,10 +1221,11 @@ Build the simplest useful version first:
 3. Write one Parquet file per tile.
 4. Write `manifest.parquet`.
 5. Implement viewport query.
-6. Add `gene_tile_counts.parquet`.
-7. Add coarser sampled levels.
-8. Add optional `exact_genes/` cache for selected-gene exact rendering.
-9. Replace tile files with sharded Parquet row groups.
+6. Add the guarded live `Points` layer update helper and async-slicing regression test.
+7. Add `gene_tile_counts.parquet`.
+8. Add coarser sampled levels.
+9. Add optional `exact_genes/` cache for selected-gene exact rendering.
+10. Replace tile files with sharded Parquet row groups.
 
 ---
 
