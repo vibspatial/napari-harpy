@@ -149,8 +149,7 @@ level 0 = coarsest / most downsampled
 level N = finest / most complete
 ```
 
-Use sharded Parquet files with one row group per logical tile from the first
-implementation.
+Use sharded Parquet files with one row group per logical tile from the start.
 
 ---
 
@@ -418,7 +417,7 @@ gene_code: int32
 sample_rank: uint64
 ```
 
-Required row order inside each tile for the first implementation:
+Required row order inside each tile:
 
 ```text
 gene_code, sample_rank
@@ -1076,9 +1075,9 @@ An R-tree is optional. It is not necessary for the main case.
 
 ---
 
-## First Implementation Plan
+## Implementation Plan
 
-Build the simplest useful version first:
+Build in this order:
 
 1. Preserve the current exact/direct path for selections whose total count is
    within the render budget.
@@ -1097,9 +1096,9 @@ Build the simplest useful version first:
 
 ---
 
-## Production Implementation Plan
+## Scale and Performance Plan
 
-For larger data:
+For large datasets and interactive use:
 
 1. Use multiple levels.
 2. Store tile data in shard files.
