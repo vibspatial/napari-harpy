@@ -70,7 +70,8 @@ selected_total_count <= render_budget
 
 selected_total_count > render_budget
   -> tiled/live mode
-  -> query the persistent tile cache with max_visible_points = render_budget
+  -> query the persistent tile cache using render_budget as the target for level selection
+  -> trust the selected cache level rather than resampling the query result
   -> create a fresh live napari Points layer for the render request
   -> update that layer on debounced viewport changes
 ```
@@ -148,29 +149,8 @@ level 0 = coarsest / most downsampled
 level N = finest / most complete
 ```
 
-A simpler first implementation can use one file per tile:
-
-```text
-.sdata_points_cache/
-  cache_metadata.json
-  genes.parquet
-
-  level_0_manifest.parquet
-  level_0_gene_tile_counts.parquet
-  level_0_tiles/
-    tile_0_0.parquet
-    tile_0_1.parquet
-    ...
-
-  level_1_manifest.parquet
-  level_1_gene_tile_counts.parquet
-  level_1_tiles/
-    tile_0_0.parquet
-    tile_0_1.parquet
-    ...
-```
-
-For production-scale datasets, prefer sharded Parquet files with one row group per tile.
+Use sharded Parquet files with one row group per logical tile from the first
+implementation.
 
 ---
 
@@ -438,25 +418,15 @@ gene_code: int32
 sample_rank: uint64
 ```
 
-Recommended row order inside each tile:
+Required row order inside each tile for the first implementation:
 
 ```text
 gene_code, sample_rank
 ```
 
-or:
-
-```text
-gene_code, id
-```
-
-For visualization, prefer:
-
-```text
-gene_code, sample_rank
-```
-
-This allows deterministic downsampling.
+Rows should be grouped primarily by `gene_code` so gene switches can be handled
+snappily. Within each gene range, `sample_rank` provides a deterministic order
+for stable display and any future gene-local operations.
 
 ---
 
@@ -605,24 +575,33 @@ def build_levels(normalized_path, levels, cache_dir):
 Conceptually, for each level:
 
 ```python
-tile_x = floor((x - origin_x) / tile_size_x)
-tile_y = floor((y - origin_y) / tile_size_y)
-tile_id = make_tile_id(tile_x, tile_y)
+points = points.with_columns([
+    tile_x_expr(level),
+    tile_y_expr(level),
+    tile_id_expr(level),
+    sample_rank_expr(point_id),
+])
 ```
 
-Group by tile:
+Then rank points within each tile by `sample_rank`:
 
 ```python
-groupby(tile_id)
+ranked = points.with_columns(
+    row_number()
+    .over("tile_id")
+    .sort_by("sample_rank")
+    .alias("rank_in_tile")
+)
 ```
 
-For each tile:
+For sampled levels, keep only the first `level.max_points_per_tile` points in
+each tile. For the finest level, keep all points:
 
 ```python
-if n_points <= max_points_per_tile:
-    keep all points
+if level.is_finest:
+    emitted = ranked
 else:
-    keep deterministic sample of max_points_per_tile
+    emitted = ranked.filter(rank_in_tile <= level.max_points_per_tile)
 ```
 
 Use a stable hash for sampling:
@@ -647,14 +626,6 @@ tile_points = tile_points.sort_values(["gene_code", "sample_rank"])
 
 ### Step 4: Write Tile Data
 
-For a first implementation:
-
-```text
-one Parquet file per tile
-```
-
-For a production implementation:
-
 ```text
 one Parquet row group per tile
 multiple tiles per shard file
@@ -665,12 +636,6 @@ The manifest row should point to the physical location:
 ```text
 shard_path
 row_group
-```
-
-or, in a simpler implementation:
-
-```text
-tile_path
 ```
 
 ---
@@ -726,7 +691,7 @@ Given:
 ```text
 viewport bbox
 selected genes
-max_visible_points
+render_budget
 ```
 
 Estimate the number of points at each level.
@@ -759,10 +724,13 @@ estimated_count = gene_tile_counts[
 Pick the finest tile-pyramid level where:
 
 ```text
-estimated_count <= max_visible_points
+estimated_count <= render_budget
 ```
 
-If all levels exceed the limit, pick the coarsest level and apply a final deterministic cap.
+If all levels exceed the limit, pick the coarsest level and display that cached
+representation as-is. Do not apply a second deterministic cap at query time.
+Cache parameters should be chosen so the coarsest level remains acceptable for
+overview rendering.
 
 ---
 
@@ -773,7 +741,7 @@ Given a napari viewport and selected genes:
 ```text
 xmin, xmax, ymin, ymax
 selected_gene_codes
-max_visible_points
+render_budget
 ```
 
 ### 1. Choose query path and level
@@ -801,12 +769,6 @@ For each selected tile:
 read shard_path + row_group
 ```
 
-or:
-
-```text
-read tile_path
-```
-
 ### 5. Apply exact filtering
 
 Filter by viewport:
@@ -826,13 +788,14 @@ Filter by gene:
 tile = tile[tile.gene_code.isin(selected_gene_codes)]
 ```
 
-### 6. Cap if needed
+### 6. Trust the selected cache level
 
-If the result is still too large:
+Do not apply an additional viewport-wide budget trim after loading tiles. The
+cache already encodes the approximation through its level choice, tile size, and
+`max_points_per_tile`.
 
-```python
-result = result.nsmallest(max_visible_points, "sample_rank")
-```
+Unexpected manifest/cache mismatches should be treated as diagnostics, not as a
+normal reason to resample the query result.
 
 ### 7. Return napari-ready data
 
@@ -882,7 +845,7 @@ On viewport changes, query the tile source and update that same live layer:
 visible = tile_source.query(
     bbox=current_view_bbox(viewer),
     selected_genes=selected_genes,
-    max_visible_points=100_000,
+    render_budget=100_000,
 )
 
 update_live_points_layer(
@@ -978,7 +941,8 @@ Layer-model timing measured locally was roughly:
 ```
 
 These numbers exclude real GPU upload cost, but they suggest that a 50-150 ms
-camera debounce and a ~100k visible point budget are plausible starting points.
+camera debounce and a ~100k render-budget level-selection target are plausible
+starting points.
 
 Use debouncing:
 
@@ -1027,7 +991,7 @@ Evict based on byte size.
 Key:
 
 ```python
-(level, rounded_bbox, selected_gene_codes, max_visible_points)
+(level, rounded_bbox, selected_gene_codes, render_budget)
 ```
 
 Value:
@@ -1121,7 +1085,7 @@ Build the simplest useful version first:
 2. Add the render-mode decision on `Add / Update in viewer`.
 3. Encode genes into `gene_code`.
 4. Build one finest-level tiled cache.
-5. Write one Parquet file per tile.
+5. Write sharded Parquet with one row group per logical tile.
 6. Write `manifest.parquet`.
 7. Implement tiled viewport query.
 8. Add the guarded live `Points` layer update helper and async-slicing regression test.
@@ -1130,7 +1094,6 @@ Build the simplest useful version first:
 10. Add `gene_tile_counts.parquet`.
 11. Add coarser sampled levels, each built independently from the normalized
     source as a self-contained tile set.
-12. Replace tile files with sharded Parquet row groups.
 
 ---
 
@@ -1164,7 +1127,7 @@ class ViewQuery:
     ymin: float
     ymax: float
     genes: tuple[str, ...] | None
-    max_points: int
+    render_budget: int
     coordinate_system: str
 
 
@@ -1189,7 +1152,6 @@ class SpatialDataPointTileSource:
         coordinate_system: str | None = None,
         cache_dir: str | Path | None = None,
         max_points_per_tile: int = 4096,
-        max_visible_points: int = 100_000,
     ):
         ...
 
@@ -1245,10 +1207,10 @@ At runtime:
 Add / Update in viewer
   -> compute selected_total_count
   -> if selected_total_count <= render_budget: exact/direct static layer
-  -> otherwise: tiled/live layer
+  -> otherwise: tiled/live layer using the selected cache level as-is
 
 tiled/live viewport update
-  -> tile range -> manifest lookup -> optional gene index lookup -> load tile chunks
+  -> tile range -> manifest lookup -> choose level -> optional gene index lookup -> load tile chunks
   -> exact bbox/gene filter
   -> guarded in-place update of the live napari Points layer
 ```
