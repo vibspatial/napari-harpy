@@ -469,7 +469,7 @@ tile_x = floor((x - origin_x) / tile_size_x)
 tile_y = floor((y - origin_y) / tile_size_y)
 tile_id = make_tile_id(tile_x, tile_y)
 gene_code = categorical_code(gene)
-sample_rank = stable_hash(id, level)
+sample_rank = stable_hash(id)
 ```
 
 Then sort by:
@@ -498,6 +498,16 @@ fast gene filtering
 stable point order
 deterministic downsampling
 ```
+
+Use a level-independent `sample_rank`:
+
+```python
+sample_rank = stable_hash(id)
+```
+
+This makes samples nested across levels: points that are visible in a coarser
+sample tend to remain present as the viewer moves to finer levels. That should
+reduce visual popping during zoom changes.
 
 ---
 
@@ -558,7 +568,41 @@ genes.parquet
 
 ### Step 3: Build Each Level
 
-For each level:
+Build every level as a self-contained representation of the full normalized
+points source. Do not build residual levels where points emitted at one level
+are removed from the input for the next level. The viewport query displays one
+chosen level at a time, so each level must be able to answer the query on its
+own.
+
+Use this build shape:
+
+```python
+def build_levels(normalized_path, levels, cache_dir):
+    for level in levels:
+        points = scan_parquet(normalized_path)
+
+        points = points.with_columns([
+            tile_x_expr(level),
+            tile_y_expr(level),
+            tile_id_expr(level),
+            sample_rank_expr(point_id),
+        ])
+
+        ranked = rank_within_tile(points, by="sample_rank")
+
+        if level.is_finest:
+            emitted = ranked
+        else:
+            emitted = ranked.filter(rank_in_tile <= level.max_points_per_tile)
+
+        write_level_tiles_and_manifest(
+            emitted,
+            level=level,
+            cache_dir=cache_dir,
+        )
+```
+
+Conceptually, for each level:
 
 ```python
 tile_x = floor((x - origin_x) / tile_size_x)
@@ -584,7 +628,7 @@ else:
 Use a stable hash for sampling:
 
 ```python
-sample_rank = stable_hash(id, level)
+sample_rank = stable_hash(id)
 ```
 
 Keep points with the lowest sample ranks:
@@ -1084,7 +1128,8 @@ Build the simplest useful version first:
 9. Add live tiled layer lifecycle management: fresh layer per request, retire
    previous layer, stop stale viewport listeners.
 10. Add `gene_tile_counts.parquet`.
-11. Add coarser sampled levels.
+11. Add coarser sampled levels, each built independently from the normalized
+    source as a self-contained tile set.
 12. Replace tile files with sharded Parquet row groups.
 
 ---
