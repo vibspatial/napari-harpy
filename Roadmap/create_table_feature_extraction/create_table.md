@@ -342,12 +342,76 @@ Acceptance tests:
 - if object classification already had `selected_table_name == "old_table"` and
   `old_table` is still valid, it remains selected after the create-table event;
 - object classification does not silently fall back to the first table or switch
-  to `new_table` when a different valid table was already selected.
+  to `new_table` when a different valid table was already selected;
 - if object classification had no selected/available table and `new_table`
   annotates the currently selected labels element, it auto-selects `new_table`
   after the event refresh.
 
-### Slice 7: Polish And Documentation
+### Slice 7: Refresh Viewer Linked Tables From Feature-Matrix Events
+
+The Viewer widget also needs to become aware that feature extraction may create a
+new annotating table. Today
+[src/napari_harpy/widgets/viewer/widget.py](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/widgets/viewer/widget.py:255)
+listens to `sdata_changed` and coordinate-system changes, but not to
+`feature_matrix_written`.
+
+The labels cards discover linked tables only when they are built:
+
+- `_rebuild_labels_cards(...)` calls
+  `get_annotating_table_names(sdata, labels_name)`;
+- it then calls `get_table_color_source_options(...)` for each linked table;
+- `_LabelsCardWidget` receives that static table/source snapshot at
+  construction time.
+
+That means a newly created table will not appear in the Viewer widget's linked
+table controls until some unrelated viewer refresh happens.
+
+Work items:
+
+- import `FeatureMatrixWrittenEvent` in the Viewer widget and connect
+  `self._app_state.feature_matrix_written` during widget initialization;
+- ignore events that are not `FeatureMatrixWrittenEvent` instances or whose
+  `event.sdata` is not the viewer widget's current `sdata`;
+- on a same-`sdata` event, refresh labels-card table metadata for the current
+  coordinate system so newly created annotating tables become available in the
+  `Linked table` combos;
+- preserve each labels card's selected linked table whenever it is still valid.
+  A feature-extraction-created table must not silently switch a card away from an
+  already selected valid table;
+- if a labels card had no linked/selected table before the refresh and the new
+  table annotates that labels element, auto-select the new table;
+- preserve expanded/collapsed labels rows across the refresh, matching the
+  existing row refresh behavior;
+- do not automatically add or update napari layers. The listener refreshes
+  Viewer-widget controls only; users still choose whether to add/update primary
+  labels layers or colored overlays.
+
+Implementation notes:
+
+- The simplest first implementation can reuse `_refresh_coordinate_system_content()`
+  if it snapshots and restores per-label card state before rebuilding.
+- A more focused implementation could add an in-place update method to
+  `_LabelsCardWidget` for table names and color-source options, but that is not
+  required for the first pass.
+- Existing feature-matrix writes to `.obsm` do not currently add Viewer color
+  sources, because Viewer color sources come from table `obs` and `X`/`var`, not
+  from `.obsm`. The event is still the right hook because the same event also
+  represents newly created annotating tables.
+
+Acceptance tests:
+
+- a `feature_matrix_written` event for a different `sdata` leaves Viewer cards
+  unchanged;
+- a same-`sdata` event after creating `new_table` refreshes the matching labels
+  card so `new_table` appears in its `Linked table` combo;
+- if a labels card already selected `old_table` and `old_table` is still valid,
+  it remains selected after the event refresh;
+- if a labels card previously had no linked table and `new_table` annotates that
+  labels element, the card becomes enabled and selects `new_table`;
+- expanded labels rows remain expanded after the event refresh;
+- no napari layer is added or updated merely because the event was received.
+
+### Slice 8: Polish And Documentation
 
 Work items:
 
@@ -361,7 +425,5 @@ Work items:
 
 ```bash
 source .venv/bin/activate
-pytest tests/test_feature_extraction.py tests/test_feature_extraction_widget.py tests/test_app_state.py
+pytest tests/test_feature_extraction.py tests/test_feature_extraction_widget.py tests/test_app_state.py tests/test_viewer_widget.py
 ```
-
-## Open Spec Questions
