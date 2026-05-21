@@ -64,7 +64,7 @@ Important Harpy constraints:
 
 ## Proposed UX Rules
 
-- Add `Create table...` as a sentinel option in the `Table` combo whenever the
+- Add `Create table...` as the last option in the `Table` combo whenever the
   staged labels batch is complete enough to know which labels elements would be
   annotated.
 - Preserve the current behavior for existing tables: if at least one eligible
@@ -73,6 +73,9 @@ Important Harpy constraints:
 - If no eligible existing table exists, auto-select `Create table...` so the
   user can continue immediately.
 - Show a `New table name` `QLineEdit` only while `Create table...` is selected.
+- When create mode becomes active, suggest `features_table` as the default new
+  table name. If `features_table` already exists in `sdata.tables`, suggest
+  `features_table_{uuid.uuid4()}` instead.
 - Validate the new table name before enabling calculation:
   - non-empty after trimming;
   - valid SpatialData element name, using the same naming helper as the feature
@@ -84,6 +87,10 @@ Important Harpy constraints:
   the status card should be the primary user-facing explanation.
 - Do not expose table overwrite in the first implementation. Add it later as an
   explicit confirmation path if needed.
+- Do not support overwriting existing tables for this feature. A table-name
+  collision remains a hard validation block with a clear status-card message.
+  Supporting table overwrites would require a broader design change around how
+  feature matrices are written into `.obsm`.
 - Treat `Create table...` as a one-shot mode. After successful creation, the UI
   should switch to the newly created table as a normal existing-table selection.
   A second click on `Calculate` should therefore use the existing-table
@@ -176,13 +183,17 @@ Work items:
   - item data: a private sentinel object/string;
 - add `self.new_table_name_line_edit` below the `Table` row and hide it by
   default;
+- add a helper that proposes the default create-table name:
+  - return `features_table` when it is not already in `sdata.tables`;
+  - otherwise return `features_table_{uuid.uuid4()}`;
 - add state:
   - `_selected_table_mode: Literal["existing", "create"] | None`;
   - `_new_table_name: str | None`;
 - keep `selected_table_name` meaning "selected existing table name";
 - add a new property such as `selected_output_table_name` for create mode;
 - update `_refresh_table_names()` to populate eligible existing tables plus the
-  sentinel when the staged labels batch is complete;
+  sentinel when the staged labels batch is complete, with `Create table...` as
+  the last combo item;
 - update `_on_table_changed(...)` to show/hide the new-name field and rebind;
 - add `_on_new_table_name_changed(...)` to rebind on text edits.
 
@@ -194,6 +205,8 @@ Acceptance tests:
   `Create table...`, with `table` selected by default;
 - with no eligible existing tables, the combo contains `Create table...`, it is
   enabled, and the new-name field is visible;
+- when create mode first becomes active, the new-name field is prefilled with
+  `features_table` or a `features_table_<uuid>` fallback when needed;
 - switching away from create mode hides the new-name field without losing the
   typed value;
 - `selected_table_name` remains `None` in create mode, while
@@ -249,8 +262,8 @@ Work items:
   feature-key overwrite in existing-table mode;
 - in create-table mode, never send `overwrite_feature_key=True`;
 - block table-name collisions before calculation for MVP;
-- leave `overwrite_output_table=True` out of the UI until we explicitly spec the
-  replace-table behavior.
+- do not add an `overwrite_output_table=True` path; table collisions are a hard
+  block.
 
 Acceptance tests:
 
@@ -313,9 +326,9 @@ Work items:
   whenever it is still valid. If the classifier already has a selected table,
   creating a new table elsewhere must not silently switch it to the first table
   or to the newly created table;
-- only consider auto-selecting the newly created table in object classification
-  when no table was selected before the refresh and the new table annotates the
-  currently selected labels element.
+- auto-select the newly created table in object classification only when no
+  table was selected before the refresh, no other table was available/selected,
+  and the new table annotates the currently selected labels element.
 
 Acceptance tests:
 
@@ -330,6 +343,9 @@ Acceptance tests:
   `old_table` is still valid, it remains selected after the create-table event;
 - object classification does not silently fall back to the first table or switch
   to `new_table` when a different valid table was already selected.
+- if object classification had no selected/available table and `new_table`
+  annotates the currently selected labels element, it auto-selects `new_table`
+  after the event refresh.
 
 ### Slice 7: Polish And Documentation
 
@@ -349,15 +365,3 @@ pytest tests/test_feature_extraction.py tests/test_feature_extraction_widget.py 
 ```
 
 ## Open Spec Questions
-
-- Should `Create table...` be last, preserving existing table auto-selection, or
-  first for discoverability?
-- Should the widget suggest a default table name, such as
-  `features_<labels_name>` or `table_<labels_name>`?
-- In multi-label batches, should the suggested default be based on the common
-  coordinate system, the first labels element, or a neutral name like
-  `feature_table`?
-- Do we want an overwrite-output-table confirmation in this first pass, or should
-  collisions remain a hard block?
-- Should object classification auto-select a newly created table when it matches
-  the current labels element, or merely refresh the available table list?
