@@ -26,11 +26,12 @@ The recommended design is inspired by Neuroglancer's annotation rendering model:
 
 ## Core Principle
 
-Do **not** pass an over-budget SpatialData points selection directly to napari.
-Exact direct rendering is still the preferred path when the selected points fit
-within the user's render budget.
+Prefer the persistent point cache whenever a valid cache exists for the selected
+points element, coordinate system, coordinate transform, and category column.
+The direct SpatialData path remains the fallback for users who have not built a
+cache or explicitly disable cached rendering.
 
-For over-budget selections, use:
+When a valid cache exists, use:
 
 ```text
 SpatialData points element
@@ -44,11 +45,12 @@ small NumPy/Pandas visible subset
 ordinary napari Points layer
 ```
 
-The napari `Points` layer should only contain the currently visible subset.
+In cached mode, the napari `Points` layer should only contain the currently
+visible subset.
 
 ---
 
-## Hybrid Rendering Policy
+## Cache-First Rendering Policy
 
 Users keep the existing render-budget workflow:
 
@@ -58,51 +60,49 @@ user selects genes, a few genes, or all/no genes
 user clicks Add / Update in viewer
 ```
 
-On each `Add / Update in viewer` click, compute the total selected source-point
-count before deciding how to render:
+On each `Add / Update in viewer` click, choose the render path from cache
+availability:
 
 ```text
-selected_total_count <= render_budget
-  -> exact/direct mode
-  -> reuse the current direct implementation
-  -> create a fresh static napari Points layer with all selected points
-  -> no viewport-driven updates
-
-selected_total_count > render_budget
-  -> tiled/live mode
+valid cache available
+  -> cached/live mode
   -> query the persistent tile cache using render_budget as the target for level selection
   -> trust the selected cache level rather than resampling the query result
   -> create a fresh live napari Points layer for the render request
   -> update that layer on debounced viewport changes
+
+no valid cache, or cached rendering disabled
+  -> direct fallback mode
+  -> reuse the current direct implementation and its render-budget behavior
+  -> create a fresh static napari Points layer
+  -> no viewport-driven updates
 ```
 
-For no gene filter / all genes, `selected_total_count` is the total number of
-points in the points element. This means small datasets still render exactly,
-while large datasets automatically use the tiled path.
+With a valid cache, selected genes and all/no-gene selections use the same
+cached query path. If the finest visible cached level fits the render budget,
+the cache returns exact points for the viewport. If not, the query chooses a
+coarser sampled level.
 
-Mode selection happens only when the user changes the selection or render
+Render-path selection happens only when the user changes the selection or render
 budget and clicks `Add / Update in viewer`. Camera movement must not switch
-between exact/direct and tiled/live mode. Camera movement only updates the
-current tiled/live layer.
+between cached and direct modes. Camera movement only updates the current
+cached/live layer and may choose a different cached level for the new viewport.
 
-Once a selection enters tiled/live mode because its global count exceeds the
-render budget, zoomed-in views can still become exact when the finest visible
-tiles fit within the viewport budget. In other words, multiscale rendering does
-not mean "always sampled"; it means "sampled when needed, exact when locally
-affordable."
+Cached rendering does not mean "always sampled"; it means "sampled when needed,
+exact when locally affordable."
 
 Layer lifecycle should stay simple:
 
 ```text
 each Add / Update click creates a new napari Points layer object
 the previous Harpy-managed points render layer for the same source is retired
-any previous live tiled query controller/listener is stopped
-the new request is either exact/static or tiled/live
+any previous cached/live query controller/listener is stopped
+the new request is either cached/live or direct/static fallback
 ```
 
 This matches the current direct points adapter behavior, which replaces the old
 Harpy-managed points layer with a fresh layer object for the same source
-identity. The tiled/live implementation should keep that same lifecycle rule
+identity. The cached/live implementation should keep that same lifecycle rule
 and additionally retire any old viewport-update worker/controller.
 
 ---
@@ -818,16 +818,8 @@ features = {"gene": gene_names}
 On each `Add / Update in viewer` click, create a fresh `Points` layer for the
 new render request.
 
-In exact/direct mode, use the current direct path:
-
-```text
-_points_value_index.load_points(...)
-  -> fully materialized selected points
-  -> fresh static napari Points layer
-  -> no camera listener
-```
-
-In tiled/live mode, create one fresh live `Points` layer for the request:
+If a valid cache is available, create one fresh live `Points` layer for the
+request:
 
 ```python
 layer = viewer.add_points(
@@ -854,14 +846,27 @@ update_live_points_layer(
 )
 ```
 
+The cached query may choose the finest complete level, in which case the visible
+points are exact. If the finest visible level exceeds the render budget, the
+query chooses a coarser sampled level.
+
+If no valid cache is available, use the current direct path:
+
+```text
+_points_value_index.load_points(...)
+  -> materialized direct selection using the current render-budget behavior
+  -> fresh static napari Points layer
+  -> no camera listener
+```
+
 When the user clicks `Add / Update in viewer` again, the new request should
 create a new `Points` layer object and retire the previous Harpy-managed points
-render layer for the same source. If the previous request was tiled/live, also
+render layer for the same source. If the previous request was cached/live, also
 stop its debounced camera listener and ignore any stale query results.
 
 ### Safe In-Place Points Layer Updates
 
-The live tiled mode should keep one persistent napari `Points` layer and update
+Cached/live mode should keep one persistent napari `Points` layer and update
 its payload in place. Replacing the layer on every pan or zoom would reset
 viewer state and is unlikely to feel snappy.
 
@@ -1079,16 +1084,16 @@ An R-tree is optional. It is not necessary for the main case.
 
 Build in this order:
 
-1. Preserve the current exact/direct path for selections whose total count is
-   within the render budget.
-2. Add the render-mode decision on `Add / Update in viewer`.
+1. Preserve the current direct path as the fallback when no valid cache is
+   available or cached rendering is disabled.
+2. Add the cache-first render-mode decision on `Add / Update in viewer`.
 3. Encode genes into `gene_code`.
 4. Build one finest-level tiled cache.
 5. Write sharded Parquet with one row group per logical tile.
 6. Write `manifest.parquet`.
-7. Implement tiled viewport query.
+7. Implement cached viewport query with `render_budget` level selection.
 8. Add the guarded live `Points` layer update helper and async-slicing regression test.
-9. Add live tiled layer lifecycle management: fresh layer per request, retire
+9. Add cached/live layer lifecycle management: fresh layer per request, retire
    previous layer, stop stale viewport listeners.
 10. Add `gene_tile_counts.parquet`.
 11. Add coarser sampled levels, each built independently from the normalized
@@ -1204,11 +1209,10 @@ At runtime:
 
 ```text
 Add / Update in viewer
-  -> compute selected_total_count
-  -> if selected_total_count <= render_budget: exact/direct static layer
-  -> otherwise: tiled/live layer using the selected cache level as-is
+  -> if valid cache is available: cached/live layer using render_budget for level selection
+  -> otherwise: direct/static fallback using the current implementation
 
-tiled/live viewport update
+cached/live viewport update
   -> tile range -> manifest lookup -> choose level -> optional gene index lookup -> load tile chunks
   -> exact bbox/gene filter
   -> guarded in-place update of the live napari Points layer
