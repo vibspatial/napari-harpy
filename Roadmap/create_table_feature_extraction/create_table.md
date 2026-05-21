@@ -29,9 +29,9 @@ The widget is currently existing-table-only.
   `validate_table_annotation_coverage(...)` and
   `validate_table_region_instance_ids(...)`.
 - [src/napari_harpy/widgets/feature_extraction/controller.py](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/widgets/feature_extraction/controller.py:28)
-  stores `FeatureExtractionRequest.table_name` as a required `str`.
+  stores `FeatureExtractionRequest.table_name` as the existing table to update.
 - The controller's `can_calculate` path requires `_get_bound_table() is not None`,
-  so `table_name=None` can never reach the Harpy worker today.
+  so Harpy's create-table mode can never be represented today.
 - `_run_feature_extraction_job(...)` currently calls
   `hp.tb.add_feature_matrix(...)` with `table_name=job.request.table_name` only.
 
@@ -99,44 +99,43 @@ For a table-name collision, use wording along these lines:
 
 ## Implementation Slices
 
-### Slice 1: Add Explicit Table Target Fields
+### Slice 1: Add Explicit Table Target Mode
 
 Carry the table target explicitly through the controller request/binding state so
 the controller can distinguish an existing table from a table that does not exist
 yet.
 
-Use direct fields rather than a nested target dataclass, because the state maps
-cleanly to Harpy's API and only needs two names:
+Use one napari-harpy target name plus a mode flag. This reads more naturally in
+the widget/controller than carrying Harpy's `table_name`/`output_table_name`
+pair everywhere:
 
 ```python
 @dataclass(frozen=True)
 class FeatureExtractionRequest:
     triplets: tuple[FeatureExtractionTriplet, ...]
-    table_name: str | None
-    output_table_name: str | None = None
+    table_name: str
+    create_table: bool
     feature_names: tuple[str, ...]
     feature_key: str
     overwrite_feature_key: bool = False
 
     def __post_init__(self) -> None:
-        if self.table_name is not None and self.output_table_name is not None:
-            raise ValueError(
-                "Feature extraction request cannot target both an existing table and a new table."
-            )
-        if self.table_name is None and self.output_table_name is None:
-            raise ValueError("Feature extraction request requires either table_name or output_table_name.")
+        if not self.table_name.strip():
+            raise ValueError("Feature extraction request requires a table name.")
+        if self.create_table and self.overwrite_feature_key:
+            raise ValueError("Cannot overwrite a feature key while creating a new table.")
 
     @property
-    def is_create_table(self) -> bool:
-        return self.table_name is None and self.output_table_name is not None
+    def harpy_table_name(self) -> str | None:
+        return None if self.create_table else self.table_name
 
     @property
-    def resolved_table_name(self) -> str | None:
-        return self.table_name if self.table_name is not None else self.output_table_name
+    def harpy_output_table_name(self) -> str | None:
+        return self.table_name if self.create_table else None
 ```
 
-`FeatureExtractionBindingState` should mirror the same table fields, but remain
-able to represent incomplete UI state:
+`FeatureExtractionBindingState` should mirror the target mode, but remain able
+to represent incomplete UI state:
 
 ```python
 @dataclass(frozen=True)
@@ -144,59 +143,62 @@ class FeatureExtractionBindingState:
     sdata: SpatialData | None
     triplets: tuple[FeatureExtractionTriplet, ...]
     table_name: str | None
-    output_table_name: str | None
+    create_table: bool
     feature_names: tuple[str, ...]
     feature_key: str | None
     overwrite_feature_key: bool = False
 
     def __post_init__(self) -> None:
-        if self.table_name is not None and self.output_table_name is not None:
-            raise ValueError(
-                "Feature extraction binding cannot target both an existing table and a new table."
-            )
+        if self.table_name is not None and not self.table_name.strip():
+            raise ValueError("Feature extraction binding table name cannot be empty.")
 
     @property
-    def is_create_table(self) -> bool:
-        return self.table_name is None and self.output_table_name is not None
+    def harpy_table_name(self) -> str | None:
+        if self.table_name is None:
+            return None
+        return None if self.create_table else self.table_name
 
     @property
-    def resolved_table_name(self) -> str | None:
-        return self.table_name if self.table_name is not None else self.output_table_name
+    def harpy_output_table_name(self) -> str | None:
+        if self.table_name is None:
+            return None
+        return self.table_name if self.create_table else None
 ```
 
 Work items:
 
-- update `FeatureExtractionRequest` to carry `table_name: str | None`,
-  `output_table_name: str | None`, and small helper properties such as
-  `is_create_table` and `resolved_table_name`;
+- update `FeatureExtractionRequest` to carry `table_name: str`,
+  `create_table: bool`, and small Harpy adapter properties such as
+  `harpy_table_name` and `harpy_output_table_name`;
 - add `FeatureExtractionRequest.__post_init__` validation:
-  - reject both names being set at the same time;
-  - reject both names being `None`, because a prepared request must be runnable;
-- update `FeatureExtractionBindingState` similarly, with direct
-  `table_name`/`output_table_name` fields;
-- add `FeatureExtractionBindingState.__post_init__` validation that rejects both
-  names being set at the same time, but still allows both names to be `None`
-  because binding state can represent incomplete UI state;
-- keep `FeatureExtractionJob.table_name` returning the final resolved table name
-  for event/status use, using the request helper;
+  - reject an empty `table_name`;
+  - reject `create_table=True` with `overwrite_feature_key=True`;
+- update `FeatureExtractionBindingState` similarly, with `table_name: str | None`
+  and `create_table: bool`;
+- add `FeatureExtractionBindingState.__post_init__` validation that rejects an
+  empty non-`None` table name, but still allows `table_name=None` because binding
+  state can represent incomplete UI state;
+- keep `FeatureExtractionJob.table_name` returning `request.table_name` for
+  event/status use;
 - refactor controller table validation:
   - existing-table mode still uses `get_table(...)`;
-  - create-table mode validates the output table name and collision state without
+  - create-table mode validates the requested new table name and collision state without
     reading a table;
 - keep the old `bind(...)` and `bind_batch(...)` signatures working by adding
-  optional keyword-only `output_table_name=None`.
+  optional keyword-only `create_table=False`.
 
 Acceptance tests:
 
 - existing-table controller tests still pass unchanged;
-- binding with `table_name=None, output_table_name="new_table"` can become ready;
-- `FeatureExtractionRequest(table_name="table", output_table_name="new_table", ...)`
+- binding with `table_name="new_table", create_table=True` can become ready;
+- `FeatureExtractionRequest(table_name="", create_table=True, ...)` raises a
+  `ValueError`;
+- `FeatureExtractionRequest(table_name="new_table", create_table=True, overwrite_feature_key=True, ...)`
   raises a `ValueError`;
-- `FeatureExtractionRequest(table_name=None, output_table_name=None, ...)` raises
-  a `ValueError`;
-- `FeatureExtractionBindingState(table_name=None, output_table_name=None, ...)`
-  remains valid for incomplete UI state;
-- create-table mode rejects an empty, invalid, or colliding output name;
+- `FeatureExtractionBindingState(table_name=None, create_table=False, ...)` and
+  `FeatureExtractionBindingState(table_name=None, create_table=True, ...)`
+  remain valid for incomplete UI state;
+- create-table mode rejects an empty, invalid, or colliding new table name;
 - create-table mode rejects `overwrite_feature_key=True`;
 - existing-table mode still rejects missing/nonexistent tables.
 
@@ -208,17 +210,17 @@ Harpy.
 Work items:
 
 - update `_run_feature_extraction_job(...)` to pass:
-  - `table_name=job.request.table_name`;
-  - `output_table_name=job.request.output_table_name`;
+  - `table_name=job.request.harpy_table_name`;
+  - `output_table_name=job.request.harpy_output_table_name`;
   - `overwrite_output_table=False`;
-- make `FeatureExtractionResult.table_name` resolve to the existing table name or
-  the new output table name;
+- keep `FeatureExtractionResult.table_name` as the napari-harpy target table name,
+  i.e. `job.request.table_name` in both modes;
 - keep `change_kind="created"` for create-table jobs;
 - keep `change_kind="updated"` only for existing-table feature-key replacement.
 
 Acceptance tests:
 
-- fake-Harpy test captures `table_name=None` and
+- fake-Harpy test for `create_table=True` captures `table_name=None` and
   `output_table_name="new_table"`;
 - fake-Harpy test captures `overwrite_output_table=False`;
 - result/event table name is `"new_table"`;
@@ -246,7 +248,8 @@ Work items:
   - `_selected_table_mode: Literal["existing", "create"] | None`;
   - `_new_table_name: str | None`;
 - keep `selected_table_name` meaning "selected existing table name";
-- add a new property such as `selected_output_table_name` for create mode;
+- add a property such as `selected_new_table_name` that returns the trimmed new
+  table name in create mode;
 - update `_refresh_table_names()` to populate eligible existing tables plus the
   sentinel when the staged labels batch is complete, with `Create table...` as
   the last combo item;
@@ -266,7 +269,7 @@ Acceptance tests:
 - switching away from create mode hides the new-name field without losing the
   typed value;
 - `selected_table_name` remains `None` in create mode, while
-  `selected_output_table_name` returns the trimmed new table name.
+  `selected_new_table_name` returns the trimmed new table name.
 
 ### Slice 4: Bind Create-Table Widget State Into The Controller
 
@@ -279,8 +282,8 @@ Work items:
 - add `_validate_create_table_target(...)` for the new table name;
 - update `_bind_current_selection()` and `_expected_controller_binding_state()`
   to pass either:
-  - existing mode: `table_name=<existing>, output_table_name=None`;
-  - create mode: `table_name=None, output_table_name=<new>`;
+  - existing mode: `table_name=<existing>, create_table=False`;
+  - create mode: `table_name=<new>, create_table=True`;
 - update `_selection_status_table_blocker()` and
   `_get_calculate_button_blocking_reason()` so create mode is blocked only by an
   invalid or missing new table name, not by the absence of an existing table;
@@ -305,12 +308,12 @@ Acceptance tests:
 Existing feature-key overwrite checks currently assume an existing selected
 table. Keep that path isolated from create-table mode.
 
-This matters for the common "clicked Calculate twice" flow. The first click in
-create-table mode creates `output_table_name` and writes the feature matrix. The
-success path must then promote that new table into existing-table mode. The
+This matters for the common "clicked Calculate twice" flow. The first click with
+`create_table=True` creates `request.table_name` and writes the feature matrix.
+The success path must then promote that new table into existing-table mode. The
 second click should see `sdata.tables[new_table].obsm[feature_key]`, show the
 existing feature-key overwrite confirmation, and call Harpy with
-`table_name="new_table"` plus `overwrite_feature_key=True`.
+`table_name="new_table"`, `create_table=False`, and `overwrite_feature_key=True`.
 
 Work items:
 
@@ -372,7 +375,7 @@ Work items:
 - hide the `New table name` field once the new table is selected as an existing
   table;
 - rebind the controller after that promotion with `table_name=<new_table>` and
-  `output_table_name=None`;
+  `create_table=False`;
 - emit the existing `FeatureMatrixWrittenEvent` with the new table name so dirty
   state and downstream widgets see the table update;
 - update the object-classification widget listener so any
@@ -391,7 +394,7 @@ Acceptance tests:
 - after a fake successful create-table result, `_refresh_table_names()` selects
   the new table;
 - after that refresh, `selected_table_name == "new_table"` and
-  `selected_output_table_name is None`;
+  `selected_new_table_name is None`;
 - `HarpyAppState.is_table_dirty(sdata, "new_table")` becomes `True`;
 - object-classification table choices can discover the new table in the same
   session when its selected labels element matches;
