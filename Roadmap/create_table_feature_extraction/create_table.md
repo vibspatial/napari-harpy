@@ -207,6 +207,25 @@ Acceptance tests:
 Once the controller can prepare a create-table job, pass the new fields into
 Harpy.
 
+The worker should call Harpy exactly through the request adapter properties:
+
+```python
+hp.tb.add_feature_matrix(
+    sdata=job.sdata,
+    labels_name=_resolve_harpy_labels_name_parameter(triplets),
+    image_name=_resolve_harpy_image_name_parameter(triplets, job.request.feature_names),
+    table_name=job.request.harpy_table_name,
+    output_table_name=job.request.harpy_output_table_name,
+    feature_key=job.request.feature_key,
+    features=list(job.request.feature_names),
+    channels=_resolve_harpy_channel_parameter(triplets, job.request.feature_names),
+    feature_matrices_key=_FEATURE_MATRICES_KEY,
+    overwrite_output_table=False,
+    overwrite_feature_key=job.request.overwrite_feature_key,
+    to_coordinate_system=_resolve_harpy_coordinate_system_parameter(triplets),
+)
+```
+
 Work items:
 
 - update `_run_feature_extraction_job(...)` to pass:
@@ -215,7 +234,10 @@ Work items:
   - `overwrite_output_table=False`;
 - keep `FeatureExtractionResult.table_name` as the napari-harpy target table name,
   i.e. `job.request.table_name` in both modes;
-- keep `change_kind="created"` for create-table jobs;
+- keep `change_kind="created"` for any successful write that creates a new
+  feature matrix key. In create-table mode this means "created table plus
+  feature matrix"; in existing-table mode it means "created feature matrix in an
+  existing table";
 - keep `change_kind="updated"` only for existing-table feature-key replacement.
 
 Acceptance tests:
@@ -224,6 +246,11 @@ Acceptance tests:
   `output_table_name="new_table"`;
 - fake-Harpy test captures `overwrite_output_table=False`;
 - result/event table name is `"new_table"`;
+- create-table result emits `change_kind="created"` using the same semantics as a
+  newly created feature matrix key;
+- existing-table result emits `change_kind="created"` when the feature key did
+  not previously exist and `change_kind="updated"` when the feature key is
+  replaced;
 - existing-table worker tests still capture `output_table_name is None` or omit it
   according to the chosen implementation.
 
