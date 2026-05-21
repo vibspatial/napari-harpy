@@ -1082,37 +1082,136 @@ An R-tree is optional. It is not necessary for the main case.
 
 ## Implementation Plan
 
-Build in this order:
+### Slice 1: Cache Contracts
 
-1. Preserve the current direct path as the fallback when no valid cache is
-   available or cached rendering is disabled.
-2. Add the cache-first render-mode decision on `Add / Update in viewer`.
-3. Encode genes into `gene_code`.
-4. Build one finest-level tiled cache.
-5. Write sharded Parquet with one row group per logical tile.
-6. Write `manifest.parquet`.
-7. Implement cached viewport query with `render_budget` level selection.
-8. Add the guarded live `Points` layer update helper and async-slicing regression test.
-9. Add cached/live layer lifecycle management: fresh layer per request, retire
-   previous layer, stop stale viewport listeners.
-10. Add `gene_tile_counts.parquet`.
-11. Add coarser sampled levels, each built independently from the normalized
-    source as a self-contained tile set.
+Define the cache metadata, cache validity checks, and public query interfaces.
+This should include:
 
----
+```text
+cache_metadata.json
+cache identity / invalidation rules
+ViewQuery
+PointTileSource
+manifest schema
+gene dictionary schema
+tile row schema
+```
 
-## Scale and Performance Plan
+At the end of this slice, the code should be able to answer whether a valid
+cache exists for a points element, coordinate system, coordinate transform, and
+category column. No viewer behavior needs to change yet.
 
-For large datasets and interactive use:
+### Slice 2: Finest Exact Cache
 
-1. Use multiple levels.
-2. Store tile data in shard files.
-3. Use one Parquet row group per tile.
-4. Keep `manifest.parquet` and `gene_tile_counts.parquet` memory-mapped or loaded in memory.
-5. Use async loading.
-6. Use an LRU cache for recently viewed tiles.
-7. Debounce napari camera events.
-8. Ignore stale query results.
+Build the finest complete level using the final storage layout:
+
+```text
+sharded Parquet
+one row group per logical tile
+manifest.parquet
+genes.parquet
+rows sorted by gene_code, sample_rank
+```
+
+This gives an exact cached representation and validates the storage/query shape
+before adding sampled levels.
+
+### Slice 3: Cached Exact Query
+
+Implement viewport queries against the finest complete level:
+
+```text
+bbox + selected genes
+  -> tile ids
+  -> manifest lookup
+  -> read row groups
+  -> bbox filter
+  -> gene filter
+  -> napari-ready coords/features
+```
+
+At the end of this slice, a valid cache can render exact visible points from
+the finest level.
+
+### Slice 4: Cache-First Viewer Integration
+
+Change `Add / Update in viewer` behavior to:
+
+```text
+valid cache available
+  -> cached/live layer
+
+no valid cache, or cached rendering disabled
+  -> current direct fallback
+```
+
+Every click should still create a fresh Harpy-managed `Points` layer and retire
+the previous one for the same source.
+
+### Slice 5: Live Layer Updates
+
+Add the guarded in-place `Points` layer update helper and make cached rendering
+use one persistent live layer per request.
+
+This slice should include:
+
+```text
+debounced viewport updates
+safe layer.data / layer.features mutation
+napari async-slicing regression test
+stale query result protection
+```
+
+### Slice 6: Gene Index
+
+Add:
+
+```text
+gene_tile_counts.parquet
+```
+
+Use it to:
+
+```text
+skip irrelevant tiles
+estimate visible selected-gene counts
+make gene switching fast
+```
+
+This is where `gene_code, sample_rank` row ordering starts paying off.
+
+### Slice 7: Coarser Sampled Levels
+
+Add sampled levels built independently from the normalized source:
+
+```text
+sample_rank = stable_hash(point_id)
+rank within tile by sample_rank
+keep rank_in_tile <= level.max_points_per_tile
+```
+
+Then `render_budget` can select the finest acceptable cached level.
+
+### Slice 8: Performance Polish
+
+Add the interaction and IO pieces needed for large datasets:
+
+```text
+tile payload LRU cache
+async row-group reads
+camera debounce
+ignore stale queries
+basic timing/logging
+```
+
+Benchmark at least:
+
+```text
+all genes overview
+single gene overview
+pan/zoom at multiple zoom levels
+large selection switching
+```
 
 ---
 
