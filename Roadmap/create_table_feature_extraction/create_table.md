@@ -84,6 +84,10 @@ Important Harpy constraints:
   the status card should be the primary user-facing explanation.
 - Do not expose table overwrite in the first implementation. Add it later as an
   explicit confirmation path if needed.
+- Treat `Create table...` as a one-shot mode. After successful creation, the UI
+  should switch to the newly created table as a normal existing-table selection.
+  A second click on `Calculate` should therefore use the existing-table
+  feature-key overwrite prompt instead of trying to create the table again.
 
 For a table-name collision, use wording along these lines:
 
@@ -232,6 +236,13 @@ Acceptance tests:
 Existing feature-key overwrite checks currently assume an existing selected
 table. Keep that path isolated from create-table mode.
 
+This matters for the common "clicked Calculate twice" flow. The first click in
+create-table mode creates `output_table_name` and writes the feature matrix. The
+success path must then promote that new table into existing-table mode. The
+second click should see `sdata.tables[new_table].obsm[feature_key]`, show the
+existing feature-key overwrite confirmation, and call Harpy with
+`table_name="new_table"` plus `overwrite_feature_key=True`.
+
 Work items:
 
 - in `_calculate_feature_matrix()`, only inspect `table.obsm` and prompt for
@@ -245,6 +256,9 @@ Acceptance tests:
 
 - create-table mode does not call `_prompt_overwrite_feature_key_confirmation`;
 - existing-table mode still prompts when `.obsm[feature_key]` already exists;
+- after a successful create-table run, clicking `Calculate` again follows the
+  existing-table overwrite prompt path rather than the create-table collision
+  path;
 - a new table name colliding with any existing `sdata.tables` key keeps
   Calculate disabled with a clear status-card message and matching tooltip.
 
@@ -253,13 +267,43 @@ Acceptance tests:
 After Harpy creates the table, the widget should move from create mode to the new
 authoritative existing table.
 
+Use the controller's local table-refresh hook for this, not the shared
+`feature_matrix_written` app-state event. That hook already exists for local
+table-context refreshes, but today it has no payload:
+
+```python
+on_table_state_changed: Callable[[], None] | None
+```
+
+For create-table mode, change it to carry the completed
+`FeatureExtractionResult`:
+
+```python
+on_table_state_changed: Callable[[FeatureExtractionResult], None] | None
+```
+
+The controller should call this before emitting the shared
+`FeatureMatrixWrittenEvent`, so the owning Feature Extraction widget can refresh
+its table choices, prefer the newly created table, and rebind before downstream
+widgets consume the shared semantic event.
+
 Work items:
 
+- update `FeatureExtractionController._notify_table_state_changed(...)` to accept
+  and forward `FeatureExtractionResult`;
+- update the existing controller comment there: this is no longer only a future
+  "may create or relink a table" hook; it is the mechanism that promotes a
+  successful create-table run into normal existing-table mode;
+- update `FeatureExtractionWidget._on_controller_table_state_changed(...)` to
+  accept the result and treat `result.table_name` as the one-shot preferred table
+  for the next refresh;
 - make the success refresh prefer `event.table_name` or the job result table name
   when repopulating table options;
 - after creation, select the newly created table in the `Table` combo;
 - hide the `New table name` field once the new table is selected as an existing
   table;
+- rebind the controller after that promotion with `table_name=<new_table>` and
+  `output_table_name=None`;
 - emit the existing `FeatureMatrixWrittenEvent` with the new table name so dirty
   state and downstream widgets see the table update;
 - consider updating the object-classification widget listener so any
@@ -270,6 +314,8 @@ Acceptance tests:
 
 - after a fake successful create-table result, `_refresh_table_names()` selects
   the new table;
+- after that refresh, `selected_table_name == "new_table"` and
+  `selected_output_table_name is None`;
 - `HarpyAppState.is_table_dirty(sdata, "new_table")` becomes `True`;
 - object-classification table choices can discover the new table in the same
   session when its selected labels element matches.
