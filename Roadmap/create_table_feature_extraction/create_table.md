@@ -58,7 +58,6 @@ Important Harpy constraints:
 - `output_table_name` is required when `table_name is None`;
 - `output_table_name` is not allowed when updating an existing table;
 - `overwrite_feature_key=True` is only valid for existing-table updates;
-- `overwrite_output_table=True` is only valid for new-table creation;
 - if `output_table_name` already exists and `overwrite_output_table=False`,
   Harpy raises a collision error.
 
@@ -80,13 +79,11 @@ Important Harpy constraints:
   - non-empty after trimming;
   - valid SpatialData element name, using the same naming helper as the feature
     matrix key;
-  - no collision with any existing `sdata.tables` key for the MVP.
+  - no collision with any existing `sdata.tables` key.
 - Report create-table validation failures through the existing Feature
   Extraction status-card pattern. The calculate button tooltip should mirror the
   same blocking reason, and the `New table name` field can receive a tooltip, but
   the status card should be the primary user-facing explanation.
-- Do not expose table overwrite in the first implementation. Add it later as an
-  explicit confirmation path if needed.
 - Do not support overwriting existing tables for this feature. A table-name
   collision remains a hard validation block with a clear status-card message.
   Supporting table overwrites would require a broader design change around how
@@ -102,45 +99,103 @@ For a table-name collision, use wording along these lines:
 
 ## Implementation Slices
 
-### Slice 1: Add An Explicit Table Target Model
+### Slice 1: Add Explicit Table Target Fields
 
-Introduce a small target model so the controller can distinguish an existing
-table from a table that does not exist yet.
+Carry the table target explicitly through the controller request/binding state so
+the controller can distinguish an existing table from a table that does not exist
+yet.
 
-Possible shape:
+Use direct fields rather than a nested target dataclass, because the state maps
+cleanly to Harpy's API and only needs two names:
 
 ```python
 @dataclass(frozen=True)
-class FeatureExtractionTableTarget:
+class FeatureExtractionRequest:
+    triplets: tuple[FeatureExtractionTriplet, ...]
     table_name: str | None
     output_table_name: str | None = None
-    overwrite_output_table: bool = False
+    feature_names: tuple[str, ...]
+    feature_key: str
+    overwrite_feature_key: bool = False
+
+    def __post_init__(self) -> None:
+        if self.table_name is not None and self.output_table_name is not None:
+            raise ValueError(
+                "Feature extraction request cannot target both an existing table and a new table."
+            )
+        if self.table_name is None and self.output_table_name is None:
+            raise ValueError("Feature extraction request requires either table_name or output_table_name.")
 
     @property
     def is_create_table(self) -> bool:
         return self.table_name is None and self.output_table_name is not None
+
+    @property
+    def resolved_table_name(self) -> str | None:
+        return self.table_name if self.table_name is not None else self.output_table_name
+```
+
+`FeatureExtractionBindingState` should mirror the same table fields, but remain
+able to represent incomplete UI state:
+
+```python
+@dataclass(frozen=True)
+class FeatureExtractionBindingState:
+    sdata: SpatialData | None
+    triplets: tuple[FeatureExtractionTriplet, ...]
+    table_name: str | None
+    output_table_name: str | None
+    feature_names: tuple[str, ...]
+    feature_key: str | None
+    overwrite_feature_key: bool = False
+
+    def __post_init__(self) -> None:
+        if self.table_name is not None and self.output_table_name is not None:
+            raise ValueError(
+                "Feature extraction binding cannot target both an existing table and a new table."
+            )
+
+    @property
+    def is_create_table(self) -> bool:
+        return self.table_name is None and self.output_table_name is not None
+
+    @property
+    def resolved_table_name(self) -> str | None:
+        return self.table_name if self.table_name is not None else self.output_table_name
 ```
 
 Work items:
 
 - update `FeatureExtractionRequest` to carry `table_name: str | None`,
-  `output_table_name: str | None`, and `overwrite_output_table: bool`;
-- update `FeatureExtractionBindingState` similarly, or replace the raw table
-  fields with `FeatureExtractionTableTarget`;
-- keep `FeatureExtractionJob.table_name` returning the final target table name
-  for event/status use;
+  `output_table_name: str | None`, and small helper properties such as
+  `is_create_table` and `resolved_table_name`;
+- add `FeatureExtractionRequest.__post_init__` validation:
+  - reject both names being set at the same time;
+  - reject both names being `None`, because a prepared request must be runnable;
+- update `FeatureExtractionBindingState` similarly, with direct
+  `table_name`/`output_table_name` fields;
+- add `FeatureExtractionBindingState.__post_init__` validation that rejects both
+  names being set at the same time, but still allows both names to be `None`
+  because binding state can represent incomplete UI state;
+- keep `FeatureExtractionJob.table_name` returning the final resolved table name
+  for event/status use, using the request helper;
 - refactor controller table validation:
   - existing-table mode still uses `get_table(...)`;
   - create-table mode validates the output table name and collision state without
     reading a table;
 - keep the old `bind(...)` and `bind_batch(...)` signatures working by adding
-  optional keyword-only `output_table_name=None` and
-  `overwrite_output_table=False`.
+  optional keyword-only `output_table_name=None`.
 
 Acceptance tests:
 
 - existing-table controller tests still pass unchanged;
 - binding with `table_name=None, output_table_name="new_table"` can become ready;
+- `FeatureExtractionRequest(table_name="table", output_table_name="new_table", ...)`
+  raises a `ValueError`;
+- `FeatureExtractionRequest(table_name=None, output_table_name=None, ...)` raises
+  a `ValueError`;
+- `FeatureExtractionBindingState(table_name=None, output_table_name=None, ...)`
+  remains valid for incomplete UI state;
 - create-table mode rejects an empty, invalid, or colliding output name;
 - create-table mode rejects `overwrite_feature_key=True`;
 - existing-table mode still rejects missing/nonexistent tables.
@@ -155,7 +210,7 @@ Work items:
 - update `_run_feature_extraction_job(...)` to pass:
   - `table_name=job.request.table_name`;
   - `output_table_name=job.request.output_table_name`;
-  - `overwrite_output_table=job.request.overwrite_output_table`;
+  - `overwrite_output_table=False`;
 - make `FeatureExtractionResult.table_name` resolve to the existing table name or
   the new output table name;
 - keep `change_kind="created"` for create-table jobs;
@@ -165,6 +220,7 @@ Acceptance tests:
 
 - fake-Harpy test captures `table_name=None` and
   `output_table_name="new_table"`;
+- fake-Harpy test captures `overwrite_output_table=False`;
 - result/event table name is `"new_table"`;
 - existing-table worker tests still capture `output_table_name is None` or omit it
   according to the chosen implementation.
@@ -261,7 +317,7 @@ Work items:
 - in `_calculate_feature_matrix()`, only inspect `table.obsm` and prompt for
   feature-key overwrite in existing-table mode;
 - in create-table mode, never send `overwrite_feature_key=True`;
-- block table-name collisions before calculation for MVP;
+- block table-name collisions before calculation;
 - do not add an `overwrite_output_table=True` path; table collisions are a hard
   block.
 

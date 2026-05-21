@@ -55,7 +55,19 @@ class FeatureExtractionRequest:
 
 @dataclass(frozen=True)
 class FeatureExtractionBindingState:
-    """Read-only snapshot of the controller's currently bound widget state."""
+    """Read-only snapshot of the controller's currently bound widget state.
+
+    The Feature Extraction widget keeps its own staged UI state while the
+    controller stores the state that would be used for the next calculation.
+    This value object lets the widget compare those two views directly before it
+    enables calculation. If the expected widget state differs from
+    `controller.binding_state`, the UI treats the request as still
+    synchronizing and keeps Calculate disabled.
+
+    Unlike `FeatureExtractionRequest`, this binding state may represent an
+    incomplete form. For example, `table_name` can be `None` while the user has
+    not selected a valid annotation table yet.
+    """
 
     sdata: SpatialData | None
     triplets: tuple[FeatureExtractionTriplet, ...]
