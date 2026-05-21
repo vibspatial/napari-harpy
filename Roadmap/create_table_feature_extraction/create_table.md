@@ -306,9 +306,16 @@ Work items:
   `output_table_name=None`;
 - emit the existing `FeatureMatrixWrittenEvent` with the new table name so dirty
   state and downstream widgets see the table update;
-- consider updating the object-classification widget listener so any
+- update the object-classification widget listener so any
   `feature_matrix_written` event for the same `sdata` refreshes table names, not
-  only events for the currently selected table.
+  only events for the currently selected table;
+- preserve the object-classification widget's selected table during that refresh
+  whenever it is still valid. If the classifier already has a selected table,
+  creating a new table elsewhere must not silently switch it to the first table
+  or to the newly created table;
+- only consider auto-selecting the newly created table in object classification
+  when no table was selected before the refresh and the new table annotates the
+  currently selected labels element.
 
 Acceptance tests:
 
@@ -318,7 +325,11 @@ Acceptance tests:
   `selected_output_table_name is None`;
 - `HarpyAppState.is_table_dirty(sdata, "new_table")` becomes `True`;
 - object-classification table choices can discover the new table in the same
-  session when its selected labels element matches.
+  session when its selected labels element matches;
+- if object classification already had `selected_table_name == "old_table"` and
+  `old_table` is still valid, it remains selected after the create-table event;
+- object classification does not silently fall back to the first table or switch
+  to `new_table` when a different valid table was already selected.
 
 ### Slice 7: Polish And Documentation
 
