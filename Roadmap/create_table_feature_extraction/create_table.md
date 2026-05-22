@@ -446,13 +446,15 @@ Terminology:
 - `selected_table_name` should remain `None` in create mode, because it means
   "selected existing table" at the widget API level.
 
-Consider renaming `_table_binding_error` to `_table_target_error` in this slice.
-The old name was accurate when every target was an existing table; after this
-slice, the same stored error can describe either an invalid existing table
-binding or an invalid create-table target name.
+Rename `_table_binding_error` to `_table_target_error` in this slice. The old
+name was accurate when every target was an existing table; after this slice, the
+same stored error can describe either an invalid existing table binding or an
+invalid create-table target name.
 
 Work items:
 
+- rename widget state and call sites from `_table_binding_error` to
+  `_table_target_error`;
 - keep `_validate_selected_table_binding(...)` existing-table-only:
   - return `None` in create mode;
   - continue using `validate_table_annotation_coverage(...)` and
