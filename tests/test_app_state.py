@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from types import SimpleNamespace
 
+import pytest
+
 import napari_harpy._app_state as app_state_module
 import napari_harpy._interactive as interactive_module
 import napari_harpy.widgets.object_classification.widget as object_widget_module
@@ -395,6 +397,75 @@ def test_interactive_headless_sets_sdata_without_running_event_loop(monkeypatch,
         ("napari-harpy", "Feature Extraction", True),
         ("napari-harpy", "Object Classification", True),
     ]
+
+
+def test_interactive_can_dock_a_single_widget(monkeypatch, sdata_blobs) -> None:
+    viewer = DummyViewer()
+    run_calls: list[str] = []
+
+    monkeypatch.setattr(interactive_module.napari, "run", lambda: run_calls.append("run"))
+
+    interactive = interactive_module.Interactive(
+        sdata_blobs,
+        viewer=viewer,
+        headless=True,
+        widgets="viewer",
+    )
+
+    assert interactive.app_state.sdata is sdata_blobs
+    assert run_calls == []
+    assert viewer.window.calls == [("napari-harpy", "Viewer", True)]
+
+
+def test_interactive_can_dock_a_widget_subset(monkeypatch, sdata_blobs) -> None:
+    viewer = DummyViewer()
+
+    monkeypatch.setattr(interactive_module.napari, "run", lambda: None)
+
+    interactive_module.Interactive(
+        sdata_blobs,
+        viewer=viewer,
+        headless=True,
+        widgets=("feature_extraction", "object_classification", "feature_extraction"),
+    )
+
+    assert viewer.window.calls == [
+        ("napari-harpy", "Feature Extraction", True),
+        ("napari-harpy", "Object Classification", True),
+    ]
+
+
+def test_interactive_can_load_sdata_without_docking_widgets(monkeypatch, sdata_blobs) -> None:
+    viewer = DummyViewer()
+
+    monkeypatch.setattr(interactive_module.napari, "run", lambda: None)
+
+    interactive = interactive_module.Interactive(
+        sdata_blobs,
+        viewer=viewer,
+        headless=True,
+        widgets=(),
+    )
+
+    assert interactive.app_state.sdata is sdata_blobs
+    assert viewer.window.calls == []
+
+
+def test_interactive_rejects_unknown_widget_selection(monkeypatch, sdata_blobs) -> None:
+    viewer = DummyViewer()
+
+    monkeypatch.setattr(interactive_module.napari, "run", lambda: None)
+
+    with pytest.raises(ValueError, match="Unknown Harpy widget selection 'features'"):
+        interactive_module.Interactive(
+            sdata_blobs,
+            viewer=viewer,
+            headless=True,
+            widgets="features",  # type: ignore[arg-type]
+        )
+
+    assert get_or_create_app_state(viewer).sdata is None
+    assert viewer.window.calls == []
 
 
 def test_interactive_auto_runs_and_reuses_existing_plugin_widgets(monkeypatch, sdata_blobs) -> None:
