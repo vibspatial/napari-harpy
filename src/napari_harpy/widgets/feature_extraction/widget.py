@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from html import escape
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from qtpy.QtCore import QSignalBlocker, Qt
 from qtpy.QtGui import QPixmap
@@ -117,10 +119,46 @@ _MORPHOLOGY_FEATURES = (
     "centroid_dif",
 )
 _DEFAULT_FEATURE_MATRIX_KEY = "features"
+_DEFAULT_NEW_TABLE_NAME = "features_table"
+_CREATE_TABLE_OPTION_TEXT = "Create table..."
 _MAX_VISIBLE_EXTRACTION_CHANNELS = 5
 _FEATURE_GROUPS_TOP_SPACING = 12
 _CHOOSE_SEGMENTATION_TEXT = "Choose a labels element"
 ElementIdentity = tuple[int, str]
+
+
+class _FeatureExtractionTableComboMode(Enum):
+    EXISTING = "existing"
+    CREATE_TABLE = "create_table"
+
+
+@dataclass(frozen=True)
+class _FeatureExtractionTableComboData:
+    mode: _FeatureExtractionTableComboMode
+    table_name: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.mode, _FeatureExtractionTableComboMode):
+            raise ValueError("Unknown table combo mode.")
+
+        if self.mode is _FeatureExtractionTableComboMode.EXISTING:
+            if self.table_name is None or not self.table_name.strip():
+                raise ValueError("Existing table combo data requires a table name.")
+            return
+
+        if (
+            self.mode is _FeatureExtractionTableComboMode.CREATE_TABLE
+            and self.table_name is not None
+        ):
+            raise ValueError("Create-table combo data cannot carry a table name.")
+
+    @classmethod
+    def existing(cls, table_name: str) -> _FeatureExtractionTableComboData:
+        return cls(_FeatureExtractionTableComboMode.EXISTING, table_name)
+
+    @classmethod
+    def create_table(cls) -> _FeatureExtractionTableComboData:
+        return cls(_FeatureExtractionTableComboMode.CREATE_TABLE)
 
 
 @dataclass(frozen=True)
@@ -321,8 +359,12 @@ class FeatureExtractionWidget(QWidget):
         # Persistent per-coordinate-system memory of the last explicit user
         # card selection while the current SpatialData object remains loaded.
         self._remembered_card_selection_by_coordinate_system: dict[str, _FeatureExtractionCardSelection] = {}
-        self._table_names: list[str] = []
+        # Existing real tables that annotate every currently staged labels element.
+        self._eligible_existing_table_names: list[str] = []
+        self._create_table = False
         self._selected_table_name: str | None = None
+        # Proposed create-table target name.
+        self._new_table_name: str | None = None
         self._coordinate_systems: list[str] = []
         self._checked_coordinate_systems: list[str] = []
         self._selected_coordinate_system: str | None = None
@@ -443,6 +485,17 @@ class FeatureExtractionWidget(QWidget):
         self.table_combo.currentIndexChanged.connect(self._on_table_changed)
         self.table_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
 
+        self.new_table_name_label = self._create_form_label("New table name")
+        self.new_table_name_label.setObjectName("feature_extraction_new_table_name_label")
+        self.new_table_name_label.hide()
+
+        self.new_table_name_line_edit = QLineEdit()
+        self.new_table_name_line_edit.setObjectName("feature_extraction_new_table_name_line_edit")
+        self.new_table_name_line_edit.setPlaceholderText(_DEFAULT_NEW_TABLE_NAME)
+        self.new_table_name_line_edit.textChanged.connect(self._on_new_table_name_changed)
+        self.new_table_name_line_edit.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
+        self.new_table_name_line_edit.hide()
+
         self.coordinate_system_combo = CompactComboBox()
         self.coordinate_system_combo.setObjectName("feature_extraction_coordinate_system_combo")
         self.coordinate_system_combo.currentIndexChanged.connect(self._on_coordinate_system_changed)
@@ -513,6 +566,7 @@ class FeatureExtractionWidget(QWidget):
         )
         shared_controls_layout.addRow(self.channel_selection_label, self.channel_selection_container)
         shared_controls_layout.addRow(self._create_form_label("Table"), self.table_combo)
+        shared_controls_layout.addRow(self.new_table_name_label, self.new_table_name_line_edit)
         shared_controls_layout.addRow(self._create_form_label("Feature matrix key"), self.output_key_line_edit)
 
         calculate_action_layout.addWidget(self.calculate_button, 1)
@@ -575,6 +629,27 @@ class FeatureExtractionWidget(QWidget):
         return self._selected_table_name
 
     @property
+    def selected_table_mode(self) -> Literal["existing", "create"] | None:
+        """Return the current table target mode."""
+        if self._create_table:
+            return "create"
+        if self._selected_table_name is not None:
+            return "existing"
+        return None
+
+    @property
+    def selected_new_table_name(self) -> str | None:
+        """Return the trimmed create-table target name, if create mode is selected."""
+        if not self._create_table:
+            return None
+
+        value = self._new_table_name
+        if value is None:
+            value = self.new_table_name_line_edit.text()
+        value = value.strip()
+        return value or None
+
+    @property
     def selected_coordinate_system(self) -> str | None:
         """Return the currently selected coordinate system."""
         return self._selected_coordinate_system
@@ -634,6 +709,7 @@ class FeatureExtractionWidget(QWidget):
             self.table_combo.clear()
             self.table_combo.setEnabled(False)
             self.table_combo.setCurrentIndex(-1)
+        self._set_create_table_name_controls_visible(False)
 
         with QSignalBlocker(self.coordinate_system_combo):
             self.coordinate_system_combo.clear()
@@ -666,8 +742,14 @@ class FeatureExtractionWidget(QWidget):
         )
         self._remembered_card_selection_by_coordinate_system = {}
         self._clear_batch_channel_options()
-        self._table_names = []
+        self._eligible_existing_table_names = []
+        self._create_table = False
         self._selected_table_name = None
+        self._new_table_name = None
+        if hasattr(self, "new_table_name_line_edit"):
+            with QSignalBlocker(self.new_table_name_line_edit):
+                self.new_table_name_line_edit.clear()
+            self._set_create_table_name_controls_visible(False)
         self._coordinate_systems = []
         self._checked_coordinate_systems = []
         self._selected_coordinate_system = None
@@ -1670,44 +1752,117 @@ class FeatureExtractionWidget(QWidget):
 
         return sorted(set.intersection(*table_names_by_label))
 
+    def _can_choose_table_target(self, staged_batch_state: _FeatureExtractionStagedBatchState) -> bool:
+        return (
+            self.selected_spatialdata is not None
+            and bool(staged_batch_state.checked_coordinate_systems)
+            and bool(staged_batch_state.labels_names)
+            and len(staged_batch_state.labels_names) == len(staged_batch_state.checked_coordinate_systems)
+        )
+
     def _refresh_table_names(self) -> None:
         previous_table_name = self.selected_table_name
+        previous_create_table = self._create_table
         staged_batch_state = self._resolve_staged_batch_state()
+        can_choose_table_target = self._can_choose_table_target(staged_batch_state)
 
-        if (
-            self.selected_spatialdata is None
-            or not staged_batch_state.checked_coordinate_systems
-            or len(staged_batch_state.labels_names) != len(staged_batch_state.checked_coordinate_systems)
-        ):
-            self._table_names = []
+        if not can_choose_table_target:
+            self._eligible_existing_table_names = []
         else:
-            self._table_names = self._eligible_table_names_for_label_batch(staged_batch_state.labels_names)
+            self._eligible_existing_table_names = self._eligible_table_names_for_label_batch(
+                staged_batch_state.labels_names
+            )
 
         with QSignalBlocker(self.table_combo):
             self.table_combo.clear()
-            for table_name in self._table_names:
-                self.table_combo.addItem(table_name, table_name)
+            for table_name in self._eligible_existing_table_names:
+                self.table_combo.addItem(
+                    table_name,
+                    _FeatureExtractionTableComboData.existing(table_name),
+                )
 
-            has_tables = bool(self._table_names)
-            self.table_combo.setEnabled(has_tables)
+            if can_choose_table_target:
+                self.table_combo.addItem(
+                    _CREATE_TABLE_OPTION_TEXT,
+                    _FeatureExtractionTableComboData.create_table(),
+                )
 
-            next_index = -1 if previous_table_name is None else self.table_combo.findData(previous_table_name)
-            if has_tables:
-                self.table_combo.setCurrentIndex(0 if next_index < 0 else next_index)
-            else:
-                self.table_combo.setCurrentIndex(-1)
+            has_table_targets = self.table_combo.count() > 0
+            self.table_combo.setEnabled(has_table_targets)
 
-        self._set_selected_table_name(self.table_combo.currentIndex())
+            next_index = -1
+            if previous_create_table:
+                next_index = self._find_table_combo_target_index(_FeatureExtractionTableComboData.create_table())
+            elif previous_table_name is not None:
+                next_index = self._find_table_combo_target_index(
+                    _FeatureExtractionTableComboData.existing(previous_table_name)
+                )
+
+            if next_index < 0 and self._eligible_existing_table_names:
+                next_index = self._find_table_combo_target_index(
+                    _FeatureExtractionTableComboData.existing(self._eligible_existing_table_names[0])
+                )
+            if next_index < 0 and can_choose_table_target:
+                next_index = self._find_table_combo_target_index(_FeatureExtractionTableComboData.create_table())
+
+            self.table_combo.setCurrentIndex(next_index)
+
+        self._set_selected_table_target_from_combo(self.table_combo.currentIndex())
 
     def _on_table_changed(self, index: int) -> None:
-        self._set_selected_table_name(index)
+        self._set_selected_table_target_from_combo(index)
         self._bind_current_selection()
 
-    def _set_selected_table_name(self, index: int) -> None:
-        if index < 0 or index >= len(self._table_names):
+    def _find_table_combo_target_index(self, target_data: _FeatureExtractionTableComboData) -> int:
+        for index in range(self.table_combo.count()):
+            if self.table_combo.itemData(index) == target_data:
+                return index
+        return -1
+
+    def _set_selected_table_target_from_combo(self, index: int) -> None:
+        item_data = self.table_combo.itemData(index) if 0 <= index < self.table_combo.count() else None
+        if not isinstance(item_data, _FeatureExtractionTableComboData):
+            self._create_table = False
             self._selected_table_name = None
-        else:
-            self._selected_table_name = self._table_names[index]
+            self._set_create_table_name_controls_visible(False)
+            return
+
+        if item_data.mode is _FeatureExtractionTableComboMode.CREATE_TABLE:
+            self._create_table = True
+            self._selected_table_name = None
+            self._ensure_new_table_name_suggestion()
+            self._set_create_table_name_controls_visible(True)
+            return
+
+        self._create_table = False
+        self._selected_table_name = item_data.table_name
+        self._set_create_table_name_controls_visible(False)
+
+    def _suggest_new_table_name(self) -> str:
+        if self.selected_spatialdata is None or _DEFAULT_NEW_TABLE_NAME not in self.selected_spatialdata.tables:
+            return _DEFAULT_NEW_TABLE_NAME
+        return f"{_DEFAULT_NEW_TABLE_NAME}_{uuid.uuid4()}"
+
+    def _ensure_new_table_name_suggestion(self) -> None:
+        current_name = self._new_table_name if self._new_table_name is not None else self.new_table_name_line_edit.text()
+        if current_name.strip():
+            if self.new_table_name_line_edit.text() != current_name:
+                with QSignalBlocker(self.new_table_name_line_edit):
+                    self.new_table_name_line_edit.setText(current_name)
+            return
+
+        suggested_name = self._suggest_new_table_name()
+        self._new_table_name = suggested_name
+        with QSignalBlocker(self.new_table_name_line_edit):
+            self.new_table_name_line_edit.setText(suggested_name)
+
+    def _set_create_table_name_controls_visible(self, is_visible: bool) -> None:
+        self.new_table_name_label.setVisible(is_visible)
+        self.new_table_name_line_edit.setVisible(is_visible)
+
+    def _on_new_table_name_changed(self, text: str) -> None:
+        self._new_table_name = text
+        self._bind_current_selection()
 
     def _refresh_coordinate_systems(self) -> None:
         if self.selected_spatialdata is None:
@@ -2053,7 +2208,7 @@ class FeatureExtractionWidget(QWidget):
 
     def _selection_status_table_blocker(self) -> str | None:
         if self.selected_table_name is None:
-            return "no_eligible" if not self._table_names else "choose_table"
+            return "no_eligible" if not self._eligible_existing_table_names else "choose_table"
         if self._table_binding_error is not None:
             return "invalid"
         return None
@@ -2139,7 +2294,7 @@ class FeatureExtractionWidget(QWidget):
             return self._staged_batch_state.error_text or "Complete all checked extraction targets before calculating."
 
         if self.selected_table_name is None:
-            if not self._table_names:
+            if not self._eligible_existing_table_names:
                 return "No table annotates all staged labels elements."
             return "Choose a table that annotates all staged labels elements."
 

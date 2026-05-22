@@ -280,18 +280,53 @@ contain both real tables and a sentinel option, selection must be derived from
 Suggested constants/types:
 
 ```python
-from typing import Literal
 import uuid
+from dataclasses import dataclass
+from enum import Enum
 
 _CREATE_TABLE_OPTION_TEXT = "Create table..."
-_CREATE_TABLE_OPTION_DATA = ("create_table", None)
 _DEFAULT_NEW_TABLE_NAME = "features_table"
-_FeatureExtractionTableComboMode = Literal["existing", "create"]
+
+
+class _FeatureExtractionTableComboMode(Enum):
+    EXISTING = "existing"
+    CREATE_TABLE = "create_table"
+
+
+@dataclass(frozen=True)
+class _FeatureExtractionTableComboData:
+    mode: _FeatureExtractionTableComboMode
+    table_name: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.mode, _FeatureExtractionTableComboMode):
+            raise ValueError("Unknown table combo mode.")
+
+        if self.mode is _FeatureExtractionTableComboMode.EXISTING:
+            if self.table_name is None or not self.table_name.strip():
+                raise ValueError("Existing table combo data requires a table name.")
+            return
+
+        if (
+            self.mode is _FeatureExtractionTableComboMode.CREATE_TABLE
+            and self.table_name is not None
+        ):
+            raise ValueError("Create-table combo data cannot carry a table name.")
+
+    @classmethod
+    def existing(cls, table_name: str) -> "_FeatureExtractionTableComboData":
+        return cls(_FeatureExtractionTableComboMode.EXISTING, table_name)
+
+    @classmethod
+    def create_table(cls) -> "_FeatureExtractionTableComboData":
+        return cls(_FeatureExtractionTableComboMode.CREATE_TABLE)
 ```
 
-Real table combo rows should use structured item data too, for example
-`("existing", table_name)`. That avoids any possible collision between a real
-table name and the sentinel.
+Real table combo rows should use
+`_FeatureExtractionTableComboData.existing(table_name)`, while the sentinel row
+should use `_FeatureExtractionTableComboData.create_table()`. That keeps the
+string tags in one enum and avoids any possible collision between a real table
+name and the sentinel.
 
 State shape:
 
@@ -364,7 +399,8 @@ Work items:
   `_bind_current_selection()`;
 - add `_on_new_table_name_changed(...)`:
   - store the text in `_new_table_name`;
-  - call `_bind_current_selection()` and `_update_selection_status()`;
+  - call `_bind_current_selection()` so binding and selection status refresh
+    through the normal path;
   - Slice 3 may still bind no existing table while create mode is selected;
     Slice 4 will change the controller binding to `create_table=True`.
 
