@@ -16,7 +16,8 @@ The intended UI is:
 
 ## Current State
 
-The widget is currently existing-table-only.
+The widget is currently existing-table-only, while the controller and worker now
+have the explicit create-table target mode from slices 1 and 2.
 
 - [src/napari_harpy/widgets/feature_extraction/widget.py](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/widgets/feature_extraction/widget.py:1661)
   computes eligible table names by intersecting
@@ -29,11 +30,15 @@ The widget is currently existing-table-only.
   `validate_table_annotation_coverage(...)` and
   `validate_table_region_instance_ids(...)`.
 - [src/napari_harpy/widgets/feature_extraction/controller.py](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/widgets/feature_extraction/controller.py:28)
-  stores `FeatureExtractionRequest.table_name` as the existing table to update.
-- The controller's `can_calculate` path requires `_get_bound_table() is not None`,
-  so Harpy's create-table mode can never be represented today.
+  stores `FeatureExtractionRequest.table_name` as the napari-harpy target table
+  and uses `FeatureExtractionRequest.create_table` to distinguish existing-table
+  updates from create-table writes.
+- The controller's `can_calculate` path now accepts either a valid existing table
+  target or a valid create-table target.
 - `_run_feature_extraction_job(...)` currently calls
-  `hp.tb.add_feature_matrix(...)` with `table_name=job.request.table_name` only.
+  `hp.tb.add_feature_matrix(...)` with `table_name` and `output_table_name`
+  derived from the request adapter properties, and always passes
+  `overwrite_output_table=False`.
 
 Harpy already supports the target behavior:
 
@@ -146,7 +151,6 @@ class FeatureExtractionBindingState:
     create_table: bool
     feature_names: tuple[str, ...]
     feature_key: str | None
-    overwrite_feature_key: bool = False
 
     def __post_init__(self) -> None:
         if self.table_name is not None and not self.table_name.strip():
@@ -178,14 +182,21 @@ Work items:
 - add `FeatureExtractionBindingState.__post_init__` validation that rejects an
   empty non-`None` table name, but still allows `table_name=None` because binding
   state can represent incomplete UI state;
+- do not keep overwrite-feature-key state in controller binding; overwrite is a
+  per-click calculation decision after the widget confirmation prompt;
+- keep `FeatureExtractionController.calculate(..., overwrite_feature_key=False)`
+  as the only controller entry point for feature-key overwrite intent;
+- keep `_prepare_feature_extraction_job(..., overwrite_feature_key: bool)` on a
+  resolved boolean only, with no `None`/tri-state value entering job creation;
 - keep `FeatureExtractionJob.table_name` returning `request.table_name` for
   event/status use;
 - refactor controller table validation:
   - existing-table mode still uses `get_table(...)`;
   - create-table mode validates the requested new table name and collision state without
     reading a table;
-- keep the old `bind(...)` and `bind_batch(...)` signatures working by adding
-  optional keyword-only `create_table=False`.
+- keep `bind(...)` and `bind_batch(...)` focused on selection binding by adding
+  optional keyword-only `create_table=False`; do not pass overwrite state through
+  binding.
 
 Acceptance tests:
 

@@ -1990,7 +1990,6 @@ class FeatureExtractionWidget(QWidget):
             table_name,
             self.selected_feature_names,
             self.selected_feature_key,
-            overwrite_feature_key=False,
         )
         self._update_selection_status()
 
@@ -2104,9 +2103,9 @@ class FeatureExtractionWidget(QWidget):
             sdata=self.selected_spatialdata,
             triplets=triplets,
             table_name=table_name,
+            create_table=False,
             feature_names=self.selected_feature_names,
             feature_key=self.selected_feature_key,
-            overwrite_feature_key=False,
         )
 
     def _controller_is_bound_to_staged_batch(self) -> bool:

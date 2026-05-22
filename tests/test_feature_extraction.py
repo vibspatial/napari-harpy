@@ -11,6 +11,7 @@ from spatialdata import SpatialData
 from napari_harpy._app_state import FeatureMatrixWrittenEvent
 from napari_harpy.widgets.feature_extraction.controller import (
     FEATURE_EXTRACTION_IDLE_STATUS,
+    FeatureExtractionBindingState,
     FeatureExtractionController,
     FeatureExtractionJob,
     FeatureExtractionRequest,
@@ -56,6 +57,79 @@ def test_feature_extraction_controller_starts_idle() -> None:
     assert controller.can_calculate is False
 
 
+def test_feature_extraction_request_maps_create_table_target_to_harpy_parameters() -> None:
+    request = FeatureExtractionRequest(
+        triplets=(),
+        table_name="features_table",
+        create_table=True,
+        feature_names=("area",),
+        feature_key="features",
+    )
+
+    assert request.harpy_table_name is None
+    assert request.harpy_output_table_name == "features_table"
+
+
+def test_feature_extraction_request_maps_existing_table_target_to_harpy_parameters() -> None:
+    request = FeatureExtractionRequest(
+        triplets=(),
+        table_name="table",
+        create_table=False,
+        feature_names=("area",),
+        feature_key="features",
+    )
+
+    assert request.harpy_table_name == "table"
+    assert request.harpy_output_table_name is None
+
+
+def test_feature_extraction_request_rejects_invalid_table_target_state() -> None:
+    with pytest.raises(ValueError, match="requires a table name"):
+        FeatureExtractionRequest(
+            triplets=(),
+            table_name="",
+            create_table=True,
+            feature_names=("area",),
+            feature_key="features",
+        )
+
+    with pytest.raises(ValueError, match="Cannot overwrite a feature key while creating a new table"):
+        FeatureExtractionRequest(
+            triplets=(),
+            table_name="features_table",
+            create_table=True,
+            feature_names=("area",),
+            feature_key="features",
+            overwrite_feature_key=True,
+        )
+
+
+def test_feature_extraction_binding_state_allows_incomplete_table_target() -> None:
+    binding_state = FeatureExtractionBindingState(
+        sdata=None,
+        triplets=(),
+        table_name=None,
+        create_table=True,
+        feature_names=(),
+        feature_key=None,
+    )
+
+    assert binding_state.harpy_table_name is None
+    assert binding_state.harpy_output_table_name is None
+
+
+def test_feature_extraction_binding_state_rejects_empty_table_name() -> None:
+    with pytest.raises(ValueError, match="binding table name cannot be empty"):
+        FeatureExtractionBindingState(
+            sdata=None,
+            triplets=(),
+            table_name=" ",
+            create_table=False,
+            feature_names=(),
+            feature_key=None,
+        )
+
+
 def test_feature_extraction_controller_bind_is_passive_and_ready_for_existing_table(
     sdata_blobs: SpatialData,
 ) -> None:
@@ -97,7 +171,7 @@ def test_feature_extraction_controller_rejects_spatialdata_invalid_feature_key(
     assert controller.status_kind == "warning"
     assert "choose a valid feature matrix key" in controller.status_message
     assert "alphanumeric characters, underscores, dots and hyphens" in controller.status_message
-    assert controller._prepare_feature_extraction_job(8) is None
+    assert controller._prepare_feature_extraction_job(8, overwrite_feature_key=False) is None
 
 
 def test_feature_extraction_controller_blocks_when_no_table_is_selected(sdata_blobs: SpatialData) -> None:
@@ -118,6 +192,107 @@ def test_feature_extraction_controller_blocks_when_no_table_is_selected(sdata_bl
     assert (
         controller.status_message
         == "Feature extraction: choose an annotation table linked to the selected labels element."
+    )
+
+
+def test_feature_extraction_controller_bind_is_ready_for_create_table(
+    sdata_blobs: SpatialData,
+) -> None:
+    controller = FeatureExtractionController()
+
+    context_changed = controller.bind(
+        sdata_blobs,
+        "blobs_labels",
+        None,
+        "features_table",
+        "global",
+        ["area", "perimeter"],
+        "feature_matrix_1",
+        create_table=True,
+    )
+
+    job = controller._prepare_feature_extraction_job(8, overwrite_feature_key=False)
+
+    assert context_changed is True
+    assert controller.status_message == "Feature extraction: ready to calculate."
+    assert controller.status_kind == "success"
+    assert controller.can_calculate is True
+    assert isinstance(job, FeatureExtractionJob)
+    assert job.change_kind == "created"
+    assert job.request.create_table is True
+    assert job.request.table_name == "features_table"
+    assert job.request.harpy_table_name is None
+    assert job.request.harpy_output_table_name == "features_table"
+
+
+def test_feature_extraction_controller_blocks_create_table_name_collision(
+    sdata_blobs: SpatialData,
+) -> None:
+    controller = FeatureExtractionController()
+
+    controller.bind(
+        sdata_blobs,
+        "blobs_labels",
+        None,
+        "table",
+        "global",
+        ["area"],
+        "feature_matrix_1",
+        create_table=True,
+    )
+
+    assert controller.can_calculate is False
+    assert controller.status_kind == "warning"
+    assert controller.status_message == (
+        "Feature extraction: table `table` already exists. Choose a different table name."
+    )
+    assert controller._prepare_feature_extraction_job(8, overwrite_feature_key=False) is None
+
+
+def test_feature_extraction_controller_blocks_invalid_create_table_name(
+    sdata_blobs: SpatialData,
+) -> None:
+    controller = FeatureExtractionController()
+
+    controller.bind(
+        sdata_blobs,
+        "blobs_labels",
+        None,
+        "features table",
+        "global",
+        ["area"],
+        "feature_matrix_1",
+        create_table=True,
+    )
+
+    assert controller.can_calculate is False
+    assert controller.status_kind == "warning"
+    assert "choose a valid table name" in controller.status_message
+    assert "alphanumeric characters, underscores, dots and hyphens" in controller.status_message
+    assert controller._prepare_feature_extraction_job(8, overwrite_feature_key=False) is None
+
+
+def test_feature_extraction_controller_blocks_create_table_feature_key_overwrite_override(
+    sdata_blobs: SpatialData,
+) -> None:
+    controller = FeatureExtractionController()
+    controller.bind(
+        sdata_blobs,
+        "blobs_labels",
+        None,
+        "features_table",
+        "global",
+        ["area"],
+        "feature_matrix_1",
+        create_table=True,
+    )
+
+    launched = controller.calculate(overwrite_feature_key=True)
+
+    assert launched is False
+    assert controller.status_kind == "warning"
+    assert controller.status_message == (
+        "Feature extraction: cannot overwrite a feature key while creating a new table."
     )
 
 
@@ -155,7 +330,7 @@ def test_feature_extraction_controller_requires_coordinate_system(sdata_blobs: S
     assert controller.can_calculate is False
     assert controller.status_kind == "warning"
     assert controller.status_message == "Feature extraction: choose a coordinate system."
-    assert controller._prepare_feature_extraction_job(8) is None
+    assert controller._prepare_feature_extraction_job(8, overwrite_feature_key=False) is None
 
 
 def test_feature_extraction_controller_requires_segmentation_mask(sdata_blobs: SpatialData) -> None:
@@ -174,7 +349,7 @@ def test_feature_extraction_controller_requires_segmentation_mask(sdata_blobs: S
     assert controller.can_calculate is False
     assert controller.status_kind == "warning"
     assert controller.status_message == "Feature extraction: choose a labels element."
-    assert controller._prepare_feature_extraction_job(8) is None
+    assert controller._prepare_feature_extraction_job(8, overwrite_feature_key=False) is None
 
 
 def test_feature_extraction_controller_bind_returns_false_for_unchanged_context(sdata_blobs: SpatialData) -> None:
@@ -213,10 +388,9 @@ def test_feature_extraction_controller_prepares_immutable_job_payload(sdata_blob
         "global",
         ["mean", "area", "mean"],
         "feature_matrix_1",
-        overwrite_feature_key=True,
     )
 
-    job = controller._prepare_feature_extraction_job(7)
+    job = controller._prepare_feature_extraction_job(7, overwrite_feature_key=True)
 
     assert isinstance(job, FeatureExtractionJob)
     assert job.job_id == 7
@@ -252,7 +426,7 @@ def test_feature_extraction_controller_bind_stores_selected_channels_in_job(sdat
         channels=("1", "2"),
     )
 
-    job = controller._prepare_feature_extraction_job(8)
+    job = controller._prepare_feature_extraction_job(8, overwrite_feature_key=False)
 
     assert isinstance(job, FeatureExtractionJob)
     assert job.channels == ("1", "2")
@@ -287,7 +461,7 @@ def test_feature_extraction_controller_morphology_only_job_keeps_channels_none(s
         channels=None,
     )
 
-    job = controller._prepare_feature_extraction_job(9)
+    job = controller._prepare_feature_extraction_job(9, overwrite_feature_key=False)
 
     assert isinstance(job, FeatureExtractionJob)
     assert job.image_name is None
@@ -352,7 +526,6 @@ def test_feature_extraction_controller_exposes_binding_state_snapshot(
     assert binding_state.table_name == "table"
     assert binding_state.feature_names == ("mean",)
     assert binding_state.feature_key == "feature_matrix_batch"
-    assert binding_state.overwrite_feature_key is False
 
 
 def test_feature_extraction_controller_bind_batch_rejects_mixed_channel_selections_for_intensity_features(
@@ -496,7 +669,6 @@ def test_feature_extraction_controller_calculate_accepts_one_shot_overwrite_over
         "global",
         ["mean", "area"],
         "feature_matrix_1",
-        overwrite_feature_key=False,
     )
 
     def capture_worker(job: FeatureExtractionJob) -> _DeferredWorker:
@@ -574,6 +746,7 @@ def test_run_feature_extraction_job_passes_channels_to_harpy(monkeypatch, sdata_
                     ),
                 ),
                 table_name="table",
+                create_table=False,
                 feature_names=("mean", "area"),
                 feature_key="feature_matrix_1",
                 overwrite_feature_key=False,
@@ -583,6 +756,8 @@ def test_run_feature_extraction_job_passes_channels_to_harpy(monkeypatch, sdata_
 
     assert captured_kwargs["channels"] == ["0", "2"]
     assert captured_kwargs["feature_matrices_key"] == "feature_matrices"
+    assert captured_kwargs["output_table_name"] is None
+    assert captured_kwargs["overwrite_output_table"] is False
     assert result == FeatureExtractionResult(
         job_id=4,
         labels_name="blobs_labels",
@@ -626,6 +801,7 @@ def test_run_feature_extraction_job_submits_multi_target_request_to_harpy(
                     ),
                 ),
                 table_name="table",
+                create_table=False,
                 feature_names=("mean", "area"),
                 feature_key="feature_matrix_batch",
                 overwrite_feature_key=True,
@@ -636,8 +812,10 @@ def test_run_feature_extraction_job_submits_multi_target_request_to_harpy(
     assert captured_kwargs["labels_name"] == ["blobs_labels", "blobs_multiscale_labels"]
     assert captured_kwargs["image_name"] == ["blobs_image", "blobs_multiscale_image"]
     assert captured_kwargs["table_name"] == "table"
+    assert captured_kwargs["output_table_name"] is None
     assert captured_kwargs["to_coordinate_system"] == ["global", "aligned"]
     assert captured_kwargs["channels"] == ["0", "2"]
+    assert captured_kwargs["overwrite_output_table"] is False
     assert captured_kwargs["overwrite_feature_key"] is True
     assert result == FeatureExtractionResult(
         job_id=5,
@@ -690,6 +868,7 @@ def test_run_feature_extraction_job_fills_one_feature_matrix_for_multiple_region
                     ),
                 ),
                 table_name="table_multi",
+                create_table=False,
                 feature_names=("area",),
                 feature_key=feature_key,
                 overwrite_feature_key=True,
@@ -710,6 +889,54 @@ def test_run_feature_extraction_job_fills_one_feature_matrix_for_multiple_region
     assert features.shape == (table.n_obs, 1)
     assert np.all(features[region_values == "blobs_labels", 0] == 1.0)
     assert np.all(features[region_values == "blobs_labels_2", 0] == 2.0)
+
+
+def test_run_feature_extraction_job_submits_create_table_request_to_harpy(
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    captured_kwargs: dict[str, object] = {}
+
+    def fake_add_feature_matrix(**kwargs):
+        captured_kwargs.update(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "harpy",
+        SimpleNamespace(tb=SimpleNamespace(add_feature_matrix=fake_add_feature_matrix)),
+    )
+
+    result = _run_feature_extraction_job.__wrapped__(
+        FeatureExtractionJob(
+            job_id=7,
+            sdata=sdata_blobs,
+            request=FeatureExtractionRequest(
+                triplets=(
+                    FeatureExtractionTriplet(
+                        coordinate_system="global",
+                        labels_name="blobs_labels",
+                        image_name=None,
+                    ),
+                ),
+                table_name="features_table",
+                create_table=True,
+                feature_names=("area",),
+                feature_key="feature_matrix_1",
+                overwrite_feature_key=False,
+            ),
+        )
+    )
+
+    assert captured_kwargs["table_name"] is None
+    assert captured_kwargs["output_table_name"] == "features_table"
+    assert captured_kwargs["overwrite_output_table"] is False
+    assert captured_kwargs["overwrite_feature_key"] is False
+    assert result == FeatureExtractionResult(
+        job_id=7,
+        labels_name="blobs_labels",
+        table_name="features_table",
+        feature_key="feature_matrix_1",
+    )
 
 
 def test_feature_extraction_controller_propagates_worker_errors(sdata_blobs: SpatialData) -> None:

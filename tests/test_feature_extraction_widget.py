@@ -1053,7 +1053,7 @@ def test_feature_extraction_widget_surfaces_duplicate_channel_names_as_batch_err
     assert bind_batch_calls
     args, kwargs = bind_batch_calls[-1]
     assert args == (sdata_blobs, (), None, ("mean",), "features")
-    assert kwargs == {"overwrite_feature_key": False}
+    assert kwargs == {}
 
 
 def test_feature_extraction_widget_channel_selection_is_independent_from_viewer_overlay_state(
@@ -1324,7 +1324,7 @@ def test_feature_extraction_widget_rebinds_controller_when_inputs_change(
         ("area",),
         "features",
     )
-    assert kwargs == {"overwrite_feature_key": False}
+    assert kwargs == {}
 
 
 def test_feature_extraction_widget_binds_selected_channels_into_controller(
@@ -1366,7 +1366,7 @@ def test_feature_extraction_widget_binds_selected_channels_into_controller(
         ("mean",),
         "features",
     )
-    assert kwargs == {"overwrite_feature_key": False}
+    assert kwargs == {}
 
 
 def test_feature_extraction_widget_enables_calculate_for_valid_morphology_batch(
