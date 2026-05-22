@@ -831,7 +831,7 @@ Acceptance tests:
 
 ### Slice 8: Refresh Viewer Linked Tables From Feature-Matrix Events
 
-Status: specified.
+Status: implemented.
 
 The Viewer widget also needs to become aware that feature extraction may create a
 new annotating table. Today

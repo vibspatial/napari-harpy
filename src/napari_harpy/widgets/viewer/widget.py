@@ -22,7 +22,12 @@ from qtpy.QtWidgets import (
 )
 from spatialdata import read_zarr
 
-from napari_harpy._app_state import CoordinateSystemChangedEvent, HarpyAppState, get_or_create_app_state
+from napari_harpy._app_state import (
+    CoordinateSystemChangedEvent,
+    FeatureMatrixWrittenEvent,
+    HarpyAppState,
+    get_or_create_app_state,
+)
 from napari_harpy.core.spatialdata import (
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
@@ -253,6 +258,9 @@ class ViewerWidget(QWidget):
 
         self._app_state.sdata_changed.connect(self._on_sdata_changed)
         self._app_state.coordinate_system_changed.connect(self._on_app_state_coordinate_system_changed)
+        # Feature extraction can create new annotating tables; refresh Viewer
+        # linked-table choices when that happens in the active sdata.
+        self._app_state.feature_matrix_written.connect(self._on_feature_matrix_written)
         self.refresh_from_sdata(self._app_state.sdata)
 
     @property
@@ -308,6 +316,15 @@ class ViewerWidget(QWidget):
         self._clear_action_feedback()
         self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
         self._refresh_coordinate_system_content()
+
+    def _on_feature_matrix_written(self, event: object) -> None:
+        """Refresh linked-table controls after same-session feature-matrix writes."""
+        if not isinstance(event, FeatureMatrixWrittenEvent):
+            return
+        if event.sdata is not self._app_state.sdata:
+            return
+
+        self._refresh_labels_card_linked_tables()
 
     def _open_spatialdata(self, _checked: bool = False) -> None:
         selected_path = QFileDialog.getExistingDirectory(
@@ -453,6 +470,18 @@ class ViewerWidget(QWidget):
             self.labels_section_layout.addWidget(row)
             self._labels_cards.append(card)
             self._labels_rows.append(row)
+
+    def _refresh_labels_card_linked_tables(self) -> None:
+        sdata = self._app_state.sdata
+        if sdata is None:
+            return
+
+        for card in self._labels_cards:
+            table_names = get_annotating_table_names(sdata, card.labels_name)
+            table_color_sources_by_table = {
+                table_name: get_table_color_source_options(sdata, table_name) for table_name in table_names
+            }
+            card.set_linked_tables(table_names, table_color_sources_by_table)
 
     def _rebuild_shapes_cards(self, sdata: SpatialData, shapes_names: list[str]) -> None:
         _clear_layout(self.shapes_section_layout)
