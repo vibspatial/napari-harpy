@@ -862,8 +862,9 @@ Work items:
 - preserve each labels card's selected linked table whenever it is still valid.
   A feature-extraction-created table must not silently switch a card away from an
   already selected valid table;
-- if a labels card had no linked/selected table before the refresh and the new
-  table annotates that labels element, auto-select the new table;
+- if a labels card had no linked/selected table before the refresh, keep it on
+  the neutral no-selection state. The newly created table should become
+  selectable, but should not be auto-selected;
 - preserve expanded/collapsed labels rows across the refresh, matching the
   existing row refresh behavior;
 - do not automatically add or update napari layers. The listener refreshes
@@ -884,8 +885,6 @@ Implementation notes:
       self,
       table_names: list[str],
       table_color_sources_by_table: dict[str, list[TableColorSourceSpec]],
-      *,
-      preferred_table_name: str | None = None,
   ) -> None:
       ...
   ```
@@ -893,14 +892,12 @@ Implementation notes:
   Restore priority inside the card should be:
 
   - keep `previous selected_table_name` if it is still present;
-  - else select `preferred_table_name` if it is present;
-  - else select the first linked table if any exist;
+  - else keep the combo in a neutral no-selection state if linked tables exist;
   - else show the disabled `No linked tables` row.
 
-- The widget-level event handler should only pass `preferred_table_name` for the
-  event-created table when the card had no linked table before the refresh. That
-  mirrors Object Classification: a new table may fill an empty control, but must
-  not steal an existing valid table selection.
+- The widget-level event handler should not pass `event.table_name` as a
+  selection preference. Viewer refreshes availability only; users explicitly
+  choose whether to use the newly created table for overlays.
 - Preserve color-source controls where possible:
   - keep the previous color source kind if still selected;
   - keep the previous `TableColorSourceSpec.identity` if it still exists for the
@@ -921,7 +918,8 @@ Acceptance tests:
 - if a labels card already selected `old_table` and `old_table` is still valid,
   it remains selected after the event refresh;
 - if a labels card previously had no linked table and `new_table` annotates that
-  labels element, the card becomes enabled and selects `new_table`;
+  labels element, the card becomes enabled and exposes `new_table`, but keeps no
+  linked table selected;
 - a new table that annotates a non-visible labels element does not change the
   currently visible cards;
 - same-table feature-matrix writes that only add/update `.obsm` do not change
