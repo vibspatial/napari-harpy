@@ -43,6 +43,7 @@ from napari_harpy.core.validation import normalize_spatialdata_name
 from napari_harpy.widgets.feature_extraction.controller import (
     FeatureExtractionBindingState,
     FeatureExtractionController,
+    FeatureExtractionResult,
     FeatureExtractionTriplet,
 )
 from napari_harpy.widgets.feature_extraction.status_card import (
@@ -1799,7 +1800,7 @@ class FeatureExtractionWidget(QWidget):
             and len(staged_batch_state.labels_names) == len(staged_batch_state.checked_coordinate_systems)
         )
 
-    def _refresh_table_names(self) -> None:
+    def _refresh_table_names(self, *, preferred_existing_table_name: str | None = None) -> None:
         previous_table_name = self.selected_table_name
         previous_create_table = self._create_table
         staged_batch_state = self._resolve_staged_batch_state()
@@ -1830,12 +1831,17 @@ class FeatureExtractionWidget(QWidget):
             self.table_combo.setEnabled(has_table_targets)
 
             next_index = -1
-            if previous_create_table:
-                next_index = self._find_table_combo_target_index(_FeatureExtractionTableComboData.create_table())
-            elif previous_table_name is not None:
+            if preferred_existing_table_name is not None:
                 next_index = self._find_table_combo_target_index(
-                    _FeatureExtractionTableComboData.existing(previous_table_name)
+                    _FeatureExtractionTableComboData.existing(preferred_existing_table_name)
                 )
+            if next_index < 0:
+                if previous_create_table:
+                    next_index = self._find_table_combo_target_index(_FeatureExtractionTableComboData.create_table())
+                elif previous_table_name is not None:
+                    next_index = self._find_table_combo_target_index(
+                        _FeatureExtractionTableComboData.existing(previous_table_name)
+                    )
 
             if next_index < 0 and self._eligible_existing_table_names:
                 next_index = self._find_table_combo_target_index(
@@ -2400,8 +2406,8 @@ class FeatureExtractionWidget(QWidget):
         self._update_feature_extraction_feedback()
         self._update_calculate_controls()
 
-    def _on_controller_table_state_changed(self) -> None:
-        self._refresh_table_names()
+    def _on_controller_table_state_changed(self, result: FeatureExtractionResult) -> None:
+        self._refresh_table_names(preferred_existing_table_name=result.table_name)
         self._bind_current_selection()
 
     def _on_controller_feature_matrix_written(self, event: FeatureMatrixWrittenEvent) -> None:

@@ -556,8 +556,7 @@ Acceptance tests:
 
 ### Slice 5: Keep Existing Overwrite Behavior Correct
 
-Status: partially implemented; remaining second-click behavior depends on
-Slice 6 promotion.
+Status: implemented.
 
 Existing feature-key overwrite checks currently assume an existing selected
 table. Keep that path isolated from create-table mode, and preserve it once a
@@ -570,7 +569,7 @@ second click should see `sdata.tables[new_table].obsm[feature_key]`, show the
 existing feature-key overwrite confirmation, and call Harpy with
 `table_name="new_table"`, `create_table=False`, and `overwrite_feature_key=True`.
 
-Current code already contains the first half of this behavior:
+Current code contains this behavior:
 
 - `_calculate_feature_matrix()` only checks `.obsm` when
   `selected_table_name is not None`, `_table_target_state.error_text is None`,
@@ -585,9 +584,9 @@ Current code already contains the first half of this behavior:
   `_run_feature_extraction_job(...)` always passes
   `overwrite_output_table=False`.
 
-The remaining part is tied to Slice 6: after a successful create-table run, the
-widget must be in existing-table mode before the next click, so the existing
-`.obsm[feature_key]` overwrite confirmation can run normally.
+Slice 6 supplies the promotion step: after a successful create-table run, the
+widget is in existing-table mode before the next click, so the existing
+`.obsm[feature_key]` overwrite confirmation runs normally.
 
 Work items:
 
@@ -633,6 +632,8 @@ Acceptance tests:
   overwrite prompt.
 
 ### Slice 6: Refresh Selection After The New Table Is Created
+
+Status: implemented.
 
 After Harpy creates the table, the widget should move from create mode to the new
 authoritative existing table.

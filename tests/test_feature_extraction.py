@@ -563,18 +563,17 @@ def test_feature_extraction_controller_bind_batch_rejects_mixed_channel_selectio
 
 
 def test_feature_extraction_controller_notifies_table_state_change_on_success(sdata_blobs: SpatialData) -> None:
-    table_state_changes: list[str] = []
-    deferred_worker = _DeferredWorker(
-        FeatureExtractionResult(
-            job_id=1,
-            labels_name="blobs_labels",
-            table_name="table",
-            feature_key="feature_matrix_1",
-        )
+    table_state_changes: list[FeatureExtractionResult] = []
+    result = FeatureExtractionResult(
+        job_id=1,
+        labels_name="blobs_labels",
+        table_name="table",
+        feature_key="feature_matrix_1",
     )
+    deferred_worker = _DeferredWorker(result)
 
     controller = FeatureExtractionController(
-        on_table_state_changed=lambda: table_state_changes.append("changed"),
+        on_table_state_changed=table_state_changes.append,
     )
     controller.bind(
         sdata_blobs,
@@ -595,7 +594,7 @@ def test_feature_extraction_controller_notifies_table_state_change_on_success(sd
 
     deferred_worker.emit_returned()
 
-    assert table_state_changes == ["changed"]
+    assert table_state_changes == [result]
     assert controller.status_kind == "success"
     assert (
         controller.status_message
@@ -944,7 +943,7 @@ def test_feature_extraction_controller_propagates_worker_errors(sdata_blobs: Spa
     deferred_worker = _DeferredWorker()
 
     controller = FeatureExtractionController(
-        on_table_state_changed=lambda: table_state_changes.append("changed"),
+        on_table_state_changed=lambda result: table_state_changes.append(result.table_name),
     )
     controller.bind(
         sdata_blobs,
@@ -968,6 +967,42 @@ def test_feature_extraction_controller_propagates_worker_errors(sdata_blobs: Spa
     assert controller.is_running is False
 
 
+def test_feature_extraction_controller_notifies_table_state_before_feature_matrix_written(
+    sdata_blobs: SpatialData,
+) -> None:
+    notification_order: list[str] = []
+    result = FeatureExtractionResult(
+        job_id=1,
+        labels_name="blobs_labels",
+        table_name="table",
+        feature_key="feature_matrix_1",
+        change_kind="created",
+    )
+    deferred_worker = _DeferredWorker(result)
+
+    controller = FeatureExtractionController(
+        on_table_state_changed=lambda table_result: notification_order.append(
+            f"table:{table_result.table_name}"
+        ),
+        on_feature_matrix_written=lambda event: notification_order.append(f"event:{event.table_name}"),
+    )
+    controller.bind(
+        sdata_blobs,
+        "blobs_labels",
+        "blobs_image",
+        "table",
+        "global",
+        ["mean", "area"],
+        "feature_matrix_1",
+    )
+    controller._create_feature_extraction_worker = lambda job: deferred_worker  # type: ignore[method-assign]
+
+    assert controller.calculate() is True
+    deferred_worker.emit_returned()
+
+    assert notification_order == ["table:table", "event:table"]
+
+
 def test_feature_extraction_controller_drops_stale_results_after_rebinding(sdata_blobs: SpatialData) -> None:
     table_state_changes: list[str] = []
     deferred_worker = _DeferredWorker(
@@ -980,7 +1015,7 @@ def test_feature_extraction_controller_drops_stale_results_after_rebinding(sdata
     )
 
     controller = FeatureExtractionController(
-        on_table_state_changed=lambda: table_state_changes.append("changed"),
+        on_table_state_changed=lambda result: table_state_changes.append(result.table_name),
     )
     controller.bind(
         sdata_blobs,

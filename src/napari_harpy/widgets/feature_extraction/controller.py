@@ -225,7 +225,7 @@ class FeatureExtractionController:
         self,
         *,
         on_state_changed: Callable[[], None] | None = None,
-        on_table_state_changed: Callable[[], None] | None = None,
+        on_table_state_changed: Callable[[FeatureExtractionResult], None] | None = None,
         on_feature_matrix_written: Callable[[FeatureMatrixWrittenEvent], None] | None = None,
     ) -> None:
         self._on_state_changed = on_state_changed
@@ -533,15 +533,14 @@ class FeatureExtractionController:
         if self._on_state_changed is not None:
             self._on_state_changed()
 
-    def _notify_table_state_changed(self) -> None:
+    def _notify_table_state_changed(self, result: FeatureExtractionResult) -> None:
         # Keep this local widget refresh hook separate from the shared
-        # `feature_matrix_written` app-state event. The current successful
-        # feature-matrix-write path is already covered by that semantic event,
-        # so this hook is mainly retained for future local table-context
-        # refresh flows where running feature extraction may create or relink a
-        # table and the widget must refresh its table selection.
+        # `feature_matrix_written` app-state event. The owning widget uses the
+        # concrete result to refresh table choices and, after create-table
+        # writes, promote the new table into normal existing-table mode before
+        # downstream widgets consume the shared semantic event.
         if self._on_table_state_changed is not None:
-            self._on_table_state_changed()
+            self._on_table_state_changed(result)
 
     def _notify_feature_matrix_written(self, result: FeatureExtractionResult) -> None:
         if self._on_feature_matrix_written is None or self._selected_spatialdata is None:
@@ -631,7 +630,7 @@ class FeatureExtractionController:
         if job_id != self._latest_requested_job_id or job_id != self._active_worker_job_id:
             return
 
-        self._notify_table_state_changed()
+        self._notify_table_state_changed(result)
         self._notify_feature_matrix_written(result)
         self._set_status(
             "Feature extraction: "

@@ -17,7 +17,11 @@ from napari_harpy.core.spatialdata import (
     SpatialDataImageOption,
     SpatialDataLabelsOption,
 )
-from napari_harpy.widgets.feature_extraction.controller import FeatureExtractionBindingState, FeatureExtractionTriplet
+from napari_harpy.widgets.feature_extraction.controller import (
+    FeatureExtractionBindingState,
+    FeatureExtractionResult,
+    FeatureExtractionTriplet,
+)
 from napari_harpy.widgets.feature_extraction.widget import FeatureExtractionWidget
 from napari_harpy.widgets.viewer.widget import ViewerWidget
 
@@ -1813,9 +1817,9 @@ def test_feature_extraction_widget_refreshes_table_state_after_controller_succes
     original_refresh_table_names = widget._refresh_table_names
     original_bind_current_selection = widget._bind_current_selection
 
-    def recording_refresh_table_names() -> None:
+    def recording_refresh_table_names(*, preferred_existing_table_name: str | None = None) -> None:
         calls.append("refresh_table_names")
-        original_refresh_table_names()
+        original_refresh_table_names(preferred_existing_table_name=preferred_existing_table_name)
 
     def recording_bind_current_selection() -> None:
         calls.append("bind_current_selection")
@@ -1824,9 +1828,115 @@ def test_feature_extraction_widget_refreshes_table_state_after_controller_succes
     widget._refresh_table_names = recording_refresh_table_names  # type: ignore[method-assign]
     widget._bind_current_selection = recording_bind_current_selection  # type: ignore[method-assign]
 
-    widget._on_controller_table_state_changed()
+    widget._on_controller_table_state_changed(
+        FeatureExtractionResult(
+            job_id=1,
+            labels_name="blobs_labels",
+            table_name="table",
+            feature_key="features",
+        )
+    )
 
     assert calls == ["refresh_table_names", "bind_current_selection"]
+
+
+def test_feature_extraction_widget_promotes_created_table_to_existing_selection(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+    check_coordinate_system(widget, "global")
+    select_segmentation(widget, "global", 0)
+    widget.table_combo.setCurrentIndex(widget.table_combo.findText("Create table..."))
+    widget.new_table_name_line_edit.setText("new_table")
+    widget.findChild(QCheckBox, "feature_checkbox_area").setChecked(True)
+
+    assert widget.selected_table_mode == "create"
+    assert widget.selected_new_table_name == "new_table"
+    assert widget._feature_extraction_controller.binding_state.create_table is True
+
+    sdata_blobs.tables["new_table"] = sdata_blobs.tables["table"].copy()
+    widget._on_controller_table_state_changed(
+        FeatureExtractionResult(
+            job_id=1,
+            labels_name="blobs_labels",
+            table_name="new_table",
+            feature_key="features",
+        )
+    )
+
+    expected_state = FeatureExtractionBindingState(
+        sdata=sdata_blobs,
+        triplets=(
+            FeatureExtractionTriplet(
+                coordinate_system="global",
+                labels_name="blobs_labels",
+                image_name=None,
+                channels=None,
+            ),
+        ),
+        table_name="new_table",
+        create_table=False,
+        feature_names=("area",),
+        feature_key="features",
+    )
+
+    assert widget.selected_table_mode == "existing"
+    assert widget.selected_table_name == "new_table"
+    assert widget.selected_new_table_name is None
+    assert widget.new_table_name_line_edit.isHidden()
+    assert widget._feature_extraction_controller.binding_state == expected_state
+
+
+def test_feature_extraction_widget_uses_existing_overwrite_prompt_after_created_table_promotion(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+    check_coordinate_system(widget, "global")
+    select_segmentation(widget, "global", 0)
+    widget.table_combo.setCurrentIndex(widget.table_combo.findText("Create table..."))
+    widget.new_table_name_line_edit.setText("new_table")
+    widget.findChild(QCheckBox, "feature_checkbox_area").setChecked(True)
+
+    sdata_blobs.tables["new_table"] = sdata_blobs.tables["table"].copy()
+    sdata_blobs.tables["new_table"].obsm["features"] = np.zeros((sdata_blobs.tables["new_table"].n_obs, 1))
+    widget._on_controller_table_state_changed(
+        FeatureExtractionResult(
+            job_id=1,
+            labels_name="blobs_labels",
+            table_name="new_table",
+            feature_key="features",
+        )
+    )
+
+    prompt_calls: list[tuple[str, str | None]] = []
+    overwrite_calls: list[bool | None] = []
+
+    def fake_prompt(feature_key: str, table_name: str | None) -> bool | None:
+        prompt_calls.append((feature_key, table_name))
+        return True
+
+    def fake_calculate(*, overwrite_feature_key: bool | None = None) -> bool:
+        overwrite_calls.append(overwrite_feature_key)
+        return True
+
+    widget._prompt_overwrite_feature_key_confirmation = fake_prompt  # type: ignore[method-assign]
+    widget._feature_extraction_controller.calculate = fake_calculate  # type: ignore[method-assign]
+
+    assert widget.selected_table_mode == "existing"
+    assert widget._feature_extraction_controller.binding_state.create_table is False
+
+    widget.calculate_button.click()
+
+    assert prompt_calls == [("features", "new_table")]
+    assert overwrite_calls == [True]
 
 
 def test_feature_extraction_widget_reemits_feature_matrix_writes_to_shared_app_state(
