@@ -862,9 +862,10 @@ Work items:
 - preserve each labels card's selected linked table whenever it is still valid.
   A feature-extraction-created table must not silently switch a card away from an
   already selected valid table;
-- if a labels card had no linked/selected table before the refresh, keep it on
-  the neutral no-selection state. The newly created table should become
-  selectable, but should not be auto-selected;
+- if a labels card had no linked/selected table before the refresh, keep the
+  existing combo behavior: once linked tables become available, select index `0`.
+  If the newly created table is the first/only linked table, it will become the
+  selected table;
 - preserve expanded/collapsed labels rows across the refresh, matching the
   existing row refresh behavior;
 - do not automatically add or update napari layers. The listener refreshes
@@ -892,12 +893,13 @@ Implementation notes:
   Restore priority inside the card should be:
 
   - keep `previous selected_table_name` if it is still present;
-  - else keep the combo in a neutral no-selection state if linked tables exist;
+  - else select the first linked table if any exist;
   - else show the disabled `No linked tables` row.
 
 - The widget-level event handler should not pass `event.table_name` as a
-  selection preference. Viewer refreshes availability only; users explicitly
-  choose whether to use the newly created table for overlays.
+  selection preference. Viewer refreshes availability only and lets the labels
+  card's existing combo fallback choose index `0` when no previous selection can
+  be preserved.
 - Preserve color-source controls where possible:
   - keep the previous color source kind if still selected;
   - keep the previous `TableColorSourceSpec.identity` if it still exists for the
@@ -918,8 +920,8 @@ Acceptance tests:
 - if a labels card already selected `old_table` and `old_table` is still valid,
   it remains selected after the event refresh;
 - if a labels card previously had no linked table and `new_table` annotates that
-  labels element, the card becomes enabled and exposes `new_table`, but keeps no
-  linked table selected;
+  labels element, the card becomes enabled and selects the first available linked
+  table, which is `new_table` when it is the first/only option;
 - a new table that annotates a non-visible labels element does not change the
   currently visible cards;
 - same-table feature-matrix writes that only add/update `.obsm` do not change
