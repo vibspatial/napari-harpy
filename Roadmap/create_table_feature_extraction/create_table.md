@@ -831,6 +831,8 @@ Acceptance tests:
 
 ### Slice 8: Refresh Viewer Linked Tables From Feature-Matrix Events
 
+Status: specified.
+
 The Viewer widget also needs to become aware that feature extraction may create a
 new annotating table. Today
 [src/napari_harpy/widgets/viewer/widget.py](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/widgets/viewer/widget.py:255)
@@ -854,9 +856,9 @@ Work items:
   `self._app_state.feature_matrix_written` during widget initialization;
 - ignore events that are not `FeatureMatrixWrittenEvent` instances or whose
   `event.sdata` is not the viewer widget's current `sdata`;
-- on a same-`sdata` event, refresh labels-card table metadata for the current
-  coordinate system so newly created annotating tables become available in the
-  `Linked table` combos;
+- on a same-`sdata` event, refresh only labels-card table metadata for the
+  current coordinate system so newly created annotating tables become available
+  in the `Linked table` combos;
 - preserve each labels card's selected linked table whenever it is still valid.
   A feature-extraction-created table must not silently switch a card away from an
   already selected valid table;
@@ -870,11 +872,40 @@ Work items:
 
 Implementation notes:
 
-- The simplest first implementation can reuse `_refresh_coordinate_system_content()`
-  if it snapshots and restores per-label card state before rebuilding.
-- A more focused implementation could add an in-place update method to
-  `_LabelsCardWidget` for table names and color-source options, but that is not
-  required for the first pass.
+- Prefer an in-place `_LabelsCardWidget` update method over rebuilding all cards.
+  `_LabelsCardWidget` already owns `linked_table_combo`,
+  `color_source_kind_combo`, `color_source_value_input`, and
+  `_table_color_sources_by_table`, so it can refresh linked-table choices without
+  disturbing row expansion, images, shapes, points, or global action feedback.
+- Suggested card API:
+
+  ```python
+  def set_linked_tables(
+      self,
+      table_names: list[str],
+      table_color_sources_by_table: dict[str, list[TableColorSourceSpec]],
+      *,
+      preferred_table_name: str | None = None,
+  ) -> None:
+      ...
+  ```
+
+  Restore priority inside the card should be:
+
+  - keep `previous selected_table_name` if it is still present;
+  - else select `preferred_table_name` if it is present;
+  - else select the first linked table if any exist;
+  - else show the disabled `No linked tables` row.
+
+- The widget-level event handler should only pass `preferred_table_name` for the
+  event-created table when the card had no linked table before the refresh. That
+  mirrors Object Classification: a new table may fill an empty control, but must
+  not steal an existing valid table selection.
+- Preserve color-source controls where possible:
+  - keep the previous color source kind if still selected;
+  - keep the previous `TableColorSourceSpec.identity` if it still exists for the
+    selected table and kind;
+  - otherwise fall back to the card's existing first-available-source behavior.
 - Existing feature-matrix writes to `.obsm` do not currently add Viewer color
   sources, because Viewer color sources come from table `obs` and `X`/`var`, not
   from `.obsm`. The event is still the right hook because the same event also
@@ -882,6 +913,7 @@ Implementation notes:
 
 Acceptance tests:
 
+- a non-`FeatureMatrixWrittenEvent` payload leaves Viewer cards unchanged;
 - a `feature_matrix_written` event for a different `sdata` leaves Viewer cards
   unchanged;
 - a same-`sdata` event after creating `new_table` refreshes the matching labels
@@ -890,6 +922,10 @@ Acceptance tests:
   it remains selected after the event refresh;
 - if a labels card previously had no linked table and `new_table` annotates that
   labels element, the card becomes enabled and selects `new_table`;
+- a new table that annotates a non-visible labels element does not change the
+  currently visible cards;
+- same-table feature-matrix writes that only add/update `.obsm` do not change
+  color-source controls, because `.obsm` is not a Viewer color source;
 - expanded labels rows remain expanded after the event refresh;
 - no napari layer is added or updated merely because the event was received.
 
