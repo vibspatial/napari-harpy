@@ -296,6 +296,7 @@ table name and the sentinel.
 State shape:
 
 ```python
+# Existing real tables that annotate every currently staged labels element.
 self._eligible_existing_table_names: list[str] = []
 self._create_table: bool = False
 self._selected_table_name: str | None = None
