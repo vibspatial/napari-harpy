@@ -433,23 +433,81 @@ Acceptance tests:
 
 This is the point where the UI path becomes calculable.
 
+The controller is already ready for this slice: `bind_batch(...)` accepts
+`create_table=True`, `FeatureExtractionBindingState` mirrors that mode, and
+`FeatureExtractionController.can_calculate` validates create-table names and
+collisions as a final safety net. Slice 4 should make the widget pass the
+create-table target into that existing controller path.
+
+Terminology:
+
+- existing-table mode targets `selected_table_name` with `create_table=False`;
+- create-table mode targets `selected_new_table_name` with `create_table=True`;
+- `selected_table_name` should remain `None` in create mode, because it means
+  "selected existing table" at the widget API level.
+
+Consider renaming `_table_binding_error` to `_table_target_error` in this slice.
+The old name was accurate when every target was an existing table; after this
+slice, the same stored error can describe either an invalid existing table
+binding or an invalid create-table target name.
+
 Work items:
 
-- update `_validate_selected_table_binding(...)` so it only validates existing
-  table selections;
-- add `_validate_create_table_target(...)` for the new table name;
+- keep `_validate_selected_table_binding(...)` existing-table-only:
+  - return `None` in create mode;
+  - continue using `validate_table_annotation_coverage(...)` and
+    `validate_table_region_instance_ids(...)` only for existing selected tables;
+- add `_validate_create_table_target(...)` for the new table name:
+  - return `"Enter a new table name."` when `selected_new_table_name is None`;
+  - validate the non-empty name with `normalize_spatialdata_name(..., "table name")`;
+  - reject collisions with any key in `selected_spatialdata.tables`;
+  - use the primary message
+    ``Table `<name>` already exists. Choose a different table name.`` for
+    collisions;
+  - do not check table annotation coverage or region instance ids, because the
+    table does not exist yet;
+- add a small table-target resolver, either as a helper or inline in
+  `_bind_current_selection()`:
+
+```python
+if self._create_table:
+    table_name = self.selected_new_table_name
+    create_table = True
+    table_error = self._validate_create_table_target()
+else:
+    table_name = self.selected_table_name
+    create_table = False
+    table_error = self._validate_selected_table_binding(staged_batch_state)
+```
+
 - update `_bind_current_selection()` and `_expected_controller_binding_state()`
   to pass either:
   - existing mode: `table_name=<existing>, create_table=False`;
   - create mode: `table_name=<new>, create_table=True`;
+- only pass staged triplets to the controller when:
+  - the staged batch is bindable;
+  - the resolved table target has a non-`None` name;
+  - the resolved table target has no validation error;
+- when the create-table name changes, `_on_new_table_name_changed(...)` should
+  continue calling `_bind_current_selection()`, so the controller binding and
+  status cards update immediately as the user types;
 - update `_selection_status_table_blocker()` and
   `_get_calculate_button_blocking_reason()` so create mode is blocked only by an
   invalid or missing new table name, not by the absence of an existing table;
-- update status-card wording from "No table annotates..." to something more
-  actionable when create mode is available, for example:
-  - missing name: "Enter a new table name.";
-  - invalid name: "Choose a valid table name. ...";
-  - collision: "Table `<name>` already exists. Choose a different table name."
+- extend the status-card table blocker model in
+  `widgets/feature_extraction/status_card.py` so create-table errors get their
+  own wording instead of reusing `"no_eligible"`:
+  - missing name: title `Table Not Ready`, line `Enter a new table name.`;
+  - invalid name: title `Table Not Ready`, line from the validation error;
+  - collision: title `Table Not Ready`, line
+    ``Table `<name>` already exists. Choose a different table name.``;
+- keep the calculate-button tooltip synchronized with the same table-target
+  validation message;
+- keep `_calculate_feature_matrix()` from inspecting `.obsm` in create mode.
+  Since `selected_table_name is None` in create mode, the existing overwrite
+  prompt path should remain existing-table-only, and the controller should be
+  called with `calculate(overwrite_feature_key=False)` for the normal
+  create-table click.
 
 Acceptance tests:
 
@@ -458,8 +516,17 @@ Acceptance tests:
 - the same scenario stays disabled while the new table name is empty or invalid;
 - a colliding new table name stays disabled and is explained by the primary
   status card plus the calculate-button tooltip;
+- in create mode, `bind_batch(...)` receives the staged triplets,
+  `table_name=<selected_new_table_name>`, and `create_table=True`;
+- in create mode with an invalid or missing new table name, `bind_batch(...)`
+  does not receive a calculable staged request;
+- `_expected_controller_binding_state()` matches the controller binding for both
+  existing-table and create-table modes;
 - existing-table table-binding errors still appear in the status tooltip;
 - intensity feature image requirements still apply unchanged in create mode.
+- clicking `Calculate` in create mode calls
+  `controller.calculate(overwrite_feature_key=False)` without showing the
+  existing-feature-key overwrite dialog.
 
 ### Slice 5: Keep Existing Overwrite Behavior Correct
 
