@@ -267,47 +267,120 @@ Acceptance tests:
 
 ### Slice 3: Add The Widget Dropdown Sentinel And Name Field
 
-Add the UI without changing the labels/image staging behavior.
+Add the UI without changing the labels/image staging behavior and without yet
+making create-table mode calculable. Slice 3 should make the widget able to
+represent the user's table-target choice. Slice 4 will bind that create-table
+choice into the controller.
+
+Current table-selection code assumes that the combo index maps directly into
+`_table_names`. This slice should remove that assumption. Once the combo can
+contain both real tables and a sentinel option, selection must be derived from
+`itemData(...)`, not from the visible row index.
+
+Suggested constants/types:
+
+```python
+from typing import Literal
+import uuid
+
+_CREATE_TABLE_OPTION_TEXT = "Create table..."
+_CREATE_TABLE_OPTION_DATA = ("create_table", None)
+_DEFAULT_NEW_TABLE_NAME = "features_table"
+_FeatureExtractionTableMode = Literal["existing", "create"]
+```
+
+Real table combo rows should use structured item data too, for example
+`("existing", table_name)`. That avoids any possible collision between a real
+table name and the sentinel.
+
+State shape:
+
+```python
+self._eligible_existing_table_names: list[str] = []
+self._selected_table_mode: _FeatureExtractionTableMode | None = None
+self._selected_table_name: str | None = None
+self._new_table_name: str | None = None
+```
+
+Property semantics:
+
+- `selected_table_name` remains the selected existing table name only.
+- `selected_table_name is None` while `Create table...` is selected.
+- add `selected_table_mode`, returning `"existing"`, `"create"`, or `None`;
+- add `selected_new_table_name`, returning the trimmed new table name only in
+  create mode, otherwise `None`.
 
 Work items:
 
-- rename `_table_names` internally to something like
-  `_eligible_existing_table_names` to avoid mixing real table names with the
-  sentinel option;
-- add constants for the combo sentinel, for example:
-  - display text: `Create table...`;
-  - item data: a private sentinel object/string;
-- add `self.new_table_name_line_edit` below the `Table` row and hide it by
-  default;
-- add a helper that proposes the default create-table name:
+- rename `_table_names` to `_eligible_existing_table_names` to keep real table
+  names separate from the sentinel option;
+- add the combo sentinel constants and structured item-data model;
+- add `self.new_table_name_line_edit` below the `Table` row:
+  - label: `New table name`;
+  - object name: `feature_extraction_new_table_name_line_edit`;
+  - same input stylesheet as the feature-matrix-key field;
+  - hidden by default;
+  - connected to `_on_new_table_name_changed(...)`;
+- add a helper such as `_suggest_new_table_name()`:
   - return `features_table` when it is not already in `sdata.tables`;
   - otherwise return `features_table_{uuid.uuid4()}`;
-- add state:
-  - `_selected_table_mode: Literal["existing", "create"] | None`;
-  - `_new_table_name: str | None`;
-- keep `selected_table_name` meaning "selected existing table name";
-- add a property such as `selected_new_table_name` that returns the trimmed new
-  table name in create mode;
+  - only consult `sdata.tables`, not eligible-table filtering;
+- add a helper such as `_ensure_new_table_name_suggestion()`:
+  - if `_new_table_name` already has a non-empty value, preserve it;
+  - otherwise set `_new_table_name` and the line edit text to the suggested
+    default;
+- add a helper such as `_set_create_table_name_controls_visible(is_visible)` to
+  show/hide the label and line edit together;
 - update `_refresh_table_names()` to populate eligible existing tables plus the
   sentinel when the staged labels batch is complete, with `Create table...` as
   the last combo item;
-- update `_on_table_changed(...)` to show/hide the new-name field and rebind;
-- add `_on_new_table_name_changed(...)` to rebind on text edits.
+- when the staged labels batch is not complete enough to know labels elements,
+  keep the current inactive behavior: no sentinel, combo disabled, create-name
+  field hidden;
+- update selection restoration in `_refresh_table_names()`:
+  - if previous mode was `"create"` and the sentinel is available, keep create
+    mode selected and preserve the typed new table name;
+  - else, if the previous existing table is still eligible, keep it selected;
+  - else, if at least one eligible existing table exists, select the first
+    existing table;
+  - else, if the sentinel is available, select `Create table...`;
+  - else select no table;
+- replace `_set_selected_table_name(index)` with a target-aware helper, for
+  example `_set_selected_table_target_from_combo(index)`, that reads
+  `self.table_combo.itemData(index)` and updates:
+  - `_selected_table_mode`;
+  - `_selected_table_name`;
+  - `_new_table_name`/line-edit visibility when create mode is selected;
+- update `_on_table_changed(...)` to call the target-aware helper, then
+  `_bind_current_selection()`;
+- add `_on_new_table_name_changed(...)`:
+  - store the text in `_new_table_name`;
+  - call `_bind_current_selection()` and `_update_selection_status()`;
+  - Slice 3 may still bind no existing table while create mode is selected;
+    Slice 4 will change the controller binding to `create_table=True`.
 
 Acceptance tests:
 
 - before a labels batch is complete, the table controls remain inactive as they
-  are today;
+  are today: no sentinel, combo disabled, and the new-name field hidden;
 - with one eligible existing table, the combo contains `table` and
   `Create table...`, with `table` selected by default;
 - with no eligible existing tables, the combo contains `Create table...`, it is
   enabled, and the new-name field is visible;
 - when create mode first becomes active, the new-name field is prefilled with
   `features_table` or a `features_table_<uuid>` fallback when needed;
+- the UUID fallback is deterministic in tests by monkeypatching `uuid.uuid4`;
 - switching away from create mode hides the new-name field without losing the
   typed value;
+- switching back to create mode restores the previously typed value instead of
+  replacing it with a fresh suggestion;
+- selecting `Create table...` sets `selected_table_mode == "create"`;
 - `selected_table_name` remains `None` in create mode, while
-  `selected_new_table_name` returns the trimmed new table name.
+  `selected_new_table_name` returns the trimmed new table name;
+- selecting an existing table sets `selected_table_mode == "existing"`,
+  `selected_table_name == <table>`, and `selected_new_table_name is None`;
+- `bind_batch(...)` still receives the existing-table-only target in this slice:
+  create-table controller binding is intentionally deferred to Slice 4.
 
 ### Slice 4: Bind Create-Table Widget State Into The Controller
 
