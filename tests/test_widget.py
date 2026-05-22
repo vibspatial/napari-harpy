@@ -126,6 +126,32 @@ def select_segmentation(widget: HarpyWidget, index: int = 0) -> None:
     widget.segmentation_combo.setCurrentIndex(index)
 
 
+def _combo_texts(combo: QComboBox) -> list[str]:
+    return [combo.itemText(index) for index in range(combo.count())]
+
+
+def _add_feature_table_for_labels(
+    sdata: SpatialData,
+    *,
+    table_name: str,
+    labels_name: str,
+    feature_key: str,
+) -> None:
+    table = sdata["table"].copy()
+    attrs = table.uns[TableModel.ATTRS_KEY]
+    region_key = attrs[TableModel.REGION_KEY_KEY]
+
+    table.obs[region_key] = pd.Categorical([labels_name] * table.n_obs, categories=[labels_name])
+    table.uns[TableModel.ATTRS_KEY] = {
+        **attrs,
+        TableModel.REGION_KEY: [labels_name],
+    }
+    for key in list(table.obsm.keys()):
+        del table.obsm[key]
+    table.obsm[feature_key] = np.arange(table.n_obs, dtype=np.float64).reshape(table.n_obs, 1)
+    sdata.tables[table_name] = table
+
+
 _SUCCESS_FEEDBACK_STYLE = {
     "text": "#047857",
     "border": "#a7f3d0",
@@ -1146,6 +1172,133 @@ def test_widget_ignores_feature_matrix_writes_for_other_tables(qtbot, sdata_blob
     ] == previous_items
     assert widget.selected_feature_key == "features_1"
     assert widget._persistence_controller.is_dirty is False
+
+
+def test_widget_ignores_non_feature_matrix_write_events(qtbot, sdata_blobs: SpatialData) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    previous_table_items = _combo_texts(widget.table_combo)
+    previous_feature_items = _combo_texts(widget.feature_matrix_combo)
+
+    widget._on_feature_matrix_written(object())
+
+    assert _combo_texts(widget.table_combo) == previous_table_items
+    assert _combo_texts(widget.feature_matrix_combo) == previous_feature_items
+    assert widget.selected_table_name == "table"
+    assert widget.selected_feature_key == "features_1"
+
+
+def test_widget_ignores_feature_matrix_writes_for_other_sdata(
+    qtbot,
+    sdata_blobs: SpatialData,
+    sdata_blobs_multi_region: SpatialData,
+) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    app_state = get_or_create_app_state(viewer)
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    previous_table_items = _combo_texts(widget.table_combo)
+    previous_feature_items = _combo_texts(widget.feature_matrix_combo)
+
+    app_state.emit_feature_matrix_written(
+        FeatureMatrixWrittenEvent(
+            sdata=sdata_blobs_multi_region,
+            table_name="table_multi",
+            feature_key="features_new",
+            change_kind="created",
+        )
+    )
+
+    assert _combo_texts(widget.table_combo) == previous_table_items
+    assert _combo_texts(widget.feature_matrix_combo) == previous_feature_items
+    assert widget.selected_table_name == "table"
+    assert widget.selected_feature_key == "features_1"
+
+
+def test_widget_discovers_new_feature_matrix_table_without_stealing_existing_selection(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    app_state = get_or_create_app_state(viewer)
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    previous_feature_items = _combo_texts(widget.feature_matrix_combo)
+    _add_feature_table_for_labels(
+        sdata_blobs,
+        table_name="new_table",
+        labels_name="blobs_labels",
+        feature_key="features_new",
+    )
+
+    app_state.emit_feature_matrix_written(
+        FeatureMatrixWrittenEvent(
+            sdata=sdata_blobs,
+            table_name="new_table",
+            feature_key="features_new",
+            change_kind="created",
+        )
+    )
+
+    assert _combo_texts(widget.table_combo) == ["new_table", "table"]
+    assert widget.selected_table_name == "table"
+    assert _combo_texts(widget.feature_matrix_combo) == previous_feature_items
+    assert widget.selected_feature_key == "features_1"
+    assert widget._persistence_controller.is_dirty is False
+
+
+def test_widget_auto_selects_new_feature_matrix_table_when_no_table_was_available(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    app_state = get_or_create_app_state(viewer)
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.segmentation_combo.setCurrentIndex(1)
+    mark_dirty_reasons: list[str | None] = []
+    monkeypatch.setattr(
+        widget._classifier_controller,
+        "mark_dirty",
+        lambda *, reason=None: mark_dirty_reasons.append(reason),
+    )
+
+    assert widget.selected_segmentation_name == "blobs_multiscale_labels"
+    assert widget.selected_table_name is None
+    assert widget.table_combo.count() == 0
+
+    _add_feature_table_for_labels(
+        sdata_blobs,
+        table_name="new_table",
+        labels_name="blobs_multiscale_labels",
+        feature_key="features_new",
+    )
+    app_state.emit_feature_matrix_written(
+        FeatureMatrixWrittenEvent(
+            sdata=sdata_blobs,
+            table_name="new_table",
+            feature_key="features_new",
+            change_kind="created",
+        )
+    )
+
+    assert _combo_texts(widget.table_combo) == ["new_table"]
+    assert widget.selected_table_name == "new_table"
+    assert widget.selected_feature_key == "features_new"
+    assert widget._persistence_controller.is_dirty is True
+    assert mark_dirty_reasons == []
 
 
 def test_widget_updates_color_by_mode_when_selection_changes(qtbot, sdata_blobs: SpatialData) -> None:

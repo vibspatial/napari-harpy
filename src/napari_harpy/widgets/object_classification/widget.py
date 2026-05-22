@@ -538,18 +538,36 @@ class ObjectClassificationWidget(QWidget):
     def _on_feature_matrix_written(self, event: object) -> None:
         if not isinstance(event, FeatureMatrixWrittenEvent):
             return
-        if event.sdata is not self.selected_spatialdata or event.table_name != self.selected_table_name:
+        if event.sdata is not self.selected_spatialdata:
             return
 
+        previous_effective_table_name = None if self._table_binding_error is not None else self.selected_table_name
+        previous_table_name = self.selected_table_name
+        previous_table_names = tuple(self._table_names)
         previous_feature_key = self.selected_feature_key
         self._set_persistence_feedback("")
-        self._refresh_feature_matrix_keys()
+        # Prefer the event table only when the widget had no table context yet;
+        # otherwise a newly created table must not steal an existing selection.
+        preferred_table_name = (
+            event.table_name if previous_table_name is None and not previous_table_names else None
+        )
+        self._refresh_table_names(preferred_table_name=preferred_table_name)
 
-        if self.selected_feature_key != previous_feature_key:
+        next_table_binding_error = self._validate_selected_table_binding()
+        next_effective_table_name = None if next_table_binding_error is not None else self.selected_table_name
+
+        if (
+            next_effective_table_name != previous_effective_table_name
+            or self.selected_feature_key != previous_feature_key
+        ):
             self._bind_current_selection()
             return
 
-        if event.change_kind == "updated" and previous_feature_key == event.feature_key:
+        if (
+            event.table_name == previous_table_name
+            and event.change_kind == "updated"
+            and previous_feature_key == event.feature_key
+        ):
             self._classifier_controller.invalidate_for_feature_matrix_overwrite(event.feature_key)
 
         self._update_selection_status()
@@ -800,7 +818,7 @@ class ObjectClassificationWidget(QWidget):
         finally:
             self._is_preparing_labels_layer = False
 
-    def _refresh_table_names(self) -> None:
+    def _refresh_table_names(self, *, preferred_table_name: str | None = None) -> None:
         previous_table_name = self.selected_table_name
 
         if self.selected_spatialdata is None or self.selected_segmentation_name is None:
@@ -817,6 +835,8 @@ class ObjectClassificationWidget(QWidget):
             self.table_combo.setEnabled(has_tables)
 
             next_index = -1 if previous_table_name is None else self.table_combo.findData(previous_table_name)
+            if next_index < 0 and preferred_table_name is not None:
+                next_index = self.table_combo.findData(preferred_table_name)
             if has_tables:
                 self.table_combo.setCurrentIndex(0 if next_index < 0 else next_index)
             else:

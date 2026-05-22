@@ -725,6 +725,8 @@ Acceptance tests:
 
 ### Slice 7: Refresh Object Classification From Feature-Matrix Events
 
+Status: implemented.
+
 Object Classification should become aware that Feature Extraction may create a
 new annotating table. Today
 [src/napari_harpy/widgets/object_classification/widget.py](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/widgets/object_classification/widget.py:538)
@@ -736,6 +738,47 @@ newly created table.
 This slice should keep the existing same-table feature-matrix behavior while
 adding a same-`sdata` table-list refresh path.
 
+Keep this as an `ObjectClassificationWidget` responsibility. The widget owns the
+table and feature-matrix combo boxes, while the classifier, annotation, styling,
+and persistence controllers should continue to receive the already-resolved
+widget selection through `_bind_current_selection(...)`.
+
+Implementation shape:
+
+- extend `_refresh_table_names(...)` with an optional one-shot preference:
+
+  ```python
+  def _refresh_table_names(
+      self,
+      *,
+      preferred_table_name: str | None = None,
+  ) -> None:
+      ...
+  ```
+
+- restore priority should be:
+  - if the previous selected table is still present, keep it;
+  - else if `preferred_table_name` is present and eligible, select it;
+  - else if any eligible table exists, select the first;
+  - else clear the table selection;
+- the feature-matrix event handler should only pass `preferred_table_name` for
+  the "new table became available and there was no prior table context" case.
+  In practice, that means:
+
+  ```python
+  previous_table_name = self.selected_table_name
+  previous_table_names = tuple(self._table_names)
+  preferred_table_name = (
+      event.table_name
+      if previous_table_name is None and not previous_table_names
+      else None
+  )
+  ```
+
+  This keeps the first-table fallback behavior for ordinary refreshes, while
+  preventing an event-created table from stealing selection when Object
+  Classification already had a valid table.
+
 Work items:
 
 - update `ObjectClassificationWidget._on_feature_matrix_written(...)` so it
@@ -743,9 +786,14 @@ Work items:
   `sdata`, but no longer returns early only because
   `event.table_name != self.selected_table_name`;
 - treat same-`sdata` feature-matrix events in two layers:
-  - always refresh the eligible table list for the current labels element;
-  - only refresh feature-matrix keys and invalidate an overwritten selected
-    feature matrix when `event.table_name == self.selected_table_name`;
+  - always refresh the eligible table list for the current labels element,
+    allowing `_refresh_table_names(...)` to refresh feature-matrix keys for the
+    effective selected table;
+  - only run selected-feature overwrite invalidation when
+    `event.table_name == self.selected_table_name`;
+- compare the effective selected `(table_name, feature_key)` before and after
+  the refresh. Call `_bind_current_selection()` only when the table or feature
+  matrix selection changed;
 - preserve the object-classification widget's selected table during that refresh
   whenever it is still valid. If the classifier already has a selected table,
   creating a new table elsewhere must not silently switch it to the first table
@@ -753,8 +801,10 @@ Work items:
 - auto-select the newly created table only when no table was selected before the
   refresh, no other table was available/selected, and the new table annotates the
   currently selected labels element;
-- after the table refresh, rebind the controllers only if the effective selected
-  table or feature matrix key changed;
+- do not pass a classifier dirty reason when the feature-matrix event merely
+  discovers or auto-selects a table. The classifier context may need rebinding,
+  but no trained classifier output is being invalidated by a user selection
+  change in this path;
 - same-table feature-matrix updates should preserve the existing classifier
   invalidation behavior.
 
@@ -763,13 +813,18 @@ Acceptance tests:
 - object-classification table choices can discover the new table in the same
   session when its selected labels element matches;
 - object-classification ignores events for a different `sdata`;
+- object-classification ignores non-`FeatureMatrixWrittenEvent` payloads;
 - if object classification already had `selected_table_name == "old_table"` and
   `old_table` is still valid, it remains selected after the create-table event;
 - object classification does not silently fall back to the first table or switch
   to `new_table` when a different valid table was already selected;
 - if object classification had no selected/available table and `new_table`
   annotates the currently selected labels element, it auto-selects `new_table`
-  after the event refresh.
+  after the event refresh;
+- when `new_table` is auto-selected, feature-matrix keys are refreshed and the
+  newly written `event.feature_key` can become the selected feature matrix;
+- if a new table is discovered but not selected, the current feature-matrix combo
+  still reflects the previously selected table;
 - existing object-classification behavior for updates to the currently selected
   feature matrix remains intact: overwriting the selected feature key still
   invalidates the classifier.
