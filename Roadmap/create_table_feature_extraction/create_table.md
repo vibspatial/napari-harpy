@@ -267,6 +267,8 @@ Acceptance tests:
 
 ### Slice 3: Add The Widget Dropdown Sentinel And Name Field
 
+Status: implemented.
+
 Add the UI without changing the labels/image staging behavior and without yet
 making create-table mode calculable. Slice 3 should make the widget able to
 represent the user's table-target choice. Slice 4 will bind that create-table
