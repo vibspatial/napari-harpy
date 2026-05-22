@@ -286,7 +286,7 @@ import uuid
 _CREATE_TABLE_OPTION_TEXT = "Create table..."
 _CREATE_TABLE_OPTION_DATA = ("create_table", None)
 _DEFAULT_NEW_TABLE_NAME = "features_table"
-_FeatureExtractionTableMode = Literal["existing", "create"]
+_FeatureExtractionTableComboMode = Literal["existing", "create"]
 ```
 
 Real table combo rows should use structured item data too, for example
@@ -297,7 +297,7 @@ State shape:
 
 ```python
 self._eligible_existing_table_names: list[str] = []
-self._selected_table_mode: _FeatureExtractionTableMode | None = None
+self._create_table: bool = False
 self._selected_table_name: str | None = None
 self._new_table_name: str | None = None
 ```
@@ -306,7 +306,11 @@ Property semantics:
 
 - `selected_table_name` remains the selected existing table name only.
 - `selected_table_name is None` while `Create table...` is selected.
-- add `selected_table_mode`, returning `"existing"`, `"create"`, or `None`;
+- add `selected_table_mode` as a derived read-only convenience:
+  - return `"create"` when `_create_table` is `True`;
+  - return `"existing"` when `_create_table` is `False` and
+    `_selected_table_name is not None`;
+  - otherwise return `None`;
 - add `selected_new_table_name`, returning the trimmed new table name only in
   create mode, otherwise `None`.
 
@@ -348,7 +352,7 @@ Work items:
 - replace `_set_selected_table_name(index)` with a target-aware helper, for
   example `_set_selected_table_target_from_combo(index)`, that reads
   `self.table_combo.itemData(index)` and updates:
-  - `_selected_table_mode`;
+  - `_create_table`;
   - `_selected_table_name`;
   - `_new_table_name`/line-edit visibility when create mode is selected;
 - update `_on_table_changed(...)` to call the target-aware helper, then
