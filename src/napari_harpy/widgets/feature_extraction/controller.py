@@ -610,6 +610,13 @@ class FeatureExtractionController:
         if self.is_running:
             return
 
+        if self._create_table and self._selected_table_name is not None:
+            self._set_status(
+                f"Feature extraction: ready to create table `{self._selected_table_name}` and calculate.",
+                kind="success",
+            )
+            return
+
         self._set_status("Feature extraction: ready to calculate.", kind="success")
 
     def _cancel_pending_and_active_jobs(self) -> None:

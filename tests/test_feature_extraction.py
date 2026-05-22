@@ -214,7 +214,7 @@ def test_feature_extraction_controller_bind_is_ready_for_create_table(
     job = controller._prepare_feature_extraction_job(8, overwrite_feature_key=False)
 
     assert context_changed is True
-    assert controller.status_message == "Feature extraction: ready to calculate."
+    assert controller.status_message == "Feature extraction: ready to create table `features_table` and calculate."
     assert controller.status_kind == "success"
     assert controller.can_calculate is True
     assert isinstance(job, FeatureExtractionJob)

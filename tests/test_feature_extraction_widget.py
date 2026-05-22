@@ -1351,6 +1351,9 @@ def test_feature_extraction_widget_create_table_binding_matches_expected_control
     assert widget._feature_extraction_controller.binding_state == expected_state
     assert widget.calculate_button.isEnabled() is True
     assert widget.calculate_button.toolTip() == ""
+    controller_feedback_text = unescape(widget.controller_feedback.text())
+    assert "Feature Extraction Ready" in controller_feedback_text
+    assert "ready to create table `features_table` and calculate." in controller_feedback_text
 
 
 def test_feature_extraction_widget_blocks_create_table_mode_for_missing_or_invalid_table_name(
