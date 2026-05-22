@@ -556,6 +556,9 @@ Acceptance tests:
 
 ### Slice 5: Keep Existing Overwrite Behavior Correct
 
+Status: partially implemented; remaining second-click behavior depends on
+Slice 6 promotion.
+
 Existing feature-key overwrite checks currently assume an existing selected
 table. Keep that path isolated from create-table mode, and preserve it once a
 newly created table is promoted back into existing-table mode.
