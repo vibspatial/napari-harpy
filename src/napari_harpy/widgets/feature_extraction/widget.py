@@ -610,14 +610,14 @@ class FeatureExtractionWidget(QWidget):
 
         content_layout.addWidget(title)
         content_layout.addLayout(selector_layout)
+        content_layout.addWidget(self.selection_status)
+        content_layout.addWidget(self.controller_feedback)
         content_layout.addWidget(self.triplet_cards_container)
         content_layout.addLayout(shared_controls_layout)
         content_layout.addSpacing(_FEATURE_GROUPS_TOP_SPACING)
         content_layout.addWidget(self.intensity_features_group)
         content_layout.addWidget(self.morphology_features_group)
         content_layout.addWidget(self.calculate_action_row)
-        content_layout.addWidget(self.selection_status)
-        content_layout.addWidget(self.controller_feedback)
         content_layout.addStretch(1)
 
         self._app_state.sdata_changed.connect(self._on_sdata_changed)

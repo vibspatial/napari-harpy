@@ -1456,6 +1456,31 @@ def test_feature_extraction_widget_exposes_grouped_feature_checkboxes(qtbot) -> 
     assert widget.intensity_features_hint.isHidden()
 
 
+def test_feature_extraction_widget_places_feedback_above_main_controls(qtbot) -> None:
+    widget = FeatureExtractionWidget()
+
+    qtbot.addWidget(widget)
+
+    content_layout = widget.scroll_content.layout()
+
+    def widget_index(target) -> int:
+        for index in range(content_layout.count()):
+            item = content_layout.itemAt(index)
+            if item.widget() is target:
+                return index
+        return -1
+
+    selection_status_index = widget_index(widget.selection_status)
+    controller_feedback_index = widget_index(widget.controller_feedback)
+    triplet_cards_index = widget_index(widget.triplet_cards_container)
+
+    assert selection_status_index >= 0
+    assert controller_feedback_index >= 0
+    assert triplet_cards_index >= 0
+    assert selection_status_index < triplet_cards_index
+    assert controller_feedback_index < triplet_cards_index
+
+
 def test_feature_extraction_widget_reads_back_feature_selection_and_output_key(qtbot) -> None:
     widget = FeatureExtractionWidget()
 
