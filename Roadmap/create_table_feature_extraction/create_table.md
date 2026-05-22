@@ -703,29 +703,7 @@ Work items:
 - after promotion, preserve the typed `_new_table_name` value only as inactive
   create-mode memory; it must not keep the widget in create mode;
 - emit the existing `FeatureMatrixWrittenEvent` with the new table name so dirty
-  state and downstream widgets see the table update;
-- update the object-classification widget listener so any
-  `feature_matrix_written` event for the same `sdata` refreshes table names, not
-  only events for the currently selected table. Today
-  `_on_feature_matrix_written(...)` returns early when
-  `event.table_name != self.selected_table_name`, which means it cannot discover
-  a newly created table;
-- object classification should treat same-`sdata` feature-matrix events in two
-  layers:
-  - always refresh the eligible table list for the current labels element;
-  - only refresh feature-matrix keys and invalidate an overwritten selected
-    feature matrix when `event.table_name == self.selected_table_name`;
-- preserve the object-classification widget's selected table during that refresh
-  whenever it is still valid. If the classifier already has a selected table,
-  creating a new table elsewhere must not silently switch it to the first table
-  or to the newly created table;
-- auto-select the newly created table in object classification only when no
-  table was selected before the refresh, no other table was available/selected,
-  and the new table annotates the currently selected labels element.
-- after the object-classification table refresh, rebind the controllers only if
-  the effective selected table or feature matrix key changed. Same-table
-  feature-matrix updates should preserve the existing classifier invalidation
-  behavior.
+  state and downstream widgets see the table update.
 
 Acceptance tests:
 
@@ -742,7 +720,45 @@ Acceptance tests:
   `table_name == "new_table"` and `create_table is False`;
 - a second `Calculate` click after promotion checks the existing table `.obsm`
   and uses the existing feature-key overwrite confirmation path;
-- `HarpyAppState.is_table_dirty(sdata, "new_table")` becomes `True`;
+- `HarpyAppState.is_table_dirty(sdata, "new_table")` becomes `True`.
+
+### Slice 7: Refresh Object Classification From Feature-Matrix Events
+
+Object Classification should become aware that Feature Extraction may create a
+new annotating table. Today
+[src/napari_harpy/widgets/object_classification/widget.py](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/widgets/object_classification/widget.py:538)
+listens to `feature_matrix_written`, but returns early when
+`event.table_name != self.selected_table_name`. That means it can refresh
+feature-matrix keys for the currently selected table, but it cannot discover a
+newly created table.
+
+This slice should keep the existing same-table feature-matrix behavior while
+adding a same-`sdata` table-list refresh path.
+
+Work items:
+
+- update `ObjectClassificationWidget._on_feature_matrix_written(...)` so it
+  ignores non-`FeatureMatrixWrittenEvent` objects and events for a different
+  `sdata`, but no longer returns early only because
+  `event.table_name != self.selected_table_name`;
+- treat same-`sdata` feature-matrix events in two layers:
+  - always refresh the eligible table list for the current labels element;
+  - only refresh feature-matrix keys and invalidate an overwritten selected
+    feature matrix when `event.table_name == self.selected_table_name`;
+- preserve the object-classification widget's selected table during that refresh
+  whenever it is still valid. If the classifier already has a selected table,
+  creating a new table elsewhere must not silently switch it to the first table
+  or to the newly created table;
+- auto-select the newly created table only when no table was selected before the
+  refresh, no other table was available/selected, and the new table annotates the
+  currently selected labels element;
+- after the table refresh, rebind the controllers only if the effective selected
+  table or feature matrix key changed;
+- same-table feature-matrix updates should preserve the existing classifier
+  invalidation behavior.
+
+Acceptance tests:
+
 - object-classification table choices can discover the new table in the same
   session when its selected labels element matches;
 - object-classification ignores events for a different `sdata`;
@@ -757,7 +773,7 @@ Acceptance tests:
   feature matrix remains intact: overwriting the selected feature key still
   invalidates the classifier.
 
-### Slice 7: Refresh Viewer Linked Tables From Feature-Matrix Events
+### Slice 8: Refresh Viewer Linked Tables From Feature-Matrix Events
 
 The Viewer widget also needs to become aware that feature extraction may create a
 new annotating table. Today
@@ -821,7 +837,7 @@ Acceptance tests:
 - expanded labels rows remain expanded after the event refresh;
 - no napari layer is added or updated merely because the event was received.
 
-### Slice 8: Polish And Documentation
+### Slice 9: Polish And Documentation
 
 Work items:
 
