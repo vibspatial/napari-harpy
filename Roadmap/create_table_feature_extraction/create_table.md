@@ -326,6 +326,10 @@ Work items:
   - same input stylesheet as the feature-matrix-key field;
   - hidden by default;
   - connected to `_on_new_table_name_changed(...)`;
+  - placement in the shared form:
+    - `Table`;
+    - `New table name`;
+    - `Feature matrix key`;
 - add a helper such as `_suggest_new_table_name()`:
   - return `features_table` when it is not already in `sdata.tables`;
   - otherwise return `features_table_{uuid.uuid4()}`;
