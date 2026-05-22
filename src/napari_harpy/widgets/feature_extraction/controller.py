@@ -129,10 +129,8 @@ class FeatureExtractionJob:
     change_kind: FeatureMatrixWriteChangeKind = "created"
 
     @property
-    def labels_name(self) -> str | None:
-        if len(self.request.triplets) != 1:
-            return None
-        return self.request.triplets[0].labels_name
+    def labels_names(self) -> tuple[str, ...]:
+        return tuple(triplet.labels_name for triplet in self.request.triplets)
 
     @property
     def image_name(self) -> str | None:
@@ -178,11 +176,15 @@ class FeatureExtractionResult:
     """Summary produced by a completed feature-extraction worker."""
 
     job_id: int
-    labels_name: str | None  # why do we now allow labels_name = None
+    # Tuple because a single feature-extraction request can cover a batch of labels elements.
+    labels_names: tuple[str, ...]
     table_name: str
     feature_key: str
     change_kind: FeatureMatrixWriteChangeKind = "created"
-    triplet_count: int = 1
+
+    @property
+    def triplet_count(self) -> int:
+        return len(self.labels_names)
 
 
 @thread_worker(start_thread=False, ignore_errors=True)
@@ -210,11 +212,10 @@ def _run_feature_extraction_job(job: FeatureExtractionJob) -> FeatureExtractionR
 
     return FeatureExtractionResult(
         job_id=job.job_id,
-        labels_name=job.labels_name,
+        labels_names=job.labels_names,
         table_name=job.request.table_name,
         feature_key=job.request.feature_key,
         change_kind=job.change_kind,
-        triplet_count=len(triplets),
     )
 
 
@@ -422,9 +423,10 @@ class FeatureExtractionController:
         worker.returned.connect(partial(self._on_worker_returned, job.job_id))
         worker.errored.connect(partial(self._on_worker_errored, job.job_id))
         worker.finished.connect(partial(self._on_worker_finished, job.job_id))
-        if job.triplet_count == 1 and job.labels_name is not None:
+        if job.triplet_count == 1:
+            labels_name = job.labels_names[0]
             self._set_status(
-                f"Feature extraction: calculating `{job.feature_key}` for labels element `{job.labels_name}`.",
+                f"Feature extraction: calculating `{job.feature_key}` for labels element `{labels_name}`.",
                 kind="info",
             )
         else:

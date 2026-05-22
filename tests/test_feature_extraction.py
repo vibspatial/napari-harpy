@@ -395,7 +395,7 @@ def test_feature_extraction_controller_prepares_immutable_job_payload(sdata_blob
     assert isinstance(job, FeatureExtractionJob)
     assert job.job_id == 7
     assert job.sdata is sdata_blobs
-    assert job.labels_name == "blobs_labels"
+    assert job.labels_names == ("blobs_labels",)
     assert job.image_name == "blobs_image"
     assert job.channels is None
     assert job.table_name == "table"
@@ -566,7 +566,7 @@ def test_feature_extraction_controller_notifies_table_state_change_on_success(sd
     table_state_changes: list[FeatureExtractionResult] = []
     result = FeatureExtractionResult(
         job_id=1,
-        labels_name="blobs_labels",
+        labels_names=("blobs_labels",),
         table_name="table",
         feature_key="feature_matrix_1",
     )
@@ -609,7 +609,7 @@ def test_feature_extraction_controller_notifies_feature_matrix_written_on_succes
     deferred_worker = _DeferredWorker(
         FeatureExtractionResult(
             job_id=1,
-            labels_name="blobs_labels",
+            labels_names=("blobs_labels",),
             table_name="table",
             feature_key="feature_matrix_1",
             change_kind="created",
@@ -653,7 +653,7 @@ def test_feature_extraction_controller_calculate_accepts_one_shot_overwrite_over
     deferred_worker = _DeferredWorker(
         FeatureExtractionResult(
             job_id=1,
-            labels_name="blobs_labels",
+            labels_names=("blobs_labels",),
             table_name="table",
             feature_key="feature_matrix_1",
         )
@@ -689,7 +689,7 @@ def test_feature_extraction_controller_calculate_launches_job_with_selected_chan
     deferred_worker = _DeferredWorker(
         FeatureExtractionResult(
             job_id=1,
-            labels_name="blobs_labels",
+            labels_names=("blobs_labels",),
             table_name="table",
             feature_key="feature_matrix_1",
         )
@@ -759,7 +759,7 @@ def test_run_feature_extraction_job_passes_channels_to_harpy(monkeypatch, sdata_
     assert captured_kwargs["overwrite_output_table"] is False
     assert result == FeatureExtractionResult(
         job_id=4,
-        labels_name="blobs_labels",
+        labels_names=("blobs_labels",),
         table_name="table",
         feature_key="feature_matrix_1",
     )
@@ -818,11 +818,11 @@ def test_run_feature_extraction_job_submits_multi_target_request_to_harpy(
     assert captured_kwargs["overwrite_feature_key"] is True
     assert result == FeatureExtractionResult(
         job_id=5,
-        labels_name=None,
+        labels_names=("blobs_labels", "blobs_multiscale_labels"),
         table_name="table",
         feature_key="feature_matrix_batch",
-        triplet_count=2,
     )
+    assert result.triplet_count == 2
 
 
 def test_run_feature_extraction_job_fills_one_feature_matrix_for_multiple_regions(
@@ -880,11 +880,11 @@ def test_run_feature_extraction_job_fills_one_feature_matrix_for_multiple_region
 
     assert result == FeatureExtractionResult(
         job_id=6,
-        labels_name=None,
+        labels_names=("blobs_labels", "blobs_labels_2"),
         table_name="table_multi",
         feature_key=feature_key,
-        triplet_count=2,
     )
+    assert result.triplet_count == 2
     assert features.shape == (table.n_obs, 1)
     assert np.all(features[region_values == "blobs_labels", 0] == 1.0)
     assert np.all(features[region_values == "blobs_labels_2", 0] == 2.0)
@@ -932,7 +932,7 @@ def test_run_feature_extraction_job_submits_create_table_request_to_harpy(
     assert captured_kwargs["overwrite_feature_key"] is False
     assert result == FeatureExtractionResult(
         job_id=7,
-        labels_name="blobs_labels",
+        labels_names=("blobs_labels",),
         table_name="features_table",
         feature_key="feature_matrix_1",
     )
@@ -973,7 +973,7 @@ def test_feature_extraction_controller_notifies_table_state_before_feature_matri
     notification_order: list[str] = []
     result = FeatureExtractionResult(
         job_id=1,
-        labels_name="blobs_labels",
+        labels_names=("blobs_labels",),
         table_name="table",
         feature_key="feature_matrix_1",
         change_kind="created",
@@ -1008,7 +1008,7 @@ def test_feature_extraction_controller_drops_stale_results_after_rebinding(sdata
     deferred_worker = _DeferredWorker(
         FeatureExtractionResult(
             job_id=1,
-            labels_name="blobs_labels",
+            labels_names=("blobs_labels",),
             table_name="table",
             feature_key="feature_matrix_1",
         )

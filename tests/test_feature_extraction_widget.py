@@ -1831,7 +1831,7 @@ def test_feature_extraction_widget_refreshes_table_state_after_controller_succes
     widget._on_controller_table_state_changed(
         FeatureExtractionResult(
             job_id=1,
-            labels_name="blobs_labels",
+            labels_names=("blobs_labels",),
             table_name="table",
             feature_key="features",
         )
@@ -1862,7 +1862,7 @@ def test_feature_extraction_widget_promotes_created_table_to_existing_selection(
     widget._on_controller_table_state_changed(
         FeatureExtractionResult(
             job_id=1,
-            labels_name="blobs_labels",
+            labels_names=("blobs_labels",),
             table_name="new_table",
             feature_key="features",
         )
@@ -1910,7 +1910,7 @@ def test_feature_extraction_widget_uses_existing_overwrite_prompt_after_created_
     widget._on_controller_table_state_changed(
         FeatureExtractionResult(
             job_id=1,
-            labels_name="blobs_labels",
+            labels_names=("blobs_labels",),
             table_name="new_table",
             feature_key="features",
         )
