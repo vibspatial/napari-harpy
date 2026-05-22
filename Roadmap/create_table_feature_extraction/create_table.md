@@ -590,6 +590,12 @@ Acceptance tests:
 After Harpy creates the table, the widget should move from create mode to the new
 authoritative existing table.
 
+Without an explicit preference, the current widget selection restoration would
+try to preserve the previous create-table sentinel after refresh. That would
+leave the widget in create mode with a now-colliding table name. Slice 6 should
+therefore promote the successful target table into normal existing-table mode as
+a one-shot post-success preference.
+
 Use the controller's local table-refresh hook for this, not the shared
 `feature_matrix_written` app-state event. That hook already exists for local
 table-context refreshes, but today it has no payload:
@@ -598,8 +604,8 @@ table-context refreshes, but today it has no payload:
 on_table_state_changed: Callable[[], None] | None
 ```
 
-For create-table mode, change it to carry the completed
-`FeatureExtractionResult`:
+Change it to always carry the completed `FeatureExtractionResult`, for both
+existing-table writes and create-table writes:
 
 ```python
 on_table_state_changed: Callable[[FeatureExtractionResult], None] | None
@@ -609,29 +615,59 @@ The controller should call this before emitting the shared
 `FeatureMatrixWrittenEvent`, so the owning Feature Extraction widget can refresh
 its table choices, prefer the newly created table, and rebind before downstream
 widgets consume the shared semantic event.
+For create-table success, the widget uses `result.table_name` as a one-shot
+preferred existing-table selection. For existing-table success, this remains a
+targeted refresh/rebind hook and should preserve the current existing table
+selection.
 
 Work items:
 
 - update `FeatureExtractionController._notify_table_state_changed(...)` to accept
   and forward `FeatureExtractionResult`;
+- update `FeatureExtractionController.__init__(...)` type annotations for
+  `on_table_state_changed`;
+- update `_on_worker_returned(...)` to call
+  `_notify_table_state_changed(result)` before
+  `_notify_feature_matrix_written(result)`;
 - update the existing controller comment there: this is no longer only a future
   "may create or relink a table" hook; it is the mechanism that promotes a
   successful create-table run into normal existing-table mode;
 - update `FeatureExtractionWidget._on_controller_table_state_changed(...)` to
   accept the result and treat `result.table_name` as the one-shot preferred table
   for the next refresh;
-- make the success refresh prefer `event.table_name` or the job result table name
-  when repopulating table options;
-- after creation, select the newly created table in the `Table` combo;
+- add a widget helper or small state field for the one-shot preference, for
+  example `_preferred_existing_table_name_after_success: str | None`;
+- update `_refresh_table_names(...)` so the restore priority is:
+  - if a one-shot preferred existing table is present and eligible, select it;
+  - else if previous mode was create and the sentinel is available, keep create
+    mode selected;
+  - else if the previous existing table is still eligible, keep it selected;
+  - else if at least one eligible existing table exists, select the first;
+  - else if the sentinel is available, select `Create table...`;
+  - else select no table;
+- clear the one-shot preferred table after one refresh attempt, regardless of
+  whether it was found, so ordinary user selection rules resume afterwards;
+- after creation, select the newly created table in the `Table` combo as an
+  existing-table row;
 - hide the `New table name` field once the new table is selected as an existing
   table;
 - rebind the controller after that promotion with `table_name=<new_table>` and
   `create_table=False`;
+- after promotion, preserve the typed `_new_table_name` value only as inactive
+  create-mode memory; it must not keep the widget in create mode;
 - emit the existing `FeatureMatrixWrittenEvent` with the new table name so dirty
   state and downstream widgets see the table update;
 - update the object-classification widget listener so any
   `feature_matrix_written` event for the same `sdata` refreshes table names, not
-  only events for the currently selected table;
+  only events for the currently selected table. Today
+  `_on_feature_matrix_written(...)` returns early when
+  `event.table_name != self.selected_table_name`, which means it cannot discover
+  a newly created table;
+- object classification should treat same-`sdata` feature-matrix events in two
+  layers:
+  - always refresh the eligible table list for the current labels element;
+  - only refresh feature-matrix keys and invalidate an overwritten selected
+    feature matrix when `event.table_name == self.selected_table_name`;
 - preserve the object-classification widget's selected table during that refresh
   whenever it is still valid. If the classifier already has a selected table,
   creating a new table elsewhere must not silently switch it to the first table
@@ -639,16 +675,30 @@ Work items:
 - auto-select the newly created table in object classification only when no
   table was selected before the refresh, no other table was available/selected,
   and the new table annotates the currently selected labels element.
+- after the object-classification table refresh, rebind the controllers only if
+  the effective selected table or feature matrix key changed. Same-table
+  feature-matrix updates should preserve the existing classifier invalidation
+  behavior.
 
 Acceptance tests:
 
+- the controller table-state callback receives the `FeatureExtractionResult`;
+- the controller still emits the local table-state callback before the shared
+  `FeatureMatrixWrittenEvent`;
 - after a fake successful create-table result, `_refresh_table_names()` selects
   the new table;
 - after that refresh, `selected_table_name == "new_table"` and
   `selected_new_table_name is None`;
+- after that refresh, `selected_table_mode == "existing"` and
+  `new_table_name_line_edit` is hidden;
+- after that refresh, the Feature Extraction controller binding has
+  `table_name == "new_table"` and `create_table is False`;
+- a second `Calculate` click after promotion checks the existing table `.obsm`
+  and uses the existing feature-key overwrite confirmation path;
 - `HarpyAppState.is_table_dirty(sdata, "new_table")` becomes `True`;
 - object-classification table choices can discover the new table in the same
   session when its selected labels element matches;
+- object-classification ignores events for a different `sdata`;
 - if object classification already had `selected_table_name == "old_table"` and
   `old_table` is still valid, it remains selected after the create-table event;
 - object classification does not silently fall back to the first table or switch
@@ -656,6 +706,9 @@ Acceptance tests:
 - if object classification had no selected/available table and `new_table`
   annotates the currently selected labels element, it auto-selects `new_table`
   after the event refresh.
+- existing object-classification behavior for updates to the currently selected
+  feature matrix remains intact: overwriting the selected feature key still
+  invalidates the classifier.
 
 ### Slice 7: Refresh Viewer Linked Tables From Feature-Matrix Events
 
