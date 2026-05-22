@@ -557,7 +557,8 @@ Acceptance tests:
 ### Slice 5: Keep Existing Overwrite Behavior Correct
 
 Existing feature-key overwrite checks currently assume an existing selected
-table. Keep that path isolated from create-table mode.
+table. Keep that path isolated from create-table mode, and preserve it once a
+newly created table is promoted back into existing-table mode.
 
 This matters for the common "clicked Calculate twice" flow. The first click with
 `create_table=True` creates `request.table_name` and writes the feature matrix.
@@ -566,24 +567,67 @@ second click should see `sdata.tables[new_table].obsm[feature_key]`, show the
 existing feature-key overwrite confirmation, and call Harpy with
 `table_name="new_table"`, `create_table=False`, and `overwrite_feature_key=True`.
 
+Current code already contains the first half of this behavior:
+
+- `_calculate_feature_matrix()` only checks `.obsm` when
+  `selected_table_name is not None`, `_table_target_state.error_text is None`,
+  and `_create_table is False`;
+- create-table mode calls
+  `controller.calculate(overwrite_feature_key=False)` without showing the
+  overwrite dialog;
+- `FeatureExtractionController._prepare_feature_extraction_job(...)` still has a
+  defensive guard that rejects `create_table=True` with
+  `overwrite_feature_key=True`;
+- table-name collisions are hard-blocked before calculation, and
+  `_run_feature_extraction_job(...)` always passes
+  `overwrite_output_table=False`.
+
+The remaining part is tied to Slice 6: after a successful create-table run, the
+widget must be in existing-table mode before the next click, so the existing
+`.obsm[feature_key]` overwrite confirmation can run normally.
+
 Work items:
 
-- in `_calculate_feature_matrix()`, only inspect `table.obsm` and prompt for
-  feature-key overwrite in existing-table mode;
-- in create-table mode, never send `overwrite_feature_key=True`;
-- block table-name collisions before calculation;
-- do not add an `overwrite_output_table=True` path; table collisions are a hard
-  block.
+- keep `_calculate_feature_matrix()` existing-table-only for `.obsm` inspection:
+  - require `_create_table is False`;
+  - require a non-`None` `selected_table_name`;
+  - require no table-target error;
+- keep create-table clicks one-way:
+  - never show `_prompt_overwrite_feature_key_confirmation(...)`;
+  - call `controller.calculate(overwrite_feature_key=False)`;
+- keep the controller's `create_table and overwrite_feature_key` guard as a
+  defensive backstop;
+- keep table-name collisions as hard blocks. Do not add an
+  `overwrite_output_table=True` path;
+- after Slice 6 promotes a created table to existing-table mode, ensure the next
+  click uses the existing-table overwrite path:
+  - inspect `sdata.tables[new_table].obsm`;
+  - prompt if `.obsm[feature_key]` exists;
+  - on confirmation, call
+    `controller.calculate(overwrite_feature_key=True)`;
+  - the controller request should then have `table_name="new_table"`,
+    `create_table=False`, and `overwrite_feature_key=True`.
 
 Acceptance tests:
 
-- create-table mode does not call `_prompt_overwrite_feature_key_confirmation`;
+- create-table mode does not call `_prompt_overwrite_feature_key_confirmation`,
+  even if another existing table contains the same feature key;
+- create-table mode calls `controller.calculate(overwrite_feature_key=False)`;
 - existing-table mode still prompts when `.obsm[feature_key]` already exists;
+- if the existing-table overwrite prompt is cancelled, calculation is not
+  launched;
+- if the existing-table overwrite prompt is confirmed, calculation is launched
+  with `overwrite_feature_key=True`;
+- the controller still rejects `calculate(overwrite_feature_key=True)` while
+  bound in create-table mode;
+- a new table name colliding with any existing `sdata.tables` key keeps
+  Calculate disabled with a clear status-card message and matching tooltip;
 - after a successful create-table run, clicking `Calculate` again follows the
   existing-table overwrite prompt path rather than the create-table collision
   path;
-- a new table name colliding with any existing `sdata.tables` key keeps
-  Calculate disabled with a clear status-card message and matching tooltip.
+- after promotion, the second-click test should assert
+  `create_table is False` in the controller binding before triggering the
+  overwrite prompt.
 
 ### Slice 6: Refresh Selection After The New Table Is Created
 
