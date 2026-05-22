@@ -10,7 +10,8 @@ y
 gene
 ```
 
-The goal is to visualize these points efficiently in **napari**, without loading all points into a `Points` layer at once.
+The goal is to visualize these points efficiently in **napari**, without
+loading an over-budget point selection into a `Points` layer at once.
 
 The recommended design is inspired by Neuroglancer's annotation rendering model:
 
@@ -19,17 +20,18 @@ The recommended design is inspired by Neuroglancer's annotation rendering model:
 - Store complete or nearly complete point data at fine levels.
 - Use a **manifest** to map viewport queries to tile data.
 - Use a **gene/category index** to avoid loading irrelevant tiles.
-- Optionally use a **gene-major exact cache** for selected genes that fit within
-  the point render budget.
 - Feed napari only a **small visible subset** of points.
 
 ---
 
 ## Core Principle
 
-Do **not** pass the full SpatialData points table directly to napari.
+Prefer the persistent point cache whenever a valid cache exists for the selected
+points element, coordinate system, coordinate transform, and category column.
+The direct SpatialData path remains the fallback for users who have not built a
+cache or explicitly disable cached rendering.
 
-Instead:
+When a valid cache exists, use:
 
 ```text
 SpatialData points element
@@ -43,7 +45,65 @@ small NumPy/Pandas visible subset
 ordinary napari Points layer
 ```
 
-The napari `Points` layer should only contain the currently visible subset.
+In cached mode, the napari `Points` layer should only contain the currently
+visible subset.
+
+---
+
+## Cache-First Rendering Policy
+
+Users keep the existing render-budget workflow:
+
+```text
+user chooses render budget
+user selects genes, a few genes, or all/no genes
+user clicks Add / Update in viewer
+```
+
+On each `Add / Update in viewer` click, choose the render path from cache
+availability:
+
+```text
+valid cache available
+  -> cached/live mode
+  -> query the persistent tile cache using render_budget as the target for level selection
+  -> trust the selected cache level rather than resampling the query result
+  -> create a fresh live napari Points layer for the render request
+  -> update that layer on debounced viewport changes
+
+no valid cache, or cached rendering disabled
+  -> direct fallback mode
+  -> reuse the current direct implementation and its render-budget behavior
+  -> create a fresh static napari Points layer
+  -> no viewport-driven updates
+```
+
+With a valid cache, selected genes and all/no-gene selections use the same
+cached query path. If the finest visible cached level fits the render budget,
+the cache returns exact points for the viewport. If not, the query chooses a
+coarser sampled level.
+
+Render-path selection happens only when the user changes the selection or render
+budget and clicks `Add / Update in viewer`. Camera movement must not switch
+between cached and direct modes. Camera movement only updates the current
+cached/live layer and may choose a different cached level for the new viewport.
+
+Cached rendering does not mean "always sampled"; it means "sampled when needed,
+exact when locally affordable."
+
+Layer lifecycle should stay simple:
+
+```text
+each Add / Update click creates a new napari Points layer object
+the previous Harpy-managed points render layer for the same source is retired
+any previous cached/live query controller/listener is stopped
+the new request is either cached/live or direct/static fallback
+```
+
+This matches the current direct points adapter behavior, which replaces the old
+Harpy-managed points layer with a fresh layer object for the same source
+identity. The cached/live implementation should keep that same lifecycle rule
+and additionally retire any old viewport-update worker/controller.
 
 ---
 
@@ -80,13 +140,6 @@ A practical cache layout:
         shard_00000.parquet
         shard_00001.parquet
         ...
-
-  exact_genes/
-    manifest.parquet
-    shards/
-      shard_00000.parquet
-      shard_00001.parquet
-      ...
 ```
 
 Where:
@@ -96,33 +149,7 @@ level 0 = coarsest / most downsampled
 level N = finest / most complete
 ```
 
-The `exact_genes/` directory is optional. It stores a complementary gene-major
-view of the full-resolution point data for selected-gene queries where the
-visible exact count fits within the render budget.
-
-A simpler first implementation can use one file per tile:
-
-```text
-.sdata_points_cache/
-  cache_metadata.json
-  genes.parquet
-
-  level_0_manifest.parquet
-  level_0_gene_tile_counts.parquet
-  level_0_tiles/
-    tile_0_0.parquet
-    tile_0_1.parquet
-    ...
-
-  level_1_manifest.parquet
-  level_1_gene_tile_counts.parquet
-  level_1_tiles/
-    tile_0_0.parquet
-    tile_0_1.parquet
-    ...
-```
-
-For production-scale datasets, prefer sharded Parquet files with one row group per tile.
+Use sharded Parquet files with one row group per logical tile from the start.
 
 ---
 
@@ -390,105 +417,15 @@ gene_code: int32
 sample_rank: uint64
 ```
 
-Recommended row order inside each tile:
+Required row order inside each tile:
 
 ```text
 gene_code, sample_rank
 ```
 
-or:
-
-```text
-gene_code, id
-```
-
-For visualization, prefer:
-
-```text
-gene_code, sample_rank
-```
-
-This allows deterministic downsampling.
-
----
-
-## Optional Exact Gene Cache
-
-The tile pyramid is tile-major. It is optimized for normal spatial browsing,
-especially when no gene is selected or many genes are visible.
-
-However, selected-gene rendering has a useful special case:
-
-```text
-if the user selects one or a few genes
-and the exact visible count is <= points_render_budget
-then show those genes exactly, even at zoomed-out levels
-```
-
-With only the tile-major cache, this can require reading many tile row groups
-that mostly contain other genes, then filtering to the selected genes in memory.
-
-To support exact selected-gene rendering efficiently, add an optional
-gene-major cache alongside the tile pyramid:
-
-```text
-exact_genes/
-  manifest.parquet
-  shards/
-    shard_00000.parquet
-    shard_00001.parquet
-    ...
-```
-
-This cache stores full-resolution points organized primarily by `gene_code`.
-It is not a replacement for the tile pyramid. It is a complementary read path
-for cases where exact selected-gene rendering fits the point render budget.
-
-Recommended manifest schema:
-
-```text
-gene_code: int32
-chunk_id: int32
-
-xmin: float64
-xmax: float64
-ymin: float64
-ymax: float64
-
-n_points: int64
-
-shard_path: string
-row_group: int32
-```
-
-Each row group contains full-resolution point rows:
-
-```text
-id: uint64
-x: float32 or float64
-y: float32 or float64
-gene_code: int32
-tile_x: int32
-tile_y: int32
-tile_id: int64
-sample_rank: uint64
-```
-
-For a simple implementation, use one row group per gene.
-
-For large or abundant genes, split each gene into chunks, for example targeting
-64k-256k points per row group. Rows within each gene can be sorted by:
-
-```text
-tile_id, sample_rank
-```
-
-or by a spatial key such as Morton/Hilbert order if spatial pruning inside very
-large genes becomes important.
-
-Avoid using one row group per `(tile_id, gene_code)` as the default. That layout
-can create a very large number of tiny row groups for transcript datasets with
-many genes and many tiles.
+Rows should be grouped primarily by `gene_code` so gene switches can be handled
+snappily. Within each gene range, `sample_rank` provides a deterministic order
+for stable display and any future gene-local operations.
 
 ---
 
@@ -501,7 +438,7 @@ tile_x = floor((x - origin_x) / tile_size_x)
 tile_y = floor((y - origin_y) / tile_size_y)
 tile_id = make_tile_id(tile_x, tile_y)
 gene_code = categorical_code(gene)
-sample_rank = stable_hash(id, level)
+sample_rank = stable_hash(id)
 ```
 
 Then sort by:
@@ -530,6 +467,16 @@ fast gene filtering
 stable point order
 deterministic downsampling
 ```
+
+Use a level-independent `sample_rank`:
+
+```python
+sample_rank = stable_hash(id)
+```
+
+This makes samples nested across levels: points that are visible in a coarser
+sample tend to remain present as the viewer moves to finer levels. That should
+reduce visual popping during zoom changes.
 
 ---
 
@@ -590,33 +537,76 @@ genes.parquet
 
 ### Step 3: Build Each Level
 
-For each level:
+Build every level as a self-contained representation of the full normalized
+points source. Do not build residual levels where points emitted at one level
+are removed from the input for the next level. The viewport query displays one
+chosen level at a time, so each level must be able to answer the query on its
+own.
+
+Use this build shape:
 
 ```python
-tile_x = floor((x - origin_x) / tile_size_x)
-tile_y = floor((y - origin_y) / tile_size_y)
-tile_id = make_tile_id(tile_x, tile_y)
+def build_levels(normalized_path, levels, cache_dir):
+    for level in levels:
+        points = scan_parquet(normalized_path)
+
+        points = points.with_columns([
+            tile_x_expr(level),
+            tile_y_expr(level),
+            tile_id_expr(level),
+            sample_rank_expr(point_id),
+        ])
+
+        ranked = rank_within_tile(points, by="sample_rank")
+
+        if level.is_finest:
+            emitted = ranked
+        else:
+            emitted = ranked.filter(rank_in_tile <= level.max_points_per_tile)
+
+        write_level_tiles_and_manifest(
+            emitted,
+            level=level,
+            cache_dir=cache_dir,
+        )
 ```
 
-Group by tile:
+Conceptually, for each level:
 
 ```python
-groupby(tile_id)
+points = points.with_columns([
+    tile_x_expr(level),
+    tile_y_expr(level),
+    tile_id_expr(level),
+    sample_rank_expr(point_id),
+])
 ```
 
-For each tile:
+Then rank points within each tile by `sample_rank`:
 
 ```python
-if n_points <= max_points_per_tile:
-    keep all points
+ranked = points.with_columns(
+    row_number()
+    .over("tile_id")
+    .sort_by("sample_rank")
+    .alias("rank_in_tile")
+)
+```
+
+For sampled levels, keep only the first `level.max_points_per_tile` points in
+each tile. For the finest level, keep all points:
+
+```python
+if level.is_finest:
+    emitted = ranked
 else:
-    keep deterministic sample of max_points_per_tile
+    emitted = ranked.filter(rank_in_tile <= level.max_points_per_tile)
 ```
 
 Use a stable hash for sampling:
 
 ```python
-sample_rank = stable_hash(id, level)
+sample_rank = stable_hash(id)
 ```
 
 Keep points with the lowest sample ranks:
@@ -635,14 +625,6 @@ tile_points = tile_points.sort_values(["gene_code", "sample_rank"])
 
 ### Step 4: Write Tile Data
 
-For a first implementation:
-
-```text
-one Parquet file per tile
-```
-
-For a production implementation:
-
 ```text
 one Parquet row group per tile
 multiple tiles per shard file
@@ -653,12 +635,6 @@ The manifest row should point to the physical location:
 ```text
 shard_path
 row_group
-```
-
-or, in a simpler implementation:
-
-```text
-tile_path
 ```
 
 ---
@@ -707,49 +683,14 @@ Because tile rows are sorted by `gene_code`, each gene occupies a contiguous ran
 
 ---
 
-### Step 7: Optionally Write the Exact Gene Cache
-
-For each gene, write full-resolution points to `exact_genes/`.
-
-For a simple implementation:
-
-```text
-one Parquet row group per gene
-```
-
-For larger genes:
-
-```text
-one Parquet row group per gene chunk
-```
-
-Write `exact_genes/manifest.parquet` with:
-
-```text
-gene_code
-chunk_id
-xmin
-xmax
-ymin
-ymax
-n_points
-shard_path
-row_group
-```
-
-This cache is used only when selected-gene exact rendering is expected to stay
-within `points_render_budget` / `max_visible_points`.
-
----
-
-## Choosing a Level at Query Time
+## Choosing a Tiled Level at Query Time
 
 Given:
 
 ```text
 viewport bbox
 selected genes
-max_visible_points
+render_budget
 ```
 
 Estimate the number of points at each level.
@@ -779,94 +720,37 @@ estimated_count = gene_tile_counts[
 ]["n_points_stored"].sum()
 ```
 
-For selected-gene exact rendering, estimate a conservative full-resolution
-visible count using the finest/full level and `n_points_total`:
-
-```python
-estimated_exact_count = gene_tile_counts[
-    (gene_tile_counts.level == finest_level) &
-    (gene_tile_counts.tile_x >= tile_x_min) &
-    (gene_tile_counts.tile_x <= tile_x_max) &
-    (gene_tile_counts.tile_y >= tile_y_min) &
-    (gene_tile_counts.tile_y <= tile_y_max) &
-    (gene_tile_counts.gene_code.isin(selected_gene_codes))
-]["n_points_total"].sum()
-```
-
-This is an upper bound because it counts whole tiles that intersect the viewport.
-If the exact gene cache is chunked, `exact_genes/manifest.parquet` can provide a
-second, usually tighter, upper bound by summing `n_points` for chunks whose
-bounding boxes intersect the viewport.
-
-If few genes are selected, `exact_genes/` exists, and:
+Pick the finest tile-pyramid level where:
 
 ```text
-estimated_exact_count <= points_render_budget
+estimated_count <= render_budget
 ```
 
-prefer the exact gene-major read path instead of a sampled zoomed-out level.
-
-If exact selected-gene rendering is not possible, pick the finest tile-pyramid
-level where:
-
-```text
-estimated_count <= max_visible_points
-```
-
-If all levels exceed the limit, pick the coarsest level and apply a final deterministic cap.
+If all levels exceed the limit, pick the coarsest level and display that cached
+representation as-is. Do not apply a second deterministic cap at query time.
+Cache parameters should be chosen so the coarsest level remains acceptable for
+overview rendering.
 
 ---
 
-## Query Path
+## Tiled Query Path
 
 Given a napari viewport and selected genes:
 
 ```text
 xmin, xmax, ymin, ymax
 selected_gene_codes
-max_visible_points
+render_budget
 ```
 
 ### 1. Choose query path and level
 
 Use the manifest and gene index to estimate visible point counts.
 
-If few genes are selected and the exact visible count is within
-`points_render_budget` / `max_visible_points`, use `exact_genes/` and return
-full-resolution points for those genes.
+Choose a tile-pyramid level based on the visible-count estimate and render
+budget.
 
-Otherwise, choose a tile-pyramid level.
-
-### 2A. Exact gene-major path
-
-Use `exact_genes/manifest.parquet` to find row groups for the selected genes.
-
-If the exact gene cache uses chunks, prune chunks by their bounding boxes:
-
-```python
-chunks = exact_gene_manifest[
-    (exact_gene_manifest.gene_code.isin(selected_gene_codes)) &
-    (exact_gene_manifest.xmax >= xmin) &
-    (exact_gene_manifest.xmin <= xmax) &
-    (exact_gene_manifest.ymax >= ymin) &
-    (exact_gene_manifest.ymin <= ymax)
-]
-```
-
-Read those gene row groups, then apply the exact viewport filter:
-
-```python
-points = points[
-    (points.x >= xmin) &
-    (points.x <= xmax) &
-    (points.y >= ymin) &
-    (points.y <= ymax)
-]
-```
-
-This path is intended for selected-gene queries that can be rendered exactly.
-
-### 2B. Tile-pyramid path
+### 2. Tile-pyramid path
 
 Find intersecting tiles.
 
@@ -882,12 +766,6 @@ For each selected tile:
 
 ```text
 read shard_path + row_group
-```
-
-or:
-
-```text
-read tile_path
 ```
 
 ### 5. Apply exact filtering
@@ -909,13 +787,14 @@ Filter by gene:
 tile = tile[tile.gene_code.isin(selected_gene_codes)]
 ```
 
-### 6. Cap if needed
+### 6. Trust the selected cache level
 
-If the result is still too large:
+Do not apply an additional viewport-wide budget trim after loading tiles. The
+cache already encodes the approximation through its level choice, tile size, and
+`max_points_per_tile`.
 
-```python
-result = result.nsmallest(max_visible_points, "sample_rank")
-```
+Unexpected manifest/cache mismatches should be treated as diagnostics, not as a
+normal reason to resample the query result.
 
 ### 7. Return napari-ready data
 
@@ -936,7 +815,11 @@ features = {"gene": gene_names}
 
 ## napari Integration
 
-Create one `Points` layer:
+On each `Add / Update in viewer` click, create a fresh `Points` layer for the
+new render request.
+
+If a valid cache is available, create one fresh live `Points` layer for the
+request:
 
 ```python
 layer = viewer.add_points(
@@ -947,20 +830,123 @@ layer = viewer.add_points(
 )
 ```
 
-On viewport or gene-filter change:
+On viewport changes, query the tile source and update that same live layer:
 
 ```python
 visible = tile_source.query(
     bbox=current_view_bbox(viewer),
     selected_genes=selected_genes,
-    max_visible_points=100_000,
+    render_budget=100_000,
 )
 
-layer.data = visible.coords_yx
-layer.features = {"gene": visible.gene_names}
-layer.face_color = "gene"
+update_live_points_layer(
+    layer,
+    coords_yx=visible.coords_yx,
+    features={"gene": visible.gene_names},
+)
+```
+
+The cached query may choose the finest complete level, in which case the visible
+points are exact. If the finest visible level exceeds the render budget, the
+query chooses a coarser sampled level.
+
+If no valid cache is available, use the current direct path:
+
+```text
+_points_value_index.load_points(...)
+  -> materialized direct selection using the current render-budget behavior
+  -> fresh static napari Points layer
+  -> no camera listener
+```
+
+When the user clicks `Add / Update in viewer` again, the new request should
+create a new `Points` layer object and retire the previous Harpy-managed points
+render layer for the same source. If the previous request was cached/live, also
+stop its debounced camera listener and ignore any stale query results.
+
+### Safe In-Place Points Layer Updates
+
+Cached/live mode should keep one persistent napari `Points` layer and update
+its payload in place. Replacing the layer on every pan or zoom would reset
+viewer state and is unlikely to feel snappy.
+
+However, plain in-place updates are not always safe:
+
+```python
+layer.data = coords_yx
+layer.features = features
 layer.refresh()
 ```
+
+In napari 0.7.0, this can leave stale private view indices during the update
+when experimental async slicing is enabled. If the new data array is shorter
+than the old one, hover/status/render callbacks can temporarily read old
+`_indices_view` values against the new shorter `data` array and raise an
+`IndexError`.
+
+Use a guarded update sequence:
+
+```python
+from contextlib import ExitStack
+
+
+def update_live_points_layer(layer, *, coords_yx, features) -> None:
+    with ExitStack() as stack:
+        stack.enter_context(layer.events.blocker_all())
+        stack.enter_context(layer._face.events.blocker_all())
+        stack.enter_context(layer._border.events.blocker_all())
+        stack.enter_context(layer.text.events.blocker_all())
+
+        layer.selected_data = set()
+        layer._value = None
+        layer.data = coords_yx
+        layer.features = features
+
+    layer.set_view_slice()
+    layer._refresh_sync(
+        thumbnail=False,
+        data_displayed=True,
+        highlight=False,
+        extent=False,
+        force=True,
+    )
+```
+
+Important details:
+
+```text
+block layer, face-color, border-color, and text events while the layer payload
+is internally inconsistent
+
+assign data before features, because napari validates feature length against
+the current data length
+
+clear transient selection/hover state before the payload swap
+
+force a synchronous set_view_slice() before emitting the single visual update
+
+do not reset face_color on every viewport update; configure the color mode once
+when creating the live layer, then update data/features only
+```
+
+This uses napari private APIs (`_face`, `_border`, `_value`, `_refresh_sync`),
+so it should be isolated in one Harpy helper and covered by regression tests.
+The minimum regression test should enable napari async slicing, update a points
+layer from many rows to fewer rows, and assert that `_view_data`, `_view_size`,
+and `get_status(...)` do not raise after the helper returns.
+
+Layer-model timing measured locally was roughly:
+
+```text
+10k points:   ~5 ms
+50k points:   ~23 ms
+100k points:  ~44 ms
+200k points:  ~88 ms
+```
+
+These numbers exclude real GPU upload cost, but they suggest that a 50-150 ms
+camera debounce and a ~100k render-budget level-selection target are plausible
+starting points.
 
 Use debouncing:
 
@@ -976,8 +962,7 @@ camera event
 
 ## Cache Layers
 
-Use three cache layers, with an optional fourth layer for exact selected-gene
-queries.
+Use three cache layers.
 
 ### 1. Persistent Disk Cache
 
@@ -1010,7 +995,7 @@ Evict based on byte size.
 Key:
 
 ```python
-(level, rounded_bbox, selected_gene_codes, max_visible_points)
+(level, rounded_bbox, selected_gene_codes, render_budget)
 ```
 
 Value:
@@ -1023,41 +1008,12 @@ ids
 
 This is useful because napari can emit multiple camera events for nearly identical views.
 
-### 4. Optional In-Memory Gene Chunk LRU Cache
-
-Key:
-
-```python
-(gene_code, chunk_id)
-```
-
-Value:
-
-```text
-full-resolution points for that gene chunk
-```
-
-This is useful when users repeatedly toggle or pan around selected genes.
-
----
-
 ## Gene Filtering Strategy
 
 ### Few selected genes
 
-First use `gene_tile_counts.parquet` to estimate the full-resolution visible
-count for those genes.
-
-If:
-
-```text
-estimated_exact_count <= points_render_budget
-```
-
-and `exact_genes/` is available, use the exact gene-major cache.
-
-Otherwise, use `gene_tile_counts.parquet` to find visible tiles containing
-those genes.
+Use `gene_tile_counts.parquet` to estimate the visible count for those genes
+and to find visible tiles containing those genes.
 
 Then use per-tile `start_in_tile` / `count_in_tile` ranges.
 
@@ -1071,8 +1027,7 @@ Ignore the gene index.
 
 ### Very sparse genes
 
-Use the exact gene-major cache when available. Otherwise, use the gene index
-aggressively to avoid reading empty tiles.
+Use the gene index aggressively to avoid reading empty tiles.
 
 ---
 
@@ -1097,9 +1052,6 @@ level 3: tile size 512, full points
 At low zoom, show representative points.
 
 At high zoom, show complete local detail.
-
-When a small number of selected genes fits within the point render budget, use
-the exact gene-major cache to show those genes exactly, even at low zoom.
 
 ---
 
@@ -1128,35 +1080,138 @@ An R-tree is optional. It is not necessary for the main case.
 
 ---
 
-## First Implementation Plan
+## Implementation Plan
 
-Build the simplest useful version first:
+### Slice 1: Cache Contracts
 
-1. Encode genes into `gene_code`.
-2. Build one finest-level tiled cache.
-3. Write one Parquet file per tile.
-4. Write `manifest.parquet`.
-5. Implement viewport query.
-6. Add `gene_tile_counts.parquet`.
-7. Add coarser sampled levels.
-8. Add optional `exact_genes/` cache for selected-gene exact rendering.
-9. Replace tile files with sharded Parquet row groups.
+Define the cache metadata, cache validity checks, and public query interfaces.
+This should include:
 
----
+```text
+cache_metadata.json
+cache identity / invalidation rules
+ViewQuery
+PointTileSource
+manifest schema
+gene dictionary schema
+tile row schema
+```
 
-## Production Implementation Plan
+At the end of this slice, the code should be able to answer whether a valid
+cache exists for a points element, coordinate system, coordinate transform, and
+category column. No viewer behavior needs to change yet.
 
-For larger data:
+### Slice 2: Finest Exact Cache
 
-1. Use multiple levels.
-2. Store tile data in shard files.
-3. Use one Parquet row group per tile.
-4. Keep `manifest.parquet` and `gene_tile_counts.parquet` memory-mapped or loaded in memory.
-5. Add `exact_genes/` with one row group per gene or gene chunk.
-6. Use async loading.
-7. Use an LRU cache for recently viewed tiles and gene chunks.
-8. Debounce napari camera events.
-9. Ignore stale query results.
+Build the finest complete level using the final storage layout:
+
+```text
+sharded Parquet
+one row group per logical tile
+manifest.parquet
+genes.parquet
+rows sorted by gene_code, sample_rank
+```
+
+This gives an exact cached representation and validates the storage/query shape
+before adding sampled levels.
+
+### Slice 3: Cached Exact Query
+
+Implement viewport queries against the finest complete level:
+
+```text
+bbox + selected genes
+  -> tile ids
+  -> manifest lookup
+  -> read row groups
+  -> bbox filter
+  -> gene filter
+  -> napari-ready coords/features
+```
+
+At the end of this slice, a valid cache can render exact visible points from
+the finest level.
+
+### Slice 4: Cache-First Viewer Integration
+
+Change `Add / Update in viewer` behavior to:
+
+```text
+valid cache available
+  -> cached/live layer
+
+no valid cache, or cached rendering disabled
+  -> current direct fallback
+```
+
+Every click should still create a fresh Harpy-managed `Points` layer and retire
+the previous one for the same source.
+
+### Slice 5: Live Layer Updates
+
+Add the guarded in-place `Points` layer update helper and make cached rendering
+use one persistent live layer per request.
+
+This slice should include:
+
+```text
+debounced viewport updates
+safe layer.data / layer.features mutation
+napari async-slicing regression test
+stale query result protection
+```
+
+### Slice 6: Gene Index
+
+Add:
+
+```text
+gene_tile_counts.parquet
+```
+
+Use it to:
+
+```text
+skip irrelevant tiles
+estimate visible selected-gene counts
+make gene switching fast
+```
+
+This is where `gene_code, sample_rank` row ordering starts paying off.
+
+### Slice 7: Coarser Sampled Levels
+
+Add sampled levels built independently from the normalized source:
+
+```text
+sample_rank = stable_hash(point_id)
+rank within tile by sample_rank
+keep rank_in_tile <= level.max_points_per_tile
+```
+
+Then `render_budget` can select the finest acceptable cached level.
+
+### Slice 8: Performance Polish
+
+Add the interaction and IO pieces needed for large datasets:
+
+```text
+tile payload LRU cache
+async row-group reads
+camera debounce
+ignore stale queries
+basic timing/logging
+```
+
+Benchmark at least:
+
+```text
+all genes overview
+single gene overview
+pan/zoom at multiple zoom levels
+large selection switching
+```
 
 ---
 
@@ -1175,7 +1230,7 @@ class ViewQuery:
     ymin: float
     ymax: float
     genes: tuple[str, ...] | None
-    max_points: int
+    render_budget: int
     coordinate_system: str
 
 
@@ -1200,8 +1255,6 @@ class SpatialDataPointTileSource:
         coordinate_system: str | None = None,
         cache_dir: str | Path | None = None,
         max_points_per_tile: int = 4096,
-        max_visible_points: int = 100_000,
-        enable_exact_gene_cache: bool = True,
     ):
         ...
 
@@ -1232,15 +1285,6 @@ gene_tile_counts.parquet
 
 as the categorical/gene index.
 
-Optionally use:
-
-```text
-exact_genes/
-```
-
-as a gene-major full-resolution cache for selected-gene queries that fit within
-the point render budget.
-
 Store point data sorted by:
 
 ```text
@@ -1263,12 +1307,14 @@ fine levels = complete
 At runtime:
 
 ```text
-viewport
-  -> estimate selected-gene exact count
-  -> if exact gene path fits budget: load exact_genes chunks
-  -> otherwise: tile range -> manifest lookup -> optional gene index lookup -> load tile chunks
+Add / Update in viewer
+  -> if valid cache is available: cached/live layer using render_budget for level selection
+  -> otherwise: direct/static fallback using the current implementation
+
+cached/live viewport update
+  -> tile range -> manifest lookup -> choose level -> optional gene index lookup -> load tile chunks
   -> exact bbox/gene filter
-  -> update napari Points layer
+  -> guarded in-place update of the live napari Points layer
 ```
 
 This gives you a Neuroglancer-like point visualization system while still using an ordinary napari `Points` layer for rendering.

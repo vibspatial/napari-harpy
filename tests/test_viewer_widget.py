@@ -19,6 +19,7 @@ from spatialdata.transformations import Identity
 
 import napari_harpy._app_state as app_state_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
+from napari_harpy._app_state import FeatureMatrixWrittenEvent
 from napari_harpy._points_value_index import PointsValueSelection, PointsValueTable
 from napari_harpy.core._color_source import ShapeColorSourceSpec, TableColorSourceSpec
 from napari_harpy.viewer.adapter import PointsLayerIdentity
@@ -87,6 +88,37 @@ def _patch_coordinate_system_names(monkeypatch, coordinate_systems: list[str]) -
         app_state_module,
         "get_coordinate_system_names_from_sdata",
         lambda sdata: list(coordinate_systems),
+    )
+
+
+def _combo_texts(combo: QComboBox) -> list[str]:
+    return [combo.itemText(index) for index in range(combo.count())]
+
+
+def _patch_viewer_widget_labels_tables(
+    monkeypatch,
+    *,
+    labels_names: list[str],
+    table_names_by_label: dict[str, list[str]],
+    color_sources_by_table: dict[str, list[TableColorSourceSpec]] | None = None,
+) -> None:
+    monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(viewer_widget_module, "_get_shapes_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(viewer_widget_module, "_get_points_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(
+        viewer_widget_module,
+        "_get_labels_in_coordinate_system",
+        lambda sdata, coordinate_system: list(labels_names),
+    )
+    monkeypatch.setattr(
+        viewer_widget_module,
+        "get_annotating_table_names",
+        lambda sdata, labels_name: list(table_names_by_label.get(labels_name, [])),
+    )
+    monkeypatch.setattr(
+        viewer_widget_module,
+        "get_table_color_source_options",
+        lambda sdata, table_name: list((color_sources_by_table or {}).get(table_name, [])),
     )
 
 
@@ -705,6 +737,202 @@ def test_viewer_widget_labels_card_repopulates_color_sources_when_linked_table_c
     assert card.color_source_value_input.isEnabled()
     assert card.color_source_value_input.completer().model().stringList() == ["GeneA"]
     assert card.action_hint_label.text() == 'Action: add/update colored overlay for X[:, "GeneA"]'
+
+
+def test_viewer_widget_ignores_non_feature_matrix_write_events(qtbot, monkeypatch) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    fake_sdata = object()
+    table_names_by_label = {"labels": ["table"]}
+
+    qtbot.addWidget(widget)
+
+    _patch_coordinate_system_names(monkeypatch, ["global"])
+    _patch_viewer_widget_labels_tables(
+        monkeypatch,
+        labels_names=["labels"],
+        table_names_by_label=table_names_by_label,
+    )
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(fake_sdata)
+
+    card = widget.labels_cards[0]
+    table_names_by_label["labels"] = ["table", "new_table"]
+
+    widget._on_feature_matrix_written(object())
+
+    assert _combo_texts(card.linked_table_combo) == ["table"]
+    assert card.selected_table_name == "table"
+
+
+def test_viewer_widget_ignores_feature_matrix_writes_for_other_sdata(qtbot, monkeypatch) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    fake_sdata = object()
+    other_sdata = object()
+    table_names_by_label = {"labels": ["table"]}
+
+    qtbot.addWidget(widget)
+
+    _patch_coordinate_system_names(monkeypatch, ["global"])
+    _patch_viewer_widget_labels_tables(
+        monkeypatch,
+        labels_names=["labels"],
+        table_names_by_label=table_names_by_label,
+    )
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(fake_sdata)
+
+    card = widget.labels_cards[0]
+    table_names_by_label["labels"] = ["table", "new_table"]
+
+    widget.app_state.emit_feature_matrix_written(
+        FeatureMatrixWrittenEvent(
+            sdata=other_sdata,
+            table_name="new_table",
+            feature_key="features",
+            change_kind="created",
+        )
+    )
+
+    assert _combo_texts(card.linked_table_combo) == ["table"]
+    assert card.selected_table_name == "table"
+
+
+def test_viewer_widget_refreshes_labels_card_linked_tables_from_feature_matrix_event(qtbot, monkeypatch) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    fake_sdata = object()
+    table_names_by_label = {"labels": ["table"]}
+
+    qtbot.addWidget(widget)
+
+    _patch_coordinate_system_names(monkeypatch, ["global"])
+    _patch_viewer_widget_labels_tables(
+        monkeypatch,
+        labels_names=["labels"],
+        table_names_by_label=table_names_by_label,
+    )
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(fake_sdata)
+
+    card = widget.labels_cards[0]
+    row = widget.labels_rows[0]
+    row.set_expanded(True)
+    table_names_by_label["labels"] = ["new_table", "table"]
+
+    widget.app_state.emit_feature_matrix_written(
+        FeatureMatrixWrittenEvent(
+            sdata=fake_sdata,
+            table_name="new_table",
+            feature_key="features",
+            change_kind="created",
+        )
+    )
+
+    assert _combo_texts(card.linked_table_combo) == ["new_table", "table"]
+    assert card.selected_table_name == "table"
+    assert row.is_expanded()
+    assert len(viewer.layers) == 0
+
+
+def test_viewer_widget_selects_first_linked_table_when_event_creates_first_table(qtbot, monkeypatch) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    fake_sdata = object()
+    table_names_by_label = {"labels": []}
+
+    qtbot.addWidget(widget)
+
+    _patch_coordinate_system_names(monkeypatch, ["global"])
+    _patch_viewer_widget_labels_tables(
+        monkeypatch,
+        labels_names=["labels"],
+        table_names_by_label=table_names_by_label,
+    )
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(fake_sdata)
+
+    card = widget.labels_cards[0]
+    assert _combo_texts(card.linked_table_combo) == ["No linked tables"]
+    assert card.selected_table_name is None
+    assert not card.linked_table_combo.isEnabled()
+
+    table_names_by_label["labels"] = ["new_table"]
+    widget.app_state.emit_feature_matrix_written(
+        FeatureMatrixWrittenEvent(
+            sdata=fake_sdata,
+            table_name="new_table",
+            feature_key="features",
+            change_kind="created",
+        )
+    )
+
+    assert _combo_texts(card.linked_table_combo) == ["new_table"]
+    assert card.linked_table_combo.isEnabled()
+    assert card.selected_table_name == "new_table"
+    assert len(viewer.layers) == 0
+
+
+def test_viewer_widget_preserves_labels_card_color_source_selection_after_event(qtbot, monkeypatch) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    fake_sdata = object()
+    table_names_by_label = {"labels": ["table"]}
+    color_sources_by_table = {
+        "table": [
+            TableColorSourceSpec(
+                table_name="table",
+                source_kind="obs_column",
+                value_key="cell_type",
+                value_kind="categorical",
+            )
+        ]
+    }
+
+    qtbot.addWidget(widget)
+
+    _patch_coordinate_system_names(monkeypatch, ["global"])
+    _patch_viewer_widget_labels_tables(
+        monkeypatch,
+        labels_names=["labels"],
+        table_names_by_label=table_names_by_label,
+        color_sources_by_table=color_sources_by_table,
+    )
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(fake_sdata)
+
+    card = widget.labels_cards[0]
+    card.color_source_kind_combo.setCurrentIndex(1)
+    assert card.selected_color_source == color_sources_by_table["table"][0]
+
+    table_names_by_label["labels"] = ["new_table", "table"]
+    color_sources_by_table["new_table"] = [
+        TableColorSourceSpec(
+            table_name="new_table",
+            source_kind="obs_column",
+            value_key="other_type",
+            value_kind="categorical",
+        )
+    ]
+    widget.app_state.emit_feature_matrix_written(
+        FeatureMatrixWrittenEvent(
+            sdata=fake_sdata,
+            table_name="new_table",
+            feature_key="features",
+            change_kind="created",
+        )
+    )
+
+    assert card.selected_table_name == "table"
+    assert card.selected_source_kind == "obs_column"
+    assert card.selected_color_source == color_sources_by_table["table"][0]
+    assert card.action_hint_label.text() == 'Action: add/update colored overlay for obs["cell_type"]'
 
 
 def test_viewer_widget_image_mode_toggles_are_mutually_exclusive(qtbot, sdata_blobs) -> None:

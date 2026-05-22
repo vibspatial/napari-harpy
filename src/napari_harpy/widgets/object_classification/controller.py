@@ -59,7 +59,7 @@ MIN_LABELED_SAMPLES = 2
 RANDOM_FOREST_PARAMS = {
     "n_estimators": 100,
     "random_state": 0,
-    "n_jobs": 1,
+    "n_jobs": -2,
 }
 
 ClassifierScopeMode = Literal["selected_segmentation_only", "all"]

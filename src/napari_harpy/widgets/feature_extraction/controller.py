@@ -44,25 +44,79 @@ thread_worker = _resolve_thread_worker()
 
 @dataclass(frozen=True)
 class FeatureExtractionRequest:
-    """A validated feature-extraction request covering one or more triplets."""
+    """A validated feature-extraction request covering one or more triplets.
+
+    `table_name` is always the napari-harpy target table name. `create_table`
+    decides whether that name refers to an existing table or to a table Harpy
+    should create while writing the feature matrix.
+    """
 
     triplets: tuple[FeatureExtractionTriplet, ...]
     table_name: str
+    create_table: bool
     feature_names: tuple[str, ...]
     feature_key: str
     overwrite_feature_key: bool = False
 
+    def __post_init__(self) -> None:
+        if not self.table_name.strip():
+            raise ValueError("Feature extraction request requires a table name.")
+        if self.create_table and self.overwrite_feature_key:
+            raise ValueError("Cannot overwrite a feature key while creating a new table.")
+
+    @property
+    def harpy_table_name(self) -> str | None:
+        """Return Harpy's existing-table target parameter for this request."""
+        return None if self.create_table else self.table_name
+
+    @property
+    def harpy_output_table_name(self) -> str | None:
+        """Return Harpy's create-table output parameter for this request."""
+        return self.table_name if self.create_table else None
+
 
 @dataclass(frozen=True)
 class FeatureExtractionBindingState:
-    """Read-only snapshot of the controller's currently bound widget state."""
+    """Read-only snapshot of the controller's currently bound widget state.
+
+    The Feature Extraction widget keeps its own staged UI state while the
+    controller stores the state that would be used for the next calculation.
+    This value object lets the widget compare those two views directly before it
+    enables calculation. If the expected widget state differs from
+    `controller.binding_state`, the UI treats the request as still
+    synchronizing and keeps Calculate disabled.
+
+    Unlike `FeatureExtractionRequest`, this binding state may represent an
+    incomplete form. For example, `table_name` can be `None` while the user has
+    not selected a valid annotation table or entered a new output table name
+    yet. When present, `table_name` is the target name for both existing-table
+    and create-table modes; `create_table` disambiguates which mode applies.
+    """
 
     sdata: SpatialData | None
     triplets: tuple[FeatureExtractionTriplet, ...]
     table_name: str | None
+    create_table: bool
     feature_names: tuple[str, ...]
     feature_key: str | None
-    overwrite_feature_key: bool = False
+
+    def __post_init__(self) -> None:
+        if self.table_name is not None and not self.table_name.strip():
+            raise ValueError("Feature extraction binding table name cannot be empty.")
+
+    @property
+    def harpy_table_name(self) -> str | None:
+        """Return Harpy's existing-table target parameter for this binding."""
+        if self.table_name is None:
+            return None
+        return None if self.create_table else self.table_name
+
+    @property
+    def harpy_output_table_name(self) -> str | None:
+        """Return Harpy's create-table output parameter for this binding."""
+        if self.table_name is None:
+            return None
+        return self.table_name if self.create_table else None
 
 
 @dataclass(frozen=True)
@@ -75,10 +129,8 @@ class FeatureExtractionJob:
     change_kind: FeatureMatrixWriteChangeKind = "created"
 
     @property
-    def labels_name(self) -> str | None:
-        if len(self.request.triplets) != 1:
-            return None
-        return self.request.triplets[0].labels_name
+    def labels_names(self) -> tuple[str, ...]:
+        return tuple(triplet.labels_name for triplet in self.request.triplets)
 
     @property
     def image_name(self) -> str | None:
@@ -124,11 +176,15 @@ class FeatureExtractionResult:
     """Summary produced by a completed feature-extraction worker."""
 
     job_id: int
-    labels_name: str | None  # why do we now allow labels_name = None
+    # Tuple because a single feature-extraction request can cover a batch of labels elements.
+    labels_names: tuple[str, ...]
     table_name: str
     feature_key: str
     change_kind: FeatureMatrixWriteChangeKind = "created"
-    triplet_count: int = 1
+
+    @property
+    def triplet_count(self) -> int:
+        return len(self.labels_names)
 
 
 @thread_worker(start_thread=False, ignore_errors=True)
@@ -141,22 +197,25 @@ def _run_feature_extraction_job(job: FeatureExtractionJob) -> FeatureExtractionR
         sdata=job.sdata,
         labels_name=_resolve_harpy_labels_name_parameter(triplets),
         image_name=_resolve_harpy_image_name_parameter(triplets, job.request.feature_names),
-        table_name=job.request.table_name,
+        table_name=job.request.harpy_table_name,
+        output_table_name=job.request.harpy_output_table_name,
         feature_key=job.request.feature_key,
         features=list(job.request.feature_names),
         channels=_resolve_harpy_channel_parameter(triplets, job.request.feature_names),
         feature_matrices_key=_FEATURE_MATRICES_KEY,
+        # Table-name collisions are blocked in the UI/controller; replacing an
+        # existing table would need a broader table and .obsm replacement policy.
+        overwrite_output_table=False,
         overwrite_feature_key=job.request.overwrite_feature_key,
         to_coordinate_system=_resolve_harpy_coordinate_system_parameter(triplets),
     )
 
     return FeatureExtractionResult(
         job_id=job.job_id,
-        labels_name=job.labels_name,
+        labels_names=job.labels_names,
         table_name=job.request.table_name,
         feature_key=job.request.feature_key,
         change_kind=job.change_kind,
-        triplet_count=len(triplets),
     )
 
 
@@ -167,7 +226,7 @@ class FeatureExtractionController:
         self,
         *,
         on_state_changed: Callable[[], None] | None = None,
-        on_table_state_changed: Callable[[], None] | None = None,
+        on_table_state_changed: Callable[[FeatureExtractionResult], None] | None = None,
         on_feature_matrix_written: Callable[[FeatureMatrixWrittenEvent], None] | None = None,
     ) -> None:
         self._on_state_changed = on_state_changed
@@ -177,9 +236,9 @@ class FeatureExtractionController:
         self._selected_spatialdata: SpatialData | None = None
         self._selected_triplets: tuple[FeatureExtractionTriplet, ...] = ()
         self._selected_table_name: str | None = None
+        self._create_table = False
         self._selected_feature_names: tuple[str, ...] = ()
         self._selected_feature_key: str | None = None
-        self._overwrite_feature_key = False
         self._selected_labels_name_hint: str | None = None
         self._selected_coordinate_system_hint: str | None = None
 
@@ -212,16 +271,16 @@ class FeatureExtractionController:
             sdata=self._selected_spatialdata,
             triplets=self._selected_triplets,
             table_name=self._selected_table_name,
+            create_table=self._create_table,
             feature_names=self._selected_feature_names,
             feature_key=self._selected_feature_key,
-            overwrite_feature_key=self._overwrite_feature_key,
         )
 
     @property
     def can_calculate(self) -> bool:
         """Return whether the current selection has the minimum data to run."""
         return (
-            self._get_bound_table() is not None
+            self._get_table_target_validation_error() is None
             and bool(self._selected_triplets)
             and bool(self._selected_feature_names)
             and self._selected_feature_key is not None
@@ -246,7 +305,7 @@ class FeatureExtractionController:
         feature_key: str | None,
         *,
         channels: Sequence[FeatureExtractionChannel] | FeatureExtractionChannel | None = None,
-        overwrite_feature_key: bool = False,
+        create_table: bool = False,
     ) -> bool:
         """Bind the controller to one visible single-triplet selection."""
         normalized_coordinate_system = None if coordinate_system is None else coordinate_system.strip() or None
@@ -268,9 +327,9 @@ class FeatureExtractionController:
             sdata=sdata,
             triplets=triplets,
             table_name=table_name,
+            create_table=create_table,
             feature_names=normalized_feature_names,
             feature_key=normalized_feature_key,
-            overwrite_feature_key=overwrite_feature_key,
             labels_name_hint=labels_name,
             coordinate_system_hint=normalized_coordinate_system,
         )
@@ -283,7 +342,7 @@ class FeatureExtractionController:
         feature_names: Sequence[str] | str | None,
         feature_key: str | None,
         *,
-        overwrite_feature_key: bool = False,
+        create_table: bool = False,
     ) -> bool:
         """Bind the controller to one or more explicit extraction triplets."""
         normalized_triplets = _normalize_triplets(triplets)
@@ -296,9 +355,9 @@ class FeatureExtractionController:
             sdata=sdata,
             triplets=normalized_triplets,
             table_name=table_name,
+            create_table=create_table,
             feature_names=normalized_feature_names,
             feature_key=normalized_feature_key,
-            overwrite_feature_key=overwrite_feature_key,
             labels_name_hint=labels_name_hint,
             coordinate_system_hint=coordinate_system_hint,
         )
@@ -309,29 +368,31 @@ class FeatureExtractionController:
         sdata: SpatialData | None,
         triplets: tuple[FeatureExtractionTriplet, ...],
         table_name: str | None,
+        create_table: bool,
         feature_names: tuple[str, ...],
         feature_key: str | None,
-        overwrite_feature_key: bool,
         labels_name_hint: str | None,
         coordinate_system_hint: str | None,
     ) -> bool:
+        normalized_table_name = _normalize_optional_table_name(table_name)
+        normalized_create_table = bool(create_table)
         context_changed = (
             sdata is not self._selected_spatialdata
             or triplets != self._selected_triplets
-            or table_name != self._selected_table_name
+            or normalized_table_name != self._selected_table_name
+            or normalized_create_table is not self._create_table
             or feature_names != self._selected_feature_names
             or feature_key != self._selected_feature_key
-            or bool(overwrite_feature_key) is not self._overwrite_feature_key
             or labels_name_hint != self._selected_labels_name_hint
             or coordinate_system_hint != self._selected_coordinate_system_hint
         )
 
         self._selected_spatialdata = sdata
         self._selected_triplets = triplets
-        self._selected_table_name = table_name
+        self._selected_table_name = normalized_table_name
+        self._create_table = normalized_create_table
         self._selected_feature_names = feature_names
         self._selected_feature_key = feature_key
-        self._overwrite_feature_key = bool(overwrite_feature_key)
         self._selected_labels_name_hint = labels_name_hint
         self._selected_coordinate_system_hint = coordinate_system_hint
 
@@ -341,14 +402,17 @@ class FeatureExtractionController:
         self._update_idle_status()
         return context_changed
 
-    def calculate(self, *, overwrite_feature_key: bool | None = None) -> bool:
+    def calculate(self, *, overwrite_feature_key: bool = False) -> bool:
         """Launch feature extraction for the current bound inputs."""
         if self.is_running:
             self._set_status("Feature extraction: calculation is already running.", kind="info")
             return False
 
         next_job_id = self._latest_requested_job_id + 1
-        job = self._prepare_feature_extraction_job(next_job_id, overwrite_feature_key=overwrite_feature_key)
+        job = self._prepare_feature_extraction_job(
+            next_job_id,
+            overwrite_feature_key=bool(overwrite_feature_key),
+        )
         if job is None:
             return False
 
@@ -359,9 +423,10 @@ class FeatureExtractionController:
         worker.returned.connect(partial(self._on_worker_returned, job.job_id))
         worker.errored.connect(partial(self._on_worker_errored, job.job_id))
         worker.finished.connect(partial(self._on_worker_finished, job.job_id))
-        if job.triplet_count == 1 and job.labels_name is not None:
+        if job.triplet_count == 1:
+            labels_name = job.labels_names[0]
             self._set_status(
-                f"Feature extraction: calculating `{job.feature_key}` for labels element `{job.labels_name}`.",
+                f"Feature extraction: calculating `{job.feature_key}` for labels element `{labels_name}`.",
                 kind="info",
             )
         else:
@@ -376,9 +441,8 @@ class FeatureExtractionController:
         self,
         job_id: int,
         *,
-        overwrite_feature_key: bool | None = None,
+        overwrite_feature_key: bool,
     ) -> FeatureExtractionJob | None:
-        table = self._get_bound_table()
         if self._selected_spatialdata is None:
             self._set_status(FEATURE_EXTRACTION_IDLE_STATUS, kind="warning")
             return None
@@ -392,11 +456,9 @@ class FeatureExtractionController:
                 self._set_status(FEATURE_EXTRACTION_IDLE_STATUS, kind="warning")
             return None
 
-        if table is None or self._selected_table_name is None:
-            self._set_status(
-                "Feature extraction: choose an annotation table linked to the selected labels element.",
-                kind="warning",
-            )
+        table_target_validation_error = self._get_table_target_validation_error()
+        if table_target_validation_error is not None:
+            self._set_status(table_target_validation_error, kind="warning")
             return None
 
         if not self._selected_feature_names:
@@ -428,20 +490,43 @@ class FeatureExtractionController:
             )
             return None
 
+        if self._create_table and overwrite_feature_key:
+            self._set_status(
+                "Feature extraction: cannot overwrite a feature key while creating a new table.",
+                kind="warning",
+            )
+            return None
+
+        selected_table_name = self._selected_table_name
+        if selected_table_name is None:
+            self._set_status(
+                (
+                    "Feature extraction: enter a new table name."
+                    if self._create_table
+                    else "Feature extraction: choose an annotation table linked to the selected labels element."
+                ),
+                kind="warning",
+            )
+            return None
+
         request = FeatureExtractionRequest(
             triplets=self._selected_triplets,
-            table_name=self._selected_table_name,
+            table_name=selected_table_name,
+            create_table=self._create_table,
             feature_names=self._selected_feature_names,
             feature_key=self._selected_feature_key,
-            overwrite_feature_key=(
-                self._overwrite_feature_key if overwrite_feature_key is None else bool(overwrite_feature_key)
-            ),
+            overwrite_feature_key=overwrite_feature_key,
         )
+        table = self._get_bound_table()
         return FeatureExtractionJob(
             job_id=job_id,
             sdata=self._selected_spatialdata,
             request=request,
-            change_kind="updated" if self._selected_feature_key in table.obsm else "created",
+            change_kind=(
+                "updated"
+                if table is not None and self._selected_feature_key in table.obsm
+                else "created"
+            ),
         )
 
     def _set_status(self, message: str, *, kind: str) -> None:
@@ -450,15 +535,14 @@ class FeatureExtractionController:
         if self._on_state_changed is not None:
             self._on_state_changed()
 
-    def _notify_table_state_changed(self) -> None:
+    def _notify_table_state_changed(self, result: FeatureExtractionResult) -> None:
         # Keep this local widget refresh hook separate from the shared
-        # `feature_matrix_written` app-state event. The current successful
-        # feature-matrix-write path is already covered by that semantic event,
-        # so this hook is mainly retained for future local table-context
-        # refresh flows where running feature extraction may create or relink a
-        # table and the widget must refresh its table selection.
+        # `feature_matrix_written` app-state event. The owning widget uses the
+        # concrete result to refresh table choices and, after create-table
+        # writes, promote the new table into normal existing-table mode before
+        # downstream widgets consume the shared semantic event.
         if self._on_table_state_changed is not None:
-            self._on_table_state_changed()
+            self._on_table_state_changed(result)
 
     def _notify_feature_matrix_written(self, result: FeatureExtractionResult) -> None:
         if self._on_feature_matrix_written is None or self._selected_spatialdata is None:
@@ -489,11 +573,9 @@ class FeatureExtractionController:
                 self._set_status(FEATURE_EXTRACTION_IDLE_STATUS, kind="warning")
             return
 
-        if self._get_bound_table() is None:
-            self._set_status(
-                "Feature extraction: choose an annotation table linked to the selected labels element.",
-                kind="warning",
-            )
+        table_target_validation_error = self._get_table_target_validation_error()
+        if table_target_validation_error is not None:
+            self._set_status(table_target_validation_error, kind="warning")
             return
 
         if not self._selected_feature_names:
@@ -528,6 +610,13 @@ class FeatureExtractionController:
         if self.is_running:
             return
 
+        if self._create_table and self._selected_table_name is not None:
+            self._set_status(
+                f"Feature extraction: ready to create table `{self._selected_table_name}` and calculate.",
+                kind="success",
+            )
+            return
+
         self._set_status("Feature extraction: ready to calculate.", kind="success")
 
     def _cancel_pending_and_active_jobs(self) -> None:
@@ -550,7 +639,7 @@ class FeatureExtractionController:
         if job_id != self._latest_requested_job_id or job_id != self._active_worker_job_id:
             return
 
-        self._notify_table_state_changed()
+        self._notify_table_state_changed(result)
         self._notify_feature_matrix_written(result)
         self._set_status(
             "Feature extraction: "
@@ -576,10 +665,36 @@ class FeatureExtractionController:
             self._on_state_changed()
 
     def _get_bound_table(self) -> AnnData | None:
-        if self._selected_spatialdata is None or self._selected_table_name is None:
+        if self._selected_spatialdata is None or self._selected_table_name is None or self._create_table:
             return None
 
         return get_table(self._selected_spatialdata, self._selected_table_name)
+
+    def _get_table_target_validation_error(self) -> str | None:
+        if self._selected_spatialdata is None:
+            return None
+
+        if self._selected_table_name is None:
+            if self._create_table:
+                return "Feature extraction: enter a new table name."
+            return "Feature extraction: choose an annotation table linked to the selected labels element."
+
+        if not self._create_table:
+            self._get_bound_table()
+            return None
+
+        try:
+            normalize_spatialdata_name(self._selected_table_name, "table name")
+        except ValueError as error:
+            return f"Feature extraction: choose a valid table name. {error}"
+
+        if self._selected_table_name in self._selected_spatialdata.tables:
+            return (
+                f"Feature extraction: table `{self._selected_table_name}` already exists. "
+                "Choose a different table name."
+            )
+
+        return None
 
 
 def _normalize_feature_names(feature_names: Sequence[str] | str | None) -> tuple[str, ...]:
@@ -599,6 +714,14 @@ def _normalize_feature_names(feature_names: Sequence[str] | str | None) -> tuple
         normalized.append(normalized_name)
         seen.add(normalized_name)
     return tuple(normalized)
+
+
+def _normalize_optional_table_name(table_name: str | None) -> str | None:
+    if table_name is None:
+        return None
+
+    normalized_table_name = str(table_name).strip()
+    return normalized_table_name or None
 
 
 def _get_feature_key_validation_error(feature_key: str | None) -> str | None:

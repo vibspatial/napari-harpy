@@ -152,10 +152,50 @@ class _LabelsCardWidget(QFrame):
                 return source
         return None
 
-    def _refresh_color_source_controls(self, _index: int | None = None) -> None:
-        selected_source_identity = (
+    def set_linked_tables(
+        self,
+        table_names: list[str],
+        table_color_sources_by_table: dict[str, list[TableColorSourceSpec]],
+    ) -> None:
+        previous_table_name = self.selected_table_name
+        previous_source_kind = self.selected_source_kind
+        previous_source_identity = (
             self.selected_color_source.identity if self.selected_color_source is not None else None
         )
+
+        self._table_color_sources_by_table = table_color_sources_by_table
+        with QSignalBlocker(self.linked_table_combo):
+            # Rebuild linked-table choices after the sdata table set changed,
+            # then restore the previous selection when it is still valid.
+            self.linked_table_combo.clear()
+            if table_names:
+                self.linked_table_combo.addItems(table_names)
+                self.linked_table_combo.setEnabled(True)
+                next_index = table_names.index(previous_table_name) if previous_table_name in table_names else 0
+                self.linked_table_combo.setCurrentIndex(next_index)
+            else:
+                self.linked_table_combo.addItem("No linked tables")
+                self.linked_table_combo.setEnabled(False)
+                self.linked_table_combo.setCurrentIndex(0)
+
+        with QSignalBlocker(self.color_source_kind_combo):
+            next_source_kind_index = self.color_source_kind_combo.findData(previous_source_kind)
+            if next_source_kind_index >= 0:
+                self.color_source_kind_combo.setCurrentIndex(next_source_kind_index)
+
+        self._refresh_color_source_controls(preferred_source_identity=previous_source_identity)
+
+    def _refresh_color_source_controls(
+        self,
+        _index: int | None = None,
+        *,
+        preferred_source_identity: tuple[str, TableColorSourceKind, str] | None = None,
+    ) -> None:
+        if preferred_source_identity is not None:
+            selected_source_identity = preferred_source_identity
+        else:
+            selected_source = self.selected_color_source
+            selected_source_identity = selected_source.identity if selected_source is not None else None
         source_kind = self.selected_source_kind
         table_name = self.selected_table_name
 

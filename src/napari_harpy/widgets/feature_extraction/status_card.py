@@ -6,7 +6,7 @@ from typing import Literal
 
 from napari_harpy.widgets.shared_styles import StatusCardKind, format_feedback_identifier, validate_status_card_kind
 
-_FeatureExtractionTableBlocker = Literal["choose_table", "no_eligible", "invalid"] | None
+_FeatureExtractionTableBlocker = Literal["choose_table", "no_eligible", "invalid", "create_invalid"] | None
 
 
 @dataclass(frozen=True)
@@ -134,6 +134,9 @@ def _build_table_blocker_card_spec(
     elif table_blocker == "no_eligible":
         title = "Batch Incomplete"
         lines = ("No table annotates all currently staged labels elements.",)
+    elif table_blocker == "create_invalid":
+        title = "Table Not Ready"
+        lines = (table_tooltip_message or "Enter a new table name.",)
     else:
         title = "Table Not Ready"
         lines = ("Selected table cannot currently be used for all staged labels elements.",)
