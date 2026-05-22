@@ -39,6 +39,7 @@ from napari_harpy.core.spatialdata import (
     validate_table_annotation_coverage,
     validate_table_region_instance_ids,
 )
+from napari_harpy.core.validation import normalize_spatialdata_name
 from napari_harpy.widgets.feature_extraction.controller import (
     FeatureExtractionBindingState,
     FeatureExtractionController,
@@ -227,6 +228,14 @@ class _FeatureExtractionBatchChannelState:
 
 @dataclass(frozen=True)
 class _FeatureExtractionStagedBatchState:
+    """Resolved widget-side snapshot of the staged extraction targets.
+
+    This state describes what the user wants to calculate on: the checked
+    coordinate systems, the labels elements selected for those systems, and the
+    resulting controller triplets. It is bindable only when the staged batch is
+    complete enough to send to the controller.
+    """
+
     checked_coordinate_systems: tuple[str, ...]
     labels_names: tuple[str, ...]
     triplets: tuple[FeatureExtractionTriplet, ...]
@@ -236,6 +245,30 @@ class _FeatureExtractionStagedBatchState:
     @property
     def is_bindable(self) -> bool:
         return self.error_text is None and bool(self.triplets)
+
+
+@dataclass(frozen=True)
+class _FeatureExtractionTableTargetState:
+    """Resolved widget-side snapshot of the table destination.
+
+    This state describes where the feature matrix should be written. In
+    existing-table mode, `table_name` names a selected table in `sdata.tables`.
+    In create-table mode, `table_name` names the new table that Harpy should
+    create. Incomplete or invalid UI state is represented with `table_name=None`
+    or `error_text`.
+    """
+
+    table_name: str | None
+    create_table: bool
+    error_text: str | None = None
+
+    @property
+    def bound_table_name(self) -> str | None:
+        return self.table_name if self.error_text is None else None
+
+    @property
+    def is_ready(self) -> bool:
+        return self.bound_table_name is not None
 
 
 @dataclass
@@ -356,6 +389,10 @@ class FeatureExtractionWidget(QWidget):
             invalid_coordinate_systems=(),
             error_text=None,
         )
+        self._table_target_state = _FeatureExtractionTableTargetState(
+            table_name=None,
+            create_table=False,
+        )
         # Persistent per-coordinate-system memory of the last explicit user
         # card selection while the current SpatialData object remains loaded.
         self._remembered_card_selection_by_coordinate_system: dict[str, _FeatureExtractionCardSelection] = {}
@@ -368,7 +405,6 @@ class FeatureExtractionWidget(QWidget):
         self._coordinate_systems: list[str] = []
         self._checked_coordinate_systems: list[str] = []
         self._selected_coordinate_system: str | None = None
-        self._table_binding_error: str | None = None
         self._feature_checkboxes: dict[str, QCheckBox] = {}
         self._coordinate_system_checkboxes: dict[str, QCheckBox] = {}
         # Multi-card state is split into:
@@ -740,6 +776,10 @@ class FeatureExtractionWidget(QWidget):
             invalid_coordinate_systems=(),
             error_text=None,
         )
+        self._table_target_state = _FeatureExtractionTableTargetState(
+            table_name=None,
+            create_table=False,
+        )
         self._remembered_card_selection_by_coordinate_system = {}
         self._clear_batch_channel_options()
         self._eligible_existing_table_names = []
@@ -753,7 +793,6 @@ class FeatureExtractionWidget(QWidget):
         self._coordinate_systems = []
         self._checked_coordinate_systems = []
         self._selected_coordinate_system = None
-        self._table_binding_error = None
         self._coordinate_system_checkboxes = {}
         self._triplet_card_widgets_by_coordinate_system = {}
         self._triplet_card_states_by_coordinate_system = {}
@@ -1959,7 +1998,8 @@ class FeatureExtractionWidget(QWidget):
             feature_key is not None
             and self.selected_spatialdata is not None
             and self.selected_table_name is not None
-            and self._table_binding_error is None
+            and self._table_target_state.error_text is None
+            and not self._create_table
         )
         # Only inspect `.obsm` when the current table binding is valid enough
         # to read the selected table safely. The controller still decides
@@ -2098,11 +2138,11 @@ class FeatureExtractionWidget(QWidget):
 
     def _validate_selected_table_binding(
         self,
-        staged_batch_state: _FeatureExtractionStagedBatchState | None = None,
+        staged_batch_state: _FeatureExtractionStagedBatchState,
     ) -> str | None:
-        staged_batch_state = self._staged_batch_state if staged_batch_state is None else staged_batch_state
         if (
-            self.selected_spatialdata is None
+            self._create_table
+            or self.selected_spatialdata is None
             or self.selected_table_name is None
             or not staged_batch_state.labels_names
             or len(staged_batch_state.labels_names) != len(staged_batch_state.checked_coordinate_systems)
@@ -2125,26 +2165,56 @@ class FeatureExtractionWidget(QWidget):
 
         return None
 
+    def _validate_create_table_target(self) -> str | None:
+        if not self._create_table or self.selected_spatialdata is None:
+            return None
+
+        table_name = self.selected_new_table_name
+        if table_name is None:
+            return "Enter a new table name."
+
+        try:
+            normalize_spatialdata_name(table_name, "table name")
+        except ValueError as error:
+            return f"Choose a valid table name. {error}"
+
+        if table_name in self.selected_spatialdata.tables:
+            return f"Table `{table_name}` already exists. Choose a different table name."
+
+        return None
+
+    def _resolve_table_target(
+        self,
+        staged_batch_state: _FeatureExtractionStagedBatchState,
+    ) -> _FeatureExtractionTableTargetState:
+        if self._create_table:
+            return _FeatureExtractionTableTargetState(
+                table_name=self.selected_new_table_name,
+                create_table=True,
+                error_text=self._validate_create_table_target(),
+            )
+
+        return _FeatureExtractionTableTargetState(
+            table_name=self.selected_table_name,
+            create_table=False,
+            error_text=self._validate_selected_table_binding(staged_batch_state),
+        )
+
     def _bind_current_selection(self) -> None:
         self._staged_batch_state = self._resolve_staged_batch_state()
-        self._table_binding_error = self._validate_selected_table_binding(self._staged_batch_state)
+        self._table_target_state = self._resolve_table_target(self._staged_batch_state)
 
         triplets: tuple[FeatureExtractionTriplet, ...] = ()
-        table_name: str | None = None
-        if (
-            self._staged_batch_state.is_bindable
-            and self._table_binding_error is None
-            and self.selected_table_name is not None
-        ):
+        if self._staged_batch_state.is_bindable and self._table_target_state.is_ready:
             triplets = self._staged_batch_state.triplets
-            table_name = self.selected_table_name
 
         self._feature_extraction_controller.bind_batch(
             self.selected_spatialdata,
             triplets,
-            table_name,
+            self._table_target_state.bound_table_name,
             self.selected_feature_names,
             self.selected_feature_key,
+            create_table=self._table_target_state.create_table,
         )
         self._update_selection_status()
 
@@ -2207,9 +2277,14 @@ class FeatureExtractionWidget(QWidget):
         return "incompatible channel names"
 
     def _selection_status_table_blocker(self) -> str | None:
+        if self._table_target_state.create_table:
+            if self._table_target_state.error_text is not None or self._table_target_state.table_name is None:
+                return "create_invalid"
+            return None
+
         if self.selected_table_name is None:
             return "no_eligible" if not self._eligible_existing_table_names else "choose_table"
-        if self._table_binding_error is not None:
+        if self._table_target_state.error_text is not None:
             return "invalid"
         return None
 
@@ -2238,39 +2313,33 @@ class FeatureExtractionWidget(QWidget):
             checked_coordinate_systems=self._staged_batch_state.checked_coordinate_systems,
             entries=self._build_selection_status_entries(),
             table_blocker=self._selection_status_table_blocker(),
-            table_tooltip_message=self._table_binding_error,
+            table_tooltip_message=self._table_target_state.error_text,
         )
         self._apply_status_card_spec(self.selection_status, spec)
 
     def _expected_controller_binding_state(self) -> FeatureExtractionBindingState:
         triplets: tuple[FeatureExtractionTriplet, ...] = ()
-        table_name: str | None = None
-
-        if (
-            self._staged_batch_state.is_bindable
-            and self._table_binding_error is None
-            and self.selected_table_name is not None
-        ):
+        if self._staged_batch_state.is_bindable and self._table_target_state.is_ready:
             triplets = self._staged_batch_state.triplets
-            table_name = self.selected_table_name
 
         return FeatureExtractionBindingState(
             sdata=self.selected_spatialdata,
             triplets=triplets,
-            table_name=table_name,
-            create_table=False,
+            table_name=self._table_target_state.bound_table_name,
+            create_table=self._table_target_state.create_table,
             feature_names=self.selected_feature_names,
             feature_key=self.selected_feature_key,
         )
 
     def _controller_is_bound_to_staged_batch(self) -> bool:
+        # Defensive guard: do not enable calculation if the controller still
+        # holds an older request than the widget's currently resolved UI state.
         return self._feature_extraction_controller.binding_state == self._expected_controller_binding_state()
 
     def _should_show_controller_feedback(self) -> bool:
         return (
             self._staged_batch_state.is_bindable
-            and self.selected_table_name is not None
-            and self._table_binding_error is None
+            and self._table_target_state.is_ready
             and self._controller_is_bound_to_staged_batch()
             and bool(self._feature_extraction_controller.status_message)
         )
@@ -2293,13 +2362,16 @@ class FeatureExtractionWidget(QWidget):
         if not self._staged_batch_state.is_bindable:
             return self._staged_batch_state.error_text or "Complete all checked extraction targets before calculating."
 
-        if self.selected_table_name is None:
+        if self._table_target_state.error_text is not None:
+            return self._table_target_state.error_text
+
+        if self._table_target_state.create_table:
+            if self._table_target_state.table_name is None:
+                return "Enter a new table name."
+        elif self.selected_table_name is None:
             if not self._eligible_existing_table_names:
                 return "No table annotates all staged labels elements."
             return "Choose a table that annotates all staged labels elements."
-
-        if self._table_binding_error is not None:
-            return self._table_binding_error
 
         if not self.selected_feature_names:
             return "Choose at least one feature to calculate."

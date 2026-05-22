@@ -431,6 +431,8 @@ Acceptance tests:
 
 ### Slice 4: Bind Create-Table Widget State Into The Controller
 
+Status: implemented.
+
 This is the point where the UI path becomes calculable.
 
 The controller is already ready for this slice: `bind_batch(...)` accepts
@@ -446,15 +448,31 @@ Terminology:
 - `selected_table_name` should remain `None` in create mode, because it means
   "selected existing table" at the widget API level.
 
-Rename `_table_binding_error` to `_table_target_error` in this slice. The old
-name was accurate when every target was an existing table; after this slice, the
-same stored error can describe either an invalid existing table binding or an
-invalid create-table target name.
+Replace `_table_binding_error` with a stored table-target snapshot in this
+slice. The old name was accurate when every target was an existing table; after
+this slice, the target state can describe either an existing table binding or a
+create-table target.
+
+```python
+@dataclass(frozen=True)
+class _FeatureExtractionTableTargetState:
+    table_name: str | None
+    create_table: bool
+    error_text: str | None = None
+
+    @property
+    def bound_table_name(self) -> str | None:
+        return self.table_name if self.error_text is None else None
+
+    @property
+    def is_ready(self) -> bool:
+        return self.bound_table_name is not None
+```
 
 Work items:
 
-- rename widget state and call sites from `_table_binding_error` to
-  `_table_target_error`;
+- replace widget state and call sites from `_table_binding_error` with
+  `_table_target_state`;
 - keep `_validate_selected_table_binding(...)` existing-table-only:
   - return `None` in create mode;
   - continue using `validate_table_annotation_coverage(...)` and
@@ -473,23 +491,29 @@ Work items:
 
 ```python
 if self._create_table:
-    table_name = self.selected_new_table_name
-    create_table = True
-    table_error = self._validate_create_table_target()
+    return _FeatureExtractionTableTargetState(
+        table_name=self.selected_new_table_name,
+        create_table=True,
+        error_text=self._validate_create_table_target(),
+    )
 else:
-    table_name = self.selected_table_name
-    create_table = False
-    table_error = self._validate_selected_table_binding(staged_batch_state)
+    return _FeatureExtractionTableTargetState(
+        table_name=self.selected_table_name,
+        create_table=False,
+        error_text=self._validate_selected_table_binding(staged_batch_state),
+    )
 ```
 
 - update `_bind_current_selection()` and `_expected_controller_binding_state()`
   to pass either:
   - existing mode: `table_name=<existing>, create_table=False`;
   - create mode: `table_name=<new>, create_table=True`;
+- `_bind_current_selection()` should store the resolved
+  `_table_target_state`, and `_expected_controller_binding_state()` should read
+  that stored snapshot rather than recomputing target validation;
 - only pass staged triplets to the controller when:
   - the staged batch is bindable;
-  - the resolved table target has a non-`None` name;
-  - the resolved table target has no validation error;
+  - the resolved table target is ready;
 - when the create-table name changes, `_on_new_table_name_changed(...)` should
   continue calling `_bind_current_selection()`, so the controller binding and
   status cards update immediately as the user types;

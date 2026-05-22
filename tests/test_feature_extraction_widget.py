@@ -17,7 +17,7 @@ from napari_harpy.core.spatialdata import (
     SpatialDataImageOption,
     SpatialDataLabelsOption,
 )
-from napari_harpy.widgets.feature_extraction.controller import FeatureExtractionTriplet
+from napari_harpy.widgets.feature_extraction.controller import FeatureExtractionBindingState, FeatureExtractionTriplet
 from napari_harpy.widgets.feature_extraction.widget import FeatureExtractionWidget
 from napari_harpy.widgets.viewer.widget import ViewerWidget
 
@@ -1064,8 +1064,8 @@ def test_feature_extraction_widget_surfaces_duplicate_channel_names_as_batch_err
     )
     assert bind_batch_calls
     args, kwargs = bind_batch_calls[-1]
-    assert args == (sdata_blobs, (), None, ("mean",), "features")
-    assert kwargs == {}
+    assert args == (sdata_blobs, (), "table", ("mean",), "features")
+    assert kwargs == {"create_table": False}
 
 
 def test_feature_extraction_widget_channel_selection_is_independent_from_viewer_overlay_state(
@@ -1193,7 +1193,7 @@ def test_feature_extraction_widget_reports_one_line_per_checked_card_in_batch_re
     assert widget.selection_status.toolTip() == ""
 
 
-def test_feature_extraction_widget_blocks_when_selected_segmentation_has_no_linked_table(
+def test_feature_extraction_widget_selects_create_table_when_selected_segmentation_has_no_linked_table(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
@@ -1215,10 +1215,10 @@ def test_feature_extraction_widget_blocks_when_selected_segmentation_has_no_link
     assert not widget.new_table_name_line_edit.isHidden()
     assert widget.coordinate_system_combo.count() == 1
     assert widget.selected_coordinate_system == "global"
-    assert "Batch Incomplete" in widget.selection_status.text()
-    assert "No table annotates all currently staged labels elements." in widget.selection_status.text()
+    assert "Batch Ready" in widget.selection_status.text()
+    assert "global: blobs_multiscale_labels (no image)" in widget.selection_status.text()
     tooltip = unescape(widget.selection_status.toolTip()).replace("&#8203;", "").replace("\u200b", "")
-    assert "global: blobs_multiscale_labels (no image)" in tooltip
+    assert tooltip == ""
 
 
 def test_feature_extraction_widget_suggests_uuid_table_name_when_default_exists(
@@ -1275,7 +1275,7 @@ def test_feature_extraction_widget_preserves_typed_create_table_name_when_toggli
     assert widget.new_table_name_line_edit.text() == "custom_features"
 
 
-def test_feature_extraction_widget_keeps_create_mode_existing_table_binding_deferred(
+def test_feature_extraction_widget_binds_create_table_mode_into_controller(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
@@ -1298,8 +1298,108 @@ def test_feature_extraction_widget_keeps_create_mode_existing_table_binding_defe
     assert widget.selected_table_mode == "create"
     assert bind_batch_calls
     args, kwargs = bind_batch_calls[-1]
-    assert args == (sdata_blobs, (), None, ("area",), "features")
-    assert kwargs == {}
+    assert args == (
+        sdata_blobs,
+        (
+            FeatureExtractionTriplet(
+                coordinate_system="global",
+                labels_name="blobs_multiscale_labels",
+                image_name=None,
+                channels=None,
+            ),
+        ),
+        "features_table",
+        ("area",),
+        "features",
+    )
+    assert kwargs == {"create_table": True}
+
+
+def test_feature_extraction_widget_create_table_binding_matches_expected_controller_state(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+    check_coordinate_system(widget, "global")
+    widget.segmentation_combo.setCurrentIndex(1)
+    widget.findChild(QCheckBox, "feature_checkbox_area").setChecked(True)
+
+    expected_state = FeatureExtractionBindingState(
+        sdata=sdata_blobs,
+        triplets=(
+            FeatureExtractionTriplet(
+                coordinate_system="global",
+                labels_name="blobs_multiscale_labels",
+                image_name=None,
+                channels=None,
+            ),
+        ),
+        table_name="features_table",
+        create_table=True,
+        feature_names=("area",),
+        feature_key="features",
+    )
+
+    assert widget._expected_controller_binding_state() == expected_state
+    assert widget._feature_extraction_controller.binding_state == expected_state
+    assert widget.calculate_button.isEnabled() is True
+    assert widget.calculate_button.toolTip() == ""
+
+
+def test_feature_extraction_widget_blocks_create_table_mode_for_missing_or_invalid_table_name(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+    check_coordinate_system(widget, "global")
+    widget.segmentation_combo.setCurrentIndex(1)
+    widget.findChild(QCheckBox, "feature_checkbox_area").setChecked(True)
+
+    widget.new_table_name_line_edit.clear()
+
+    assert widget.selected_table_mode == "create"
+    assert widget.selected_new_table_name is None
+    assert widget.calculate_button.isEnabled() is False
+    assert "Table Not Ready" in widget.selection_status.text()
+    assert "Enter a new table name." in widget.selection_status.text()
+    assert "Enter a new table name." in unescape(widget.calculate_button.toolTip())
+    assert widget._feature_extraction_controller.binding_state.triplets == ()
+
+    widget.new_table_name_line_edit.setText("bad name")
+
+    assert widget.calculate_button.isEnabled() is False
+    assert "Choose a valid table name." in widget.selection_status.text()
+    assert "Choose a valid table name." in unescape(widget.calculate_button.toolTip())
+    assert widget._feature_extraction_controller.binding_state.triplets == ()
+
+
+def test_feature_extraction_widget_blocks_create_table_mode_for_table_name_collision(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+    check_coordinate_system(widget, "global")
+    widget.segmentation_combo.setCurrentIndex(1)
+    widget.findChild(QCheckBox, "feature_checkbox_area").setChecked(True)
+    widget.new_table_name_line_edit.setText("table")
+
+    assert widget.selected_table_mode == "create"
+    assert widget.calculate_button.isEnabled() is False
+    assert "Table Not Ready" in widget.selection_status.text()
+    assert "Table `table` already exists. Choose a different table name." in widget.selection_status.text()
+    assert "Table `table` already exists. Choose a different table name." in unescape(
+        widget.calculate_button.toolTip()
+    )
+    assert widget._feature_extraction_controller.binding_state.triplets == ()
 
 
 def test_feature_extraction_widget_uses_batch_table_error_as_status_tooltip(
@@ -1421,7 +1521,7 @@ def test_feature_extraction_widget_rebinds_controller_when_inputs_change(
         ("area",),
         "features",
     )
-    assert kwargs == {}
+    assert kwargs == {"create_table": False}
 
 
 def test_feature_extraction_widget_binds_selected_channels_into_controller(
@@ -1463,7 +1563,7 @@ def test_feature_extraction_widget_binds_selected_channels_into_controller(
         ("mean",),
         "features",
     )
-    assert kwargs == {}
+    assert kwargs == {"create_table": False}
 
 
 def test_feature_extraction_widget_enables_calculate_for_valid_morphology_batch(
@@ -1630,6 +1730,43 @@ def test_feature_extraction_widget_does_not_prompt_before_overwriting_while_calc
 
     assert prompt_calls == []
     assert overwrite_calls == []
+
+
+def test_feature_extraction_widget_does_not_prompt_for_existing_feature_key_in_create_table_mode(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+    check_coordinate_system(widget, "global")
+    widget.segmentation_combo.setCurrentIndex(1)
+    widget.findChild(QCheckBox, "feature_checkbox_area").setChecked(True)
+    widget.output_key_line_edit.setText("existing_features")
+    sdata_blobs.tables["table"].obsm["existing_features"] = np.zeros((sdata_blobs.tables["table"].n_obs, 1))
+
+    prompt_calls: list[tuple[str, str | None]] = []
+    overwrite_calls: list[bool | None] = []
+
+    def fake_prompt(feature_key: str, table_name: str | None) -> bool | None:
+        prompt_calls.append((feature_key, table_name))
+        return True
+
+    def fake_calculate(*, overwrite_feature_key: bool | None = None) -> bool:
+        overwrite_calls.append(overwrite_feature_key)
+        return True
+
+    widget._prompt_overwrite_feature_key_confirmation = fake_prompt  # type: ignore[method-assign]
+    widget._feature_extraction_controller.calculate = fake_calculate  # type: ignore[method-assign]
+
+    assert widget.selected_table_mode == "create"
+    assert widget.calculate_button.isEnabled() is True
+
+    widget.calculate_button.click()
+
+    assert prompt_calls == []
+    assert overwrite_calls == [False]
 
 
 def test_feature_extraction_widget_cancelled_overwrite_does_not_launch_calculation(
