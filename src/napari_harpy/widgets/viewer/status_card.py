@@ -227,8 +227,9 @@ def build_image_loaded_card_spec(
         line = f"{action} image layer for `{display_name}` in stack mode."
         tooltip_line = f"{action} image layer for `{image_name}` in stack mode."
     else:
-        line = f"{action} image overlay for `{display_name}` with channels {list(result.channels)}."
-        tooltip_line = f"{action} image overlay for `{image_name}` with channels {list(result.channels)}."
+        channel_text = _format_image_overlay_channels(result)
+        line = f"{action} image overlay for `{display_name}` with {channel_text}."
+        tooltip_line = f"{action} image overlay for `{image_name}` with {channel_text}."
 
     return _ViewerStatusCardSpec(
         title=f"Image Layer {action}",
@@ -236,6 +237,14 @@ def build_image_loaded_card_spec(
         kind="success",
         tooltip_message=tooltip_line if was_shortened else None,
     )
+
+
+def _format_image_overlay_channels(result: ImageLoadResult) -> str:
+    channel_names = tuple(getattr(result, "channel_names", ()))
+    channel_values = channel_names or tuple(str(channel) for channel in result.channels)
+    label = "channel" if len(channel_values) == 1 else "channels"
+    formatted_channels = ", ".join(f"`{channel}`" for channel in channel_values)
+    return f"{label} {formatted_channels}"
 
 
 def _format_table_color_source(color_source: TableColorSourceSpec) -> str:

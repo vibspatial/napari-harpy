@@ -27,6 +27,7 @@ class ImageLoadResult:
     mode: ImageDisplayMode
     created: bool
     channels: tuple[int, ...] = ()
+    channel_names: tuple[str, ...] = ()
 
     @property
     def primary_layer(self) -> Image:

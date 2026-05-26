@@ -2163,6 +2163,7 @@ def test_viewer_adapter_ensure_image_loaded_overlay_adds_one_layer_per_selected_
     assert result.mode == "overlay"
     assert result.created is True
     assert result.channels == (0, 2)
+    assert result.channel_names == ("0", "2")
     assert len(layers) == 2
     assert [layer.name for layer in layers] == ["blobs_image[0]", "blobs_image[2]"]
     assert [layer.blending for layer in layers] == ["additive", "additive"]
@@ -2285,6 +2286,7 @@ def test_viewer_adapter_ensure_image_loaded_overlay_removes_stale_channel_layers
 
     assert mixed_result.created is True
     assert mixed_result.channels == (1, 2)
+    assert mixed_result.channel_names == ("1", "2")
     assert mixed_result.layers[0] is layers[0]
     assert len(viewer.layers) == 2
 
@@ -2324,6 +2326,7 @@ def test_viewer_adapter_ensure_image_loaded_overlay_accepts_channel_names(sdata_
     layers = result.layers
 
     assert result.channels == (1, 2)
+    assert result.channel_names == ("CD3", "CD8")
     assert [layer.name for layer in layers] == ["blobs_image[CD3]", "blobs_image[CD8]"]
     assert [adapter.layer_bindings.get_binding(layer).channel_name for layer in layers] == ["CD3", "CD8"]
 

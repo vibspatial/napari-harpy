@@ -1202,6 +1202,7 @@ class ViewerAdapter(QObject):
             mode="overlay",
             created=created,
             channels=tuple(channel_index for channel_index, _ in resolved_channels),
+            channel_names=tuple(channel_name for _, channel_name in resolved_channels),
         )
 
     def ensure_shapes_loaded(self, sdata: SpatialData, shapes_name: str, coordinate_system: str) -> ShapesLoadResult:
