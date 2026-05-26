@@ -865,7 +865,21 @@ def test_viewer_adapter_ensure_points_layer_from_selection_applies_solid_face_co
     assert np.allclose(result.layer.border_color, result.layer.face_color)
 
 
-def test_viewer_adapter_ensure_points_layer_from_selection_keeps_categorical_face_palette_owned_by_harpy() -> None:
+def test_viewer_adapter_ensure_points_layer_from_selection_applies_single_categorical_face_color_control() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
+    selection = make_points_selection(["AAMP", "AAMP"], selected_values=("AAMP",))
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    result = adapter._ensure_points_layer_from_selection(identity, selection=selection)
+    result.layer.current_face_color = "red"
+
+    assert np.allclose(result.layer.face_color, np.asarray([to_rgba("red")] * selection.loaded_count))
+    assert np.allclose(result.layer.border_color, result.layer.face_color)
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_keeps_multi_categorical_palette_owned_by_harpy() -> None:
     sdata = SimpleNamespace()
     identity = make_points_identity(sdata)
     selection = make_points_selection(["AAMP", "AXL"], selected_values=("AAMP", "AXL"))
@@ -875,7 +889,6 @@ def test_viewer_adapter_ensure_points_layer_from_selection_keeps_categorical_fac
     result = adapter._ensure_points_layer_from_selection(identity, selection=selection)
     face_color = result.layer.face_color.copy()
     border_color = result.layer.border_color.copy()
-    np.testing.assert_array_equal(border_color, face_color)
     result.layer.current_face_color = "red"
 
     np.testing.assert_array_equal(result.layer.face_color, face_color)
@@ -994,11 +1007,11 @@ def test_viewer_adapter_ensure_points_layer_from_selection_preserves_solid_face_
     assert np.allclose(second.layer.border_color, second.layer.face_color)
 
 
-def test_viewer_adapter_ensure_points_layer_from_selection_does_not_preserve_categorical_face_swatch() -> None:
+def test_viewer_adapter_ensure_points_layer_from_selection_preserves_overridden_categorical_face_color() -> None:
     sdata = SimpleNamespace()
     identity = make_points_identity(sdata)
-    first_selection = make_points_selection(["AAMP", "AXL"], selected_values=("AAMP", "AXL"))
-    second_selection = make_points_selection(["AAMP", "AAMP"], selected_values=("AAMP",))
+    first_selection = make_points_selection(["AAMP", "AAMP"], selected_values=("AAMP",))
+    second_selection = make_points_selection(["AXL", "AXL"], selected_values=("AXL",))
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
     first = adapter._ensure_points_layer_from_selection(identity, selection=first_selection)
@@ -1006,10 +1019,25 @@ def test_viewer_adapter_ensure_points_layer_from_selection_does_not_preserve_cat
 
     second = adapter._ensure_points_layer_from_selection(identity, selection=second_selection)
 
-    assert np.allclose(
-        second.layer.face_color,
-        np.asarray([to_rgba(default_categorical_colors(1)[0])] * second_selection.loaded_count),
-    )
+    assert second.layer.current_face_color == "red"
+    assert np.allclose(second.layer.face_color, np.asarray([to_rgba("red")] * second_selection.loaded_count))
+    assert np.allclose(second.layer.border_color, second.layer.face_color)
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_does_not_preserve_single_color_into_multi_category() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
+    first_selection = make_points_selection(["AAMP", "AAMP"], selected_values=("AAMP",))
+    second_selection = make_points_selection(["AAMP", "AXL"], selected_values=("AAMP", "AXL"))
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    first = adapter._ensure_points_layer_from_selection(identity, selection=first_selection)
+    first.layer.current_face_color = "red"
+
+    second = adapter._ensure_points_layer_from_selection(identity, selection=second_selection)
+
+    expected_colors = np.asarray([to_rgba(color) for color in default_categorical_colors(2)], dtype=np.float32)
+    assert np.allclose(second.layer.face_color, expected_colors)
     assert np.allclose(second.layer.border_color, second.layer.face_color)
 
 
