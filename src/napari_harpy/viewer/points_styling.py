@@ -81,7 +81,7 @@ def apply_points_selection_style(
     _connect_current_symbol_to_global_point_symbol(layer)
 
     selected_value_count = len(selection.selected_values)
-    if selected_value_count < 2 or selected_value_count > POINTS_SELECTION_MAX_CATEGORICAL_COLORS:
+    if selected_value_count == 0 or selected_value_count > POINTS_SELECTION_MAX_CATEGORICAL_COLORS:
         layer.current_face_color = POINTS_SELECTION_SOLID_COLOR if point_face_color is None else point_face_color
         layer.face_color = layer.current_face_color
         layer.current_border_color = layer.current_face_color
