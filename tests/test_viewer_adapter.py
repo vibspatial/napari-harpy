@@ -78,6 +78,21 @@ class DummyViewer:
         return layer
 
 
+class UniqueNameDummyViewer(DummyViewer):
+    def add_layer(self, layer: object) -> object:
+        name = getattr(layer, "name", None)
+        if isinstance(name, str):
+            existing_names = {getattr(existing_layer, "name", None) for existing_layer in self.layers}
+            if name in existing_names:
+                suffix = 1
+                candidate_name = f"{name} [{suffix}]"
+                while candidate_name in existing_names:
+                    suffix += 1
+                    candidate_name = f"{name} [{suffix}]"
+                layer.name = candidate_name
+        return super().add_layer(layer)
+
+
 class UnsupportedViewer:
     def __init__(self) -> None:
         self.layers = None
@@ -1076,6 +1091,22 @@ def test_viewer_adapter_ensure_points_layer_from_selection_uses_all_values_name(
     result = adapter._ensure_points_layer_from_selection(identity, selection=selection)
 
     assert result.layer.name == "transcripts: all gene values"
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_restores_name_after_duplicate_add() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
+    selection = make_points_selection(["AAMP", "AXL"], selected_values=("AAMP", "AXL"), selection_mode="all")
+    viewer = UniqueNameDummyViewer()
+    adapter = ViewerAdapter(viewer)
+    first = adapter._ensure_points_layer_from_selection(identity, selection=selection)
+
+    second = adapter._ensure_points_layer_from_selection(identity, selection=selection)
+
+    assert first.layer not in viewer.layers
+    assert second.layer in viewer.layers
+    assert second.layer.name == "transcripts: all gene values"
+    assert len(viewer.layers) == 1
 
 
 def test_viewer_adapter_ensure_points_layer_from_selection_uses_categorical_color_for_single_all_value() -> None:

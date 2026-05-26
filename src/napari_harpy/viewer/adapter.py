@@ -943,6 +943,7 @@ class ViewerAdapter(QObject):
         camera_state = _capture_viewer_camera_state(self._viewer) if old_layer is not None else None
 
         layer = _build_points_layer_from_selection(identity, selection)
+        intended_layer_name = layer.name
         layer.visible = visible
         style_result = apply_points_selection_style(
             layer,
@@ -969,6 +970,7 @@ class ViewerAdapter(QObject):
                 # `_view_size`. In-place mutation has produced stale-cache
                 # errors when switching between point selections.
                 self._remove_layer_from_viewer_and_registry(old_layer)
+                layer.name = intended_layer_name
         finally:
             _restore_viewer_camera_state(self._viewer, camera_state)
 
