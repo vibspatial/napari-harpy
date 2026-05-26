@@ -19,6 +19,7 @@ POINTS_SELECTION_DEFAULT_SYMBOL = "disc"
 _POINTS_SIZE_SYNC_CALLBACK_ATTR = "_harpy_points_size_sync_callback"
 _POINTS_SYMBOL_SYNC_CALLBACK_ATTR = "_harpy_points_symbol_sync_callback"
 _POINTS_FACE_COLOR_SYNC_CALLBACK_ATTR = "_harpy_points_face_color_sync_callback"
+_POINTS_FACE_COLOR_OVERRIDE_ATTR = "_harpy_points_face_color_override"
 
 
 @dataclass(frozen=True)
@@ -68,7 +69,12 @@ def apply_points_selection_style(
     point_face_color: Any | None = None,
     categorical_colors: Sequence[str] | None = None,
 ) -> PointsStyleResult:
-    """Apply points value-selection styling."""
+    """Apply points value-selection styling.
+
+    ``point_face_color`` is a preserved napari UI color from the previous
+    layer. It is used for solid fallback layers and single-category
+    categorical layers, where one color cannot erase a multi-value palette.
+    """
     resolved_point_size = _coerce_point_size(point_size, default=POINTS_SELECTION_DEFAULT_SIZE)
     resolved_point_symbol = POINTS_SELECTION_DEFAULT_SYMBOL if point_symbol is None else point_symbol
     layer.current_size = resolved_point_size
@@ -81,7 +87,7 @@ def apply_points_selection_style(
     _connect_current_symbol_to_global_point_symbol(layer)
 
     selected_value_count = len(selection.selected_values)
-    if selected_value_count < 2 or selected_value_count > POINTS_SELECTION_MAX_CATEGORICAL_COLORS:
+    if selected_value_count == 0 or selected_value_count > POINTS_SELECTION_MAX_CATEGORICAL_COLORS:
         layer.current_face_color = POINTS_SELECTION_SOLID_COLOR if point_face_color is None else point_face_color
         layer.face_color = layer.current_face_color
         layer.current_border_color = layer.current_face_color
@@ -101,6 +107,10 @@ def apply_points_selection_style(
         )
         layer.face_color = selection.index_column
         layer.border_color = layer.face_color
+        if selected_value_count == 1:
+            _connect_current_face_color_to_global_point_face_color(layer)
+            if point_face_color is not None:
+                layer.current_face_color = point_face_color
 
     return PointsStyleResult(
         color_mode="categorical",
@@ -138,6 +148,7 @@ def _connect_current_face_color_to_global_point_face_color(layer: Points) -> Non
         return
 
     def _sync_current_face_color_to_all_points(_event: Any | None = None) -> None:
+        setattr(layer, _POINTS_FACE_COLOR_OVERRIDE_ATTR, True)
         layer.face_color = layer.current_face_color
         layer.current_border_color = layer.current_face_color
         layer.border_color = layer.face_color

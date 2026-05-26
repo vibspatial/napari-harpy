@@ -5,7 +5,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from html import escape
-from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from qtpy.QtCore import QSignalBlocker, Qt
@@ -27,6 +26,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_harpy._app_state import FeatureMatrixWrittenEvent, HarpyAppState, get_or_create_app_state
+from napari_harpy._resources import get_logo_path
 from napari_harpy.core.spatialdata import (
     SpatialDataImageOption,
     SpatialDataLabelsOption,
@@ -424,7 +424,7 @@ class FeatureExtractionWidget(QWidget):
             selected_image_option=None,
             image_note_text=None,
         )
-        self._logo_path = Path(__file__).resolve().parents[4] / "docs" / "_static" / "logo.png"
+        self._logo_path = get_logo_path()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)

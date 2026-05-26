@@ -30,6 +30,7 @@ from napari_harpy._app_state import (
     get_or_create_app_state,
 )
 from napari_harpy._persistence import PersistenceController
+from napari_harpy._resources import get_logo_path
 from napari_harpy.core.annotation import UNLABELED_CLASS
 from napari_harpy.core.classifier_export import DEFAULT_CLASSIFIER_EXPORT_SUFFIX
 from napari_harpy.core.spatialdata import (
@@ -180,7 +181,7 @@ class ObjectClassificationWidget(QWidget):
         self._selected_training_scope: ClassifierScopeMode = DEFAULT_TRAINING_SCOPE
         self._selected_prediction_scope: ClassifierScopeMode = DEFAULT_PREDICTION_SCOPE
         self._auto_train_enabled = False
-        self._logo_path = Path(__file__).resolve().parents[4] / "docs" / "_static" / "logo.png"
+        self._logo_path = get_logo_path()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)

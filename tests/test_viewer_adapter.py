@@ -28,6 +28,7 @@ from napari_harpy.viewer.adapter import (
     ShapesLayerBinding,
     ViewerAdapter,
 )
+from napari_harpy.viewer.points_styling import POINTS_SELECTION_SOLID_COLOR
 from napari_harpy.viewer.shapes_styling import SHAPES_FACE_ALPHA
 
 
@@ -75,6 +76,21 @@ class DummyViewer:
             self.camera.center = (0.0, 0.0)
             self.camera.zoom = 1.0
         return layer
+
+
+class UniqueNameDummyViewer(DummyViewer):
+    def add_layer(self, layer: object) -> object:
+        name = getattr(layer, "name", None)
+        if isinstance(name, str):
+            existing_names = {getattr(existing_layer, "name", None) for existing_layer in self.layers}
+            if name in existing_names:
+                suffix = 1
+                candidate_name = f"{name} [{suffix}]"
+                while candidate_name in existing_names:
+                    suffix += 1
+                    candidate_name = f"{name} [{suffix}]"
+                layer.name = candidate_name
+        return super().add_layer(layer)
 
 
 class UnsupportedViewer:
@@ -723,7 +739,8 @@ def test_viewer_adapter_ensure_points_layer_from_selection_creates_registered_la
     result = adapter._ensure_points_layer_from_selection(identity, selection=selection)
 
     assert result.created is True
-    assert result.color_mode == "solid"
+    assert str(result.layer.face_color_mode) == "cycle"
+    assert result.color_mode == "categorical"
     assert result.categorical_coloring_disabled is False
     assert result.selected_value_count == 1
     assert result.categorical_limit == 102
@@ -737,7 +754,8 @@ def test_viewer_adapter_ensure_points_layer_from_selection_creates_registered_la
     assert result.layer.current_symbol.value == "disc"
     assert all(symbol.value == "disc" for symbol in result.layer.symbol)
     assert np.all(result.layer.border_width == 0)
-    assert np.allclose(result.layer.face_color, np.asarray([to_rgba("#00FFFF")] * selection.loaded_count))
+    expected_colors = np.asarray([to_rgba(default_categorical_colors(1)[0])] * selection.loaded_count)
+    assert np.allclose(result.layer.face_color, expected_colors)
     assert np.allclose(result.layer.border_color, result.layer.face_color)
     binding = adapter.layer_bindings.get_binding(result.layer)
     assert isinstance(binding, PointsLayerBinding)
@@ -748,6 +766,53 @@ def test_viewer_adapter_ensure_points_layer_from_selection_creates_registered_la
     assert binding.sdata_id == id(sdata)
     assert viewer.camera.center == (0.0, 0.0)
     assert viewer.camera.zoom == 1.0
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_uses_categorical_color_for_single_value() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
+    selection = make_points_selection(["AAMP", "AAMP"], selected_values=("AAMP",))
+    adapter = ViewerAdapter(DummyViewer())
+
+    result = adapter._ensure_points_layer_from_selection(identity, selection=selection)
+
+    assert str(result.layer.face_color_mode) == "cycle"
+    assert result.color_mode == "categorical"
+    assert np.allclose(
+        result.layer.face_color,
+        np.asarray([to_rgba(default_categorical_colors(1)[0])] * selection.loaded_count),
+    )
+    assert np.allclose(result.layer.border_color, result.layer.face_color)
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_handles_empty_selection() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
+    selection = PointsValueSelection(
+        coordinates=np.empty((0, 2), dtype="float32"),
+        features=pd.DataFrame(
+            {
+                "gene": pd.Categorical([], categories=[]),
+                "value_id": pd.Series([], dtype="uint32"),
+            }
+        ),
+        index_column="gene",
+        selected_values=(),
+        selected_value_ids=(),
+        selection_mode="values",
+        total_count=0,
+        render_point_budget=100_000,
+        is_sampled=False,
+        warning=None,
+    )
+    adapter = ViewerAdapter(DummyViewer())
+
+    result = adapter._ensure_points_layer_from_selection(identity, selection=selection)
+
+    assert result.layer.name == "transcripts: no gene values"
+    assert result.color_mode == "solid"
+    assert result.categorical_coloring_disabled is False
+    assert result.selected_value_count == 0
 
 
 def test_viewer_adapter_ensure_points_layer_from_selection_applies_points_affine() -> None:
@@ -803,6 +868,21 @@ def test_viewer_adapter_ensure_points_layer_from_selection_applies_symbol_contro
 def test_viewer_adapter_ensure_points_layer_from_selection_applies_solid_face_color_control_to_all_points() -> None:
     sdata = SimpleNamespace()
     identity = make_points_identity(sdata)
+    selected_values = tuple(f"gene_{index}" for index in range(103))
+    selection = make_points_selection(list(selected_values), selected_values=selected_values)
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    result = adapter._ensure_points_layer_from_selection(identity, selection=selection)
+    result.layer.current_face_color = "red"
+
+    assert np.allclose(result.layer.face_color, np.asarray([to_rgba("red")] * selection.loaded_count))
+    assert np.allclose(result.layer.border_color, result.layer.face_color)
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_applies_single_categorical_face_color_control() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
     selection = make_points_selection(["AAMP", "AAMP"], selected_values=("AAMP",))
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
@@ -814,7 +894,7 @@ def test_viewer_adapter_ensure_points_layer_from_selection_applies_solid_face_co
     assert np.allclose(result.layer.border_color, result.layer.face_color)
 
 
-def test_viewer_adapter_ensure_points_layer_from_selection_keeps_categorical_face_palette_owned_by_harpy() -> None:
+def test_viewer_adapter_ensure_points_layer_from_selection_keeps_multi_categorical_palette_owned_by_harpy() -> None:
     sdata = SimpleNamespace()
     identity = make_points_identity(sdata)
     selection = make_points_selection(["AAMP", "AXL"], selected_values=("AAMP", "AXL"))
@@ -824,7 +904,6 @@ def test_viewer_adapter_ensure_points_layer_from_selection_keeps_categorical_fac
     result = adapter._ensure_points_layer_from_selection(identity, selection=selection)
     face_color = result.layer.face_color.copy()
     border_color = result.layer.border_color.copy()
-    np.testing.assert_array_equal(border_color, face_color)
     result.layer.current_face_color = "red"
 
     np.testing.assert_array_equal(result.layer.face_color, face_color)
@@ -927,7 +1006,26 @@ def test_viewer_adapter_ensure_points_layer_from_selection_preserves_symbol_when
 def test_viewer_adapter_ensure_points_layer_from_selection_preserves_solid_face_color_when_replacing_layer() -> None:
     sdata = SimpleNamespace()
     identity = make_points_identity(sdata)
-    first_selection = make_points_selection(["AAMP"], selected_values=("AAMP",))
+    first_values = tuple(f"gene_{index}" for index in range(103))
+    second_values = tuple(f"target_{index}" for index in range(103))
+    first_selection = make_points_selection(list(first_values), selected_values=first_values)
+    second_selection = make_points_selection(list(second_values), selected_values=second_values)
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    first = adapter._ensure_points_layer_from_selection(identity, selection=first_selection)
+    first.layer.current_face_color = "red"
+
+    second = adapter._ensure_points_layer_from_selection(identity, selection=second_selection)
+
+    assert second.layer.current_face_color == "red"
+    assert np.allclose(second.layer.face_color, np.asarray([to_rgba("red")] * second_selection.loaded_count))
+    assert np.allclose(second.layer.border_color, second.layer.face_color)
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_preserves_overridden_categorical_face_color() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
+    first_selection = make_points_selection(["AAMP", "AAMP"], selected_values=("AAMP",))
     second_selection = make_points_selection(["AXL", "AXL"], selected_values=("AXL",))
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
@@ -941,11 +1039,11 @@ def test_viewer_adapter_ensure_points_layer_from_selection_preserves_solid_face_
     assert np.allclose(second.layer.border_color, second.layer.face_color)
 
 
-def test_viewer_adapter_ensure_points_layer_from_selection_does_not_preserve_categorical_face_swatch() -> None:
+def test_viewer_adapter_ensure_points_layer_from_selection_does_not_preserve_single_color_into_multi_category() -> None:
     sdata = SimpleNamespace()
     identity = make_points_identity(sdata)
-    first_selection = make_points_selection(["AAMP", "AXL"], selected_values=("AAMP", "AXL"))
-    second_selection = make_points_selection(["AAMP", "AAMP"], selected_values=("AAMP",))
+    first_selection = make_points_selection(["AAMP", "AAMP"], selected_values=("AAMP",))
+    second_selection = make_points_selection(["AAMP", "AXL"], selected_values=("AAMP", "AXL"))
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
     first = adapter._ensure_points_layer_from_selection(identity, selection=first_selection)
@@ -953,7 +1051,8 @@ def test_viewer_adapter_ensure_points_layer_from_selection_does_not_preserve_cat
 
     second = adapter._ensure_points_layer_from_selection(identity, selection=second_selection)
 
-    assert np.allclose(second.layer.face_color, np.asarray([to_rgba("#00FFFF")] * second_selection.loaded_count))
+    expected_colors = np.asarray([to_rgba(color) for color in default_categorical_colors(2)], dtype=np.float32)
+    assert np.allclose(second.layer.face_color, expected_colors)
     assert np.allclose(second.layer.border_color, second.layer.face_color)
 
 
@@ -992,6 +1091,38 @@ def test_viewer_adapter_ensure_points_layer_from_selection_uses_all_values_name(
     result = adapter._ensure_points_layer_from_selection(identity, selection=selection)
 
     assert result.layer.name == "transcripts: all gene values"
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_restores_name_after_duplicate_add() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
+    selection = make_points_selection(["AAMP", "AXL"], selected_values=("AAMP", "AXL"), selection_mode="all")
+    viewer = UniqueNameDummyViewer()
+    adapter = ViewerAdapter(viewer)
+    first = adapter._ensure_points_layer_from_selection(identity, selection=selection)
+
+    second = adapter._ensure_points_layer_from_selection(identity, selection=selection)
+
+    assert first.layer not in viewer.layers
+    assert second.layer in viewer.layers
+    assert second.layer.name == "transcripts: all gene values"
+    assert len(viewer.layers) == 1
+
+
+def test_viewer_adapter_ensure_points_layer_from_selection_uses_categorical_color_for_single_all_value() -> None:
+    sdata = SimpleNamespace()
+    identity = make_points_identity(sdata)
+    selection = make_points_selection(["AAMP", "AAMP"], selected_values=("AAMP",), selection_mode="all")
+    adapter = ViewerAdapter(DummyViewer())
+
+    result = adapter._ensure_points_layer_from_selection(identity, selection=selection)
+
+    assert str(result.layer.face_color_mode) == "cycle"
+    assert result.color_mode == "categorical"
+    assert np.allclose(
+        result.layer.face_color,
+        np.asarray([to_rgba(default_categorical_colors(1)[0])] * selection.loaded_count),
+    )
 
 
 def test_viewer_adapter_ensure_points_layer_from_selection_uses_categorical_colors_for_small_selections() -> None:
@@ -1042,7 +1173,10 @@ def test_viewer_adapter_ensure_points_layer_from_selection_uses_solid_color_abov
     assert result.categorical_coloring_disabled is True
     assert result.selected_value_count == 103
     assert result.categorical_limit == 102
-    assert np.allclose(result.layer.face_color, np.asarray([to_rgba("#00FFFF")] * selection.loaded_count))
+    assert np.allclose(
+        result.layer.face_color,
+        np.asarray([to_rgba(POINTS_SELECTION_SOLID_COLOR)] * selection.loaded_count),
+    )
 
 
 def test_viewer_adapter_ensure_points_layer_from_selection_keeps_sampling_warning_on_selection() -> None:
@@ -1683,6 +1817,27 @@ def test_viewer_adapter_ensure_shapes_loaded_reuses_matching_existing_layer(sdat
     assert len(viewer.layers) == 1
 
 
+def test_viewer_adapter_primary_shapes_layer_applies_edge_width_control_to_all_shapes(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    result = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
+    result.layer.current_edge_width = 6
+
+    assert result.layer.edge_width == [6] * len(result.layer.data)
+
+
+def test_viewer_adapter_primary_shapes_layer_applies_edge_color_control_to_all_shapes(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    result = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
+    result.layer.current_edge_color = "red"
+
+    expected_color = np.asarray([to_rgba("red")] * len(result.layer.data))
+    np.testing.assert_allclose(result.layer.edge_color, expected_color)
+
+
 def test_viewer_adapter_ensure_styled_shapes_loaded_creates_registered_variant_with_stored_palette() -> None:
     sdata = make_colorable_shapes_sdata()
     viewer = DummyViewer()
@@ -1738,6 +1893,39 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_updates_fill_alpha_on_existi
     assert len(viewer.layers) == 1
     np.testing.assert_allclose(first.layer.face_color[:, 3], np.full(len(first.layer.data), SHAPES_FACE_ALPHA))
     np.testing.assert_allclose(first.layer.edge_color[:, 3], np.ones(len(first.layer.data)))
+
+
+def test_viewer_adapter_styled_shapes_layer_applies_edge_width_control_to_all_shapes() -> None:
+    sdata = make_colorable_shapes_sdata()
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = ShapeColorSourceSpec(
+        source_kind="shape_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    result = adapter.ensure_styled_shapes_loaded(sdata, "cell_boundaries", "global", style_spec)
+    result.layer.current_edge_width = 6
+
+    assert result.layer.edge_width == [6] * len(result.layer.data)
+
+
+def test_viewer_adapter_styled_shapes_layer_keeps_palette_when_current_edge_color_changes() -> None:
+    sdata = make_colorable_shapes_sdata()
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = ShapeColorSourceSpec(
+        source_kind="shape_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    result = adapter.ensure_styled_shapes_loaded(sdata, "cell_boundaries", "global", style_spec)
+    edge_color = result.layer.edge_color.copy()
+    result.layer.current_edge_color = "red"
+
+    np.testing.assert_array_equal(result.layer.edge_color, edge_color)
 
 
 def test_viewer_adapter_styled_shapes_status_includes_selected_shape_column() -> None:
@@ -1975,6 +2163,7 @@ def test_viewer_adapter_ensure_image_loaded_overlay_adds_one_layer_per_selected_
     assert result.mode == "overlay"
     assert result.created is True
     assert result.channels == (0, 2)
+    assert result.channel_names == ("0", "2")
     assert len(layers) == 2
     assert [layer.name for layer in layers] == ["blobs_image[0]", "blobs_image[2]"]
     assert [layer.blending for layer in layers] == ["additive", "additive"]
@@ -2097,6 +2286,7 @@ def test_viewer_adapter_ensure_image_loaded_overlay_removes_stale_channel_layers
 
     assert mixed_result.created is True
     assert mixed_result.channels == (1, 2)
+    assert mixed_result.channel_names == ("1", "2")
     assert mixed_result.layers[0] is layers[0]
     assert len(viewer.layers) == 2
 
@@ -2136,6 +2326,7 @@ def test_viewer_adapter_ensure_image_loaded_overlay_accepts_channel_names(sdata_
     layers = result.layers
 
     assert result.channels == (1, 2)
+    assert result.channel_names == ("CD3", "CD8")
     assert [layer.name for layer in layers] == ["blobs_image[CD3]", "blobs_image[CD8]"]
     assert [adapter.layer_bindings.get_binding(layer).channel_name for layer in layers] == ["CD3", "CD8"]
 

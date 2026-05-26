@@ -276,10 +276,25 @@ def test_build_image_loaded_card_spec_reports_overlay_channels() -> None:
         mode="overlay",
         created=True,
         channels=(0, 2),
+        channel_names=("DAPI", "CD8"),
     )
 
     spec = build_image_loaded_card_spec(request, result)
 
     assert spec.title == "Image Layer Created"
     assert spec.kind == "success"
-    assert spec.lines == ("Created image overlay for `blobs_image` with channels [0, 2].",)
+    assert spec.lines == ("Created image overlay for `blobs_image` with channels `DAPI`, `CD8`.",)
+
+
+def test_build_image_loaded_card_spec_falls_back_to_overlay_channel_indices() -> None:
+    request = SimpleNamespace(image_name="blobs_image")
+    result = SimpleNamespace(
+        layers=(object(),),
+        mode="overlay",
+        created=True,
+        channels=(0,),
+    )
+
+    spec = build_image_loaded_card_spec(request, result)
+
+    assert spec.lines == ("Created image overlay for `blobs_image` with channel `0`.",)

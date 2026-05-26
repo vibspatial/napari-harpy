@@ -27,6 +27,8 @@ from napari_harpy.viewer.labels_styling import (
     build_styled_labels_layer_name,
 )
 from napari_harpy.viewer.points_styling import (
+    _POINTS_FACE_COLOR_OVERRIDE_ATTR,
+    POINTS_SELECTION_MAX_CATEGORICAL_COLORS,
     POINTS_SELECTION_SOLID_COLOR,
     PointsLoadResult,
     apply_points_selection_style,
@@ -34,6 +36,8 @@ from napari_harpy.viewer.points_styling import (
 )
 from napari_harpy.viewer.shapes_styling import (
     ShapesLoadResult,
+    _connect_current_edge_color_to_global_edge_color,
+    _connect_current_edge_width_to_global_edge_width,
     apply_shape_color_source_to_shapes_layer,
     build_styled_shapes_layer_name,
 )
@@ -939,13 +943,14 @@ class ViewerAdapter(QObject):
         camera_state = _capture_viewer_camera_state(self._viewer) if old_layer is not None else None
 
         layer = _build_points_layer_from_selection(identity, selection)
+        intended_layer_name = layer.name
         layer.visible = visible
         style_result = apply_points_selection_style(
             layer,
             selection,
             point_size=getattr(old_layer, "current_size", None),
             point_symbol=getattr(old_layer, "current_symbol", None),
-            point_face_color=_get_preserved_solid_points_face_color(old_layer),
+            point_face_color=_get_preserved_points_face_color(old_layer, selection=selection),
             categorical_colors=categorical_colors,
         )
 
@@ -965,6 +970,7 @@ class ViewerAdapter(QObject):
                 # `_view_size`. In-place mutation has produced stale-cache
                 # errors when switching between point selections.
                 self._remove_layer_from_viewer_and_registry(old_layer)
+                layer.name = intended_layer_name
         finally:
             _restore_viewer_camera_state(self._viewer, camera_state)
 
@@ -1196,6 +1202,7 @@ class ViewerAdapter(QObject):
             mode="overlay",
             created=created,
             channels=tuple(channel_index for channel_index, _ in resolved_channels),
+            channel_names=tuple(channel_name for _, channel_name in resolved_channels),
         )
 
     def ensure_shapes_loaded(self, sdata: SpatialData, shapes_name: str, coordinate_system: str) -> ShapesLoadResult:
@@ -1213,7 +1220,13 @@ class ViewerAdapter(QObject):
                 skipped_geometry_count=skipped_geometry_count,
             )
 
-        built_layer = _build_shapes_layer(sdata, shapes_name, coordinate_system, name=shapes_name)
+        built_layer = _build_shapes_layer(
+            sdata,
+            shapes_name,
+            coordinate_system,
+            name=shapes_name,
+            sync_edge_color=True,
+        )
         layer = built_layer.layer
         _add_layer_to_viewer(self._viewer, layer)
         self.register_shapes_layer(
@@ -1257,6 +1270,7 @@ class ViewerAdapter(QObject):
                 shapes_name,
                 coordinate_system,
                 name=build_styled_shapes_layer_name(shapes_name, style_spec),
+                sync_edge_color=False,
             )
             layer = built_layer.layer
             _add_layer_to_viewer(self._viewer, layer)
@@ -1485,16 +1499,24 @@ def _get_points_affine_transform(
     return transform.to_affine_matrix(input_axes=("y", "x"), output_axes=("y", "x"))
 
 
-def _get_preserved_solid_points_face_color(layer: Points | None) -> Any | None:
+def _get_preserved_points_face_color(layer: Points | None, *, selection: PointsValueSelection) -> Any | None:
     if layer is None:
         return None
-    # Only preserve user-selected face color for solid/direct coloring.
-    # Napari's "direct" mode means `layer.face_color` is explicit RGBA colors,
-    # which is the mode Harpy uses for solid points selections. In categorical
-    # mode, napari uses "cycle": face color is mapped from a feature column
-    # through a color cycle, so preserving `current_face_color` would carry a
-    # single swatch value instead of the Harpy gene/value palette.
-    if getattr(layer, "face_color_mode", None) != "direct":
+
+    selected_value_count = len(selection.selected_values)
+    selection_uses_solid_color = (
+        selected_value_count == 0 or selected_value_count > POINTS_SELECTION_MAX_CATEGORICAL_COLORS
+    )
+    selection_accepts_single_face_color = selection_uses_solid_color or selected_value_count == 1
+    # A user override is a single layer-wide color; only carry it into new
+    # selections where that cannot flatten a meaningful multi-value palette.
+    if not selection_accepts_single_face_color:
+        return None
+
+    if getattr(layer, _POINTS_FACE_COLOR_OVERRIDE_ATTR, False):
+        return getattr(layer, "current_face_color", None)
+
+    if not selection_uses_solid_color or getattr(layer, "face_color_mode", None) != "direct":
         return None
     return getattr(layer, "current_face_color", None)
 
@@ -1691,6 +1713,7 @@ def _build_shapes_layer(
     coordinate_system: str,
     *,
     name: str,
+    sync_edge_color: bool = True,
 ) -> _BuiltShapesLayer:
     shapes = getattr(sdata, "shapes", {})
     if shapes_name not in shapes:
@@ -1725,6 +1748,12 @@ def _build_shapes_layer(
         edge_width=1,
         opacity=0.8,
     )
+    _connect_current_edge_width_to_global_edge_width(layer)
+    # Primary shapes own their edge color as presentation, while styled shapes
+    # use edge color as a data-driven palette that should not be flattened by
+    # napari's current edge-color control.
+    if sync_edge_color:
+        _connect_current_edge_color_to_global_edge_color(layer)
     return _BuiltShapesLayer(
         layer=layer,
         source_shapes_index_feature_name=napari_layer_inputs.source_shapes_index_feature_name,
