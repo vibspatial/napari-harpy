@@ -34,6 +34,8 @@ from napari_harpy.viewer.points_styling import (
 )
 from napari_harpy.viewer.shapes_styling import (
     ShapesLoadResult,
+    _connect_current_edge_color_to_global_edge_color,
+    _connect_current_edge_width_to_global_edge_width,
     apply_shape_color_source_to_shapes_layer,
     build_styled_shapes_layer_name,
 )
@@ -1213,7 +1215,13 @@ class ViewerAdapter(QObject):
                 skipped_geometry_count=skipped_geometry_count,
             )
 
-        built_layer = _build_shapes_layer(sdata, shapes_name, coordinate_system, name=shapes_name)
+        built_layer = _build_shapes_layer(
+            sdata,
+            shapes_name,
+            coordinate_system,
+            name=shapes_name,
+            sync_edge_color=True,
+        )
         layer = built_layer.layer
         _add_layer_to_viewer(self._viewer, layer)
         self.register_shapes_layer(
@@ -1257,6 +1265,7 @@ class ViewerAdapter(QObject):
                 shapes_name,
                 coordinate_system,
                 name=build_styled_shapes_layer_name(shapes_name, style_spec),
+                sync_edge_color=False,
             )
             layer = built_layer.layer
             _add_layer_to_viewer(self._viewer, layer)
@@ -1691,6 +1700,7 @@ def _build_shapes_layer(
     coordinate_system: str,
     *,
     name: str,
+    sync_edge_color: bool = True,
 ) -> _BuiltShapesLayer:
     shapes = getattr(sdata, "shapes", {})
     if shapes_name not in shapes:
@@ -1725,6 +1735,12 @@ def _build_shapes_layer(
         edge_width=1,
         opacity=0.8,
     )
+    _connect_current_edge_width_to_global_edge_width(layer)
+    # Primary shapes own their edge color as presentation, while styled shapes
+    # use edge color as a data-driven palette that should not be flattened by
+    # napari's current edge-color control.
+    if sync_edge_color:
+        _connect_current_edge_color_to_global_edge_color(layer)
     return _BuiltShapesLayer(
         layer=layer,
         source_shapes_index_feature_name=napari_layer_inputs.source_shapes_index_feature_name,

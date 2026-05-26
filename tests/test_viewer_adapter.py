@@ -1683,6 +1683,27 @@ def test_viewer_adapter_ensure_shapes_loaded_reuses_matching_existing_layer(sdat
     assert len(viewer.layers) == 1
 
 
+def test_viewer_adapter_primary_shapes_layer_applies_edge_width_control_to_all_shapes(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    result = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
+    result.layer.current_edge_width = 6
+
+    assert result.layer.edge_width == [6] * len(result.layer.data)
+
+
+def test_viewer_adapter_primary_shapes_layer_applies_edge_color_control_to_all_shapes(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    result = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
+    result.layer.current_edge_color = "red"
+
+    expected_color = np.asarray([to_rgba("red")] * len(result.layer.data))
+    np.testing.assert_allclose(result.layer.edge_color, expected_color)
+
+
 def test_viewer_adapter_ensure_styled_shapes_loaded_creates_registered_variant_with_stored_palette() -> None:
     sdata = make_colorable_shapes_sdata()
     viewer = DummyViewer()
@@ -1738,6 +1759,39 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_updates_fill_alpha_on_existi
     assert len(viewer.layers) == 1
     np.testing.assert_allclose(first.layer.face_color[:, 3], np.full(len(first.layer.data), SHAPES_FACE_ALPHA))
     np.testing.assert_allclose(first.layer.edge_color[:, 3], np.ones(len(first.layer.data)))
+
+
+def test_viewer_adapter_styled_shapes_layer_applies_edge_width_control_to_all_shapes() -> None:
+    sdata = make_colorable_shapes_sdata()
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = ShapeColorSourceSpec(
+        source_kind="shape_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    result = adapter.ensure_styled_shapes_loaded(sdata, "cell_boundaries", "global", style_spec)
+    result.layer.current_edge_width = 6
+
+    assert result.layer.edge_width == [6] * len(result.layer.data)
+
+
+def test_viewer_adapter_styled_shapes_layer_keeps_palette_when_current_edge_color_changes() -> None:
+    sdata = make_colorable_shapes_sdata()
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = ShapeColorSourceSpec(
+        source_kind="shape_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    result = adapter.ensure_styled_shapes_loaded(sdata, "cell_boundaries", "global", style_spec)
+    edge_color = result.layer.edge_color.copy()
+    result.layer.current_edge_color = "red"
+
+    np.testing.assert_array_equal(result.layer.edge_color, edge_color)
 
 
 def test_viewer_adapter_styled_shapes_status_includes_selected_shape_column() -> None:

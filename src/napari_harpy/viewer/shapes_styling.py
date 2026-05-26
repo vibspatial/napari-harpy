@@ -32,6 +32,8 @@ if TYPE_CHECKING:
 SHAPES_MISSING_BASE_COLOR = "#808080"
 SHAPES_FACE_ALPHA = 0.35
 SHAPES_EDGE_ALPHA = 1.0
+_SHAPES_EDGE_WIDTH_SYNC_CALLBACK_ATTR = "_harpy_shapes_edge_width_sync_callback"
+_SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR = "_harpy_shapes_edge_color_sync_callback"
 
 
 @dataclass(frozen=True)
@@ -125,6 +127,30 @@ def apply_shape_color_source_to_shapes_layer(
 def build_styled_shapes_layer_name(shapes_name: str, style_spec: ShapeColorSourceSpec) -> str:
     """Return the user-facing layer name for one styled shapes variant."""
     return f"{shapes_name}[shape:{style_spec.value_key}]"
+
+
+def _connect_current_edge_width_to_global_edge_width(layer: Shapes) -> None:
+    if getattr(layer, _SHAPES_EDGE_WIDTH_SYNC_CALLBACK_ATTR, None) is not None:
+        return
+
+    def _sync_current_edge_width_to_all_shapes(_event: Any | None = None) -> None:
+        layer.edge_width = layer.current_edge_width
+
+    # Napari exposes `current_edge_width`, but emits its changes through
+    # the `edge_width` event.
+    layer.events.edge_width.connect(_sync_current_edge_width_to_all_shapes)
+    setattr(layer, _SHAPES_EDGE_WIDTH_SYNC_CALLBACK_ATTR, _sync_current_edge_width_to_all_shapes)
+
+
+def _connect_current_edge_color_to_global_edge_color(layer: Shapes) -> None:
+    if getattr(layer, _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR, None) is not None:
+        return
+
+    def _sync_current_edge_color_to_all_shapes(_event: Any | None = None) -> None:
+        layer.edge_color = layer.current_edge_color
+
+    layer.events.current_edge_color.connect(_sync_current_edge_color_to_all_shapes)
+    setattr(layer, _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR, _sync_current_edge_color_to_all_shapes)
 
 
 def disambiguate_shape_style_feature_name(style_column_name: str, source_index_feature_name: str) -> str:
