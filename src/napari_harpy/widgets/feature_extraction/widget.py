@@ -648,7 +648,11 @@ class FeatureExtractionWidget(QWidget):
 
     @property
     def selected_extraction_channel_names(self) -> tuple[str, ...] | None:
-        """Return the shared batch extraction-channel names for the current schema."""
+        """Return selected batch extraction-channel names for the current schema.
+
+        `None` means no channel schema/selector is currently available. `()`
+        means a selector is available, but no channel checkboxes are selected.
+        """
         if not self._batch_channel_names:
             return None
 
@@ -656,7 +660,11 @@ class FeatureExtractionWidget(QWidget):
 
     @property
     def selected_extraction_channel_indices(self) -> tuple[int, ...] | None:
-        """Return the shared batch extraction-channel indices for the current schema."""
+        """Return selected batch extraction-channel indices for the current schema.
+
+        `None` means no channel schema/selector is currently available. `()`
+        means a selector is available, but no channel checkboxes are selected.
+        """
         if not self._batch_channel_names:
             return None
 

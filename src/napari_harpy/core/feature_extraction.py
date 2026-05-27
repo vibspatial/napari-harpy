@@ -10,7 +10,14 @@ _INTENSITY_FEATURES = frozenset({"sum", "mean", "var", "min", "max", "kurtosis",
 
 @dataclass(frozen=True)
 class FeatureExtractionTriplet:
-    """One explicit `coordinate_system -> labels element -> image` selection."""
+    """One explicit `coordinate_system -> labels element -> image` selection.
+
+    Channel selection uses a small but important internal distinction:
+    `channels=None` means no explicit channel selection was supplied, so Harpy
+    may use its default behavior; `channels=()` means an explicit empty
+    selection, which is invalid for intensity-derived features; a non-empty
+    tuple carries the selected channels.
+    """
 
     coordinate_system: str
     labels_name: str
@@ -21,6 +28,11 @@ class FeatureExtractionTriplet:
 def _normalize_channels(
     channels: Sequence[FeatureExtractionChannel] | FeatureExtractionChannel | None,
 ) -> tuple[FeatureExtractionChannel, ...] | None:
+    """Normalize optional channel input while preserving explicit empty selections.
+
+    `None` is kept as "no explicit selection"; empty sequences normalize to
+    `()`, which represents "a selector exists, but no channels are selected".
+    """
     if channels is None:
         return None
     if isinstance(channels, (str, int)):
