@@ -81,6 +81,8 @@ coverage.xml
 .napari_cache
 .codex
 .codex-home/
+.claude/*
+!.claude/settings.json
 
 # Translations
 *.mo
