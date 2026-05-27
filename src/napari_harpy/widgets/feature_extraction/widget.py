@@ -1771,6 +1771,10 @@ class FeatureExtractionWidget(QWidget):
             error_text = "Choose an image for every extraction target before calculating intensity features."
         elif requires_image and self._batch_channel_error is not None:
             error_text = self._batch_channel_error
+        # `_batch_channel_names` is only populated once a selected image exposes a channel schema, so
+        # this branch nudges the user to pick a channel without nagging before an image is chosen.
+        elif requires_image and self._batch_channel_names and not self.selected_extraction_channel_names:
+            error_text = "Select at least one channel before calculating intensity features."
 
         return _FeatureExtractionStagedBatchState(
             checked_coordinate_systems=checked_coordinate_systems,
@@ -2133,6 +2137,14 @@ class FeatureExtractionWidget(QWidget):
         if not self._selected_visible_image_options():
             self.intensity_features_hint.setText(
                 "Intensity features are selected, so choose an image before calculating."
+            )
+            self.intensity_features_hint.setStyleSheet(_FEATURE_HINT_WARNING_STYLESHEET)
+            self.intensity_features_hint.setVisible(True)
+            return
+
+        if self._batch_channel_names and not self.selected_extraction_channel_names:
+            self.intensity_features_hint.setText(
+                "Intensity features are selected, so select at least one channel before calculating."
             )
             self.intensity_features_hint.setStyleSheet(_FEATURE_HINT_WARNING_STYLESHEET)
             self.intensity_features_hint.setVisible(True)

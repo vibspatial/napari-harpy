@@ -839,6 +839,32 @@ def test_feature_extraction_widget_shows_selected_image_channels_and_defaults_to
     assert not widget.channel_selection_container.isHidden()
 
 
+def test_feature_extraction_widget_blocks_intensity_features_without_selected_channels(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    check_coordinate_system(widget, "global")
+    select_segmentation(widget, "global", 0)
+    widget.findChild(QCheckBox, "feature_checkbox_mean").setChecked(True)
+    widget.image_combo.setCurrentIndex(1)
+    widget.output_key_line_edit.setText("features")
+
+    assert widget.calculate_button.isEnabled() is True
+
+    for checkbox in widget._batch_channel_checkboxes:
+        checkbox.setChecked(False)
+
+    assert widget.selected_extraction_channel_names == ()
+    assert widget.calculate_button.isEnabled() is False
+    assert not widget.intensity_features_hint.isHidden()
+    assert "select at least one channel" in widget.intensity_features_hint.text().lower()
+
+
 def test_feature_extraction_widget_raises_when_selected_image_has_no_channel_axis(
     qtbot,
     monkeypatch,
