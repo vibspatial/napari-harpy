@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import ast
-import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -25,6 +23,7 @@ from napari_harpy.core.classifier_export import (
 )
 
 _FEATURE_MATRICES_KEY = "feature_matrices"
+_MISSING = object()
 
 
 def _set_deterministic_features(
@@ -47,18 +46,23 @@ def _set_feature_metadata(
     feature_key: str = "features_1",
     feature_columns: tuple[str, ...] = ("is_large", "instance_fraction"),
     features: tuple[str, ...] = ("synthetic_size", "synthetic_position"),
+    source_image: object = None,
+    source_channels: object = _MISSING,
 ) -> None:
     table = sdata[table_name]
-    table.uns.setdefault(_FEATURE_MATRICES_KEY, {})[feature_key] = {
+    metadata = {
         "feature_columns": list(feature_columns),
         "schema_version": 1,
         "backend": "numpy",
         "dtype": str(np.asarray(table.obsm[feature_key]).dtype),
         "source_label": "blobs_labels",
-        "source_image": None,
+        "source_image": source_image,
         "coordinate_system": "global",
         "features": list(features),
     }
+    if source_channels is not _MISSING:
+        metadata["source_channels"] = source_channels
+    table.uns.setdefault(_FEATURE_MATRICES_KEY, {})[feature_key] = metadata
 
 
 def _make_classifier_bundle(
@@ -140,6 +144,7 @@ def _make_area_classifier_bundle() -> ClassifierExportBundle:
             "dtype": "float64",
             "source_label": "source_labels",
             "source_image": None,
+            "source_channels": None,
             "coordinate_system": "global",
             "features": ["area"],
         },
@@ -165,35 +170,6 @@ def _set_invalid_feature_rows_for_region(
     region_mask = (table.obs["region"].astype("string") == region_name).to_numpy(dtype=bool, copy=False)
     feature_matrix[region_mask, :] = np.nan
     table.obsm[feature_key] = feature_matrix
-
-
-def _install_fake_feature_extraction(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    feature_columns: tuple[str, ...] = ("is_large", "instance_fraction"),
-) -> dict[str, object]:
-    captured_kwargs: dict[str, object] = {}
-
-    def fake_add_feature_matrix(**kwargs):
-        captured_kwargs.update(kwargs)
-        sdata = kwargs["sdata"]
-        table_name = str(kwargs["table_name"])
-        feature_key = str(kwargs["feature_key"])
-        _set_deterministic_features(sdata, table_name=table_name, feature_key=feature_key)
-        _set_feature_metadata(
-            sdata,
-            table_name=table_name,
-            feature_key=feature_key,
-            feature_columns=feature_columns,
-            features=tuple(str(feature) for feature in kwargs["features"]),
-        )
-
-    monkeypatch.setitem(
-        sys.modules,
-        "harpy",
-        SimpleNamespace(tb=SimpleNamespace(add_feature_matrix=fake_add_feature_matrix)),
-    )
-    return captured_kwargs
 
 
 def test_apply_classifier_from_path_writes_predictions_and_apply_config(
@@ -275,25 +251,19 @@ def test_apply_classifier_rejects_spatialdata_invalid_prediction_column_names(sd
         )
 
 
-def test_compute_features_for_classifier_uses_target_mapping(
-    monkeypatch: pytest.MonkeyPatch,
-    sdata_blobs: SpatialData,
-) -> None:
-    _set_deterministic_features(sdata_blobs)
-    _set_feature_metadata(sdata_blobs)
-    classifier = _make_classifier_bundle(sdata_blobs)
-    captured_kwargs = _install_fake_feature_extraction(monkeypatch)
+def test_compute_features_for_classifier_uses_target_mapping(sdata_blobs: SpatialData) -> None:
+    classifier = _make_area_classifier_bundle()
 
     resolved_target = headless.compute_features_for_classifier(
         sdata_blobs,
         classifier=classifier,
         target=headless.HeadlessFeatureTarget(
             table_name="table",
-            feature_key="computed_features",
+            feature_key="computed_area",
             triplets=(
                 headless.FeatureExtractionTriplet(
-                    coordinate_system="target_global",
-                    labels_name="target_cells",
+                    coordinate_system="global",
+                    labels_name="blobs_labels",
                     image_name=None,
                 ),
             ),
@@ -301,25 +271,103 @@ def test_compute_features_for_classifier_uses_target_mapping(
     )
 
     assert resolved_target.table_name == "table"
-    assert resolved_target.feature_key == "computed_features"
+    assert resolved_target.feature_key == "computed_area"
     assert len(resolved_target.triplets) == 1
-    assert captured_kwargs["labels_name"] == "target_cells"
-    assert captured_kwargs["to_coordinate_system"] == "target_global"
-    assert captured_kwargs["table_name"] == "table"
-    assert captured_kwargs["feature_key"] == "computed_features"
-    assert captured_kwargs["features"] == list(classifier.feature_names)
-    assert captured_kwargs["overwrite_feature_key"] is False
-    assert "computed_features" in sdata_blobs["table"].obsm
+    assert "computed_area" in sdata_blobs["table"].obsm
+    metadata = sdata_blobs["table"].uns[_FEATURE_MATRICES_KEY]["computed_area"]
+    assert list(metadata["feature_columns"]) == ["area"]
+    assert list(metadata["source_label"]) == ["blobs_labels"]
+    assert list(metadata["source_image"]) == [None]
+    assert metadata["source_channels"] is None
 
 
-def test_compute_features_for_classifier_rejects_spatialdata_invalid_feature_key(
-    monkeypatch: pytest.MonkeyPatch,
-    sdata_blobs: SpatialData,
-) -> None:
+def test_compute_features_for_classifier_rejects_explicit_triplet_channels(sdata_blobs: SpatialData) -> None:
     _set_deterministic_features(sdata_blobs)
-    _set_feature_metadata(sdata_blobs)
+    _set_feature_metadata(
+        sdata_blobs,
+        feature_columns=("mean__1", "mean__0"),
+        features=("mean",),
+        source_image="blobs_image",
+        source_channels=["1", "0"],
+    )
     classifier = _make_classifier_bundle(sdata_blobs)
-    captured_kwargs = _install_fake_feature_extraction(monkeypatch)
+
+    with pytest.raises(ValueError, match="does not accept explicit channels"):
+        headless.compute_features_for_classifier(
+            sdata_blobs,
+            classifier=classifier,
+            target=headless.HeadlessFeatureTarget(
+                table_name="table",
+                feature_key="computed_features",
+                triplets=(
+                    headless.FeatureExtractionTriplet(
+                        coordinate_system="global",
+                        labels_name="blobs_labels",
+                        image_name="blobs_image",
+                        channels=("0",),
+                    ),
+                ),
+            ),
+        )
+
+    assert "computed_features" not in sdata_blobs["table"].obsm
+
+
+def test_apply_classifier_with_feature_extraction_uses_classifier_source_channels(sdata_blobs: SpatialData) -> None:
+    _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(
+        sdata_blobs,
+        feature_columns=("mean__1", "mean__0"),
+        features=("mean",),
+        source_image="blobs_image",
+        source_channels=["1", "0"],
+    )
+    classifier = _make_classifier_bundle(sdata_blobs)
+
+    result = headless.apply_classifier_with_feature_extraction(
+        sdata_blobs,
+        classifier=classifier,
+        table_name="table",
+        labels_name="blobs_labels",
+        feature_key="computed_features",
+        coordinate_system="global",
+        image_name="blobs_image",
+    )
+
+    assert result.feature_key == "computed_features"
+    assert PRED_CLASS_COLUMN in sdata_blobs["table"].obs
+    assert PRED_CONFIDENCE_COLUMN in sdata_blobs["table"].obs
+    metadata = sdata_blobs["table"].uns[_FEATURE_MATRICES_KEY]["computed_features"]
+    assert list(metadata["feature_columns"]) == ["mean__1", "mean__0"]
+    assert list(metadata["source_channels"]) == ["1", "0"]
+
+
+def test_apply_classifier_with_feature_extraction_rejects_missing_source_channels(sdata_blobs: SpatialData) -> None:
+    _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(
+        sdata_blobs,
+        feature_columns=("mean__1", "mean__0"),
+        features=("mean",),
+        source_image="blobs_image",
+    )
+    classifier = _make_classifier_bundle(sdata_blobs)
+
+    with pytest.raises(ValueError, match="does not contain `source_channels`"):
+        headless.apply_classifier_with_feature_extraction(
+            sdata_blobs,
+            classifier=classifier,
+            table_name="table",
+            labels_name="blobs_labels",
+            feature_key="computed_features",
+            coordinate_system="global",
+            image_name="blobs_image",
+        )
+
+    assert "computed_features" not in sdata_blobs["table"].obsm
+
+
+def test_compute_features_for_classifier_rejects_spatialdata_invalid_feature_key(sdata_blobs: SpatialData) -> None:
+    classifier = _make_area_classifier_bundle()
 
     with pytest.raises(ValueError, match="target\\.feature_key must be a valid SpatialData name"):
         headless.compute_features_for_classifier(
@@ -332,73 +380,60 @@ def test_compute_features_for_classifier_rejects_spatialdata_invalid_feature_key
             ),
         )
 
-    assert captured_kwargs == {}
+    assert "features tst" not in sdata_blobs["table"].obsm
 
 
-def test_compute_features_for_classifier_returns_normalized_target(
-    monkeypatch: pytest.MonkeyPatch,
-    sdata_blobs: SpatialData,
-) -> None:
-    _set_deterministic_features(sdata_blobs)
-    _set_feature_metadata(sdata_blobs)
-    bundle = _make_classifier_bundle(sdata_blobs)
+def test_compute_features_for_classifier_returns_normalized_target(sdata_blobs: SpatialData) -> None:
+    bundle = _make_area_classifier_bundle()
     table = sdata_blobs["table"]
-    table.obsm["computed_features"] = np.zeros((table.n_obs, 2), dtype=np.float64)
-    captured_kwargs = _install_fake_feature_extraction(monkeypatch)
+    table.obsm["computed_area"] = np.zeros((table.n_obs, 1), dtype=np.float64)
 
     resolved_target = headless.compute_features_for_classifier(
         sdata_blobs,
         bundle,
         target=headless.HeadlessFeatureTarget(
             table_name=" table ",
-            feature_key=" computed_features ",
+            feature_key=" computed_area ",
             triplets=(headless.FeatureExtractionTriplet("global", "blobs_labels", None),),
             overwrite_feature_key=True,
         ),
     )
 
     assert resolved_target.table_name == "table"
-    assert resolved_target.feature_key == "computed_features"
+    assert resolved_target.feature_key == "computed_area"
     assert resolved_target.overwrite_feature_key is True
-    assert captured_kwargs["overwrite_feature_key"] is True
+    metadata = table.uns[_FEATURE_MATRICES_KEY]["computed_area"]
+    assert list(metadata["feature_columns"]) == ["area"]
 
 
-def test_apply_classifier_with_feature_extraction_writes_predictions(
-    monkeypatch: pytest.MonkeyPatch,
-    sdata_blobs: SpatialData,
-) -> None:
-    _set_deterministic_features(sdata_blobs)
-    _set_feature_metadata(sdata_blobs)
-    classifier = _make_classifier_bundle(sdata_blobs)
-    _install_fake_feature_extraction(monkeypatch)
+def test_apply_classifier_with_feature_extraction_writes_predictions(sdata_blobs: SpatialData) -> None:
+    classifier = _make_area_classifier_bundle()
 
     result = headless.apply_classifier_with_feature_extraction(
         sdata_blobs,
         classifier=classifier,
         table_name="table",
         labels_name="blobs_labels",
-        feature_key="computed_features",
+        feature_key="computed_area",
         coordinate_system="global",
         pred_class_column="with_features_class",
         pred_confidence_column="with_features_confidence",
     )
 
     table = sdata_blobs["table"]
-    assert result.feature_key == "computed_features"
+    assert result.feature_key == "computed_area"
     assert result.pred_class_column == "with_features_class"
+    assert "computed_area" in table.obsm
     assert "with_features_class" in table.obs
     assert "with_features_confidence" in table.obs
-    assert table.uns[CLASSIFIER_APPLY_CONFIG_KEY]["feature_key"] == "computed_features"
+    assert table.uns[CLASSIFIER_APPLY_CONFIG_KEY]["feature_key"] == "computed_area"
 
 
 def test_apply_classifier_with_feature_extraction_rejects_incompatible_feature_columns(
-    monkeypatch: pytest.MonkeyPatch,
     sdata_blobs: SpatialData,
 ) -> None:
-    _set_deterministic_features(sdata_blobs)
-    _set_feature_metadata(sdata_blobs)
-    bundle = _make_classifier_bundle(sdata_blobs)
-    _install_fake_feature_extraction(monkeypatch, feature_columns=("instance_fraction", "is_large"))
+    bundle = _make_area_classifier_bundle()
+    bundle.source_feature_metadata["feature_columns"] = ["not_area"]
 
     with pytest.raises(ValueError, match="do not match"):
         headless.apply_classifier_with_feature_extraction(
@@ -406,7 +441,7 @@ def test_apply_classifier_with_feature_extraction_rejects_incompatible_feature_c
             bundle,
             table_name="table",
             labels_name="blobs_labels",
-            feature_key="computed_features",
+            feature_key="computed_area",
             coordinate_system="global",
         )
 
@@ -415,13 +450,9 @@ def test_apply_classifier_with_feature_extraction_rejects_incompatible_feature_c
 
 
 def test_apply_classifier_with_feature_extraction_requires_explicit_ambiguous_coordinate_system(
-    monkeypatch: pytest.MonkeyPatch,
     sdata_blobs: SpatialData,
 ) -> None:
-    _set_deterministic_features(sdata_blobs)
-    _set_feature_metadata(sdata_blobs)
-    bundle = _make_classifier_bundle(sdata_blobs)
-    _install_fake_feature_extraction(monkeypatch)
+    bundle = _make_area_classifier_bundle()
     set_transformation(sdata_blobs.labels["blobs_labels"], Identity(), to_coordinate_system="also_global")
 
     with pytest.raises(ValueError, match="Pass `coordinate_system` explicitly"):

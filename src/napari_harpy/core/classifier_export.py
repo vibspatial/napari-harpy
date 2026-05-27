@@ -7,7 +7,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import joblib
-import numpy as np
 from sklearn import __version__ as sklearn_version
 from sklearn.ensemble import RandomForestClassifier
 
@@ -84,6 +83,11 @@ class ClassifierExportBundle:
     def feature_names(self) -> tuple[str, ...]:
         """Return the requested Harpy feature names used to create the matrix."""
         return normalize_feature_names(self.source_feature_metadata)
+
+    @property
+    def source_channels(self) -> tuple[str, ...] | None:
+        """Return the channel selection captured during source feature extraction."""
+        return normalize_source_channels(self.source_feature_metadata)
 
     @property
     def n_features(self) -> int:
@@ -192,15 +196,44 @@ def normalize_feature_names(feature_metadata: Mapping[str, object]) -> tuple[str
     return names
 
 
-def _normalize_sequence(mapping: Mapping[str, object], key: str) -> tuple[object, ...]:
-    value = mapping.get(key)
-    if isinstance(value, np.ndarray):
-        if value.ndim != 1:
-            raise ValueError(f"Classifier export metadata sequence `{key}` must be 1-dimensional.")
-        return tuple(value.tolist())
+def normalize_source_channels(feature_metadata: Mapping[str, object]) -> tuple[str, ...] | None:
+    """Return the optional source channel selection from Harpy feature metadata.
+
+    Harpy stores `source_channels` as a flat sequence of channel names shared
+    across all labels/image pairs, or `None` for morphology-only matrices. The
+    sequence is cast to a tuple of strings as-is; Harpy owns channel validation.
+    """
+    channels = _normalize_sequence(feature_metadata, "source_channels", optional=True)
+    if channels is None:
+        return None
+    return tuple(str(channel) for channel in channels)
+
+
+def _normalize_sequence(
+    mapping: Mapping[str, object], key: str, *, optional: bool = False
+) -> tuple[object, ...] | None:
+    """Coerce a metadata value into a tuple of items.
+
+    Array-likes (e.g. numpy arrays) are coerced to lists first, and must be
+    1-dimensional. When `optional` is set, a missing value yields `None`;
+    otherwise a missing or non-sequence value is an error.
+    """
+    raw_value = mapping.get(key)
+    ndim = getattr(raw_value, "ndim", None)
+    if ndim is not None and ndim != 1:
+        raise ValueError(f"Classifier export metadata `{key}` must be a 1-dimensional sequence.")
+    value = _coerce_metadata_sequence(raw_value)
+    if optional and value is None:
+        return None
     if isinstance(value, str) or not isinstance(value, Sequence):
-        raise ValueError(f"Classifier export metadata is missing required sequence `{key}`.")
+        raise ValueError(f"Classifier export metadata `{key}` must be a sequence.")
     return tuple(value)
+
+
+def _coerce_metadata_sequence(value: object) -> object:
+    if hasattr(value, "tolist") and not isinstance(value, str):
+        return value.tolist()
+    return value
 
 
 def _validate_export_bundle(bundle: ClassifierExportBundle) -> None:
