@@ -861,6 +861,13 @@ def test_feature_extraction_widget_blocks_intensity_features_without_selected_ch
     assert not widget.intensity_features_hint.isHidden()
     assert "select at least one channel" in widget.intensity_features_hint.text().lower()
 
+    # The same blocker also surfaces in the primary batch status, consistent with
+    # other incomplete staged extraction targets.
+    selection_status_text = unescape(widget.selection_status.text())
+    assert "Batch Incomplete" in selection_status_text
+    assert "select at least one channel" in selection_status_text.lower()
+    assert widget.controller_feedback.isHidden()
+
     # Selecting a channel unblocks calculation and clears the hint.
     widget._batch_channel_checkboxes[0].setChecked(True)
 

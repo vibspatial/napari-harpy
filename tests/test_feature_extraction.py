@@ -314,6 +314,31 @@ def test_feature_extraction_controller_requires_image_for_intensity_features(sda
     assert controller.status_message == "Feature extraction: choose an image before calculating intensity features."
 
 
+def test_feature_extraction_controller_requires_selected_channels_for_intensity_features(
+    sdata_blobs: SpatialData,
+) -> None:
+    controller = FeatureExtractionController()
+
+    controller.bind(
+        sdata_blobs,
+        "blobs_labels",
+        "blobs_image",
+        "table",
+        "global",
+        ["mean", "area"],
+        "feature_matrix_1",
+        channels=(),
+    )
+
+    assert controller.can_calculate is False
+    assert controller.status_kind == "warning"
+    assert (
+        controller.status_message
+        == "Feature extraction: select at least one channel before calculating intensity features."
+    )
+    assert controller._prepare_feature_extraction_job(8, overwrite_feature_key=False) is None
+
+
 def test_feature_extraction_controller_requires_coordinate_system(sdata_blobs: SpatialData) -> None:
     controller = FeatureExtractionController()
 

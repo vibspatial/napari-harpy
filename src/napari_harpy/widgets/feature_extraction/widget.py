@@ -1734,6 +1734,7 @@ class FeatureExtractionWidget(QWidget):
         invalid_coordinate_systems: list[str] = []
         has_missing_segmentation = False
         has_missing_required_image = False
+        has_empty_channel_selection = requires_image and self._has_empty_intensity_channel_selection()
 
         for coordinate_system in checked_coordinate_systems:
             state = self._triplet_card_states_by_coordinate_system.get(coordinate_system)
@@ -1757,6 +1758,10 @@ class FeatureExtractionWidget(QWidget):
                 invalid_coordinate_systems.append(coordinate_system)
                 continue
 
+            if has_empty_channel_selection:
+                invalid_coordinate_systems.append(coordinate_system)
+                continue
+
             candidate_triplets.append(
                 FeatureExtractionTriplet(
                     coordinate_system=coordinate_system,
@@ -1773,9 +1778,7 @@ class FeatureExtractionWidget(QWidget):
             error_text = "Choose an image for every extraction target before calculating intensity features."
         elif requires_image and self._batch_channel_error is not None:
             error_text = self._batch_channel_error
-        # `_batch_channel_names` is only populated once a selected image exposes a channel schema, so
-        # this branch nudges the user to pick a channel without nagging before an image is chosen.
-        elif requires_image and self._batch_channel_names and not self.selected_extraction_channel_names:
+        elif has_empty_channel_selection:
             error_text = "Select at least one channel before calculating intensity features."
 
         return _FeatureExtractionStagedBatchState(
@@ -2115,6 +2118,9 @@ class FeatureExtractionWidget(QWidget):
                 return True
         return False
 
+    def _has_empty_intensity_channel_selection(self) -> bool:
+        return bool(self._batch_channel_names) and self.selected_extraction_channel_names == ()
+
     def _update_intensity_features_hint(self) -> None:
         if not self._has_intensity_features_selected():
             self.intensity_features_hint.setText("")
@@ -2144,7 +2150,7 @@ class FeatureExtractionWidget(QWidget):
             self.intensity_features_hint.setVisible(True)
             return
 
-        if self._batch_channel_names and not self.selected_extraction_channel_names:
+        if self._has_empty_intensity_channel_selection():
             self.intensity_features_hint.setText(
                 "Intensity features are selected, so select at least one channel before calculating."
             )
@@ -2251,6 +2257,7 @@ class FeatureExtractionWidget(QWidget):
         channel_blocking_reason = self._selection_status_channel_blocking_reason()
         incompatible_coordinate_systems = set(self._batch_channel_state.incompatible_coordinate_systems)
         requires_image = self._has_intensity_features_selected()
+        has_empty_channel_selection = requires_image and self._has_empty_intensity_channel_selection()
 
         for coordinate_system in checked_coordinate_systems:
             state = self._triplet_card_states_by_coordinate_system.get(coordinate_system)
@@ -2270,6 +2277,8 @@ class FeatureExtractionWidget(QWidget):
                 blocking_reason = "choose an image"
             elif requires_image and coordinate_system in incompatible_coordinate_systems:
                 blocking_reason = channel_blocking_reason
+            elif has_empty_channel_selection:
+                blocking_reason = "select at least one channel"
 
             blocking_reasons_by_coordinate_system[coordinate_system] = blocking_reason
 
