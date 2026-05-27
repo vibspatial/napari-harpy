@@ -20,12 +20,9 @@ from napari_harpy.core.classifier_export import (
     read_classifier_export_bundle,
 )
 from napari_harpy.core.feature_extraction import (
-    FeatureExtractionChannel,
     FeatureExtractionTriplet,
-    _get_triplet_channel_selection_error,
-    _normalize_channels,
     _normalize_triplets,
-    _resolve_harpy_channel_parameter,
+    _requires_image,
     _resolve_harpy_coordinate_system_parameter,
     _resolve_harpy_image_name_parameter,
     _resolve_harpy_labels_name_parameter,
@@ -61,12 +58,15 @@ def compute_features_for_classifier(
     *,
     target: HeadlessFeatureTarget,
 ) -> HeadlessFeatureTarget:
-    """Compute the feature matrix required by an exported classifier."""
+    """Compute the feature matrix required by an exported classifier.
+
+    Intensity-channel selection is read from the classifier's exported
+    `source_channels` feature metadata so the computed matrix preserves the
+    training schema.
+    """
     resolved_target = _normalize_headless_feature_target(target)
     feature_names = classifier.feature_names
-    channel_selection_error = _get_triplet_channel_selection_error(resolved_target.triplets, feature_names)
-    if channel_selection_error is not None:
-        raise ValueError(channel_selection_error)
+    source_channels = _resolve_classifier_source_channels(classifier)
 
     import harpy as hp
 
@@ -77,7 +77,7 @@ def compute_features_for_classifier(
         table_name=resolved_target.table_name,
         feature_key=resolved_target.feature_key,
         features=list(feature_names),
-        channels=_resolve_harpy_channel_parameter(resolved_target.triplets, feature_names),
+        channels=None if source_channels is None else list(source_channels),
         feature_matrices_key=_FEATURE_MATRICES_KEY,
         overwrite_feature_key=resolved_target.overwrite_feature_key,
         to_coordinate_system=_resolve_harpy_coordinate_system_parameter(resolved_target.triplets),
@@ -187,7 +187,6 @@ def apply_classifier_with_feature_extraction(
     feature_key: str | None = None,
     coordinate_system: str | Sequence[str] | None = None,
     image_name: str | Sequence[str] | None = None,
-    channels: Sequence[FeatureExtractionChannel] | FeatureExtractionChannel | None = None,
     overwrite_feature_key: bool = False,
     pred_class_column: str = "pred_class",
     pred_confidence_column: str = "pred_confidence",
@@ -200,7 +199,9 @@ def apply_classifier_with_feature_extraction(
     computed feature key. The generated feature matrix is written to
     `table.obsm[feature_key]`, and Harpy feature metadata is written to
     `table.uns["feature_matrices"][feature_key]`. The computed feature columns
-    must exactly match the feature schema stored in `classifier`.
+    must exactly match the feature schema stored in `classifier`. For
+    intensity-derived features, channel selection is read from the classifier's
+    exported `source_channels` metadata.
 
     If `sdata` is backed by zarr, Harpy persists the feature matrix and feature
     metadata during feature extraction, and `apply_classifier(...)` persists
@@ -229,9 +230,6 @@ def apply_classifier_with_feature_extraction(
         Image element or elements to use for intensity-derived features. This is
         required when the classifier was trained on intensity features
         and ignored for morphology-only classifiers.
-    channels
-        Optional image channel selection for intensity-derived features. The
-        same channel selection is used for every selected labels element.
     overwrite_feature_key
         Whether to replace an existing `table.obsm[feature_key]`.
     pred_class_column
@@ -253,7 +251,6 @@ def apply_classifier_with_feature_extraction(
         feature_key=feature_key,
         coordinate_system=coordinate_system,
         image_name=image_name,
-        channels=channels,
         overwrite_feature_key=overwrite_feature_key,
     )
     resolved_target = compute_features_for_classifier(sdata, classifier, target=target)
@@ -278,7 +275,6 @@ def apply_classifier_with_feature_extraction_from_path(
     feature_key: str | None = None,
     coordinate_system: str | Sequence[str] | None = None,
     image_name: str | Sequence[str] | None = None,
-    channels: Sequence[FeatureExtractionChannel] | FeatureExtractionChannel | None = None,
     overwrite_feature_key: bool = False,
     pred_class_column: str = "pred_class",
     pred_confidence_column: str = "pred_confidence",
@@ -312,9 +308,6 @@ def apply_classifier_with_feature_extraction_from_path(
         Image element or elements to use for intensity-derived features. This is
         required when the classifier was trained on intensity features
         and ignored for morphology-only classifiers.
-    channels
-        Optional image channel selection for intensity-derived features. The
-        same channel selection is used for every selected labels element.
     overwrite_feature_key
         Whether to replace an existing `table.obsm[feature_key]`.
     pred_class_column
@@ -334,7 +327,6 @@ def apply_classifier_with_feature_extraction_from_path(
         feature_key=feature_key,
         coordinate_system=coordinate_system,
         image_name=image_name,
-        channels=channels,
         overwrite_feature_key=overwrite_feature_key,
         pred_class_column=pred_class_column,
         pred_confidence_column=pred_confidence_column,
@@ -351,13 +343,11 @@ def _build_headless_feature_target(
     feature_key: str | None,
     coordinate_system: str | Sequence[str] | None,
     image_name: str | Sequence[str] | None,
-    channels: Sequence[FeatureExtractionChannel] | FeatureExtractionChannel | None,
     overwrite_feature_key: bool,
 ) -> HeadlessFeatureTarget:
     normalized_labels = _normalize_name_sequence(labels_name, "labels_name")
     coordinate_systems = _resolve_coordinate_systems_for_labels(sdata, normalized_labels, coordinate_system)
     image_names = _normalize_optional_parallel_names(image_name, len(normalized_labels), "image_name")
-    normalized_channels = _normalize_channels(channels)
     resolved_feature_key = normalize_spatialdata_name(
         classifier.feature_key if feature_key is None else feature_key,
         "feature_key",
@@ -368,7 +358,6 @@ def _build_headless_feature_target(
             coordinate_system=resolved_coordinate_system,
             labels_name=resolved_labels_name,
             image_name=resolved_image_name,
-            channels=normalized_channels,
         )
         for resolved_labels_name, resolved_coordinate_system, resolved_image_name in zip(
             normalized_labels,
@@ -392,6 +381,11 @@ def _normalize_headless_feature_target(target: HeadlessFeatureTarget) -> Headles
     normalized_triplets = _normalize_triplets(target.triplets)
     if not normalized_triplets:
         raise ValueError("target.triplets must contain at least one feature-extraction triplet.")
+    if any(triplet.channels is not None for triplet in normalized_triplets):
+        raise ValueError(
+            "Headless classifier feature extraction does not accept explicit channels. "
+            "Channels are read from the exported classifier metadata `source_channels`."
+        )
 
     return HeadlessFeatureTarget(
         table_name=normalized_table_name,
@@ -399,6 +393,19 @@ def _normalize_headless_feature_target(target: HeadlessFeatureTarget) -> Headles
         triplets=normalized_triplets,
         overwrite_feature_key=bool(target.overwrite_feature_key),
     )
+
+
+def _resolve_classifier_source_channels(classifier: ClassifierExportBundle) -> tuple[str, ...] | None:
+    if not _requires_image(classifier.feature_names):
+        return None
+
+    source_channels = classifier.source_channels
+    if source_channels is None:
+        raise ValueError(
+            "Classifier uses intensity-derived features but its feature metadata does not contain "
+            "`source_channels`. Re-export the classifier with a newer Harpy/napari-harpy version."
+        )
+    return source_channels
 
 
 def _normalize_nonempty_str(value: str, name: str) -> str:

@@ -94,7 +94,8 @@ the required features before applying the classifier.
 The headless APIs accept one labels element or a sequence of labels elements.
 For multi-sample data, pass matching labels, image, and coordinate-system
 sequences so Harpy can build or apply a shared table-level feature matrix across
-the selected samples.
+the selected samples. When features need image intensities, the channel
+selection is read from the exported classifier's `source_channels` metadata.
 
 ```python
 from spatialdata import read_zarr
