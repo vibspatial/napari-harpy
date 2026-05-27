@@ -322,7 +322,9 @@ class _FeatureExtractionChannelSelectionMemory:
         if self.is_valid_for_schema(schema, remembered_selection):
             return remembered_selection  # type: ignore[return-value]
 
-        return schema
+        # Default to no channels selected so intensity feature extraction never runs on every
+        # channel without an explicit choice from the user.
+        return ()
 
     def remember_for_schema(self, schema: tuple[str, ...], selection: tuple[str, ...]) -> None:
         """Persist one explicit user selection for the current ordered schema."""
