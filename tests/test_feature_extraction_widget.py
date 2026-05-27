@@ -818,7 +818,7 @@ def test_feature_extraction_widget_hides_channel_selection_without_image(
     assert widget.channel_selection_container.isHidden()
 
 
-def test_feature_extraction_widget_shows_selected_image_channels_and_defaults_to_all_selected(
+def test_feature_extraction_widget_shows_selected_image_channels_and_defaults_to_no_selection(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
@@ -833,10 +833,47 @@ def test_feature_extraction_widget_shows_selected_image_channels_and_defaults_to
 
     assert widget.selected_image_name == "blobs_image"
     assert [checkbox.text() for checkbox in widget._batch_channel_checkboxes] == ["0", "1", "2"]
-    assert widget.selected_extraction_channel_names == ("0", "1", "2")
-    assert widget.selected_extraction_channel_indices == (0, 1, 2)
+    assert all(not checkbox.isChecked() for checkbox in widget._batch_channel_checkboxes)
+    assert widget.selected_extraction_channel_names == ()
+    assert widget.selected_extraction_channel_indices == ()
     assert not widget.channel_selection_label.isHidden()
     assert not widget.channel_selection_container.isHidden()
+
+
+def test_feature_extraction_widget_blocks_intensity_features_without_selected_channels(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+    widget = FeatureExtractionWidget(viewer)
+
+    qtbot.addWidget(widget)
+
+    check_coordinate_system(widget, "global")
+    select_segmentation(widget, "global", 0)
+    widget.findChild(QCheckBox, "feature_checkbox_mean").setChecked(True)
+    widget.image_combo.setCurrentIndex(1)
+    widget.output_key_line_edit.setText("features")
+
+    # No channels are selected by default, so intensity feature extraction is blocked.
+    assert widget.selected_extraction_channel_names == ()
+    assert widget.calculate_button.isEnabled() is False
+    assert not widget.intensity_features_hint.isHidden()
+    assert "select at least one channel" in widget.intensity_features_hint.text().lower()
+
+    # The same blocker also surfaces in the primary batch status, consistent with
+    # other incomplete staged extraction targets.
+    selection_status_text = unescape(widget.selection_status.text())
+    assert "Batch Incomplete" in selection_status_text
+    assert "select at least one channel" in selection_status_text.lower()
+    assert widget.controller_feedback.isHidden()
+
+    # Selecting a channel unblocks calculation and clears the hint.
+    widget._batch_channel_checkboxes[0].setChecked(True)
+
+    assert widget.selected_extraction_channel_names == ("0",)
+    assert widget.calculate_button.isEnabled() is True
+    assert widget.intensity_features_hint.isHidden()
 
 
 def test_feature_extraction_widget_raises_when_selected_image_has_no_channel_axis(
@@ -926,7 +963,8 @@ def test_feature_extraction_widget_keeps_shared_channel_selector_visible_for_inc
     check_coordinate_system(widget, "aligned")
     select_segmentation(widget, "aligned", 0)
     widget._triplet_card_widgets_by_coordinate_system["aligned"].image_combo.setCurrentIndex(1)
-    widget._batch_channel_checkboxes[1].setChecked(False)
+    widget._batch_channel_checkboxes[0].setChecked(True)
+    widget._batch_channel_checkboxes[2].setChecked(True)
 
     assert widget.selected_extraction_channel_names == ("0", "2")
 
@@ -1001,7 +1039,8 @@ def test_feature_extraction_widget_remembers_shared_channel_selection_by_schema(
     check_coordinate_system(widget, "global")
     select_segmentation(widget, "global", 0)
     widget._triplet_card_widgets_by_coordinate_system["global"].image_combo.setCurrentIndex(1)
-    widget._batch_channel_checkboxes[1].setChecked(False)
+    widget._batch_channel_checkboxes[0].setChecked(True)
+    widget._batch_channel_checkboxes[2].setChecked(True)
 
     assert widget.selected_extraction_channel_names == ("0", "2")
 
@@ -1010,7 +1049,7 @@ def test_feature_extraction_widget_remembers_shared_channel_selection_by_schema(
     check_coordinate_system(widget, "aligned")
     select_segmentation(widget, "aligned", 0)
     widget._triplet_card_widgets_by_coordinate_system["aligned"].image_combo.setCurrentIndex(1)
-    widget._batch_channel_checkboxes[0].setChecked(False)
+    widget._batch_channel_checkboxes[1].setChecked(True)
 
     assert widget.selected_extraction_channel_names == ("b",)
 
@@ -1086,7 +1125,8 @@ def test_feature_extraction_widget_channel_selection_is_independent_from_viewer_
     check_coordinate_system(feature_widget, "global")
     select_segmentation(feature_widget, "global", 0)
     feature_widget.image_combo.setCurrentIndex(1)
-    feature_widget._batch_channel_checkboxes[0].setChecked(False)
+    feature_widget._batch_channel_checkboxes[1].setChecked(True)
+    feature_widget._batch_channel_checkboxes[2].setChecked(True)
 
     assert feature_widget.selected_extraction_channel_indices == (1, 2)
 
@@ -1510,6 +1550,7 @@ def test_feature_extraction_widget_hides_intensity_warning_when_image_is_selecte
     select_segmentation(widget, "global", 0)
     widget.image_combo.setCurrentIndex(1)
     widget.findChild(QCheckBox, "feature_checkbox_mean").setChecked(True)
+    widget._batch_channel_checkboxes[0].setChecked(True)
 
     assert widget.selected_image_name == "blobs_image"
     assert widget.intensity_features_hint.isHidden()
@@ -1577,7 +1618,8 @@ def test_feature_extraction_widget_binds_selected_channels_into_controller(
     select_segmentation(widget, "global", 0)
     widget.findChild(QCheckBox, "feature_checkbox_mean").setChecked(True)
     widget.image_combo.setCurrentIndex(1)
-    widget._batch_channel_checkboxes[1].setChecked(False)
+    widget._batch_channel_checkboxes[0].setChecked(True)
+    widget._batch_channel_checkboxes[2].setChecked(True)
 
     assert bind_batch_calls
     args, kwargs = bind_batch_calls[-1]

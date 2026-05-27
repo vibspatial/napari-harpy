@@ -12,6 +12,7 @@ from napari_harpy.core.feature_extraction import (
     FeatureExtractionChannel,
     FeatureExtractionTriplet,
     _get_triplet_channel_selection_error,
+    _has_empty_intensity_channel_selection,
     _normalize_channels,
     _normalize_triplets,
     _requires_image,
@@ -287,6 +288,7 @@ class FeatureExtractionController:
             and bool(self._selected_feature_key.strip())
             and _get_feature_key_validation_error(self._selected_feature_key) is None
             and _get_triplet_channel_selection_error(self._selected_triplets, self._selected_feature_names) is None
+            and not _has_empty_intensity_channel_selection(self._selected_triplets, self._selected_feature_names)
             and (
                 not _requires_image(self._selected_feature_names)
                 or all(triplet.image_name is not None for triplet in self._selected_triplets)
@@ -490,6 +492,13 @@ class FeatureExtractionController:
             )
             return None
 
+        if _has_empty_intensity_channel_selection(self._selected_triplets, self._selected_feature_names):
+            self._set_status(
+                "Feature extraction: select at least one channel before calculating intensity features.",
+                kind="warning",
+            )
+            return None
+
         if self._create_table and overwrite_feature_key:
             self._set_status(
                 "Feature extraction: cannot overwrite a feature key while creating a new table.",
@@ -603,6 +612,13 @@ class FeatureExtractionController:
         ):
             self._set_status(
                 "Feature extraction: choose an image before calculating intensity features.",
+                kind="warning",
+            )
+            return
+
+        if _has_empty_intensity_channel_selection(self._selected_triplets, self._selected_feature_names):
+            self._set_status(
+                "Feature extraction: select at least one channel before calculating intensity features.",
                 kind="warning",
             )
             return

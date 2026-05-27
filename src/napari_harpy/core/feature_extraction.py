@@ -10,7 +10,14 @@ _INTENSITY_FEATURES = frozenset({"sum", "mean", "var", "min", "max", "kurtosis",
 
 @dataclass(frozen=True)
 class FeatureExtractionTriplet:
-    """One explicit `coordinate_system -> labels element -> image` selection."""
+    """One explicit `coordinate_system -> labels element -> image` selection.
+
+    Channel selection uses a small but important internal distinction:
+    `channels=None` means no explicit channel selection was supplied, so Harpy
+    may use its default behavior; `channels=()` means an explicit empty
+    selection, which is invalid for intensity-derived features; a non-empty
+    tuple carries the selected channels.
+    """
 
     coordinate_system: str
     labels_name: str
@@ -21,6 +28,11 @@ class FeatureExtractionTriplet:
 def _normalize_channels(
     channels: Sequence[FeatureExtractionChannel] | FeatureExtractionChannel | None,
 ) -> tuple[FeatureExtractionChannel, ...] | None:
+    """Normalize optional channel input while preserving explicit empty selections.
+
+    `None` is kept as "no explicit selection"; empty sequences normalize to
+    `()`, which represents "a selector exists, but no channels are selected".
+    """
     if channels is None:
         return None
     if isinstance(channels, (str, int)):
@@ -90,6 +102,21 @@ def _requires_image(feature_names: Sequence[str]) -> bool:
     return any(feature_name in _INTENSITY_FEATURES for feature_name in feature_names)
 
 
+def _has_empty_intensity_channel_selection(
+    triplets: Sequence[FeatureExtractionTriplet],
+    feature_names: Sequence[str],
+) -> bool:
+    """Return whether intensity features are requested with an explicitly empty channel selection.
+
+    A `channels` value of `None` means "use all channels" (the harpy default), so only an empty
+    sequence counts as the user having selected no channels.
+    """
+    if not _requires_image(feature_names):
+        return False
+
+    return any(triplet.channels is not None and len(triplet.channels) == 0 for triplet in triplets)
+
+
 def _get_triplet_channel_selection_error(
     triplets: Sequence[FeatureExtractionTriplet],
     feature_names: Sequence[str],
@@ -150,5 +177,7 @@ def _resolve_harpy_channel_parameter(
     channels = triplets[0].channels
     if channels is None:
         return None
+    if len(channels) == 0:
+        raise ValueError("Intensity-derived feature extraction requires at least one selected channel.")
 
     return list(channels)
