@@ -10,6 +10,8 @@ Support coloring a `sdata.shapes[...]` element by values stored in an
 The useful user-facing cases are:
 
 - table `.obs` columns, for example `cell_type`, `leiden`, `quality_score`;
+- the table `instance_key`, shown as an observation source but rendered with
+  instance/identity colors rather than as a categorical or continuous value;
 - table expression/feature values, represented like the current labels path as
   `X[:, var_name]`, where `var_name` comes from `table.var_names`.
 
@@ -52,6 +54,9 @@ Implemented pieces:
     implementation for table-backed coloring;
   - it aligns table rows to label instances through `region_key` and
     `instance_key`;
+  - current labels styling silently drops duplicate instance IDs with
+    `keep="last"` during alignment, which should be fixed so duplicates within
+    a selected region raise clearly;
   - categorical `.obs` columns use `table.uns["<column>_colors"]`;
   - `X[:, var_name]` values are continuous.
 - `viewer/adapter.py`
@@ -80,9 +85,13 @@ SpatialData table metadata gives us:
   element;
 - `region`: the declared element name or names the table annotates.
 
-For shapes, `instance_key` should align to `sdata.shapes[shapes_name].index`.
-Unlike labels, shape indices can be strings or other non-integer labels. Do not
-reuse labels-only validation that coerces instance IDs to positive integers.
+For shapes, table `obs[instance_key]` should align only to the
+`sdata.shapes[shapes_name][instance_key]` column. Do not fall back to
+`sdata.shapes[shapes_name].index`, because implicit index matching can produce
+surprising styling when the GeoDataFrame index is just storage/order metadata.
+Unlike labels, shape instance values can be strings or other non-integer labels.
+Do not reuse labels-only validation that coerces instance IDs to positive
+integers.
 
 Do not infer that a labels-linked table also annotates shapes because IDs happen
 to match. A table that annotates `blobs_labels` should not appear as a color
@@ -122,12 +131,12 @@ Suggested action text:
 Layer names should remain stable and include the source kind:
 
 - shape column: `cell_boundaries[shape:leiden]`
-- table obs: `cell_boundaries[table:table/obs:cell_type]`
-- table var: `cell_boundaries[table:table/X:GeneA]`
+- table obs: `cell_boundaries[obs:cell_type]`
+- table var: `cell_boundaries[X:GeneA]`
 
-The table name should be part of styled layer identity and the displayed name,
-because multiple tables can annotate the same shapes element and expose the
-same column names.
+The table name should be part of styled layer identity, because multiple tables
+can annotate the same shapes element and expose the same column names. It should
+not be included in the displayed napari layer name.
 
 ## Data Model Changes
 
@@ -157,9 +166,10 @@ already contains the table name, source kind, value key, and value kind needed
 for table-backed shape coloring.
 
 One caveat: `TableColorSourceSpec.value_kind == "instance"` is labels-specific
-today. There is no direct shapes equivalent of napari's label colormap. For the
-first table-backed shapes slice, exclude the table `instance_key` from shapes
-table color options unless we add a deliberate "shape instance colors" mode.
+today, but the same value kind should be used for table-backed shapes when the
+selected observation source is the table `instance_key`. For shapes, this means
+identity coloring: one color per shape instance, not categorical or continuous
+coloring of arbitrary table values.
 
 ## Discovery Helpers
 
@@ -191,8 +201,7 @@ Discovery rules:
 - validate that table metadata `annotates(shapes_name)`;
 - reuse the existing table `.obs` and `X[:, var_name]` source classification;
 - exclude `region_key` as before;
-- exclude `instance_key` for the first implementation, or expose it only after
-  adding shape-specific instance color semantics;
+- include `instance_key` as an observation source with `value_kind="instance"`;
 - keep direct shape-column discovery unchanged.
 
 Some existing names are labels-specific but generic in implementation:
@@ -209,6 +218,13 @@ Avoid reusing:
   integer instance IDs;
 - `_get_region_rows_by_instance(...)` from labels styling, because it drops
   non-positive numeric IDs and casts the instance index to `int64`.
+
+Related labels fix:
+
+- labels table alignment should stop silently dropping duplicate
+  `instance_key` values with `keep="last"` and should instead raise when
+  duplicates occur within the selected labels region, matching the intended
+  shape behavior.
 
 ## Alignment Algorithm
 
@@ -231,41 +247,64 @@ Recommended steps:
 2. Check `table_metadata.annotates(shapes_name)`.
 3. Filter table rows where `table.obs[region_key] == shapes_name`.
 4. Drop rows with missing `instance_key`.
-5. Preserve `instance_key` values as labels; do not coerce to integers.
-6. Require table `instance_key` values to be unique within the selected shapes
+5. Require the shapes element to contain a column named `instance_key`; if it is
+   missing, raise a clear error instead of falling back to the GeoDataFrame
+   index.
+6. Preserve table and shapes `instance_key` values as labels; do not coerce to
+   integers.
+7. Require table `instance_key` values to be unique within the selected shapes
    region. Duplicates are ambiguous and should raise `ValueError`.
-7. Build a source-level `pd.Series` indexed by shape instance ID:
+8. Build a table-level `pd.Series` indexed by table `instance_key` value:
+   - for `instance_key`, use the aligned instance labels themselves;
    - for `.obs`, use `table.obs[value_key]`;
    - for `X[:, var_name]`, extract the selected `X` column at the matching
      table observation positions.
-8. Align that series to `shapes_element.index`.
-9. Align again to `source_shapes_index_by_row`, repeating values for
+9. Align that series to the source shapes' `shapes_element[instance_key]`
+   values.
+10. Align again to `source_shapes_index_by_row`, repeating values for
    MultiPolygon parts.
-10. Apply colors to `layer.face_color` and `layer.edge_color` with the existing
+11. Apply colors to `layer.face_color` and `layer.edge_color` with the existing
     shape alpha behavior.
-11. Add the selected table value to `layer.features` for hover/status display.
+12. Add the selected table value to `layer.features` for hover/status display.
 
 Missing table rows:
 
-- If no table instances overlap with the shapes index, raise a clear error.
+- If no table instances overlap with `shapes_element[instance_key]`, raise a
+  clear error.
 - If some shapes have no matching table row, keep rendering them with the
   existing missing gray color and consider reporting the missing count in the
   status card.
 
 The all-missing case should not silently create an all-gray styled layer,
 because it usually means the table metadata points at the shapes element but
-the instance IDs use a different convention than the GeoDataFrame index.
+the instance IDs use a different convention than the shapes `instance_key`
+column.
 
 ## Styling Semantics
 
 For table-backed shape `.obs` sources, reuse labels overlay semantics:
 
+- the table `instance_key` -> instance/identity coloring;
 - pandas categorical -> categorical;
 - bool -> categorical;
 - exact binary integer `{0, 1}` -> categorical;
 - other integer/float -> continuous;
 - string-like object columns -> temporary categorical with warning;
 - unsupported object/mixed columns -> not offered.
+
+For the table `instance_key` source:
+
+- mirror labels conceptually: this is a special identity-coloring branch, not a
+  table-value categorical or continuous colormap;
+- do not use `table.uns["<instance_key>_colors"]`;
+- set result metadata to `value_kind="instance"`, `palette_source=None`, and
+  `coercion_applied=False`;
+- for numeric shape instance IDs compatible with napari labels, the colors can
+  follow napari's cyclic `label_colormap(...)` behavior;
+- for string or otherwise non-numeric shape instance IDs, use an equivalent
+  deterministic cyclic identity palette over the aligned instance labels;
+- repeated rendered rows from a `MultiPolygon` source instance must receive the
+  same instance color.
 
 Palette behavior:
 
@@ -309,15 +348,22 @@ Likely code changes:
 - `viewer/shapes_styling.py`
   - keep `apply_shape_color_source_to_shapes_layer(...)` for direct columns;
   - add `apply_table_color_source_to_shapes_layer(...)`;
+  - add a shape-specific instance-coloring branch for table `instance_key`
+    sources;
   - extract shared categorical/continuous rendered-row application helpers so
     both direct and table paths share as much as possible;
   - reuse or move labels table palette resolution so table-backed shapes and
     labels behave identically.
+- `viewer/labels_styling.py`
+  - fix the existing labels alignment shortcoming by raising on duplicate
+    `instance_key` values within the selected region instead of silently keeping
+    the last duplicate row.
 - `viewer/adapter.py`
   - broaden styled-shapes `style_spec` typing;
   - in `ensure_styled_shapes_loaded(...)`, dispatch to the direct shape-column
     styler or table-backed styler based on spec type/source kind;
-  - include table source identity in lookup and layer names.
+  - include table source identity in lookup while keeping displayed layer names
+    table-name-free.
 - `widgets/viewer/shapes_widget.py`
   - add linked table support;
   - allow table source kinds in `selected_source_kind`;
@@ -337,25 +383,35 @@ Core/discovery tests:
 - a table that annotates a shapes element is discovered for that shapes card;
 - a table that annotates only labels is not offered for shapes;
 - direct shape-column options remain available unchanged;
-- table `region_key` and shape `instance_key` are not offered as ordinary
-  first-pass table shape color options;
+- table `region_key` is not offered as an ordinary color option;
+- table `instance_key` is offered as an observation source with
+  `value_kind="instance"`;
 - table `.obs` and `X[:, var_name]` sources produce stable identities including
   table name.
 
 Styling tests:
 
 - table `.obs` categorical colors use `table.uns["<column>_colors"]`;
+- table `instance_key` colors shapes by instance identity rather than by table
+  categorical/continuous semantics;
+- table `instance_key` identity coloring works for string shape instance values
+  without integer coercion;
+- table-backed styling raises clearly when the shapes element lacks the
+  `instance_key` column and does not fall back to the GeoDataFrame index;
 - invalid/missing table palettes fall back like labels overlays;
 - table `.obs` string/object values coerce to temporary categorical values;
 - table `.obs` continuous values use the continuous colormap;
 - `X[:, var_name]` values color shapes continuously for dense and sparse `X`;
-- string shape indices align without integer coercion;
+- string shape `instance_key` values align without integer coercion;
 - MultiPolygon-expanded rendered rows repeat the table value for each rendered
   part;
 - duplicate table `instance_key` values within the shapes region raise a clear
   error;
-- zero overlap between table instances and shapes index raises a clear error;
+- zero overlap between table instances and shapes `instance_key` values raises a
+  clear error;
 - partial overlap renders unmatched shapes gray.
+- labels duplicate table `instance_key` values within the selected labels
+  region raise a clear error instead of being silently de-duplicated.
 
 Adapter/widget tests:
 
@@ -367,8 +423,8 @@ Adapter/widget tests:
   `X[:, var_name]`;
 - styled shape variants for two tables with the same column name coexist;
 - fill toggling reuses the same styled table-backed shapes layer;
-- status feedback reports table source names and palette fallback/coercion
-  behavior.
+- status feedback reports table source names, instance coloring, and palette
+  fallback/coercion behavior.
 
 ## Suggested Slices
 
@@ -380,8 +436,10 @@ Adapter/widget tests:
 2. Table-backed styling core
    - implement table-to-shape alignment;
    - add `apply_table_color_source_to_shapes_layer(...)`;
-   - cover categorical, continuous, `X[:, var_name]`, string index, duplicate
-     instance IDs, and MultiPolygon repetition.
+   - cover instance, categorical, continuous, `X[:, var_name]`, string index,
+     duplicate instance IDs, and MultiPolygon repetition.
+   - fix labels alignment so duplicate instance IDs within one selected region
+     raise instead of silently keeping the last duplicate row.
 
 3. Adapter and layer lifecycle
    - dispatch styled shapes to direct or table-backed styler;
@@ -395,9 +453,10 @@ Adapter/widget tests:
 
 ## Open Questions
 
-- Should we ever expose `instance_key` as a shape color source? It is useful as
-  an identity view, but labels' `instance` colormap does not transfer directly
-  to shapes. First implementation should probably exclude it.
+- For non-numeric shape instance IDs, should identity colors be generated by
+  enumerating aligned instance labels into napari's cyclic label palette, or by
+  using the existing default categorical palette? Either way, the mode should
+  behave as identity coloring and not consult table categorical palettes.
 - Should partial table coverage be warning-level feedback with a missing count?
   This would help users catch incomplete annotation tables without blocking
   useful partial visualization.
@@ -406,9 +465,9 @@ Adapter/widget tests:
   shape-column path already handles collisions with the source index feature;
   table-backed sources additionally need to avoid collisions with direct shape
   columns and other table variants.
-- If a shapes element has an integer index and a table stores instance IDs as
-  strings, should Harpy attempt string-normalized matching? Safer default is
-  exact matching plus a clear error on zero overlap.
+- If a shapes element has string-like `instance_key` values and a table stores
+  numeric-looking instance IDs, should Harpy attempt string-normalized matching?
+  Safer default is exact matching plus a clear error on zero overlap.
 
 ## Recommendation
 
@@ -418,8 +477,9 @@ not as a replacement for it.
 The best first version is:
 
 - only tables that explicitly annotate the selected shapes element;
-- `.obs` columns and `X[:, var_name]` values;
-- exact shape-index alignment;
+- the table `instance_key`, other `.obs` columns, and `X[:, var_name]` values;
+- exact alignment between `table.obs[instance_key]` and
+  `shapes_element[instance_key]`;
 - direct reuse of existing shape rendered-row coloring;
 - labels-compatible table palette behavior;
 - no labels-table inference and no direct `.var` metadata coloring.
