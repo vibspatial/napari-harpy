@@ -89,6 +89,15 @@ For shapes, table `obs[instance_key]` should align only to the
 `sdata.shapes[shapes_name][instance_key]` column. Do not fall back to
 `sdata.shapes[shapes_name].index`, because implicit index matching can produce
 surprising styling when the GeoDataFrame index is just storage/order metadata.
+Use exact value matching: do not coerce strings to numbers, normalize IDs, or do
+fuzzy matching between table and shape instance values.
+
+Coverage is intentionally asymmetric. Table rows for the selected shapes region
+must refer only to instances present in `shapes_element[instance_key]`; table
+instances that are not present in the shapes element should raise clearly.
+Shapes instances that have no table row are allowed and should render with the
+missing color.
+
 Unlike labels, shape instance values can be strings or other non-integer labels.
 Do not reuse labels-only validation that coerces instance IDs to positive
 integers.
@@ -259,18 +268,24 @@ Recommended steps:
    - for `.obs`, use `table.obs[value_key]`;
    - for `X[:, var_name]`, extract the selected `X` column at the matching
      table observation positions.
-9. Align that series to the source shapes' `shapes_element[instance_key]`
-   values.
-10. Align again to `source_shapes_index_by_row`, repeating values for
-   MultiPolygon parts.
-11. Apply colors to `layer.face_color` and `layer.edge_color` with the existing
+9. Validate that every table `instance_key` value for the selected shapes region
+   exists in `shapes_element[instance_key]`; extra table instances should raise
+   a clear error.
+10. Align that series to the source shapes' `shapes_element[instance_key]`
+    values. Shapes with no matching table row are allowed and receive missing
+    values.
+11. Align again to `source_shapes_index_by_row`, repeating values for
+    MultiPolygon parts.
+12. Apply colors to `layer.face_color` and `layer.edge_color` with the existing
     shape alpha behavior.
-12. Add the selected table value to `layer.features` for hover/status display.
+13. Add the selected table value to `layer.features` for hover/status display.
 
 Missing table rows:
 
 - If no table instances overlap with `shapes_element[instance_key]`, raise a
   clear error.
+- If any table instances for the selected shapes region are missing from
+  `shapes_element[instance_key]`, raise a clear error.
 - If some shapes have no matching table row, keep rendering them with the
   existing missing gray color and consider reporting the missing count in the
   status card.
@@ -407,9 +422,11 @@ Styling tests:
   part;
 - duplicate table `instance_key` values within the shapes region raise a clear
   error;
+- table `instance_key` values for the selected shapes region that are absent
+  from `shapes_element[instance_key]` raise a clear error;
 - zero overlap between table instances and shapes `instance_key` values raises a
   clear error;
-- partial overlap renders unmatched shapes gray.
+- shape instances without table rows render gray;
 - labels duplicate table `instance_key` values within the selected labels
   region raise a clear error instead of being silently de-duplicated.
 
@@ -467,7 +484,8 @@ Adapter/widget tests:
   columns and other table variants.
 - If a shapes element has string-like `instance_key` values and a table stores
   numeric-looking instance IDs, should Harpy attempt string-normalized matching?
-  Safer default is exact matching plus a clear error on zero overlap.
+  Safer default is exact value matching plus a clear error when table instances
+  do not exist in the shapes element.
 
 ## Recommendation
 
@@ -478,8 +496,9 @@ The best first version is:
 
 - only tables that explicitly annotate the selected shapes element;
 - the table `instance_key`, other `.obs` columns, and `X[:, var_name]` values;
-- exact alignment between `table.obs[instance_key]` and
-  `shapes_element[instance_key]`;
+- exact value matching between `table.obs[instance_key]` and
+  `shapes_element[instance_key]`, with table instances required to be a subset
+  of shape instances;
 - direct reuse of existing shape rendered-row coloring;
 - labels-compatible table palette behavior;
 - no labels-table inference and no direct `.var` metadata coloring.
