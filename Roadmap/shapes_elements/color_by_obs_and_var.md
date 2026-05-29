@@ -92,6 +92,11 @@ surprising styling when the GeoDataFrame index is just storage/order metadata.
 Use exact value matching: do not coerce strings to numbers, normalize IDs, or do
 fuzzy matching between table and shape instance values.
 
+The GeoDataFrame index remains only a render-row bookkeeping key: it maps each
+napari-rendered shape row back to its source GeoDataFrame row, especially when a
+single source geometry expands into multiple rendered rows. It must not be used
+as the semantic join key to the table.
+
 Coverage is intentionally asymmetric. Table rows for the selected shapes region
 must refer only to instances present in `shapes_element[instance_key]`; table
 instances that are not present in the shapes element should raise clearly.
@@ -271,9 +276,9 @@ Recommended steps:
 9. Validate that every table `instance_key` value for the selected shapes region
    exists in `shapes_element[instance_key]`; extra table instances should raise
    a clear error.
-10. Align that series to the source shapes' `shapes_element[instance_key]`
-    values. Shapes with no matching table row are allowed and receive missing
-    values.
+10. Align table values to source GeoDataFrame rows by mapping each source row to
+    its `shapes_element[instance_key]` value. Shapes with no matching table row
+    are allowed and receive missing values.
 11. Align again to `source_shapes_index_by_row`, repeating values for
     MultiPolygon parts.
 12. Apply colors to `layer.face_color` and `layer.edge_color` with the existing
