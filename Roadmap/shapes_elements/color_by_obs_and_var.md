@@ -448,30 +448,75 @@ Adapter/widget tests:
 - status feedback reports table source names, instance coloring, and palette
   fallback/coercion behavior.
 
-## Suggested Slices
+## Implementation Slices
 
-1. Discovery and model plumbing
-   - add shape table discovery helpers;
-   - broaden styled-shapes style-spec typing;
-   - add tests without changing rendering behavior yet.
+Each slice should be independently testable and should keep the existing direct
+shape-column coloring behavior unchanged.
 
-2. Table-backed styling core
-   - implement table-to-shape alignment;
+1. Table metadata validation cleanup
+   - make table annotation terminology element-generic where useful, for example
+     `annotates(element_name)`;
+   - add or reuse validation that rejects duplicate `instance_key` values within
+     one selected region;
+   - fix labels styling so duplicate labels-table `instance_key` values raise
+     instead of being silently de-duplicated with `keep="last"`;
+   - add labels regression tests for duplicate instance IDs within one region.
+
+2. Shape table discovery and source typing
+   - add `get_shape_annotating_table_names(...)`;
+   - add `get_shape_table_color_source_options(...)`;
+   - add `get_shape_color_source_options(...)` if a combined helper keeps widget
+     code simpler;
+   - expose table `instance_key` as an observation source with
+     `value_kind="instance"`;
+   - keep excluding `region_key`;
+   - add `SpatialElementColorSourceSpec = ShapeColorSourceSpec | TableColorSourceSpec`;
+   - broaden shape-facing type annotations without changing adapter behavior yet;
+   - test discovery for linked shapes tables, labels-only tables, `instance_key`,
+     `.obs`, and `X[:, var_name]`.
+
+3. Shape table-to-source-row alignment
+   - implement a focused helper that resolves table values to one value per
+     source GeoDataFrame row;
+   - require `shapes_element[instance_key]` and never fall back to
+     `shapes_element.index`;
+   - use exact value matching between table and shapes instance values;
+   - require selected-region table instances to be a subset of shape instances;
+   - allow shape instances without table rows and return missing values for
+     those rows;
+   - preserve string and non-integer instance values without coercion;
+   - test missing `instance_key` column, duplicate table instances, extra table
+     instances, zero overlap, partial shape coverage, and string IDs.
+
+4. Table-backed shapes styling
    - add `apply_table_color_source_to_shapes_layer(...)`;
-   - cover instance, categorical, continuous, `X[:, var_name]`, string index,
-     duplicate instance IDs, and MultiPolygon repetition.
-   - fix labels alignment so duplicate instance IDs within one selected region
-     raise instead of silently keeping the last duplicate row.
+   - reuse the existing rendered-row expansion via `source_shapes_index_by_row`;
+   - add the special `instance_key` identity-coloring branch;
+   - support categorical `.obs` columns with `table.uns["<column>_colors"]`;
+   - support string/object `.obs` coercion with default palette behavior;
+   - support continuous `.obs` columns and dense/sparse `X[:, var_name]`;
+   - preserve shape fill/edge alpha rules and missing gray behavior;
+   - add rendered-row tests for MultiPolygon repetition and feature-table values.
 
-3. Adapter and layer lifecycle
-   - dispatch styled shapes to direct or table-backed styler;
-   - update layer naming and lookup;
-   - ensure table-backed variants coexist with direct shape-column variants.
+5. Adapter and layer lifecycle
+   - dispatch styled shapes to direct shape-column styling or table-backed
+     styling based on the source spec;
+   - include table name in styled-layer identity and lookup;
+   - keep displayed layer names table-name-free:
+     `shape:leiden`, `obs:cell_type`, `X:GeneA`;
+   - ensure styled variants from multiple linked tables can coexist even when
+     their displayed names collide or napari suffixes them;
+   - test creation, update, fill toggling, layer lookup, and coexistence.
 
-4. Widget and feedback
-   - add linked table and `Observations`/`Vars` controls to shapes cards;
-   - update error/status messages;
-   - add widget tests for disabled and linked-table states.
+6. Widget and status feedback
+   - add linked-table selection to shape cards;
+   - expose `None | Shapes column | Observations | Vars`;
+   - show `No linked tables` or table-backed disabled state when appropriate;
+   - dispatch `TableColorSourceSpec` for `Observations` and `Vars`;
+   - update action hints and error messages for linked-table requirements,
+     missing shape `instance_key` column, extra table instances, and zero overlap;
+   - report instance coloring, palette fallback/coercion, skipped geometries,
+     and optional missing-shape counts in status feedback.
 
 ## Open Questions
 
