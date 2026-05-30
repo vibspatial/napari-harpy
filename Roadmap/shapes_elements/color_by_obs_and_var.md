@@ -100,8 +100,9 @@ as the semantic join key to the table.
 Coverage is intentionally asymmetric. Table rows for the selected shapes region
 must refer only to instances present in `shapes_element[instance_key]`; table
 instances that are not present in the shapes element should raise clearly.
-Shapes instances that have no table row are allowed and should render with the
-missing color.
+Shapes instances that have no table row are allowed and should render
+transparent, matching labels overlay behavior. Shapes that do have a table row
+but whose selected value is missing should render with the missing color.
 
 Unlike labels, shape instance values can be strings or other non-integer labels.
 Do not reuse labels-only validation that coerces instance IDs to positive
@@ -264,45 +265,42 @@ Recommended steps:
 1. Load and validate the table with `get_table(...)` and `get_table_metadata(...)`.
 2. Check `table_metadata.annotates(shapes_name)`.
 3. Filter table rows where `table.obs[region_key] == shapes_name`.
-4. Drop rows with missing `instance_key`.
-5. Require the shapes element to contain a column named `instance_key`; if it is
+4. Require at least one table row for the selected shapes region after region
+   filtering; if none remain, raise a clear error because the table metadata
+   declares the shapes annotation but no rows annotate that shapes element.
+5. Drop rows with missing `instance_key`.
+6. Require the shapes element to contain a column named `instance_key`; if it is
    missing, raise a clear error instead of falling back to the GeoDataFrame
    index.
-6. Preserve table and shapes `instance_key` values as labels; do not coerce to
+7. Preserve table and shapes `instance_key` values as labels; do not coerce to
    integers.
-7. Require table `instance_key` values to be unique within the selected shapes
+8. Require table `instance_key` values to be unique within the selected shapes
    region. Duplicates are ambiguous and should raise `ValueError`.
-8. Build a table-level `pd.Series` indexed by table `instance_key` value:
+9. Build a table-level `pd.Series` indexed by table `instance_key` value:
    - for `instance_key`, use the aligned instance labels themselves;
    - for `.obs`, use `table.obs[value_key]`;
    - for `X[:, var_name]`, extract the selected `X` column at the matching
      table observation positions.
-9. Validate that every table `instance_key` value for the selected shapes region
+10. Validate that every table `instance_key` value for the selected shapes region
    exists in `shapes_element[instance_key]`; extra table instances should raise
    a clear error.
-10. Align table values to source GeoDataFrame rows by mapping each source row to
+11. Align table values to source GeoDataFrame rows by mapping each source row to
     its `shapes_element[instance_key]` value. Shapes with no matching table row
-    are allowed and receive missing values.
-11. Align again to `source_shapes_index_by_row`, repeating values for
+    are allowed and receive transparent colors, not missing-value colors.
+12. Align again to `source_shapes_index_by_row`, repeating values for
     MultiPolygon parts.
-12. Apply colors to `layer.face_color` and `layer.edge_color` with the existing
+13. Apply colors to `layer.face_color` and `layer.edge_color` with the existing
     shape alpha behavior.
-13. Add the selected table value to `layer.features` for hover/status display.
+14. Add the selected table value to `layer.features` for hover/status display.
 
 Missing table rows:
 
-- If no table instances overlap with `shapes_element[instance_key]`, raise a
-  clear error.
+- If no table rows remain for the selected shapes region after filtering by
+  `region_key`, raise a clear error.
 - If any table instances for the selected shapes region are missing from
   `shapes_element[instance_key]`, raise a clear error.
-- If some shapes have no matching table row, keep rendering them with the
-  existing missing gray color and report the missing count as informational
-  status feedback, not as a warning.
-
-The all-missing case should not silently create an all-gray styled layer,
-because it usually means the table metadata points at the shapes element but
-the instance IDs use a different convention than the shapes `instance_key`
-column.
+- If some shapes have no matching table row, render them transparent and report
+  the count as informational status feedback, not as a warning.
 
 ## Styling Semantics
 
@@ -352,7 +350,9 @@ For `X[:, var_name]` table sources:
 
 For missing values after alignment:
 
-- use `SHAPES_MISSING_BASE_COLOR`;
+- use `SHAPES_MISSING_BASE_COLOR` only for shape instances that have a matching
+  table row but whose selected table value is missing;
+- use transparent colors for shape instances that have no matching table row;
 - preserve existing alpha rules:
   - face alpha `0.0` by default;
   - face alpha `SHAPES_FACE_ALPHA` when `Fill` is enabled;
@@ -439,9 +439,10 @@ Styling tests:
   error;
 - table `instance_key` values for the selected shapes region that are absent
   from `shapes_element[instance_key]` raise a clear error;
-- zero overlap between table instances and shapes `instance_key` values raises a
-  clear error;
-- shape instances without table rows render gray;
+- an annotating table with no rows for the selected shapes region raises a clear
+  error;
+- shape instances without table rows render transparent;
+- shape instances with table rows but missing selected values render gray;
 - partial shape coverage reports the count of shape instances without table
   rows as informational feedback, not warning feedback;
 - labels duplicate table `instance_key` values within the selected labels
@@ -494,11 +495,12 @@ shape-column coloring behavior unchanged.
      `shapes_element.index`;
    - use exact value matching between table and shapes instance values;
    - require selected-region table instances to be a subset of shape instances;
-   - allow shape instances without table rows and return missing values for
-     those rows;
+   - allow shape instances without table rows and track them separately from
+     missing selected table values;
    - preserve string and non-integer instance values without coercion;
    - test missing `instance_key` column, duplicate table instances, extra table
-     instances, zero overlap, partial shape coverage, and string IDs.
+     instances, no selected-region table rows, partial shape coverage, and
+     string IDs.
 
 4. Table-backed shapes styling
    - add `apply_table_color_source_to_shapes_layer(...)`;
@@ -507,7 +509,9 @@ shape-column coloring behavior unchanged.
    - support categorical `.obs` columns with `table.uns["<column>_colors"]`;
    - support string/object `.obs` coercion with default palette behavior;
    - support continuous `.obs` columns and dense/sparse `X[:, var_name]`;
-   - preserve shape fill/edge alpha rules and missing gray behavior;
+   - preserve shape fill/edge alpha rules, missing gray behavior for table rows
+     with missing selected values, and transparent behavior for shapes without
+     table rows;
    - add rendered-row tests for MultiPolygon repetition and feature-table values.
 
 5. Adapter and layer lifecycle
@@ -526,7 +530,8 @@ shape-column coloring behavior unchanged.
    - show `No linked tables` or table-backed disabled state when appropriate;
    - dispatch `TableColorSourceSpec` for `Observations` and `Vars`;
    - update action hints and error messages for linked-table requirements,
-     missing shape `instance_key` column, extra table instances, and zero overlap;
+     missing shape `instance_key` column, extra table instances, and no
+     selected-region table rows;
    - report instance coloring, palette fallback/coercion, skipped geometries,
      and missing-shape counts in status feedback;
    - treat missing-shape counts from partial table coverage as informational,
