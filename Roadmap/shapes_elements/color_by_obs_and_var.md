@@ -62,7 +62,9 @@ Implemented pieces:
   - `X[:, var_name]` values are continuous.
 - `viewer/adapter.py`
   - primary and styled shapes layers can coexist;
-  - styled shapes layer identity is currently keyed by `ShapeColorSourceSpec`;
+- styled shapes layer identity is currently keyed by `ShapeColorSourceSpec`;
+  this should become `ShapesColorSourceSpec` once table-backed shapes styling is
+  supported;
   - styled shape layers keep the source shape index mapping in
     `ShapesLayerBinding`.
 - `widgets/viewer/shapes_widget.py`
@@ -166,7 +168,7 @@ Recommended typing:
 
 ```python
 ShapeColumnColorSourceSpec  # renamed from the current concrete ShapeColorSourceSpec
-ShapeColorSourceSpec = ShapeColumnColorSourceSpec | TableColorSourceSpec
+ShapesColorSourceSpec = ShapeColumnColorSourceSpec | TableColorSourceSpec
 ```
 
 Then update shape-facing contracts that can now accept either direct shape
@@ -364,7 +366,7 @@ Likely code changes:
   - rename the current direct-shape-column dataclass to
     `ShapeColumnColorSourceSpec`;
   - add the shape-facing union alias
-    `ShapeColorSourceSpec = ShapeColumnColorSourceSpec | TableColorSourceSpec`;
+    `ShapesColorSourceSpec = ShapeColumnColorSourceSpec | TableColorSourceSpec`;
   - decide whether to add shape-table-specific display helpers or keep those in
     the widget/status-card layer.
 - `core/spatialdata.py`
@@ -523,12 +525,12 @@ shape-column coloring behavior unchanged.
      `X[:, var_name]` sources;
    - rename the current concrete `ShapeColorSourceSpec` dataclass to
      `ShapeColumnColorSourceSpec`;
-   - add `ShapeColorSourceSpec = ShapeColumnColorSourceSpec | TableColorSourceSpec`,
+   - add `ShapesColorSourceSpec = ShapeColumnColorSourceSpec | TableColorSourceSpec`,
      so the broad shape-facing name means any source that can color shapes;
    - keep `TableColorSourceSpec` as the table-backed source model and update its
      docstring so it is no longer labels-specific;
    - broaden shape-facing type annotations to accept the new union
-     `ShapeColorSourceSpec` without changing adapter dispatch behavior yet;
+     `ShapesColorSourceSpec` without changing adapter dispatch behavior yet;
    - do not add shape table-to-shape alignment validation in this slice:
      `shapes_element[instance_key]`, exact matching, subset validation, missing
      shape coverage, and no-row checks belong to Slice 3;
