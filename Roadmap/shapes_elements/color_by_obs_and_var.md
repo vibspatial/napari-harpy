@@ -91,6 +91,9 @@ For shapes, table `obs[instance_key]` should align only to the
 surprising styling when the GeoDataFrame index is just storage/order metadata.
 Use exact value matching: do not coerce strings to numbers, normalize IDs, or do
 fuzzy matching between table and shape instance values.
+If table and shape instance IDs differ only by dtype or formatting, for example
+`1` versus `"1"`, Harpy should still treat them as different IDs and raise a
+clear error for table instances that do not exist in the shapes element.
 
 The GeoDataFrame index remains only a render-row bookkeeping key: it maps each
 napari-rendered shape row back to its source GeoDataFrame row, especially when a
@@ -543,13 +546,6 @@ shape-column coloring behavior unchanged.
      and missing-shape counts in status feedback;
    - treat missing-shape counts from partial table coverage as informational,
      because unannotated shapes are expected in normal use.
-
-## Open Questions
-
-- If a shapes element has string-like `instance_key` values and a table stores
-  numeric-looking instance IDs, should Harpy attempt string-normalized matching?
-  Safer default is exact value matching plus a clear error when table instances
-  do not exist in the shapes element.
 
 ## Recommendation
 
