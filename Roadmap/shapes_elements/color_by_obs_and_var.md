@@ -198,9 +198,9 @@ coloring of arbitrary table values.
 
 ## Discovery Helpers
 
-Add shape-specific table helpers in `core/spatialdata.py`.
+Mirror the current labels linked-table discovery flow for shapes.
 
-Recommended new functions:
+Recommended discovery flow:
 
 ```python
 table_names = get_annotating_table_names(sdata, shapes_name)
@@ -370,10 +370,11 @@ Likely code changes:
   - decide whether to add shape-table-specific display helpers or keep those in
     the widget/status-card layer.
 - `core/spatialdata.py`
-  - add shape table discovery helpers;
-  - add shape-specific table binding validation that preserves arbitrary shape
-    index labels;
-  - optionally make existing table annotation helper names element-generic.
+  - make existing table annotation helper parameter names element-generic where
+    the implementation is already generic;
+  - reuse `get_annotating_table_names(sdata, shapes_name)` and
+    `get_table_color_source_options(sdata, table_name)` for Slice 2 discovery;
+  - keep shape-specific table-to-shape validation for Slice 3.
 - `viewer/shapes_styling.py`
   - keep `apply_shape_color_source_to_shapes_layer(...)` for direct columns;
   - add `apply_table_color_source_to_shapes_layer(...)`;
