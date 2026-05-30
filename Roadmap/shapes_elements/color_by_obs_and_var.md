@@ -292,6 +292,9 @@ Recommended steps:
 13. Apply colors to `layer.face_color` and `layer.edge_color` with the existing
     shape alpha behavior.
 14. Add the selected table value to `layer.features` for hover/status display.
+    Store it under `value_key` by default and reuse the existing
+    source-index-feature disambiguation when `value_key` collides with the
+    feature column that stores the source GeoDataFrame index.
 
 Missing table rows:
 
@@ -460,6 +463,8 @@ Adapter/widget tests:
 - fill toggling reuses the same styled table-backed shapes layer;
 - status feedback reports table source names, instance coloring, and palette
   fallback/coercion behavior.
+- table-backed values are added to `layer.features` under `value_key`, with the
+  same source-index-feature collision handling used by direct shape columns.
 
 ## Implementation Slices
 
@@ -512,6 +517,8 @@ shape-column coloring behavior unchanged.
    - preserve shape fill/edge alpha rules, missing gray behavior for table rows
      with missing selected values, and transparent behavior for shapes without
      table rows;
+   - store the selected table value in `layer.features` under `value_key`,
+     disambiguating only if it collides with the source-index feature name;
    - add rendered-row tests for MultiPolygon repetition and feature-table values.
 
 5. Adapter and layer lifecycle
@@ -539,11 +546,6 @@ shape-column coloring behavior unchanged.
 
 ## Open Questions
 
-- Should table-backed values be added to `layer.features` under just
-  `value_key`, or a disambiguated name like `table.obs.cell_type`? The direct
-  shape-column path already handles collisions with the source index feature;
-  table-backed sources additionally need to avoid collisions with direct shape
-  columns and other table variants.
 - If a shapes element has string-like `instance_key` values and a table stores
   numeric-looking instance IDs, should Harpy attempt string-normalized matching?
   Safer default is exact value matching plus a clear error when table instances
