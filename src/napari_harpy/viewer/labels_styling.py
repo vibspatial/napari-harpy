@@ -15,7 +15,7 @@ from napari_harpy.core._color_source import (
     validate_table_color_value_kind,
 )
 from napari_harpy.core.class_palette import normalize_color_sequence
-from napari_harpy.core.spatialdata import get_table, get_table_metadata
+from napari_harpy.core.spatialdata import get_table, validate_table_binding
 from napari_harpy.viewer._styling import (
     StyledPaletteSource,
     build_string_categorical_values,
@@ -65,10 +65,7 @@ def apply_table_color_source_to_labels_layer(
 ) -> LabelsStyleResult:
     """Apply one table-backed source to a styled labels layer."""
     table = get_table(sdata, style_spec.table_name)
-    table_metadata = get_table_metadata(sdata, style_spec.table_name)
-    if not table_metadata.annotates(labels_name):
-        raise ValueError(f"Table `{style_spec.table_name}` does not annotate labels element `{labels_name}`.")
-
+    table_metadata = validate_table_binding(sdata, labels_name, style_spec.table_name)
     region_rows, obs_index = _get_region_rows_by_instance(table, table_metadata, labels_name)
     if style_spec.value_kind == "instance" or (
         style_spec.source_kind == "obs_column" and style_spec.value_key == table_metadata.instance_key
@@ -265,7 +262,18 @@ def _get_region_rows_by_instance(
     region_rows = region_rows.loc[instance_ids.notna()].copy()
     region_rows[table_metadata.instance_key] = instance_ids.loc[region_rows.index].astype("int64")
     region_rows = region_rows.loc[region_rows[table_metadata.instance_key] > 0].copy()
-    region_rows = region_rows.drop_duplicates(subset=[table_metadata.instance_key], keep="last")
+    duplicate_instance_ids = region_rows.loc[
+        region_rows[table_metadata.instance_key].duplicated(keep=False),
+        table_metadata.instance_key,
+    ]
+    if not duplicate_instance_ids.empty:
+        preview = _format_instance_preview(duplicate_instance_ids.drop_duplicates().tolist())
+        raise ValueError(
+            f"Table `{table_metadata.table_name}` cannot be aligned to labels element `{labels_name}` because "
+            f"`{table_metadata.instance_key}` contains duplicate positive label IDs after labels-specific "
+            f"numeric coercion: {preview}."
+        )
+
     aligned_obs_index = region_rows.index.copy()
     region_rows = region_rows.set_index(table_metadata.instance_key)
     region_rows.index = region_rows.index.astype("int64", copy=False)
@@ -280,6 +288,13 @@ def _build_labels_features(features: pd.DataFrame, *, instance_key: str) -> pd.D
     if instance_key not in features.columns:
         features.insert(0, instance_key, features.index.to_numpy(copy=False))
     return features.reset_index()
+
+
+def _format_instance_preview(instance_ids: list[Any]) -> str:
+    preview = ", ".join(str(instance_id) for instance_id in instance_ids[:5])
+    if len(instance_ids) > 5:
+        preview += ", ..."
+    return preview
 
 
 def _resolve_categorical_palette(

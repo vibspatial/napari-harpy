@@ -1518,6 +1518,44 @@ def test_viewer_adapter_ensure_styled_labels_loaded_colors_instance_key_as_label
     assert np.allclose(result.layer.colormap.map(np.asarray([0], dtype=np.int64))[0], np.zeros(4))
 
 
+def test_viewer_adapter_ensure_styled_labels_loaded_rejects_duplicate_instance_ids(sdata_blobs) -> None:
+    table = sdata_blobs["table"]
+    first_index, second_index = table.obs.index[:2]
+    table.obs.loc[second_index, "instance_id"] = table.obs.loc[first_index, "instance_id"]
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="instance_id",
+        value_kind="instance",
+    )
+
+    with pytest.raises(ValueError, match="contains duplicate values within that region"):
+        adapter.ensure_styled_labels_loaded(sdata_blobs, "blobs_labels", "global", style_spec)
+
+
+def test_viewer_adapter_ensure_styled_labels_loaded_rejects_duplicates_after_numeric_coercion(
+    sdata_blobs,
+) -> None:
+    table = sdata_blobs["table"]
+    table.obs["instance_id"] = table.obs["instance_id"].astype(str)
+    first_index, second_index = table.obs.index[:2]
+    table.obs.loc[first_index, "instance_id"] = "1"
+    table.obs.loc[second_index, "instance_id"] = "01"
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="instance_id",
+        value_kind="instance",
+    )
+
+    with pytest.raises(ValueError, match="after labels-specific numeric coercion"):
+        adapter.ensure_styled_labels_loaded(sdata_blobs, "blobs_labels", "global", style_spec)
+
+
 def test_viewer_adapter_ensure_styled_labels_loaded_coerces_string_obs_to_categorical(sdata_blobs) -> None:
     table = sdata_blobs["table"]
     table.obs["sample_type"] = pd.Series(

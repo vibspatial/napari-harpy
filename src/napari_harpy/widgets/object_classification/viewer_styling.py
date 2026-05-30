@@ -28,7 +28,7 @@ from napari_harpy.core.spatialdata import (
     get_table_metadata,
 )
 from napari_harpy.viewer.adapter import ViewerAdapter
-from napari_harpy.viewer.labels_styling import _build_labels_features
+from napari_harpy.viewer.labels_styling import _build_labels_features, _get_region_rows_by_instance
 from napari_harpy.widgets.object_classification.controller import (
     PRED_CLASS_COLORS_KEY,
     PRED_CLASS_COLUMN,
@@ -307,13 +307,8 @@ class ViewerStylingController:
         if table is None or metadata is None or self._selected_labels_name is None:
             return pd.DataFrame(index=pd.Index([], dtype="int64", name="index"))
 
-        region_rows = table.obs.loc[table.obs[metadata.region_key] == self._selected_labels_name].copy()
-        instance_ids = pd.to_numeric(region_rows[metadata.instance_key], errors="coerce")
-        region_rows = region_rows.loc[instance_ids.notna()].copy()
-        region_rows[metadata.instance_key] = instance_ids.loc[region_rows.index].astype("int64")
-        region_rows = region_rows.loc[region_rows[metadata.instance_key] > 0].copy()
-        region_rows = region_rows.drop_duplicates(subset=[metadata.instance_key], keep="last")
-        return region_rows.set_index(metadata.instance_key)
+        region_rows, _ = _get_region_rows_by_instance(table, metadata, self._selected_labels_name)
+        return region_rows
 
     def _get_region_feature_rows(self) -> pd.DataFrame:
         """Return normalized labels features for the selected segmentation region.

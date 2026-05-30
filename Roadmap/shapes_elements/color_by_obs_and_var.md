@@ -474,7 +474,7 @@ Adapter/widget tests:
 Each slice should be independently testable and should keep the existing direct
 shape-column coloring behavior unchanged.
 
-1. Table metadata validation cleanup
+1. Table metadata validation cleanup - completed
    - keep the existing public labels-facing table APIs stable for this slice:
      `get_annotating_table_names(...)`,
      `get_table_annotated_labels_names(...)`,
