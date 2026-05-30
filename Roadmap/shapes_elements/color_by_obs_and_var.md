@@ -475,13 +475,32 @@ Each slice should be independently testable and should keep the existing direct
 shape-column coloring behavior unchanged.
 
 1. Table metadata validation cleanup
-   - make table annotation terminology element-generic where useful, for example
-     `annotates(element_name)`;
+   - keep the existing public labels-facing table APIs stable for this slice:
+     `get_annotating_table_names(...)`,
+     `get_table_annotated_labels_names(...)`,
+     `validate_table_annotation_coverage(...)`,
+     `validate_table_region_instance_ids(...)`, and
+     `validate_table_binding(...)`;
+   - make table annotation terminology element-generic only where the existing
+     behavior is already element-generic, for example
+     `SpatialDataTableMetadata.annotates(element_name)`;
+   - rename private helper arguments from labels-specific names to generic
+     `element_name` where they validate table metadata rather than labels data;
    - add or reuse validation that rejects duplicate `instance_key` values within
-     one selected region;
+     one selected region, without adding the shapes-specific validation API yet;
+   - add a small private helper for required table `.obs` binding columns if it
+     keeps the current validation functions consistent;
    - fix labels styling so duplicate labels-table `instance_key` values raise
      instead of being silently de-duplicated with `keep="last"`;
-   - add labels regression tests for duplicate instance IDs within one region.
+   - labels styling should call the existing table binding validation before
+     alignment, and `_get_region_rows_by_instance(...)` should also reject
+     duplicates after labels-specific numeric coercion;
+   - keep shapes/table-to-shape alignment validation for Slice 3, because it
+     needs `shapes_element[instance_key]`, exact matching, subset validation, and
+     partial shape coverage behavior;
+   - add labels regression tests for duplicate instance IDs within one region,
+     including duplicate IDs that only become duplicates after labels-specific
+     numeric coercion.
 
 2. Shape table discovery and source typing
    - add `get_shape_annotating_table_names(...)`;
