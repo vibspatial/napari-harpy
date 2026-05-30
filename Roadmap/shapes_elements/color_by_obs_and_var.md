@@ -503,17 +503,42 @@ shape-column coloring behavior unchanged.
      numeric coercion.
 
 2. Shape table discovery and source typing
-   - add `get_shape_annotating_table_names(...)`;
-   - add `get_shape_table_color_source_options(...)`;
-   - add `get_shape_color_source_options(...)` if a combined helper keeps widget
-     code simpler;
-   - expose table `instance_key` as an observation source with
-     `value_kind="instance"`;
-   - keep excluding `region_key`;
-   - add `SpatialElementColorSourceSpec = ShapeColorSourceSpec | TableColorSourceSpec`;
-   - broaden shape-facing type annotations without changing adapter behavior yet;
-   - test discovery for linked shapes tables, labels-only tables, `instance_key`,
-     `.obs`, and `X[:, var_name]`.
+   - mirror the current labels discovery flow instead of introducing a flat
+     all-tables source list;
+   - generalize the existing `get_annotating_table_names(...)` helper to use an
+     `element_name` parameter, because SpatialData's
+     `get_element_annotators(sdata, element_name)` is already element-generic;
+     keep the function name stable unless a shape-specific alias is useful for
+     readability;
+   - use `get_annotating_table_names(sdata, shapes_name)` for shapes linked-table
+     discovery, so only tables that explicitly annotate that shapes element are
+     returned;
+   - keep `get_table_color_source_options(sdata, table_name)` as the per-table
+     source API, matching labels;
+   - have the shapes widget build
+     `table_color_sources_by_table: dict[str, list[TableColorSourceSpec]]`,
+     matching `_LabelsCardWidget`;
+   - reuse existing table source option classification: expose table
+     `instance_key` as an observation source with `value_kind="instance"`, keep
+     excluding `region_key`, include colorable `.obs` columns, and include
+     `X[:, var_name]` sources;
+   - add
+     `get_shape_color_source_options(sdata, shapes_name) -> list[SpatialElementColorSourceSpec]`
+     only if a combined direct-shape-plus-table helper keeps widget code simpler;
+   - add
+     `SpatialElementColorSourceSpec = ShapeColorSourceSpec | TableColorSourceSpec`,
+     likely in `core/_color_source.py`;
+   - broaden shape-facing type annotations to accept
+     `SpatialElementColorSourceSpec` without changing adapter dispatch behavior
+     yet;
+   - do not add shape table-to-shape alignment validation in this slice:
+     `shapes_element[instance_key]`, exact matching, subset validation, missing
+     shape coverage, and no-row checks belong to Slice 3;
+   - test linked shapes table discovery, labels-only table exclusion, per-table
+     source grouping, table
+     `instance_key` as `value_kind="instance"`, `region_key` exclusion, `.obs`
+     sources, `X[:, var_name]` sources, and unchanged direct shape-column source
+     discovery.
 
 3. Shape table-to-source-row alignment
    - implement a focused helper that resolves table values to one value per
