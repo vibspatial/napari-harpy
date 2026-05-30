@@ -173,6 +173,10 @@ columns or table-backed sources:
 - `ViewerAdapter.ensure_styled_shapes_loaded(...)`
 - `ShapesLoadRequest.selected_color_source`
 - status-card helpers for styled shapes.
+- `ShapesStyleResult` / `ShapesLoadResult` or an adjacent result object should
+  carry optional table-alignment info, such as the number of rendered/source
+  shapes without a matching table row, so the UI can report it as informational
+  feedback.
 
 Alternative: create a new dataclass such as `ShapesTableColorSourceSpec`.
 That is more explicit, but likely unnecessary because `TableColorSourceSpec`
@@ -292,8 +296,8 @@ Missing table rows:
 - If any table instances for the selected shapes region are missing from
   `shapes_element[instance_key]`, raise a clear error.
 - If some shapes have no matching table row, keep rendering them with the
-  existing missing gray color and consider reporting the missing count in the
-  status card.
+  existing missing gray color and report the missing count as informational
+  status feedback, not as a warning.
 
 The all-missing case should not silently create an all-gray styled layer,
 because it usually means the table metadata points at the shapes element but
@@ -438,6 +442,8 @@ Styling tests:
 - zero overlap between table instances and shapes `instance_key` values raises a
   clear error;
 - shape instances without table rows render gray;
+- partial shape coverage reports the count of shape instances without table
+  rows as informational feedback, not warning feedback;
 - labels duplicate table `instance_key` values within the selected labels
   region raise a clear error instead of being silently de-duplicated.
 
@@ -522,13 +528,12 @@ shape-column coloring behavior unchanged.
    - update action hints and error messages for linked-table requirements,
      missing shape `instance_key` column, extra table instances, and zero overlap;
    - report instance coloring, palette fallback/coercion, skipped geometries,
-     and optional missing-shape counts in status feedback.
+     and missing-shape counts in status feedback;
+   - treat missing-shape counts from partial table coverage as informational,
+     because unannotated shapes are expected in normal use.
 
 ## Open Questions
 
-- Should partial table coverage be warning-level feedback with a missing count?
-  This would help users catch incomplete annotation tables without blocking
-  useful partial visualization.
 - Should table-backed values be added to `layer.features` under just
   `value_key`, or a disambiguated name like `table.obs.cell_type`? The direct
   shape-column path already handles collisions with the source index feature;
