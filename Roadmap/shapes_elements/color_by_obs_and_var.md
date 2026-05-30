@@ -29,7 +29,8 @@ the shapes `GeoDataFrame`.
 Implemented pieces:
 
 - `core/_color_source.py`
-  - `ShapeColorSourceSpec` supports only `source_kind="shape_column"`;
+  - `ShapeColorSourceSpec` currently supports only `source_kind="shape_column"`;
+    this should become `ShapeColumnColorSourceSpec`;
   - `TableColorSourceSpec` supports `source_kind="obs_column"` and `"x_var"`,
     but it is currently used by labels overlays.
 - `core/spatialdata.py`
@@ -158,14 +159,14 @@ not be included in the displayed napari layer name.
 
 ## Data Model Changes
 
-The current separation between `ShapeColorSourceSpec` and
-`TableColorSourceSpec` is still useful. Do not add table fields to
-`ShapeColorSourceSpec`.
+The separation between direct shape-column sources and table-backed sources is
+still useful. Do not add table fields to the direct shape-column dataclass.
 
 Recommended typing:
 
 ```python
-SpatialElementColorSourceSpec = ShapeColorSourceSpec | TableColorSourceSpec
+ShapeColumnColorSourceSpec  # renamed from the current concrete ShapeColorSourceSpec
+ShapeColorSourceSpec = ShapeColumnColorSourceSpec | TableColorSourceSpec
 ```
 
 Then update shape-facing contracts that can now accept either direct shape
@@ -200,21 +201,12 @@ Add shape-specific table helpers in `core/spatialdata.py`.
 Recommended new functions:
 
 ```python
-def get_shape_annotating_table_names(sdata: SpatialData, shapes_name: str) -> list[str]:
-    ...
-
-def get_shape_table_color_source_options(
-    sdata: SpatialData,
-    shapes_name: str,
-    table_name: str,
-) -> list[TableColorSourceSpec]:
-    ...
-
-def get_shape_color_source_options(
-    sdata: SpatialData,
-    shapes_name: str,
-) -> list[ShapeColorSourceSpec | TableColorSourceSpec]:
-    ...
+table_names = get_annotating_table_names(sdata, shapes_name)
+shape_color_sources = get_shape_column_color_source_options(sdata, shapes_name)
+table_color_sources_by_table = {
+    table_name: get_table_color_source_options(sdata, table_name)
+    for table_name in table_names
+}
 ```
 
 Discovery rules:
@@ -369,8 +361,10 @@ For missing values after alignment:
 Likely code changes:
 
 - `core/_color_source.py`
-  - add a union alias, for example
-    `SpatialElementColorSourceSpec = ShapeColorSourceSpec | TableColorSourceSpec`;
+  - rename the current direct-shape-column dataclass to
+    `ShapeColumnColorSourceSpec`;
+  - add the shape-facing union alias
+    `ShapeColorSourceSpec = ShapeColumnColorSourceSpec | TableColorSourceSpec`;
   - decide whether to add shape-table-specific display helpers or keep those in
     the widget/status-card layer.
 - `core/spatialdata.py`
@@ -515,22 +509,26 @@ shape-column coloring behavior unchanged.
      returned;
    - keep `get_table_color_source_options(sdata, table_name)` as the per-table
      source API, matching labels;
+   - keep direct shape-column source discovery separate:
+     `shape_color_sources = get_shape_column_color_source_options(sdata, shapes_name)`;
    - have the shapes widget build
      `table_color_sources_by_table: dict[str, list[TableColorSourceSpec]]`,
      matching `_LabelsCardWidget`;
+   - the shapes widget should therefore mirror labels with:
+     `table_names = get_annotating_table_names(sdata, shapes_name)` and
+     `table_color_sources_by_table = {table_name: get_table_color_source_options(sdata, table_name) for table_name in table_names}`;
    - reuse existing table source option classification: expose table
      `instance_key` as an observation source with `value_kind="instance"`, keep
      excluding `region_key`, include colorable `.obs` columns, and include
      `X[:, var_name]` sources;
-   - add
-     `get_shape_color_source_options(sdata, shapes_name) -> list[SpatialElementColorSourceSpec]`
-     only if a combined direct-shape-plus-table helper keeps widget code simpler;
-   - add
-     `SpatialElementColorSourceSpec = ShapeColorSourceSpec | TableColorSourceSpec`,
-     likely in `core/_color_source.py`;
-   - broaden shape-facing type annotations to accept
-     `SpatialElementColorSourceSpec` without changing adapter dispatch behavior
-     yet;
+   - rename the current concrete `ShapeColorSourceSpec` dataclass to
+     `ShapeColumnColorSourceSpec`;
+   - add `ShapeColorSourceSpec = ShapeColumnColorSourceSpec | TableColorSourceSpec`,
+     so the broad shape-facing name means any source that can color shapes;
+   - keep `TableColorSourceSpec` as the table-backed source model and update its
+     docstring so it is no longer labels-specific;
+   - broaden shape-facing type annotations to accept the new union
+     `ShapeColorSourceSpec` without changing adapter dispatch behavior yet;
    - do not add shape table-to-shape alignment validation in this slice:
      `shapes_element[instance_key]`, exact matching, subset validation, missing
      shape coverage, and no-row checks belong to Slice 3;
