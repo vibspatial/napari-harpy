@@ -1269,7 +1269,7 @@ Implementation notes:
   modes are display options for the same styled layer variant and should update
   the existing layer instead of creating parallel layers;
 - keep the styled layer name stable, e.g.
-  `cell_boundaries[shape:cell_type]`, regardless of fill state.
+  `cell_boundaries[shapes_column:cell_type]`, regardless of fill state.
 
 Implemented tests:
 

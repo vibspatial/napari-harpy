@@ -19,7 +19,10 @@ from spatialdata.models import get_axes_names
 from spatialdata.transformations import get_transformation
 from xarray import DataArray, DataTree
 
-from napari_harpy.core._color_source import ShapeColorSourceSpec, TableColorSourceSpec
+from napari_harpy.core._color_source import (
+    ShapeColumnColorSourceSpec,
+    TableColorSourceSpec,
+)
 from napari_harpy.viewer.image_styling import DEFAULT_OVERLAY_COLORS, ImageDisplayMode, ImageLoadResult
 from napari_harpy.viewer.labels_styling import (
     LabelsLoadResult,
@@ -230,7 +233,7 @@ class ShapesLayerBinding(BaseLayerBinding):
 
     element_type: Literal["shapes"] = "shapes"
     shapes_role: Literal["primary", "styled"] = "primary"
-    style_spec: ShapeColorSourceSpec | None = None
+    style_spec: ShapeColumnColorSourceSpec | TableColorSourceSpec | None = None
     source_shapes_index_by_row: tuple[Any, ...] = ()
     source_shapes_index_feature_name: str = DEFAULT_SHAPES_INDEX_FEATURE_NAME
     skipped_geometry_count: int = 0
@@ -439,7 +442,7 @@ class LayerBindingRegistry:
         coordinate_system: str | None = None,
         sdata: SpatialData | None = None,
         shapes_role: Literal["primary", "styled"] = "primary",
-        style_spec: ShapeColorSourceSpec | None = None,
+        style_spec: ShapeColumnColorSourceSpec | TableColorSourceSpec | None = None,
         source_shapes_index_by_row: tuple[Any, ...] = (),
         source_shapes_index_feature_name: str = DEFAULT_SHAPES_INDEX_FEATURE_NAME,
         skipped_geometry_count: int = 0,
@@ -485,7 +488,7 @@ class LayerBindingRegistry:
         coordinate_system: str | None = None,
         labels_role: Literal["primary", "styled"] | None = None,
         shapes_role: Literal["primary", "styled"] | None = None,
-        style_spec: TableColorSourceSpec | ShapeColorSourceSpec | None = None,
+        style_spec: ShapeColumnColorSourceSpec | TableColorSourceSpec | None = None,
         image_display_mode: ImageDisplayMode | None = None,
         channel_index: int | None = None,
         channel_name: str | None = None,
@@ -649,7 +652,7 @@ class ViewerAdapter(QObject):
         coordinate_system: str | None = None,
         sdata: SpatialData | None = None,
         shapes_role: Literal["primary", "styled"] = "primary",
-        style_spec: ShapeColorSourceSpec | None = None,
+        style_spec: ShapeColumnColorSourceSpec | TableColorSourceSpec | None = None,
         source_shapes_index_by_row: tuple[Any, ...] = (),
         source_shapes_index_feature_name: str = DEFAULT_SHAPES_INDEX_FEATURE_NAME,
         skipped_geometry_count: int = 0,
@@ -863,7 +866,7 @@ class ViewerAdapter(QObject):
         self,
         sdata: SpatialData,
         shapes_name: str,
-        style_spec: ShapeColorSourceSpec,
+        style_spec: ShapeColumnColorSourceSpec | TableColorSourceSpec,
         coordinate_system: str | None = None,
     ) -> Shapes | None:
         """Return one loaded styled shapes layer for a specific style variant."""
@@ -1252,11 +1255,14 @@ class ViewerAdapter(QObject):
         sdata: SpatialData,
         shapes_name: str,
         coordinate_system: str,
-        style_spec: ShapeColorSourceSpec,
+        style_spec: ShapeColumnColorSourceSpec | TableColorSourceSpec,
         *,
         fill: bool = False,
     ) -> ShapesLoadResult:
         """Load or update one styled shapes layer variant."""
+        if not isinstance(style_spec, ShapeColumnColorSourceSpec):
+            raise ValueError("Table-backed shapes styling is not implemented yet.")
+
         existing_layer = self.get_loaded_styled_shapes_layer(
             sdata,
             shapes_name,
@@ -1989,7 +1995,7 @@ def _matches_shapes_binding(
     element_name: str,
     coordinate_system: str | None = None,
     shapes_role: Literal["primary", "styled"] | None = None,
-    style_spec: ShapeColorSourceSpec | None = None,
+    style_spec: ShapeColumnColorSourceSpec | TableColorSourceSpec | None = None,
 ) -> bool:
     if not isinstance(binding, ShapesLayerBinding):
         return False

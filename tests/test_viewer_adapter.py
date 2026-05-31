@@ -17,7 +17,7 @@ from spatialdata.transformations import Affine, Identity
 import napari_harpy.viewer._styling as styling_module
 from napari_harpy._app_state import get_or_create_app_state
 from napari_harpy._points_value_index import PointsValueSelection
-from napari_harpy.core._color_source import ShapeColorSourceSpec, TableColorSourceSpec
+from napari_harpy.core._color_source import ShapeColumnColorSourceSpec, TableColorSourceSpec
 from napari_harpy.core.class_palette import default_categorical_colors
 from napari_harpy.viewer.adapter import (
     ImageLayerBinding,
@@ -328,7 +328,7 @@ def test_layer_binding_registry_tracks_shapes_identity() -> None:
 def test_layer_binding_registry_tracks_shapes_role_and_style_spec() -> None:
     registry = LayerBindingRegistry()
     layer = make_shapes_layer()
-    style_spec = ShapeColorSourceSpec(
+    style_spec = ShapeColumnColorSourceSpec(
         source_kind="shape_column",
         value_key="cell_type",
         value_kind="categorical",
@@ -361,9 +361,38 @@ def test_layer_binding_registry_tracks_shapes_role_and_style_spec() -> None:
     assert "style_value_kind" not in layer.metadata
 
 
+def test_layer_binding_registry_tracks_table_backed_shapes_style_spec() -> None:
+    registry = LayerBindingRegistry()
+    layer = make_shapes_layer()
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    binding = registry.register_shapes_layer(
+        layer,
+        element_name="cell_boundaries",
+        coordinate_system="global",
+        shapes_role="styled",
+        style_spec=style_spec,
+        source_shapes_index_by_row=("cell_1",),
+        source_shapes_index_feature_name="cell_id",
+    )
+
+    assert binding.style_spec == style_spec
+    assert registry.find_bindings(
+        element_name="cell_boundaries",
+        element_type="shapes",
+        shapes_role="styled",
+        style_spec=style_spec,
+    ) == [binding]
+
+
 def test_shapes_layer_binding_rejects_invalid_role_style_spec_combinations() -> None:
     layer = make_shapes_layer()
-    style_spec = ShapeColorSourceSpec(
+    style_spec = ShapeColumnColorSourceSpec(
         source_kind="shape_column",
         value_key="cell_type",
         value_kind="categorical",
@@ -1880,7 +1909,7 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_creates_registered_variant_w
     sdata = make_colorable_shapes_sdata()
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
-    style_spec = ShapeColorSourceSpec(
+    style_spec = ShapeColumnColorSourceSpec(
         source_kind="shape_column",
         value_key="cell_type",
         value_kind="categorical",
@@ -1893,7 +1922,7 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_creates_registered_variant_w
     assert result.palette_source == "stored"
     assert result.coercion_applied is False
     assert result.layer in viewer.layers
-    assert result.layer.name == "cell_boundaries[shape:cell_type]"
+    assert result.layer.name == "cell_boundaries[shapes_column:cell_type]"
     assert adapter.get_loaded_primary_shapes_layer(sdata, "cell_boundaries", "global") is None
     binding = get_shapes_binding(adapter, result.layer)
     assert binding.shapes_role == "styled"
@@ -1910,11 +1939,28 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_creates_registered_variant_w
     assert "style_value_kind" not in result.layer.metadata
 
 
+def test_viewer_adapter_ensure_styled_shapes_loaded_rejects_table_sources_until_styling_slice() -> None:
+    sdata = make_colorable_shapes_sdata()
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    with pytest.raises(ValueError, match="Table-backed shapes styling is not implemented yet"):
+        adapter.ensure_styled_shapes_loaded(sdata, "cell_boundaries", "global", style_spec)
+
+    assert viewer.layers == []
+
+
 def test_viewer_adapter_ensure_styled_shapes_loaded_updates_fill_alpha_on_existing_variant() -> None:
     sdata = make_colorable_shapes_sdata()
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
-    style_spec = ShapeColorSourceSpec(
+    style_spec = ShapeColumnColorSourceSpec(
         source_kind="shape_column",
         value_key="cell_type",
         value_kind="categorical",
@@ -1937,7 +1983,7 @@ def test_viewer_adapter_styled_shapes_layer_applies_edge_width_control_to_all_sh
     sdata = make_colorable_shapes_sdata()
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
-    style_spec = ShapeColorSourceSpec(
+    style_spec = ShapeColumnColorSourceSpec(
         source_kind="shape_column",
         value_key="cell_type",
         value_kind="categorical",
@@ -1953,7 +1999,7 @@ def test_viewer_adapter_styled_shapes_layer_keeps_palette_when_current_edge_colo
     sdata = make_colorable_shapes_sdata()
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
-    style_spec = ShapeColorSourceSpec(
+    style_spec = ShapeColumnColorSourceSpec(
         source_kind="shape_column",
         value_key="cell_type",
         value_kind="categorical",
@@ -1970,7 +2016,7 @@ def test_viewer_adapter_styled_shapes_status_includes_selected_shape_column() ->
     sdata = make_colorable_shapes_sdata()
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
-    style_spec = ShapeColorSourceSpec(
+    style_spec = ShapeColumnColorSourceSpec(
         source_kind="shape_column",
         value_key="cell_type",
         value_kind="categorical",
@@ -1988,7 +2034,7 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_coexists_with_primary_shapes
     sdata = make_colorable_shapes_sdata()
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
-    style_spec = ShapeColorSourceSpec(
+    style_spec = ShapeColumnColorSourceSpec(
         source_kind="shape_column",
         value_key="cell_type",
         value_kind="categorical",
@@ -2015,7 +2061,7 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_reuses_matching_variant() ->
     sdata = make_colorable_shapes_sdata()
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
-    style_spec = ShapeColorSourceSpec(
+    style_spec = ShapeColumnColorSourceSpec(
         source_kind="shape_column",
         value_key="score",
         value_kind="continuous",
@@ -2035,12 +2081,12 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_creates_distinct_variants_fo
     sdata = make_colorable_shapes_sdata()
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
-    categorical_style = ShapeColorSourceSpec(
+    categorical_style = ShapeColumnColorSourceSpec(
         source_kind="shape_column",
         value_key="cell_type",
         value_kind="categorical",
     )
-    continuous_style = ShapeColorSourceSpec(
+    continuous_style = ShapeColumnColorSourceSpec(
         source_kind="shape_column",
         value_key="score",
         value_kind="continuous",
@@ -2060,7 +2106,7 @@ def test_viewer_adapter_remove_shapes_layer_removes_only_primary_shapes_layer() 
     sdata = make_colorable_shapes_sdata()
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
-    style_spec = ShapeColorSourceSpec(
+    style_spec = ShapeColumnColorSourceSpec(
         source_kind="shape_column",
         value_key="cell_type",
         value_kind="categorical",
@@ -2080,7 +2126,7 @@ def test_viewer_adapter_remove_layers_outside_coordinate_system_removes_primary_
     sdata = make_colorable_shapes_sdata()
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
-    style_spec = ShapeColorSourceSpec(
+    style_spec = ShapeColumnColorSourceSpec(
         source_kind="shape_column",
         value_key="cell_type",
         value_kind="categorical",

@@ -47,7 +47,7 @@ def validate_shape_color_value_kind(kind: str) -> ShapeColorValueKind:
 
 @dataclass(frozen=True)
 class TableColorSourceSpec:
-    """Semantic description of one table-backed source used for labels coloring."""
+    """Semantic description of one table-backed source used for viewer coloring."""
 
     table_name: str
     source_kind: TableColorSourceKind
@@ -70,7 +70,7 @@ class TableColorSourceSpec:
 
 
 @dataclass(frozen=True)
-class ShapeColorSourceSpec:
+class ShapeColumnColorSourceSpec:
     """Semantic description of one direct shapes column used for coloring."""
 
     source_kind: ShapeColorSourceKind

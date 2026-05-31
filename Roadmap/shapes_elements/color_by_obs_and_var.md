@@ -1,6 +1,6 @@
 # Color Shapes By Linked Table `.obs` And `X[:, var]`
 
-Status: investigation
+Status: Slice 2 implemented; Slice 3+ pending
 
 ## Goal
 
@@ -29,17 +29,17 @@ the shapes `GeoDataFrame`.
 Implemented pieces:
 
 - `core/_color_source.py`
-  - `ShapeColorSourceSpec` currently supports only `source_kind="shape_column"`;
-    this should become `ShapeColumnColorSourceSpec`;
+  - `ShapeColumnColorSourceSpec` supports direct shape-column sources with
+    `source_kind="shape_column"`;
   - `TableColorSourceSpec` supports `source_kind="obs_column"` and `"x_var"`,
-    but it is currently used by labels overlays.
+    and is the shared table-backed source model for labels and shapes.
 - `core/spatialdata.py`
   - `get_shape_column_color_source_options(...)` discovers direct shape
     columns;
   - `get_table_color_source_options(...)` discovers table `.obs` and
     `X[:, var_name]` sources;
-  - `get_annotating_table_names(...)` currently has labels-oriented naming, but
-    it calls SpatialData's generic `get_element_annotators(...)`.
+  - `get_annotating_table_names(sdata, element_name)` calls SpatialData's
+    generic `get_element_annotators(...)`.
 - `viewer/shapes_styling.py`
   - `apply_shape_color_source_to_shapes_layer(...)` applies direct
     `GeoDataFrame` column values;
@@ -62,14 +62,17 @@ Implemented pieces:
   - `X[:, var_name]` values are continuous.
 - `viewer/adapter.py`
   - primary and styled shapes layers can coexist;
-- styled shapes layer identity is currently keyed by `ShapeColorSourceSpec`;
-  this should become `ShapesColorSourceSpec` once table-backed shapes styling is
-  supported;
+  - styled shapes layer identity accepts explicit
+    `ShapeColumnColorSourceSpec | TableColorSourceSpec` unions, while
+    table-backed styling dispatch is still pending Slice 3+;
   - styled shape layers keep the source shape index mapping in
     `ShapesLayerBinding`.
 - `widgets/viewer/shapes_widget.py`
-  - shapes cards expose `Color source = None | Shapes column`;
-  - there is no linked-table selector for shapes.
+  - shapes cards expose `Color source = None | Shapes column | Observations |
+    Vars`;
+  - linked tables are discovered per shapes element, matching labels;
+  - table-backed selections are represented in the UI and request model, but
+    table-to-shape value alignment/styling is still pending Slice 3+.
 
 Conclusion: the geometry/rendered-row machinery is already the hard part, and
 it is in place. The missing work is mostly table discovery, a shape-specific
@@ -151,7 +154,7 @@ Suggested action text:
 
 Layer names should remain stable and include the source kind:
 
-- shape column: `cell_boundaries[shape:leiden]`
+- shapes column: `cell_boundaries[shapes_column:leiden]`
 - table obs: `cell_boundaries[obs:cell_type]`
 - table var: `cell_boundaries[X:GeneA]`
 
@@ -167,8 +170,8 @@ still useful. Do not add table fields to the direct shape-column dataclass.
 Recommended typing:
 
 ```python
-ShapeColumnColorSourceSpec  # renamed from the current concrete ShapeColorSourceSpec
-ShapesColorSourceSpec = ShapeColumnColorSourceSpec | TableColorSourceSpec
+ShapeColumnColorSourceSpec  # renamed from the former concrete ShapeColorSourceSpec
+ShapeColumnColorSourceSpec | TableColorSourceSpec
 ```
 
 Then update shape-facing contracts that can now accept either direct shape
@@ -365,8 +368,8 @@ Likely code changes:
 - `core/_color_source.py`
   - rename the current direct-shape-column dataclass to
     `ShapeColumnColorSourceSpec`;
-  - add the shape-facing union alias
-    `ShapesColorSourceSpec = ShapeColumnColorSourceSpec | TableColorSourceSpec`;
+  - use explicit `ShapeColumnColorSourceSpec | TableColorSourceSpec` annotations
+    at shape-facing boundaries instead of adding a broad union alias;
   - decide whether to add shape-table-specific display helpers or keep those in
     the widget/status-card layer.
 - `core/spatialdata.py`
@@ -499,7 +502,7 @@ shape-column coloring behavior unchanged.
      including duplicate IDs that only become duplicates after labels-specific
      numeric coercion.
 
-2. Shape table discovery and source typing
+2. Shape table discovery and source typing - completed
    - mirror the current labels discovery flow instead of introducing a flat
      all-tables source list;
    - generalize the existing `get_annotating_table_names(...)` helper to use an
@@ -513,10 +516,14 @@ shape-column coloring behavior unchanged.
    - keep `get_table_color_source_options(sdata, table_name)` as the per-table
      source API, matching labels;
    - keep direct shape-column source discovery separate:
-     `shape_color_sources = get_shape_column_color_source_options(sdata, shapes_name)`;
+     `shape_column_color_sources = get_shape_column_color_source_options(sdata, shapes_name)`;
    - have the shapes widget build
      `table_color_sources_by_table: dict[str, list[TableColorSourceSpec]]`,
      matching `_LabelsCardWidget`;
+   - use `table_color_sources_by_table` as the single source of truth for linked
+     table choices in labels and shapes cards, deriving the table combo entries
+     from the dictionary order instead of passing a separate `table_names`
+     argument that could drift;
    - the shapes widget should therefore mirror labels with:
      `table_names = get_annotating_table_names(sdata, shapes_name)` and
      `table_color_sources_by_table = {table_name: get_table_color_source_options(sdata, table_name) for table_name in table_names}`;
@@ -526,12 +533,11 @@ shape-column coloring behavior unchanged.
      `X[:, var_name]` sources;
    - rename the current concrete `ShapeColorSourceSpec` dataclass to
      `ShapeColumnColorSourceSpec`;
-   - add `ShapesColorSourceSpec = ShapeColumnColorSourceSpec | TableColorSourceSpec`,
-     so the broad shape-facing name means any source that can color shapes;
    - keep `TableColorSourceSpec` as the table-backed source model and update its
      docstring so it is no longer labels-specific;
-   - broaden shape-facing type annotations to accept the new union
-     `ShapesColorSourceSpec` without changing adapter dispatch behavior yet;
+   - broaden shape-facing type annotations to accept explicit
+     `ShapeColumnColorSourceSpec | TableColorSourceSpec` unions without changing
+     adapter dispatch behavior yet;
    - do not add shape table-to-shape alignment validation in this slice:
      `shapes_element[instance_key]`, exact matching, subset validation, missing
      shape coverage, and no-row checks belong to Slice 3;
@@ -574,7 +580,7 @@ shape-column coloring behavior unchanged.
      styling based on the source spec;
    - include table name in styled-layer identity and lookup;
    - keep displayed layer names table-name-free:
-     `shape:leiden`, `obs:cell_type`, `X:GeneA`;
+     `shapes_column:leiden`, `obs:cell_type`, `X:GeneA`;
    - ensure styled variants from multiple linked tables can coexist even when
      their displayed names collide or napari suffixes them;
    - test creation, update, fill toggling, layer lookup, and coexistence.

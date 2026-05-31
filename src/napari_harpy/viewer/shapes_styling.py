@@ -11,8 +11,9 @@ from matplotlib.colors import to_rgba
 from napari.layers import Shapes
 
 from napari_harpy.core._color_source import (
-    ShapeColorSourceSpec,
     ShapeColorValueKind,
+    ShapeColumnColorSourceSpec,
+    TableColorSourceSpec,
     validate_shape_color_value_kind,
 )
 from napari_harpy.viewer._styling import (
@@ -64,7 +65,7 @@ def apply_shape_color_source_to_shapes_layer(
     layer: Shapes,
     *,
     shapes_element: gpd.GeoDataFrame,
-    style_spec: ShapeColorSourceSpec,
+    style_spec: ShapeColumnColorSourceSpec,
     source_shapes_index_by_row: tuple[Any, ...],
     source_shapes_index_feature_name: str,
     fill: bool = False,
@@ -124,9 +125,16 @@ def apply_shape_color_source_to_shapes_layer(
     return style_result
 
 
-def build_styled_shapes_layer_name(shapes_name: str, style_spec: ShapeColorSourceSpec) -> str:
+def build_styled_shapes_layer_name(
+    shapes_name: str,
+    style_spec: ShapeColumnColorSourceSpec | TableColorSourceSpec,
+) -> str:
     """Return the user-facing layer name for one styled shapes variant."""
-    return f"{shapes_name}[shape:{style_spec.value_key}]"
+    if style_spec.source_kind == "obs_column":
+        return f"{shapes_name}[obs:{style_spec.value_key}]"
+    if style_spec.source_kind == "x_var":
+        return f"{shapes_name}[X:{style_spec.value_key}]"
+    return f"{shapes_name}[shapes_column:{style_spec.value_key}]"
 
 
 def _connect_current_edge_width_to_global_edge_width(layer: Shapes) -> None:

@@ -8,7 +8,7 @@ from matplotlib.colors import to_rgba
 from napari.layers import Shapes
 from shapely.geometry import Polygon
 
-from napari_harpy.core._color_source import ShapeColorSourceSpec
+from napari_harpy.core._color_source import ShapeColumnColorSourceSpec, TableColorSourceSpec
 from napari_harpy.viewer._styling import continuous_colors_for_values
 from napari_harpy.viewer.shapes_styling import (
     SHAPES_EDGE_ALPHA,
@@ -56,7 +56,7 @@ def test_apply_shape_color_source_to_shapes_layer_uses_stored_categorical_compan
         index=["cell_1", "cell_2", "cell_3"],
     )
     layer = _make_shapes_layer(("cell_1", "cell_1", "cell_2", "cell_3"))
-    style_spec = ShapeColorSourceSpec(
+    style_spec = ShapeColumnColorSourceSpec(
         source_kind="shape_column",
         value_key="cell_type",
         value_kind="categorical",
@@ -106,7 +106,7 @@ def test_apply_shape_color_source_to_shapes_layer_uses_continuous_colormap_and_m
         index=["cell_1", "cell_2", "cell_3"],
     )
     layer = _make_shapes_layer(("cell_1", "cell_2", "cell_3"))
-    style_spec = ShapeColorSourceSpec(
+    style_spec = ShapeColumnColorSourceSpec(
         source_kind="shape_column",
         value_key="score",
         value_kind="continuous",
@@ -143,7 +143,7 @@ def test_apply_shape_color_source_to_shapes_layer_can_fill_faces() -> None:
         index=["cell_1", "cell_2"],
     )
     layer = _make_shapes_layer(("cell_1", "cell_2"))
-    style_spec = ShapeColorSourceSpec(
+    style_spec = ShapeColumnColorSourceSpec(
         source_kind="shape_column",
         value_key="score",
         value_kind="continuous",
@@ -180,7 +180,7 @@ def test_apply_shape_color_source_to_shapes_layer_rejects_invalid_companion_pale
         index=["cell_1", "cell_2", "cell_3"],
     )
     layer = _make_shapes_layer(("cell_1", "cell_2", "cell_3"))
-    style_spec = ShapeColorSourceSpec(
+    style_spec = ShapeColumnColorSourceSpec(
         source_kind="shape_column",
         value_key="group",
         value_kind="categorical",
@@ -219,7 +219,7 @@ def test_apply_shape_color_source_to_shapes_layer_uses_stored_palettes_for_bool_
         index=["cell_1", "cell_2", "cell_3"],
     )
     layer = _make_shapes_layer(("cell_1", "cell_2", "cell_3"))
-    style_spec = ShapeColorSourceSpec(
+    style_spec = ShapeColumnColorSourceSpec(
         source_kind="shape_column",
         value_key="group",
         value_kind="categorical",
@@ -253,7 +253,7 @@ def test_apply_shape_color_source_to_shapes_layer_reports_missing_companion_pale
         index=["cell_1", "cell_2"],
     )
     layer = _make_shapes_layer(("cell_1", "cell_2"))
-    style_spec = ShapeColorSourceSpec(
+    style_spec = ShapeColumnColorSourceSpec(
         source_kind="shape_column",
         value_key="group",
         value_kind="categorical",
@@ -282,7 +282,7 @@ def test_apply_shape_color_source_to_shapes_layer_treats_string_object_values_as
     )
     original_dtype = geodataframe["free_text"].dtype
     layer = _make_shapes_layer(("cell_1", "cell_2"))
-    style_spec = ShapeColorSourceSpec(
+    style_spec = ShapeColumnColorSourceSpec(
         source_kind="shape_column",
         value_key="free_text",
         value_kind="categorical",
@@ -311,7 +311,7 @@ def test_apply_shape_color_source_to_shapes_layer_disambiguates_style_feature_fr
     )
     geodataframe.index.name = "cell_id"
     layer = _make_shapes_layer(("cell_1",), source_index_feature_name="cell_id")
-    style_spec = ShapeColorSourceSpec(
+    style_spec = ShapeColumnColorSourceSpec(
         source_kind="shape_column",
         value_key="cell_id",
         value_kind="categorical",
@@ -337,7 +337,7 @@ def test_apply_shape_color_source_to_shapes_layer_rejects_duplicate_source_indic
         index=["cell_1", "cell_1"],
     )
     layer = _make_shapes_layer(("cell_1",))
-    style_spec = ShapeColorSourceSpec(
+    style_spec = ShapeColumnColorSourceSpec(
         source_kind="shape_column",
         value_key="group",
         value_kind="categorical",
@@ -361,10 +361,28 @@ def test_apply_rendered_row_colors_to_shapes_layer_requires_one_color_per_render
 
 
 def test_build_styled_shapes_layer_name_returns_stable_shape_column_variant_name() -> None:
-    style_spec = ShapeColorSourceSpec(
+    style_spec = ShapeColumnColorSourceSpec(
         source_kind="shape_column",
         value_key="cell_type",
         value_kind="categorical",
     )
 
-    assert build_styled_shapes_layer_name("cell_boundaries", style_spec) == "cell_boundaries[shape:cell_type]"
+    assert build_styled_shapes_layer_name("cell_boundaries", style_spec) == "cell_boundaries[shapes_column:cell_type]"
+
+
+def test_build_styled_shapes_layer_name_returns_stable_table_variant_names() -> None:
+    obs_style = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+    x_style = TableColorSourceSpec(
+        table_name="table",
+        source_kind="x_var",
+        value_key="GeneA",
+        value_kind="continuous",
+    )
+
+    assert build_styled_shapes_layer_name("cell_boundaries", obs_style) == "cell_boundaries[obs:cell_type]"
+    assert build_styled_shapes_layer_name("cell_boundaries", x_style) == "cell_boundaries[X:GeneA]"

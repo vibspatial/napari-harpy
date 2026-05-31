@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import anndata as ad
 import geopandas as gpd
 import numpy as np
 import pandas as pd
@@ -12,7 +13,7 @@ from spatialdata.models import TableModel
 from xarray import DataArray
 
 import napari_harpy.core.spatialdata as spatialdata_module
-from napari_harpy.core._color_source import ShapeColorSourceSpec
+from napari_harpy.core._color_source import ShapeColumnColorSourceSpec
 from napari_harpy.core.spatialdata import (
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
@@ -52,6 +53,10 @@ class DummySpatialData:
     def __getitem__(self, key: str):
         return self._tables[key]
 
+    @property
+    def tables(self):
+        return self._tables
+
 
 class FakeTransform:
     def __init__(self, matrix: np.ndarray | list[list[float]]) -> None:
@@ -72,6 +77,46 @@ def test_get_annotating_table_names_returns_empty_list_for_unannotated_label(sda
     table_names = get_annotating_table_names(sdata_blobs, "blobs_multiscale_labels")
 
     assert table_names == []
+
+
+def test_get_annotating_table_names_is_element_generic_for_shapes() -> None:
+    shapes = gpd.GeoDataFrame(
+        {"cell_id": ["cell_1"]},
+        geometry=[Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])],
+    )
+    shape_table = TableModel.parse(
+        ad.AnnData(
+            obs=pd.DataFrame(
+                {
+                    "region": ["cell_boundaries"],
+                    "instance_id": ["cell_1"],
+                }
+            )
+        ),
+        region="cell_boundaries",
+        region_key="region",
+        instance_key="instance_id",
+    )
+    labels_table = TableModel.parse(
+        ad.AnnData(
+            obs=pd.DataFrame(
+                {
+                    "region": ["nuclei"],
+                    "instance_id": [1],
+                }
+            )
+        ),
+        region="nuclei",
+        region_key="region",
+        instance_key="instance_id",
+    )
+    fake_sdata = DummySpatialData(
+        shapes={"cell_boundaries": shapes},
+        labels={"nuclei": object()},
+        tables={"shape_table": shape_table, "labels_table": labels_table},
+    )
+
+    assert get_annotating_table_names(fake_sdata, "cell_boundaries") == ["shape_table"]
 
 
 def test_sdata_blobs_fixture_adds_dummy_feature_matrices(sdata_blobs: SpatialData) -> None:
@@ -162,7 +207,7 @@ def test_get_table_color_source_options_combines_obs_and_x_var_sources(sdata_blo
 
 
 def test_shape_color_source_spec_identity_and_display_name() -> None:
-    source = ShapeColorSourceSpec(
+    source = ShapeColumnColorSourceSpec(
         source_kind="shape_column",
         value_key="cell_type",
         value_kind="categorical",

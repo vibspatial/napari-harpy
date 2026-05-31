@@ -325,6 +325,7 @@ class ViewerWidget(QWidget):
             return
 
         self._refresh_labels_card_linked_tables()
+        self._refresh_shapes_card_linked_tables()
 
     def _open_spatialdata(self, _checked: bool = False) -> None:
         selected_path = QFileDialog.getExistingDirectory(
@@ -450,7 +451,6 @@ class ViewerWidget(QWidget):
             }
             card = _LabelsCardWidget(
                 labels_name=labels_name,
-                table_names=table_names,
                 table_color_sources_by_table=table_color_sources_by_table,
             )
             card.add_update_requested.connect(self._add_or_update_labels_layer)
@@ -481,7 +481,19 @@ class ViewerWidget(QWidget):
             table_color_sources_by_table = {
                 table_name: get_table_color_source_options(sdata, table_name) for table_name in table_names
             }
-            card.set_linked_tables(table_names, table_color_sources_by_table)
+            card.set_linked_tables(table_color_sources_by_table)
+
+    def _refresh_shapes_card_linked_tables(self) -> None:
+        sdata = self._app_state.sdata
+        if sdata is None:
+            return
+
+        for card in self._shape_cards:
+            table_names = get_annotating_table_names(sdata, card.shapes_name)
+            table_color_sources_by_table = {
+                table_name: get_table_color_source_options(sdata, table_name) for table_name in table_names
+            }
+            card.set_linked_tables(table_color_sources_by_table)
 
     def _rebuild_shapes_cards(self, sdata: SpatialData, shapes_names: list[str]) -> None:
         _clear_layout(self.shapes_section_layout)
@@ -490,9 +502,14 @@ class ViewerWidget(QWidget):
         self._expanded_shapes_names.intersection_update(shapes_names)
 
         for shapes_name in shapes_names:
+            table_names = get_annotating_table_names(sdata, shapes_name)
+            table_color_sources_by_table = {
+                table_name: get_table_color_source_options(sdata, table_name) for table_name in table_names
+            }
             card = _ShapesCardWidget(
                 shapes_name=shapes_name,
-                shape_color_sources=get_shape_column_color_source_options(sdata, shapes_name),
+                shape_column_color_sources=get_shape_column_color_source_options(sdata, shapes_name),
+                table_color_sources_by_table=table_color_sources_by_table,
             )
             card.add_update_requested.connect(self._add_or_update_shapes_layer)
             row = _DisclosureElementWidget(
@@ -664,7 +681,7 @@ class ViewerWidget(QWidget):
 
         if sdata is None or not coordinate_system:
             self._set_action_feedback(
-                title="Colored Overlay Error",
+                title="Styled Labels Error",
                 lines=["Load a SpatialData object and select a coordinate system first."],
                 kind="error",
             )
@@ -672,21 +689,20 @@ class ViewerWidget(QWidget):
 
         if request.table_name is None:
             self._set_action_feedback(
-                title="Colored Overlay Error",
+                title="Styled Labels Error",
                 lines=[f"Labels element `{request.labels_name}` has no linked table for table-driven coloring."],
                 kind="error",
             )
             return
 
         if request.selected_color_source is None:
-            missing_source_label = "observation column" if request.selected_source_kind == "obs_column" else "var"
-            missing_source_article = "an" if request.selected_source_kind == "obs_column" else "a"
+            if request.selected_source_kind == "obs_column":
+                missing_source = "an observation column"
+            else:
+                missing_source = "a var"
             self._set_action_feedback(
-                title="Colored Overlay Error",
-                lines=[
-                    f"Select {missing_source_article} {missing_source_label} "
-                    f"to create a colored overlay for `{request.labels_name}`."
-                ],
+                title="Styled Labels Error",
+                lines=[f"Select {missing_source} to create a colored overlay for `{request.labels_name}`."],
                 kind="error",
             )
             return
@@ -699,7 +715,7 @@ class ViewerWidget(QWidget):
                 request.selected_color_source,
             )
         except ValueError as error:
-            self._set_action_feedback(title="Colored Overlay Error", lines=[str(error)], kind="error")
+            self._set_action_feedback(title="Styled Labels Error", lines=[str(error)], kind="error")
             return
 
         self._app_state.viewer_adapter.activate_layer(result.layer)
@@ -752,10 +768,24 @@ class ViewerWidget(QWidget):
             )
             return
 
-        if request.selected_color_source is None:
+        if request.selected_source_kind in {"obs_column", "x_var"} and request.table_name is None:
             self._set_action_feedback(
                 title="Styled Shapes Error",
-                lines=[f"Select a shapes column to create a styled shapes layer for `{request.shapes_name}`."],
+                lines=[f"Shapes element `{request.shapes_name}` has no linked table for table-driven coloring."],
+                kind="error",
+            )
+            return
+
+        if request.selected_color_source is None:
+            if request.selected_source_kind == "obs_column":
+                missing_source = "an observation column"
+            elif request.selected_source_kind == "x_var":
+                missing_source = "a var"
+            else:
+                missing_source = "a shapes column"
+            self._set_action_feedback(
+                title="Styled Shapes Error",
+                lines=[f"Select {missing_source} to create a styled shapes layer for `{request.shapes_name}`."],
                 kind="error",
             )
             return

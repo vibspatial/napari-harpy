@@ -13,8 +13,8 @@ from spatialdata.transformations import get_transformation
 from xarray import DataArray
 
 from napari_harpy.core._color_source import (
-    ShapeColorSourceSpec,
     ShapeColorValueKind,
+    ShapeColumnColorSourceSpec,
     TableColorSourceSpec,
     TableColorValueKind,
 )
@@ -128,9 +128,9 @@ class SpatialDataTableMetadata:
         return element_name in self.regions
 
 
-def get_annotating_table_names(sdata: SpatialData, labels_name: str) -> list[str]:
-    """Return the table names that annotate a labels element in a SpatialData object."""
-    return sorted(get_element_annotators(sdata, labels_name))
+def get_annotating_table_names(sdata: SpatialData, element_name: str) -> list[str]:
+    """Return the table names that annotate a spatial element in a SpatialData object."""
+    return sorted(get_element_annotators(sdata, element_name))
 
 
 def get_table(sdata: SpatialData, table_name: str) -> AnnData:
@@ -311,12 +311,17 @@ def get_table_color_source_options(sdata: SpatialData, table_name: str) -> list[
     )
 
 
-def get_shape_column_color_source_options(sdata: SpatialData, shapes_name: str) -> list[ShapeColorSourceSpec]:
-    """Return colorable direct columns for one shapes element."""
+def get_shape_column_color_source_options(sdata: SpatialData, shapes_name: str) -> list[ShapeColumnColorSourceSpec]:
+    """Return colorable columns stored directly on a shapes GeoDataFrame.
+
+    This discovers values that can color `sdata.shapes[shapes_name]` from the
+    shapes element itself. Linked AnnData table `.obs` and `X[:, var]` sources
+    are discovered separately with `get_table_color_source_options(...)`.
+    """
     shapes = sdata.shapes[shapes_name]
     geometry_column_name = _get_geometry_column_name(shapes)
 
-    options: list[ShapeColorSourceSpec] = []
+    options: list[ShapeColumnColorSourceSpec] = []
     for column_name in shapes.columns:
         column_key = str(column_name)
         if column_name == geometry_column_name or _is_shape_color_helper_column(column_key):
@@ -327,7 +332,7 @@ def get_shape_column_color_source_options(sdata: SpatialData, shapes_name: str) 
             continue
 
         options.append(
-            ShapeColorSourceSpec(
+            ShapeColumnColorSourceSpec(
                 source_kind="shape_column",
                 value_key=column_key,
                 value_kind=value_kind,
