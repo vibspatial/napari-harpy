@@ -170,9 +170,14 @@ still useful. Do not add table fields to the direct shape-column dataclass.
 Recommended typing:
 
 ```python
+ShapeColorSourceKind = Literal["shape_column"]
 ShapeColumnColorSourceSpec  # renamed from the former concrete ShapeColorSourceSpec
 ShapeColumnColorSourceSpec | TableColorSourceSpec
 ```
+
+Keep `ShapeColorSourceKind` even though it currently has only one allowed
+value. It documents the direct shape-column source-kind domain and keeps the
+shape-column dataclass parallel with the table-backed source typing.
 
 Then update shape-facing contracts that can now accept either direct shape
 columns or table-backed sources:
@@ -207,7 +212,7 @@ Recommended discovery flow:
 
 ```python
 table_names = get_annotating_table_names(sdata, shapes_name)
-shape_color_sources = get_shape_column_color_source_options(sdata, shapes_name)
+shape_column_color_sources = get_shape_column_color_source_options(sdata, shapes_name)
 table_color_sources_by_table = {
     table_name: get_table_color_source_options(sdata, table_name)
     for table_name in table_names
