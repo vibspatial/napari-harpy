@@ -188,10 +188,21 @@ columns or table-backed sources:
 - `ViewerAdapter.ensure_styled_shapes_loaded(...)`
 - `ShapesLoadRequest.selected_color_source`
 - status-card helpers for styled shapes.
-- `ShapesStyleResult` / `ShapesLoadResult` or an adjacent result object should
-  carry optional table-alignment info, such as the number of rendered/source
-  shapes without a matching table row, so the UI can report it as informational
-  feedback.
+- `ShapesStyleResult` should carry optional table-alignment counts so Slice 6
+  can report partial table coverage as informational feedback without rerunning
+  alignment:
+  ```python
+  @dataclass(frozen=True)
+  class ShapesStyleResult:
+      value_kind: ShapeColorValueKind | None
+      palette_source: StyledPaletteSource | None
+      coercion_applied: bool
+      unannotated_source_shape_count: int = 0
+      unannotated_rendered_shape_count: int = 0
+  ```
+  Direct shape-column styling returns zeros for these counts. Table-backed
+  styling fills them from `_AlignedShapeTableValues.source_row_has_table_row`
+  and `_AlignedShapeTableValues.rendered_row_has_table_row`.
 
 Alternative: create a new dataclass such as `ShapesTableColorSourceSpec`.
 That is more explicit, but likely unnecessary because `TableColorSourceSpec`
@@ -681,6 +692,10 @@ shape-column coloring behavior unchanged.
    - preserve shape fill/edge alpha rules, missing gray behavior for table rows
      with missing selected values, and transparent behavior for shapes without
      table rows;
+   - return `ShapesStyleResult` with
+     `unannotated_source_shape_count` and
+     `unannotated_rendered_shape_count`, using zero counts for direct
+     shape-column styling and table coverage masks for table-backed styling;
    - store the selected table value in `layer.features` under `value_key`,
      disambiguating only if it collides with the source-index feature name;
    - add rendered-row tests for MultiPolygon repetition and feature-table values.
