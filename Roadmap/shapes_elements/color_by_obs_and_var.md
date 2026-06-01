@@ -275,6 +275,12 @@ class _AlignedShapeTableValues:
     rendered_row_has_table_row: pd.Series
 ```
 
+Document these fields in the dataclass docstring or with adjacent inline
+comments. In particular, make clear that `source_row_*` fields align to the
+source `GeoDataFrame` rows, `rendered_row_*` fields align to napari shape rows
+after MultiPolygon expansion, and `*_has_table_row` distinguishes unannotated
+shapes from annotated rows whose selected table value is missing.
+
 The table metadata, selected-region rows, table observation index, and
 `value_by_instance` mapping can stay local implementation details unless Slice
 4 shows they need to cross function boundaries.
@@ -605,6 +611,8 @@ shape-column coloring behavior unchanged.
 3. Shape table-to-source-row alignment
    - implement a small private `_AlignedShapeTableValues` return object and
      `_align_table_color_source_to_shapes_rows(...)`;
+   - document the difference between source-row values, rendered-row values,
+     and table-coverage masks in docstrings or nearby inline comments;
    - avoid a broad public alignment dataclass; keep table metadata,
      selected-region rows, table observation index, and `value_by_instance` as
      local implementation details unless Slice 4 proves they need to cross a
