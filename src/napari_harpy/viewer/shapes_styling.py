@@ -188,7 +188,35 @@ def apply_table_color_source_to_shapes_layer(
     source_shapes_index_feature_name: str,
     fill: bool = False,
 ) -> ShapesStyleResult:
-    """Apply one table-backed color source to a napari ``Shapes`` layer."""
+    """Apply one table-backed color source to a napari ``Shapes`` layer.
+
+    Parameters
+    ----------
+    sdata
+        SpatialData object containing the source shapes element and the linked
+        AnnData table named by ``style_spec.table_name``.
+    shapes_name
+        Name of the shapes element to style.
+    style_spec
+        Table-backed color source describing the linked table, source kind, and
+        selected value key.
+    source_shapes_index_by_row
+        Source GeoDataFrame index label for each rendered napari shape row.
+        This can be longer than the source GeoDataFrame row count when one
+        source row, such as a ``MultiPolygon``, expands into multiple rendered
+        napari shapes. For example, if source row ``"cell_7"`` expands into
+        three polygons and ``"cell_8"`` expands into one polygon, this mapping
+        is ``("cell_7", "cell_7", "cell_7", "cell_8")``. Table-backed
+        styling uses it to repeat each source row's aligned table value for
+        every rendered part.
+    source_shapes_index_feature_name
+        Name of the ``layer.features`` column that stores the source
+        GeoDataFrame index for napari-visible inspection and status-bar text.
+        This follows the GeoDataFrame index name, falling back to ``"index"``
+        for unnamed indexes.
+    fill
+        Whether to apply visible face alpha in addition to edge colors.
+    """
     table = get_table(sdata, style_spec.table_name)
     table_metadata = get_table_metadata(sdata, style_spec.table_name)
     shapes = getattr(sdata, "shapes", {})
