@@ -1,6 +1,6 @@
 # Color Shapes By Linked Table `.obs` And `X[:, var]`
 
-Status: Slice 5 implemented; Slice 6 pending
+Status: Slice 5 implemented; Slice 6 specified and pending implementation
 
 ## Goal
 
@@ -710,18 +710,36 @@ shape-column coloring behavior unchanged.
      their displayed names collide or napari suffixes them;
    - test creation, update, fill toggling, layer lookup, and coexistence.
 
-6. Widget and status feedback
-   - add linked-table selection to shape cards;
-   - expose `None | Shapes column | Observations | Vars`;
-   - show `No linked tables` or table-backed disabled state when appropriate;
-   - dispatch `TableColorSourceSpec` for `Observations` and `Vars`;
-   - update action hints and error messages for linked-table requirements,
-     missing shape `instance_key` column, extra table instances, and no
-     selected-region table rows;
-   - report instance coloring, palette fallback/coercion, skipped geometries,
-     and missing-shape counts in status feedback;
-   - treat missing-shape counts from partial table coverage as informational,
-     because unannotated shapes are expected in normal use.
+6. Widget and status feedback - specified
+   - no major widget API changes are expected in this slice: shape cards already
+     support linked-table selection, `None | Shapes column | Observations |
+     Vars`, `TableColorSourceSpec` dispatch, and linked-table disabled states;
+   - keep `_add_or_update_styled_shapes_layer(...)` responsible for surfacing
+     table-backed alignment and validation errors as `Styled Shapes Error`,
+     including missing shape `instance_key` column, extra table instances, and
+     no selected-region table rows;
+   - update `build_styled_shapes_card_spec(...)` so the status text describes
+     the selected source by source type:
+     - direct shape-column source: `column "leiden"`;
+     - table observation source: `obs["cell_type"]`;
+     - table expression source: `X[:, "GeneA"]`;
+   - report table-backed instance-key coloring explicitly in status feedback,
+     using labels-compatible instance identity wording unless a clearer
+     shape-neutral wording is introduced for both labels and shapes;
+   - report `unannotated_source_shape_count` and
+     `unannotated_rendered_shape_count` as informational feedback for
+     table-backed shapes, because shapes without a linked table row are valid
+     and are rendered transparent by design;
+   - do not turn partial table coverage into a warning. If the styled layer has
+     no other warning condition, partial coverage may make the status kind
+     `info`; existing warning conditions such as skipped geometries, invalid
+     palettes, or palette coercion should remain warnings;
+   - keep skipped-geometry feedback unchanged and stronger than partial table
+     coverage info;
+   - add focused tests for status-card source wording, table-backed instance
+     feedback, partial table coverage info, the existing table-backed widget
+     request/update path, and one representative table-alignment error reaching
+     widget feedback.
 
 Optional cleanup slice:
 
