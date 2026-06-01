@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
+from anndata import AnnData
 from loguru import logger
 from matplotlib.colors import to_rgba
 from napari.layers import Shapes
@@ -16,6 +17,7 @@ from napari_harpy.core._color_source import (
     TableColorSourceSpec,
     validate_shape_color_value_kind,
 )
+from napari_harpy.core.spatialdata import SpatialDataTableMetadata
 from napari_harpy.viewer._styling import (
     StyledPaletteSource,
     build_string_categorical_values,
@@ -59,6 +61,34 @@ class ShapesLoadResult(ShapesStyleResult):
     layer: Shapes
     created: bool
     skipped_geometry_count: int = 0
+
+
+@dataclass(frozen=True)
+class _AlignedShapeTableValues:
+    """Table-backed values aligned to source shapes and rendered napari shapes.
+
+    Parameters
+    ----------
+    source_row_values
+        Selected table-backed value for each source GeoDataFrame row. Shapes
+        with no matching table row have a missing value here.
+    rendered_row_values
+        Selected table-backed value for each rendered napari shape row. Values
+        are repeated when one source row, such as a ``MultiPolygon``, expands
+        into multiple rendered shapes.
+    source_row_has_table_row
+        Boolean mask with one value per source GeoDataFrame row. ``False`` means
+        the shape instance is not annotated by the selected table.
+    rendered_row_has_table_row
+        Boolean mask with one value per rendered napari shape row. Slice 4 uses
+        this to distinguish unannotated shapes from annotated shapes whose
+        selected table value is missing.
+    """
+
+    source_row_values: pd.Series
+    rendered_row_values: pd.Series
+    source_row_has_table_row: pd.Series
+    rendered_row_has_table_row: pd.Series
 
 
 def apply_shape_color_source_to_shapes_layer(
@@ -152,6 +182,176 @@ def build_styled_shapes_layer_name(
     if style_spec.source_kind == "x_var":
         return f"{shapes_name}[X:{style_spec.value_key}]"
     return f"{shapes_name}[shapes_column:{style_spec.value_key}]"
+
+
+def _align_table_color_source_to_shapes_rows(
+    *,
+    table: AnnData,
+    table_metadata: SpatialDataTableMetadata,
+    shapes_name: str,
+    shapes_element: gpd.GeoDataFrame,
+    style_spec: TableColorSourceSpec,
+    source_shapes_index_by_row: tuple[Any, ...],
+) -> _AlignedShapeTableValues:
+    """Align one table-backed color source to source and rendered shapes rows."""
+    if style_spec.table_name != table_metadata.table_name:
+        raise ValueError(
+            f"Table color source `{style_spec.table_name}` does not match table metadata "
+            f"`{table_metadata.table_name}`."
+        )
+    if not table_metadata.annotates(shapes_name):
+        raise ValueError(f"Table `{table_metadata.table_name}` does not annotate shapes element `{shapes_name}`.")
+    if table_metadata.region_key not in table.obs.columns:
+        raise ValueError(
+            f"Table `{table_metadata.table_name}` is missing required obs column `{table_metadata.region_key}`."
+        )
+    if table_metadata.instance_key not in table.obs.columns:
+        raise ValueError(
+            f"Table `{table_metadata.table_name}` is missing required obs column `{table_metadata.instance_key}`."
+        )
+    if table_metadata.instance_key not in shapes_element.columns:
+        raise ValueError(
+            f"Shapes element `{shapes_name}` is missing required instance key column "
+            f"`{table_metadata.instance_key}` for table-backed styling."
+        )
+    if not shapes_element.index.is_unique:
+        raise ValueError(
+            "Table-backed shape coloring requires unique source GeoDataFrame index labels; "
+            "duplicate index labels make rendered-row to source-row style lookup ambiguous."
+        )
+
+    shape_instance_values = shapes_element[table_metadata.instance_key]
+    missing_shape_instances = shape_instance_values.loc[shape_instance_values.isna()]
+    if not missing_shape_instances.empty:
+        preview = _format_value_preview(missing_shape_instances.index.tolist())
+        raise ValueError(
+            f"Shapes element `{shapes_name}` cannot be aligned to table `{table_metadata.table_name}` because "
+            f"`{table_metadata.instance_key}` contains missing values for source row(s): {preview}."
+        )
+    # Duplicate shape instance values are allowed: multiple geometries can
+    # represent the same instance and receive the same table-backed value.
+
+    region_rows = table.obs.loc[table.obs[table_metadata.region_key] == shapes_name].copy()
+    if region_rows.empty:
+        raise ValueError(
+            f"Table `{table_metadata.table_name}` declares shapes element `{shapes_name}`, "
+            "but no table rows annotate that shapes element."
+        )
+
+    region_instances = region_rows[table_metadata.instance_key]
+    missing_table_instances = region_instances.loc[region_instances.isna()]
+    if not missing_table_instances.empty:
+        preview = _format_value_preview(missing_table_instances.index.tolist())
+        raise ValueError(
+            f"Table `{table_metadata.table_name}` cannot be aligned to shapes element `{shapes_name}` because "
+            f"`{table_metadata.instance_key}` contains missing values for table row(s): {preview}."
+        )
+
+    # Duplicate table instance values are not allowed within the selected
+    # region: one instance must map to exactly one selected table-backed value.
+    duplicate_table_instances = region_instances.loc[region_instances.duplicated(keep=False)]
+    if not duplicate_table_instances.empty:
+        preview = _format_value_preview(duplicate_table_instances.drop_duplicates().tolist())
+        raise ValueError(
+            f"Table `{table_metadata.table_name}` cannot be aligned to shapes element `{shapes_name}` because "
+            f"`{table_metadata.instance_key}` contains duplicate values within that region: {preview}."
+        )
+
+    # Series from selected-region table instance identity to the selected
+    # table-backed value. Shape instances that are absent from the table are not
+    # present here; they are tracked separately with `source_row_has_table_row`.
+    # index      value
+    # cell_1     3.2
+    # cell_2     7.5
+    table_value_by_instance = _get_table_color_values_by_instance(
+        table=table,
+        region_rows=region_rows,
+        region_instances=region_instances,
+        table_metadata=table_metadata,
+        style_spec=style_spec,
+    )
+    missing_shape_instances_for_table = pd.Index(table_value_by_instance.index)[
+        ~pd.Index(table_value_by_instance.index).isin(shape_instance_values)
+    ]
+    if len(missing_shape_instances_for_table) > 0:
+        preview = _format_value_preview(missing_shape_instances_for_table.tolist())
+        raise ValueError(
+            f"Table `{table_metadata.table_name}` contains instance(s) for shapes element `{shapes_name}` that "
+            f"are not present in `shapes_element[{table_metadata.instance_key!r}]`: {preview}."
+        )
+
+    source_row_has_table_row = shape_instance_values.isin(table_value_by_instance.index)
+    source_row_has_table_row.name = style_spec.value_key
+    source_row_values = shape_instance_values.map(table_value_by_instance)
+    source_row_values.name = style_spec.value_key
+
+    source_index_by_rendered_row = pd.Index(source_shapes_index_by_row)
+    missing_source_indices = source_index_by_rendered_row[~source_index_by_rendered_row.isin(shapes_element.index)]
+    if len(missing_source_indices) > 0:
+        preview = _format_value_preview(pd.unique(missing_source_indices).tolist())
+        raise ValueError(f"Could not align rendered shapes back to source index label(s): {preview}.")
+
+    rendered_row_values = source_row_values.reindex(source_index_by_rendered_row)
+    rendered_row_values.index = pd.RangeIndex(len(rendered_row_values))
+    rendered_row_has_table_row = source_row_has_table_row.reindex(source_index_by_rendered_row)
+    rendered_row_has_table_row.index = pd.RangeIndex(len(rendered_row_has_table_row))
+
+    return _AlignedShapeTableValues(
+        source_row_values=source_row_values,
+        rendered_row_values=rendered_row_values,
+        source_row_has_table_row=source_row_has_table_row,
+        rendered_row_has_table_row=rendered_row_has_table_row,
+    )
+
+
+def _get_table_color_values_by_instance(
+    *,
+    table: AnnData,
+    region_rows: pd.DataFrame,
+    region_instances: pd.Series,
+    table_metadata: SpatialDataTableMetadata,
+    style_spec: TableColorSourceSpec,
+) -> pd.Series:
+    if style_spec.value_kind == "instance" or (
+        style_spec.source_kind == "obs_column" and style_spec.value_key == table_metadata.instance_key
+    ):
+        if style_spec.source_kind != "obs_column" or style_spec.value_key != table_metadata.instance_key:
+            raise ValueError(
+                "Instance ID coloring must use the table instance key "
+                f"`{table_metadata.instance_key}` as an observation source."
+            )
+        values = region_instances.copy()
+    elif style_spec.source_kind == "obs_column":
+        if style_spec.value_key not in table.obs:
+            raise ValueError(f"Observation column `{style_spec.value_key}` is not available in the selected table.")
+        values = region_rows[style_spec.value_key]
+    elif style_spec.source_kind == "x_var":
+        var_name = style_spec.value_key
+        if var_name not in table.var_names:
+            raise ValueError(f"Var `{var_name}` is not available in the selected table.")
+
+        var_index = table.var_names.get_loc(var_name)
+        if not isinstance(var_index, (int, np.integer)):
+            raise ValueError(f"Var `{var_name}` does not resolve to one unique column in `table.var_names`.")
+
+        obs_positions = table.obs.index.get_indexer(region_rows.index)
+        if np.any(obs_positions < 0):
+            raise ValueError(f"Could not align linked table rows back to `X[:, {var_name!r}]` for viewer coloring.")
+
+        column_values = table.X[obs_positions, int(var_index)]
+        if hasattr(column_values, "toarray"):
+            x_values = column_values.toarray().reshape(-1)
+        else:
+            x_values = np.asarray(column_values).reshape(-1)
+        values = pd.Series(x_values, index=region_rows.index, name=var_name)
+    else:
+        raise ValueError(f"Unsupported table color source kind `{style_spec.source_kind}`.")
+
+    return pd.Series(
+        values.to_numpy(copy=False),
+        index=pd.Index(region_instances.to_numpy(copy=False), name=table_metadata.instance_key),
+        name=style_spec.value_key,
+    )
 
 
 def _connect_current_edge_width_to_global_edge_width(layer: Shapes) -> None:
@@ -422,6 +622,13 @@ def _present_categories(values: pd.Series, candidate_categories: Sequence[object
         for category in candidate_categories
         if (normalized_category := normalize_category_value(category)) in present_values
     ]
+
+
+def _format_value_preview(values: Sequence[Any]) -> str:
+    preview = ", ".join(repr(value) for value in values[:5])
+    if len(values) > 5:
+        preview += ", ..."
+    return preview
 
 
 def _is_categorical_dtype(values: pd.Series) -> bool:

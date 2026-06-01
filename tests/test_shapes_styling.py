@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import anndata as ad
 import geopandas as gpd
 import numpy as np
 import pandas as pd
@@ -9,11 +10,13 @@ from napari.layers import Shapes
 from shapely.geometry import Polygon
 
 from napari_harpy.core._color_source import ShapeColumnColorSourceSpec, TableColorSourceSpec
+from napari_harpy.core.spatialdata import SpatialDataTableMetadata
 from napari_harpy.viewer._styling import continuous_colors_for_values
 from napari_harpy.viewer.shapes_styling import (
     SHAPES_EDGE_ALPHA,
     SHAPES_FACE_ALPHA,
     SHAPES_MISSING_BASE_COLOR,
+    _align_table_color_source_to_shapes_rows,
     _apply_rendered_row_colors_to_shapes_layer,
     apply_shape_color_source_to_shapes_layer,
     build_styled_shapes_layer_name,
@@ -41,9 +44,379 @@ def _make_shapes_layer(
     )
 
 
+def _table_metadata(regions: tuple[str, ...] = ("cells",)) -> SpatialDataTableMetadata:
+    return SpatialDataTableMetadata(
+        table_name="table",
+        region_key="region",
+        instance_key="instance_id",
+        regions=regions,
+    )
+
+
 def _rgba(color: object, alpha: float) -> tuple[float, float, float, float]:
     red, green, blue, _alpha = to_rgba(color)
     return (red, green, blue, alpha)
+
+
+def test_align_table_color_source_to_shapes_rows_allows_partial_coverage_and_duplicate_shape_instances() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"instance_id": ["cell_1", "cell_1", "cell_2", "cell_3"]},
+        geometry=[_polygon(0), _polygon(2), _polygon(4), _polygon(6)],
+        index=["shape_a", "shape_b", "shape_c", "shape_d"],
+    )
+    table = ad.AnnData(
+        obs=pd.DataFrame(
+            {
+                "region": ["cells", "cells"],
+                "instance_id": ["cell_1", "cell_2"],
+                "cell_type": ["T", "B"],
+            },
+            index=["obs_1", "obs_2"],
+        )
+    )
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    aligned = _align_table_color_source_to_shapes_rows(
+        table=table,
+        table_metadata=_table_metadata(),
+        shapes_name="cells",
+        shapes_element=geodataframe,
+        style_spec=style_spec,
+        source_shapes_index_by_row=("shape_a", "shape_b", "shape_b", "shape_c", "shape_d"),
+    )
+
+    assert aligned.source_row_values.index.to_list() == ["shape_a", "shape_b", "shape_c", "shape_d"]
+    assert aligned.source_row_values.iloc[:3].to_list() == ["T", "T", "B"]
+    assert pd.isna(aligned.source_row_values.iloc[3])
+    assert aligned.source_row_has_table_row.to_list() == [True, True, True, False]
+    assert aligned.rendered_row_values.index.to_list() == [0, 1, 2, 3, 4]
+    assert aligned.rendered_row_values.iloc[:4].to_list() == ["T", "T", "T", "B"]
+    assert pd.isna(aligned.rendered_row_values.iloc[4])
+    assert aligned.rendered_row_has_table_row.to_list() == [True, True, True, True, False]
+
+
+def test_align_table_color_source_to_shapes_rows_extracts_x_var_values_from_region_rows() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"instance_id": ["cell_1", "cell_2"]},
+        geometry=[_polygon(0), _polygon(2)],
+        index=["shape_a", "shape_b"],
+    )
+    table = ad.AnnData(
+        X=np.asarray([[1.0, 10.0], [2.0, 20.0], [3.0, 30.0]]),
+        obs=pd.DataFrame(
+            {
+                "region": ["cells", "other", "cells"],
+                "instance_id": ["cell_1", "other_1", "cell_2"],
+            },
+            index=["obs_1", "obs_2", "obs_3"],
+        ),
+        var=pd.DataFrame(index=["GeneA", "GeneB"]),
+    )
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="x_var",
+        value_key="GeneB",
+        value_kind="continuous",
+    )
+
+    aligned = _align_table_color_source_to_shapes_rows(
+        table=table,
+        table_metadata=_table_metadata(regions=("cells", "other")),
+        shapes_name="cells",
+        shapes_element=geodataframe,
+        style_spec=style_spec,
+        source_shapes_index_by_row=("shape_b", "shape_a"),
+    )
+
+    assert aligned.source_row_values.to_list() == [10.0, 30.0]
+    assert aligned.rendered_row_values.to_list() == [30.0, 10.0]
+    assert aligned.rendered_row_has_table_row.to_list() == [True, True]
+
+
+def test_align_table_color_source_to_shapes_rows_preserves_instance_key_values_for_identity_coloring() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"instance_id": ["cell_1", "cell_2"]},
+        geometry=[_polygon(0), _polygon(2)],
+        index=["shape_a", "shape_b"],
+    )
+    table = ad.AnnData(
+        obs=pd.DataFrame(
+            {
+                "region": ["cells"],
+                "instance_id": ["cell_1"],
+            },
+            index=["obs_1"],
+        )
+    )
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="instance_id",
+        value_kind="instance",
+    )
+
+    aligned = _align_table_color_source_to_shapes_rows(
+        table=table,
+        table_metadata=_table_metadata(),
+        shapes_name="cells",
+        shapes_element=geodataframe,
+        style_spec=style_spec,
+        source_shapes_index_by_row=("shape_a", "shape_b"),
+    )
+
+    assert aligned.source_row_values.iloc[0] == "cell_1"
+    assert pd.isna(aligned.source_row_values.iloc[1])
+    assert aligned.source_row_has_table_row.to_list() == [True, False]
+
+
+def test_align_table_color_source_to_shapes_rows_requires_table_to_annotate_shapes_element() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"instance_id": ["cell_1"]},
+        geometry=[_polygon(0)],
+        index=["shape_a"],
+    )
+    table = ad.AnnData(
+        obs=pd.DataFrame({"region": ["cells"], "instance_id": ["cell_1"]}, index=["obs_1"])
+    )
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="instance_id",
+        value_kind="instance",
+    )
+
+    with pytest.raises(ValueError, match="does not annotate shapes element"):
+        _align_table_color_source_to_shapes_rows(
+            table=table,
+            table_metadata=_table_metadata(regions=("other",)),
+            shapes_name="cells",
+            shapes_element=geodataframe,
+            style_spec=style_spec,
+            source_shapes_index_by_row=("shape_a",),
+        )
+
+
+def test_align_table_color_source_to_shapes_rows_requires_shapes_instance_key_column() -> None:
+    geodataframe = gpd.GeoDataFrame({"cell_type": ["T"]}, geometry=[_polygon(0)], index=["shape_a"])
+    table = ad.AnnData(
+        obs=pd.DataFrame({"region": ["cells"], "instance_id": ["cell_1"]}, index=["obs_1"])
+    )
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="instance_id",
+        value_kind="instance",
+    )
+
+    with pytest.raises(ValueError, match="missing required instance key column"):
+        _align_table_color_source_to_shapes_rows(
+            table=table,
+            table_metadata=_table_metadata(),
+            shapes_name="cells",
+            shapes_element=geodataframe,
+            style_spec=style_spec,
+            source_shapes_index_by_row=("shape_a",),
+        )
+
+
+def test_align_table_color_source_to_shapes_rows_rejects_missing_shapes_instance_values() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"instance_id": ["cell_1", None]},
+        geometry=[_polygon(0), _polygon(2)],
+        index=["shape_a", "shape_b"],
+    )
+    table = ad.AnnData(
+        obs=pd.DataFrame({"region": ["cells"], "instance_id": ["cell_1"]}, index=["obs_1"])
+    )
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="instance_id",
+        value_kind="instance",
+    )
+
+    with pytest.raises(ValueError, match="contains missing values for source row"):
+        _align_table_color_source_to_shapes_rows(
+            table=table,
+            table_metadata=_table_metadata(),
+            shapes_name="cells",
+            shapes_element=geodataframe,
+            style_spec=style_spec,
+            source_shapes_index_by_row=("shape_a",),
+        )
+
+
+def test_align_table_color_source_to_shapes_rows_rejects_missing_table_instance_values() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"instance_id": ["cell_1"]},
+        geometry=[_polygon(0)],
+        index=["shape_a"],
+    )
+    table = ad.AnnData(
+        obs=pd.DataFrame({"region": ["cells"], "instance_id": [None]}, index=["obs_1"])
+    )
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="instance_id",
+        value_kind="instance",
+    )
+
+    with pytest.raises(ValueError, match="contains missing values for table row"):
+        _align_table_color_source_to_shapes_rows(
+            table=table,
+            table_metadata=_table_metadata(),
+            shapes_name="cells",
+            shapes_element=geodataframe,
+            style_spec=style_spec,
+            source_shapes_index_by_row=("shape_a",),
+        )
+
+
+def test_align_table_color_source_to_shapes_rows_rejects_duplicate_table_instances() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"instance_id": ["cell_1"]},
+        geometry=[_polygon(0)],
+        index=["shape_a"],
+    )
+    table = ad.AnnData(
+        obs=pd.DataFrame(
+            {
+                "region": ["cells", "cells"],
+                "instance_id": ["cell_1", "cell_1"],
+            },
+            index=["obs_1", "obs_2"],
+        )
+    )
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="instance_id",
+        value_kind="instance",
+    )
+
+    with pytest.raises(ValueError, match="contains duplicate values within that region"):
+        _align_table_color_source_to_shapes_rows(
+            table=table,
+            table_metadata=_table_metadata(),
+            shapes_name="cells",
+            shapes_element=geodataframe,
+            style_spec=style_spec,
+            source_shapes_index_by_row=("shape_a",),
+        )
+
+
+def test_align_table_color_source_to_shapes_rows_rejects_table_instances_missing_from_shapes() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"instance_id": ["1"]},
+        geometry=[_polygon(0)],
+        index=["shape_a"],
+    )
+    table = ad.AnnData(
+        obs=pd.DataFrame({"region": ["cells"], "instance_id": [1]}, index=["obs_1"])
+    )
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="instance_id",
+        value_kind="instance",
+    )
+
+    with pytest.raises(ValueError, match="are not present"):
+        _align_table_color_source_to_shapes_rows(
+            table=table,
+            table_metadata=_table_metadata(),
+            shapes_name="cells",
+            shapes_element=geodataframe,
+            style_spec=style_spec,
+            source_shapes_index_by_row=("shape_a",),
+        )
+
+
+def test_align_table_color_source_to_shapes_rows_rejects_empty_selected_region() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"instance_id": ["cell_1"]},
+        geometry=[_polygon(0)],
+        index=["shape_a"],
+    )
+    table = ad.AnnData(
+        obs=pd.DataFrame({"region": ["other"], "instance_id": ["cell_1"]}, index=["obs_1"])
+    )
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="instance_id",
+        value_kind="instance",
+    )
+
+    with pytest.raises(ValueError, match="no table rows annotate"):
+        _align_table_color_source_to_shapes_rows(
+            table=table,
+            table_metadata=_table_metadata(regions=("cells", "other")),
+            shapes_name="cells",
+            shapes_element=geodataframe,
+            style_spec=style_spec,
+            source_shapes_index_by_row=("shape_a",),
+        )
+
+
+def test_align_table_color_source_to_shapes_rows_rejects_non_unique_source_index() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"instance_id": ["cell_1", "cell_2"]},
+        geometry=[_polygon(0), _polygon(2)],
+        index=["shape_a", "shape_a"],
+    )
+    table = ad.AnnData(
+        obs=pd.DataFrame({"region": ["cells"], "instance_id": ["cell_1"]}, index=["obs_1"])
+    )
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="instance_id",
+        value_kind="instance",
+    )
+
+    with pytest.raises(ValueError, match="requires unique source GeoDataFrame index"):
+        _align_table_color_source_to_shapes_rows(
+            table=table,
+            table_metadata=_table_metadata(),
+            shapes_name="cells",
+            shapes_element=geodataframe,
+            style_spec=style_spec,
+            source_shapes_index_by_row=("shape_a",),
+        )
+
+
+def test_align_table_color_source_to_shapes_rows_rejects_unknown_rendered_source_index() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"instance_id": ["cell_1"]},
+        geometry=[_polygon(0)],
+        index=["shape_a"],
+    )
+    table = ad.AnnData(
+        obs=pd.DataFrame({"region": ["cells"], "instance_id": ["cell_1"]}, index=["obs_1"])
+    )
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="instance_id",
+        value_kind="instance",
+    )
+
+    with pytest.raises(ValueError, match="Could not align rendered shapes back"):
+        _align_table_color_source_to_shapes_rows(
+            table=table,
+            table_metadata=_table_metadata(),
+            shapes_name="cells",
+            shapes_element=geodataframe,
+            style_spec=style_spec,
+            source_shapes_index_by_row=("shape_missing",),
+        )
 
 
 def test_apply_shape_color_source_to_shapes_layer_uses_stored_categorical_companion_palette() -> None:

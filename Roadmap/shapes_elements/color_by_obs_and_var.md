@@ -1,6 +1,6 @@
 # Color Shapes By Linked Table `.obs` And `X[:, var]`
 
-Status: Slice 2 implemented; Slice 3+ pending
+Status: Slice 3 implemented; Slice 4+ pending
 
 ## Goal
 
@@ -608,7 +608,7 @@ shape-column coloring behavior unchanged.
      sources, `X[:, var_name]` sources, and unchanged direct shape-column source
      discovery.
 
-3. Shape table-to-source-row alignment
+3. Shape table-to-source-row alignment - completed
    - implement a small private `_AlignedShapeTableValues` return object and
      `_align_table_color_source_to_shapes_rows(...)`;
    - document the difference between source-row values, rendered-row values,
@@ -628,7 +628,7 @@ shape-column coloring behavior unchanged.
    - require selected-region table instances to be a subset of shape instances;
    - raise if selected-region table rows have missing `instance_key` values;
    - raise if any source shapes row in the GeoDataFrame has a missing
-     `shapes_element[instance_key]` values;
+     `shapes_element[instance_key]` value;
    - require selected-region table `instance_key` values to be unique;
    - allow duplicate values in `shapes_element[instance_key]`, so multiple
      geometries can share one table-backed instance value;
@@ -677,6 +677,14 @@ shape-column coloring behavior unchanged.
      and missing-shape counts in status feedback;
    - treat missing-shape counts from partial table coverage as informational,
      because unannotated shapes are expected in normal use.
+
+Optional cleanup slice:
+
+- Consider renaming `source_shapes_index_by_row` to
+  `source_shapes_index_by_rendered_row` across the adapter, shapes styling,
+  tests, and roadmap docs. The current name is established and documented, so
+  this should be a behavior-free naming cleanup only if the clearer rendered-row
+  wording is worth the churn.
 
 ## Recommendation
 
