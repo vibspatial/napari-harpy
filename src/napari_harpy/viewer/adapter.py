@@ -41,7 +41,7 @@ from napari_harpy.viewer.shapes_styling import (
     ShapesLoadResult,
     _connect_current_edge_color_to_global_edge_color,
     _connect_current_edge_width_to_global_edge_width,
-    apply_shape_color_source_to_shapes_layer,
+    apply_shape_column_color_source_to_shapes_layer,
     build_styled_shapes_layer_name,
 )
 
@@ -1302,7 +1302,7 @@ class ViewerAdapter(QObject):
         if shapes_name not in shapes:
             raise ValueError(f"Shapes element `{shapes_name}` is not available in the selected SpatialData object.")
 
-        style_result = apply_shape_color_source_to_shapes_layer(
+        style_result = apply_shape_column_color_source_to_shapes_layer(
             layer,
             shapes_element=shapes[shapes_name],
             style_spec=style_spec,

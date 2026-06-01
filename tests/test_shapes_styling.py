@@ -18,7 +18,7 @@ from napari_harpy.viewer.shapes_styling import (
     SHAPES_MISSING_BASE_COLOR,
     _align_table_color_source_to_shapes_rows,
     _apply_rendered_row_colors_to_shapes_layer,
-    apply_shape_color_source_to_shapes_layer,
+    apply_shape_column_color_source_to_shapes_layer,
     build_styled_shapes_layer_name,
     disambiguate_shape_style_feature_name,
 )
@@ -419,7 +419,7 @@ def test_align_table_color_source_to_shapes_rows_rejects_unknown_rendered_source
         )
 
 
-def test_apply_shape_color_source_to_shapes_layer_uses_stored_categorical_companion_palette() -> None:
+def test_apply_shape_column_color_source_to_shapes_layer_uses_stored_categorical_companion_palette() -> None:
     geodataframe = gpd.GeoDataFrame(
         {
             "cell_type": pd.Categorical(["T", "B", None]),
@@ -435,7 +435,7 @@ def test_apply_shape_color_source_to_shapes_layer_uses_stored_categorical_compan
         value_kind="categorical",
     )
 
-    result = apply_shape_color_source_to_shapes_layer(
+    result = apply_shape_column_color_source_to_shapes_layer(
         layer,
         shapes_element=geodataframe,
         style_spec=style_spec,
@@ -472,7 +472,7 @@ def test_apply_shape_color_source_to_shapes_layer_uses_stored_categorical_compan
     assert pd.isna(layer.features["cell_type"].iloc[3])
 
 
-def test_apply_shape_color_source_to_shapes_layer_uses_continuous_colormap_and_missing_gray() -> None:
+def test_apply_shape_column_color_source_to_shapes_layer_uses_continuous_colormap_and_missing_gray() -> None:
     geodataframe = gpd.GeoDataFrame(
         {"score": [0.0, 10.0, None]},
         geometry=[_polygon(0), _polygon(2), _polygon(4)],
@@ -485,7 +485,7 @@ def test_apply_shape_color_source_to_shapes_layer_uses_continuous_colormap_and_m
         value_kind="continuous",
     )
 
-    result = apply_shape_color_source_to_shapes_layer(
+    result = apply_shape_column_color_source_to_shapes_layer(
         layer,
         shapes_element=geodataframe,
         style_spec=style_spec,
@@ -509,7 +509,7 @@ def test_apply_shape_color_source_to_shapes_layer_uses_continuous_colormap_and_m
     assert pd.isna(layer.features["score"].iloc[2])
 
 
-def test_apply_shape_color_source_to_shapes_layer_can_fill_faces() -> None:
+def test_apply_shape_column_color_source_to_shapes_layer_can_fill_faces() -> None:
     geodataframe = gpd.GeoDataFrame(
         {"score": [0.0, 10.0]},
         geometry=[_polygon(0), _polygon(2)],
@@ -522,7 +522,7 @@ def test_apply_shape_color_source_to_shapes_layer_can_fill_faces() -> None:
         value_kind="continuous",
     )
 
-    apply_shape_color_source_to_shapes_layer(
+    apply_shape_column_color_source_to_shapes_layer(
         layer,
         shapes_element=geodataframe,
         style_spec=style_spec,
@@ -543,7 +543,7 @@ def test_apply_shape_color_source_to_shapes_layer_can_fill_faces() -> None:
         ["red", "red", None],
     ],
 )
-def test_apply_shape_color_source_to_shapes_layer_rejects_invalid_companion_palettes(colors: list[object]) -> None:
+def test_apply_shape_column_color_source_to_shapes_layer_rejects_invalid_companion_palettes(colors: list[object]) -> None:
     geodataframe = gpd.GeoDataFrame(
         {
             "group": pd.Categorical(["a", "a", "b"]),
@@ -559,7 +559,7 @@ def test_apply_shape_color_source_to_shapes_layer_rejects_invalid_companion_pale
         value_kind="categorical",
     )
 
-    result = apply_shape_color_source_to_shapes_layer(
+    result = apply_shape_column_color_source_to_shapes_layer(
         layer,
         shapes_element=geodataframe,
         style_spec=style_spec,
@@ -579,7 +579,7 @@ def test_apply_shape_color_source_to_shapes_layer_rejects_invalid_companion_pale
         ([0, 1, 0], ["red", "blue", "red"]),
     ],
 )
-def test_apply_shape_color_source_to_shapes_layer_uses_stored_palettes_for_bool_and_binary_integer_columns(
+def test_apply_shape_column_color_source_to_shapes_layer_uses_stored_palettes_for_bool_and_binary_integer_columns(
     values: list[object],
     colors: list[str],
 ) -> None:
@@ -598,7 +598,7 @@ def test_apply_shape_color_source_to_shapes_layer_uses_stored_palettes_for_bool_
         value_kind="categorical",
     )
 
-    result = apply_shape_color_source_to_shapes_layer(
+    result = apply_shape_column_color_source_to_shapes_layer(
         layer,
         shapes_element=geodataframe,
         style_spec=style_spec,
@@ -619,7 +619,7 @@ def test_apply_shape_color_source_to_shapes_layer_uses_stored_palettes_for_bool_
     )
 
 
-def test_apply_shape_color_source_to_shapes_layer_reports_missing_companion_palette() -> None:
+def test_apply_shape_column_color_source_to_shapes_layer_reports_missing_companion_palette() -> None:
     geodataframe = gpd.GeoDataFrame(
         {"group": pd.Categorical(["a", "b"])},
         geometry=[_polygon(0), _polygon(2)],
@@ -632,7 +632,7 @@ def test_apply_shape_color_source_to_shapes_layer_reports_missing_companion_pale
         value_kind="categorical",
     )
 
-    result = apply_shape_color_source_to_shapes_layer(
+    result = apply_shape_column_color_source_to_shapes_layer(
         layer,
         shapes_element=geodataframe,
         style_spec=style_spec,
@@ -644,7 +644,7 @@ def test_apply_shape_color_source_to_shapes_layer_reports_missing_companion_pale
     assert result.coercion_applied is False
 
 
-def test_apply_shape_color_source_to_shapes_layer_treats_string_object_values_as_temporary_categorical() -> None:
+def test_apply_shape_column_color_source_to_shapes_layer_treats_string_object_values_as_temporary_categorical() -> None:
     geodataframe = gpd.GeoDataFrame(
         {
             "free_text": ["alpha", "beta"],
@@ -661,7 +661,7 @@ def test_apply_shape_color_source_to_shapes_layer_treats_string_object_values_as
         value_kind="categorical",
     )
 
-    result = apply_shape_color_source_to_shapes_layer(
+    result = apply_shape_column_color_source_to_shapes_layer(
         layer,
         shapes_element=geodataframe,
         style_spec=style_spec,
@@ -676,7 +676,7 @@ def test_apply_shape_color_source_to_shapes_layer_treats_string_object_values_as
     assert layer.features["free_text"].to_list() == ["alpha", "beta"]
 
 
-def test_apply_shape_color_source_to_shapes_layer_disambiguates_style_feature_from_source_index_feature() -> None:
+def test_apply_shape_column_color_source_to_shapes_layer_disambiguates_style_feature_from_source_index_feature() -> None:
     geodataframe = gpd.GeoDataFrame(
         {"cell_id": pd.Categorical(["A"])},
         geometry=[_polygon(0)],
@@ -690,7 +690,7 @@ def test_apply_shape_color_source_to_shapes_layer_disambiguates_style_feature_fr
         value_kind="categorical",
     )
 
-    apply_shape_color_source_to_shapes_layer(
+    apply_shape_column_color_source_to_shapes_layer(
         layer,
         shapes_element=geodataframe,
         style_spec=style_spec,
@@ -703,7 +703,7 @@ def test_apply_shape_color_source_to_shapes_layer_disambiguates_style_feature_fr
     assert disambiguate_shape_style_feature_name("cell_id", "cell_id") == "cell_id__value"
 
 
-def test_apply_shape_color_source_to_shapes_layer_rejects_duplicate_source_indices() -> None:
+def test_apply_shape_column_color_source_to_shapes_layer_rejects_duplicate_source_indices() -> None:
     geodataframe = gpd.GeoDataFrame(
         {"group": pd.Categorical(["a", "b"])},
         geometry=[_polygon(0), _polygon(2)],
@@ -717,7 +717,7 @@ def test_apply_shape_color_source_to_shapes_layer_rejects_duplicate_source_indic
     )
 
     with pytest.raises(ValueError, match="requires unique source GeoDataFrame index"):
-        apply_shape_color_source_to_shapes_layer(
+        apply_shape_column_color_source_to_shapes_layer(
             layer,
             shapes_element=geodataframe,
             style_spec=style_spec,

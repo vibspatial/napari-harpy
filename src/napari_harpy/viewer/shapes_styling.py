@@ -91,7 +91,7 @@ class _AlignedShapeTableValues:
     rendered_row_has_table_row: pd.Series
 
 
-def apply_shape_color_source_to_shapes_layer(
+def apply_shape_column_color_source_to_shapes_layer(
     layer: Shapes,
     *,
     shapes_element: gpd.GeoDataFrame,
