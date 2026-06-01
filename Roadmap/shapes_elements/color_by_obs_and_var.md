@@ -317,28 +317,32 @@ Recommended steps:
    declares the shapes annotation but no rows annotate that shapes element.
 6. Raise if any selected-region table row has a missing `instance_key`.
    Do not drop these rows silently.
-7. Preserve table and shapes `instance_key` values as labels; do not coerce to
+7. Raise if any source shapes row considered for alignment has a missing
+   `shapes_element[instance_key]` value. A missing shape instance value is
+   malformed, while a present shape instance value with no matching table row is
+   allowed and tracked separately.
+8. Preserve table and shapes `instance_key` values as labels; do not coerce to
    integers.
-8. Require table `instance_key` values to be unique within the selected shapes
+9. Require table `instance_key` values to be unique within the selected shapes
    region. Duplicates are ambiguous and should raise `ValueError`.
-9. Allow duplicate values in `shapes_element[instance_key]`. Multiple source
+10. Allow duplicate values in `shapes_element[instance_key]`. Multiple source
    geometries with the same shape instance identity should receive the same
    table value.
-10. Build a table-level `pd.Series` indexed by table `instance_key` value:
+11. Build a table-level `pd.Series` indexed by table `instance_key` value:
    - for `instance_key`, use the aligned instance labels themselves;
    - for `.obs`, use `table.obs[value_key]`;
    - for `X[:, var_name]`, extract the selected `X` column at the matching
      table observation positions.
-11. Validate that every table `instance_key` value for the selected shapes region
+12. Validate that every table `instance_key` value for the selected shapes region
    exists in `shapes_element[instance_key]`; extra table instances should raise
    a clear error.
-12. Align table values to source GeoDataFrame rows by mapping each source row to
+13. Align table values to source GeoDataFrame rows by mapping each source row to
     its `shapes_element[instance_key]` value.
-13. Build `source_row_has_table_row` so shapes with no matching table row are
+14. Build `source_row_has_table_row` so shapes with no matching table row are
     tracked separately from rows whose selected table value is missing.
-14. Align again to `source_shapes_index_by_row`, repeating values and masks for
+15. Align again to `source_shapes_index_by_row`, repeating values and masks for
     MultiPolygon parts.
-15. Return the alignment object for Slice 4 styling.
+16. Return the alignment object for Slice 4 styling.
 
 Missing table rows:
 
@@ -604,19 +608,21 @@ shape-column coloring behavior unchanged.
    - require the source GeoDataFrame index to be unique, because rendered-row
      mapping uses that index;
    - use exact value matching between table and shapes instance values;
-   - require selected-region table instances to be a subset of shape instances;
-   - raise if selected-region table rows have missing `instance_key` values;
-   - require selected-region table `instance_key` values to be unique;
+- require selected-region table instances to be a subset of shape instances;
+- raise if selected-region table rows have missing `instance_key` values;
+- raise if source shapes rows considered for alignment have missing
+  `shapes_element[instance_key]` values;
+- require selected-region table `instance_key` values to be unique;
    - allow duplicate values in `shapes_element[instance_key]`, so multiple
      geometries can share one table-backed instance value;
    - allow shape instances without table rows and track them separately from
      missing selected table values;
    - preserve string and non-integer instance values without coercion;
-   - test missing shapes `instance_key` column, non-unique source GeoDataFrame
-     index, missing table `instance_key` values, duplicate table instances,
-     duplicate shapes instance values, extra table instances, no selected-region
-     table rows, partial shape coverage, rendered-row repetition, and string
-     IDs.
+- test missing shapes `instance_key` column, missing shapes `instance_key`
+  values, non-unique source GeoDataFrame index, missing table `instance_key`
+  values, duplicate table instances, duplicate shapes instance values, extra
+  table instances, no selected-region table rows, partial shape coverage,
+  rendered-row repetition, and string IDs.
 
 4. Table-backed shapes styling
    - add `apply_table_color_source_to_shapes_layer(...)`;
