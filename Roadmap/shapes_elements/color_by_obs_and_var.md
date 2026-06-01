@@ -328,7 +328,7 @@ Recommended steps:
    declares the shapes annotation but no rows annotate that shapes element.
 6. Raise if any selected-region table row has a missing `instance_key`.
    Do not drop these rows silently.
-7. Raise if any source shapes row considered for alignment has a missing
+7. Raise if any source shapes row in the GeoDataFrame has a missing
    `shapes_element[instance_key]` value. A missing shape instance value is
    malformed, while a present shape instance value with no matching table row is
    allowed and tracked separately.
@@ -627,7 +627,7 @@ shape-column coloring behavior unchanged.
    - use exact value matching between table and shapes instance values;
    - require selected-region table instances to be a subset of shape instances;
    - raise if selected-region table rows have missing `instance_key` values;
-   - raise if source shapes rows considered for alignment have missing
+   - raise if any source shapes row in the GeoDataFrame has a missing
      `shapes_element[instance_key]` values;
    - require selected-region table `instance_key` values to be unique;
    - allow duplicate values in `shapes_element[instance_key]`, so multiple
