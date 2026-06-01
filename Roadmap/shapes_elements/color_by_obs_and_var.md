@@ -252,27 +252,32 @@ Related labels fix:
 
 ## Alignment Algorithm
 
-Add a shape-specific table alignment function. Slice 3 should stop at
+Add a small shape-specific table alignment helper. Slice 3 should stop at
 alignment: it should return aligned values and masks, but it should not apply
 colors, mutate `layer.features`, or dispatch through the adapter yet. Those
 steps belong to Slice 4+.
 
-The helper output should carry both source-row and rendered-row views, because
-a source `MultiPolygon` can expand into multiple napari rows. A good concrete
-return object is:
+Avoid introducing a broad public alignment model. The current codebase keeps
+alignment close to the styling function: direct shapes styling aligns inline in
+`apply_shape_color_source_to_shapes_layer(...)`, and labels use a small private
+helper returning only the pieces the styling function needs. Shape table
+alignment should follow that pattern.
+
+The helper output only needs to carry source-row and rendered-row views,
+because a source `MultiPolygon` can expand into multiple napari rows:
 
 ```python
 @dataclass(frozen=True)
-class ShapeTableValueAlignment:
-    table_metadata: SpatialDataTableMetadata
-    region_rows: pd.DataFrame
-    region_obs_index: pd.Index
-    value_by_instance: pd.Series
+class _AlignedShapeTableValues:
     source_row_values: pd.Series
     rendered_row_values: pd.Series
     source_row_has_table_row: pd.Series
     rendered_row_has_table_row: pd.Series
 ```
+
+The table metadata, selected-region rows, table observation index, and
+`value_by_instance` mapping can stay local implementation details unless Slice
+4 shows they need to cross function boundaries.
 
 Inputs:
 
@@ -283,10 +288,10 @@ Inputs:
 - `TableColorSourceSpec`
 - `source_shapes_index_by_row`
 
-Recommended helper shape:
+Recommended private helper shape:
 
 ```python
-def align_table_color_source_to_shapes_rows(
+def _align_table_color_source_to_shapes_rows(
     *,
     table: AnnData,
     table_metadata: SpatialDataTableMetadata,
@@ -294,7 +299,7 @@ def align_table_color_source_to_shapes_rows(
     shapes_element: gpd.GeoDataFrame,
     style_spec: TableColorSourceSpec,
     source_shapes_index_by_row: tuple[Any, ...],
-) -> ShapeTableValueAlignment:
+) -> _AlignedShapeTableValues:
     ...
 ```
 
@@ -342,7 +347,7 @@ Recommended steps:
     tracked separately from rows whose selected table value is missing.
 15. Align again to `source_shapes_index_by_row`, repeating values and masks for
     MultiPolygon parts.
-16. Return the alignment object for Slice 4 styling.
+16. Return `_AlignedShapeTableValues` for Slice 4 styling.
 
 Missing table rows:
 
@@ -598,8 +603,12 @@ shape-column coloring behavior unchanged.
      discovery.
 
 3. Shape table-to-source-row alignment
-   - implement `ShapeTableValueAlignment` and
-     `align_table_color_source_to_shapes_rows(...)`;
+   - implement a small private `_AlignedShapeTableValues` return object and
+     `_align_table_color_source_to_shapes_rows(...)`;
+   - avoid a broad public alignment dataclass; keep table metadata,
+     selected-region rows, table observation index, and `value_by_instance` as
+     local implementation details unless Slice 4 proves they need to cross a
+     function boundary;
    - keep this slice alignment-only: return source-row/rendered-row values and
      table-coverage masks, but do not apply colors, write `layer.features`, or
      dispatch through the adapter yet;
@@ -608,21 +617,21 @@ shape-column coloring behavior unchanged.
    - require the source GeoDataFrame index to be unique, because rendered-row
      mapping uses that index;
    - use exact value matching between table and shapes instance values;
-- require selected-region table instances to be a subset of shape instances;
-- raise if selected-region table rows have missing `instance_key` values;
-- raise if source shapes rows considered for alignment have missing
-  `shapes_element[instance_key]` values;
-- require selected-region table `instance_key` values to be unique;
+   - require selected-region table instances to be a subset of shape instances;
+   - raise if selected-region table rows have missing `instance_key` values;
+   - raise if source shapes rows considered for alignment have missing
+     `shapes_element[instance_key]` values;
+   - require selected-region table `instance_key` values to be unique;
    - allow duplicate values in `shapes_element[instance_key]`, so multiple
      geometries can share one table-backed instance value;
    - allow shape instances without table rows and track them separately from
      missing selected table values;
    - preserve string and non-integer instance values without coercion;
-- test missing shapes `instance_key` column, missing shapes `instance_key`
-  values, non-unique source GeoDataFrame index, missing table `instance_key`
-  values, duplicate table instances, duplicate shapes instance values, extra
-  table instances, no selected-region table rows, partial shape coverage,
-  rendered-row repetition, and string IDs.
+   - test missing shapes `instance_key` column, missing shapes `instance_key`
+     values, non-unique source GeoDataFrame index, missing table `instance_key`
+     values, duplicate table instances, duplicate shapes instance values, extra
+     table instances, no selected-region table rows, partial shape coverage,
+     rendered-row repetition, and string IDs.
 
 4. Table-backed shapes styling
    - add `apply_table_color_source_to_shapes_layer(...)`;
