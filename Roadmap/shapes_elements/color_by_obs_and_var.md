@@ -740,6 +740,44 @@ shape-column coloring behavior unchanged.
      request/update path, and one representative table-alignment error reaching
      widget feedback.
 
+7a. Internal source-row identity for shapes - follow-up
+   - stop relying on the GeoDataFrame index as the unique internal source-row
+     identity for rendered-row lookup;
+   - generate an internal source-row identifier, for example row position or a
+     private row-id feature, when building napari shapes layers;
+   - use this internal source-row identifier for `source_shapes_index_by_row` or
+     its eventual renamed equivalent, so rendered napari rows can always map
+     back to the correct source GeoDataFrame row even when the GeoDataFrame index
+     is duplicated;
+   - keep this internal identifier separate from user-facing shape features and
+     separate from biological/table instance identity;
+   - preserve existing MultiPolygon expansion behavior: multiple rendered rows
+     from one source row should carry the same internal source-row identifier;
+   - add tests for duplicate GeoDataFrame indices, MultiPolygon expansion, layer
+     feature contents, adapter layer lookup, and direct shape-column styling
+     after the internal source-row identity change.
+
+7b. Shape instance identity source compatibility - follow-up
+   - after 7a, align table-backed shapes styling with SpatialData's accepted
+     shapes annotation patterns by resolving biological/table shape instance
+     identity independently from rendered-row source identity:
+     - if `shapes_element[instance_key]` exists as a GeoDataFrame column, use
+       that column;
+     - otherwise, if `shapes_element.index.name == instance_key`, use the
+       GeoDataFrame index;
+     - if both the column and a named index exist, require them to agree row by
+       row, or raise a clear error when they disagree;
+   - keep exact value matching against `table.obs[instance_key]`;
+   - keep allowing duplicate shape instance values, because multiple source
+     geometries may represent the same biological instance and should receive
+     the same table-backed value;
+   - update error messages so they mention both accepted locations when neither
+     a matching column nor a matching index name is present;
+   - add tests for column-backed shape instances, index-backed shape instances
+     with unique and duplicate index values, matching column/index values,
+     disagreeing column/index values, and table instances missing from the
+     resolved shape instance identities.
+
 Optional cleanup slice:
 
 - Consider renaming `source_shapes_index_by_row` to
@@ -758,8 +796,8 @@ The best first version is:
 - only tables that explicitly annotate the selected shapes element;
 - the table `instance_key`, other `.obs` columns, and `X[:, var_name]` values;
 - exact value matching between `table.obs[instance_key]` and
-  `shapes_element[instance_key]`, with table instances required to be a subset
-  of shape instances;
+  the resolved shapes instance identities, with table instances required to be
+  a subset of shape instances;
 - direct reuse of existing shape rendered-row coloring;
 - labels-compatible table palette behavior;
 - no labels-table inference and no direct `.var` metadata coloring.
