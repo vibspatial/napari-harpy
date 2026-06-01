@@ -723,9 +723,8 @@ shape-column coloring behavior unchanged.
      - direct shape-column source: `column "leiden"`;
      - table observation source: `obs["cell_type"]`;
      - table expression source: `X[:, "GeneA"]`;
-   - report table-backed instance-key coloring explicitly in status feedback,
-     using labels-compatible instance identity wording unless a clearer
-     shape-neutral wording is introduced for both labels and shapes;
+   - report table-backed instance-key coloring explicitly in status feedback
+     with the shared wording `Used instance colors.`;
    - report `unannotated_source_shape_count` and
      `unannotated_rendered_shape_count` as informational feedback for
      table-backed shapes, because shapes without a linked table row are valid
