@@ -1368,7 +1368,7 @@ def test_viewer_widget_styled_overlay_instance_key_uses_success_card(qtbot, sdat
 
     _assert_action_feedback_card(widget, title="Colored Overlay Created", kind="success")
     assert 'Created colored overlay for obs["instance_id"]' in widget.global_action_feedback_label.text()
-    assert "Used instance label colors." in widget.global_action_feedback_label.text()
+    assert "Used instance colors." in widget.global_action_feedback_label.text()
     binding = widget.app_state.viewer_adapter.layer_bindings.get_binding(viewer.layers[0])
     assert binding is not None
     assert binding.style_spec is not None
@@ -1777,6 +1777,71 @@ def test_viewer_widget_shapes_card_exposes_linked_table_sources(qtbot, monkeypat
     assert card.action_hint_label.text() == 'Action: add/update styled shapes layer for X[:, "GeneA"]'
 
 
+def test_viewer_widget_add_update_shapes_with_table_source_dispatches_to_styled_path(qtbot, monkeypatch) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    sdata = _make_colorable_shapes_sdata(cell_type_colors=["red", "blue"])
+    table_source = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+    recorded_calls: list[tuple[object, str, str, TableColorSourceSpec, bool]] = []
+    result_layer = object()
+
+    monkeypatch.setattr(
+        viewer_widget_module,
+        "get_annotating_table_names",
+        lambda sdata, element_name: ["table"] if element_name == "cells" else [],
+    )
+    monkeypatch.setattr(
+        viewer_widget_module,
+        "get_table_color_source_options",
+        lambda sdata, table_name: [table_source],
+    )
+
+    def ensure_styled_shapes_loaded(
+        sdata_arg: object,
+        shapes_name: str,
+        coordinate_system: str,
+        style_spec: TableColorSourceSpec,
+        *,
+        fill: bool = False,
+    ) -> SimpleNamespace:
+        recorded_calls.append((sdata_arg, shapes_name, coordinate_system, style_spec, fill))
+        return SimpleNamespace(
+            layer=result_layer,
+            created=True,
+            value_kind="categorical",
+            palette_source="stored",
+            coercion_applied=False,
+            skipped_geometry_count=0,
+            unannotated_source_shape_count=1,
+            unannotated_rendered_shape_count=1,
+        )
+
+    monkeypatch.setattr(widget.app_state.viewer_adapter, "ensure_styled_shapes_loaded", ensure_styled_shapes_loaded)
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata)
+
+    card = widget.shape_cards[0]
+    card.color_source_kind_combo.setCurrentIndex(2)
+    card.fill_toggle.setChecked(True)
+    card.add_update_button.click()
+
+    assert recorded_calls == [(sdata, "cells", "global", table_source, True)]
+    assert viewer.layers.selection.active is result_layer
+    _assert_action_feedback_card(widget, title="Styled Shapes Created", kind="info")
+    assert 'Created styled shapes layer for obs["cell_type"]' in widget.global_action_feedback_label.text()
+    assert "Used the stored categorical palette." in widget.global_action_feedback_label.text()
+    assert "Rendered 1 shape transparent because it has no row in the linked table." in (
+        widget.global_action_feedback_label.text()
+    )
+
+
 def test_viewer_widget_add_update_shapes_with_shape_column_dispatches_to_styled_path(qtbot, monkeypatch) -> None:
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)
@@ -1940,6 +2005,40 @@ def test_viewer_widget_table_backed_styled_shapes_without_linked_table_is_feedba
 
     _assert_action_feedback_card(widget, title="Styled Shapes Error", kind="error")
     assert "has no linked table for table-driven coloring" in widget.global_action_feedback_label.text()
+
+
+def test_viewer_widget_table_backed_styled_shapes_alignment_error_is_feedback(qtbot, monkeypatch) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    sdata = _make_colorable_shapes_sdata(cell_type_colors=["red", "blue"])
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    def raise_alignment_error(*args: object, **kwargs: object) -> None:
+        raise ValueError("Every selected-region table instance must exist in the shapes instance column.")
+
+    monkeypatch.setattr(widget.app_state.viewer_adapter, "ensure_styled_shapes_loaded", raise_alignment_error)
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata)
+
+    request = ShapesLoadRequest(
+        shapes_name="cells",
+        table_name="table",
+        selected_source_kind="obs_column",
+        selected_color_source=style_spec,
+        fill_shapes=False,
+    )
+
+    widget._add_or_update_shapes_layer(request)
+
+    _assert_action_feedback_card(widget, title="Styled Shapes Error", kind="error")
+    assert "Every selected-region table instance must exist" in widget.global_action_feedback_label.text()
 
 
 def test_viewer_widget_styled_shapes_feedback_reports_skipped_geometry(qtbot) -> None:

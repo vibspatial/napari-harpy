@@ -1,6 +1,6 @@
 # Color Shapes By Linked Table `.obs` And `X[:, var]`
 
-Status: Slice 5 implemented; Slice 6 specified and pending implementation
+Status: Slice 6 implemented
 
 ## Goal
 
@@ -710,7 +710,7 @@ shape-column coloring behavior unchanged.
      their displayed names collide or napari suffixes them;
    - test creation, update, fill toggling, layer lookup, and coexistence.
 
-6. Widget and status feedback - specified
+6. Widget and status feedback - completed
    - no major widget API changes are expected in this slice: shape cards already
      support linked-table selection, `None | Shapes column | Observations |
      Vars`, `TableColorSourceSpec` dispatch, and linked-table disabled states;
