@@ -743,19 +743,40 @@ shape-column coloring behavior unchanged.
 7a. Internal source-row identity for shapes - follow-up
    - stop relying on the GeoDataFrame index as the unique internal source-row
      identity for rendered-row lookup;
-   - generate an internal source-row identifier, for example row position or a
-     private row-id feature, when building napari shapes layers;
-   - use this internal source-row identifier for `source_shapes_index_by_row` or
-     its eventual renamed equivalent, so rendered napari rows can always map
-     back to the correct source GeoDataFrame row even when the GeoDataFrame index
-     is duplicated;
-   - keep this internal identifier separate from user-facing shape features and
+   - generate an internal source-row identifier when building napari shapes
+     layers. Prefer integer source row position, `0..len(shapes_element)-1`,
+     because it is unique even when the GeoDataFrame index contains duplicates;
+   - rename the rendered-row mapping to make the new meaning explicit:
+     `source_shapes_index_by_row` should become
+     `source_row_id_by_rendered_row`;
+   - use `source_row_id_by_rendered_row` for all internal rendered-row to
+     source-row style alignment, so rendered napari rows can always map back to
+     the correct source GeoDataFrame row even when the GeoDataFrame index is
+     duplicated;
+   - keep the GeoDataFrame index as a visible feature for status display, using
+     `source_shapes_index_feature_name` or a later clearer name. For example,
+     if the index name is `cell_id`, keep showing `cell_id: ...` in the napari
+     status bar, even if those displayed index values are duplicated;
+   - keep this internal row id separate from user-facing shape features and
      separate from biological/table instance identity;
    - preserve existing MultiPolygon expansion behavior: multiple rendered rows
      from one source row should carry the same internal source-row identifier;
-   - add tests for duplicate GeoDataFrame indices, MultiPolygon expansion, layer
-     feature contents, adapter layer lookup, and direct shape-column styling
-     after the internal source-row identity change.
+   - remove the current styling requirement that `shapes_element.index` is
+     unique;
+   - direct shape-column styling should align source values by integer source
+     row id, for example with `iloc`, not by `reindex(...)` on the GeoDataFrame
+     index;
+   - table-backed styling should produce source-row values aligned to internal
+     source row ids, then expand them to rendered rows with
+     `source_row_id_by_rendered_row`;
+   - keep validating that the rendered-row mapping has one entry per rendered
+     napari shape row and that each internal source row id resolves to a source
+     GeoDataFrame row;
+   - add tests for primary shapes loading with duplicate GeoDataFrame indices,
+     duplicated visible index values in `layer.features`, direct shape-column
+     styling with duplicate GeoDataFrame indices, MultiPolygon expansion,
+     adapter bindings storing internal row ids, and table-backed styling with an
+     `instance_key` column while the GeoDataFrame index is duplicated.
 
 7b. Shape instance identity source compatibility - follow-up
    - after 7a, align table-backed shapes styling with SpatialData's accepted
@@ -771,6 +792,15 @@ shape-column coloring behavior unchanged.
    - keep allowing duplicate shape instance values, because multiple source
      geometries may represent the same biological instance and should receive
      the same table-backed value;
+   - when the GeoDataFrame index is used as the resolved instance identity, keep
+     displaying that source index in `layer.features` under the real index name
+     or `"index"` fallback. Do not hide or overwrite it just because it also
+     serves as the biological/table instance identity;
+   - if table-backed styling by `instance_key` would store the selected table
+     value under the same feature name as the visible source-index feature,
+     continue using the existing `__value` disambiguation, for example
+     `instance_id` for the visible source index and `instance_id__value` for
+     the selected table-backed style value;
    - update error messages so they mention both accepted locations when neither
      a matching column nor a matching index name is present;
    - add tests for column-backed shape instances, index-backed shape instances
