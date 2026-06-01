@@ -42,6 +42,7 @@ from napari_harpy.viewer.shapes_styling import (
     _connect_current_edge_color_to_global_edge_color,
     _connect_current_edge_width_to_global_edge_width,
     apply_shape_column_color_source_to_shapes_layer,
+    apply_table_color_source_to_shapes_layer,
     build_styled_shapes_layer_name,
 )
 
@@ -1260,9 +1261,6 @@ class ViewerAdapter(QObject):
         fill: bool = False,
     ) -> ShapesLoadResult:
         """Load or update one styled shapes layer variant."""
-        if not isinstance(style_spec, ShapeColumnColorSourceSpec):
-            raise ValueError("Table-backed shapes styling is not implemented yet.")
-
         existing_layer = self.get_loaded_styled_shapes_layer(
             sdata,
             shapes_name,
@@ -1298,18 +1296,31 @@ class ViewerAdapter(QObject):
                 raise ValueError("Styled shapes layer is missing its Harpy shapes binding.")
 
         layer.name = build_styled_shapes_layer_name(shapes_name, style_spec)
-        shapes = getattr(sdata, "shapes", {})
-        if shapes_name not in shapes:
-            raise ValueError(f"Shapes element `{shapes_name}` is not available in the selected SpatialData object.")
+        if isinstance(style_spec, ShapeColumnColorSourceSpec):
+            shapes = getattr(sdata, "shapes", {})
+            if shapes_name not in shapes:
+                raise ValueError(f"Shapes element `{shapes_name}` is not available in the selected SpatialData object.")
 
-        style_result = apply_shape_column_color_source_to_shapes_layer(
-            layer,
-            shapes_element=shapes[shapes_name],
-            style_spec=style_spec,
-            source_shapes_index_by_row=binding.source_shapes_index_by_row,
-            source_shapes_index_feature_name=binding.source_shapes_index_feature_name,
-            fill=fill,
-        )
+            style_result = apply_shape_column_color_source_to_shapes_layer(
+                layer,
+                shapes_element=shapes[shapes_name],
+                style_spec=style_spec,
+                source_shapes_index_by_row=binding.source_shapes_index_by_row,
+                source_shapes_index_feature_name=binding.source_shapes_index_feature_name,
+                fill=fill,
+            )
+        elif isinstance(style_spec, TableColorSourceSpec):
+            style_result = apply_table_color_source_to_shapes_layer(
+                layer,
+                sdata=sdata,
+                shapes_name=shapes_name,
+                style_spec=style_spec,
+                source_shapes_index_by_row=binding.source_shapes_index_by_row,
+                source_shapes_index_feature_name=binding.source_shapes_index_feature_name,
+                fill=fill,
+            )
+        else:
+            raise ValueError(f"Unsupported styled shapes color source spec: {style_spec!r}.")
         return ShapesLoadResult(
             layer=layer,
             created=created,

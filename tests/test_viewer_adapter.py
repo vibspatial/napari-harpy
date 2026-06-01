@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from types import SimpleNamespace
 
+import anndata as ad
 import geopandas as gpd
 import numpy as np
 import pandas as pd
@@ -11,7 +12,7 @@ from matplotlib.colors import to_rgba
 from napari.layers import Image, Labels, Points, Shapes
 from napari.utils.colormaps import CyclicLabelColormap, DirectLabelColormap
 from shapely.geometry import LineString, Polygon
-from spatialdata.models import PointsModel, ShapesModel
+from spatialdata.models import PointsModel, ShapesModel, TableModel
 from spatialdata.transformations import Affine, Identity
 
 import napari_harpy.viewer._styling as styling_module
@@ -96,6 +97,11 @@ class UniqueNameDummyViewer(DummyViewer):
 class UnsupportedViewer:
     def __init__(self) -> None:
         self.layers = None
+
+
+class ShapesSpatialDataWithTables(SimpleNamespace):
+    def __getitem__(self, key: str):
+        return self.tables[key]
 
 
 def make_labels_layer(*, sdata, labels_name: str = "blobs_labels", metadata: dict[str, object] | None = None) -> Labels:
@@ -193,6 +199,58 @@ def make_colorable_shapes_sdata(shapes_name: str = "cell_boundaries") -> SimpleN
         index=["cell_1", "cell_2"],
     )
     return make_shapes_sdata(geodataframe, shapes_name=shapes_name)
+
+
+def make_table_backed_shapes_sdata() -> ShapesSpatialDataWithTables:
+    geodataframe = gpd.GeoDataFrame(
+        {"instance_id": ["cell_1", "cell_2", "cell_3"]},
+        geometry=[
+            Polygon([(0, 0), (4, 0), (4, 4), (0, 4), (0, 0)]),
+            Polygon([(5, 0), (9, 0), (9, 4), (5, 4), (5, 0)]),
+            Polygon([(10, 0), (14, 0), (14, 4), (10, 4), (10, 0)]),
+        ],
+        index=["shape_1", "shape_2", "shape_3"],
+    )
+    shapes = ShapesModel.parse(geodataframe, transformations={"global": Identity()})
+    table = TableModel.parse(
+        ad.AnnData(
+            obs=pd.DataFrame(
+                {
+                    "region": ["cell_boundaries", "cell_boundaries"],
+                    "instance_id": ["cell_1", "cell_2"],
+                    "cell_type": pd.Categorical(["T", "B"], categories=["T", "B"]),
+                },
+                index=["obs_1", "obs_2"],
+            )
+        ),
+        region="cell_boundaries",
+        region_key="region",
+        instance_key="instance_id",
+    )
+    table.uns["cell_type_colors"] = ["#ff0000", "#00ff00"]
+    return ShapesSpatialDataWithTables(shapes={"cell_boundaries": shapes}, tables={"table": table})
+
+
+def make_two_table_backed_shapes_sdata() -> ShapesSpatialDataWithTables:
+    sdata = make_table_backed_shapes_sdata()
+    table_b = TableModel.parse(
+        ad.AnnData(
+            obs=pd.DataFrame(
+                {
+                    "region": ["cell_boundaries", "cell_boundaries"],
+                    "instance_id": ["cell_1", "cell_2"],
+                    "cell_type": pd.Categorical(["T", "B"], categories=["T", "B"]),
+                },
+                index=["obs_1", "obs_2"],
+            )
+        ),
+        region="cell_boundaries",
+        region_key="region",
+        instance_key="instance_id",
+    )
+    table_b.uns["cell_type_colors"] = ["#0000ff", "#ffff00"]
+    sdata.tables["table_b"] = table_b
+    return sdata
 
 
 def get_shapes_binding(adapter: ViewerAdapter, layer: Shapes) -> ShapesLayerBinding:
@@ -1939,8 +1997,8 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_creates_registered_variant_w
     assert "style_value_kind" not in result.layer.metadata
 
 
-def test_viewer_adapter_ensure_styled_shapes_loaded_rejects_table_sources_until_styling_slice() -> None:
-    sdata = make_colorable_shapes_sdata()
+def test_viewer_adapter_ensure_styled_shapes_loaded_creates_table_backed_variant() -> None:
+    sdata = make_table_backed_shapes_sdata()
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
     style_spec = TableColorSourceSpec(
@@ -1950,10 +2008,53 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_rejects_table_sources_until_
         value_kind="categorical",
     )
 
-    with pytest.raises(ValueError, match="Table-backed shapes styling is not implemented yet"):
-        adapter.ensure_styled_shapes_loaded(sdata, "cell_boundaries", "global", style_spec)
+    result = adapter.ensure_styled_shapes_loaded(sdata, "cell_boundaries", "global", style_spec)
 
-    assert viewer.layers == []
+    assert result.created is True
+    assert result.value_kind == "categorical"
+    assert result.palette_source == "stored"
+    assert result.coercion_applied is False
+    assert result.unannotated_source_shape_count == 1
+    assert result.unannotated_rendered_shape_count == 1
+    assert result.layer in viewer.layers
+    assert result.layer.name == "cell_boundaries[obs:cell_type]"
+    assert adapter.get_loaded_primary_shapes_layer(sdata, "cell_boundaries", "global") is None
+    binding = get_shapes_binding(adapter, result.layer)
+    assert binding.shapes_role == "styled"
+    assert binding.style_spec == style_spec
+    assert binding.source_shapes_index_by_row == ("shape_1", "shape_2", "shape_3")
+    assert list(result.layer.features.columns) == ["index", "cell_type"]
+    assert result.layer.features["cell_type"].to_list()[:2] == ["T", "B"]
+    assert pd.isna(result.layer.features["cell_type"].iloc[2])
+    np.testing.assert_allclose(result.layer.edge_color[0], (*to_rgba("#ff0000")[:3], 1.0))
+    np.testing.assert_allclose(result.layer.edge_color[1], (*to_rgba("#00ff00")[:3], 1.0))
+    assert result.layer.edge_color[2, 3] == 0.0
+
+
+def test_viewer_adapter_ensure_styled_shapes_loaded_reuses_table_backed_variant_and_updates_fill() -> None:
+    sdata = make_table_backed_shapes_sdata()
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    first = adapter.ensure_styled_shapes_loaded(sdata, "cell_boundaries", "global", style_spec)
+
+    np.testing.assert_allclose(first.layer.face_color[:, 3], np.zeros(len(first.layer.data)))
+
+    second = adapter.ensure_styled_shapes_loaded(sdata, "cell_boundaries", "global", style_spec, fill=True)
+
+    assert second.layer is first.layer
+    assert second.created is False
+    assert len(viewer.layers) == 1
+    np.testing.assert_allclose(first.layer.face_color[:2, 3], np.full(2, SHAPES_FACE_ALPHA))
+    assert first.layer.face_color[2, 3] == 0.0
+    np.testing.assert_allclose(first.layer.edge_color[:2, 3], np.ones(2))
+    assert first.layer.edge_color[2, 3] == 0.0
 
 
 def test_viewer_adapter_ensure_styled_shapes_loaded_updates_fill_alpha_on_existing_variant() -> None:
@@ -2100,6 +2201,37 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_creates_distinct_variants_fo
     assert adapter.get_loaded_styled_shapes_layer(sdata, "cell_boundaries", categorical_style, "global") is first.layer
     assert adapter.get_loaded_styled_shapes_layer(sdata, "cell_boundaries", continuous_style, "global") is second.layer
     assert adapter.get_loaded_styled_shapes_layers(sdata, "cell_boundaries", "global") == [first.layer, second.layer]
+
+
+def test_viewer_adapter_ensure_styled_shapes_loaded_creates_distinct_variants_for_different_tables() -> None:
+    sdata = make_two_table_backed_shapes_sdata()
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    table_a_style = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+    table_b_style = TableColorSourceSpec(
+        table_name="table_b",
+        source_kind="obs_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    first = adapter.ensure_styled_shapes_loaded(sdata, "cell_boundaries", "global", table_a_style)
+    second = adapter.ensure_styled_shapes_loaded(sdata, "cell_boundaries", "global", table_b_style)
+
+    assert first.layer is not second.layer
+    assert len(viewer.layers) == 2
+    assert first.layer.name == "cell_boundaries[obs:cell_type]"
+    assert second.layer.name == "cell_boundaries[obs:cell_type]"
+    assert adapter.get_loaded_styled_shapes_layer(sdata, "cell_boundaries", table_a_style, "global") is first.layer
+    assert adapter.get_loaded_styled_shapes_layer(sdata, "cell_boundaries", table_b_style, "global") is second.layer
+    assert adapter.get_loaded_styled_shapes_layers(sdata, "cell_boundaries", "global") == [first.layer, second.layer]
+    np.testing.assert_allclose(first.layer.edge_color[0], (*to_rgba("#ff0000")[:3], 1.0))
+    np.testing.assert_allclose(second.layer.edge_color[0], (*to_rgba("#0000ff")[:3], 1.0))
 
 
 def test_viewer_adapter_remove_shapes_layer_removes_only_primary_shapes_layer() -> None:

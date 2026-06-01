@@ -1,6 +1,6 @@
 # Color Shapes By Linked Table `.obs` And `X[:, var]`
 
-Status: Slice 4 implemented; Slice 5+ pending
+Status: Slice 5 implemented; Slice 6 pending
 
 ## Goal
 
@@ -63,20 +63,20 @@ Implemented pieces:
 - `viewer/adapter.py`
   - primary and styled shapes layers can coexist;
   - styled shapes layer identity accepts explicit
-    `ShapeColumnColorSourceSpec | TableColorSourceSpec` unions, while
-    table-backed styling dispatch is still pending Slice 5;
+    `ShapeColumnColorSourceSpec | TableColorSourceSpec` unions;
+  - `ensure_styled_shapes_loaded(...)` dispatches direct shape-column sources
+    and table-backed sources to the appropriate styler;
   - styled shape layers keep the source shape index mapping in
     `ShapesLayerBinding`.
 - `widgets/viewer/shapes_widget.py`
   - shapes cards expose `Color source = None | Shapes column | Observations |
     Vars`;
   - linked tables are discovered per shapes element, matching labels;
-  - table-backed selections are represented in the UI and request model, but
-    adapter dispatch and lifecycle wiring are still pending Slice 5.
+  - table-backed selections are represented in the UI and request model.
 
 Conclusion: the geometry/rendered-row machinery is already the hard part, and
-it is in place. The missing work is mostly table discovery, a shape-specific
-table alignment function, broader style-spec typing, and UI plumbing.
+it is in place. The remaining work is mostly widget/status feedback polish for
+table-backed shapes.
 
 ## SpatialData Semantics
 
@@ -700,7 +700,7 @@ shape-column coloring behavior unchanged.
      disambiguating only if it collides with the source-index feature name;
    - add rendered-row tests for MultiPolygon repetition and feature-table values.
 
-5. Adapter and layer lifecycle
+5. Adapter and layer lifecycle - completed
    - dispatch styled shapes to direct shape-column styling or table-backed
      styling based on the source spec;
    - include table name in styled-layer identity and lookup;
