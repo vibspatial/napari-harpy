@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
-from loguru import logger
 from napari.layers import Labels
 from napari.utils.colormaps import DirectLabelColormap, label_colormap
 
@@ -14,7 +13,6 @@ from napari_harpy.core._color_source import (
     TableColorValueKind,
     validate_table_color_value_kind,
 )
-from napari_harpy.core.class_palette import normalize_color_sequence
 from napari_harpy.core.spatialdata import get_table, validate_table_binding
 from napari_harpy.viewer._styling import (
     StyledPaletteSource,
@@ -23,8 +21,8 @@ from napari_harpy.viewer._styling import (
     continuous_colors_for_values,
     default_categorical_palette_for_categories,
     is_string_like_series,
-    is_valid_color,
     normalize_category_value,
+    resolve_table_categorical_palette,
     validate_styled_palette_source,
 )
 
@@ -118,7 +116,7 @@ def _build_obs_column_colormap(
 
     if _is_categorical_dtype(full_series):
         categories = [normalize_category_value(value) for value in full_series.cat.categories]
-        palette_source, palette = _resolve_categorical_palette(
+        palette_source, palette = resolve_table_categorical_palette(
             table=table,
             column_name=column_name,
             categories=categories,
@@ -133,7 +131,7 @@ def _build_obs_column_colormap(
 
     if pd.api.types.is_bool_dtype(full_series):
         categories = [value for value in (False, True) if value in set(full_series.dropna().tolist())]
-        palette_source, palette = _resolve_categorical_palette(
+        palette_source, palette = resolve_table_categorical_palette(
             table=table,
             column_name=column_name,
             categories=categories,
@@ -153,7 +151,7 @@ def _build_obs_column_colormap(
             if value in set(pd.to_numeric(full_series.dropna(), errors="coerce").astype("int64").tolist())
         ]
         numeric_region_series = pd.to_numeric(region_series, errors="coerce").astype("Int64")
-        palette_source, palette = _resolve_categorical_palette(
+        palette_source, palette = resolve_table_categorical_palette(
             table=table,
             column_name=column_name,
             categories=categories,
@@ -295,37 +293,6 @@ def _format_instance_preview(instance_ids: list[Any]) -> str:
     if len(instance_ids) > 5:
         preview += ", ..."
     return preview
-
-
-def _resolve_categorical_palette(
-    *,
-    table: AnnData,
-    column_name: str,
-    categories: list[object],
-) -> tuple[StyledPaletteSource, list[str]]:
-    colors_key = f"{column_name}_colors"
-    stored_colors = normalize_color_sequence(table.uns.get(colors_key))
-    if stored_colors is None:
-        logger.info(
-            f"No stored `{colors_key}` palette found in `table.uns`; using the default categorical palette for viewer coloring."
-        )
-        return "default_missing", default_categorical_palette_for_categories(categories)
-
-    if len(stored_colors) != len(categories):
-        logger.warning(
-            f"Stored `{colors_key}` palette has {len(stored_colors)} colors for {len(categories)} categories; "
-            "using the default categorical palette."
-        )
-        return "default_invalid", default_categorical_palette_for_categories(categories)
-
-    if not all(is_valid_color(color) for color in stored_colors):
-        logger.warning(
-            f"Stored `{colors_key}` palette contains invalid color values; using the default categorical palette."
-        )
-        return "default_invalid", default_categorical_palette_for_categories(categories)
-
-    logger.info(f"Using stored `{colors_key}` palette from `table.uns` for viewer coloring.")
-    return "stored", list(stored_colors)
 
 
 def _build_categorical_color_dict(

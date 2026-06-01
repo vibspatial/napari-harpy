@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -10,6 +10,7 @@ from anndata import AnnData
 from loguru import logger
 from matplotlib.colors import to_rgba
 from napari.layers import Shapes
+from napari.utils.colormaps import label_colormap
 
 from napari_harpy.core._color_source import (
     ShapeColorValueKind,
@@ -17,7 +18,7 @@ from napari_harpy.core._color_source import (
     TableColorSourceSpec,
     validate_shape_color_value_kind,
 )
-from napari_harpy.core.spatialdata import SpatialDataTableMetadata
+from napari_harpy.core.spatialdata import SpatialDataTableMetadata, get_table, get_table_metadata
 from napari_harpy.viewer._styling import (
     StyledPaletteSource,
     build_string_categorical_values,
@@ -26,29 +27,34 @@ from napari_harpy.viewer._styling import (
     default_categorical_palette_for_categories,
     is_string_like_series,
     normalize_category_value,
+    resolve_table_categorical_palette,
     validate_styled_palette_source,
 )
 
 if TYPE_CHECKING:
     import geopandas as gpd
+    from spatialdata import SpatialData
 
 SHAPES_MISSING_BASE_COLOR = "#808080"
 SHAPES_FACE_ALPHA = 0.35
 SHAPES_EDGE_ALPHA = 1.0
 _SHAPES_EDGE_WIDTH_SYNC_CALLBACK_ATTR = "_harpy_shapes_edge_width_sync_callback"
 _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR = "_harpy_shapes_edge_color_sync_callback"
+ShapesStyleValueKind = ShapeColorValueKind | Literal["instance"]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ShapesStyleResult:
     """Describe shapes styling metadata, if styling was applied."""
 
-    value_kind: ShapeColorValueKind | None
+    value_kind: ShapesStyleValueKind | None
     palette_source: StyledPaletteSource | None
     coercion_applied: bool
+    unannotated_source_shape_count: int = 0
+    unannotated_rendered_shape_count: int = 0
 
     def __post_init__(self) -> None:
-        if self.value_kind is not None:
+        if self.value_kind is not None and self.value_kind != "instance":
             validate_shape_color_value_kind(self.value_kind)
         if self.palette_source is not None:
             validate_styled_palette_source(self.palette_source)
@@ -64,7 +70,7 @@ class ShapesLoadResult(ShapesStyleResult):
 
 
 @dataclass(frozen=True)
-class _AlignedShapeTableValues:
+class _ShapeTableRowAlignment:
     """Table-backed values aligned to source shapes and rendered napari shapes.
 
     Parameters
@@ -172,6 +178,76 @@ def apply_shape_column_color_source_to_shapes_layer(
     return style_result
 
 
+def apply_table_color_source_to_shapes_layer(
+    layer: Shapes,
+    *,
+    sdata: SpatialData,
+    shapes_name: str,
+    style_spec: TableColorSourceSpec,
+    source_shapes_index_by_row: tuple[Any, ...],
+    source_shapes_index_feature_name: str,
+    fill: bool = False,
+) -> ShapesStyleResult:
+    """Apply one table-backed color source to a napari ``Shapes`` layer."""
+    table = get_table(sdata, style_spec.table_name)
+    table_metadata = get_table_metadata(sdata, style_spec.table_name)
+    shapes = getattr(sdata, "shapes", {})
+    if shapes_name not in shapes:
+        raise ValueError(f"Shapes element `{shapes_name}` is not available in the selected SpatialData object.")
+
+    aligned_values = _align_table_color_source_to_shapes_rows(
+        table=table,
+        table_metadata=table_metadata,
+        shapes_name=shapes_name,
+        shapes_element=shapes[shapes_name],
+        style_spec=style_spec,
+        source_shapes_index_by_row=source_shapes_index_by_row,
+    )
+
+    if style_spec.value_kind == "instance" or (
+        style_spec.source_kind == "obs_column" and style_spec.value_key == table_metadata.instance_key
+    ):
+        if style_spec.source_kind != "obs_column" or style_spec.value_key != table_metadata.instance_key:
+            raise ValueError(
+                "Instance ID coloring must use the table instance key "
+                f"`{table_metadata.instance_key}` as an observation source."
+            )
+        style_result, rendered_row_colors, feature_values = _build_table_instance_shape_style(aligned_values)
+    elif style_spec.source_kind == "obs_column":
+        style_result, rendered_row_colors, feature_values = _build_table_obs_shape_style(
+            table=table,
+            aligned_values=aligned_values,
+            column_name=style_spec.value_key,
+        )
+    elif style_spec.source_kind == "x_var":
+        style_result, rendered_row_colors, feature_values = _build_continuous_shape_style(
+            aligned_values.rendered_row_values
+        )
+    else:
+        raise ValueError(f"Unsupported table color source kind `{style_spec.source_kind}`.")
+
+    style_result = ShapesStyleResult(
+        value_kind=style_result.value_kind,
+        palette_source=style_result.palette_source,
+        coercion_applied=style_result.coercion_applied,
+        unannotated_source_shape_count=int((~aligned_values.source_row_has_table_row).sum()),
+        unannotated_rendered_shape_count=int((~aligned_values.rendered_row_has_table_row).sum()),
+    )
+    _apply_table_rendered_row_colors_to_shapes_layer(
+        layer,
+        rendered_row_colors,
+        rendered_row_has_table_row=aligned_values.rendered_row_has_table_row,
+        fill=fill,
+    )
+    _set_shape_style_feature(
+        layer,
+        feature_values,
+        style_column_name=style_spec.value_key,
+        source_index_feature_name=source_shapes_index_feature_name,
+    )
+    return style_result
+
+
 def build_styled_shapes_layer_name(
     shapes_name: str,
     style_spec: ShapeColumnColorSourceSpec | TableColorSourceSpec,
@@ -192,7 +268,7 @@ def _align_table_color_source_to_shapes_rows(
     shapes_element: gpd.GeoDataFrame,
     style_spec: TableColorSourceSpec,
     source_shapes_index_by_row: tuple[Any, ...],
-) -> _AlignedShapeTableValues:
+) -> _ShapeTableRowAlignment:
     """Align one table-backed color source to source and rendered shapes rows."""
     if style_spec.table_name != table_metadata.table_name:
         raise ValueError(
@@ -282,8 +358,19 @@ def _align_table_color_source_to_shapes_rows(
 
     source_row_has_table_row = shape_instance_values.isin(table_value_by_instance.index)
     source_row_has_table_row.name = style_spec.value_key
-    source_row_values = shape_instance_values.map(table_value_by_instance)
-    source_row_values.name = style_spec.value_key
+    # Avoid `shape_instance_values.map(table_value_by_instance)`: pandas may
+    # upcast positive integer instance IDs to floats when unannotated shapes
+    # introduce missing values, which would break labels-like identity coloring.
+    table_value_lookup = table_value_by_instance.to_dict()
+    source_row_values = pd.Series(
+        [
+            table_value_lookup[value] if has_table_row else pd.NA
+            for value, has_table_row in zip(shape_instance_values, source_row_has_table_row, strict=True)
+        ],
+        index=shape_instance_values.index,
+        name=style_spec.value_key,
+        dtype="object",
+    )
 
     source_index_by_rendered_row = pd.Index(source_shapes_index_by_row)
     missing_source_indices = source_index_by_rendered_row[~source_index_by_rendered_row.isin(shapes_element.index)]
@@ -296,7 +383,7 @@ def _align_table_color_source_to_shapes_rows(
     rendered_row_has_table_row = source_row_has_table_row.reindex(source_index_by_rendered_row)
     rendered_row_has_table_row.index = pd.RangeIndex(len(rendered_row_has_table_row))
 
-    return _AlignedShapeTableValues(
+    return _ShapeTableRowAlignment(
         source_row_values=source_row_values,
         rendered_row_values=rendered_row_values,
         source_row_has_table_row=source_row_has_table_row,
@@ -506,6 +593,153 @@ def _build_continuous_shape_style(
     )
 
 
+def _build_table_obs_shape_style(
+    *,
+    table: AnnData,
+    aligned_values: _ShapeTableRowAlignment,
+    column_name: str,
+) -> tuple[ShapesStyleResult, pd.Series, pd.Series]:
+    if column_name not in table.obs:
+        raise ValueError(f"Observation column `{column_name}` is not available in the selected table.")
+
+    full_series = table.obs[column_name]
+    rendered_row_values = aligned_values.rendered_row_values
+
+    if _is_categorical_dtype(full_series):
+        normalized_rendered_row_values = _normalize_category_series(rendered_row_values)
+        categories = [normalize_category_value(value) for value in full_series.cat.categories]
+        palette_source, palette = resolve_table_categorical_palette(
+            table=table,
+            column_name=column_name,
+            categories=categories,
+        )
+        rendered_row_colors = categorical_colors_for_values(
+            normalized_rendered_row_values,
+            categories=categories,
+            palette=palette,
+            missing_color=SHAPES_MISSING_BASE_COLOR,
+        )
+        style_result = ShapesStyleResult(
+            value_kind="categorical",
+            palette_source=palette_source,
+            coercion_applied=False,
+        )
+        return style_result, rendered_row_colors, normalized_rendered_row_values
+
+    if _is_bool_series(full_series):
+        normalized_rendered_row_values = _normalize_category_series(rendered_row_values)
+        present_values = set(full_series.dropna().tolist())
+        categories = [value for value in (False, True) if value in present_values]
+        palette_source, palette = resolve_table_categorical_palette(
+            table=table,
+            column_name=column_name,
+            categories=categories,
+        )
+        rendered_row_colors = categorical_colors_for_values(
+            normalized_rendered_row_values,
+            categories=categories,
+            palette=palette,
+            missing_color=SHAPES_MISSING_BASE_COLOR,
+        )
+        style_result = ShapesStyleResult(
+            value_kind="categorical",
+            palette_source=palette_source,
+            coercion_applied=False,
+        )
+        return style_result, rendered_row_colors, normalized_rendered_row_values
+
+    if _is_exact_binary_integer_series(full_series):
+        numeric_rendered_row_values = pd.to_numeric(rendered_row_values, errors="coerce").astype("Int64")
+        non_missing_source = pd.to_numeric(full_series.dropna(), errors="coerce").astype("int64")
+        present_values = set(non_missing_source.tolist())
+        categories = [value for value in (0, 1) if value in present_values]
+        palette_source, palette = resolve_table_categorical_palette(
+            table=table,
+            column_name=column_name,
+            categories=categories,
+        )
+        rendered_row_colors = categorical_colors_for_values(
+            numeric_rendered_row_values,
+            categories=categories,
+            palette=palette,
+            missing_color=SHAPES_MISSING_BASE_COLOR,
+        )
+        style_result = ShapesStyleResult(
+            value_kind="categorical",
+            palette_source=palette_source,
+            coercion_applied=False,
+        )
+        return style_result, rendered_row_colors, numeric_rendered_row_values
+
+    if is_string_like_series(full_series):
+        string_rendered_row_values, categories = build_string_categorical_values(
+            full_values=full_series,
+            row_values=rendered_row_values,
+            column_name=column_name,
+        )
+        rendered_row_colors = categorical_colors_for_values(
+            string_rendered_row_values,
+            categories=categories,
+            palette=default_categorical_palette_for_categories(categories),
+            missing_color=SHAPES_MISSING_BASE_COLOR,
+        )
+        style_result = ShapesStyleResult(
+            value_kind="categorical",
+            palette_source="default_missing",
+            coercion_applied=True,
+        )
+        return style_result, rendered_row_colors, string_rendered_row_values
+
+    return _build_continuous_shape_style(rendered_row_values)
+
+
+def _build_table_instance_shape_style(
+    aligned_values: _ShapeTableRowAlignment,
+) -> tuple[ShapesStyleResult, pd.Series, pd.Series]:
+    rendered_row_values = aligned_values.rendered_row_values
+    annotated_source_values = aligned_values.source_row_values.loc[aligned_values.source_row_has_table_row]
+    rendered_row_codes = _instance_identity_codes(
+        source_values=annotated_source_values,
+        rendered_row_values=rendered_row_values,
+    )
+    mapped_colors = label_colormap(background_value=0).map(rendered_row_codes.to_numpy(dtype=np.int64, copy=False))
+    rendered_row_colors = pd.Series(
+        [tuple(float(component) for component in color) for color in mapped_colors],
+        index=rendered_row_values.index,
+        dtype="object",
+    )
+    return (
+        ShapesStyleResult(
+            value_kind="instance",
+            palette_source=None,
+            coercion_applied=False,
+        ),
+        rendered_row_colors,
+        rendered_row_values,
+    )
+
+
+def _instance_identity_codes(*, source_values: pd.Series, rendered_row_values: pd.Series) -> pd.Series:
+    non_missing_source_values = source_values.dropna()
+    if _is_positive_integer_instance_series(non_missing_source_values):
+        numeric_codes = pd.to_numeric(rendered_row_values, errors="coerce").fillna(0).astype("int64")
+        return pd.Series(numeric_codes.to_numpy(copy=False), index=rendered_row_values.index, name=rendered_row_values.name)
+
+    unique_values = pd.unique(non_missing_source_values)
+    code_by_value = {value: code for code, value in enumerate(unique_values, start=1)}
+    codes = [0 if pd.isna(value) else int(code_by_value[value]) for value in rendered_row_values]
+    return pd.Series(codes, index=rendered_row_values.index, name=rendered_row_values.name, dtype="int64")
+
+
+def _is_positive_integer_instance_series(values: pd.Series) -> bool:
+    if values.empty:
+        return False
+    return all(
+        isinstance(value, int | np.integer) and not isinstance(value, bool | np.bool_) and int(value) > 0
+        for value in values.tolist()
+    )
+
+
 def _resolve_shape_categorical_palette(
     *,
     shapes_element: gpd.GeoDataFrame,
@@ -564,6 +798,34 @@ def _apply_rendered_row_colors_to_shapes_layer(
         raise ValueError("Rendered-row colors must contain one color for each rendered napari shape row.")
     layer.face_color = _with_alpha(rendered_row_colors, _styled_shapes_face_alpha(fill))
     layer.edge_color = _with_alpha(rendered_row_colors, SHAPES_EDGE_ALPHA)
+    refresh = getattr(layer, "refresh", None)
+    if callable(refresh):
+        refresh()
+
+
+def _apply_table_rendered_row_colors_to_shapes_layer(
+    layer: Shapes,
+    rendered_row_colors: pd.Series,
+    *,
+    rendered_row_has_table_row: pd.Series,
+    fill: bool = False,
+) -> None:
+    if len(rendered_row_colors) != len(layer.data):
+        raise ValueError("Rendered-row colors must contain one color for each rendered napari shape row.")
+    if len(rendered_row_has_table_row) != len(layer.data):
+        raise ValueError("Rendered-row table coverage must contain one value for each rendered napari shape row.")
+
+    face_color = _with_alpha(rendered_row_colors, _styled_shapes_face_alpha(fill))
+    edge_color = _with_alpha(rendered_row_colors, SHAPES_EDGE_ALPHA)
+    # Unannotated shapes and annotated rows with missing selected values both
+    # appear as missing in `rendered_row_values`, so color builders map both to
+    # gray. Use the table-row coverage mask to keep missing table values gray
+    # while making shapes with no table row fully transparent.
+    unannotated_rows = ~rendered_row_has_table_row.to_numpy(dtype=bool, copy=False)
+    face_color[unannotated_rows, 3] = 0.0
+    edge_color[unannotated_rows, 3] = 0.0
+    layer.face_color = face_color
+    layer.edge_color = edge_color
     refresh = getattr(layer, "refresh", None)
     if callable(refresh):
         refresh()

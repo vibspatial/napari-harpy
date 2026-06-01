@@ -1,6 +1,6 @@
 # Color Shapes By Linked Table `.obs` And `X[:, var]`
 
-Status: Slice 3 implemented; Slice 4+ pending
+Status: Slice 4 implemented; Slice 5+ pending
 
 ## Goal
 
@@ -64,7 +64,7 @@ Implemented pieces:
   - primary and styled shapes layers can coexist;
   - styled shapes layer identity accepts explicit
     `ShapeColumnColorSourceSpec | TableColorSourceSpec` unions, while
-    table-backed styling dispatch is still pending Slice 3+;
+    table-backed styling dispatch is still pending Slice 5;
   - styled shape layers keep the source shape index mapping in
     `ShapesLayerBinding`.
 - `widgets/viewer/shapes_widget.py`
@@ -72,7 +72,7 @@ Implemented pieces:
     Vars`;
   - linked tables are discovered per shapes element, matching labels;
   - table-backed selections are represented in the UI and request model, but
-    table-to-shape value alignment/styling is still pending Slice 3+.
+    adapter dispatch and lifecycle wiring are still pending Slice 5.
 
 Conclusion: the geometry/rendered-row machinery is already the hard part, and
 it is in place. The missing work is mostly table discovery, a shape-specific
@@ -201,8 +201,8 @@ columns or table-backed sources:
       unannotated_rendered_shape_count: int = 0
   ```
   Direct shape-column styling returns zeros for these counts. Table-backed
-  styling fills them from `_AlignedShapeTableValues.source_row_has_table_row`
-  and `_AlignedShapeTableValues.rendered_row_has_table_row`.
+  styling fills them from `_ShapeTableRowAlignment.source_row_has_table_row`
+  and `_ShapeTableRowAlignment.rendered_row_has_table_row`.
 
 Alternative: create a new dataclass such as `ShapesTableColorSourceSpec`.
 That is more explicit, but likely unnecessary because `TableColorSourceSpec`
@@ -279,7 +279,7 @@ because a source `MultiPolygon` can expand into multiple napari rows:
 
 ```python
 @dataclass(frozen=True)
-class _AlignedShapeTableValues:
+class _ShapeTableRowAlignment:
     source_row_values: pd.Series
     rendered_row_values: pd.Series
     source_row_has_table_row: pd.Series
@@ -316,7 +316,7 @@ def _align_table_color_source_to_shapes_rows(
     shapes_element: gpd.GeoDataFrame,
     style_spec: TableColorSourceSpec,
     source_shapes_index_by_row: tuple[Any, ...],
-) -> _AlignedShapeTableValues:
+) -> _ShapeTableRowAlignment:
     ...
 ```
 
@@ -364,7 +364,7 @@ Recommended steps:
     tracked separately from rows whose selected table value is missing.
 15. Align again to `source_shapes_index_by_row`, repeating values and masks for
     MultiPolygon parts.
-16. Return `_AlignedShapeTableValues` for Slice 4 styling.
+16. Return `_ShapeTableRowAlignment` for Slice 4 styling.
 
 Missing table rows:
 
@@ -634,7 +634,7 @@ shape-column coloring behavior unchanged.
      discovery.
 
 3. Shape table-to-source-row alignment - completed
-   - implement a small private `_AlignedShapeTableValues` return object and
+   - implement a small private `_ShapeTableRowAlignment` return object and
      `_align_table_color_source_to_shapes_rows(...)`;
    - document the difference between source-row values, rendered-row values,
      and table-coverage masks in docstrings or nearby inline comments;
@@ -666,7 +666,7 @@ shape-column coloring behavior unchanged.
      table instances, no selected-region table rows, partial shape coverage,
      rendered-row repetition, and string IDs.
 
-4. Table-backed shapes styling
+4. Table-backed shapes styling - completed
    - add `apply_table_color_source_to_shapes_layer(...)` with the agreed API:
      ```python
      def apply_table_color_source_to_shapes_layer(

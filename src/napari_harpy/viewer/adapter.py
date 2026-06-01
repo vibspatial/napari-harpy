@@ -1316,6 +1316,8 @@ class ViewerAdapter(QObject):
             value_kind=style_result.value_kind,
             palette_source=style_result.palette_source,
             coercion_applied=style_result.coercion_applied,
+            unannotated_source_shape_count=style_result.unannotated_source_shape_count,
+            unannotated_rendered_shape_count=style_result.unannotated_rendered_shape_count,
             skipped_geometry_count=binding.skipped_geometry_count,
         )
 

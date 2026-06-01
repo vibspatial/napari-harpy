@@ -113,10 +113,24 @@ def test_shapes_style_result_accepts_no_style_metadata() -> None:
     assert result.value_kind is None
 
 
+def test_shapes_style_result_accepts_table_backed_instance_coloring_metadata() -> None:
+    result = ShapesStyleResult(
+        value_kind="instance",
+        palette_source=None,
+        coercion_applied=False,
+        unannotated_source_shape_count=2,
+        unannotated_rendered_shape_count=3,
+    )
+
+    assert result.value_kind == "instance"
+    assert result.unannotated_source_shape_count == 2
+    assert result.unannotated_rendered_shape_count == 3
+
+
 def test_shapes_style_result_rejects_invalid_value_kind() -> None:
     with pytest.raises(ValueError, match="Invalid shape color value kind"):
         ShapesStyleResult(
-            value_kind="instance",
+            value_kind="ordinal",
             palette_source=None,
             coercion_applied=False,
         )

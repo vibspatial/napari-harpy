@@ -7,7 +7,9 @@ import pandas as pd
 import pytest
 from matplotlib.colors import to_rgba
 from napari.layers import Shapes
+from napari.utils.colormaps import label_colormap
 from shapely.geometry import Polygon
+from spatialdata.models import TableModel
 
 from napari_harpy.core._color_source import ShapeColumnColorSourceSpec, TableColorSourceSpec
 from napari_harpy.core.spatialdata import SpatialDataTableMetadata
@@ -19,6 +21,7 @@ from napari_harpy.viewer.shapes_styling import (
     _align_table_color_source_to_shapes_rows,
     _apply_rendered_row_colors_to_shapes_layer,
     apply_shape_column_color_source_to_shapes_layer,
+    apply_table_color_source_to_shapes_layer,
     build_styled_shapes_layer_name,
     disambiguate_shape_style_feature_name,
 )
@@ -51,6 +54,25 @@ def _table_metadata(regions: tuple[str, ...] = ("cells",)) -> SpatialDataTableMe
         instance_key="instance_id",
         regions=regions,
     )
+
+
+class _DummySpatialData:
+    def __init__(self, *, shapes: dict[str, gpd.GeoDataFrame], tables: dict[str, ad.AnnData]) -> None:
+        self.shapes = shapes
+        self.tables = tables
+
+    def __getitem__(self, key: str) -> ad.AnnData:
+        return self.tables[key]
+
+
+def _make_shapes_sdata(shapes_element: gpd.GeoDataFrame, table: ad.AnnData) -> _DummySpatialData:
+    parsed_table = TableModel.parse(
+        table,
+        region="cells",
+        region_key="region",
+        instance_key="instance_id",
+    )
+    return _DummySpatialData(shapes={"cells": shapes_element}, tables={"table": parsed_table})
 
 
 def _rgba(color: object, alpha: float) -> tuple[float, float, float, float]:
@@ -417,6 +439,296 @@ def test_align_table_color_source_to_shapes_rows_rejects_unknown_rendered_source
             style_spec=style_spec,
             source_shapes_index_by_row=("shape_missing",),
         )
+
+
+def test_apply_table_color_source_to_shapes_layer_uses_table_categorical_palette_and_table_coverage() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"instance_id": ["cell_1", "cell_2", "cell_3"]},
+        geometry=[_polygon(0), _polygon(2), _polygon(4)],
+        index=["shape_a", "shape_b", "shape_c"],
+    )
+    table = ad.AnnData(
+        obs=pd.DataFrame(
+            {
+                "region": ["cells", "cells"],
+                "instance_id": ["cell_1", "cell_2"],
+                "cell_type": pd.Categorical(["T", None], categories=["T", "B"]),
+            },
+            index=["obs_1", "obs_2"],
+        )
+    )
+    table.uns["cell_type_colors"] = ["red", "blue"]
+    layer = _make_shapes_layer(("shape_a", "shape_a", "shape_b", "shape_c"))
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    result = apply_table_color_source_to_shapes_layer(
+        layer,
+        sdata=_make_shapes_sdata(geodataframe, table),
+        shapes_name="cells",
+        style_spec=style_spec,
+        source_shapes_index_by_row=("shape_a", "shape_a", "shape_b", "shape_c"),
+        source_shapes_index_feature_name="index",
+        fill=True,
+    )
+
+    assert result.value_kind == "categorical"
+    assert result.palette_source == "stored"
+    assert result.coercion_applied is False
+    assert result.unannotated_source_shape_count == 1
+    assert result.unannotated_rendered_shape_count == 1
+    np.testing.assert_allclose(
+        layer.face_color,
+        np.asarray(
+            [
+                _rgba("red", SHAPES_FACE_ALPHA),
+                _rgba("red", SHAPES_FACE_ALPHA),
+                _rgba(SHAPES_MISSING_BASE_COLOR, SHAPES_FACE_ALPHA),
+                _rgba(SHAPES_MISSING_BASE_COLOR, 0.0),
+            ]
+        ),
+    )
+    np.testing.assert_allclose(
+        layer.edge_color,
+        np.asarray(
+            [
+                _rgba("red", SHAPES_EDGE_ALPHA),
+                _rgba("red", SHAPES_EDGE_ALPHA),
+                _rgba(SHAPES_MISSING_BASE_COLOR, SHAPES_EDGE_ALPHA),
+                _rgba(SHAPES_MISSING_BASE_COLOR, 0.0),
+            ]
+        ),
+    )
+    assert layer.features["cell_type"].iloc[:2].to_list() == ["T", "T"]
+    assert pd.isna(layer.features["cell_type"].iloc[2])
+    assert pd.isna(layer.features["cell_type"].iloc[3])
+
+
+def test_apply_table_color_source_to_shapes_layer_colors_string_instances_with_label_colormap() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"instance_id": ["cell_1", "cell_1", "cell_2"]},
+        geometry=[_polygon(0), _polygon(2), _polygon(4)],
+        index=["shape_a", "shape_b", "shape_c"],
+    )
+    table = ad.AnnData(
+        obs=pd.DataFrame(
+            {
+                "region": ["cells", "cells"],
+                "instance_id": ["cell_1", "cell_2"],
+            },
+            index=["obs_1", "obs_2"],
+        )
+    )
+    layer = _make_shapes_layer(("shape_a", "shape_b", "shape_c"))
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="instance_id",
+        value_kind="instance",
+    )
+
+    result = apply_table_color_source_to_shapes_layer(
+        layer,
+        sdata=_make_shapes_sdata(geodataframe, table),
+        shapes_name="cells",
+        style_spec=style_spec,
+        source_shapes_index_by_row=("shape_a", "shape_b", "shape_c"),
+        source_shapes_index_feature_name="index",
+    )
+
+    expected_label_colors = label_colormap(background_value=0).map(np.asarray([1, 1, 2], dtype=np.int64))
+    expected_edge = expected_label_colors.copy()
+    expected_edge[:, 3] = SHAPES_EDGE_ALPHA
+    expected_face = expected_label_colors.copy()
+    expected_face[:, 3] = 0.0
+
+    assert result.value_kind == "instance"
+    assert result.palette_source is None
+    assert result.coercion_applied is False
+    assert result.unannotated_source_shape_count == 0
+    assert result.unannotated_rendered_shape_count == 0
+    np.testing.assert_allclose(layer.face_color, expected_face)
+    np.testing.assert_allclose(layer.edge_color, expected_edge)
+    assert layer.features["instance_id"].to_list() == ["cell_1", "cell_1", "cell_2"]
+
+
+def test_apply_table_color_source_to_shapes_layer_uses_positive_integer_instance_ids_for_identity_colors() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"instance_id": [5, 10, 15]},
+        geometry=[_polygon(0), _polygon(2), _polygon(4)],
+        index=["shape_a", "shape_b", "shape_c"],
+    )
+    table = ad.AnnData(
+        obs=pd.DataFrame(
+            {
+                "region": ["cells", "cells"],
+                "instance_id": [5, 10],
+            },
+            index=["obs_1", "obs_2"],
+        )
+    )
+    layer = _make_shapes_layer(("shape_a", "shape_b", "shape_c"))
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="instance_id",
+        value_kind="instance",
+    )
+
+    result = apply_table_color_source_to_shapes_layer(
+        layer,
+        sdata=_make_shapes_sdata(geodataframe, table),
+        shapes_name="cells",
+        style_spec=style_spec,
+        source_shapes_index_by_row=("shape_a", "shape_b", "shape_c"),
+        source_shapes_index_feature_name="index",
+    )
+
+    expected_label_colors = label_colormap(background_value=0).map(np.asarray([5, 10, 0], dtype=np.int64))
+    expected_edge = expected_label_colors.copy()
+    expected_edge[:, 3] = SHAPES_EDGE_ALPHA
+    expected_edge[2, 3] = 0.0
+
+    assert result.value_kind == "instance"
+    assert result.unannotated_source_shape_count == 1
+    assert result.unannotated_rendered_shape_count == 1
+    np.testing.assert_allclose(layer.edge_color, expected_edge)
+    assert layer.features["instance_id"].to_list()[:2] == [5, 10]
+    assert pd.isna(layer.features["instance_id"].iloc[2])
+
+
+def test_apply_table_color_source_to_shapes_layer_colors_sparse_x_var_continuously() -> None:
+    from scipy import sparse
+
+    geodataframe = gpd.GeoDataFrame(
+        {"instance_id": ["cell_1", "cell_2", "cell_3"]},
+        geometry=[_polygon(0), _polygon(2), _polygon(4)],
+        index=["shape_a", "shape_b", "shape_c"],
+    )
+    table = ad.AnnData(
+        X=sparse.csr_matrix(np.asarray([[1.0, 10.0], [2.0, 20.0]])),
+        obs=pd.DataFrame(
+            {
+                "region": ["cells", "cells"],
+                "instance_id": ["cell_1", "cell_2"],
+            },
+            index=["obs_1", "obs_2"],
+        ),
+        var=pd.DataFrame(index=["GeneA", "GeneB"]),
+    )
+    layer = _make_shapes_layer(("shape_a", "shape_b", "shape_c"))
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="x_var",
+        value_key="GeneB",
+        value_kind="continuous",
+    )
+
+    result = apply_table_color_source_to_shapes_layer(
+        layer,
+        sdata=_make_shapes_sdata(geodataframe, table),
+        shapes_name="cells",
+        style_spec=style_spec,
+        source_shapes_index_by_row=("shape_a", "shape_b", "shape_c"),
+        source_shapes_index_feature_name="index",
+    )
+
+    rendered_row_colors = continuous_colors_for_values(
+        pd.Series([10.0, 20.0, np.nan]),
+        missing_color=SHAPES_MISSING_BASE_COLOR,
+    )
+    expected_edge = np.asarray([_rgba(color, SHAPES_EDGE_ALPHA) for color in rendered_row_colors])
+    expected_edge[2, 3] = 0.0
+
+    assert result.value_kind == "continuous"
+    assert result.palette_source is None
+    assert result.coercion_applied is False
+    assert result.unannotated_source_shape_count == 1
+    assert result.unannotated_rendered_shape_count == 1
+    np.testing.assert_allclose(layer.edge_color, expected_edge)
+    assert layer.features["GeneB"].to_list()[:2] == [10.0, 20.0]
+    assert pd.isna(layer.features["GeneB"].iloc[2])
+
+
+def test_apply_table_color_source_to_shapes_layer_coerces_string_obs_to_temporary_categorical() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"instance_id": ["cell_1", "cell_2"]},
+        geometry=[_polygon(0), _polygon(2)],
+        index=["shape_a", "shape_b"],
+    )
+    table = ad.AnnData(
+        obs=pd.DataFrame(
+            {
+                "region": ["cells", "cells"],
+                "instance_id": ["cell_1", "cell_2"],
+                "free_text": ["alpha", "beta"],
+            },
+            index=["obs_1", "obs_2"],
+        )
+    )
+    table.uns["free_text_colors"] = ["red", "blue"]
+    layer = _make_shapes_layer(("shape_a", "shape_b"))
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="free_text",
+        value_kind="categorical",
+    )
+
+    result = apply_table_color_source_to_shapes_layer(
+        layer,
+        sdata=_make_shapes_sdata(geodataframe, table),
+        shapes_name="cells",
+        style_spec=style_spec,
+        source_shapes_index_by_row=("shape_a", "shape_b"),
+        source_shapes_index_feature_name="index",
+    )
+
+    assert result.value_kind == "categorical"
+    assert result.palette_source == "default_missing"
+    assert result.coercion_applied is True
+    assert layer.features["free_text"].to_list() == ["alpha", "beta"]
+
+
+def test_apply_table_color_source_to_shapes_layer_disambiguates_style_feature_from_source_index_feature() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"instance_id": ["cell_1"]},
+        geometry=[_polygon(0)],
+        index=["shape_a"],
+    )
+    table = ad.AnnData(
+        obs=pd.DataFrame(
+            {
+                "region": ["cells"],
+                "instance_id": ["cell_1"],
+                "cell_id": pd.Categorical(["A"]),
+            },
+            index=["obs_1"],
+        )
+    )
+    layer = _make_shapes_layer(("shape_a",), source_index_feature_name="cell_id")
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="cell_id",
+        value_kind="categorical",
+    )
+
+    apply_table_color_source_to_shapes_layer(
+        layer,
+        sdata=_make_shapes_sdata(geodataframe, table),
+        shapes_name="cells",
+        style_spec=style_spec,
+        source_shapes_index_by_row=("shape_a",),
+        source_shapes_index_feature_name="cell_id",
+    )
+
+    assert layer.features["cell_id"].to_list() == ["shape_a"]
+    assert layer.features["cell_id__value"].to_list() == ["A"]
 
 
 def test_apply_shape_column_color_source_to_shapes_layer_uses_stored_categorical_companion_palette() -> None:
