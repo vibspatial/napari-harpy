@@ -41,7 +41,7 @@ Implemented pieces:
   - `get_annotating_table_names(sdata, element_name)` calls SpatialData's
     generic `get_element_annotators(...)`.
 - `viewer/shapes_styling.py`
-  - `apply_shape_color_source_to_shapes_layer(...)` applies direct
+  - `apply_shape_column_color_source_to_shapes_layer(...)` applies direct
     `GeoDataFrame` column values;
   - it already handles rendered-row alignment for MultiPolygons through
     `source_shapes_index_by_row`;
@@ -259,7 +259,7 @@ steps belong to Slice 4+.
 
 Avoid introducing a broad public alignment model. The current codebase keeps
 alignment close to the styling function: direct shapes styling aligns inline in
-`apply_shape_color_source_to_shapes_layer(...)`, and labels use a small private
+`apply_shape_column_color_source_to_shapes_layer(...)`, and labels use a small private
 helper returning only the pieces the styling function needs. Shape table
 alignment should follow that pattern.
 
@@ -440,8 +440,22 @@ Likely code changes:
     `get_table_color_source_options(sdata, table_name)` for Slice 2 discovery;
   - keep shape-specific table-to-shape validation for Slice 3.
 - `viewer/shapes_styling.py`
-  - keep `apply_shape_color_source_to_shapes_layer(...)` for direct columns;
-  - add `apply_table_color_source_to_shapes_layer(...)`;
+  - keep `apply_shape_column_color_source_to_shapes_layer(...)` for direct columns;
+  - add `apply_table_color_source_to_shapes_layer(...)` with an `sdata`-based
+    API that mirrors labels styling and resolves the linked table internally:
+    ```python
+    def apply_table_color_source_to_shapes_layer(
+        layer: Shapes,
+        *,
+        sdata: SpatialData,
+        shapes_name: str,
+        style_spec: TableColorSourceSpec,
+        source_shapes_index_by_row: tuple[Any, ...],
+        source_shapes_index_feature_name: str,
+        fill: bool = False,
+    ) -> ShapesStyleResult:
+        ...
+    ```
   - add a shape-specific instance-coloring branch for table `instance_key`
     sources;
   - extract shared categorical/continuous rendered-row application helpers so
@@ -642,7 +656,23 @@ shape-column coloring behavior unchanged.
      rendered-row repetition, and string IDs.
 
 4. Table-backed shapes styling
-   - add `apply_table_color_source_to_shapes_layer(...)`;
+   - add `apply_table_color_source_to_shapes_layer(...)` with the agreed API:
+     ```python
+     def apply_table_color_source_to_shapes_layer(
+         layer: Shapes,
+         *,
+         sdata: SpatialData,
+         shapes_name: str,
+         style_spec: TableColorSourceSpec,
+         source_shapes_index_by_row: tuple[Any, ...],
+         source_shapes_index_feature_name: str,
+         fill: bool = False,
+     ) -> ShapesStyleResult:
+         ...
+     ```
+   - resolve the table and `SpatialDataTableMetadata` from
+     `style_spec.table_name` inside the function, matching the labels styling
+     API shape and keeping adapter dispatch simple;
    - reuse the existing rendered-row expansion via `source_shapes_index_by_row`;
    - add the special `instance_key` identity-coloring branch;
    - support categorical `.obs` columns with `table.uns["<column>_colors"]`;
