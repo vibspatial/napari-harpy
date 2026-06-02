@@ -203,6 +203,20 @@ def make_colorable_shapes_sdata(shapes_name: str = "cell_boundaries") -> SimpleN
     return make_shapes_sdata(geodataframe, shapes_name=shapes_name)
 
 
+def make_colorable_point_radius_shapes_sdata(shapes_name: str = "cell_centroids") -> SimpleNamespace:
+    geodataframe = gpd.GeoDataFrame(
+        {
+            "radius": [2.0, 3.0],
+            "cell_type": pd.Categorical(["T", "B"], categories=["T", "B"]),
+            "cell_type_colors": ["#ff0000", "#00ff00"],
+            "score": [0.0, 1.0],
+        },
+        geometry=[Point(10, 20), Point(30, 40)],
+        index=["cell_1", "cell_2"],
+    )
+    return make_shapes_sdata(geodataframe, shapes_name=shapes_name)
+
+
 def make_table_backed_shapes_sdata() -> ShapesSpatialDataWithTables:
     geodataframe = gpd.GeoDataFrame(
         {"instance_id": ["cell_1", "cell_2", "cell_3"]},
@@ -2170,6 +2184,100 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_creates_registered_variant_w
     assert "style_source_kind" not in result.layer.metadata
     assert "style_value_key" not in result.layer.metadata
     assert "style_value_kind" not in result.layer.metadata
+
+
+def test_viewer_adapter_ensure_styled_shapes_loaded_creates_point_backed_categorical_variant() -> None:
+    sdata = make_colorable_point_radius_shapes_sdata()
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = ShapeColumnColorSourceSpec(
+        source_kind="shape_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    result = adapter.ensure_styled_shapes_loaded(sdata, "cell_centroids", "global", style_spec)
+
+    assert result.created is True
+    assert result.value_kind == "categorical"
+    assert result.palette_source == "stored"
+    assert result.coercion_applied is False
+    assert isinstance(result.layer, Points)
+    assert result.layer in viewer.layers
+    assert result.layer.name == "cell_centroids[shapes_column:cell_type]"
+    assert adapter.get_loaded_primary_shapes_layer(sdata, "cell_centroids", "global") is None
+    assert adapter.get_loaded_styled_shapes_layer(sdata, "cell_centroids", style_spec, "global") is result.layer
+    binding = get_shapes_binding(adapter, result.layer)
+    assert binding.shapes_role == "styled"
+    assert binding.shapes_rendering_mode == "points"
+    assert binding.style_spec == style_spec
+    assert binding.source_row_id_by_rendered_row == range(2)
+    assert binding.source_shapes_index_feature_name == "index"
+    assert list(result.layer.features.columns) == ["index", "cell_type"]
+    assert result.layer.features["index"].to_list() == ["cell_1", "cell_2"]
+    assert result.layer.features["cell_type"].to_list() == ["T", "B"]
+    np.testing.assert_allclose(result.layer.size, np.asarray([4.0, 6.0]))
+    np.testing.assert_allclose(result.layer.face_color[0], to_rgba("#ff0000"))
+    np.testing.assert_allclose(result.layer.border_color[1], to_rgba("#00ff00"))
+    np.testing.assert_allclose(result.layer.border_width, np.zeros(2))
+    assert result.layer._get_feature_status(0) == "index: cell_1; cell_type: T"
+
+
+def test_viewer_adapter_ensure_styled_shapes_loaded_creates_point_backed_continuous_variant() -> None:
+    sdata = make_colorable_point_radius_shapes_sdata()
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = ShapeColumnColorSourceSpec(
+        source_kind="shape_column",
+        value_key="score",
+        value_kind="continuous",
+    )
+
+    first = adapter.ensure_styled_shapes_loaded(sdata, "cell_centroids", "global", style_spec)
+    second = adapter.ensure_styled_shapes_loaded(sdata, "cell_centroids", "global", style_spec, fill=True)
+
+    assert isinstance(first.layer, Points)
+    assert first.layer is second.layer
+    assert first.created is True
+    assert second.created is False
+    assert first.value_kind == "continuous"
+    assert first.palette_source is None
+    assert first.coercion_applied is False
+    assert get_shapes_binding(adapter, first.layer).shapes_rendering_mode == "points"
+    assert list(first.layer.features.columns) == ["index", "score"]
+    assert first.layer.features["score"].to_list() == [0.0, 1.0]
+    np.testing.assert_allclose(first.layer.size, np.asarray([4.0, 6.0]))
+    np.testing.assert_allclose(first.layer.face_color, first.layer.border_color)
+    assert len(viewer.layers) == 1
+
+
+def test_viewer_adapter_point_backed_shape_column_styling_disambiguates_index_feature_collision() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {
+            "radius": [2.0],
+            "cell_type": pd.Categorical(["T"], categories=["T"]),
+            "cell_type_colors": ["#ff0000"],
+        },
+        geometry=[Point(10, 20)],
+        index=["cell_1"],
+    )
+    geodataframe.index.name = "cell_type"
+    sdata = make_shapes_sdata(geodataframe, shapes_name="cell_centroids")
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = ShapeColumnColorSourceSpec(
+        source_kind="shape_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    result = adapter.ensure_styled_shapes_loaded(sdata, "cell_centroids", "global", style_spec)
+
+    assert isinstance(result.layer, Points)
+    assert get_shapes_binding(adapter, result.layer).source_shapes_index_feature_name == "cell_type"
+    assert list(result.layer.features.columns) == ["cell_type", "cell_type__value"]
+    assert result.layer.features["cell_type"].to_list() == ["cell_1"]
+    assert result.layer.features["cell_type__value"].to_list() == ["T"]
 
 
 def test_viewer_adapter_ensure_styled_shapes_loaded_creates_table_backed_variant() -> None:

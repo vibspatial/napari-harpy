@@ -98,15 +98,15 @@ class _ShapeTableRowAlignment:
 
 
 def apply_shape_column_color_source_to_shapes_layer(
-    layer: Shapes,
+    layer: Shapes | Points,
     *,
     shapes_element: gpd.GeoDataFrame,
     style_spec: ShapeColumnColorSourceSpec,
-    source_row_id_by_rendered_row: tuple[int, ...],
+    source_row_id_by_rendered_row: tuple[int, ...] | range,
     source_shapes_index_feature_name: str,
     fill: bool = False,
 ) -> ShapesStyleResult:
-    """Apply one direct shapes-column color source to a napari ``Shapes`` layer.
+    """Apply one direct shapes-column color source to a semantic shapes layer.
 
     Parameters
     ----------
@@ -116,7 +116,8 @@ def apply_shape_column_color_source_to_shapes_layer(
         source row, such as a ``MultiPolygon``, expands into multiple rendered
         napari shapes. For example, if source row position ``7`` expands into
         three polygons and source row position ``8`` expands into one polygon,
-        this mapping is ``(7, 7, 7, 8)``. Styled shapes use it to repeat the
+        this mapping is ``(7, 7, 7, 8)``. Point-backed shapes are one-to-one
+        and can pass ``range(n)``. Styled shapes use this mapping to repeat the
         source row's style value for every rendered part.
     source_shapes_index_feature_name
         Name of the ``layer.features`` column that stores the source
@@ -152,7 +153,12 @@ def apply_shape_column_color_source_to_shapes_layer(
     else:
         style_result, rendered_row_colors, feature_values = _build_continuous_shape_style(rendered_row_values)
 
-    _apply_rendered_row_colors_to_shapes_layer(layer, rendered_row_colors, fill=fill)
+    if isinstance(layer, Shapes):
+        _apply_rendered_row_colors_to_shapes_layer(layer, rendered_row_colors, fill=fill)
+    elif isinstance(layer, Points):
+        _apply_rendered_row_colors_to_points_layer(layer, rendered_row_colors)
+    else:  # pragma: no cover - defensive for future layer subclasses.
+        raise TypeError(f"Unsupported styled shapes layer type: {type(layer)!r}.")
     # Unlike styled labels, styled shapes already have a useful feature table
     # from the geometry-loading path: the source GeoDataFrame index column used
     # for status-bar display. Preserve it and add only the selected style source
@@ -280,7 +286,7 @@ def build_styled_shapes_layer_name(
 
 
 def _validate_source_row_id_by_rendered_row(
-    source_row_id_by_rendered_row: tuple[int, ...],
+    source_row_id_by_rendered_row: tuple[int, ...] | range,
     *,
     source_row_count: int,
     rendered_row_count: int | None = None,
@@ -913,6 +919,22 @@ def _apply_rendered_row_colors_to_shapes_layer(
         refresh()
 
 
+def _apply_rendered_row_colors_to_points_layer(
+    layer: Points,
+    rendered_row_colors: pd.Series,
+) -> None:
+    if len(rendered_row_colors) != len(layer.data):
+        raise ValueError("Rendered-row colors must contain one color for each rendered napari point row.")
+
+    colors = _with_alpha(rendered_row_colors, SHAPES_EDGE_ALPHA)
+    layer.face_color = colors
+    layer.border_color = colors
+    layer.border_width = 0
+    refresh = getattr(layer, "refresh", None)
+    if callable(refresh):
+        refresh()
+
+
 def _apply_table_rendered_row_colors_to_shapes_layer(
     layer: Shapes,
     rendered_row_colors: pd.Series,
@@ -946,7 +968,7 @@ def _styled_shapes_face_alpha(fill: bool) -> float:
 
 
 def _set_shape_style_feature(
-    layer: Shapes,
+    layer: Shapes | Points,
     values: pd.Series,
     *,
     style_column_name: str,

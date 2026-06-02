@@ -990,10 +990,10 @@ class ViewerAdapter(QObject):
         shapes_name: str,
         style_spec: ShapeColumnColorSourceSpec | TableColorSourceSpec,
         coordinate_system: str | None = None,
-    ) -> Shapes | None:
+    ) -> Shapes | Points | None:
         """Return one loaded styled shapes layer for a specific style variant."""
         for layer in self._iter_candidate_layers():
-            if not _is_shapes_layer(layer):
+            if not _is_semantic_shapes_layer(layer):
                 continue
 
             binding = self._layer_bindings.get_binding(layer)
@@ -1014,11 +1014,11 @@ class ViewerAdapter(QObject):
         sdata: SpatialData,
         shapes_name: str,
         coordinate_system: str | None = None,
-    ) -> list[Shapes]:
+    ) -> list[Shapes | Points]:
         """Return all loaded styled shapes layers for one shapes element."""
-        matches: list[Shapes] = []
+        matches: list[Shapes | Points] = []
         for layer in self._iter_candidate_layers():
-            if not _is_shapes_layer(layer):
+            if not _is_semantic_shapes_layer(layer):
                 continue
 
             binding = self._layer_bindings.get_binding(layer)
@@ -1351,9 +1351,8 @@ class ViewerAdapter(QObject):
             coordinate_system,
             name=shapes_name,
             sync_edge_color=True,
-            # Slice 3 enables the points fast path only for primary shapes.
-            # Styled point-radius support will remove this temporary split once
-            # those paths can also work with napari Points layers.
+            # Primary shapes can always use the point-radius fast path when the
+            # source element qualifies.
             render_point_radius_as_points=True,
         )
         layer = built_layer.layer
@@ -1401,10 +1400,12 @@ class ViewerAdapter(QObject):
                 coordinate_system,
                 name=build_styled_shapes_layer_name(shapes_name, style_spec),
                 sync_edge_color=False,
+                # Direct shape-column styling can color point-backed shapes.
+                # Table-backed point styling is added separately because it has
+                # more alignment rules.
+                render_point_radius_as_points=isinstance(style_spec, ShapeColumnColorSourceSpec),
             )
             layer = built_layer.layer
-            if not isinstance(layer, Shapes):  # pragma: no cover - defensive; styled shapes keep the generic path.
-                raise ValueError("Styled shapes require a napari Shapes layer.")
             _add_layer_to_viewer(self._viewer, layer)
             binding = self.register_shapes_layer(
                 layer,
@@ -1439,6 +1440,8 @@ class ViewerAdapter(QObject):
                 fill=fill,
             )
         elif isinstance(style_spec, TableColorSourceSpec):
+            if not isinstance(layer, Shapes):
+                raise ValueError("Table-backed styled shapes require a napari Shapes layer.")
             style_result = apply_table_color_source_to_shapes_layer(
                 layer,
                 sdata=sdata,
@@ -1486,7 +1489,9 @@ class ViewerAdapter(QObject):
 
         return removed_layers
 
-    def remove_shapes_layer(self, sdata: SpatialData, shapes_name: str, coordinate_system: str) -> Shapes | Points | None:
+    def remove_shapes_layer(
+        self, sdata: SpatialData, shapes_name: str, coordinate_system: str
+    ) -> Shapes | Points | None:
         """Remove the loaded shapes layer for one shapes element in one coordinate system."""
         layer = self._get_loaded_shapes_layer_for_coordinate_system(sdata, shapes_name, coordinate_system)
         if layer is None:

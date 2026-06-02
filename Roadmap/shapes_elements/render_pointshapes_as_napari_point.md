@@ -1,6 +1,6 @@
 # Render Point-Radius Shapes As Napari Points
 
-Status: Slice 3 implemented; Slice 4 specified; Slices 5-8 pending
+Status: Slice 4 implemented; Slices 5-8 pending
 
 ## Goal
 
@@ -261,7 +261,7 @@ Add focused tests for:
      - non-qualifying shapes elements still create the existing napari `Shapes`
        layer with `shapes_rendering_mode="shapes"`.
 
-4. Direct shape-column styling on points-backed shapes - specified
+4. Direct shape-column styling on points-backed shapes - completed
    - add styling support for `ShapeColumnColorSourceSpec` when the styled layer
      is a napari `Points` layer representing point-radius shapes;
    - keep this limited to direct shape-column styling. Table-backed
