@@ -354,8 +354,10 @@ Add focused tests for:
      `SourceRowIdByRenderedRow` (`tuple[int, ...] | range`), so the same
      styling path works for generic shapes and one-to-one point-radius shapes;
    - reuse the existing table-to-source-row alignment helper and semantics:
-     - resolve `instance_key` from either the shapes GeoDataFrame column or the
-       named GeoDataFrame index;
+     - require `instance_key` to be stored in the shapes GeoDataFrame index,
+       with `shapes_element.index.name == instance_key`;
+     - reject table-backed styling when `instance_key` is stored as a
+       GeoDataFrame column instead of the index;
      - require exact matching between selected-region table instances and
        shapes instance identities;
      - allow duplicate shape instance identities, so multiple rendered points

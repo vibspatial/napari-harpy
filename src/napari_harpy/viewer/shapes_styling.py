@@ -466,59 +466,28 @@ def _get_shape_instance_values(
 ) -> pd.Series:
     """Return source-row-aligned shape instance identities for table lookup.
 
-    The SpatialData table `instance_key` can identify shapes either through a
-    GeoDataFrame column with that name or through a GeoDataFrame index whose
-    name is `instance_key`.
+    Table-backed shapes styling uses the GeoDataFrame index as the shape
+    instance identity. This keeps hover/status features and table alignment on
+    the same semantic key.
     """
-    has_instance_column = instance_key in shapes_element.columns
-    has_instance_index = getattr(shapes_element.index, "name", None) == instance_key
-
-    if not has_instance_column and not has_instance_index:
+    if instance_key in shapes_element.columns:
         raise ValueError(
-            f"Shapes element `{shapes_name}` is missing instance key `{instance_key}` for table-backed styling. "
-            f"Expected either a GeoDataFrame column named `{instance_key}` or a GeoDataFrame index named "
-            f"`{instance_key}`."
+            f"Shapes element `{shapes_name}` must store table instance key `{instance_key}` in the GeoDataFrame "
+            "index, not in a GeoDataFrame column, for table-backed styling."
+        )
+    if getattr(shapes_element.index, "name", None) != instance_key:
+        raise ValueError(
+            f"Shapes element `{shapes_name}` must use GeoDataFrame index `{instance_key}` for table-backed styling. "
+            f"Set `sdata.shapes[{shapes_name!r}].index.name = {instance_key!r}` and store the shape instance "
+            "identities in that index before styling from a linked table."
         )
 
-    index_values = pd.Series(
+    return pd.Series(
         shapes_element.index.to_numpy(copy=False),
         index=pd.RangeIndex(len(shapes_element)),
         name=instance_key,
         dtype="object",
     )
-    if not has_instance_column:
-        return index_values
-
-    column_values = pd.Series(
-        shapes_element[instance_key].to_numpy(copy=False),
-        index=pd.RangeIndex(len(shapes_element)),
-        name=instance_key,
-        dtype="object",
-    )
-    if has_instance_index:
-        disagreement_row_ids = [
-            row_id
-            for row_id, (column_value, index_value) in enumerate(
-                zip(column_values, index_values, strict=True),
-            )
-            if not _shape_instance_values_equal(column_value, index_value)
-        ]
-        if disagreement_row_ids:
-            preview = _format_value_preview(disagreement_row_ids)
-            raise ValueError(
-                f"Shapes element `{shapes_name}` has instance key `{instance_key}` both as a GeoDataFrame column "
-                f"and as the GeoDataFrame index name, but they disagree for source row(s): {preview}."
-            )
-
-    return column_values
-
-
-def _shape_instance_values_equal(left: object, right: object) -> bool:
-    if pd.isna(left) and pd.isna(right):
-        return True
-    if pd.isna(left) or pd.isna(right):
-        return False
-    return bool(left == right)
 
 
 def _get_table_color_values_by_instance(
