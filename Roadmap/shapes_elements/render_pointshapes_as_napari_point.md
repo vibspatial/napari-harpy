@@ -1,6 +1,6 @@
 # Render Point-Radius Shapes As Napari Points
 
-Status: Slice 1 implemented; Slices 2-5 pending
+Status: Slice 1 implemented; Slices 2-6 pending
 
 ## Goal
 
@@ -166,7 +166,41 @@ Add focused tests for:
        column;
      - helper does not call `GeoDataFrame.iterrows()`.
 
-2. Primary point-radius layer lifecycle
+2. Vectorized point-radius preparation optimization
+   - optimize `_prepare_napari_point_radius_shapes_layer_inputs(...)` before
+     building layer lifecycle on top of it;
+   - current Slice 1 helper is correctness-oriented and loops over Shapely
+     `Point` objects. Local synthetic timings:
+     - `100k` point-radius rows: about `0.53s`;
+     - `300k` point-radius rows: about `1.4-1.6s`;
+     - `1M` point-radius rows: about `4.7-5.1s`;
+     - extrapolated `9M` point-radius rows: roughly `40s+` for preparation
+       alone;
+   - a vectorized sketch using `geometry.x`, `geometry.y`, vectorized radius
+     validation, and direct feature DataFrame construction measured about
+     `0.07s` for `300k` and `0.24s` for `1M` on the same machine;
+   - replace per-row coordinate/radius extraction with vectorized extraction:
+     - verify all geometries are non-empty points with GeoPandas/Shapely vector
+       operations where possible;
+     - validate radii with `pd.to_numeric(..., errors="coerce")` and NumPy
+       finite/positive checks;
+     - build coordinates with vectorized `geometry.y` and `geometry.x`;
+     - build sizes with vectorized `2 * radius`;
+     - build source-index features directly from the GeoDataFrame index;
+   - store `source_row_id_by_rendered_row` as `range(n)` for qualifying
+     point-radius shapes, not `tuple(range(n))`. The mapping is always
+     one-to-one in this mode, and `range(n)` avoids materializing millions of
+     Python integer objects;
+   - keep the generic `Shapes` path on `tuple[int, ...]`, because polygons and
+     MultiPolygons can repeat source row ids, for example `(7, 7, 7, 8)`;
+   - if downstream type annotations need to accept both representations,
+     introduce a small alias such as
+     `SourceRowIdByRenderedRow = tuple[int, ...] | range`;
+   - add benchmark-oriented tests or focused unit tests that protect the
+     vectorized behavior without making the normal test suite timing-sensitive;
+   - keep the Slice 1 qualification/fallback semantics unchanged.
+
+3. Primary point-radius layer lifecycle
    - extend the adapter so `ensure_shapes_loaded(...)` can create a napari
      `Points` layer for qualifying point-radius shapes elements;
    - bind the layer semantically as a shapes element while recording that the
@@ -179,7 +213,7 @@ Add focused tests for:
      duplicate indices, named index display, and fallback to `Shapes` when the
      element does not qualify.
 
-3. Direct shape-column styling on points-backed shapes
+4. Direct shape-column styling on points-backed shapes
    - add styling support for `ShapeColumnColorSourceSpec` when the styled layer
      is a napari `Points` layer representing point-radius shapes;
    - reuse the existing shape-column value alignment by source row id;
@@ -191,7 +225,7 @@ Add focused tests for:
      columns, duplicate GeoDataFrame index values, named index display, and
      fill/edge behavior.
 
-4. Table-backed styling on points-backed shapes
+5. Table-backed styling on points-backed shapes
    - add styling support for `TableColorSourceSpec` when the styled layer is a
      napari `Points` layer representing point-radius shapes;
    - reuse the same table-to-source-row alignment rules as styled shapes,
@@ -205,7 +239,7 @@ Add focused tests for:
      duplicate shape instance identities, duplicate table instance errors, and
      named-index instance identity.
 
-5. Widget and feedback polish
+6. Widget and feedback polish
    - make the shapes card/status feedback distinguish between regular shapes
      rendering and point-radius shapes rendered as points;
    - keep the existing color-source controls unchanged at the data-model level;
