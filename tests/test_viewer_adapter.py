@@ -1882,7 +1882,9 @@ def test_viewer_adapter_ensure_shapes_loaded_renders_circles_as_points(sdata_blo
     assert binding.shapes_rendering_mode == "points"
     assert binding.source_row_id_by_rendered_row == range(len(circles))
     assert tuple(layer.features["index"].to_list()) == tuple(circles.index.to_list())
-    assert layer._get_feature_status(0) == f"index: {circles.index[0]}"
+    status_value = layer.get_status(position=tuple(layer.data[0]))["value"]
+    assert "index:" in status_value
+    assert status_value.count("index:") == 1
     assert adapter.get_loaded_primary_shapes_layer(sdata_blobs, "blobs_circles", "global") is layer
 
 
@@ -2220,7 +2222,12 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_creates_point_backed_categor
     np.testing.assert_allclose(result.layer.face_color[0], to_rgba("#ff0000"))
     np.testing.assert_allclose(result.layer.border_color[1], to_rgba("#00ff00"))
     np.testing.assert_allclose(result.layer.border_width, np.zeros(2))
-    assert result.layer._get_feature_status(0) == "index: cell_1; cell_type: T"
+    status_value = result.layer.get_status(position=tuple(result.layer.data[0]))["value"]
+    assert "index:" in status_value
+    assert status_value.count("index:") == 1
+    assert "cell_type:" in status_value
+    assert status_value.count("cell_type:") == 1
+    assert status_value.index("index:") < status_value.index("cell_type:")
 
 
 def test_viewer_adapter_ensure_styled_shapes_loaded_creates_point_backed_continuous_variant() -> None:

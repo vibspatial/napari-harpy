@@ -176,20 +176,26 @@ class _HarpyPointRadiusShapes(Points):
         if position is None:
             return status
 
+        # Napari Points already appends normal feature columns to the status
+        # text. The fallback feature name "index" is special-cased by napari
+        # and is not shown, so Harpy only appends that source index manually.
+        if self._source_shapes_index_feature_name != DEFAULT_SHAPES_INDEX_FEATURE_NAME:
+            return status
+
         point_value = self.get_value(
             position,
             view_direction=view_direction,
             dims_displayed=dims_displayed,
             world=world,
         )
-        feature_status = self._get_feature_status(point_value)
-        if feature_status:
-            status["coordinates"] += f"; {feature_status}"
-            status["value"] += f"; {feature_status}"
+        index_status = self._get_source_index_status(point_value)
+        if index_status and f"{DEFAULT_SHAPES_INDEX_FEATURE_NAME}:" not in status["value"]:
+            status["coordinates"] = _insert_feature_status_first(status["coordinates"], index_status)
+            status["value"] = _insert_feature_status_first(status["value"], index_status)
         return status
 
-    def _get_feature_status(self, value: Any) -> str | None:
-        """Return status text for the picked rendered point row."""
+    def _get_source_index_status(self, value: Any) -> str | None:
+        """Return status text for the source index when napari omits it."""
         point_index = value[0] if isinstance(value, tuple) and value else value
         if point_index is None:
             return None
@@ -199,19 +205,13 @@ class _HarpyPointRadiusShapes(Points):
         except (IndexError, TypeError, ValueError):
             return None
 
-        status_parts: list[str] = []
-        index_feature_name = self._source_shapes_index_feature_name
-        if index_feature_name in feature_row:
-            source_index = feature_row[index_feature_name]
-            if not _is_missing_feature_value(source_index):
-                status_parts.append(f"{index_feature_name}: {source_index}")
+        if DEFAULT_SHAPES_INDEX_FEATURE_NAME not in feature_row:
+            return None
 
-        for feature_name, feature_value in feature_row.items():
-            if feature_name == index_feature_name or _is_missing_feature_value(feature_value):
-                continue
-            status_parts.append(f"{feature_name}: {feature_value}")
-
-        return "; ".join(status_parts) or None
+        source_index = feature_row[DEFAULT_SHAPES_INDEX_FEATURE_NAME]
+        if _is_missing_feature_value(source_index):
+            return None
+        return f"{DEFAULT_SHAPES_INDEX_FEATURE_NAME}: {source_index}"
 
 
 def _is_missing_feature_value(value: Any) -> bool:
@@ -222,6 +222,17 @@ def _is_missing_feature_value(value: Any) -> bool:
         return bool(pd.isna(value))
     except (TypeError, ValueError):
         return False
+
+
+def _insert_feature_status_first(status_text: str, feature_status: str) -> str:
+    """Insert Harpy source-index status before napari Points feature text."""
+    if not status_text:
+        return feature_status
+    if ";" not in status_text:
+        return f"{status_text}; {feature_status}"
+
+    base_status, feature_text = status_text.split(";", 1)
+    return f"{base_status}; {feature_status};{feature_text}"
 
 
 @dataclass(frozen=True, kw_only=True)
