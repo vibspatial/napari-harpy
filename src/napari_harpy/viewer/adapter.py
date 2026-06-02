@@ -1791,9 +1791,13 @@ def _prepare_napari_shapes_layer_inputs(shapes_element: Any) -> _NapariShapesLay
     has_radius = "radius" in getattr(shapes_element, "columns", [])
     geometry_column_name = getattr(getattr(shapes_element, "geometry", None), "name", "geometry")
     index_feature_name = _get_shapes_index_feature_name(shapes_element)
+    source_index_values = shapes_element.index.to_numpy(copy=False)
+    geometry_values = shapes_element[geometry_column_name].to_numpy(copy=False)
+    radius_values = shapes_element["radius"].to_numpy(copy=False) if has_radius else None
 
-    for source_row_id, (source_index, row) in enumerate(shapes_element.iterrows()):
-        geometry = row[geometry_column_name]
+    for source_row_id, (source_index, geometry) in enumerate(
+        zip(source_index_values, geometry_values, strict=True),
+    ):
         row_shape_count = len(data)
         feature_row = {index_feature_name: source_index}
 
@@ -1806,7 +1810,11 @@ def _prepare_napari_shapes_layer_inputs(shapes_element: Any) -> _NapariShapesLay
                 skipped_geometry_count += 1
                 continue
 
-            ellipse = _circle_to_napari_ellipse(geometry, row["radius"])
+            if radius_values is None:  # pragma: no cover - defensive for non-GeoDataFrame-like inputs
+                skipped_geometry_count += 1
+                continue
+
+            ellipse = _circle_to_napari_ellipse(geometry, radius_values[source_row_id])
             if ellipse is None:
                 skipped_geometry_count += 1
                 continue

@@ -11,7 +11,7 @@ import pytest
 from matplotlib.colors import to_rgba
 from napari.layers import Image, Labels, Points, Shapes
 from napari.utils.colormaps import CyclicLabelColormap, DirectLabelColormap
-from shapely.geometry import LineString, Polygon
+from shapely.geometry import LineString, Point, Polygon
 from spatialdata.models import PointsModel, ShapesModel, TableModel
 from spatialdata.transformations import Affine, Identity
 
@@ -28,6 +28,7 @@ from napari_harpy.viewer.adapter import (
     PointsLayerIdentity,
     ShapesLayerBinding,
     ViewerAdapter,
+    _prepare_napari_shapes_layer_inputs,
 )
 from napari_harpy.viewer.points_styling import POINTS_SELECTION_SOLID_COLOR
 from napari_harpy.viewer.shapes_styling import SHAPES_FACE_ALPHA
@@ -1863,6 +1864,26 @@ def test_viewer_adapter_ensure_shapes_loaded_renders_circles_as_ellipses(sdata_b
     binding = get_shapes_binding(adapter, layer)
     assert binding.source_row_id_by_rendered_row == tuple(range(len(circles)))
     assert tuple(layer.features["index"].to_list()) == tuple(circles.index.to_list())
+
+
+def test_prepare_napari_shapes_layer_inputs_does_not_use_iterrows(monkeypatch: pytest.MonkeyPatch) -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"radius": [1.0, 2.0]},
+        geometry=[Point(1, 2), Point(3, 4)],
+        index=["cell_1", "cell_2"],
+    )
+
+    def fail_iterrows(_self):
+        raise AssertionError("_prepare_napari_shapes_layer_inputs should not call GeoDataFrame.iterrows().")
+
+    monkeypatch.setattr(gpd.GeoDataFrame, "iterrows", fail_iterrows)
+
+    result = _prepare_napari_shapes_layer_inputs(geodataframe)
+
+    assert result.shape_types == ["ellipse", "ellipse"]
+    assert result.source_row_id_by_rendered_row == (0, 1)
+    assert result.features["index"].to_list() == ["cell_1", "cell_2"]
+    assert result.skipped_geometry_count == 0
 
 
 def test_viewer_adapter_ensure_shapes_loaded_preserves_polygon_holes() -> None:

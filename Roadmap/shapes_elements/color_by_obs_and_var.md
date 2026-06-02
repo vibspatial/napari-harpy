@@ -1,6 +1,6 @@
 # Color Shapes By Linked Table `.obs` And `X[:, var]`
 
-Status: Slice 7b implemented; Slices 8-9 pending
+Status: Slice 8 implemented; Slice 9 pending
 
 ## Goal
 
@@ -809,17 +809,16 @@ shape-column coloring behavior unchanged.
      disagreeing column/index values, and table instances missing from the
      resolved shape instance identities.
 
-8. Shapes geometry preparation performance - follow-up
-   - investigate and optimize `_prepare_napari_shapes_layer_inputs(...)` for
-     large shapes elements;
-   - current implementation uses `shapes_element.iterrows()`, which constructs a
-     pandas row `Series` for every source shape. A quick local synthetic check
-     for 100k point-radius rows measured about `1.76s` for the current builder
-     path versus about `0.40s` for a direct column-array loop, before napari
-     rendering;
-   - replace row-wise pandas iteration with direct array iteration where this
-     preserves behavior, for example by reading geometry, index, and radius
-     values as arrays and enumerating those arrays;
+8. Shapes geometry preparation performance - completed
+   - optimize `_prepare_napari_shapes_layer_inputs(...)` for large shapes
+     elements;
+   - previous implementation used `shapes_element.iterrows()`, which
+     constructed a pandas row `Series` for every source shape. A quick local
+     synthetic check for 100k point-radius rows measured about `1.76s` for that
+     builder path versus about `0.40s` for a direct column-array loop, before
+     napari rendering;
+   - replace row-wise pandas iteration with direct array iteration by reading
+     geometry, index, and radius values as arrays and enumerating those arrays;
    - keep the existing behavior for skipped geometries, point-radius ellipse
      conversion, `source_row_id_by_rendered_row`, visible source-index
      `layer.features`, and MultiPolygon expansion;
