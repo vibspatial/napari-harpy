@@ -1,6 +1,6 @@
 # Render Point-Radius Shapes As Napari Points
 
-Status: Slice 3 implemented; Slice 4 specified; Slices 5-7 pending
+Status: Slice 3 implemented; Slice 4 specified; Slices 5-8 pending
 
 ## Goal
 
@@ -343,14 +343,21 @@ Add focused tests for:
      - `_connect_current_edge_width_to_global_edge_width(layer)`;
      - `_connect_current_edge_color_to_global_edge_color(layer)` when
        `sync_edge_color=True`;
-   - decide the equivalent behavior for primary point-radius shapes rendered as
-     napari `Points`;
-   - likely map the shared color control to point face/border color, while
-     avoiding this sync for styled point-backed layers where colors are
+   - for primary point-radius shapes rendered as napari `Points`, sync
+     presentation-only controls:
+     - `current_symbol -> symbol`, because symbol does not change the source
+       geometry semantics;
+     - `current_face_color -> face_color` and `border_color`, because primary
+       unstyled point-backed shapes use one presentation color;
+   - do not sync `current_size -> size` as an absolute overwrite for
+     point-backed shapes. Size is derived from the source `radius` column
+     (`size = 2 * radius`) and therefore carries geometry semantics. Applying
+     napari's absolute `current_size` globally would overwrite the
+     radius-derived sizes;
+   - implement size interaction separately as the radius-size scale factor in
+     Slice 8;
+   - avoid color/symbol sync for styled point-backed layers where colors are
      data-driven;
-   - decide whether there is a point-size analogue to the shapes edge-width
-     control, or whether point size must remain radius-derived and therefore
-     should not sync to global point-size changes;
    - add tests that changing the relevant napari presentation control updates
      all primary point-backed shapes consistently, and does not flatten styled
      point-backed palettes.
@@ -379,3 +386,34 @@ Add focused tests for:
      terminology;
    - add tests for widget request dispatch, status card feedback, and fallback
      messages.
+
+8. Point-backed radius-size scale control - follow-up
+   - make napari's point-size UI useful without destroying the source
+     radius-derived sizes;
+   - store the original radius-derived point sizes on the point-backed shapes
+     layer, for example as a private Harpy attribute:
+     `original_radius_sizes = 2 * radius`;
+   - choose a stable `reference_size` for the layer:
+     - if all radii are equal, use that single diameter;
+     - otherwise use a representative diameter such as the median finite
+       original size;
+   - initialize `layer.current_size` to `reference_size`, so the napari UI
+     starts from a value that matches the displayed radius-derived sizes;
+   - when `current_size` changes, interpret it as a scale target rather than an
+     absolute size overwrite:
+     - `scale = current_size / reference_size`;
+     - `layer.size = original_radius_sizes * scale`;
+   - preserve relative radius differences for variable-radius elements;
+   - for fixed-radius elements, this should feel like the normal napari point
+     size control because every point scales together;
+   - apply this to primary point-backed shapes first. For styled point-backed
+     layers, decide during implementation whether to reuse the same size-scale
+     state or preserve the styled layer's existing radius-derived sizes until a
+     later UX pass;
+   - add tests for:
+     - fixed-radius point-backed shapes scale like ordinary point-size changes;
+     - variable-radius point-backed shapes preserve relative size ratios;
+     - `current_size` initializes to the expected reference size;
+     - invalid or zero reference sizes are rejected or fall back clearly;
+     - color/symbol updates do not reset the original radius-derived size
+       state.

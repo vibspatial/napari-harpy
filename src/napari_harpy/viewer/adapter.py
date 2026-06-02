@@ -1894,6 +1894,7 @@ def _build_shapes_layer(
                 symbol="disc",
                 border_width=0,
                 face_color="#00FFFF",
+                border_color="#00FFFF",
             )
             return _BuiltShapesLayer(
                 layer=layer,

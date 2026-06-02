@@ -1860,6 +1860,7 @@ def test_viewer_adapter_ensure_shapes_loaded_renders_circles_as_points(sdata_blo
     np.testing.assert_allclose(layer.data, expected_coordinates)
     np.testing.assert_allclose(layer.size, 2.0 * circles["radius"].to_numpy(dtype=float))
     np.testing.assert_allclose(layer.face_color, np.asarray([to_rgba("#00FFFF")] * len(circles)))
+    np.testing.assert_allclose(layer.border_color, np.asarray([to_rgba("#00FFFF")] * len(circles)))
     assert layer.opacity == 0.8
     binding = get_shapes_binding(adapter, layer)
     assert binding.element_type == "shapes"
