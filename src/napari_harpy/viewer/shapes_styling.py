@@ -9,7 +9,7 @@ import pandas as pd
 from anndata import AnnData
 from loguru import logger
 from matplotlib.colors import to_rgba
-from napari.layers import Shapes
+from napari.layers import Points, Shapes
 from napari.utils.colormaps import label_colormap
 
 from napari_harpy.core._color_source import (
@@ -62,9 +62,9 @@ class ShapesStyleResult:
 
 @dataclass(frozen=True)
 class ShapesLoadResult(ShapesStyleResult):
-    """Describe a primary or styled shapes layer load/update result."""
+    """Describe a primary or styled shapes or points layer load/update result."""
 
-    layer: Shapes
+    layer: Shapes | Points
     created: bool
     skipped_geometry_count: int = 0
 

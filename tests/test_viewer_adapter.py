@@ -255,7 +255,7 @@ def make_two_table_backed_shapes_sdata() -> ShapesSpatialDataWithTables:
     return sdata
 
 
-def get_shapes_binding(adapter: ViewerAdapter, layer: Shapes) -> ShapesLayerBinding:
+def get_shapes_binding(adapter: ViewerAdapter, layer: Shapes | Points) -> ShapesLayerBinding:
     binding = adapter.layer_bindings.get_binding(layer)
     assert isinstance(binding, ShapesLayerBinding)
     return binding
@@ -372,6 +372,7 @@ def test_layer_binding_registry_tracks_shapes_identity() -> None:
     assert binding.element_type == "shapes"
     assert binding.coordinate_system == "global"
     assert binding.shapes_role == "primary"
+    assert binding.shapes_rendering_mode == "shapes"
     assert binding.style_spec is None
     assert binding.source_row_id_by_rendered_row == (0,)
     assert binding.source_shapes_index_feature_name == "cell_id"
@@ -406,6 +407,7 @@ def test_layer_binding_registry_tracks_shapes_role_and_style_spec() -> None:
 
     assert isinstance(binding, ShapesLayerBinding)
     assert binding.shapes_role == "styled"
+    assert binding.shapes_rendering_mode == "shapes"
     assert binding.style_spec == style_spec
     assert binding.source_row_id_by_rendered_row == (0,)
     assert registry.find_bindings(
@@ -1834,11 +1836,12 @@ def test_viewer_adapter_ensure_shapes_loaded_expands_multipolygons_with_source_m
     assert len(layer.data) == len(expected_indices)
     assert layer.shape_type == ["polygon"] * len(expected_indices)
     binding = get_shapes_binding(adapter, layer)
+    assert binding.shapes_rendering_mode == "shapes"
     assert binding.source_row_id_by_rendered_row == tuple(expected_source_row_ids)
     assert tuple(layer.features["index"].to_list()) == tuple(expected_indices)
 
 
-def test_viewer_adapter_ensure_shapes_loaded_renders_circles_as_ellipses(sdata_blobs) -> None:
+def test_viewer_adapter_ensure_shapes_loaded_renders_circles_as_points(sdata_blobs) -> None:
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
 
@@ -1846,25 +1849,41 @@ def test_viewer_adapter_ensure_shapes_loaded_renders_circles_as_ellipses(sdata_b
     layer = result.layer
 
     circles = sdata_blobs.shapes["blobs_circles"]
-    first_circle = circles.iloc[0]
-    radius = float(first_circle["radius"])
-    y = float(first_circle.geometry.y)
-    x = float(first_circle.geometry.x)
-    expected_first_ellipse = np.asarray(
-        [
-            (y - radius, x - radius),
-            (y + radius, x - radius),
-            (y + radius, x + radius),
-            (y - radius, x + radius),
-        ],
-        dtype=float,
+    expected_coordinates = np.column_stack(
+        (
+            circles.geometry.y.to_numpy(dtype=float),
+            circles.geometry.x.to_numpy(dtype=float),
+        )
     )
 
-    assert layer.shape_type == ["ellipse"] * len(circles)
-    assert np.allclose(layer.data[0], expected_first_ellipse)
+    assert isinstance(layer, Points)
+    np.testing.assert_allclose(layer.data, expected_coordinates)
+    np.testing.assert_allclose(layer.size, 2.0 * circles["radius"].to_numpy(dtype=float))
+    np.testing.assert_allclose(layer.face_color, np.asarray([to_rgba("#00FFFF")] * len(circles)))
+    assert layer.opacity == 0.8
     binding = get_shapes_binding(adapter, layer)
-    assert binding.source_row_id_by_rendered_row == tuple(range(len(circles)))
+    assert binding.element_type == "shapes"
+    assert binding.shapes_role == "primary"
+    assert binding.shapes_rendering_mode == "points"
+    assert binding.source_row_id_by_rendered_row == range(len(circles))
     assert tuple(layer.features["index"].to_list()) == tuple(circles.index.to_list())
+    assert layer._get_feature_status(0) == f"index: {circles.index[0]}"
+    assert adapter.get_loaded_primary_shapes_layer(sdata_blobs, "blobs_circles", "global") is layer
+
+
+def test_viewer_adapter_ensure_shapes_loaded_reuses_point_radius_layer(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    first = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_circles", "global")
+    second = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_circles", "global")
+
+    assert isinstance(first.layer, Points)
+    assert first.layer is second.layer
+    assert first.created is True
+    assert second.created is False
+    assert len(viewer.layers) == 1
+    assert get_shapes_binding(adapter, first.layer).shapes_rendering_mode == "points"
 
 
 def test_prepare_napari_shapes_layer_inputs_does_not_use_iterrows(monkeypatch: pytest.MonkeyPatch) -> None:

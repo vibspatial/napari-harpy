@@ -1,6 +1,6 @@
 # Render Point-Radius Shapes As Napari Points
 
-Status: Slice 2 implemented; Slices 3-6 pending
+Status: Slice 3 implemented; Slices 4-6 pending
 
 ## Goal
 
@@ -201,18 +201,65 @@ Add focused tests for:
      vectorized behavior without making the normal test suite timing-sensitive;
    - keep the Slice 1 qualification/fallback semantics unchanged.
 
-3. Primary point-radius layer lifecycle
+3. Primary point-radius layer lifecycle - completed
    - extend the adapter so `ensure_shapes_loaded(...)` can create a napari
      `Points` layer for qualifying point-radius shapes elements;
-   - bind the layer semantically as a shapes element while recording that the
-     viewer representation is points-backed;
+   - keep the existing transform behavior:
+     - validate that the requested coordinate system exists;
+     - call SpatialData `transform_spatial_element(...)`;
+     - pass the transformed shapes element to
+       `_prepare_napari_point_radius_shapes_layer_inputs(...)`;
+     - do not pass a napari `affine` to the point-radius `Points` layer;
+   - if point-radius preparation returns inputs, build a napari `Points` layer:
+     - `data=coordinates`;
+     - `size=sizes`;
+     - `features=features`;
+     - default point styling should visually match the current primary shapes
+       presentation as much as reasonable, for example cyan face/border and
+       opacity `0.8`;
+     - use one `disc` symbol per point unless there is a stronger napari reason
+       to choose another symbol;
+   - if point-radius preparation returns `None`, fall back to the existing
+     generic `_prepare_napari_shapes_layer_inputs(...)` and `_HarpyShapes`
+     layer creation;
+   - bind point-radius `Points` layers semantically as shapes elements, not as
+     ordinary SpatialData points elements:
+     - keep `element_type="shapes"`;
+     - add a binding discriminator such as
+       `shapes_rendering_mode: Literal["shapes", "points"]`;
+     - use `shapes_rendering_mode="points"` for the point-radius fast path and
+       `"shapes"` for the existing generic shapes path;
+   - update types and helpers that currently assume primary shapes layers are
+     actual napari `Shapes` instances:
+     - `ShapesLoadResult.layer` may need to become `Shapes | Points`;
+     - `ShapesLayerBinding.layer` already inherits from the generic napari
+       `Layer`, but `register_shapes_layer(...)` should accept `Shapes | Points`;
+     - `source_row_id_by_rendered_row` should accept the Slice 2 `range(n)`
+       representation as well as generic shapes tuples;
+     - lookup helpers such as `get_loaded_primary_shapes_layer(...)` and
+       `_get_loaded_shapes_layer_for_coordinate_system(...)` must consider
+       points-backed shapes layers, not only `_is_shapes_layer(layer)`;
    - preserve source row id mapping, source index display/status metadata,
      coordinate system, skipped count, and layer replacement/reuse behavior;
-   - make status text for hover match the current shapes source-index/status
-     behavior as closely as napari `Points` allows;
-   - add tests for primary loading, layer reuse, binding metadata, status text,
-     duplicate indices, named index display, and fallback to `Shapes` when the
-     element does not qualify.
+   - provide source-index hover/status behavior for the points-backed shapes
+     layer. If napari `Points` does not already display the needed feature
+     values in the same way as `_HarpyShapes`, add a small Harpy-specific
+     `Points` subclass or equivalent helper;
+   - do not implement styled point-radius layers in this slice. Direct
+     shape-column styling and table-backed styling remain separate later
+     slices;
+   - add tests for:
+     - primary point-radius shapes loading creates a napari `Points` layer;
+     - the layer has coordinates, sizes, features, and source row ids from the
+       prepared inputs;
+     - the layer binding has `element_type="shapes"`,
+       `shapes_role="primary"`, and `shapes_rendering_mode="points"`;
+     - layer reuse works for an already loaded point-radius shapes layer;
+     - duplicate source indices and named source indices are preserved in
+       features/status;
+     - unknown coordinate system errors remain unchanged;
+     - non-qualifying shapes elements still create the existing napari `Shapes`
+       layer with `shapes_rendering_mode="shapes"`.
 
 4. Direct shape-column styling on points-backed shapes
    - add styling support for `ShapeColumnColorSourceSpec` when the styled layer
