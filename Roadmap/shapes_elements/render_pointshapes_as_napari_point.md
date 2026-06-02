@@ -1,6 +1,6 @@
 # Render Point-Radius Shapes As Napari Points
 
-Status: Spec extracted; implementation pending
+Status: Slice 1 implemented; Slices 2-5 pending
 
 ## Goal
 
@@ -116,21 +116,55 @@ Add focused tests for:
 
 ## Implementation Slices
 
-1. Point-radius detection and preparation
-   - add a small helper that determines whether a transformed shapes element can
-     be rendered as point-radius shapes;
-   - transform the shapes element to the selected coordinate system before
-     detection and preparation, matching the existing generic shapes path;
-   - require all geometries to be `Point` and require a `radius` column with
-     finite positive numeric values for every row;
-   - extract coordinates, radii, source index values, and source row ids as
-     arrays without `iterrows()`;
-   - return a prepared-input object for point-radius shapes, separate from the
-     existing `_NapariShapesLayerInputs`;
-   - keep invalid/mixed cases falling back to the existing `Shapes` path;
-   - add tests for valid points/radii, missing `radius`, invalid radius values,
-     mixed geometries, duplicate GeoDataFrame index values, and named index
-     values.
+1. Point-radius detection and preparation - completed
+   - add a private prepared-input dataclass, for example
+     `_NapariPointRadiusShapesLayerInputs`, with:
+     - `coordinates: np.ndarray` in napari `(y, x)` order;
+     - `sizes: np.ndarray`, one diameter per rendered point;
+     - `features: pd.DataFrame`, row-aligned to `coordinates`;
+     - `source_shapes_index_feature_name: str`;
+     - `source_row_id_by_rendered_row: tuple[int, ...]`;
+     - `skipped_geometry_count: int`;
+   - add a private helper, for example
+     `_prepare_napari_point_radius_shapes_layer_inputs(transformed_shapes)`,
+     that returns `_NapariPointRadiusShapesLayerInputs | None`;
+   - this helper receives an already transformed shapes element. The caller is
+     responsible for calling SpatialData `transform_spatial_element(...)`
+     before detection/preparation, matching the generic shapes path;
+   - return `None` when the element does not qualify, so the caller can fall
+     back to `_prepare_napari_shapes_layer_inputs(...)`;
+   - qualification rules:
+     - the shapes element has a `radius` column;
+     - every source row has a non-empty `Point` geometry;
+     - every radius value can be converted to a finite positive float;
+     - the number of extracted geometries, radii, index values, and source row
+       ids all match;
+   - mixed geometries, missing radius column, missing/empty geometries,
+     non-finite radii, non-positive radii, or non-numeric radii should return
+     `None` for this slice rather than raising. The existing generic shapes path
+     remains the fallback;
+   - extract geometry, radius, and source index values as arrays without
+     `iterrows()`;
+   - build `coordinates` with `y = geometry.y`, `x = geometry.x`, and return
+     shape `(n, 2)`;
+   - build `sizes` as `2 * radius`, because the transformed shapes element
+     already contains transformed radius values;
+   - keep `source_row_id_by_rendered_row == tuple(range(n))` for this point
+     fast path, because each source row renders as exactly one napari point;
+   - use `_get_shapes_index_feature_name(...)` and preserve duplicate/named
+     GeoDataFrame index values in `features`, matching the generic shapes path;
+   - do not create a napari layer in this slice;
+   - add tests for:
+     - valid points/radii returning coordinates, sizes, features, source row
+       ids, and zero skipped count;
+     - missing `radius` returning `None`;
+     - invalid radius values returning `None`;
+     - mixed geometries returning `None`;
+     - empty or missing point geometry returning `None`;
+     - duplicate GeoDataFrame index values preserved in `features`;
+     - named GeoDataFrame index values using the index name as the feature
+       column;
+     - helper does not call `GeoDataFrame.iterrows()`.
 
 2. Primary point-radius layer lifecycle
    - extend the adapter so `ensure_shapes_loaded(...)` can create a napari

@@ -28,6 +28,7 @@ from napari_harpy.viewer.adapter import (
     PointsLayerIdentity,
     ShapesLayerBinding,
     ViewerAdapter,
+    _prepare_napari_point_radius_shapes_layer_inputs,
     _prepare_napari_shapes_layer_inputs,
 )
 from napari_harpy.viewer.points_styling import POINTS_SELECTION_SOLID_COLOR
@@ -1884,6 +1885,115 @@ def test_prepare_napari_shapes_layer_inputs_does_not_use_iterrows(monkeypatch: p
     assert result.source_row_id_by_rendered_row == (0, 1)
     assert result.features["index"].to_list() == ["cell_1", "cell_2"]
     assert result.skipped_geometry_count == 0
+
+
+def test_prepare_napari_point_radius_shapes_layer_inputs_returns_points_arrays() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"radius": [1.5, 2.0]},
+        geometry=[Point(10, 20), Point(30, 40)],
+        index=["cell_1", "cell_2"],
+    )
+
+    result = _prepare_napari_point_radius_shapes_layer_inputs(geodataframe)
+
+    assert result is not None
+    np.testing.assert_allclose(result.coordinates, np.asarray([[20.0, 10.0], [40.0, 30.0]]))
+    np.testing.assert_allclose(result.sizes, np.asarray([3.0, 4.0]))
+    assert result.features["index"].to_list() == ["cell_1", "cell_2"]
+    assert result.source_shapes_index_feature_name == "index"
+    assert result.source_row_id_by_rendered_row == (0, 1)
+    assert result.skipped_geometry_count == 0
+
+
+def test_prepare_napari_point_radius_shapes_layer_inputs_preserves_duplicate_indices() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"radius": [1.0, 2.0]},
+        geometry=[Point(1, 2), Point(3, 4)],
+        index=["cell_1", "cell_1"],
+    )
+
+    result = _prepare_napari_point_radius_shapes_layer_inputs(geodataframe)
+
+    assert result is not None
+    assert result.features["index"].to_list() == ["cell_1", "cell_1"]
+    assert result.source_row_id_by_rendered_row == (0, 1)
+
+
+def test_prepare_napari_point_radius_shapes_layer_inputs_preserves_named_index() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"radius": [1.0]},
+        geometry=[Point(1, 2)],
+        index=["cell_1"],
+    )
+    geodataframe.index.name = "cell_ID"
+
+    result = _prepare_napari_point_radius_shapes_layer_inputs(geodataframe)
+
+    assert result is not None
+    assert result.source_shapes_index_feature_name == "cell_ID"
+    assert list(result.features.columns) == ["cell_ID"]
+    assert result.features["cell_ID"].to_list() == ["cell_1"]
+
+
+def test_prepare_napari_point_radius_shapes_layer_inputs_returns_none_without_radius() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"cell_type": ["T"]},
+        geometry=[Point(1, 2)],
+        index=["cell_1"],
+    )
+
+    assert _prepare_napari_point_radius_shapes_layer_inputs(geodataframe) is None
+
+
+def test_prepare_napari_point_radius_shapes_layer_inputs_returns_none_for_invalid_radius() -> None:
+    for radius in (0.0, -1.0, np.nan, np.inf, "not-a-radius"):
+        geodataframe = gpd.GeoDataFrame(
+            {"radius": [radius]},
+            geometry=[Point(1, 2)],
+            index=["cell_1"],
+        )
+
+        assert _prepare_napari_point_radius_shapes_layer_inputs(geodataframe) is None
+
+
+def test_prepare_napari_point_radius_shapes_layer_inputs_returns_none_for_mixed_geometries() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"radius": [1.0, 2.0]},
+        geometry=[Point(1, 2), Polygon([(0, 0), (2, 0), (2, 2), (0, 2), (0, 0)])],
+        index=["cell_1", "cell_2"],
+    )
+
+    assert _prepare_napari_point_radius_shapes_layer_inputs(geodataframe) is None
+
+
+def test_prepare_napari_point_radius_shapes_layer_inputs_returns_none_for_empty_geometry() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"radius": [1.0]},
+        geometry=[Point()],
+        index=["cell_1"],
+    )
+
+    assert _prepare_napari_point_radius_shapes_layer_inputs(geodataframe) is None
+
+
+def test_prepare_napari_point_radius_shapes_layer_inputs_does_not_use_iterrows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"radius": [1.0, 2.0]},
+        geometry=[Point(1, 2), Point(3, 4)],
+        index=["cell_1", "cell_2"],
+    )
+
+    def fail_iterrows(_self):
+        raise AssertionError("_prepare_napari_point_radius_shapes_layer_inputs should not call iterrows().")
+
+    monkeypatch.setattr(gpd.GeoDataFrame, "iterrows", fail_iterrows)
+
+    result = _prepare_napari_point_radius_shapes_layer_inputs(geodataframe)
+
+    assert result is not None
+    assert result.source_row_id_by_rendered_row == (0, 1)
 
 
 def test_viewer_adapter_ensure_shapes_loaded_preserves_polygon_holes() -> None:

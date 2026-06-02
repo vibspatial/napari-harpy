@@ -318,6 +318,18 @@ class _NapariShapesLayerInputs:
 
 
 @dataclass(frozen=True)
+class _NapariPointRadiusShapesLayerInputs:
+    """Prepared inputs for rendering point-radius shapes as napari ``Points``."""
+
+    coordinates: np.ndarray
+    sizes: np.ndarray
+    features: pd.DataFrame
+    source_shapes_index_feature_name: str
+    source_row_id_by_rendered_row: tuple[int, ...]
+    skipped_geometry_count: int
+
+
+@dataclass(frozen=True)
 class _BuiltShapesLayer:
     layer: Shapes
     source_shapes_index_feature_name: str
@@ -1844,6 +1856,55 @@ def _prepare_napari_shapes_layer_inputs(shapes_element: Any) -> _NapariShapesLay
     )
 
 
+def _prepare_napari_point_radius_shapes_layer_inputs(
+    shapes_element: Any,
+) -> _NapariPointRadiusShapesLayerInputs | None:
+    """Return point-radius layer inputs when all source rows qualify."""
+    if "radius" not in getattr(shapes_element, "columns", []):
+        return None
+
+    geometry_column_name = getattr(getattr(shapes_element, "geometry", None), "name", "geometry")
+    index_feature_name = _get_shapes_index_feature_name(shapes_element)
+    source_index_values = shapes_element.index.to_numpy(copy=False)
+    geometry_values = shapes_element[geometry_column_name].to_numpy(copy=False)
+    radius_values = shapes_element["radius"].to_numpy(copy=False)
+
+    if len(source_index_values) == 0:
+        return None
+
+    coordinates: list[tuple[float, float]] = []
+    sizes: list[float] = []
+    feature_rows: list[dict[str, Any]] = []
+    source_row_id_by_rendered_row: list[int] = []
+
+    try:
+        for source_row_id, (source_index, geometry, radius) in enumerate(
+            zip(source_index_values, geometry_values, radius_values, strict=True),
+        ):
+            if _is_empty_geometry(geometry) or not isinstance(geometry, Point):
+                return None
+
+            radius_value = _coerce_positive_radius(radius)
+            if radius_value is None:
+                return None
+
+            coordinates.append((float(geometry.y), float(geometry.x)))
+            sizes.append(2.0 * radius_value)
+            feature_rows.append({index_feature_name: source_index})
+            source_row_id_by_rendered_row.append(source_row_id)
+    except ValueError:
+        return None
+
+    return _NapariPointRadiusShapesLayerInputs(
+        coordinates=np.asarray(coordinates, dtype=float),
+        sizes=np.asarray(sizes, dtype=float),
+        features=pd.DataFrame(feature_rows),
+        source_shapes_index_feature_name=index_feature_name,
+        source_row_id_by_rendered_row=tuple(source_row_id_by_rendered_row),
+        skipped_geometry_count=0,
+    )
+
+
 def _get_shapes_index_feature_name(shapes_element: Any) -> str:
     index_name = getattr(getattr(shapes_element, "index", None), "name", None)
     if index_name is None:
@@ -1852,12 +1913,8 @@ def _get_shapes_index_feature_name(shapes_element: Any) -> str:
 
 
 def _circle_to_napari_ellipse(point: Point, radius: Any) -> np.ndarray | None:
-    try:
-        radius_value = float(radius)
-    except (TypeError, ValueError):
-        return None
-
-    if not np.isfinite(radius_value) or radius_value <= 0:
+    radius_value = _coerce_positive_radius(radius)
+    if radius_value is None:
         return None
 
     y = float(point.y)
@@ -1871,6 +1928,18 @@ def _circle_to_napari_ellipse(point: Point, radius: Any) -> np.ndarray | None:
         ],
         dtype=float,
     )
+
+
+def _coerce_positive_radius(radius: Any) -> float | None:
+    try:
+        radius_value = float(radius)
+    except (TypeError, ValueError):
+        return None
+
+    if not np.isfinite(radius_value) or radius_value <= 0:
+        return None
+
+    return radius_value
 
 
 def _iter_renderable_polygons(geometry: BaseGeometry) -> Iterable[Polygon]:
