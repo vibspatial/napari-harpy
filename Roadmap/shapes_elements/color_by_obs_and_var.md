@@ -1,6 +1,6 @@
 # Color Shapes By Linked Table `.obs` And `X[:, var]`
 
-Status: Slice 8 implemented; Slice 9 pending
+Status: Slice 8 implemented; point-radius shapes fast path moved to a separate spec
 
 ## Goal
 
@@ -832,39 +832,9 @@ shape-column coloring behavior unchanged.
      features, source-row ids, skipped-geometry counts, point-radius ellipses,
      polygon paths, and MultiPolygon expansion.
 
-9. Point-radius shapes visualization fast path - follow-up
-   - follow the `napari-spatialdata` direction for point-radius shapes:
-     visualize the common case where every geometry is a `Point` and a valid
-     `radius` column is present as a napari `Points` layer with per-point size,
-     rather than constructing one ellipse `Shapes` row per source row;
-   - this is expected to be the snappier default for large point-radius shape
-     elements because it avoids the generic polygon/MultiPolygon repair and
-     expansion loop, avoids pandas row `Series` construction, and avoids
-     allocating one small ellipse vertex array per source row;
-   - extract coordinates and radii as arrays, e.g. conceptually
-     `yx = np.fliplr(np.array([df.geometry.x, df.geometry.y]).T)` and
-     `size = 2 * radius * scale_factor`, matching the idea used by
-     `napari-spatialdata`;
-   - decide the viewer/API semantics carefully: these elements are still
-     SpatialData shapes elements, but their fast visualization layer would be a
-     napari `Points` layer. The adapter binding and widget feedback should make
-     that distinction explicit enough that styling and table alignment do not
-     become confusing;
-   - preserve source-row traceability with internal row ids and visible
-     source-index metadata. If the fast path uses a `Points` layer, define the
-     binding/status behavior needed to keep the same user-facing source row
-     context currently provided by shapes `layer.features`;
-   - keep shape-column coloring, table-backed styling, and SpatialData table
-     alignment semantics unchanged at the data-model level. If those styling
-     paths need separate points-layer rendering code for this visualization
-     mode, specify that as part of the implementation;
-   - provide a vectorized `Shapes` ellipse fallback only when actual napari
-     `Shapes` layer semantics are required. The fallback should build ellipse
-     vertex arrays from coordinate/radius arrays and still avoid `iterrows()`;
-   - add focused tests for all-point valid radii, invalid/missing radii,
-     duplicate GeoDataFrame index values, named index display, table-backed
-     source identity, and parity between the points fast path and vectorized
-     ellipse fallback where behavior should match.
+9. Point-radius shapes visualization fast path - moved
+   - this is a larger viewer representation refactor and now lives in
+     `Roadmap/shapes_elements/render_pointshapes_as_napari_point.md`.
 
 ## Recommendation
 
