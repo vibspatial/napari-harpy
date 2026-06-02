@@ -360,7 +360,7 @@ def test_layer_binding_registry_tracks_shapes_identity() -> None:
         layer,
         element_name="cell_boundaries",
         coordinate_system="global",
-        source_shapes_index_by_row=("cell_1",),
+        source_row_id_by_rendered_row=(0,),
         source_shapes_index_feature_name="cell_id",
         skipped_geometry_count=2,
     )
@@ -371,14 +371,14 @@ def test_layer_binding_registry_tracks_shapes_identity() -> None:
     assert binding.coordinate_system == "global"
     assert binding.shapes_role == "primary"
     assert binding.style_spec is None
-    assert binding.source_shapes_index_by_row == ("cell_1",)
+    assert binding.source_row_id_by_rendered_row == (0,)
     assert binding.source_shapes_index_feature_name == "cell_id"
     assert binding.skipped_geometry_count == 2
     assert registry.find_bindings(element_name="cell_boundaries", element_type="shapes") == [binding]
     assert "element_name" not in layer.metadata
     assert "element_type" not in layer.metadata
     assert "coordinate_system" not in layer.metadata
-    assert "source_shapes_index_by_row" not in layer.metadata
+    assert "source_row_id_by_rendered_row" not in layer.metadata
     assert "source_shapes_index_feature_name" not in layer.metadata
     assert "skipped_geometry_count" not in layer.metadata
 
@@ -398,14 +398,14 @@ def test_layer_binding_registry_tracks_shapes_role_and_style_spec() -> None:
         coordinate_system="global",
         shapes_role="styled",
         style_spec=style_spec,
-        source_shapes_index_by_row=("cell_1",),
+        source_row_id_by_rendered_row=(0,),
         source_shapes_index_feature_name="cell_id",
     )
 
     assert isinstance(binding, ShapesLayerBinding)
     assert binding.shapes_role == "styled"
     assert binding.style_spec == style_spec
-    assert binding.source_shapes_index_by_row == ("cell_1",)
+    assert binding.source_row_id_by_rendered_row == (0,)
     assert registry.find_bindings(
         element_name="cell_boundaries",
         element_type="shapes",
@@ -435,7 +435,7 @@ def test_layer_binding_registry_tracks_table_backed_shapes_style_spec() -> None:
         coordinate_system="global",
         shapes_role="styled",
         style_spec=style_spec,
-        source_shapes_index_by_row=("cell_1",),
+        source_row_id_by_rendered_row=(0,),
         source_shapes_index_feature_name="cell_id",
     )
 
@@ -1795,6 +1795,7 @@ def test_viewer_adapter_ensure_shapes_loaded_adds_polygon_layer_and_registers_bi
     assert layer.name == "blobs_polygons"
     assert layer.shape_type == ["polygon"] * len(sdata_blobs.shapes["blobs_polygons"])
     expected_source_index_by_row = tuple(sdata_blobs.shapes["blobs_polygons"].index.to_list())
+    expected_source_row_ids = tuple(range(len(expected_source_index_by_row)))
     assert list(layer.features.columns) == ["index"]
     assert tuple(layer.features["index"].to_list()) == expected_source_index_by_row
     binding = get_shapes_binding(adapter, layer)
@@ -1803,13 +1804,13 @@ def test_viewer_adapter_ensure_shapes_loaded_adds_polygon_layer_and_registers_bi
     assert binding.coordinate_system == "global"
     assert binding.shapes_role == "primary"
     assert binding.style_spec is None
-    assert binding.source_shapes_index_by_row == expected_source_index_by_row
+    assert binding.source_row_id_by_rendered_row == expected_source_row_ids
     assert binding.source_shapes_index_feature_name == "index"
     assert binding.skipped_geometry_count == 0
     assert "element_name" not in layer.metadata
     assert "element_type" not in layer.metadata
     assert "coordinate_system" not in layer.metadata
-    assert "source_shapes_index_by_row" not in layer.metadata
+    assert "source_row_id_by_rendered_row" not in layer.metadata
     assert "source_shapes_index_feature_name" not in layer.metadata
     assert "skipped_geometry_count" not in layer.metadata
     assert labels_events == []
@@ -1823,13 +1824,15 @@ def test_viewer_adapter_ensure_shapes_loaded_expands_multipolygons_with_source_m
     layer = result.layer
 
     expected_indices: list[object] = []
-    for source_index, geometry in sdata_blobs.shapes["blobs_multipolygons"].geometry.items():
+    expected_source_row_ids: list[int] = []
+    for source_row_id, (source_index, geometry) in enumerate(sdata_blobs.shapes["blobs_multipolygons"].geometry.items()):
         expected_indices.extend([source_index] * len(geometry.geoms))
+        expected_source_row_ids.extend([source_row_id] * len(geometry.geoms))
 
     assert len(layer.data) == len(expected_indices)
     assert layer.shape_type == ["polygon"] * len(expected_indices)
     binding = get_shapes_binding(adapter, layer)
-    assert binding.source_shapes_index_by_row == tuple(expected_indices)
+    assert binding.source_row_id_by_rendered_row == tuple(expected_source_row_ids)
     assert tuple(layer.features["index"].to_list()) == tuple(expected_indices)
 
 
@@ -1858,7 +1861,7 @@ def test_viewer_adapter_ensure_shapes_loaded_renders_circles_as_ellipses(sdata_b
     assert layer.shape_type == ["ellipse"] * len(circles)
     assert np.allclose(layer.data[0], expected_first_ellipse)
     binding = get_shapes_binding(adapter, layer)
-    assert binding.source_shapes_index_by_row == tuple(circles.index.to_list())
+    assert binding.source_row_id_by_rendered_row == tuple(range(len(circles)))
     assert tuple(layer.features["index"].to_list()) == tuple(circles.index.to_list())
 
 
@@ -1877,7 +1880,7 @@ def test_viewer_adapter_ensure_shapes_loaded_preserves_polygon_holes() -> None:
     labels = layer.to_labels(labels_shape=(12, 12))
 
     binding = get_shapes_binding(adapter, layer)
-    assert binding.source_shapes_index_by_row == ("donut",)
+    assert binding.source_row_id_by_rendered_row == (0,)
     assert list(layer.features.columns) == ["index"]
     assert layer.features.iloc[0]["index"] == "donut"
     assert "index: donut" in layer.get_status(position=(1, 1))["value"]
@@ -1899,11 +1902,31 @@ def test_viewer_adapter_ensure_shapes_loaded_uses_named_geodataframe_index_in_fe
     layer = result.layer
 
     binding = get_shapes_binding(adapter, layer)
-    assert binding.source_shapes_index_by_row == ("cell_1",)
+    assert binding.source_row_id_by_rendered_row == (0,)
     assert binding.source_shapes_index_feature_name == "cell_id"
     assert list(layer.features.columns) == ["cell_id"]
     assert layer.features.iloc[0]["cell_id"] == "cell_1"
     assert "cell_id: cell_1" in layer.get_status(position=(1, 1))["value"]
+
+
+def test_viewer_adapter_ensure_shapes_loaded_uses_internal_row_ids_with_duplicate_geodataframe_index() -> None:
+    polygon = Polygon([(0, 0), (4, 0), (4, 4), (0, 4), (0, 0)])
+    geodataframe = gpd.GeoDataFrame(
+        {"name": ["left", "right"]},
+        geometry=[polygon, Polygon([(5, 0), (9, 0), (9, 4), (5, 4), (5, 0)])],
+        index=["cell_1", "cell_1"],
+    )
+    sdata = make_shapes_sdata(geodataframe, shapes_name="cell_boundaries")
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    result = adapter.ensure_shapes_loaded(sdata, "cell_boundaries", "global")
+    layer = result.layer
+
+    binding = get_shapes_binding(adapter, layer)
+    assert binding.source_row_id_by_rendered_row == (0, 1)
+    assert layer.features["index"].to_list() == ["cell_1", "cell_1"]
+    assert "index: cell_1" in layer.get_status(position=(1, 1))["value"]
 
 
 def test_viewer_adapter_ensure_shapes_loaded_skips_empty_invalid_or_unsupported_geometries() -> None:
@@ -1925,7 +1948,7 @@ def test_viewer_adapter_ensure_shapes_loaded_skips_empty_invalid_or_unsupported_
     assert result.skipped_geometry_count == 2
     assert layer.shape_type == ["polygon", "polygon", "polygon"]
     binding = get_shapes_binding(adapter, layer)
-    assert binding.source_shapes_index_by_row == ("valid", "bowtie", "bowtie")
+    assert binding.source_row_id_by_rendered_row == (0, 1, 1)
     assert binding.skipped_geometry_count == 2
 
 
@@ -1985,7 +2008,7 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_creates_registered_variant_w
     binding = get_shapes_binding(adapter, result.layer)
     assert binding.shapes_role == "styled"
     assert binding.style_spec == style_spec
-    assert binding.source_shapes_index_by_row == ("cell_1", "cell_2")
+    assert binding.source_row_id_by_rendered_row == (0, 1)
     assert binding.source_shapes_index_feature_name == "index"
     assert list(result.layer.features.columns) == ["index", "cell_type"]
     assert result.layer.features["cell_type"].to_list() == ["T", "B"]
@@ -2022,13 +2045,59 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_creates_table_backed_variant
     binding = get_shapes_binding(adapter, result.layer)
     assert binding.shapes_role == "styled"
     assert binding.style_spec == style_spec
-    assert binding.source_shapes_index_by_row == ("shape_1", "shape_2", "shape_3")
+    assert binding.source_row_id_by_rendered_row == (0, 1, 2)
     assert list(result.layer.features.columns) == ["index", "cell_type"]
     assert result.layer.features["cell_type"].to_list()[:2] == ["T", "B"]
     assert pd.isna(result.layer.features["cell_type"].iloc[2])
     np.testing.assert_allclose(result.layer.edge_color[0], (*to_rgba("#ff0000")[:3], 1.0))
     np.testing.assert_allclose(result.layer.edge_color[1], (*to_rgba("#00ff00")[:3], 1.0))
     assert result.layer.edge_color[2, 3] == 0.0
+
+
+def test_viewer_adapter_table_backed_shapes_uses_internal_row_ids_with_duplicate_geodataframe_index() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"instance_id": ["cell_1", "cell_2"]},
+        geometry=[
+            Polygon([(0, 0), (4, 0), (4, 4), (0, 4), (0, 0)]),
+            Polygon([(5, 0), (9, 0), (9, 4), (5, 4), (5, 0)]),
+        ],
+        index=["duplicate", "duplicate"],
+    )
+    shapes = ShapesModel.parse(geodataframe, transformations={"global": Identity()})
+    table = TableModel.parse(
+        ad.AnnData(
+            obs=pd.DataFrame(
+                {
+                    "region": ["cell_boundaries", "cell_boundaries"],
+                    "instance_id": ["cell_1", "cell_2"],
+                    "cell_type": pd.Categorical(["T", "B"], categories=["T", "B"]),
+                },
+                index=["obs_1", "obs_2"],
+            )
+        ),
+        region="cell_boundaries",
+        region_key="region",
+        instance_key="instance_id",
+    )
+    table.uns["cell_type_colors"] = ["#ff0000", "#00ff00"]
+    sdata = ShapesSpatialDataWithTables(shapes={"cell_boundaries": shapes}, tables={"table": table})
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    result = adapter.ensure_styled_shapes_loaded(sdata, "cell_boundaries", "global", style_spec)
+
+    binding = get_shapes_binding(adapter, result.layer)
+    assert binding.source_row_id_by_rendered_row == (0, 1)
+    assert result.layer.features["index"].to_list() == ["duplicate", "duplicate"]
+    assert result.layer.features["cell_type"].to_list() == ["T", "B"]
+    np.testing.assert_allclose(result.layer.edge_color[0], (*to_rgba("#ff0000")[:3], 1.0))
+    np.testing.assert_allclose(result.layer.edge_color[1], (*to_rgba("#00ff00")[:3], 1.0))
 
 
 def test_viewer_adapter_ensure_styled_shapes_loaded_reuses_table_backed_variant_and_updates_fill() -> None:

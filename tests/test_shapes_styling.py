@@ -109,17 +109,17 @@ def test_align_table_color_source_to_shapes_rows_allows_partial_coverage_and_dup
         shapes_name="cells",
         shapes_element=geodataframe,
         style_spec=style_spec,
-        source_shapes_index_by_row=("shape_a", "shape_b", "shape_b", "shape_c", "shape_d"),
+        source_row_id_by_rendered_row=(0, 1, 1, 2, 3),
     )
 
-    assert aligned.source_row_values.index.to_list() == ["shape_a", "shape_b", "shape_c", "shape_d"]
+    assert aligned.source_row_values.index.to_list() == [0, 1, 2, 3]
     assert aligned.source_row_values.iloc[:3].to_list() == ["T", "T", "B"]
     assert pd.isna(aligned.source_row_values.iloc[3])
-    assert aligned.source_row_has_table_row.to_list() == [True, True, True, False]
+    assert aligned.source_row_has_table_row.tolist() == [True, True, True, False]
     assert aligned.rendered_row_values.index.to_list() == [0, 1, 2, 3, 4]
     assert aligned.rendered_row_values.iloc[:4].to_list() == ["T", "T", "T", "B"]
     assert pd.isna(aligned.rendered_row_values.iloc[4])
-    assert aligned.rendered_row_has_table_row.to_list() == [True, True, True, True, False]
+    assert aligned.rendered_row_has_table_row.tolist() == [True, True, True, True, False]
 
 
 def test_align_table_color_source_to_shapes_rows_extracts_x_var_values_from_region_rows() -> None:
@@ -152,12 +152,12 @@ def test_align_table_color_source_to_shapes_rows_extracts_x_var_values_from_regi
         shapes_name="cells",
         shapes_element=geodataframe,
         style_spec=style_spec,
-        source_shapes_index_by_row=("shape_b", "shape_a"),
+        source_row_id_by_rendered_row=(1, 0),
     )
 
     assert aligned.source_row_values.to_list() == [10.0, 30.0]
     assert aligned.rendered_row_values.to_list() == [30.0, 10.0]
-    assert aligned.rendered_row_has_table_row.to_list() == [True, True]
+    assert aligned.rendered_row_has_table_row.tolist() == [True, True]
 
 
 def test_align_table_color_source_to_shapes_rows_preserves_instance_key_values_for_identity_coloring() -> None:
@@ -188,12 +188,12 @@ def test_align_table_color_source_to_shapes_rows_preserves_instance_key_values_f
         shapes_name="cells",
         shapes_element=geodataframe,
         style_spec=style_spec,
-        source_shapes_index_by_row=("shape_a", "shape_b"),
+        source_row_id_by_rendered_row=(0, 1),
     )
 
     assert aligned.source_row_values.iloc[0] == "cell_1"
     assert pd.isna(aligned.source_row_values.iloc[1])
-    assert aligned.source_row_has_table_row.to_list() == [True, False]
+    assert aligned.source_row_has_table_row.tolist() == [True, False]
 
 
 def test_align_table_color_source_to_shapes_rows_requires_table_to_annotate_shapes_element() -> None:
@@ -219,7 +219,7 @@ def test_align_table_color_source_to_shapes_rows_requires_table_to_annotate_shap
             shapes_name="cells",
             shapes_element=geodataframe,
             style_spec=style_spec,
-            source_shapes_index_by_row=("shape_a",),
+            source_row_id_by_rendered_row=(0,),
         )
 
 
@@ -242,7 +242,7 @@ def test_align_table_color_source_to_shapes_rows_requires_shapes_instance_key_co
             shapes_name="cells",
             shapes_element=geodataframe,
             style_spec=style_spec,
-            source_shapes_index_by_row=("shape_a",),
+            source_row_id_by_rendered_row=(0,),
         )
 
 
@@ -269,7 +269,7 @@ def test_align_table_color_source_to_shapes_rows_rejects_missing_shapes_instance
             shapes_name="cells",
             shapes_element=geodataframe,
             style_spec=style_spec,
-            source_shapes_index_by_row=("shape_a",),
+            source_row_id_by_rendered_row=(0,),
         )
 
 
@@ -296,7 +296,7 @@ def test_align_table_color_source_to_shapes_rows_rejects_missing_table_instance_
             shapes_name="cells",
             shapes_element=geodataframe,
             style_spec=style_spec,
-            source_shapes_index_by_row=("shape_a",),
+            source_row_id_by_rendered_row=(0,),
         )
 
 
@@ -329,7 +329,7 @@ def test_align_table_color_source_to_shapes_rows_rejects_duplicate_table_instanc
             shapes_name="cells",
             shapes_element=geodataframe,
             style_spec=style_spec,
-            source_shapes_index_by_row=("shape_a",),
+            source_row_id_by_rendered_row=(0,),
         )
 
 
@@ -356,7 +356,7 @@ def test_align_table_color_source_to_shapes_rows_rejects_table_instances_missing
             shapes_name="cells",
             shapes_element=geodataframe,
             style_spec=style_spec,
-            source_shapes_index_by_row=("shape_a",),
+            source_row_id_by_rendered_row=(0,),
         )
 
 
@@ -383,11 +383,11 @@ def test_align_table_color_source_to_shapes_rows_rejects_empty_selected_region()
             shapes_name="cells",
             shapes_element=geodataframe,
             style_spec=style_spec,
-            source_shapes_index_by_row=("shape_a",),
+            source_row_id_by_rendered_row=(0,),
         )
 
 
-def test_align_table_color_source_to_shapes_rows_rejects_non_unique_source_index() -> None:
+def test_align_table_color_source_to_shapes_rows_allows_duplicate_source_index() -> None:
     geodataframe = gpd.GeoDataFrame(
         {"instance_id": ["cell_1", "cell_2"]},
         geometry=[_polygon(0), _polygon(2)],
@@ -403,18 +403,22 @@ def test_align_table_color_source_to_shapes_rows_rejects_non_unique_source_index
         value_kind="instance",
     )
 
-    with pytest.raises(ValueError, match="requires unique source GeoDataFrame index"):
-        _align_table_color_source_to_shapes_rows(
-            table=table,
-            table_metadata=_table_metadata(),
-            shapes_name="cells",
-            shapes_element=geodataframe,
-            style_spec=style_spec,
-            source_shapes_index_by_row=("shape_a",),
-        )
+    aligned = _align_table_color_source_to_shapes_rows(
+        table=table,
+        table_metadata=_table_metadata(),
+        shapes_name="cells",
+        shapes_element=geodataframe,
+        style_spec=style_spec,
+        source_row_id_by_rendered_row=(0, 1),
+    )
+
+    assert aligned.source_row_values.index.to_list() == [0, 1]
+    assert aligned.source_row_values.iloc[0] == "cell_1"
+    assert pd.isna(aligned.source_row_values.iloc[1])
+    assert aligned.rendered_row_has_table_row.tolist() == [True, False]
 
 
-def test_align_table_color_source_to_shapes_rows_rejects_unknown_rendered_source_index() -> None:
+def test_align_table_color_source_to_shapes_rows_rejects_unknown_source_row_id() -> None:
     geodataframe = gpd.GeoDataFrame(
         {"instance_id": ["cell_1"]},
         geometry=[_polygon(0)],
@@ -437,7 +441,7 @@ def test_align_table_color_source_to_shapes_rows_rejects_unknown_rendered_source
             shapes_name="cells",
             shapes_element=geodataframe,
             style_spec=style_spec,
-            source_shapes_index_by_row=("shape_missing",),
+            source_row_id_by_rendered_row=(999,),
         )
 
 
@@ -471,7 +475,7 @@ def test_apply_table_color_source_to_shapes_layer_uses_table_categorical_palette
         sdata=_make_shapes_sdata(geodataframe, table),
         shapes_name="cells",
         style_spec=style_spec,
-        source_shapes_index_by_row=("shape_a", "shape_a", "shape_b", "shape_c"),
+        source_row_id_by_rendered_row=(0, 0, 1, 2),
         source_shapes_index_feature_name="index",
         fill=True,
     )
@@ -536,7 +540,7 @@ def test_apply_table_color_source_to_shapes_layer_colors_string_instances_with_l
         sdata=_make_shapes_sdata(geodataframe, table),
         shapes_name="cells",
         style_spec=style_spec,
-        source_shapes_index_by_row=("shape_a", "shape_b", "shape_c"),
+        source_row_id_by_rendered_row=(0, 1, 2),
         source_shapes_index_feature_name="index",
     )
 
@@ -584,7 +588,7 @@ def test_apply_table_color_source_to_shapes_layer_uses_positive_integer_instance
         sdata=_make_shapes_sdata(geodataframe, table),
         shapes_name="cells",
         style_spec=style_spec,
-        source_shapes_index_by_row=("shape_a", "shape_b", "shape_c"),
+        source_row_id_by_rendered_row=(0, 1, 2),
         source_shapes_index_feature_name="index",
     )
 
@@ -633,7 +637,7 @@ def test_apply_table_color_source_to_shapes_layer_colors_sparse_x_var_continuous
         sdata=_make_shapes_sdata(geodataframe, table),
         shapes_name="cells",
         style_spec=style_spec,
-        source_shapes_index_by_row=("shape_a", "shape_b", "shape_c"),
+        source_row_id_by_rendered_row=(0, 1, 2),
         source_shapes_index_feature_name="index",
     )
 
@@ -684,7 +688,7 @@ def test_apply_table_color_source_to_shapes_layer_coerces_string_obs_to_temporar
         sdata=_make_shapes_sdata(geodataframe, table),
         shapes_name="cells",
         style_spec=style_spec,
-        source_shapes_index_by_row=("shape_a", "shape_b"),
+        source_row_id_by_rendered_row=(0, 1),
         source_shapes_index_feature_name="index",
     )
 
@@ -723,7 +727,7 @@ def test_apply_table_color_source_to_shapes_layer_disambiguates_style_feature_fr
         sdata=_make_shapes_sdata(geodataframe, table),
         shapes_name="cells",
         style_spec=style_spec,
-        source_shapes_index_by_row=("shape_a",),
+        source_row_id_by_rendered_row=(0,),
         source_shapes_index_feature_name="cell_id",
     )
 
@@ -751,7 +755,7 @@ def test_apply_shape_column_color_source_to_shapes_layer_uses_stored_categorical
         layer,
         shapes_element=geodataframe,
         style_spec=style_spec,
-        source_shapes_index_by_row=("cell_1", "cell_1", "cell_2", "cell_3"),
+        source_row_id_by_rendered_row=(0, 0, 1, 2),
         source_shapes_index_feature_name="index",
     )
 
@@ -801,7 +805,7 @@ def test_apply_shape_column_color_source_to_shapes_layer_uses_continuous_colorma
         layer,
         shapes_element=geodataframe,
         style_spec=style_spec,
-        source_shapes_index_by_row=("cell_1", "cell_2", "cell_3"),
+        source_row_id_by_rendered_row=(0, 1, 2),
         source_shapes_index_feature_name="index",
     )
 
@@ -838,7 +842,7 @@ def test_apply_shape_column_color_source_to_shapes_layer_can_fill_faces() -> Non
         layer,
         shapes_element=geodataframe,
         style_spec=style_spec,
-        source_shapes_index_by_row=("cell_1", "cell_2"),
+        source_row_id_by_rendered_row=(0, 1),
         source_shapes_index_feature_name="index",
         fill=True,
     )
@@ -875,7 +879,7 @@ def test_apply_shape_column_color_source_to_shapes_layer_rejects_invalid_compani
         layer,
         shapes_element=geodataframe,
         style_spec=style_spec,
-        source_shapes_index_by_row=("cell_1", "cell_2", "cell_3"),
+        source_row_id_by_rendered_row=(0, 1, 2),
         source_shapes_index_feature_name="index",
     )
 
@@ -914,7 +918,7 @@ def test_apply_shape_column_color_source_to_shapes_layer_uses_stored_palettes_fo
         layer,
         shapes_element=geodataframe,
         style_spec=style_spec,
-        source_shapes_index_by_row=("cell_1", "cell_2", "cell_3"),
+        source_row_id_by_rendered_row=(0, 1, 2),
         source_shapes_index_feature_name="index",
     )
 
@@ -948,7 +952,7 @@ def test_apply_shape_column_color_source_to_shapes_layer_reports_missing_compani
         layer,
         shapes_element=geodataframe,
         style_spec=style_spec,
-        source_shapes_index_by_row=("cell_1", "cell_2"),
+        source_row_id_by_rendered_row=(0, 1),
         source_shapes_index_feature_name="index",
     )
 
@@ -977,7 +981,7 @@ def test_apply_shape_column_color_source_to_shapes_layer_treats_string_object_va
         layer,
         shapes_element=geodataframe,
         style_spec=style_spec,
-        source_shapes_index_by_row=("cell_1", "cell_2"),
+        source_row_id_by_rendered_row=(0, 1),
         source_shapes_index_feature_name="index",
     )
 
@@ -1006,7 +1010,7 @@ def test_apply_shape_column_color_source_to_shapes_layer_disambiguates_style_fea
         layer,
         shapes_element=geodataframe,
         style_spec=style_spec,
-        source_shapes_index_by_row=("cell_1",),
+        source_row_id_by_rendered_row=(0,),
         source_shapes_index_feature_name="cell_id",
     )
 
@@ -1015,27 +1019,30 @@ def test_apply_shape_column_color_source_to_shapes_layer_disambiguates_style_fea
     assert disambiguate_shape_style_feature_name("cell_id", "cell_id") == "cell_id__value"
 
 
-def test_apply_shape_column_color_source_to_shapes_layer_rejects_duplicate_source_indices() -> None:
+def test_apply_shape_column_color_source_to_shapes_layer_allows_duplicate_source_indices() -> None:
     geodataframe = gpd.GeoDataFrame(
         {"group": pd.Categorical(["a", "b"])},
         geometry=[_polygon(0), _polygon(2)],
         index=["cell_1", "cell_1"],
     )
-    layer = _make_shapes_layer(("cell_1",))
+    layer = _make_shapes_layer(("cell_1", "cell_1"))
     style_spec = ShapeColumnColorSourceSpec(
         source_kind="shape_column",
         value_key="group",
         value_kind="categorical",
     )
 
-    with pytest.raises(ValueError, match="requires unique source GeoDataFrame index"):
-        apply_shape_column_color_source_to_shapes_layer(
-            layer,
-            shapes_element=geodataframe,
-            style_spec=style_spec,
-            source_shapes_index_by_row=("cell_1",),
-            source_shapes_index_feature_name="index",
-        )
+    result = apply_shape_column_color_source_to_shapes_layer(
+        layer,
+        shapes_element=geodataframe,
+        style_spec=style_spec,
+        source_row_id_by_rendered_row=(0, 1),
+        source_shapes_index_feature_name="index",
+    )
+
+    assert result.value_kind == "categorical"
+    assert layer.features["index"].to_list() == ["cell_1", "cell_1"]
+    assert layer.features["group"].to_list() == ["a", "b"]
 
 
 def test_apply_rendered_row_colors_to_shapes_layer_requires_one_color_per_rendered_row() -> None:

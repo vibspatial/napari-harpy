@@ -86,15 +86,15 @@ class _ShapeTableRowAlignment:
         Boolean mask with one value per source GeoDataFrame row. ``False`` means
         the shape instance is not annotated by the selected table.
     rendered_row_has_table_row
-        Boolean mask with one value per rendered napari shape row. Slice 4 uses
-        this to distinguish unannotated shapes from annotated shapes whose
-        selected table value is missing.
+        Boolean mask with one value per rendered napari shape row. This
+        distinguishes unannotated shapes from annotated shapes whose selected
+        table value is missing.
     """
 
     source_row_values: pd.Series
     rendered_row_values: pd.Series
-    source_row_has_table_row: pd.Series
-    rendered_row_has_table_row: pd.Series
+    source_row_has_table_row: np.ndarray
+    rendered_row_has_table_row: np.ndarray
 
 
 def apply_shape_column_color_source_to_shapes_layer(
@@ -102,7 +102,7 @@ def apply_shape_column_color_source_to_shapes_layer(
     *,
     shapes_element: gpd.GeoDataFrame,
     style_spec: ShapeColumnColorSourceSpec,
-    source_shapes_index_by_row: tuple[Any, ...],
+    source_row_id_by_rendered_row: tuple[int, ...],
     source_shapes_index_feature_name: str,
     fill: bool = False,
 ) -> ShapesStyleResult:
@@ -110,14 +110,14 @@ def apply_shape_column_color_source_to_shapes_layer(
 
     Parameters
     ----------
-    source_shapes_index_by_row
-        Source GeoDataFrame index label for each rendered napari shape row.
+    source_row_id_by_rendered_row
+        Integer source GeoDataFrame row id for each rendered napari shape row.
         This can be longer than the source GeoDataFrame row count when one
         source row, such as a ``MultiPolygon``, expands into multiple rendered
-        napari shapes. For example, if source row ``"cell_7"`` expands into
-        three polygons and ``"cell_8"`` expands into one polygon, this mapping
-        is ``("cell_7", "cell_7", "cell_7", "cell_8")``. Styled shapes use
-        it to repeat the source row's style value for every rendered part.
+        napari shapes. For example, if source row position ``7`` expands into
+        three polygons and source row position ``8`` expands into one polygon,
+        this mapping is ``(7, 7, 7, 8)``. Styled shapes use it to repeat the
+        source row's style value for every rendered part.
     source_shapes_index_feature_name
         Name of the ``layer.features`` column that stores the source
         GeoDataFrame index for napari-visible inspection and status-bar text.
@@ -128,30 +128,18 @@ def apply_shape_column_color_source_to_shapes_layer(
         raise ValueError(f"Shape color sources must use `source_kind='shape_column'`, got `{style_spec.source_kind}`.")
     if style_spec.value_key not in shapes_element.columns:
         raise ValueError(f"Shape column `{style_spec.value_key}` is not available in the selected shapes element.")
-    if not shapes_element.index.is_unique:
-        raise ValueError(
-            "Styled shape coloring requires unique source GeoDataFrame index labels; "
-            "duplicate index labels make rendered-row to source-row style lookup ambiguous."
-        )
-    if len(source_shapes_index_by_row) != len(layer.data):
-        raise ValueError(
-            "`source_shapes_index_by_row` must contain one source index for each rendered napari shape row."
-        )
+    source_row_id_by_rendered_row = _validate_source_row_id_by_rendered_row(
+        source_row_id_by_rendered_row,
+        source_row_count=len(shapes_element),
+        rendered_row_count=len(layer.data),
+    )
 
     # Start with one style value per source GeoDataFrame row.
     source_values = shapes_element[style_spec.value_key]
-    # Napari rows can outnumber source rows when a MultiPolygon expands into
-    # multiple rendered polygons, so this index repeats source labels in
-    # rendered-row order, e.g. ("cell_7", "cell_7", "cell_8").
-    source_index_by_rendered_row = pd.Index(source_shapes_index_by_row)
-    missing_source_indices = source_index_by_rendered_row[~source_index_by_rendered_row.isin(source_values.index)]
-    if len(missing_source_indices) > 0:
-        preview = ", ".join(repr(value) for value in pd.unique(missing_source_indices)[:5])
-        raise ValueError(f"Could not align rendered shapes back to source index label(s): {preview}.")
-
-    # Reindex repeats/reorders source values so there is exactly one style
-    # value per rendered napari shape row, then switch to napari row numbering.
-    rendered_row_values = source_values.reindex(source_index_by_rendered_row)
+    # Use integer row ids rather than GeoDataFrame index labels: pandas indexes
+    # can be duplicated, while rendered-row style lookup must identify exactly
+    # one source row.
+    rendered_row_values = source_values.iloc[source_row_id_by_rendered_row]
     rendered_row_values.index = pd.RangeIndex(len(rendered_row_values))
 
     if style_spec.value_kind == "categorical":
@@ -184,7 +172,7 @@ def apply_table_color_source_to_shapes_layer(
     sdata: SpatialData,
     shapes_name: str,
     style_spec: TableColorSourceSpec,
-    source_shapes_index_by_row: tuple[Any, ...],
+    source_row_id_by_rendered_row: tuple[int, ...],
     source_shapes_index_feature_name: str,
     fill: bool = False,
 ) -> ShapesStyleResult:
@@ -200,15 +188,14 @@ def apply_table_color_source_to_shapes_layer(
     style_spec
         Table-backed color source describing the linked table, source kind, and
         selected value key.
-    source_shapes_index_by_row
-        Source GeoDataFrame index label for each rendered napari shape row.
+    source_row_id_by_rendered_row
+        Integer source GeoDataFrame row id for each rendered napari shape row.
         This can be longer than the source GeoDataFrame row count when one
         source row, such as a ``MultiPolygon``, expands into multiple rendered
-        napari shapes. For example, if source row ``"cell_7"`` expands into
-        three polygons and ``"cell_8"`` expands into one polygon, this mapping
-        is ``("cell_7", "cell_7", "cell_7", "cell_8")``. Table-backed
-        styling uses it to repeat each source row's aligned table value for
-        every rendered part.
+        napari shapes. For example, if source row position ``7`` expands into
+        three polygons and source row position ``8`` expands into one polygon,
+        this mapping is ``(7, 7, 7, 8)``. Table-backed styling uses it to
+        repeat each source row's aligned table value for every rendered part.
     source_shapes_index_feature_name
         Name of the ``layer.features`` column that stores the source
         GeoDataFrame index for napari-visible inspection and status-bar text.
@@ -222,6 +209,10 @@ def apply_table_color_source_to_shapes_layer(
     shapes = getattr(sdata, "shapes", {})
     if shapes_name not in shapes:
         raise ValueError(f"Shapes element `{shapes_name}` is not available in the selected SpatialData object.")
+    if len(source_row_id_by_rendered_row) != len(layer.data):
+        raise ValueError(
+            "`source_row_id_by_rendered_row` must contain one source row id for each rendered napari shape row."
+        )
 
     aligned_values = _align_table_color_source_to_shapes_rows(
         table=table,
@@ -229,7 +220,7 @@ def apply_table_color_source_to_shapes_layer(
         shapes_name=shapes_name,
         shapes_element=shapes[shapes_name],
         style_spec=style_spec,
-        source_shapes_index_by_row=source_shapes_index_by_row,
+        source_row_id_by_rendered_row=source_row_id_by_rendered_row,
     )
 
     if style_spec.value_kind == "instance" or (
@@ -288,6 +279,41 @@ def build_styled_shapes_layer_name(
     return f"{shapes_name}[shapes_column:{style_spec.value_key}]"
 
 
+def _validate_source_row_id_by_rendered_row(
+    source_row_id_by_rendered_row: tuple[int, ...],
+    *,
+    source_row_count: int,
+    rendered_row_count: int | None = None,
+) -> np.ndarray:
+    """Validate rendered-row to source-row mapping and return it as an integer array.
+
+    Shapes styling expands source GeoDataFrame rows to rendered napari rows
+    with integer source row ids instead of GeoDataFrame index labels. This keeps
+    lookup unambiguous when the GeoDataFrame index contains duplicate labels,
+    and it lets MultiPolygon parts repeat the same source row id.
+    """
+    if rendered_row_count is not None and len(source_row_id_by_rendered_row) != rendered_row_count:
+        raise ValueError(
+            "`source_row_id_by_rendered_row` must contain one source row id for each rendered napari shape row."
+        )
+
+    invalid_row_ids = [
+        row_id
+        for row_id in source_row_id_by_rendered_row
+        if (
+            not isinstance(row_id, int | np.integer)
+            or isinstance(row_id, bool | np.bool_)
+            or int(row_id) < 0
+            or int(row_id) >= source_row_count
+        )
+    ]
+    if invalid_row_ids:
+        preview = _format_value_preview(pd.unique(pd.Index(invalid_row_ids)).tolist())
+        raise ValueError(f"Could not align rendered shapes back to source row id(s): {preview}.")
+
+    return np.asarray(source_row_id_by_rendered_row, dtype=np.int64)
+
+
 def _align_table_color_source_to_shapes_rows(
     *,
     table: AnnData,
@@ -295,7 +321,7 @@ def _align_table_color_source_to_shapes_rows(
     shapes_name: str,
     shapes_element: gpd.GeoDataFrame,
     style_spec: TableColorSourceSpec,
-    source_shapes_index_by_row: tuple[Any, ...],
+    source_row_id_by_rendered_row: tuple[int, ...],
 ) -> _ShapeTableRowAlignment:
     """Align one table-backed color source to source and rendered shapes rows."""
     if style_spec.table_name != table_metadata.table_name:
@@ -318,12 +344,6 @@ def _align_table_color_source_to_shapes_rows(
             f"Shapes element `{shapes_name}` is missing required instance key column "
             f"`{table_metadata.instance_key}` for table-backed styling."
         )
-    if not shapes_element.index.is_unique:
-        raise ValueError(
-            "Table-backed shape coloring requires unique source GeoDataFrame index labels; "
-            "duplicate index labels make rendered-row to source-row style lookup ambiguous."
-        )
-
     shape_instance_values = shapes_element[table_metadata.instance_key]
     missing_shape_instances = shape_instance_values.loc[shape_instance_values.isna()]
     if not missing_shape_instances.empty:
@@ -384,8 +404,10 @@ def _align_table_color_source_to_shapes_rows(
             f"are not present in `shapes_element[{table_metadata.instance_key!r}]`: {preview}."
         )
 
-    source_row_has_table_row = shape_instance_values.isin(table_value_by_instance.index)
-    source_row_has_table_row.name = style_spec.value_key
+    source_row_has_table_row = shape_instance_values.isin(table_value_by_instance.index).to_numpy(
+        dtype=bool,
+        copy=False,
+    )
     # Avoid `shape_instance_values.map(table_value_by_instance)`: pandas may
     # upcast positive integer instance IDs to floats when unannotated shapes
     # introduce missing values, which would break labels-like identity coloring.
@@ -395,21 +417,19 @@ def _align_table_color_source_to_shapes_rows(
             table_value_lookup[value] if has_table_row else pd.NA
             for value, has_table_row in zip(shape_instance_values, source_row_has_table_row, strict=True)
         ],
-        index=shape_instance_values.index,
+        index=pd.RangeIndex(len(shape_instance_values)),
         name=style_spec.value_key,
         dtype="object",
     )
 
-    source_index_by_rendered_row = pd.Index(source_shapes_index_by_row)
-    missing_source_indices = source_index_by_rendered_row[~source_index_by_rendered_row.isin(shapes_element.index)]
-    if len(missing_source_indices) > 0:
-        preview = _format_value_preview(pd.unique(missing_source_indices).tolist())
-        raise ValueError(f"Could not align rendered shapes back to source index label(s): {preview}.")
+    source_row_id_by_rendered_row = _validate_source_row_id_by_rendered_row(
+        source_row_id_by_rendered_row,
+        source_row_count=len(shapes_element),
+    )
 
-    rendered_row_values = source_row_values.reindex(source_index_by_rendered_row)
+    rendered_row_values = source_row_values.iloc[source_row_id_by_rendered_row]
     rendered_row_values.index = pd.RangeIndex(len(rendered_row_values))
-    rendered_row_has_table_row = source_row_has_table_row.reindex(source_index_by_rendered_row)
-    rendered_row_has_table_row.index = pd.RangeIndex(len(rendered_row_has_table_row))
+    rendered_row_has_table_row = source_row_has_table_row[source_row_id_by_rendered_row]
 
     return _ShapeTableRowAlignment(
         source_row_values=source_row_values,
@@ -835,7 +855,7 @@ def _apply_table_rendered_row_colors_to_shapes_layer(
     layer: Shapes,
     rendered_row_colors: pd.Series,
     *,
-    rendered_row_has_table_row: pd.Series,
+    rendered_row_has_table_row: np.ndarray,
     fill: bool = False,
 ) -> None:
     if len(rendered_row_colors) != len(layer.data):
@@ -849,7 +869,7 @@ def _apply_table_rendered_row_colors_to_shapes_layer(
     # appear as missing in `rendered_row_values`, so color builders map both to
     # gray. Use the table-row coverage mask to keep missing table values gray
     # while making shapes with no table row fully transparent.
-    unannotated_rows = ~rendered_row_has_table_row.to_numpy(dtype=bool, copy=False)
+    unannotated_rows = ~rendered_row_has_table_row
     face_color[unannotated_rows, 3] = 0.0
     edge_color[unannotated_rows, 3] = 0.0
     layer.face_color = face_color

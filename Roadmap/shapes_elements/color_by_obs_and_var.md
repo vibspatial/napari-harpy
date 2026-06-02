@@ -1,6 +1,6 @@
 # Color Shapes By Linked Table `.obs` And `X[:, var]`
 
-Status: Slice 6 implemented
+Status: Slice 7a implemented; Slice 7b pending
 
 ## Goal
 
@@ -43,8 +43,8 @@ Implemented pieces:
 - `viewer/shapes_styling.py`
   - `apply_shape_column_color_source_to_shapes_layer(...)` applies direct
     `GeoDataFrame` column values;
-  - it already handles rendered-row alignment for MultiPolygons through
-    `source_shapes_index_by_row`;
+  - it handles rendered-row alignment for MultiPolygons through
+    `source_row_id_by_rendered_row`;
   - categorical values can use a row-level companion `<column>_colors` shape
     column;
   - string/object columns are coerced to temporary categorical values;
@@ -303,7 +303,7 @@ Inputs:
 - `SpatialDataTableMetadata`
 - source shapes `GeoDataFrame`
 - `TableColorSourceSpec`
-- `source_shapes_index_by_row`
+- `source_row_id_by_rendered_row`
 
 Recommended private helper shape:
 
@@ -315,7 +315,7 @@ def _align_table_color_source_to_shapes_rows(
     shapes_name: str,
     shapes_element: gpd.GeoDataFrame,
     style_spec: TableColorSourceSpec,
-    source_shapes_index_by_row: tuple[Any, ...],
+    source_row_id_by_rendered_row: tuple[int, ...],
 ) -> _ShapeTableRowAlignment:
     ...
 ```
@@ -330,9 +330,9 @@ Recommended steps:
 2. Require the shapes element to contain a column named `instance_key`; if it is
    missing, raise a clear error instead of falling back to the GeoDataFrame
    index.
-3. Require the source GeoDataFrame index to be unique, because
-   `source_shapes_index_by_row` maps rendered napari rows back through that
-   index.
+3. Use internal integer source row ids for rendered-row lookup, so duplicated
+   GeoDataFrame index labels remain valid display metadata rather than internal
+   alignment keys.
 4. Filter table rows where `table.obs[region_key] == shapes_name`.
 5. Require at least one table row for the selected shapes region after region
    filtering; if none remain, raise a clear error because the table metadata
@@ -362,8 +362,8 @@ Recommended steps:
     its `shapes_element[instance_key]` value.
 14. Build `source_row_has_table_row` so shapes with no matching table row are
     tracked separately from rows whose selected table value is missing.
-15. Align again to `source_shapes_index_by_row`, repeating values and masks for
-    MultiPolygon parts.
+15. Align again to `source_row_id_by_rendered_row`, repeating values and masks
+    for MultiPolygon parts.
 16. Return `_ShapeTableRowAlignment` for Slice 4 styling.
 
 Missing table rows:
@@ -461,7 +461,7 @@ Likely code changes:
         sdata: SpatialData,
         shapes_name: str,
         style_spec: TableColorSourceSpec,
-        source_shapes_index_by_row: tuple[Any, ...],
+        source_row_id_by_rendered_row: tuple[int, ...],
         source_shapes_index_feature_name: str,
         fill: bool = False,
     ) -> ShapesStyleResult:
@@ -647,8 +647,8 @@ shape-column coloring behavior unchanged.
      dispatch through the adapter yet;
    - require `shapes_element[instance_key]` and never fall back to
      `shapes_element.index`;
-   - require the source GeoDataFrame index to be unique, because rendered-row
-     mapping uses that index;
+   - use internal integer source row ids for rendered-row mapping, while keeping
+     the GeoDataFrame index as visible/status metadata;
    - use exact value matching between table and shapes instance values;
    - require selected-region table instances to be a subset of shape instances;
    - raise if selected-region table rows have missing `instance_key` values;
@@ -661,10 +661,10 @@ shape-column coloring behavior unchanged.
      missing selected table values;
    - preserve string and non-integer instance values without coercion;
    - test missing shapes `instance_key` column, missing shapes `instance_key`
-     values, non-unique source GeoDataFrame index, missing table `instance_key`
-     values, duplicate table instances, duplicate shapes instance values, extra
-     table instances, no selected-region table rows, partial shape coverage,
-     rendered-row repetition, and string IDs.
+     values, duplicate GeoDataFrame index display values, missing table
+     `instance_key` values, duplicate table instances, duplicate shapes
+     instance values, extra table instances, no selected-region table rows,
+     partial shape coverage, rendered-row repetition, and string IDs.
 
 4. Table-backed shapes styling - completed
    - add `apply_table_color_source_to_shapes_layer(...)` with the agreed API:
@@ -675,7 +675,7 @@ shape-column coloring behavior unchanged.
          sdata: SpatialData,
          shapes_name: str,
          style_spec: TableColorSourceSpec,
-         source_shapes_index_by_row: tuple[Any, ...],
+         source_row_id_by_rendered_row: tuple[int, ...],
          source_shapes_index_feature_name: str,
          fill: bool = False,
      ) -> ShapesStyleResult:
@@ -684,7 +684,7 @@ shape-column coloring behavior unchanged.
    - resolve the table and `SpatialDataTableMetadata` from
      `style_spec.table_name` inside the function, matching the labels styling
      API shape and keeping adapter dispatch simple;
-   - reuse the existing rendered-row expansion via `source_shapes_index_by_row`;
+   - reuse the existing rendered-row expansion via `source_row_id_by_rendered_row`;
    - add the special `instance_key` identity-coloring branch;
    - support categorical `.obs` columns with `table.uns["<column>_colors"]`;
    - support string/object `.obs` coercion with default palette behavior;
@@ -740,14 +740,13 @@ shape-column coloring behavior unchanged.
      request/update path, and one representative table-alignment error reaching
      widget feedback.
 
-7a. Internal source-row identity for shapes - follow-up
+7a. Internal source-row identity for shapes - completed
    - stop relying on the GeoDataFrame index as the unique internal source-row
      identity for rendered-row lookup;
    - generate an internal source-row identifier when building napari shapes
      layers. Prefer integer source row position, `0..len(shapes_element)-1`,
      because it is unique even when the GeoDataFrame index contains duplicates;
-   - rename the rendered-row mapping to make the new meaning explicit:
-     `source_shapes_index_by_row` should become
+   - use the explicit rendered-row mapping name
      `source_row_id_by_rendered_row`;
    - use `source_row_id_by_rendered_row` for all internal rendered-row to
      source-row style alignment, so rendered napari rows can always map back to
@@ -808,13 +807,63 @@ shape-column coloring behavior unchanged.
      disagreeing column/index values, and table instances missing from the
      resolved shape instance identities.
 
-Optional cleanup slice:
+8. Shapes geometry preparation performance - follow-up
+   - investigate and optimize `_prepare_napari_shapes_layer_inputs(...)` for
+     large shapes elements;
+   - current implementation uses `shapes_element.iterrows()`, which constructs a
+     pandas row `Series` for every source shape. A quick local synthetic check
+     for 100k point-radius rows measured about `1.76s` for the current builder
+     path versus about `0.40s` for a direct column-array loop, before napari
+     rendering;
+   - replace row-wise pandas iteration with direct array iteration where this
+     preserves behavior, for example by reading geometry, index, and radius
+     values as arrays and enumerating those arrays;
+   - keep the existing behavior for skipped geometries, point-radius ellipse
+     conversion, `source_row_id_by_rendered_row`, visible source-index
+     `layer.features`, and MultiPolygon expansion;
+   - polygon and MultiPolygon geometries still need per-geometry handling for
+     geometry repair, hole preservation, and expansion into napari paths, but
+     they should not need pandas `Series` construction per source row;
+   - treat this as geometry/input preparation optimization only. Napari layer
+     creation, rendering, and interaction latency remain separate performance
+     questions;
+   - add focused tests that the optimized builder preserves primary shapes
+     features, source-row ids, skipped-geometry counts, point-radius ellipses,
+     polygon paths, and MultiPolygon expansion.
 
-- Consider renaming `source_shapes_index_by_row` to
-  `source_shapes_index_by_rendered_row` across the adapter, shapes styling,
-  tests, and roadmap docs. The current name is established and documented, so
-  this should be a behavior-free naming cleanup only if the clearer rendered-row
-  wording is worth the churn.
+9. Point-radius shapes visualization fast path - follow-up
+   - follow the `napari-spatialdata` direction for point-radius shapes:
+     visualize the common case where every geometry is a `Point` and a valid
+     `radius` column is present as a napari `Points` layer with per-point size,
+     rather than constructing one ellipse `Shapes` row per source row;
+   - this is expected to be the snappier default for large point-radius shape
+     elements because it avoids the generic polygon/MultiPolygon repair and
+     expansion loop, avoids pandas row `Series` construction, and avoids
+     allocating one small ellipse vertex array per source row;
+   - extract coordinates and radii as arrays, e.g. conceptually
+     `yx = np.fliplr(np.array([df.geometry.x, df.geometry.y]).T)` and
+     `size = 2 * radius * scale_factor`, matching the idea used by
+     `napari-spatialdata`;
+   - decide the viewer/API semantics carefully: these elements are still
+     SpatialData shapes elements, but their fast visualization layer would be a
+     napari `Points` layer. The adapter binding and widget feedback should make
+     that distinction explicit enough that styling and table alignment do not
+     become confusing;
+   - preserve source-row traceability with internal row ids and visible
+     source-index metadata. If the fast path uses a `Points` layer, define the
+     binding/status behavior needed to keep the same user-facing source row
+     context currently provided by shapes `layer.features`;
+   - keep shape-column coloring, table-backed styling, and SpatialData table
+     alignment semantics unchanged at the data-model level. If those styling
+     paths need separate points-layer rendering code for this visualization
+     mode, specify that as part of the implementation;
+   - provide a vectorized `Shapes` ellipse fallback only when actual napari
+     `Shapes` layer semantics are required. The fallback should build ellipse
+     vertex arrays from coordinate/radius arrays and still avoid `iterrows()`;
+   - add focused tests for all-point valid radii, invalid/missing radii,
+     duplicate GeoDataFrame index values, named index display, table-backed
+     source identity, and parity between the points fast path and vectorized
+     ellipse fallback where behavior should match.
 
 ## Recommendation
 

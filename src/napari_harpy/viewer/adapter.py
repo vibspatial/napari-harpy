@@ -213,14 +213,15 @@ class ShapesLayerBinding(BaseLayerBinding):
     style_spec
         Shape color source used for styled shape variants. Primary shape
         bindings do not carry a style specification.
-    source_shapes_index_by_row
-        Source GeoDataFrame index label for each rendered napari shape row.
+    source_row_id_by_rendered_row
+        Internal integer source GeoDataFrame row id for each rendered napari
+        shape row.
         This can be longer than the source GeoDataFrame row count when one
         source row, such as a ``MultiPolygon``, expands into multiple rendered
-        napari shapes. For example, if source row ``"cell_7"`` expands into
-        three polygons and ``"cell_8"`` expands into one polygon, this mapping
-        is ``("cell_7", "cell_7", "cell_7", "cell_8")``. Styled shapes use
-        it to repeat the source row's style value for every rendered part.
+        napari shapes. For example, if source row position ``7`` expands into
+        three polygons and source row position ``8`` expands into one polygon,
+        this mapping is ``(7, 7, 7, 8)``. Styled shapes use it to repeat the
+        source row's style value for every rendered part.
     source_shapes_index_feature_name
         Name of the ``layer.features`` column that stores the source
         GeoDataFrame index for napari-visible inspection and status-bar text.
@@ -235,7 +236,7 @@ class ShapesLayerBinding(BaseLayerBinding):
     element_type: Literal["shapes"] = "shapes"
     shapes_role: Literal["primary", "styled"] = "primary"
     style_spec: ShapeColumnColorSourceSpec | TableColorSourceSpec | None = None
-    source_shapes_index_by_row: tuple[Any, ...] = ()
+    source_row_id_by_rendered_row: tuple[int, ...] = ()
     source_shapes_index_feature_name: str = DEFAULT_SHAPES_INDEX_FEATURE_NAME
     skipped_geometry_count: int = 0
 
@@ -296,14 +297,14 @@ class _NapariShapesLayerInputs:
     source_shapes_index_feature_name
         Name of the ``features`` column that stores the source GeoDataFrame
         index, using the GeoDataFrame index name or ``"index"`` fallback.
-    source_shapes_index_by_row
-        Source GeoDataFrame index for each rendered napari row. This is later
-        stored in the Harpy layer binding so every row in ``data`` can be
-        mapped back to its source row even when ``len(data)`` differs from the
-        source GeoDataFrame row count. For example, if source row ``"cell_7"``
-        is a ``MultiPolygon`` that expands into three rendered napari polygons
-        and source row ``"cell_8"`` expands into one rendered napari polygon,
-        this value is ``("cell_7", "cell_7", "cell_7", "cell_8")``.
+    source_row_id_by_rendered_row
+        Internal integer source GeoDataFrame row id for each rendered napari
+        row. This is later stored in the Harpy layer binding so every row in
+        ``data`` can be mapped back to its source row even when ``len(data)``
+        differs from the source GeoDataFrame row count. For example, if source
+        row position ``7`` is a ``MultiPolygon`` that expands into three
+        rendered napari polygons and source row position ``8`` expands into one
+        rendered napari polygon, this value is ``(7, 7, 7, 8)``.
     skipped_geometry_count
         Number of source rows that could not be rendered.
     """
@@ -312,7 +313,7 @@ class _NapariShapesLayerInputs:
     shape_types: list[ShapesLayerShapeType]
     features: pd.DataFrame
     source_shapes_index_feature_name: str
-    source_shapes_index_by_row: tuple[Any, ...]
+    source_row_id_by_rendered_row: tuple[int, ...]
     skipped_geometry_count: int
 
 
@@ -320,7 +321,7 @@ class _NapariShapesLayerInputs:
 class _BuiltShapesLayer:
     layer: Shapes
     source_shapes_index_feature_name: str
-    source_shapes_index_by_row: tuple[Any, ...]
+    source_row_id_by_rendered_row: tuple[int, ...]
     skipped_geometry_count: int
 
 
@@ -444,7 +445,7 @@ class LayerBindingRegistry:
         sdata: SpatialData | None = None,
         shapes_role: Literal["primary", "styled"] = "primary",
         style_spec: ShapeColumnColorSourceSpec | TableColorSourceSpec | None = None,
-        source_shapes_index_by_row: tuple[Any, ...] = (),
+        source_row_id_by_rendered_row: tuple[int, ...] = (),
         source_shapes_index_feature_name: str = DEFAULT_SHAPES_INDEX_FEATURE_NAME,
         skipped_geometry_count: int = 0,
     ) -> ShapesLayerBinding:
@@ -456,7 +457,7 @@ class LayerBindingRegistry:
             sdata_id=_get_sdata_id(sdata),
             shapes_role=shapes_role,
             style_spec=style_spec,
-            source_shapes_index_by_row=source_shapes_index_by_row,
+            source_row_id_by_rendered_row=source_row_id_by_rendered_row,
             source_shapes_index_feature_name=source_shapes_index_feature_name,
             skipped_geometry_count=skipped_geometry_count,
         )
@@ -654,7 +655,7 @@ class ViewerAdapter(QObject):
         sdata: SpatialData | None = None,
         shapes_role: Literal["primary", "styled"] = "primary",
         style_spec: ShapeColumnColorSourceSpec | TableColorSourceSpec | None = None,
-        source_shapes_index_by_row: tuple[Any, ...] = (),
+        source_row_id_by_rendered_row: tuple[int, ...] = (),
         source_shapes_index_feature_name: str = DEFAULT_SHAPES_INDEX_FEATURE_NAME,
         skipped_geometry_count: int = 0,
     ) -> ShapesLayerBinding:
@@ -666,7 +667,7 @@ class ViewerAdapter(QObject):
             sdata=sdata,
             shapes_role=shapes_role,
             style_spec=style_spec,
-            source_shapes_index_by_row=source_shapes_index_by_row,
+            source_row_id_by_rendered_row=source_row_id_by_rendered_row,
             source_shapes_index_feature_name=source_shapes_index_feature_name,
             skipped_geometry_count=skipped_geometry_count,
         )
@@ -1238,7 +1239,7 @@ class ViewerAdapter(QObject):
             sdata=sdata,
             shapes_name=shapes_name,
             coordinate_system=coordinate_system,
-            source_shapes_index_by_row=built_layer.source_shapes_index_by_row,
+            source_row_id_by_rendered_row=built_layer.source_row_id_by_rendered_row,
             source_shapes_index_feature_name=built_layer.source_shapes_index_feature_name,
             skipped_geometry_count=built_layer.skipped_geometry_count,
         )
@@ -1285,7 +1286,7 @@ class ViewerAdapter(QObject):
                 coordinate_system=coordinate_system,
                 shapes_role="styled",
                 style_spec=style_spec,
-                source_shapes_index_by_row=built_layer.source_shapes_index_by_row,
+                source_row_id_by_rendered_row=built_layer.source_row_id_by_rendered_row,
                 source_shapes_index_feature_name=built_layer.source_shapes_index_feature_name,
                 skipped_geometry_count=built_layer.skipped_geometry_count,
             )
@@ -1305,7 +1306,7 @@ class ViewerAdapter(QObject):
                 layer,
                 shapes_element=shapes[shapes_name],
                 style_spec=style_spec,
-                source_shapes_index_by_row=binding.source_shapes_index_by_row,
+                source_row_id_by_rendered_row=binding.source_row_id_by_rendered_row,
                 source_shapes_index_feature_name=binding.source_shapes_index_feature_name,
                 fill=fill,
             )
@@ -1315,7 +1316,7 @@ class ViewerAdapter(QObject):
                 sdata=sdata,
                 shapes_name=shapes_name,
                 style_spec=style_spec,
-                source_shapes_index_by_row=binding.source_shapes_index_by_row,
+                source_row_id_by_rendered_row=binding.source_row_id_by_rendered_row,
                 source_shapes_index_feature_name=binding.source_shapes_index_feature_name,
                 fill=fill,
             )
@@ -1776,7 +1777,7 @@ def _build_shapes_layer(
     return _BuiltShapesLayer(
         layer=layer,
         source_shapes_index_feature_name=napari_layer_inputs.source_shapes_index_feature_name,
-        source_shapes_index_by_row=napari_layer_inputs.source_shapes_index_by_row,
+        source_row_id_by_rendered_row=napari_layer_inputs.source_row_id_by_rendered_row,
         skipped_geometry_count=napari_layer_inputs.skipped_geometry_count,
     )
 
@@ -1785,13 +1786,13 @@ def _prepare_napari_shapes_layer_inputs(shapes_element: Any) -> _NapariShapesLay
     data: list[np.ndarray] = []
     shape_types: list[ShapesLayerShapeType] = []
     feature_rows: list[dict[str, Any]] = []
-    source_indices: list[Any] = []
+    source_row_id_by_rendered_row: list[int] = []
     skipped_geometry_count = 0
     has_radius = "radius" in getattr(shapes_element, "columns", [])
     geometry_column_name = getattr(getattr(shapes_element, "geometry", None), "name", "geometry")
     index_feature_name = _get_shapes_index_feature_name(shapes_element)
 
-    for source_index, row in shapes_element.iterrows():
+    for source_row_id, (source_index, row) in enumerate(shapes_element.iterrows()):
         geometry = row[geometry_column_name]
         row_shape_count = len(data)
         feature_row = {index_feature_name: source_index}
@@ -1813,14 +1814,14 @@ def _prepare_napari_shapes_layer_inputs(shapes_element: Any) -> _NapariShapesLay
             data.append(ellipse)
             shape_types.append("ellipse")
             feature_rows.append(feature_row)
-            source_indices.append(source_index)
+            source_row_id_by_rendered_row.append(source_row_id)
             continue
 
         for polygon in _iter_renderable_polygons(geometry):
             data.append(_polygon_to_napari_path(polygon))
             shape_types.append("polygon")
             feature_rows.append(feature_row)
-            source_indices.append(source_index)
+            source_row_id_by_rendered_row.append(source_row_id)
 
         if len(data) == row_shape_count:
             skipped_geometry_count += 1
@@ -1830,7 +1831,7 @@ def _prepare_napari_shapes_layer_inputs(shapes_element: Any) -> _NapariShapesLay
         shape_types=shape_types,
         features=pd.DataFrame(feature_rows),
         source_shapes_index_feature_name=index_feature_name,
-        source_shapes_index_by_row=tuple(source_indices),
+        source_row_id_by_rendered_row=tuple(source_row_id_by_rendered_row),
         skipped_geometry_count=skipped_geometry_count,
     )
 

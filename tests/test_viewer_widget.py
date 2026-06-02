@@ -1966,7 +1966,7 @@ def test_viewer_widget_styled_shapes_feedback_reports_string_coercion(qtbot) -> 
     assert "Coerced string values to categorical" in widget.global_action_feedback_label.text()
 
 
-def test_viewer_widget_styled_shapes_duplicate_index_error_is_feedback(qtbot) -> None:
+def test_viewer_widget_styled_shapes_allows_duplicate_source_index(qtbot) -> None:
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)
     sdata = _make_colorable_shapes_sdata(cell_type_colors=["red", "blue"], duplicate_index=True)
@@ -1979,8 +1979,10 @@ def test_viewer_widget_styled_shapes_duplicate_index_error_is_feedback(qtbot) ->
     _select_shape_column(widget.shape_cards[0], "cell_type")
     widget.shape_cards[0].add_update_button.click()
 
-    _assert_action_feedback_card(widget, title="Styled Shapes Error", kind="error")
-    assert "requires unique source GeoDataFrame index" in widget.global_action_feedback_label.text()
+    assert len(viewer.layers) == 1
+    assert viewer.layers[0].features["index"].to_list() == ["cell_1", "cell_1"]
+    assert viewer.layers[0].features["cell_type"].to_list() == ["T", "B"]
+    _assert_action_feedback_card(widget, title="Styled Shapes Created", kind="success")
 
 
 def test_viewer_widget_table_backed_styled_shapes_without_linked_table_is_feedback(qtbot) -> None:
