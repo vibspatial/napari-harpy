@@ -46,8 +46,13 @@ If any condition fails, fall back to the existing napari `Shapes` path.
 - Extract coordinates and radii as arrays, avoiding `iterrows()`.
 - Build napari points coordinates in `(y, x)` display order.
 - Set per-point size from radius, conceptually `size = 2 * radius * scale_factor`.
-- Preserve the existing coordinate-system transform semantics before extracting
-  coordinates and radii.
+- Follow the existing shapes transform semantics: call SpatialData
+  `transform_spatial_element(...)` first, then extract transformed point
+  coordinates and transformed radii.
+- Do not pass the shapes element transformation to napari as `layer.affine` for
+  this mode. The napari `Points` layer should receive already-transformed
+  coordinates and sizes, matching the current shapes path and avoiding double
+  transforms.
 - Preserve source-row traceability with internal row ids.
 - Preserve visible source-index metadata/status behavior currently provided by
   shapes `layer.features`.
@@ -90,9 +95,10 @@ shapes:
 
 ## Fallback
 
-Keep a vectorized `Shapes` ellipse fallback for cases where actual napari
-`Shapes` layer semantics are required. The fallback should build ellipse vertex
-arrays from coordinate/radius arrays and avoid `iterrows()`.
+If an element does not qualify for the point-radius fast path, use the existing
+generic napari `Shapes` path. Do not add a separate vectorized ellipse rendering
+mode unless a concrete workflow later requires actual napari `Shapes` semantics
+for otherwise valid point-radius data.
 
 ## Tests
 
@@ -106,14 +112,15 @@ Add focused tests for:
 - named index display/status behavior;
 - source-row id preservation;
 - table-backed source identity compatibility;
-- parity between the points fast path and vectorized ellipse fallback where
-  behavior should match.
+- fallback to the generic `Shapes` path for non-qualifying elements.
 
 ## Implementation Slices
 
 1. Point-radius detection and preparation
    - add a small helper that determines whether a transformed shapes element can
      be rendered as point-radius shapes;
+   - transform the shapes element to the selected coordinate system before
+     detection and preparation, matching the existing generic shapes path;
    - require all geometries to be `Point` and require a `radius` column with
      finite positive numeric values for every row;
    - extract coordinates, radii, source index values, and source row ids as
@@ -174,12 +181,3 @@ Add focused tests for:
      terminology;
    - add tests for widget request dispatch, status card feedback, and fallback
      messages.
-
-6. Optional vectorized ellipse fallback
-   - if actual napari `Shapes` semantics are needed for point-radius elements,
-     add a vectorized ellipse fallback that avoids `iterrows()`;
-   - build ellipse vertex arrays from coordinate/radius arrays;
-   - keep source row ids and source-index features aligned with the points fast
-     path;
-   - add parity tests between the points fast path and ellipse fallback for the
-     cases where behavior should match.
