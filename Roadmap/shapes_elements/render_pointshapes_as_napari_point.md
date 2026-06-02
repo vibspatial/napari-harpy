@@ -1,6 +1,6 @@
 # Render Point-Radius Shapes As Napari Points
 
-Status: Slice 3 implemented; Slices 4-6 pending
+Status: Slice 3 implemented; Slices 4-7 pending
 
 ## Goal
 
@@ -273,7 +273,24 @@ Add focused tests for:
      columns, duplicate GeoDataFrame index values, named index display, and
      fill/edge behavior.
 
-5. Table-backed styling on points-backed shapes
+5. Point-backed primary presentation controls - follow-up
+   - primary generic shapes currently connect napari presentation controls with:
+     - `_connect_current_edge_width_to_global_edge_width(layer)`;
+     - `_connect_current_edge_color_to_global_edge_color(layer)` when
+       `sync_edge_color=True`;
+   - decide the equivalent behavior for primary point-radius shapes rendered as
+     napari `Points`;
+   - likely map the shared color control to point face/border color, while
+     avoiding this sync for styled point-backed layers where colors are
+     data-driven;
+   - decide whether there is a point-size analogue to the shapes edge-width
+     control, or whether point size must remain radius-derived and therefore
+     should not sync to global point-size changes;
+   - add tests that changing the relevant napari presentation control updates
+     all primary point-backed shapes consistently, and does not flatten styled
+     point-backed palettes.
+
+6. Table-backed styling on points-backed shapes
    - add styling support for `TableColorSourceSpec` when the styled layer is a
      napari `Points` layer representing point-radius shapes;
    - reuse the same table-to-source-row alignment rules as styled shapes,
@@ -287,7 +304,7 @@ Add focused tests for:
      duplicate shape instance identities, duplicate table instance errors, and
      named-index instance identity.
 
-6. Widget and feedback polish
+7. Widget and feedback polish
    - make the shapes card/status feedback distinguish between regular shapes
      rendering and point-radius shapes rendered as points;
    - keep the existing color-source controls unchanged at the data-model level;
