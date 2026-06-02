@@ -47,7 +47,6 @@ class _LabelsCardWidget(QFrame):
         self,
         *,
         labels_name: str,
-        table_names: list[str],
         table_color_sources_by_table: dict[str, list[TableColorSourceSpec]],
     ) -> None:
         super().__init__()
@@ -76,6 +75,7 @@ class _LabelsCardWidget(QFrame):
         self.linked_table_combo = CompactComboBox(minimum_contents_length=8)
         self.linked_table_combo.setObjectName(f"viewer_widget_linked_table_combo_{labels_name}")
         self.linked_table_combo.setStyleSheet(INPUT_CONTROL_STYLESHEET)
+        table_names = list(table_color_sources_by_table)
         if table_names:
             self.linked_table_combo.addItems(table_names)
         else:
@@ -154,7 +154,6 @@ class _LabelsCardWidget(QFrame):
 
     def set_linked_tables(
         self,
-        table_names: list[str],
         table_color_sources_by_table: dict[str, list[TableColorSourceSpec]],
     ) -> None:
         previous_table_name = self.selected_table_name
@@ -164,6 +163,7 @@ class _LabelsCardWidget(QFrame):
         )
 
         self._table_color_sources_by_table = table_color_sources_by_table
+        table_names = list(table_color_sources_by_table)
         with QSignalBlocker(self.linked_table_combo):
             # Rebuild linked-table choices after the sdata table set changed,
             # then restore the previous selection when it is still valid.
@@ -201,10 +201,13 @@ class _LabelsCardWidget(QFrame):
 
         if source_kind == "obs_column":
             self.color_source_value_label.setText("Observation")
+            placeholder_text = "Search observations"
         elif source_kind == "x_var":
             self.color_source_value_label.setText("Var")
+            placeholder_text = "Search vars"
         else:
             self.color_source_value_label.setText("Value source")
+            placeholder_text = "Select a color source kind first"
 
         available_sources = (
             list(self._table_color_sources_by_table.get(table_name, ())) if table_name is not None else []
@@ -217,7 +220,7 @@ class _LabelsCardWidget(QFrame):
             if source_kind is None:
                 self.color_source_value_input.setEnabled(False)
                 self.color_source_value_input.clear()
-                self.color_source_value_input.setPlaceholderText("Select a color source kind first")
+                self.color_source_value_input.setPlaceholderText(placeholder_text)
             else:
                 self.color_source_value_input.setEnabled(bool(self._filtered_color_sources))
                 if selected_source_identity is not None:
@@ -240,10 +243,7 @@ class _LabelsCardWidget(QFrame):
                 else:
                     self.color_source_value_input.clear()
 
-                if source_kind == "obs_column":
-                    self.color_source_value_input.setPlaceholderText("Search observations")
-                else:
-                    self.color_source_value_input.setPlaceholderText("Search vars")
+                self.color_source_value_input.setPlaceholderText(placeholder_text)
 
             self._color_source_completer_model.setStringList(
                 [source.display_name for source in self._filtered_color_sources]

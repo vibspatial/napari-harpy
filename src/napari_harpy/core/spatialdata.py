@@ -13,8 +13,8 @@ from spatialdata.transformations import get_transformation
 from xarray import DataArray
 
 from napari_harpy.core._color_source import (
-    ShapeColorSourceSpec,
     ShapeColorValueKind,
+    ShapeColumnColorSourceSpec,
     TableColorSourceSpec,
     TableColorValueKind,
 )
@@ -116,21 +116,21 @@ class SpatialDataFeatureExtractionImageDiscovery:
 
 @dataclass(frozen=True)
 class SpatialDataTableMetadata:
-    """Metadata that links a table to the labels elements it annotates."""
+    """Metadata that links a table to the spatial elements it annotates."""
 
     table_name: str
     region_key: str
     instance_key: str
     regions: tuple[str, ...]
 
-    def annotates(self, labels_name: str) -> bool:
-        """Return whether this table can annotate the given labels element."""
-        return labels_name in self.regions
+    def annotates(self, element_name: str) -> bool:
+        """Return whether this table can annotate the given spatial element."""
+        return element_name in self.regions
 
 
-def get_annotating_table_names(sdata: SpatialData, labels_name: str) -> list[str]:
-    """Return the table names that annotate a labels element in a SpatialData object."""
-    return sorted(get_element_annotators(sdata, labels_name))
+def get_annotating_table_names(sdata: SpatialData, element_name: str) -> list[str]:
+    """Return the table names that annotate a spatial element in a SpatialData object."""
+    return sorted(get_element_annotators(sdata, element_name))
 
 
 def get_table(sdata: SpatialData, table_name: str) -> AnnData:
@@ -215,15 +215,7 @@ def validate_table_region_instance_ids(
     """Validate per-region `instance_key` uniqueness for one table."""
     table = get_table(sdata, table_name)
     table_metadata = get_table_metadata(sdata, table_name)
-    if table_metadata.region_key not in table.obs.columns:
-        raise ValueError(
-            f"Table `{table_metadata.table_name}` is missing required obs column `{table_metadata.region_key}`."
-        )
-
-    if table_metadata.instance_key not in table.obs.columns:
-        raise ValueError(
-            f"Table `{table_metadata.table_name}` is missing required obs column `{table_metadata.instance_key}`."
-        )
+    _validate_table_obs_region_and_instance_key_columns(table, table_metadata)
 
     if labels_names is None:
         regions_to_check = get_table_annotated_labels_names(sdata, table_name)
@@ -232,11 +224,11 @@ def validate_table_region_instance_ids(
         regions_to_check = _normalize_requested_labels_names(labels_names)
 
     for labels_name in regions_to_check:
-        duplicate_labels = _get_duplicate_region_instances(table, table_metadata, labels_name)
-        if not duplicate_labels:
+        duplicate_instances = _get_duplicate_region_instances(table, table_metadata, labels_name)
+        if not duplicate_instances:
             continue
 
-        preview = _format_duplicate_preview(duplicate_labels)
+        preview = _format_duplicate_preview(duplicate_instances)
         raise ValueError(
             f"Table `{table_name}` cannot annotate labels element `{labels_name}` because "
             f"`{table_metadata.instance_key}` contains duplicate values within that region: {preview}."
@@ -249,19 +241,11 @@ def validate_table_binding(sdata: SpatialData, labels_name: str, table_name: str
     """Validate that a table can be safely bound to a selected labels element."""
     table = get_table(sdata, table_name)
     table_metadata = validate_table_annotation_coverage(sdata, table_name, [labels_name])
-    if table_metadata.region_key not in table.obs.columns:
-        raise ValueError(
-            f"Table `{table_metadata.table_name}` is missing required obs column `{table_metadata.region_key}`."
-        )
+    _validate_table_obs_region_and_instance_key_columns(table, table_metadata)
 
-    if table_metadata.instance_key not in table.obs.columns:
-        raise ValueError(
-            f"Table `{table_metadata.table_name}` is missing required obs column `{table_metadata.instance_key}`."
-        )
-
-    duplicate_labels = _get_duplicate_region_instances(table, table_metadata, labels_name)
-    if duplicate_labels:
-        preview = _format_duplicate_preview(duplicate_labels)
+    duplicate_instances = _get_duplicate_region_instances(table, table_metadata, labels_name)
+    if duplicate_instances:
+        preview = _format_duplicate_preview(duplicate_instances)
         raise ValueError(
             f"Table `{table_name}` cannot be bound to labels element `{labels_name}` because `{table_metadata.instance_key}` "
             f"contains duplicate values within that region: {preview}."
@@ -327,12 +311,17 @@ def get_table_color_source_options(sdata: SpatialData, table_name: str) -> list[
     )
 
 
-def get_shape_column_color_source_options(sdata: SpatialData, shapes_name: str) -> list[ShapeColorSourceSpec]:
-    """Return colorable direct columns for one shapes element."""
+def get_shape_column_color_source_options(sdata: SpatialData, shapes_name: str) -> list[ShapeColumnColorSourceSpec]:
+    """Return colorable columns stored directly on a shapes GeoDataFrame.
+
+    This discovers values that can color `sdata.shapes[shapes_name]` from the
+    shapes element itself. Linked AnnData table `.obs` and `X[:, var]` sources
+    are discovered separately with `get_table_color_source_options(...)`.
+    """
     shapes = sdata.shapes[shapes_name]
     geometry_column_name = _get_geometry_column_name(shapes)
 
-    options: list[ShapeColorSourceSpec] = []
+    options: list[ShapeColumnColorSourceSpec] = []
     for column_name in shapes.columns:
         column_key = str(column_name)
         if column_name == geometry_column_name or _is_shape_color_helper_column(column_key):
@@ -343,7 +332,7 @@ def get_shape_column_color_source_options(sdata: SpatialData, shapes_name: str) 
             continue
 
         options.append(
-            ShapeColorSourceSpec(
+            ShapeColumnColorSourceSpec(
                 source_kind="shape_column",
                 value_key=column_key,
                 value_kind=value_kind,
@@ -809,12 +798,27 @@ def _format_duplicate_preview(duplicate_labels: Sequence[Any]) -> str:
     return preview
 
 
+def _validate_table_obs_region_and_instance_key_columns(
+    table: AnnData,
+    table_metadata: SpatialDataTableMetadata,
+) -> None:
+    if table_metadata.region_key not in table.obs.columns:
+        raise ValueError(
+            f"Table `{table_metadata.table_name}` is missing required obs column `{table_metadata.region_key}`."
+        )
+
+    if table_metadata.instance_key not in table.obs.columns:
+        raise ValueError(
+            f"Table `{table_metadata.table_name}` is missing required obs column `{table_metadata.instance_key}`."
+        )
+
+
 def _get_duplicate_region_instances(
     table: AnnData,
     table_metadata: SpatialDataTableMetadata,
-    labels_name: str,
+    element_name: str,
 ) -> list[Any]:
-    region_rows = table.obs.loc[table.obs[table_metadata.region_key] == labels_name]
+    region_rows = table.obs.loc[table.obs[table_metadata.region_key] == element_name]
     if region_rows.empty:
         return []
 

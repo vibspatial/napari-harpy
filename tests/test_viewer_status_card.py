@@ -167,7 +167,7 @@ def test_build_styled_labels_card_spec_reports_instance_coloring() -> None:
 
     assert spec.title == "Colored Overlay Created"
     assert spec.kind == "success"
-    assert spec.lines[-1] == "Used instance label colors."
+    assert spec.lines[-1] == "Used instance colors."
 
 
 def test_build_styled_labels_card_spec_rejects_missing_color_source() -> None:
@@ -227,6 +227,104 @@ def test_build_styled_shapes_card_spec_combines_palette_and_geometry_warnings() 
         'Updated styled shapes layer for column "cell_type" on shapes element `blobs_circles`.',
         "Used the default categorical palette because no stored palette was present.",
         "Skipped 1 empty, invalid, or unsupported geometries while loading renderable shapes.",
+    )
+
+
+def test_build_styled_shapes_card_spec_formats_table_obs_source() -> None:
+    request = SimpleNamespace(
+        shapes_name="blobs_circles",
+        selected_color_source=SimpleNamespace(source_kind="obs_column", value_key="cell_type"),
+    )
+    result = SimpleNamespace(
+        created=True,
+        value_kind="categorical",
+        palette_source="stored",
+        coercion_applied=False,
+        skipped_geometry_count=0,
+        unannotated_source_shape_count=0,
+        unannotated_rendered_shape_count=0,
+    )
+
+    spec = build_styled_shapes_card_spec(request, result)
+
+    assert spec.title == "Styled Shapes Created"
+    assert spec.kind == "success"
+    assert spec.lines == (
+        'Created styled shapes layer for obs["cell_type"] on shapes element `blobs_circles`.',
+        "Used the stored categorical palette.",
+    )
+
+
+def test_build_styled_shapes_card_spec_formats_table_x_source() -> None:
+    request = SimpleNamespace(
+        shapes_name="blobs_circles",
+        selected_color_source=SimpleNamespace(source_kind="x_var", value_key="GeneA"),
+    )
+    result = SimpleNamespace(
+        created=True,
+        value_kind="continuous",
+        palette_source=None,
+        coercion_applied=False,
+        skipped_geometry_count=0,
+        unannotated_source_shape_count=0,
+        unannotated_rendered_shape_count=0,
+    )
+
+    spec = build_styled_shapes_card_spec(request, result)
+
+    assert spec.title == "Styled Shapes Created"
+    assert spec.kind == "success"
+    assert spec.lines == ('Created styled shapes layer for X[:, "GeneA"] on shapes element `blobs_circles`.',)
+
+
+def test_build_styled_shapes_card_spec_reports_table_backed_instance_coloring() -> None:
+    request = SimpleNamespace(
+        shapes_name="blobs_circles",
+        selected_color_source=SimpleNamespace(source_kind="obs_column", value_key="instance_id"),
+    )
+    result = SimpleNamespace(
+        created=True,
+        value_kind="instance",
+        palette_source=None,
+        coercion_applied=False,
+        skipped_geometry_count=0,
+        unannotated_source_shape_count=0,
+        unannotated_rendered_shape_count=0,
+    )
+
+    spec = build_styled_shapes_card_spec(request, result)
+
+    assert spec.title == "Styled Shapes Created"
+    assert spec.kind == "success"
+    assert spec.lines == (
+        'Created styled shapes layer for obs["instance_id"] on shapes element `blobs_circles`.',
+        "Used instance colors.",
+    )
+
+
+def test_build_styled_shapes_card_spec_reports_partial_table_coverage_as_info() -> None:
+    request = SimpleNamespace(
+        shapes_name="blobs_circles",
+        selected_color_source=SimpleNamespace(source_kind="obs_column", value_key="cell_type"),
+    )
+    result = SimpleNamespace(
+        created=True,
+        value_kind="categorical",
+        palette_source="stored",
+        coercion_applied=False,
+        skipped_geometry_count=0,
+        unannotated_source_shape_count=1,
+        unannotated_rendered_shape_count=2,
+    )
+
+    spec = build_styled_shapes_card_spec(request, result)
+
+    assert spec.title == "Styled Shapes Created"
+    assert spec.kind == "info"
+    assert spec.lines == (
+        'Created styled shapes layer for obs["cell_type"] on shapes element `blobs_circles`.',
+        "Used the stored categorical palette.",
+        "Rendered 2 shapes transparent because 1 source shape has no row in the linked table.",
     )
 
 

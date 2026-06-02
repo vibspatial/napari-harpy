@@ -182,17 +182,12 @@ def build_styled_shapes_card_spec(
         raise ValueError("Styled shapes status requires a selected color source.")
 
     action = _created_updated_action(result.created)
+    source_text = _format_shapes_color_source(selected_color_source)
     shapes_name = request.shapes_name
     display_name, was_shortened = format_feedback_identifier(shapes_name)
-    lines = [
-        (
-            f'{action} styled shapes layer for column "{selected_color_source.value_key}" '
-            f"on shapes element `{display_name}`."
-        )
-    ]
+    lines = [(f"{action} styled shapes layer for {source_text} on shapes element `{display_name}`.")]
     tooltip_message = (
-        f'{action} styled shapes layer for column "{selected_color_source.value_key}" '
-        f"on shapes element `{shapes_name}`."
+        f"{action} styled shapes layer for {source_text} on shapes element `{shapes_name}`."
         if was_shortened
         else None
     )
@@ -200,9 +195,20 @@ def build_styled_shapes_card_spec(
     kind = _append_palette_status_lines(
         lines,
         result=result,
-        include_instance_message=False,
+        include_instance_message=True,
     )
-    title = _palette_status_title(title, result, include_instance_message=False)
+    title = _palette_status_title(title, result, include_instance_message=True)
+    unannotated_source_shape_count = getattr(result, "unannotated_source_shape_count", 0)
+    unannotated_rendered_shape_count = getattr(result, "unannotated_rendered_shape_count", 0)
+    if unannotated_source_shape_count or unannotated_rendered_shape_count:
+        if kind == "success":
+            kind = "info"
+        lines.append(
+            _format_unannotated_shapes_line(
+                source_shape_count=unannotated_source_shape_count,
+                rendered_shape_count=unannotated_rendered_shape_count,
+            )
+        )
     if result.skipped_geometry_count:
         kind = "warning"
         title = _with_warning_suffix(title)
@@ -253,6 +259,13 @@ def _format_table_color_source(color_source: TableColorSourceSpec) -> str:
     return f'X[:, "{color_source.value_key}"]'
 
 
+def _format_shapes_color_source(color_source: object) -> str:
+    source_kind = getattr(color_source, "source_kind", None)
+    if source_kind in {"obs_column", "x_var"}:
+        return _format_table_color_source(color_source)
+    return f'column "{color_source.value_key}"'
+
+
 def _created_updated_action(created: bool) -> str:
     return "Created" if created else "Updated"
 
@@ -264,7 +277,7 @@ def _append_palette_status_lines(
     include_instance_message: bool,
 ) -> StatusCardKind:
     if include_instance_message and result.value_kind == "instance":
-        lines.append("Used instance label colors.")
+        lines.append("Used instance colors.")
         return "success"
     if result.coercion_applied:
         lines.append("Coerced string values to categorical and used the default categorical palette.")
@@ -298,6 +311,23 @@ def _format_skipped_geometry_line(skipped_geometry_count: int) -> str:
     return (
         f"Skipped {skipped_geometry_count} empty, invalid, or unsupported geometries while loading renderable shapes."
     )
+
+
+def _format_unannotated_shapes_line(*, source_shape_count: int, rendered_shape_count: int) -> str:
+    if source_shape_count == rendered_shape_count:
+        shape_text = _format_count(source_shape_count, "shape", "shapes")
+        verb = "it has" if source_shape_count == 1 else "they have"
+        return f"Rendered {shape_text} transparent because {verb} no row in the linked table."
+
+    rendered_text = _format_count(rendered_shape_count, "shape", "shapes")
+    source_text = _format_count(source_shape_count, "source shape", "source shapes")
+    verb = "has" if source_shape_count == 1 else "have"
+    return f"Rendered {rendered_text} transparent because {source_text} {verb} no row in the linked table."
+
+
+def _format_count(count: int, singular: str, plural: str) -> str:
+    label = singular if count == 1 else plural
+    return f"{count:,} {label}"
 
 
 def _with_warning_suffix(title: str) -> str:

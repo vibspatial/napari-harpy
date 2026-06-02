@@ -909,11 +909,11 @@ Implement:
 
 - create `viewer/shapes_styling.py` with:
   - `StyledShapesStyleResult`;
-  - `apply_shape_color_source_to_shapes_layer(...)`;
+  - `apply_shape_column_color_source_to_shapes_layer(...)`;
   - `build_styled_shapes_layer_name(...)`;
   - shapes-only source-row alignment and `face_color` / `edge_color`
     application helpers;
-- `apply_shape_color_source_to_shapes_layer(...)` should take the source shapes
+- `apply_shape_column_color_source_to_shapes_layer(...)` should take the source shapes
   `GeoDataFrame`, a `ShapeColorSourceSpec`, and the rendered-row mapping from
   the shapes binding: `source_shapes_index_by_row` and
   `source_shapes_index_feature_name`;
@@ -1100,7 +1100,7 @@ Implement:
     `ShapeColorSourceSpec`;
   - keep styled shapes identity and source-row mappings in
     `ShapesLayerBinding`, not in `layer.metadata`;
-  - call `apply_shape_color_source_to_shapes_layer(...)`;
+  - call `apply_shape_column_color_source_to_shapes_layer(...)`;
   - return `StyledShapesLoadResult`;
 - allow primary and styled shapes layers for the same shapes element to coexist.
 
@@ -1269,7 +1269,7 @@ Implementation notes:
   modes are display options for the same styled layer variant and should update
   the existing layer instead of creating parallel layers;
 - keep the styled layer name stable, e.g.
-  `cell_boundaries[shape:cell_type]`, regardless of fill state.
+  `cell_boundaries[shapes_column:cell_type]`, regardless of fill state.
 
 Implemented tests:
 

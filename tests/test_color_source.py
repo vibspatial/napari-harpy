@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from napari_harpy.core._color_source import ShapeColorSourceSpec, TableColorSourceSpec
+from napari_harpy.core._color_source import (
+    ShapeColumnColorSourceSpec,
+    TableColorSourceSpec,
+)
 from napari_harpy.viewer.labels_styling import LabelsStyleResult
 from napari_harpy.viewer.shapes_styling import ShapesStyleResult
 
@@ -29,7 +32,7 @@ def test_table_color_source_spec_rejects_invalid_value_kind() -> None:
 
 def test_shape_color_source_spec_rejects_invalid_source_kind() -> None:
     with pytest.raises(ValueError, match="Invalid shape color source kind"):
-        ShapeColorSourceSpec(
+        ShapeColumnColorSourceSpec(
             source_kind="obs_column",
             value_key="cell_type",
             value_kind="categorical",
@@ -38,11 +41,29 @@ def test_shape_color_source_spec_rejects_invalid_source_kind() -> None:
 
 def test_shape_color_source_spec_rejects_invalid_value_kind() -> None:
     with pytest.raises(ValueError, match="Invalid shape color value kind"):
-        ShapeColorSourceSpec(
+        ShapeColumnColorSourceSpec(
             source_kind="shape_column",
             value_key="cell_type",
             value_kind="instance",
         )
+
+
+def test_explicit_shape_source_union_covers_shape_columns_and_table_sources() -> None:
+    sources: list[ShapeColumnColorSourceSpec | TableColorSourceSpec] = [
+        ShapeColumnColorSourceSpec(
+            source_kind="shape_column",
+            value_key="cell_type",
+            value_kind="categorical",
+        ),
+        TableColorSourceSpec(
+            table_name="table",
+            source_kind="obs_column",
+            value_key="cell_type",
+            value_kind="categorical",
+        ),
+    ]
+
+    assert [source.value_key for source in sources] == ["cell_type", "cell_type"]
 
 
 def test_labels_style_result_accepts_no_style_metadata() -> None:
@@ -92,10 +113,24 @@ def test_shapes_style_result_accepts_no_style_metadata() -> None:
     assert result.value_kind is None
 
 
+def test_shapes_style_result_accepts_table_backed_instance_coloring_metadata() -> None:
+    result = ShapesStyleResult(
+        value_kind="instance",
+        palette_source=None,
+        coercion_applied=False,
+        unannotated_source_shape_count=2,
+        unannotated_rendered_shape_count=3,
+    )
+
+    assert result.value_kind == "instance"
+    assert result.unannotated_source_shape_count == 2
+    assert result.unannotated_rendered_shape_count == 3
+
+
 def test_shapes_style_result_rejects_invalid_value_kind() -> None:
     with pytest.raises(ValueError, match="Invalid shape color value kind"):
         ShapesStyleResult(
-            value_kind="instance",
+            value_kind="ordinal",
             palette_source=None,
             coercion_applied=False,
         )
