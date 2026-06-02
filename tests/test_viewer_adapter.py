@@ -2054,6 +2054,58 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_creates_table_backed_variant
     assert result.layer.edge_color[2, 3] == 0.0
 
 
+def test_viewer_adapter_table_backed_shapes_uses_named_index_as_instance_key() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"quality": [1.0, 0.8, 0.5]},
+        geometry=[
+            Polygon([(0, 0), (4, 0), (4, 4), (0, 4), (0, 0)]),
+            Polygon([(5, 0), (9, 0), (9, 4), (5, 4), (5, 0)]),
+            Polygon([(10, 0), (14, 0), (14, 4), (10, 4), (10, 0)]),
+        ],
+        index=["cell_1", "cell_2", "cell_3"],
+    )
+    geodataframe.index.name = "instance_id"
+    shapes = ShapesModel.parse(geodataframe, transformations={"global": Identity()})
+    table = TableModel.parse(
+        ad.AnnData(
+            obs=pd.DataFrame(
+                {
+                    "region": ["cell_boundaries", "cell_boundaries"],
+                    "instance_id": ["cell_1", "cell_2"],
+                    "cell_type": pd.Categorical(["T", "B"], categories=["T", "B"]),
+                },
+                index=["obs_1", "obs_2"],
+            )
+        ),
+        region="cell_boundaries",
+        region_key="region",
+        instance_key="instance_id",
+    )
+    table.uns["cell_type_colors"] = ["#ff0000", "#00ff00"]
+    sdata = ShapesSpatialDataWithTables(shapes={"cell_boundaries": shapes}, tables={"table": table})
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    result = adapter.ensure_styled_shapes_loaded(sdata, "cell_boundaries", "global", style_spec)
+
+    binding = get_shapes_binding(adapter, result.layer)
+    assert binding.source_row_id_by_rendered_row == (0, 1, 2)
+    assert binding.source_shapes_index_feature_name == "instance_id"
+    assert list(result.layer.features.columns) == ["instance_id", "cell_type"]
+    assert result.layer.features["instance_id"].to_list() == ["cell_1", "cell_2", "cell_3"]
+    assert result.layer.features["cell_type"].to_list()[:2] == ["T", "B"]
+    assert pd.isna(result.layer.features["cell_type"].iloc[2])
+    np.testing.assert_allclose(result.layer.edge_color[0], (*to_rgba("#ff0000")[:3], 1.0))
+    np.testing.assert_allclose(result.layer.edge_color[1], (*to_rgba("#00ff00")[:3], 1.0))
+    assert result.layer.edge_color[2, 3] == 0.0
+
+
 def test_viewer_adapter_table_backed_shapes_uses_internal_row_ids_with_duplicate_geodataframe_index() -> None:
     geodataframe = gpd.GeoDataFrame(
         {"instance_id": ["cell_1", "cell_2"]},

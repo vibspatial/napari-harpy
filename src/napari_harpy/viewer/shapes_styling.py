@@ -339,12 +339,11 @@ def _align_table_color_source_to_shapes_rows(
         raise ValueError(
             f"Table `{table_metadata.table_name}` is missing required obs column `{table_metadata.instance_key}`."
         )
-    if table_metadata.instance_key not in shapes_element.columns:
-        raise ValueError(
-            f"Shapes element `{shapes_name}` is missing required instance key column "
-            f"`{table_metadata.instance_key}` for table-backed styling."
-        )
-    shape_instance_values = shapes_element[table_metadata.instance_key]
+    shape_instance_values = _get_shape_instance_values(
+        shapes_element=shapes_element,
+        shapes_name=shapes_name,
+        instance_key=table_metadata.instance_key,
+    )
     missing_shape_instances = shape_instance_values.loc[shape_instance_values.isna()]
     if not missing_shape_instances.empty:
         preview = _format_value_preview(missing_shape_instances.index.tolist())
@@ -401,7 +400,7 @@ def _align_table_color_source_to_shapes_rows(
         preview = _format_value_preview(missing_shape_instances_for_table.tolist())
         raise ValueError(
             f"Table `{table_metadata.table_name}` contains instance(s) for shapes element `{shapes_name}` that "
-            f"are not present in `shapes_element[{table_metadata.instance_key!r}]`: {preview}."
+            f"are not present in the resolved shapes instance identities for `{table_metadata.instance_key}`: {preview}."
         )
 
     source_row_has_table_row = shape_instance_values.isin(table_value_by_instance.index).to_numpy(
@@ -437,6 +436,69 @@ def _align_table_color_source_to_shapes_rows(
         source_row_has_table_row=source_row_has_table_row,
         rendered_row_has_table_row=rendered_row_has_table_row,
     )
+
+
+def _get_shape_instance_values(
+    *,
+    shapes_element: gpd.GeoDataFrame,
+    shapes_name: str,
+    instance_key: str,
+) -> pd.Series:
+    """Return source-row-aligned shape instance identities for table lookup.
+
+    The SpatialData table `instance_key` can identify shapes either through a
+    GeoDataFrame column with that name or through a GeoDataFrame index whose
+    name is `instance_key`.
+    """
+    has_instance_column = instance_key in shapes_element.columns
+    has_instance_index = getattr(shapes_element.index, "name", None) == instance_key
+
+    if not has_instance_column and not has_instance_index:
+        raise ValueError(
+            f"Shapes element `{shapes_name}` is missing instance key `{instance_key}` for table-backed styling. "
+            f"Expected either a GeoDataFrame column named `{instance_key}` or a GeoDataFrame index named "
+            f"`{instance_key}`."
+        )
+
+    index_values = pd.Series(
+        shapes_element.index.to_numpy(copy=False),
+        index=pd.RangeIndex(len(shapes_element)),
+        name=instance_key,
+        dtype="object",
+    )
+    if not has_instance_column:
+        return index_values
+
+    column_values = pd.Series(
+        shapes_element[instance_key].to_numpy(copy=False),
+        index=pd.RangeIndex(len(shapes_element)),
+        name=instance_key,
+        dtype="object",
+    )
+    if has_instance_index:
+        disagreement_row_ids = [
+            row_id
+            for row_id, (column_value, index_value) in enumerate(
+                zip(column_values, index_values, strict=True),
+            )
+            if not _shape_instance_values_equal(column_value, index_value)
+        ]
+        if disagreement_row_ids:
+            preview = _format_value_preview(disagreement_row_ids)
+            raise ValueError(
+                f"Shapes element `{shapes_name}` has instance key `{instance_key}` both as a GeoDataFrame column "
+                f"and as the GeoDataFrame index name, but they disagree for source row(s): {preview}."
+            )
+
+    return column_values
+
+
+def _shape_instance_values_equal(left: object, right: object) -> bool:
+    if pd.isna(left) and pd.isna(right):
+        return True
+    if pd.isna(left) or pd.isna(right):
+        return False
+    return bool(left == right)
 
 
 def _get_table_color_values_by_instance(

@@ -1,6 +1,6 @@
 # Color Shapes By Linked Table `.obs` And `X[:, var]`
 
-Status: Slice 7a implemented; Slice 7b pending
+Status: Slice 7b implemented; Slices 8-9 pending
 
 ## Goal
 
@@ -101,14 +101,14 @@ If table and shape instance IDs differ only by dtype or formatting, for example
 `1` versus `"1"`, Harpy should still treat them as different IDs and raise a
 clear error for table instances that do not exist in the shapes element.
 
-The GeoDataFrame index remains only a render-row bookkeeping key: it maps each
-napari-rendered shape row back to its source GeoDataFrame row, especially when a
-single source geometry expands into multiple rendered rows. It must not be used
-as the semantic join key to the table.
+Rendered-row bookkeeping uses internal integer source-row ids, not GeoDataFrame
+index labels. The GeoDataFrame index remains visible in `layer.features` for
+status/display. It can also be the semantic table join key only when SpatialData
+declares it as the instance identity by naming the index `instance_key`.
 
 Coverage is intentionally asymmetric. Table rows for the selected shapes region
-must refer only to instances present in `shapes_element[instance_key]`; table
-instances that are not present in the shapes element should raise clearly.
+must refer only to resolved shape instance identities; table instances that are
+not present in the shapes element should raise clearly.
 Shapes instances that have no table row are allowed and should render
 transparent, matching labels overlay behavior. Shapes that do have a table row
 but whose selected value is missing should render with the missing color.
@@ -327,9 +327,10 @@ the rendered-row mapping from the shapes layer builder.
 Recommended steps:
 
 1. Check `table_metadata.annotates(shapes_name)`.
-2. Require the shapes element to contain a column named `instance_key`; if it is
-   missing, raise a clear error instead of falling back to the GeoDataFrame
-   index.
+2. Resolve the shapes instance identity from the GeoDataFrame column named
+   `instance_key`, or from the GeoDataFrame index when
+   `shapes_element.index.name == instance_key`. If both exist, require them to
+   agree row by row.
 3. Use internal integer source row ids for rendered-row lookup, so duplicated
    GeoDataFrame index labels remain valid display metadata rather than internal
    alignment keys.
@@ -339,27 +340,27 @@ Recommended steps:
    declares the shapes annotation but no rows annotate that shapes element.
 6. Raise if any selected-region table row has a missing `instance_key`.
    Do not drop these rows silently.
-7. Raise if any source shapes row in the GeoDataFrame has a missing
-   `shapes_element[instance_key]` value. A missing shape instance value is
-   malformed, while a present shape instance value with no matching table row is
-   allowed and tracked separately.
+7. Raise if any source shapes row in the GeoDataFrame has a missing resolved
+   instance identity. A missing shape instance value is malformed, while a
+   present shape instance value with no matching table row is allowed and
+   tracked separately.
 8. Preserve table and shapes `instance_key` values as labels; do not coerce to
    integers.
 9. Require table `instance_key` values to be unique within the selected shapes
    region. Duplicates are ambiguous and should raise `ValueError`.
-10. Allow duplicate values in `shapes_element[instance_key]`. Multiple source
-   geometries with the same shape instance identity should receive the same
-   table value.
+10. Allow duplicate resolved shape instance identity values. Multiple source
+    geometries with the same shape instance identity should receive the same
+    table value.
 11. Build a table-level `pd.Series` indexed by table `instance_key` value:
    - for `instance_key`, use the aligned instance labels themselves;
    - for `.obs`, use `table.obs[value_key]`;
    - for `X[:, var_name]`, extract the selected `X` column at the matching
      table observation positions.
-12. Validate that every table `instance_key` value for the selected shapes region
-   exists in `shapes_element[instance_key]`; extra table instances should raise
-   a clear error.
+12. Validate that every table `instance_key` value for the selected shapes
+    region exists in the resolved shape instance identities; extra table
+    instances should raise a clear error.
 13. Align table values to source GeoDataFrame rows by mapping each source row to
-    its `shapes_element[instance_key]` value.
+    its resolved shape instance identity.
 14. Build `source_row_has_table_row` so shapes with no matching table row are
     tracked separately from rows whose selected table value is missing.
 15. Align again to `source_row_id_by_rendered_row`, repeating values and masks
@@ -370,8 +371,8 @@ Missing table rows:
 
 - If no table rows remain for the selected shapes region after filtering by
   `region_key`, raise a clear error.
-- If any table instances for the selected shapes region are missing from
-  `shapes_element[instance_key]`, raise a clear error.
+- If any table instances for the selected shapes region are missing from the
+  resolved shape instance identities, raise a clear error.
 - If some shapes have no matching table row, allow the alignment and expose the
   count through `source_row_has_table_row` / `rendered_row_has_table_row`.
   Slice 4 should render those rows transparent and report the count as
@@ -518,8 +519,8 @@ Styling tests:
 - table `instance_key` identity coloring maps non-numeric instance labels to
   deterministic positive integer codes and samples napari's cyclic label
   colormap, not the default categorical palette;
-- table-backed styling raises clearly when the shapes element lacks the
-  `instance_key` column and does not fall back to the GeoDataFrame index;
+- table-backed styling raises clearly when the shapes element lacks both an
+  `instance_key` column and a GeoDataFrame index named `instance_key`;
 - invalid/missing table palettes fall back like labels overlays;
 - table `.obs` string/object values coerce to temporary categorical values;
 - table `.obs` continuous values use the continuous colormap;
@@ -530,7 +531,7 @@ Styling tests:
 - duplicate table `instance_key` values within the shapes region raise a clear
   error;
 - table `instance_key` values for the selected shapes region that are absent
-  from `shapes_element[instance_key]` raise a clear error;
+  from the resolved shape instance identities raise a clear error;
 - an annotating table with no rows for the selected shapes region raises a clear
   error;
 - shape instances without table rows render transparent;
@@ -582,8 +583,8 @@ shape-column coloring behavior unchanged.
      alignment, and `_get_region_rows_by_instance(...)` should also reject
      duplicates after labels-specific numeric coercion;
    - keep shapes/table-to-shape alignment validation for Slice 3, because it
-     needs `shapes_element[instance_key]`, exact matching, subset validation, and
-     partial shape coverage behavior;
+     needs resolved shape instance identities, exact matching, subset
+     validation, and partial shape coverage behavior;
    - add labels regression tests for duplicate instance IDs within one region,
      including duplicate IDs that only become duplicates after labels-specific
      numeric coercion.
@@ -625,8 +626,8 @@ shape-column coloring behavior unchanged.
      `ShapeColumnColorSourceSpec | TableColorSourceSpec` unions without changing
      adapter dispatch behavior yet;
    - do not add shape table-to-shape alignment validation in this slice:
-     `shapes_element[instance_key]`, exact matching, subset validation, missing
-     shape coverage, and no-row checks belong to Slice 3;
+     resolved shape instance identities, exact matching, subset validation,
+     missing shape coverage, and no-row checks belong to Slice 3;
    - test linked shapes table discovery, labels-only table exclusion, per-table
      source grouping, table
      `instance_key` as `value_kind="instance"`, `region_key` exclusion, `.obs`
@@ -645,22 +646,23 @@ shape-column coloring behavior unchanged.
    - keep this slice alignment-only: return source-row/rendered-row values and
      table-coverage masks, but do not apply colors, write `layer.features`, or
      dispatch through the adapter yet;
-   - require `shapes_element[instance_key]` and never fall back to
-     `shapes_element.index`;
+   - require a resolved shapes instance identity from either
+     `shapes_element[instance_key]` or a GeoDataFrame index named
+     `instance_key`;
    - use internal integer source row ids for rendered-row mapping, while keeping
      the GeoDataFrame index as visible/status metadata;
    - use exact value matching between table and shapes instance values;
    - require selected-region table instances to be a subset of shape instances;
    - raise if selected-region table rows have missing `instance_key` values;
-   - raise if any source shapes row in the GeoDataFrame has a missing
-     `shapes_element[instance_key]` value;
+   - raise if any source shapes row in the GeoDataFrame has a missing resolved
+     shape instance identity;
    - require selected-region table `instance_key` values to be unique;
-   - allow duplicate values in `shapes_element[instance_key]`, so multiple
+   - allow duplicate resolved shape instance identity values, so multiple
      geometries can share one table-backed instance value;
    - allow shape instances without table rows and track them separately from
      missing selected table values;
    - preserve string and non-integer instance values without coercion;
-   - test missing shapes `instance_key` column, missing shapes `instance_key`
+   - test missing shapes instance identity, missing resolved shape instance
      values, duplicate GeoDataFrame index display values, missing table
      `instance_key` values, duplicate table instances, duplicate shapes
      instance values, extra table instances, no selected-region table rows,
@@ -777,7 +779,7 @@ shape-column coloring behavior unchanged.
      adapter bindings storing internal row ids, and table-backed styling with an
      `instance_key` column while the GeoDataFrame index is duplicated.
 
-7b. Shape instance identity source compatibility - follow-up
+7b. Shape instance identity source compatibility - completed
    - after 7a, align table-backed shapes styling with SpatialData's accepted
      shapes annotation patterns by resolving biological/table shape instance
      identity independently from rendered-row source identity:
