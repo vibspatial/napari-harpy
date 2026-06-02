@@ -1362,9 +1362,6 @@ class ViewerAdapter(QObject):
             coordinate_system,
             name=shapes_name,
             sync_edge_color=True,
-            # Primary shapes can always use the point-radius fast path when the
-            # source element qualifies.
-            render_point_radius_as_points=True,
         )
         layer = built_layer.layer
         _add_layer_to_viewer(self._viewer, layer)
@@ -1411,10 +1408,6 @@ class ViewerAdapter(QObject):
                 coordinate_system,
                 name=build_styled_shapes_layer_name(shapes_name, style_spec),
                 sync_edge_color=False,
-                # Direct shape-column styling can color point-backed shapes.
-                # Table-backed point styling is added separately because it has
-                # more alignment rules.
-                render_point_radius_as_points=isinstance(style_spec, ShapeColumnColorSourceSpec),
             )
             layer = built_layer.layer
             _add_layer_to_viewer(self._viewer, layer)
@@ -1451,8 +1444,6 @@ class ViewerAdapter(QObject):
                 fill=fill,
             )
         elif isinstance(style_spec, TableColorSourceSpec):
-            if not isinstance(layer, Shapes):
-                raise ValueError("Table-backed styled shapes require a napari Shapes layer.")
             style_result = apply_table_color_source_to_shapes_layer(
                 layer,
                 sdata=sdata,
@@ -1878,7 +1869,6 @@ def _build_shapes_layer(
     *,
     name: str,
     sync_edge_color: bool = True,
-    render_point_radius_as_points: bool = False,
 ) -> _BuiltShapesLayer:
     shapes = getattr(sdata, "shapes", {})
     if shapes_name not in shapes:
@@ -1896,29 +1886,28 @@ def _build_shapes_layer(
     # that first lets geometry repair, hole handling, and circle-radius
     # conversion operate in the final display coordinate system.
     transformed_shapes = transform_spatial_element(shapes_element, to_coordinate_system=coordinate_system)
-    if render_point_radius_as_points:
-        point_radius_inputs = _prepare_napari_point_radius_shapes_layer_inputs(transformed_shapes)
-        if point_radius_inputs is not None:
-            layer = _HarpyPointRadiusShapes(
-                point_radius_inputs.coordinates,
-                ndim=2,
-                name=name,
-                features=point_radius_inputs.features,
-                source_shapes_index_feature_name=point_radius_inputs.source_shapes_index_feature_name,
-                size=point_radius_inputs.sizes,
-                opacity=0.8,
-                symbol="disc",
-                border_width=0,
-                face_color="#00FFFF",
-                border_color="#00FFFF",
-            )
-            return _BuiltShapesLayer(
-                layer=layer,
-                shapes_rendering_mode="points",
-                source_shapes_index_feature_name=point_radius_inputs.source_shapes_index_feature_name,
-                source_row_id_by_rendered_row=point_radius_inputs.source_row_id_by_rendered_row,
-                skipped_geometry_count=point_radius_inputs.skipped_geometry_count,
-            )
+    point_radius_inputs = _prepare_napari_point_radius_shapes_layer_inputs(transformed_shapes)
+    if point_radius_inputs is not None:
+        layer = _HarpyPointRadiusShapes(
+            point_radius_inputs.coordinates,
+            ndim=2,
+            name=name,
+            features=point_radius_inputs.features,
+            source_shapes_index_feature_name=point_radius_inputs.source_shapes_index_feature_name,
+            size=point_radius_inputs.sizes,
+            opacity=0.8,
+            symbol="disc",
+            border_width=0,
+            face_color="#00FFFF",
+            border_color="#00FFFF",
+        )
+        return _BuiltShapesLayer(
+            layer=layer,
+            shapes_rendering_mode="points",
+            source_shapes_index_feature_name=point_radius_inputs.source_shapes_index_feature_name,
+            source_row_id_by_rendered_row=point_radius_inputs.source_row_id_by_rendered_row,
+            skipped_geometry_count=point_radius_inputs.skipped_geometry_count,
+        )
 
     napari_layer_inputs = _prepare_napari_shapes_layer_inputs(transformed_shapes)
     if not napari_layer_inputs.data:

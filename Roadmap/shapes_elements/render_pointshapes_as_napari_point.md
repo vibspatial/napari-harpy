@@ -1,6 +1,6 @@
 # Render Point-Radius Shapes As Napari Points
 
-Status: Slice 4 implemented; Slices 5-8 pending
+Status: Slice 5 implemented; Slices 6-8 pending
 
 ## Goal
 
@@ -343,19 +343,79 @@ Add focused tests for:
      - non-qualifying shapes elements still create a napari `Shapes` styled
        layer with `shapes_rendering_mode="shapes"`.
 
-5. Table-backed styling on points-backed shapes
-   - add styling support for `TableColorSourceSpec` when the styled layer is a
-     napari `Points` layer representing point-radius shapes;
-   - reuse the same table-to-source-row alignment rules as styled shapes,
-     including column-backed and index-backed `instance_key` resolution;
-   - preserve partial table coverage semantics: unannotated points transparent,
-     annotated points with missing selected values gray;
-   - support observation columns, `X[:, var_name]`, and instance colors;
-   - preserve palette/coercion feedback and unannotated point counts;
-   - add tests for `.obs` categorical/continuous values, `X[:, var_name]`,
-     instance colors, partial table coverage, missing selected values,
-     duplicate shape instance identities, duplicate table instance errors, and
-     named-index instance identity.
+5. Table-backed styling on points-backed shapes - completed
+   - extend the existing table-backed shapes styling API rather than adding a
+     separate public points-specific API:
+     `apply_table_color_source_to_shapes_layer(layer: Shapes | Points, ...)`;
+   - keep the function name in shapes terminology, because the source element is
+     still a SpatialData shapes element even when the viewer representation is a
+     napari `Points` layer;
+   - update the accepted rendered-row mapping type to
+     `SourceRowIdByRenderedRow` (`tuple[int, ...] | range`), so the same
+     styling path works for generic shapes and one-to-one point-radius shapes;
+   - reuse the existing table-to-source-row alignment helper and semantics:
+     - resolve `instance_key` from either the shapes GeoDataFrame column or the
+       named GeoDataFrame index;
+     - require exact matching between selected-region table instances and
+       shapes instance identities;
+     - allow duplicate shape instance identities, so multiple rendered points
+       can share the same table-backed style;
+     - reject duplicate selected-region table instances, because one table
+       instance must map to exactly one selected table-backed value per region;
+     - preserve partial table coverage, where shapes may exist without a table
+       row;
+   - keep the existing table-backed value builders for observation columns,
+     `X[:, var_name]`, and instance colors. These builders should remain
+     layer-agnostic and return rendered-row colors plus style metadata;
+   - keep the existing generic `Shapes` color application path unchanged;
+   - add a private point-specific application helper, for example
+     `_apply_table_rendered_row_colors_to_points_layer(...)`, that:
+     - writes the computed colors to both `face_color` and `border_color`;
+     - keeps point size radius-derived and preserves the current symbol;
+     - keeps `border_width=0`;
+     - makes unannotated points transparent;
+     - leaves annotated points with missing selected values in the normal
+       missing-value color;
+   - preserve the agreed table-backed coverage semantics:
+     - not annotated by the selected table -> transparent;
+     - annotated by the selected table but selected value missing -> gray;
+     - annotated with a valid selected value -> palette, colormap, or instance
+       color;
+   - in the adapter lifecycle, allow `TableColorSourceSpec` styled variants to
+     use the point-radius fast path when the shapes element qualifies. Remove
+     the current assumption that table-backed styled shapes must be backed by a
+     napari `Shapes` layer;
+   - non-qualifying shapes elements should continue to fall back to the generic
+     napari `Shapes` styled layer;
+   - preserve `ShapesStyleResult` semantics, including `value_kind`,
+     `palette_source`, `coercion_applied`, `unannotated_source_shape_count`,
+     and `unannotated_rendered_shape_count`;
+   - keep hover/status behavior useful on point-backed styled layers:
+     - source-index metadata should remain visible;
+     - table-backed style features should be added with the same
+       disambiguation rules as generic styled shapes;
+   - add tests for:
+     - `.obs` categorical styling on qualifying point-radius shapes creates a
+       napari `Points` styled layer;
+     - `.obs` continuous styling on qualifying point-radius shapes creates a
+       napari `Points` styled layer;
+     - `X[:, var_name]` styling creates a point-backed styled layer with the
+       same colormap/coercion semantics as generic shapes;
+     - instance colors use the same labels-like cyclic instance coloring as
+       generic table-backed shapes;
+     - partial table coverage makes unannotated points transparent and reports
+       unannotated counts;
+     - annotated rows with missing selected values use the missing-value color;
+     - duplicate shape instance identities are allowed and receive the same
+       table-backed style;
+     - duplicate selected-region table instances raise clearly;
+     - named-index instance identity works when the shapes element stores
+       `instance_key` in the GeoDataFrame index;
+     - table-backed style feature name collisions are disambiguated;
+     - the same table-backed style spec reuses the existing styled point-backed
+       layer;
+     - non-qualifying shapes elements still create a generic napari `Shapes`
+       styled layer with `shapes_rendering_mode="shapes"`.
 
 6. Point-backed primary presentation controls - follow-up
    - primary generic shapes currently connect napari presentation controls with:

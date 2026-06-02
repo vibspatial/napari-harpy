@@ -6,9 +6,9 @@ import numpy as np
 import pandas as pd
 import pytest
 from matplotlib.colors import to_rgba
-from napari.layers import Shapes
+from napari.layers import Points, Shapes
 from napari.utils.colormaps import label_colormap
-from shapely.geometry import Polygon
+from shapely.geometry import Point, Polygon
 from spatialdata.models import TableModel
 
 from napari_harpy.core._color_source import ShapeColumnColorSourceSpec, TableColorSourceSpec
@@ -44,6 +44,18 @@ def _make_shapes_layer(
         [_shape_vertices(float(index)) for index in range(len(source_indices))],
         shape_type=["polygon"] * len(source_indices),
         features=pd.DataFrame({source_index_feature_name: list(source_indices)}),
+    )
+
+
+def _make_points_layer(
+    source_indices: tuple[object, ...],
+    *,
+    source_index_feature_name: str = "index",
+) -> Points:
+    return Points(
+        np.asarray([[float(index), float(index + 10)] for index in range(len(source_indices))], dtype=float),
+        features=pd.DataFrame({source_index_feature_name: list(source_indices)}),
+        size=np.asarray([4.0 + index for index in range(len(source_indices))], dtype=float),
     )
 
 
@@ -670,6 +682,67 @@ def test_apply_table_color_source_to_shapes_layer_uses_table_categorical_palette
     assert layer.features["cell_type"].iloc[:2].to_list() == ["T", "T"]
     assert pd.isna(layer.features["cell_type"].iloc[2])
     assert pd.isna(layer.features["cell_type"].iloc[3])
+
+
+def test_apply_table_color_source_to_shapes_layer_colors_point_backed_shapes() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {
+            "instance_id": ["cell_1", "cell_2", "cell_3"],
+            "radius": [2.0, 3.0, 4.0],
+        },
+        geometry=[Point(0, 0), Point(2, 2), Point(4, 4)],
+        index=["shape_a", "shape_b", "shape_c"],
+    )
+    table = ad.AnnData(
+        obs=pd.DataFrame(
+            {
+                "region": ["cells", "cells"],
+                "instance_id": ["cell_1", "cell_2"],
+                "cell_type": pd.Categorical(["T", None], categories=["T", "B"]),
+            },
+            index=["obs_1", "obs_2"],
+        )
+    )
+    table.uns["cell_type_colors"] = ["red", "blue"]
+    layer = _make_points_layer(("shape_a", "shape_b", "shape_c"))
+    original_size = layer.size.copy()
+    original_symbol = layer.symbol.copy()
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    result = apply_table_color_source_to_shapes_layer(
+        layer,
+        sdata=_make_shapes_sdata(geodataframe, table),
+        shapes_name="cells",
+        style_spec=style_spec,
+        source_row_id_by_rendered_row=range(3),
+        source_shapes_index_feature_name="index",
+    )
+
+    expected_colors = np.asarray(
+        [
+            _rgba("red", SHAPES_EDGE_ALPHA),
+            _rgba(SHAPES_MISSING_BASE_COLOR, SHAPES_EDGE_ALPHA),
+            _rgba(SHAPES_MISSING_BASE_COLOR, 0.0),
+        ]
+    )
+    assert result.value_kind == "categorical"
+    assert result.palette_source == "stored"
+    assert result.coercion_applied is False
+    assert result.unannotated_source_shape_count == 1
+    assert result.unannotated_rendered_shape_count == 1
+    np.testing.assert_allclose(layer.face_color, expected_colors)
+    np.testing.assert_allclose(layer.border_color, expected_colors)
+    np.testing.assert_allclose(layer.border_width, np.zeros(3))
+    np.testing.assert_allclose(layer.size, original_size)
+    np.testing.assert_array_equal(layer.symbol, original_symbol)
+    assert layer.features["cell_type"].iloc[0] == "T"
+    assert pd.isna(layer.features["cell_type"].iloc[1])
+    assert pd.isna(layer.features["cell_type"].iloc[2])
 
 
 def test_apply_table_color_source_to_shapes_layer_colors_string_instances_with_label_colormap() -> None:

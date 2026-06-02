@@ -173,19 +173,23 @@ def apply_shape_column_color_source_to_shapes_layer(
 
 
 def apply_table_color_source_to_shapes_layer(
-    layer: Shapes,
+    layer: Shapes | Points,
     *,
     sdata: SpatialData,
     shapes_name: str,
     style_spec: TableColorSourceSpec,
-    source_row_id_by_rendered_row: tuple[int, ...],
+    source_row_id_by_rendered_row: tuple[int, ...] | range,
     source_shapes_index_feature_name: str,
     fill: bool = False,
 ) -> ShapesStyleResult:
-    """Apply one table-backed color source to a napari ``Shapes`` layer.
+    """Apply one table-backed color source to a semantic shapes layer.
 
     Parameters
     ----------
+    layer
+        Napari layer representing the SpatialData shapes element. Generic
+        shapes render as ``Shapes``; point-radius shapes can render as
+        ``Points`` while still using the same shapes/table alignment semantics.
     sdata
         SpatialData object containing the source shapes element and the linked
         AnnData table named by ``style_spec.table_name``.
@@ -202,6 +206,7 @@ def apply_table_color_source_to_shapes_layer(
         three polygons and source row position ``8`` expands into one polygon,
         this mapping is ``(7, 7, 7, 8)``. Table-backed styling uses it to
         repeat each source row's aligned table value for every rendered part.
+        Point-backed shapes are one-to-one and can pass ``range(n)``.
     source_shapes_index_feature_name
         Name of the ``layer.features`` column that stores the source
         GeoDataFrame index for napari-visible inspection and status-bar text.
@@ -258,12 +263,21 @@ def apply_table_color_source_to_shapes_layer(
         unannotated_source_shape_count=int((~aligned_values.source_row_has_table_row).sum()),
         unannotated_rendered_shape_count=int((~aligned_values.rendered_row_has_table_row).sum()),
     )
-    _apply_table_rendered_row_colors_to_shapes_layer(
-        layer,
-        rendered_row_colors,
-        rendered_row_has_table_row=aligned_values.rendered_row_has_table_row,
-        fill=fill,
-    )
+    if isinstance(layer, Shapes):
+        _apply_table_rendered_row_colors_to_shapes_layer(
+            layer,
+            rendered_row_colors,
+            rendered_row_has_table_row=aligned_values.rendered_row_has_table_row,
+            fill=fill,
+        )
+    elif isinstance(layer, Points):
+        _apply_table_rendered_row_colors_to_points_layer(
+            layer,
+            rendered_row_colors,
+            rendered_row_has_table_row=aligned_values.rendered_row_has_table_row,
+        )
+    else:  # pragma: no cover - defensive for future layer subclasses.
+        raise TypeError(f"Unsupported styled shapes layer type: {type(layer)!r}.")
     _set_shape_style_feature(
         layer,
         feature_values,
@@ -327,7 +341,7 @@ def _align_table_color_source_to_shapes_rows(
     shapes_name: str,
     shapes_element: gpd.GeoDataFrame,
     style_spec: TableColorSourceSpec,
-    source_row_id_by_rendered_row: tuple[int, ...],
+    source_row_id_by_rendered_row: tuple[int, ...] | range,
 ) -> _ShapeTableRowAlignment:
     """Align one table-backed color source to source and rendered shapes rows."""
     if style_spec.table_name != table_metadata.table_name:
@@ -958,6 +972,30 @@ def _apply_table_rendered_row_colors_to_shapes_layer(
     edge_color[unannotated_rows, 3] = 0.0
     layer.face_color = face_color
     layer.edge_color = edge_color
+    refresh = getattr(layer, "refresh", None)
+    if callable(refresh):
+        refresh()
+
+
+def _apply_table_rendered_row_colors_to_points_layer(
+    layer: Points,
+    rendered_row_colors: pd.Series,
+    *,
+    rendered_row_has_table_row: np.ndarray,
+) -> None:
+    if len(rendered_row_colors) != len(layer.data):
+        raise ValueError("Rendered-row colors must contain one color for each rendered napari point row.")
+    if len(rendered_row_has_table_row) != len(layer.data):
+        raise ValueError("Rendered-row table coverage must contain one value for each rendered napari point row.")
+
+    colors = _with_alpha(rendered_row_colors, SHAPES_EDGE_ALPHA)
+    # Keep the same distinction as table-backed Shapes layers: annotated rows
+    # with missing selected values stay gray, while points with no table row are
+    # transparent.
+    colors[~rendered_row_has_table_row, 3] = 0.0
+    layer.face_color = colors
+    layer.border_color = colors
+    layer.border_width = 0
     refresh = getattr(layer, "refresh", None)
     if callable(refresh):
         refresh()

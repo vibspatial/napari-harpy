@@ -247,6 +247,37 @@ def make_table_backed_shapes_sdata() -> ShapesSpatialDataWithTables:
     return ShapesSpatialDataWithTables(shapes={"cell_boundaries": shapes}, tables={"table": table})
 
 
+def make_table_backed_point_radius_shapes_sdata() -> ShapesSpatialDataWithTables:
+    geodataframe = gpd.GeoDataFrame(
+        {
+            "instance_id": ["cell_1", "cell_2", "cell_3"],
+            "radius": [2.0, 3.0, 4.0],
+        },
+        geometry=[Point(10, 20), Point(30, 40), Point(50, 60)],
+        index=["shape_1", "shape_2", "shape_3"],
+    )
+    shapes = ShapesModel.parse(geodataframe, transformations={"global": Identity()})
+    table = TableModel.parse(
+        ad.AnnData(
+            X=np.asarray([[1.0], [2.0]]),
+            obs=pd.DataFrame(
+                {
+                    "region": ["cell_centroids", "cell_centroids"],
+                    "instance_id": ["cell_1", "cell_2"],
+                    "cell_type": pd.Categorical(["T", "B"], categories=["T", "B"]),
+                },
+                index=["obs_1", "obs_2"],
+            ),
+            var=pd.DataFrame(index=["GeneA"]),
+        ),
+        region="cell_centroids",
+        region_key="region",
+        instance_key="instance_id",
+    )
+    table.uns["cell_type_colors"] = ["#ff0000", "#00ff00"]
+    return ShapesSpatialDataWithTables(shapes={"cell_centroids": shapes}, tables={"table": table})
+
+
 def make_two_table_backed_shapes_sdata() -> ShapesSpatialDataWithTables:
     sdata = make_table_backed_shapes_sdata()
     table_b = TableModel.parse(
@@ -2319,6 +2350,104 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_creates_table_backed_variant
     np.testing.assert_allclose(result.layer.edge_color[0], (*to_rgba("#ff0000")[:3], 1.0))
     np.testing.assert_allclose(result.layer.edge_color[1], (*to_rgba("#00ff00")[:3], 1.0))
     assert result.layer.edge_color[2, 3] == 0.0
+
+
+def test_viewer_adapter_ensure_styled_shapes_loaded_creates_point_backed_table_variant() -> None:
+    sdata = make_table_backed_point_radius_shapes_sdata()
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    result = adapter.ensure_styled_shapes_loaded(sdata, "cell_centroids", "global", style_spec)
+    second = adapter.ensure_styled_shapes_loaded(sdata, "cell_centroids", "global", style_spec)
+
+    assert result.created is True
+    assert second.created is False
+    assert second.layer is result.layer
+    assert result.value_kind == "categorical"
+    assert result.palette_source == "stored"
+    assert result.coercion_applied is False
+    assert result.unannotated_source_shape_count == 1
+    assert result.unannotated_rendered_shape_count == 1
+    assert isinstance(result.layer, Points)
+    assert result.layer in viewer.layers
+    assert result.layer.name == "cell_centroids[obs:cell_type]"
+    binding = get_shapes_binding(adapter, result.layer)
+    assert binding.shapes_role == "styled"
+    assert binding.shapes_rendering_mode == "points"
+    assert binding.style_spec == style_spec
+    assert binding.source_row_id_by_rendered_row == range(3)
+    assert list(result.layer.features.columns) == ["index", "cell_type"]
+    assert result.layer.features["index"].to_list() == ["shape_1", "shape_2", "shape_3"]
+    assert result.layer.features["cell_type"].to_list()[:2] == ["T", "B"]
+    assert pd.isna(result.layer.features["cell_type"].iloc[2])
+    np.testing.assert_allclose(result.layer.size, np.asarray([4.0, 6.0, 8.0]))
+    np.testing.assert_allclose(result.layer.face_color[0], to_rgba("#ff0000"))
+    np.testing.assert_allclose(result.layer.border_color[1], to_rgba("#00ff00"))
+    assert result.layer.face_color[2, 3] == 0.0
+    assert result.layer.border_color[2, 3] == 0.0
+    np.testing.assert_allclose(result.layer.border_width, np.zeros(3))
+    assert len(viewer.layers) == 1
+
+
+def test_viewer_adapter_point_backed_table_x_var_styling() -> None:
+    sdata = make_table_backed_point_radius_shapes_sdata()
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="x_var",
+        value_key="GeneA",
+        value_kind="continuous",
+    )
+
+    result = adapter.ensure_styled_shapes_loaded(sdata, "cell_centroids", "global", style_spec)
+
+    assert isinstance(result.layer, Points)
+    assert result.value_kind == "continuous"
+    assert result.palette_source is None
+    assert result.coercion_applied is False
+    assert result.unannotated_source_shape_count == 1
+    assert result.unannotated_rendered_shape_count == 1
+    assert result.layer.name == "cell_centroids[X:GeneA]"
+    assert get_shapes_binding(adapter, result.layer).shapes_rendering_mode == "points"
+    assert result.layer.features["GeneA"].to_list()[:2] == [1.0, 2.0]
+    assert pd.isna(result.layer.features["GeneA"].iloc[2])
+    assert result.layer.face_color[0, 3] == 1.0
+    assert result.layer.face_color[1, 3] == 1.0
+    assert result.layer.face_color[2, 3] == 0.0
+
+
+def test_viewer_adapter_point_backed_table_instance_styling() -> None:
+    sdata = make_table_backed_point_radius_shapes_sdata()
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="instance_id",
+        value_kind="instance",
+    )
+
+    result = adapter.ensure_styled_shapes_loaded(sdata, "cell_centroids", "global", style_spec)
+
+    assert isinstance(result.layer, Points)
+    assert result.value_kind == "instance"
+    assert result.palette_source is None
+    assert result.coercion_applied is False
+    assert result.unannotated_source_shape_count == 1
+    assert result.unannotated_rendered_shape_count == 1
+    assert get_shapes_binding(adapter, result.layer).shapes_rendering_mode == "points"
+    assert result.layer.features["instance_id"].to_list()[:2] == ["cell_1", "cell_2"]
+    assert pd.isna(result.layer.features["instance_id"].iloc[2])
+    assert result.layer.face_color[0, 3] == 1.0
+    assert result.layer.face_color[1, 3] == 1.0
+    assert result.layer.face_color[2, 3] == 0.0
 
 
 def test_viewer_adapter_table_backed_shapes_uses_named_index_as_instance_key() -> None:
