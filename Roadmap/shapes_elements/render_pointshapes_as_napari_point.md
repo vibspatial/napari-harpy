@@ -282,9 +282,12 @@ Add focused tests for:
      (`Shapes | Points`) instead of only napari `Shapes` where needed;
    - keep generic `Shapes` styling behavior unchanged for non-qualifying
      elements;
-   - add a points-backed direct shape-column styling function, for example
-     `apply_shape_column_color_source_to_points_layer(...)` or
-     `apply_shape_column_color_source_to_points_backed_shapes_layer(...)`;
+   - extend the existing semantic-shapes styling API
+     `apply_shape_column_color_source_to_shapes_layer(...)` to accept
+     `layer: Shapes | Points`;
+   - keep the function name because the source element is still a SpatialData
+     shapes element, even when the viewer representation is a napari `Points`
+     layer;
    - share the existing direct shape-column value/color logic with generic
      shapes styling:
      - validate `style_spec.source_kind == "shape_column"`;
@@ -297,7 +300,9 @@ Add focused tests for:
        `_build_continuous_shape_style(...)` so categorical palettes,
        companion color columns, string coercion, missing values, and
        continuous colormap behavior match generic styled shapes;
-   - apply point-backed colors to napari `Points` as data-driven colors:
+   - keep the existing color application path for napari `Shapes`;
+   - add a layer-specific branch for napari `Points` that applies point-backed
+     colors as data-driven colors:
      - set `layer.face_color` to the rendered-row color array;
      - set `layer.border_color` to the same rendered-row color array;
      - keep `layer.border_width = 0` unless a later presentation-control slice
