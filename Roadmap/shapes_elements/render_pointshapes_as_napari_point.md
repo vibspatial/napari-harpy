@@ -1,6 +1,6 @@
 # Render Point-Radius Shapes As Napari Points
 
-Status: Slice 3 implemented; Slices 4-7 pending
+Status: Slice 3 implemented; Slice 4 specified; Slices 5-7 pending
 
 ## Goal
 
@@ -261,17 +261,82 @@ Add focused tests for:
      - non-qualifying shapes elements still create the existing napari `Shapes`
        layer with `shapes_rendering_mode="shapes"`.
 
-4. Direct shape-column styling on points-backed shapes
+4. Direct shape-column styling on points-backed shapes - specified
    - add styling support for `ShapeColumnColorSourceSpec` when the styled layer
      is a napari `Points` layer representing point-radius shapes;
-   - reuse the existing shape-column value alignment by source row id;
-   - map categorical values, continuous values, instance-like values, missing
-     values, and palette/coercion feedback to napari point face/edge colors;
-   - keep styled layer naming and adapter identity consistent with the existing
-     styled shapes layer names;
-   - add tests for categorical, continuous, missing values, color companion
-     columns, duplicate GeoDataFrame index values, named index display, and
-     fill/edge behavior.
+   - keep this limited to direct shape-column styling. Table-backed
+     point-radius styling remains Slice 6 work;
+   - in `ensure_styled_shapes_loaded(...)`, allow the point-radius fast path
+     only when `style_spec` is a `ShapeColumnColorSourceSpec`;
+   - keep table-backed styled shapes on the existing generic napari `Shapes`
+     path until Slice 6;
+   - preserve the existing styled-layer identity:
+     - layer name remains `build_styled_shapes_layer_name(...)`, for example
+       `cell_centroids[shapes_column:cell_type]`;
+     - binding keeps `element_type="shapes"`;
+     - binding uses `shapes_role="styled"`;
+     - binding stores the exact `ShapeColumnColorSourceSpec`;
+     - binding uses `shapes_rendering_mode="points"` for the point-backed
+       styled variant and `"shapes"` for the generic fallback;
+   - update styled-shapes lookup helpers to consider semantic shapes layers
+     (`Shapes | Points`) instead of only napari `Shapes` where needed;
+   - keep generic `Shapes` styling behavior unchanged for non-qualifying
+     elements;
+   - add a points-backed direct shape-column styling function, for example
+     `apply_shape_column_color_source_to_points_layer(...)` or
+     `apply_shape_column_color_source_to_points_backed_shapes_layer(...)`;
+   - share the existing direct shape-column value/color logic with generic
+     shapes styling:
+     - validate `style_spec.source_kind == "shape_column"`;
+     - validate `style_spec.value_key` exists in the source GeoDataFrame;
+     - validate `source_row_id_by_rendered_row` against the source row count
+       and rendered point count;
+     - start from one `source_values` series per source GeoDataFrame row;
+     - align values to rendered point rows by integer source row id;
+     - reuse `_build_categorical_shape_style(...)` and
+       `_build_continuous_shape_style(...)` so categorical palettes,
+       companion color columns, string coercion, missing values, and
+       continuous colormap behavior match generic styled shapes;
+   - apply point-backed colors to napari `Points` as data-driven colors:
+     - set `layer.face_color` to the rendered-row color array;
+     - set `layer.border_color` to the same rendered-row color array;
+     - keep `layer.border_width = 0` unless a later presentation-control slice
+       decides otherwise;
+     - preserve point sizes from the source `radius` values;
+     - preserve `symbol="disc"`;
+   - treat `fill` as a generic shapes-only presentation option for this slice:
+     point-backed direct styling should remain visibly filled, because the
+     filled point glyph is the fast-path representation of the point-radius
+     geometry;
+   - update `layer.features` exactly like generic styled shapes:
+     - preserve the source GeoDataFrame index feature;
+     - add the selected shape-column style value;
+     - disambiguate collisions with the source index feature via
+       `disambiguate_shape_style_feature_name(...)`;
+     - keep hover/status display useful through the point-backed Harpy `Points`
+       subclass;
+   - return the same `ShapesStyleResult` semantics as generic styled shapes:
+     `value_kind`, `palette_source`, and `coercion_applied` should be
+     indistinguishable for the same source values;
+   - add tests for:
+     - qualifying point-radius shapes with categorical shape-column styling
+       create a napari `Points` styled layer;
+     - qualifying point-radius shapes with continuous shape-column styling
+       create a napari `Points` styled layer;
+     - stored companion color columns and default palettes match generic
+       shape-column styling;
+     - missing selected values use the existing shapes missing color;
+     - source index features, named source indices, and duplicate source index
+       values are preserved;
+     - style-feature name collisions with the source index feature are
+       disambiguated;
+     - `source_row_id_by_rendered_row == range(n)` works for point-backed
+       styling;
+     - styled point sizes remain radius-derived after applying colors;
+     - the same shape-column style spec reuses the existing styled point-backed
+       layer;
+     - non-qualifying shapes elements still create a napari `Shapes` styled
+       layer with `shapes_rendering_mode="shapes"`.
 
 5. Point-backed primary presentation controls - follow-up
    - primary generic shapes currently connect napari presentation controls with:
