@@ -343,7 +343,21 @@ Add focused tests for:
      - non-qualifying shapes elements still create a napari `Shapes` styled
        layer with `shapes_rendering_mode="shapes"`.
 
-5. Point-backed primary presentation controls - follow-up
+5. Table-backed styling on points-backed shapes
+   - add styling support for `TableColorSourceSpec` when the styled layer is a
+     napari `Points` layer representing point-radius shapes;
+   - reuse the same table-to-source-row alignment rules as styled shapes,
+     including column-backed and index-backed `instance_key` resolution;
+   - preserve partial table coverage semantics: unannotated points transparent,
+     annotated points with missing selected values gray;
+   - support observation columns, `X[:, var_name]`, and instance colors;
+   - preserve palette/coercion feedback and unannotated point counts;
+   - add tests for `.obs` categorical/continuous values, `X[:, var_name]`,
+     instance colors, partial table coverage, missing selected values,
+     duplicate shape instance identities, duplicate table instance errors, and
+     named-index instance identity.
+
+6. Point-backed primary presentation controls - follow-up
    - primary generic shapes currently connect napari presentation controls with:
      - `_connect_current_edge_width_to_global_edge_width(layer)`;
      - `_connect_current_edge_color_to_global_edge_color(layer)` when
@@ -366,20 +380,6 @@ Add focused tests for:
    - add tests that changing the relevant napari presentation control updates
      all primary point-backed shapes consistently, and does not flatten styled
      point-backed palettes.
-
-6. Table-backed styling on points-backed shapes
-   - add styling support for `TableColorSourceSpec` when the styled layer is a
-     napari `Points` layer representing point-radius shapes;
-   - reuse the same table-to-source-row alignment rules as styled shapes,
-     including column-backed and index-backed `instance_key` resolution;
-   - preserve partial table coverage semantics: unannotated points transparent,
-     annotated points with missing selected values gray;
-   - support observation columns, `X[:, var_name]`, and instance colors;
-   - preserve palette/coercion feedback and unannotated point counts;
-   - add tests for `.obs` categorical/continuous values, `X[:, var_name]`,
-     instance colors, partial table coverage, missing selected values,
-     duplicate shape instance identities, duplicate table instance errors, and
-     named-index instance identity.
 
 7. Widget and feedback polish
    - make the shapes card/status feedback distinguish between regular shapes
