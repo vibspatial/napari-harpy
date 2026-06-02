@@ -325,7 +325,7 @@ class _NapariPointRadiusShapesLayerInputs:
     sizes: np.ndarray
     features: pd.DataFrame
     source_shapes_index_feature_name: str
-    source_row_id_by_rendered_row: tuple[int, ...]
+    source_row_id_by_rendered_row: range
     skipped_geometry_count: int
 
 
@@ -1866,41 +1866,44 @@ def _prepare_napari_point_radius_shapes_layer_inputs(
     geometry_column_name = getattr(getattr(shapes_element, "geometry", None), "name", "geometry")
     index_feature_name = _get_shapes_index_feature_name(shapes_element)
     source_index_values = shapes_element.index.to_numpy(copy=False)
-    geometry_values = shapes_element[geometry_column_name].to_numpy(copy=False)
-    radius_values = shapes_element["radius"].to_numpy(copy=False)
+    geometry_values = shapes_element[geometry_column_name]
 
     if len(source_index_values) == 0:
         return None
 
-    coordinates: list[tuple[float, float]] = []
-    sizes: list[float] = []
-    feature_rows: list[dict[str, Any]] = []
-    source_row_id_by_rendered_row: list[int] = []
-
     try:
-        for source_row_id, (source_index, geometry, radius) in enumerate(
-            zip(source_index_values, geometry_values, radius_values, strict=True),
-        ):
-            if _is_empty_geometry(geometry) or not isinstance(geometry, Point):
-                return None
+        missing_or_empty_geometry = geometry_values.isna().to_numpy(dtype=bool) | geometry_values.is_empty.to_numpy(
+            dtype=bool
+        )
+        if np.any(missing_or_empty_geometry):
+            return None
 
-            radius_value = _coerce_positive_radius(radius)
-            if radius_value is None:
-                return None
+        if not bool(geometry_values.geom_type.eq("Point").all()):
+            return None
 
-            coordinates.append((float(geometry.y), float(geometry.x)))
-            sizes.append(2.0 * radius_value)
-            feature_rows.append({index_feature_name: source_index})
-            source_row_id_by_rendered_row.append(source_row_id)
-    except ValueError:
+        radius_values = pd.to_numeric(shapes_element["radius"], errors="coerce").to_numpy(dtype=float, copy=False)
+    except (AttributeError, TypeError, ValueError):
         return None
 
+    if len(geometry_values) != len(source_index_values) or len(radius_values) != len(source_index_values):
+        return None
+    if not np.all(np.isfinite(radius_values)) or not np.all(radius_values > 0):
+        return None
+
+    coordinates = np.column_stack(
+        (
+            geometry_values.y.to_numpy(dtype=float),
+            geometry_values.x.to_numpy(dtype=float),
+        )
+    )
+    sizes = 2.0 * radius_values
+
     return _NapariPointRadiusShapesLayerInputs(
-        coordinates=np.asarray(coordinates, dtype=float),
-        sizes=np.asarray(sizes, dtype=float),
-        features=pd.DataFrame(feature_rows),
+        coordinates=coordinates,
+        sizes=sizes,
+        features=pd.DataFrame({index_feature_name: source_index_values}),
         source_shapes_index_feature_name=index_feature_name,
-        source_row_id_by_rendered_row=tuple(source_row_id_by_rendered_row),
+        source_row_id_by_rendered_row=range(len(source_index_values)),
         skipped_geometry_count=0,
     )
 

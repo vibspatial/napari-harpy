@@ -1901,7 +1901,7 @@ def test_prepare_napari_point_radius_shapes_layer_inputs_returns_points_arrays()
     np.testing.assert_allclose(result.sizes, np.asarray([3.0, 4.0]))
     assert result.features["index"].to_list() == ["cell_1", "cell_2"]
     assert result.source_shapes_index_feature_name == "index"
-    assert result.source_row_id_by_rendered_row == (0, 1)
+    assert result.source_row_id_by_rendered_row == range(2)
     assert result.skipped_geometry_count == 0
 
 
@@ -1916,7 +1916,7 @@ def test_prepare_napari_point_radius_shapes_layer_inputs_preserves_duplicate_ind
 
     assert result is not None
     assert result.features["index"].to_list() == ["cell_1", "cell_1"]
-    assert result.source_row_id_by_rendered_row == (0, 1)
+    assert result.source_row_id_by_rendered_row == range(2)
 
 
 def test_prepare_napari_point_radius_shapes_layer_inputs_preserves_named_index() -> None:
@@ -1967,13 +1967,14 @@ def test_prepare_napari_point_radius_shapes_layer_inputs_returns_none_for_mixed_
 
 
 def test_prepare_napari_point_radius_shapes_layer_inputs_returns_none_for_empty_geometry() -> None:
-    geodataframe = gpd.GeoDataFrame(
-        {"radius": [1.0]},
-        geometry=[Point()],
-        index=["cell_1"],
-    )
+    for geometry in (Point(), None):
+        geodataframe = gpd.GeoDataFrame(
+            {"radius": [1.0]},
+            geometry=[geometry],
+            index=["cell_1"],
+        )
 
-    assert _prepare_napari_point_radius_shapes_layer_inputs(geodataframe) is None
+        assert _prepare_napari_point_radius_shapes_layer_inputs(geodataframe) is None
 
 
 def test_prepare_napari_point_radius_shapes_layer_inputs_does_not_use_iterrows(
@@ -1993,7 +1994,7 @@ def test_prepare_napari_point_radius_shapes_layer_inputs_does_not_use_iterrows(
     result = _prepare_napari_point_radius_shapes_layer_inputs(geodataframe)
 
     assert result is not None
-    assert result.source_row_id_by_rendered_row == (0, 1)
+    assert result.source_row_id_by_rendered_row == range(2)
 
 
 def test_viewer_adapter_ensure_shapes_loaded_preserves_polygon_holes() -> None:

@@ -1,6 +1,6 @@
 # Render Point-Radius Shapes As Napari Points
 
-Status: Slice 1 implemented; Slices 2-6 pending
+Status: Slice 2 implemented; Slices 3-6 pending
 
 ## Goal
 
@@ -166,19 +166,20 @@ Add focused tests for:
        column;
      - helper does not call `GeoDataFrame.iterrows()`.
 
-2. Vectorized point-radius preparation optimization
+2. Vectorized point-radius preparation optimization - completed
    - optimize `_prepare_napari_point_radius_shapes_layer_inputs(...)` before
      building layer lifecycle on top of it;
-   - current Slice 1 helper is correctness-oriented and loops over Shapely
-     `Point` objects. Local synthetic timings:
+   - previous Slice 1 helper was correctness-oriented and looped over Shapely
+     `Point` objects. Local synthetic timings before this optimization:
      - `100k` point-radius rows: about `0.53s`;
      - `300k` point-radius rows: about `1.4-1.6s`;
      - `1M` point-radius rows: about `4.7-5.1s`;
      - extrapolated `9M` point-radius rows: roughly `40s+` for preparation
        alone;
-   - a vectorized sketch using `geometry.x`, `geometry.y`, vectorized radius
-     validation, and direct feature DataFrame construction measured about
-     `0.07s` for `300k` and `0.24s` for `1M` on the same machine;
+   - the implemented vectorized path using `geometry.x`, `geometry.y`,
+     vectorized radius validation, and direct feature DataFrame construction
+     measured about `0.07s` for `300k` and `0.23s` for `1M` on the same
+     machine;
    - replace per-row coordinate/radius extraction with vectorized extraction:
      - verify all geometries are non-empty points with GeoPandas/Shapely vector
        operations where possible;
