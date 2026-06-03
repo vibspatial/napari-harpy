@@ -309,7 +309,7 @@ def test_align_table_color_source_to_shapes_rows_allows_duplicate_named_index_in
     assert aligned.source_row_has_table_row.tolist() == [True, True, True]
 
 
-def test_align_table_color_source_to_shapes_rows_rejects_instance_key_column_even_when_index_matches() -> None:
+def test_align_table_color_source_to_shapes_rows_accepts_matching_instance_key_column_and_index() -> None:
     geodataframe = gpd.GeoDataFrame(
         {"instance_id": ["cell_1", "cell_2"]},
         geometry=[_polygon(0), _polygon(2)],
@@ -326,15 +326,17 @@ def test_align_table_color_source_to_shapes_rows_rejects_instance_key_column_eve
         value_kind="instance",
     )
 
-    with pytest.raises(ValueError, match="not in a GeoDataFrame column"):
-        _align_table_color_source_to_shapes_rows(
-            table=table,
-            table_metadata=_table_metadata(),
-            shapes_name="cells",
-            shapes_element=geodataframe,
-            style_spec=style_spec,
-            source_row_id_by_rendered_row=(0, 1),
-        )
+    aligned = _align_table_color_source_to_shapes_rows(
+        table=table,
+        table_metadata=_table_metadata(),
+        shapes_name="cells",
+        shapes_element=geodataframe,
+        style_spec=style_spec,
+        source_row_id_by_rendered_row=(0, 1),
+    )
+
+    assert aligned.source_row_values.iloc[0] == "cell_1"
+    assert pd.isna(aligned.source_row_values.iloc[1])
 
 
 def test_align_table_color_source_to_shapes_rows_rejects_instance_key_column_when_index_disagrees() -> None:
@@ -354,7 +356,7 @@ def test_align_table_color_source_to_shapes_rows_rejects_instance_key_column_whe
         value_kind="instance",
     )
 
-    with pytest.raises(ValueError, match="not in a GeoDataFrame column"):
+    with pytest.raises(ValueError, match="both as a GeoDataFrame column and as the GeoDataFrame index name"):
         _align_table_color_source_to_shapes_rows(
             table=table,
             table_metadata=_table_metadata(),

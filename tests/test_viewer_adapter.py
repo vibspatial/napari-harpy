@@ -219,7 +219,7 @@ def make_colorable_point_radius_shapes_sdata(shapes_name: str = "cell_centroids"
 
 def make_table_backed_shapes_sdata() -> ShapesSpatialDataWithTables:
     geodataframe = gpd.GeoDataFrame(
-        {},
+        {"instance_id": ["cell_1", "cell_2", "cell_3"]},
         geometry=[
             Polygon([(0, 0), (4, 0), (4, 4), (0, 4), (0, 0)]),
             Polygon([(5, 0), (9, 0), (9, 4), (5, 4), (5, 0)]),
@@ -251,6 +251,7 @@ def make_table_backed_shapes_sdata() -> ShapesSpatialDataWithTables:
 def make_table_backed_point_radius_shapes_sdata() -> ShapesSpatialDataWithTables:
     geodataframe = gpd.GeoDataFrame(
         {
+            "instance_id": ["cell_1", "cell_2", "cell_3"],
             "radius": [2.0, 3.0, 4.0],
         },
         geometry=[Point(10, 20), Point(30, 40), Point(50, 60)],

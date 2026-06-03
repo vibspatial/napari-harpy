@@ -467,14 +467,9 @@ def _get_shape_instance_values(
     """Return source-row-aligned shape instance identities for table lookup.
 
     Table-backed shapes styling uses the GeoDataFrame index as the shape
-    instance identity. This keeps hover/status features and table alignment on
-    the same semantic key.
+    instance identity. A same-named GeoDataFrame column is allowed only when it
+    duplicates the index values exactly.
     """
-    if instance_key in shapes_element.columns:
-        raise ValueError(
-            f"Shapes element `{shapes_name}` must store table instance key `{instance_key}` in the GeoDataFrame "
-            "index, not in a GeoDataFrame column, for table-backed styling."
-        )
     if getattr(shapes_element.index, "name", None) != instance_key:
         raise ValueError(
             f"Shapes element `{shapes_name}` must use GeoDataFrame index `{instance_key}` for table-backed styling. "
@@ -482,12 +477,44 @@ def _get_shape_instance_values(
             "identities in that index before styling from a linked table."
         )
 
-    return pd.Series(
+    index_values = pd.Series(
         shapes_element.index.to_numpy(copy=False),
         index=pd.RangeIndex(len(shapes_element)),
         name=instance_key,
         dtype="object",
     )
+    if instance_key not in shapes_element.columns:
+        return index_values
+
+    column_values = pd.Series(
+        shapes_element[instance_key].to_numpy(copy=False),
+        index=pd.RangeIndex(len(shapes_element)),
+        name=instance_key,
+        dtype="object",
+    )
+    disagreement_row_ids = [
+        row_id
+        for row_id, (column_value, index_value) in enumerate(
+            zip(column_values, index_values, strict=True),
+        )
+        if not _shape_instance_values_equal(column_value, index_value)
+    ]
+    if disagreement_row_ids:
+        preview = _format_value_preview(disagreement_row_ids)
+        raise ValueError(
+            f"Shapes element `{shapes_name}` has instance key `{instance_key}` both as a GeoDataFrame column and "
+            f"as the GeoDataFrame index name, but they disagree for source row(s): {preview}."
+        )
+
+    return index_values
+
+
+def _shape_instance_values_equal(left: object, right: object) -> bool:
+    if pd.isna(left) and pd.isna(right):
+        return True
+    if pd.isna(left) or pd.isna(right):
+        return False
+    return bool(left == right)
 
 
 def _get_table_color_values_by_instance(
