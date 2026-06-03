@@ -537,33 +537,73 @@ Add focused tests for:
        feedback lines;
      - generic shapes feedback does not mention point-radius rendering.
 
-8. Point-backed radius-size scale control - follow-up
+8. Point-backed radius-size scale control - specified
    - make napari's point-size UI useful without destroying the source
      radius-derived sizes;
-   - store the original radius-derived point sizes on the point-backed shapes
-     layer, for example as a private Harpy attribute:
-     `original_radius_sizes = 2 * radius`;
-   - choose a stable `reference_size` for the layer:
+   - add a point-backed-shapes-specific size sync helper, separate from the
+     existing real-points helper
+     `_connect_current_size_to_global_point_size(layer)`:
+     - do not reuse the real-points helper, because it writes one absolute size
+       to every point;
+     - keep the helper near the point-backed-shapes construction/styling path
+       or in `points_styling.py` with a clearly point-radius-shapes-specific
+       name, for example
+       `connect_current_size_to_radius_scaled_point_size(...)`;
+   - store the unscaled radius-derived point sizes on the point-backed shapes
+     layer under private Harpy attributes:
+     - `original_radius_sizes = 2 * radius`, i.e. the sizes passed by
+       `_prepare_napari_point_radius_shapes_layer_inputs(...)`;
+     - `reference_size`, used to translate napari's `current_size` control into
+       a scale factor;
+     - the callback itself, so it is not garbage-collected;
+   - choose a stable positive `reference_size` for the layer:
      - if all radii are equal, use that single diameter;
      - otherwise use a representative diameter such as the median finite
        original size;
+     - if no positive finite size exists, raise a clear error rather than
+       installing an invalid scale callback. This should normally be defensive
+       because point-radius preparation already rejects non-positive radii;
    - initialize `layer.current_size` to `reference_size`, so the napari UI
      starts from a value that matches the displayed radius-derived sizes;
    - when `current_size` changes, interpret it as a scale target rather than an
      absolute size overwrite:
      - `scale = current_size / reference_size`;
      - `layer.size = original_radius_sizes * scale`;
+     - if the user enters an invalid/non-positive `current_size`, ignore it or
+       restore the reference size using the same positive-size semantics as
+       existing point-size handling;
    - preserve relative radius differences for variable-radius elements;
    - for fixed-radius elements, this should feel like the normal napari point
      size control because every point scales together;
-   - apply this to primary point-backed shapes first. For styled point-backed
-     layers, decide during implementation whether to reuse the same size-scale
-     state or preserve the styled layer's existing radius-derived sizes until a
-     later UX pass;
+   - apply the same radius-size scale behavior to both primary and styled
+     point-backed shapes:
+     - both layer kinds represent the same source point/radius geometry;
+     - direct shape-column and table-backed styling should affect colors, not
+       reset or remove radius-size scaling;
+     - styled point-backed layers should therefore preserve relative radii when
+       `current_size` changes, just like primary point-backed layers;
+   - keep existing color and symbol behavior unchanged:
+     - symbol sync continues to apply to primary and styled point-backed shapes;
+     - color sync remains primary-only;
+     - color/symbol updates must not reset the stored original radius sizes or
+       reference size;
+   - on styled-layer updates/reuse, do not overwrite an existing user-chosen
+     size scale unless the layer is recreated:
+     - if the styled layer already exists and the user changed `current_size`,
+       reapplying color styling should keep the current scaled sizes;
+     - newly created styled layers start from the source radius-derived sizes
+       and reference size;
    - add tests for:
      - fixed-radius point-backed shapes scale like ordinary point-size changes;
      - variable-radius point-backed shapes preserve relative size ratios;
      - `current_size` initializes to the expected reference size;
      - invalid or zero reference sizes are rejected or fall back clearly;
+     - invalid or zero `current_size` does not destroy the radius-derived sizes;
+     - styled point-backed direct shape-column layers preserve relative radii
+       when `current_size` changes;
+     - styled point-backed table-backed layers preserve relative radii when
+       `current_size` changes;
+     - reapplying styled direct/table-backed colors to an existing point-backed
+       layer preserves the user's current radius-size scale;
      - color/symbol updates do not reset the original radius-derived size
        state.
