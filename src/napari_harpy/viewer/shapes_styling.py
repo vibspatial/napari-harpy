@@ -346,8 +346,7 @@ def _align_table_color_source_to_shapes_rows(
     """Align one table-backed color source to source and rendered shapes rows."""
     if style_spec.table_name != table_metadata.table_name:
         raise ValueError(
-            f"Table color source `{style_spec.table_name}` does not match table metadata "
-            f"`{table_metadata.table_name}`."
+            f"Table color source `{style_spec.table_name}` does not match table metadata `{table_metadata.table_name}`."
         )
     if not table_metadata.annotates(shapes_name):
         raise ValueError(f"Table `{table_metadata.table_name}` does not annotate shapes element `{shapes_name}`.")
@@ -492,13 +491,10 @@ def _get_shape_instance_values(
         name=instance_key,
         dtype="object",
     )
-    disagreement_row_ids = [
-        row_id
-        for row_id, (column_value, index_value) in enumerate(
-            zip(column_values, index_values, strict=True),
-        )
-        if not _shape_instance_values_equal(column_value, index_value)
-    ]
+    both_missing = column_values.isna() & index_values.isna()
+    equal_values = column_values.eq(index_values).fillna(False)
+    disagreement = ~(both_missing | equal_values)
+    disagreement_row_ids = disagreement[disagreement].index.to_list()
     if disagreement_row_ids:
         preview = _format_value_preview(disagreement_row_ids)
         raise ValueError(
@@ -507,14 +503,6 @@ def _get_shape_instance_values(
         )
 
     return index_values
-
-
-def _shape_instance_values_equal(left: object, right: object) -> bool:
-    if pd.isna(left) and pd.isna(right):
-        return True
-    if pd.isna(left) or pd.isna(right):
-        return False
-    return bool(left == right)
 
 
 def _get_table_color_values_by_instance(
@@ -849,7 +837,9 @@ def _instance_identity_codes(*, source_values: pd.Series, rendered_row_values: p
     non_missing_source_values = source_values.dropna()
     if _is_positive_integer_instance_series(non_missing_source_values):
         numeric_codes = pd.to_numeric(rendered_row_values, errors="coerce").fillna(0).astype("int64")
-        return pd.Series(numeric_codes.to_numpy(copy=False), index=rendered_row_values.index, name=rendered_row_values.name)
+        return pd.Series(
+            numeric_codes.to_numpy(copy=False), index=rendered_row_values.index, name=rendered_row_values.name
+        )
 
     unique_values = pd.unique(non_missing_source_values)
     code_by_value = {value: code for code, value in enumerate(unique_values, start=1)}

@@ -214,9 +214,7 @@ def test_align_table_color_source_to_shapes_rows_requires_table_to_annotate_shap
         geometry=[_polygon(0)],
         index=pd.Index(["cell_1"], name="instance_id"),
     )
-    table = ad.AnnData(
-        obs=pd.DataFrame({"region": ["cells"], "instance_id": ["cell_1"]}, index=["obs_1"])
-    )
+    table = ad.AnnData(obs=pd.DataFrame({"region": ["cells"], "instance_id": ["cell_1"]}, index=["obs_1"]))
     style_spec = TableColorSourceSpec(
         table_name="table",
         source_kind="obs_column",
@@ -316,9 +314,7 @@ def test_align_table_color_source_to_shapes_rows_accepts_matching_instance_key_c
         index=["cell_1", "cell_2"],
     )
     geodataframe.index.name = "instance_id"
-    table = ad.AnnData(
-        obs=pd.DataFrame({"region": ["cells"], "instance_id": ["cell_1"]}, index=["obs_1"])
-    )
+    table = ad.AnnData(obs=pd.DataFrame({"region": ["cells"], "instance_id": ["cell_1"]}, index=["obs_1"]))
     style_spec = TableColorSourceSpec(
         table_name="table",
         source_kind="obs_column",
@@ -346,9 +342,7 @@ def test_align_table_color_source_to_shapes_rows_rejects_instance_key_column_whe
         index=["cell_1", "cell_99"],
     )
     geodataframe.index.name = "instance_id"
-    table = ad.AnnData(
-        obs=pd.DataFrame({"region": ["cells"], "instance_id": ["cell_1"]}, index=["obs_1"])
-    )
+    table = ad.AnnData(obs=pd.DataFrame({"region": ["cells"], "instance_id": ["cell_1"]}, index=["obs_1"]))
     style_spec = TableColorSourceSpec(
         table_name="table",
         source_kind="obs_column",
@@ -369,9 +363,7 @@ def test_align_table_color_source_to_shapes_rows_rejects_instance_key_column_whe
 
 def test_align_table_color_source_to_shapes_rows_requires_shapes_instance_identity() -> None:
     geodataframe = gpd.GeoDataFrame({"cell_type": ["T"]}, geometry=[_polygon(0)], index=["shape_a"])
-    table = ad.AnnData(
-        obs=pd.DataFrame({"region": ["cells"], "instance_id": ["cell_1"]}, index=["obs_1"])
-    )
+    table = ad.AnnData(obs=pd.DataFrame({"region": ["cells"], "instance_id": ["cell_1"]}, index=["obs_1"]))
     style_spec = TableColorSourceSpec(
         table_name="table",
         source_kind="obs_column",
@@ -397,9 +389,7 @@ def test_align_table_color_source_to_shapes_rows_rejects_missing_shapes_instance
         index=["cell_1", None],
     )
     geodataframe.index.name = "instance_id"
-    table = ad.AnnData(
-        obs=pd.DataFrame({"region": ["cells"], "instance_id": ["cell_1"]}, index=["obs_1"])
-    )
+    table = ad.AnnData(obs=pd.DataFrame({"region": ["cells"], "instance_id": ["cell_1"]}, index=["obs_1"]))
     style_spec = TableColorSourceSpec(
         table_name="table",
         source_kind="obs_column",
@@ -424,9 +414,7 @@ def test_align_table_color_source_to_shapes_rows_rejects_missing_table_instance_
         geometry=[_polygon(0)],
         index=pd.Index(["cell_1"], name="instance_id"),
     )
-    table = ad.AnnData(
-        obs=pd.DataFrame({"region": ["cells"], "instance_id": [None]}, index=["obs_1"])
-    )
+    table = ad.AnnData(obs=pd.DataFrame({"region": ["cells"], "instance_id": [None]}, index=["obs_1"]))
     style_spec = TableColorSourceSpec(
         table_name="table",
         source_kind="obs_column",
@@ -484,9 +472,7 @@ def test_align_table_color_source_to_shapes_rows_rejects_table_instances_missing
         geometry=[_polygon(0)],
         index=pd.Index(["1"], name="instance_id"),
     )
-    table = ad.AnnData(
-        obs=pd.DataFrame({"region": ["cells"], "instance_id": [1]}, index=["obs_1"])
-    )
+    table = ad.AnnData(obs=pd.DataFrame({"region": ["cells"], "instance_id": [1]}, index=["obs_1"]))
     style_spec = TableColorSourceSpec(
         table_name="table",
         source_kind="obs_column",
@@ -512,9 +498,7 @@ def test_align_table_color_source_to_shapes_rows_rejects_table_instances_missing
         index=["cell_1"],
     )
     geodataframe.index.name = "instance_id"
-    table = ad.AnnData(
-        obs=pd.DataFrame({"region": ["cells"], "instance_id": ["cell_2"]}, index=["obs_1"])
-    )
+    table = ad.AnnData(obs=pd.DataFrame({"region": ["cells"], "instance_id": ["cell_2"]}, index=["obs_1"]))
     style_spec = TableColorSourceSpec(
         table_name="table",
         source_kind="obs_column",
@@ -539,9 +523,7 @@ def test_align_table_color_source_to_shapes_rows_rejects_empty_selected_region()
         geometry=[_polygon(0)],
         index=pd.Index(["cell_1"], name="instance_id"),
     )
-    table = ad.AnnData(
-        obs=pd.DataFrame({"region": ["other"], "instance_id": ["cell_1"]}, index=["obs_1"])
-    )
+    table = ad.AnnData(obs=pd.DataFrame({"region": ["other"], "instance_id": ["cell_1"]}, index=["obs_1"]))
     style_spec = TableColorSourceSpec(
         table_name="table",
         source_kind="obs_column",
@@ -566,9 +548,7 @@ def test_align_table_color_source_to_shapes_rows_tracks_unannotated_instance_ind
         geometry=[_polygon(0), _polygon(2)],
         index=pd.Index(["cell_1", "cell_2"], name="instance_id"),
     )
-    table = ad.AnnData(
-        obs=pd.DataFrame({"region": ["cells"], "instance_id": ["cell_1"]}, index=["obs_1"])
-    )
+    table = ad.AnnData(obs=pd.DataFrame({"region": ["cells"], "instance_id": ["cell_1"]}, index=["obs_1"]))
     style_spec = TableColorSourceSpec(
         table_name="table",
         source_kind="obs_column",
@@ -597,9 +577,7 @@ def test_align_table_color_source_to_shapes_rows_rejects_unknown_source_row_id()
         geometry=[_polygon(0)],
         index=pd.Index(["cell_1"], name="instance_id"),
     )
-    table = ad.AnnData(
-        obs=pd.DataFrame({"region": ["cells"], "instance_id": ["cell_1"]}, index=["obs_1"])
-    )
+    table = ad.AnnData(obs=pd.DataFrame({"region": ["cells"], "instance_id": ["cell_1"]}, index=["obs_1"]))
     style_spec = TableColorSourceSpec(
         table_name="table",
         source_kind="obs_column",
@@ -1093,7 +1071,9 @@ def test_apply_shape_column_color_source_to_shapes_layer_can_fill_faces() -> Non
         ["red", "red", None],
     ],
 )
-def test_apply_shape_column_color_source_to_shapes_layer_rejects_invalid_companion_palettes(colors: list[object]) -> None:
+def test_apply_shape_column_color_source_to_shapes_layer_rejects_invalid_companion_palettes(
+    colors: list[object],
+) -> None:
     geodataframe = gpd.GeoDataFrame(
         {
             "group": pd.Categorical(["a", "a", "b"]),
@@ -1226,7 +1206,9 @@ def test_apply_shape_column_color_source_to_shapes_layer_treats_string_object_va
     assert layer.features["free_text"].to_list() == ["alpha", "beta"]
 
 
-def test_apply_shape_column_color_source_to_shapes_layer_disambiguates_style_feature_from_source_index_feature() -> None:
+def test_apply_shape_column_color_source_to_shapes_layer_disambiguates_style_feature_from_source_index_feature() -> (
+    None
+):
     geodataframe = gpd.GeoDataFrame(
         {"cell_id": pd.Categorical(["A"])},
         geometry=[_polygon(0)],
