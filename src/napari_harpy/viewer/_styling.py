@@ -167,6 +167,57 @@ def categorical_colors_for_values(
     return pd.Series(colors, index=values.index, dtype="object")
 
 
+def categorical_rgba_for_values(
+    values: pd.Series,
+    *,
+    categories: Sequence[object],
+    palette: Sequence[str],
+    missing_color: Any = MISSING_CATEGORICAL_COLOR,
+) -> np.ndarray:
+    """Return one RGBA color row per categorical value."""
+    rgba = np.empty((len(values), 4), dtype="float64")
+    rgba[:] = to_rgba(missing_color)
+    if len(values) == 0:
+        return rgba
+
+    normalized_categories = [normalize_category_value(category) for category in categories]
+    palette_rgba = np.asarray(
+        [to_rgba(color) for _, color in zip(normalized_categories, palette, strict=False)],
+        dtype="float64",
+    )
+    if len(palette_rgba) == 0:
+        return rgba
+
+    category_code_by_value = {
+        category: code for code, category in enumerate(normalized_categories[: len(palette_rgba)])
+    }
+    if isinstance(values.dtype, pd.CategoricalDtype):
+        value_categories = [normalize_category_value(category) for category in values.cat.categories]
+        palette_code_by_value_code = np.asarray(
+            [category_code_by_value.get(category, -1) for category in value_categories],
+            dtype=np.int64,
+        )
+        value_codes = values.cat.codes.to_numpy(copy=False)
+        present_values = value_codes >= 0
+        if np.any(present_values):
+            palette_codes = palette_code_by_value_code[value_codes[present_values]]
+            known_values = palette_codes >= 0
+            present_indices = np.flatnonzero(present_values)
+            rgba[present_indices[known_values]] = palette_rgba[palette_codes[known_values]]
+        return rgba
+
+    normalized_values = pd.Series(
+        [pd.NA if pd.isna(value) else normalize_category_value(value) for value in values],
+        index=values.index,
+        dtype="object",
+    )
+    palette_codes = normalized_values.map(category_code_by_value)
+    known_values = palette_codes.notna().to_numpy(dtype=bool, copy=False)
+    if np.any(known_values):
+        rgba[known_values] = palette_rgba[palette_codes.loc[known_values].to_numpy(dtype=np.int64, copy=False)]
+    return rgba
+
+
 def continuous_colors_for_values(
     values: pd.Series,
     *,
@@ -197,6 +248,32 @@ def continuous_colors_for_values(
         else:
             colors[index] = cmap(float(np.clip(normalized_values[index], 0.0, 1.0)))
     return pd.Series(colors, index=values.index, dtype="object")
+
+
+def continuous_rgba_for_values(
+    values: pd.Series,
+    *,
+    missing_color: Any = MISSING_CONTINUOUS_COLOR,
+    colormap_name: str = OVERLAY_CONTINUOUS_COLORMAP,
+) -> np.ndarray:
+    """Return one RGBA color row per continuous value."""
+    value_array = pd.to_numeric(values, errors="coerce").to_numpy(dtype="float64", copy=False)
+    rgba = np.empty((len(value_array), 4), dtype="float64")
+    rgba[:] = to_rgba(missing_color)
+    present_values = ~np.isnan(value_array)
+    if not np.any(present_values):
+        return rgba
+
+    non_missing = value_array[present_values]
+    cmap = colormaps[colormap_name]
+    min_value = float(non_missing.min())
+    max_value = float(non_missing.max())
+    if max_value == min_value:
+        normalized_values = np.full(len(non_missing), 0.5, dtype="float64")
+    else:
+        normalized_values = np.clip((non_missing - min_value) / (max_value - min_value), 0.0, 1.0)
+    rgba[present_values] = cmap(normalized_values)
+    return rgba
 
 
 def is_valid_color(value: str) -> bool:
