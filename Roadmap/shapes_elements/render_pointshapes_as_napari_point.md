@@ -429,8 +429,14 @@ Add focused tests for:
      - primary generic shapes continue to sync
        `_connect_current_edge_color_to_global_edge_color(layer)` when
        `sync_edge_color=True`;
-   - for primary point-backed shapes, add point-specific presentation sync
-     helpers, separate from the generic shapes helpers:
+   - for primary point-backed shapes, reuse the existing point presentation
+     sync helpers from `viewer/points_styling.py`, separate from the generic
+     shapes helpers:
+     - rename/export the point helpers as reusable functions, for example
+       `connect_current_symbol_to_global_point_symbol(...)` and
+       `connect_current_face_color_to_global_point_face_color(...)`;
+     - keep these helpers in `points_styling.py`, because they wire napari
+       `Points` events rather than generic palette utilities;
      - sync `current_symbol -> symbol` for all points, because symbol is a
        presentation choice and does not alter the source point/radius geometry;
      - sync `current_face_color -> face_color` and `border_color` for all
