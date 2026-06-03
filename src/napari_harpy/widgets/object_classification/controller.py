@@ -437,8 +437,8 @@ class ClassifierController:
 
         self._invalidate_async_jobs()
         self._is_dirty = True
-        self._clear_model_snapshot(f"feature matrix `{feature_key}` was overwritten")
-        self._update_idle_status(reason=f"feature matrix `{feature_key}` was overwritten")
+        self._clear_model_snapshot(f'feature matrix "{feature_key}" was overwritten')
+        self._update_idle_status(reason=f'feature matrix "{feature_key}" was overwritten')
         return True
 
     def reset_after_reload(self) -> None:
@@ -543,7 +543,7 @@ class ClassifierController:
                 training_scope=pre_feature_scopes.training,
                 prediction_scope=pre_feature_scopes.prediction,
                 eligible=False,
-                reason=f"Feature matrix `{self._selected_feature_key}` is not available in `.obsm`.",
+                reason=f'Feature matrix "{self._selected_feature_key}" is not available in ".obsm".',
                 labeled_count=0,
                 class_labels=(),
                 n_features=None,
@@ -571,8 +571,8 @@ class ClassifierController:
                 prediction_scope=prediction_scope,
                 eligible=False,
                 reason=(
-                    f"No table rows for labels element `{self._selected_labels_name}` were found in "
-                    f"`{self._selected_table_name}`."
+                    f'No table rows for labels element "{self._selected_labels_name}" were found in '
+                    f'"{self._selected_table_name}".'
                 ),
                 labeled_count=0,
                 class_labels=(),
@@ -585,7 +585,7 @@ class ClassifierController:
                 prediction_scope=prediction_scope,
                 eligible=False,
                 reason=(
-                    f"Feature matrix `{self._selected_feature_key}` has no usable rows in the prediction scope: "
+                    f'Feature matrix "{self._selected_feature_key}" has no usable rows in the prediction scope: '
                     f"all {prediction_scope.n_rows_in_regions} row(s) have non-finite or missing values."
                 ),
                 labeled_count=0,
@@ -598,7 +598,7 @@ class ClassifierController:
                 training_scope=training_scope,
                 prediction_scope=prediction_scope,
                 eligible=False,
-                reason=f"Feature matrix `{self._selected_feature_key}` does not contain any columns.",
+                reason=f'Feature matrix "{self._selected_feature_key}" does not contain any columns.',
                 labeled_count=0,
                 class_labels=(),
                 n_features=0,
@@ -610,7 +610,7 @@ class ClassifierController:
                 prediction_scope=prediction_scope,
                 eligible=False,
                 reason=(
-                    f"Feature matrix `{self._selected_feature_key}` has no usable rows in the training scope: "
+                    f'Feature matrix "{self._selected_feature_key}" has no usable rows in the training scope: '
                     f"all {training_scope.n_rows_in_regions} row(s) have non-finite or missing values."
                 ),
                 labeled_count=0,
@@ -706,7 +706,7 @@ class ClassifierController:
                 training_scope=summary.training_scope,
                 prediction_scope=summary.prediction_scope,
                 eligible=False,
-                reason=f"Feature matrix `{self._selected_feature_key}` is not available in `.obsm`.",
+                reason=f'Feature matrix "{self._selected_feature_key}" is not available in ".obsm".',
                 labeled_count=summary.labeled_count,
                 class_labels=summary.class_labels,
                 n_features=None,
@@ -942,8 +942,8 @@ class ClassifierController:
         snapshot = self._model_snapshot
         if self._selected_feature_key != snapshot.feature_key:
             raise ValueError(
-                f"The selected feature matrix `{self._selected_feature_key}` does not match the fitted model "
-                f"feature matrix `{snapshot.feature_key}`."
+                f'The selected feature matrix "{self._selected_feature_key}" does not match the fitted model '
+                f'feature matrix "{snapshot.feature_key}".'
             )
         current_feature_columns = normalize_feature_columns(_get_feature_metadata(table, snapshot.feature_key))
         if current_feature_columns != snapshot.feature_columns:
@@ -964,11 +964,11 @@ class ClassifierController:
         try:
             feature_matrix = _normalize_feature_matrix(table.obsm[feature_key], table.n_obs, copy=False)
         except KeyError as error:
-            raise ValueError(f"Feature matrix `{feature_key}` is not available in `.obsm`.") from error
+            raise ValueError(f'Feature matrix "{feature_key}" is not available in ".obsm".') from error
 
         if int(feature_matrix.shape[1]) != len(feature_columns):
             raise ValueError(
-                f"Feature matrix `{feature_key}` has {int(feature_matrix.shape[1])} column(s), but its metadata "
+                f'Feature matrix "{feature_key}" has {int(feature_matrix.shape[1])} column(s), but its metadata '
                 f"describes {len(feature_columns)} feature column(s)."
             )
 
@@ -1091,7 +1091,7 @@ class ClassifierController:
         config_feature_key = config.get("feature_key")
         if isinstance(config_feature_key, str) and config_feature_key != self._selected_feature_key:
             mismatches.append(
-                f"loaded predictions use feature matrix `{config_feature_key}` but `{self._selected_feature_key}` is selected"
+                f'loaded predictions use feature matrix "{config_feature_key}" but "{self._selected_feature_key}" is selected'
             )
 
         config_table_name = config.get("table_name")
@@ -1101,7 +1101,7 @@ class ClassifierController:
             and config_table_name != self._selected_table_name
         ):
             mismatches.append(
-                f"loaded predictions target table `{config_table_name}` but `{self._selected_table_name}` is selected"
+                f'loaded predictions target table "{config_table_name}" but "{self._selected_table_name}" is selected'
             )
 
         config_prediction_scope = config.get("prediction_scope")
@@ -1109,12 +1109,12 @@ class ClassifierController:
             mismatches.append("loaded predictions do not describe their prediction scope")
         elif config_prediction_scope != self._selected_prediction_scope:
             mismatches.append(
-                f"loaded predictions use prediction scope `{config_prediction_scope}` but `{self._selected_prediction_scope}` is selected"
+                f'loaded predictions use prediction scope "{config_prediction_scope}" but "{self._selected_prediction_scope}" is selected'
             )
 
         config_prediction_regions = _normalize_prediction_regions(config.get("prediction_regions"))
         if self._selected_labels_name is not None and self._selected_labels_name not in config_prediction_regions:
-            mismatches.append(f"loaded predictions do not cover labels element `{self._selected_labels_name}`")
+            mismatches.append(f'loaded predictions do not cover labels element "{self._selected_labels_name}"')
 
         if mismatches:
             self._is_dirty = True

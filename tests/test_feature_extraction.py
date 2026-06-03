@@ -214,7 +214,7 @@ def test_feature_extraction_controller_bind_is_ready_for_create_table(
     job = controller._prepare_feature_extraction_job(8, overwrite_feature_key=False)
 
     assert context_changed is True
-    assert controller.status_message == "Feature extraction: ready to create table `features_table` and calculate."
+    assert controller.status_message == 'Feature extraction: ready to create table "features_table" and calculate.'
     assert controller.status_kind == "success"
     assert controller.can_calculate is True
     assert isinstance(job, FeatureExtractionJob)
@@ -244,7 +244,7 @@ def test_feature_extraction_controller_blocks_create_table_name_collision(
     assert controller.can_calculate is False
     assert controller.status_kind == "warning"
     assert controller.status_message == (
-        "Feature extraction: table `table` already exists. Choose a different table name."
+        'Feature extraction: table "table" already exists. Choose a different table name.'
     )
     assert controller._prepare_feature_extraction_job(8, overwrite_feature_key=False) is None
 
@@ -623,8 +623,8 @@ def test_feature_extraction_controller_notifies_table_state_change_on_success(sd
     assert controller.status_kind == "success"
     assert (
         controller.status_message
-        == "Feature extraction: wrote `feature_matrix_1` into table `table` as `.obsm['feature_matrix_1']` "
-        "with metadata in `.uns['feature_matrices']['feature_matrix_1']`."
+        == 'Feature extraction: wrote "feature_matrix_1" into table "table" as ".obsm[\'feature_matrix_1\']" '
+        'with metadata in ".uns[\'feature_matrices\'][\'feature_matrix_1\']".'
     )
     assert controller.is_running is False
 

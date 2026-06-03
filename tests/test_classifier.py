@@ -1082,7 +1082,7 @@ def test_classifier_controller_reset_after_reload_marks_stale_when_prediction_sc
     controller.reset_after_reload()
 
     assert controller.is_dirty is True
-    assert "prediction scope `all`" in controller.status_message
+    assert 'prediction scope "all"' in controller.status_message
 
 
 def test_classifier_controller_reset_after_reload_accepts_multi_region_prediction_scope(

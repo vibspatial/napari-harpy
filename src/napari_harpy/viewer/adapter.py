@@ -36,6 +36,9 @@ from napari_harpy.viewer.points_styling import (
     PointsLoadResult,
     apply_points_selection_style,
     build_points_selection_layer_name,
+    connect_current_face_color_to_global_point_face_color,
+    connect_current_size_to_radius_scaled_point_size,
+    connect_current_symbol_to_global_point_symbol,
 )
 from napari_harpy.viewer.shapes_styling import (
     ShapesLoadResult,
@@ -53,6 +56,11 @@ if TYPE_CHECKING:
 
 ElementType = Literal["labels", "image", "shapes", "points"]
 ShapesLayerShapeType = Literal["polygon", "ellipse"]
+ShapesRenderingMode = Literal["shapes", "points"]
+# Generic shapes can repeat source row ids when one source row expands into
+# multiple rendered polygons. Point-radius shapes are one-to-one, so `range`
+# avoids materializing large `tuple(range(n))` mappings.
+SourceRowIdByRenderedRow = tuple[int, ...] | range
 # Name of the layer.features column that stores the source GeoDataFrame index.
 DEFAULT_SHAPES_INDEX_FEATURE_NAME = "index"
 
@@ -130,25 +138,104 @@ class _HarpyShapes(Shapes):
         index_feature_name = self._source_shapes_index_feature_name
         if index_feature_name in feature_row:
             source_index = feature_row[index_feature_name]
-            if not self._is_missing_feature_value(source_index):
+            if not _is_missing_feature_value(source_index):
                 status_parts.append(f"{index_feature_name}: {source_index}")
 
         for feature_name, feature_value in feature_row.items():
-            if feature_name == index_feature_name or self._is_missing_feature_value(feature_value):
+            if feature_name == index_feature_name or _is_missing_feature_value(feature_value):
                 continue
             status_parts.append(f"{feature_name}: {feature_value}")
 
         return "; ".join(status_parts) or None
 
-    @staticmethod
-    def _is_missing_feature_value(value: Any) -> bool:
-        if value is None:
-            return True
+
+class _HarpyPointRadiusShapes(Points):
+    """Napari ``Points`` layer with shapes-style Harpy status-bar text."""
+
+    def __init__(
+        self,
+        *args: Any,
+        source_shapes_index_feature_name: str = DEFAULT_SHAPES_INDEX_FEATURE_NAME,
+        **kwargs: Any,
+    ) -> None:
+        self._source_shapes_index_feature_name = source_shapes_index_feature_name
+        super().__init__(*args, **kwargs)
+
+    def get_status(
+        self,
+        position: Any | None = None,
+        *,
+        view_direction: Any | None = None,
+        dims_displayed: list[int] | None = None,
+        world: bool = False,
+        value: Any | None = None,
+    ) -> dict[str, str]:
+        status = super().get_status(
+            position,
+            view_direction=view_direction,
+            dims_displayed=dims_displayed,
+            world=world,
+        )
+        if position is None:
+            return status
+
+        # Napari Points already appends normal feature columns to the status
+        # text. The fallback feature name "index" is special-cased by napari
+        # and is not shown, so Harpy only appends that source index manually.
+        if self._source_shapes_index_feature_name != DEFAULT_SHAPES_INDEX_FEATURE_NAME:
+            return status
+
+        point_value = self.get_value(
+            position,
+            view_direction=view_direction,
+            dims_displayed=dims_displayed,
+            world=world,
+        )
+        index_status = self._get_source_index_status(point_value)
+        if index_status and f"{DEFAULT_SHAPES_INDEX_FEATURE_NAME}:" not in status["value"]:
+            status["coordinates"] = _insert_feature_status_first(status["coordinates"], index_status)
+            status["value"] = _insert_feature_status_first(status["value"], index_status)
+        return status
+
+    def _get_source_index_status(self, value: Any) -> str | None:
+        """Return status text for the source index when napari omits it."""
+        point_index = value[0] if isinstance(value, tuple) and value else value
+        if point_index is None:
+            return None
 
         try:
-            return bool(pd.isna(value))
-        except (TypeError, ValueError):
-            return False
+            feature_row = self.features.iloc[int(point_index)]
+        except (IndexError, TypeError, ValueError):
+            return None
+
+        if DEFAULT_SHAPES_INDEX_FEATURE_NAME not in feature_row:
+            return None
+
+        source_index = feature_row[DEFAULT_SHAPES_INDEX_FEATURE_NAME]
+        if _is_missing_feature_value(source_index):
+            return None
+        return f"{DEFAULT_SHAPES_INDEX_FEATURE_NAME}: {source_index}"
+
+
+def _is_missing_feature_value(value: Any) -> bool:
+    if value is None:
+        return True
+
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _insert_feature_status_first(status_text: str, feature_status: str) -> str:
+    """Insert Harpy source-index status before napari Points feature text."""
+    if not status_text:
+        return feature_status
+    if ";" not in status_text:
+        return f"{status_text}; {feature_status}"
+
+    base_status, feature_text = status_text.split(";", 1)
+    return f"{base_status}; {feature_status};{feature_text}"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -210,6 +297,10 @@ class ShapesLayerBinding(BaseLayerBinding):
     shapes_role
         Whether this layer is the primary geometry layer or a viewer-only
         styled variant for one shape-column color source.
+    shapes_rendering_mode
+        How the shapes element is represented in napari. Generic geometries
+        use a napari ``Shapes`` layer, while point-radius shapes can use a
+        napari ``Points`` layer for faster primary visualization.
     style_spec
         Shape color source used for styled shape variants. Primary shape
         bindings do not carry a style specification.
@@ -235,12 +326,15 @@ class ShapesLayerBinding(BaseLayerBinding):
 
     element_type: Literal["shapes"] = "shapes"
     shapes_role: Literal["primary", "styled"] = "primary"
+    shapes_rendering_mode: ShapesRenderingMode = "shapes"
     style_spec: ShapeColumnColorSourceSpec | TableColorSourceSpec | None = None
-    source_row_id_by_rendered_row: tuple[int, ...] = ()
+    source_row_id_by_rendered_row: SourceRowIdByRenderedRow = ()
     source_shapes_index_feature_name: str = DEFAULT_SHAPES_INDEX_FEATURE_NAME
     skipped_geometry_count: int = 0
 
     def __post_init__(self) -> None:
+        if self.shapes_rendering_mode not in ("shapes", "points"):
+            raise ValueError("Shapes bindings require `shapes_rendering_mode` to be 'shapes' or 'points'.")
         if self.shapes_role == "primary" and self.style_spec is not None:
             raise ValueError("Primary shapes bindings must not carry a style specification.")
         if self.shapes_role == "styled" and self.style_spec is None:
@@ -318,10 +412,46 @@ class _NapariShapesLayerInputs:
 
 
 @dataclass(frozen=True)
-class _BuiltShapesLayer:
-    layer: Shapes
+class _NapariPointRadiusShapesLayerInputs:
+    """Prepared inputs for rendering point-radius shapes as napari ``Points``.
+
+    Parameters
+    ----------
+    coordinates
+        Point coordinates in napari `(y, x)` order, one row per source
+        GeoDataFrame row.
+    sizes
+        Point diameters derived from the transformed source radius values.
+    features
+        DataFrame row-aligned to `coordinates`. It stores the source
+        GeoDataFrame index for status-bar display.
+    source_shapes_index_feature_name
+        Name of the `features` column that stores the source GeoDataFrame
+        index, using the GeoDataFrame index name or `"index"` fallback.
+    source_row_id_by_rendered_row
+        Internal integer source GeoDataFrame row id for each rendered napari
+        point row. Point-radius rendering is one-to-one, so this is a `range`
+        instead of a materialized tuple.
+    skipped_geometry_count
+        Number of source rows that could not be rendered. Qualifying
+        point-radius inputs currently require all rows to render, so this is
+        zero.
+    """
+
+    coordinates: np.ndarray
+    sizes: np.ndarray
+    features: pd.DataFrame
     source_shapes_index_feature_name: str
-    source_row_id_by_rendered_row: tuple[int, ...]
+    source_row_id_by_rendered_row: range
+    skipped_geometry_count: int
+
+
+@dataclass(frozen=True)
+class _BuiltShapesLayer:
+    layer: Shapes | Points
+    shapes_rendering_mode: ShapesRenderingMode
+    source_shapes_index_feature_name: str
+    source_row_id_by_rendered_row: SourceRowIdByRenderedRow
     skipped_geometry_count: int
 
 
@@ -438,14 +568,15 @@ class LayerBindingRegistry:
 
     def register_shapes_layer(
         self,
-        layer: Shapes,
+        layer: Shapes | Points,
         *,
         element_name: str,
         coordinate_system: str | None = None,
         sdata: SpatialData | None = None,
         shapes_role: Literal["primary", "styled"] = "primary",
+        shapes_rendering_mode: ShapesRenderingMode = "shapes",
         style_spec: ShapeColumnColorSourceSpec | TableColorSourceSpec | None = None,
-        source_row_id_by_rendered_row: tuple[int, ...] = (),
+        source_row_id_by_rendered_row: SourceRowIdByRenderedRow = (),
         source_shapes_index_feature_name: str = DEFAULT_SHAPES_INDEX_FEATURE_NAME,
         skipped_geometry_count: int = 0,
     ) -> ShapesLayerBinding:
@@ -456,6 +587,7 @@ class LayerBindingRegistry:
             coordinate_system=coordinate_system,
             sdata_id=_get_sdata_id(sdata),
             shapes_role=shapes_role,
+            shapes_rendering_mode=shapes_rendering_mode,
             style_spec=style_spec,
             source_row_id_by_rendered_row=source_row_id_by_rendered_row,
             source_shapes_index_feature_name=source_shapes_index_feature_name,
@@ -648,14 +780,15 @@ class ViewerAdapter(QObject):
 
     def register_shapes_layer(
         self,
-        layer: Shapes,
+        layer: Shapes | Points,
         *,
         shapes_name: str,
         coordinate_system: str | None = None,
         sdata: SpatialData | None = None,
         shapes_role: Literal["primary", "styled"] = "primary",
+        shapes_rendering_mode: ShapesRenderingMode = "shapes",
         style_spec: ShapeColumnColorSourceSpec | TableColorSourceSpec | None = None,
-        source_row_id_by_rendered_row: tuple[int, ...] = (),
+        source_row_id_by_rendered_row: SourceRowIdByRenderedRow = (),
         source_shapes_index_feature_name: str = DEFAULT_SHAPES_INDEX_FEATURE_NAME,
         skipped_geometry_count: int = 0,
     ) -> ShapesLayerBinding:
@@ -666,6 +799,7 @@ class ViewerAdapter(QObject):
             coordinate_system=coordinate_system,
             sdata=sdata,
             shapes_role=shapes_role,
+            shapes_rendering_mode=shapes_rendering_mode,
             style_spec=style_spec,
             source_row_id_by_rendered_row=source_row_id_by_rendered_row,
             source_shapes_index_feature_name=source_shapes_index_feature_name,
@@ -846,10 +980,10 @@ class ViewerAdapter(QObject):
         sdata: SpatialData,
         shapes_name: str,
         coordinate_system: str | None = None,
-    ) -> Shapes | None:
+    ) -> Shapes | Points | None:
         """Return the loaded primary shapes layer for one shapes element."""
         for layer in self._iter_candidate_layers():
-            if not _is_shapes_layer(layer):
+            if not _is_semantic_shapes_layer(layer):
                 continue
 
             binding = self._layer_bindings.get_binding(layer)
@@ -870,10 +1004,10 @@ class ViewerAdapter(QObject):
         shapes_name: str,
         style_spec: ShapeColumnColorSourceSpec | TableColorSourceSpec,
         coordinate_system: str | None = None,
-    ) -> Shapes | None:
+    ) -> Shapes | Points | None:
         """Return one loaded styled shapes layer for a specific style variant."""
         for layer in self._iter_candidate_layers():
-            if not _is_shapes_layer(layer):
+            if not _is_semantic_shapes_layer(layer):
                 continue
 
             binding = self._layer_bindings.get_binding(layer)
@@ -894,11 +1028,11 @@ class ViewerAdapter(QObject):
         sdata: SpatialData,
         shapes_name: str,
         coordinate_system: str | None = None,
-    ) -> list[Shapes]:
+    ) -> list[Shapes | Points]:
         """Return all loaded styled shapes layers for one shapes element."""
-        matches: list[Shapes] = []
+        matches: list[Shapes | Points] = []
         for layer in self._iter_candidate_layers():
-            if not _is_shapes_layer(layer):
+            if not _is_semantic_shapes_layer(layer):
                 continue
 
             binding = self._layer_bindings.get_binding(layer)
@@ -1215,14 +1349,16 @@ class ViewerAdapter(QObject):
         existing_layer = self._get_loaded_shapes_layer_for_coordinate_system(sdata, shapes_name, coordinate_system)
         if existing_layer is not None:
             binding = self._layer_bindings.get_binding(existing_layer)
-            skipped_geometry_count = binding.skipped_geometry_count if isinstance(binding, ShapesLayerBinding) else 0
+            if not isinstance(binding, ShapesLayerBinding):
+                raise ValueError("Loaded shapes layer is missing its Harpy shapes binding.")
             return ShapesLoadResult(
                 layer=existing_layer,
                 created=False,
                 value_kind=None,
                 palette_source=None,
                 coercion_applied=False,
-                skipped_geometry_count=skipped_geometry_count,
+                skipped_geometry_count=binding.skipped_geometry_count,
+                shapes_rendering_mode=binding.shapes_rendering_mode,
             )
 
         built_layer = _build_shapes_layer(
@@ -1239,6 +1375,7 @@ class ViewerAdapter(QObject):
             sdata=sdata,
             shapes_name=shapes_name,
             coordinate_system=coordinate_system,
+            shapes_rendering_mode=built_layer.shapes_rendering_mode,
             source_row_id_by_rendered_row=built_layer.source_row_id_by_rendered_row,
             source_shapes_index_feature_name=built_layer.source_shapes_index_feature_name,
             skipped_geometry_count=built_layer.skipped_geometry_count,
@@ -1250,6 +1387,7 @@ class ViewerAdapter(QObject):
             palette_source=None,
             coercion_applied=False,
             skipped_geometry_count=built_layer.skipped_geometry_count,
+            shapes_rendering_mode=built_layer.shapes_rendering_mode,
         )
 
     def ensure_styled_shapes_loaded(
@@ -1285,6 +1423,7 @@ class ViewerAdapter(QObject):
                 shapes_name=shapes_name,
                 coordinate_system=coordinate_system,
                 shapes_role="styled",
+                shapes_rendering_mode=built_layer.shapes_rendering_mode,
                 style_spec=style_spec,
                 source_row_id_by_rendered_row=built_layer.source_row_id_by_rendered_row,
                 source_shapes_index_feature_name=built_layer.source_shapes_index_feature_name,
@@ -1331,6 +1470,7 @@ class ViewerAdapter(QObject):
             unannotated_source_shape_count=style_result.unannotated_source_shape_count,
             unannotated_rendered_shape_count=style_result.unannotated_rendered_shape_count,
             skipped_geometry_count=binding.skipped_geometry_count,
+            shapes_rendering_mode=binding.shapes_rendering_mode,
         )
 
     def remove_labels_layer(self, sdata: SpatialData, labels_name: str, coordinate_system: str) -> Labels | None:
@@ -1358,7 +1498,9 @@ class ViewerAdapter(QObject):
 
         return removed_layers
 
-    def remove_shapes_layer(self, sdata: SpatialData, shapes_name: str, coordinate_system: str) -> Shapes | None:
+    def remove_shapes_layer(
+        self, sdata: SpatialData, shapes_name: str, coordinate_system: str
+    ) -> Shapes | Points | None:
         """Remove the loaded shapes layer for one shapes element in one coordinate system."""
         layer = self._get_loaded_shapes_layer_for_coordinate_system(sdata, shapes_name, coordinate_system)
         if layer is None:
@@ -1475,7 +1617,7 @@ class ViewerAdapter(QObject):
         sdata: SpatialData,
         shapes_name: str,
         coordinate_system: str,
-    ) -> Shapes | None:
+    ) -> Shapes | Points | None:
         return self.get_loaded_primary_shapes_layer(sdata, shapes_name, coordinate_system)
 
 
@@ -1751,6 +1893,35 @@ def _build_shapes_layer(
     # that first lets geometry repair, hole handling, and circle-radius
     # conversion operate in the final display coordinate system.
     transformed_shapes = transform_spatial_element(shapes_element, to_coordinate_system=coordinate_system)
+    point_radius_inputs = _prepare_napari_point_radius_shapes_layer_inputs(transformed_shapes)
+    if point_radius_inputs is not None:
+        layer = _HarpyPointRadiusShapes(
+            point_radius_inputs.coordinates,
+            ndim=2,
+            name=name,
+            features=point_radius_inputs.features,
+            source_shapes_index_feature_name=point_radius_inputs.source_shapes_index_feature_name,
+            size=point_radius_inputs.sizes,
+            opacity=0.8,
+            symbol="disc",
+            border_width=0,
+            face_color="#00FFFF",
+            border_color="#00FFFF",
+        )
+        connect_current_size_to_radius_scaled_point_size(layer, point_radius_inputs.sizes)
+        connect_current_symbol_to_global_point_symbol(layer)
+        # Styled variants pass `sync_edge_color=False`; keep color callbacks
+        # primary-only so styled palettes stay data-driven.
+        if sync_edge_color:
+            connect_current_face_color_to_global_point_face_color(layer)
+        return _BuiltShapesLayer(
+            layer=layer,
+            shapes_rendering_mode="points",
+            source_shapes_index_feature_name=point_radius_inputs.source_shapes_index_feature_name,
+            source_row_id_by_rendered_row=point_radius_inputs.source_row_id_by_rendered_row,
+            skipped_geometry_count=point_radius_inputs.skipped_geometry_count,
+        )
+
     napari_layer_inputs = _prepare_napari_shapes_layer_inputs(transformed_shapes)
     if not napari_layer_inputs.data:
         raise ValueError(
@@ -1776,6 +1947,7 @@ def _build_shapes_layer(
         _connect_current_edge_color_to_global_edge_color(layer)
     return _BuiltShapesLayer(
         layer=layer,
+        shapes_rendering_mode="shapes",
         source_shapes_index_feature_name=napari_layer_inputs.source_shapes_index_feature_name,
         source_row_id_by_rendered_row=napari_layer_inputs.source_row_id_by_rendered_row,
         skipped_geometry_count=napari_layer_inputs.skipped_geometry_count,
@@ -1844,6 +2016,58 @@ def _prepare_napari_shapes_layer_inputs(shapes_element: Any) -> _NapariShapesLay
     )
 
 
+def _prepare_napari_point_radius_shapes_layer_inputs(
+    shapes_element: Any,
+) -> _NapariPointRadiusShapesLayerInputs | None:
+    """Return point-radius layer inputs when all source rows qualify."""
+    if "radius" not in getattr(shapes_element, "columns", []):
+        return None
+
+    geometry_column_name = getattr(getattr(shapes_element, "geometry", None), "name", "geometry")
+    index_feature_name = _get_shapes_index_feature_name(shapes_element)
+    source_index_values = shapes_element.index.to_numpy(copy=False)
+    geometry_values = shapes_element[geometry_column_name]
+
+    if len(source_index_values) == 0:
+        return None
+
+    try:
+        missing_or_empty_geometry = geometry_values.isna().to_numpy(dtype=bool) | geometry_values.is_empty.to_numpy(
+            dtype=bool
+        )
+        if np.any(missing_or_empty_geometry):
+            return None
+
+        if not bool(geometry_values.geom_type.eq("Point").all()):
+            return None
+
+        radius_values = pd.to_numeric(shapes_element["radius"], errors="coerce").to_numpy(dtype=float, copy=False)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+    if len(geometry_values) != len(source_index_values) or len(radius_values) != len(source_index_values):
+        return None
+    if not np.all(np.isfinite(radius_values)) or not np.all(radius_values > 0):
+        return None
+
+    coordinates = np.column_stack(
+        (
+            geometry_values.y.to_numpy(dtype=float),
+            geometry_values.x.to_numpy(dtype=float),
+        )
+    )
+    sizes = 2.0 * radius_values
+
+    return _NapariPointRadiusShapesLayerInputs(
+        coordinates=coordinates,
+        sizes=sizes,
+        features=pd.DataFrame({index_feature_name: source_index_values}),
+        source_shapes_index_feature_name=index_feature_name,
+        source_row_id_by_rendered_row=range(len(source_index_values)),
+        skipped_geometry_count=0,
+    )
+
+
 def _get_shapes_index_feature_name(shapes_element: Any) -> str:
     index_name = getattr(getattr(shapes_element, "index", None), "name", None)
     if index_name is None:
@@ -1852,12 +2076,8 @@ def _get_shapes_index_feature_name(shapes_element: Any) -> str:
 
 
 def _circle_to_napari_ellipse(point: Point, radius: Any) -> np.ndarray | None:
-    try:
-        radius_value = float(radius)
-    except (TypeError, ValueError):
-        return None
-
-    if not np.isfinite(radius_value) or radius_value <= 0:
+    radius_value = _coerce_positive_radius(radius)
+    if radius_value is None:
         return None
 
     y = float(point.y)
@@ -1871,6 +2091,18 @@ def _circle_to_napari_ellipse(point: Point, radius: Any) -> np.ndarray | None:
         ],
         dtype=float,
     )
+
+
+def _coerce_positive_radius(radius: Any) -> float | None:
+    try:
+        radius_value = float(radius)
+    except (TypeError, ValueError):
+        return None
+
+    if not np.isfinite(radius_value) or radius_value <= 0:
+        return None
+
+    return radius_value
 
 
 def _iter_renderable_polygons(geometry: BaseGeometry) -> Iterable[Polygon]:
@@ -2083,6 +2315,10 @@ def _is_image_layer(layer: Layer) -> bool:
 
 def _is_shapes_layer(layer: Layer) -> bool:
     return isinstance(layer, Shapes)
+
+
+def _is_semantic_shapes_layer(layer: Layer) -> bool:
+    return isinstance(layer, (Shapes, Points))
 
 
 def _is_points_layer(layer: Layer) -> bool:

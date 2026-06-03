@@ -91,10 +91,15 @@ SpatialData table metadata gives us:
   element;
 - `region`: the declared element name or names the table annotates.
 
-For shapes, table `obs[instance_key]` should align only to the
-`sdata.shapes[shapes_name][instance_key]` column. Do not fall back to
-`sdata.shapes[shapes_name].index`, because implicit index matching can produce
-surprising styling when the GeoDataFrame index is just storage/order metadata.
+For table-backed shapes styling, table `obs[instance_key]` should align only to
+the shapes GeoDataFrame index, and that index must be named `instance_key`.
+If the same `instance_key` is also stored as a GeoDataFrame column, allow it
+only when it agrees exactly with the named index row by row. This keeps the
+user-visible source identity in `layer.features` and the table join key aligned,
+and avoids surprising hover output where the displayed index and the table
+instance identity differ. Direct shape-column coloring remains unchanged and may
+still use ordinary GeoDataFrame columns.
+
 Use exact value matching: do not coerce strings to numbers, normalize IDs, or do
 fuzzy matching between table and shape instance values.
 If table and shape instance IDs differ only by dtype or formatting, for example
@@ -103,8 +108,8 @@ clear error for table instances that do not exist in the shapes element.
 
 Rendered-row bookkeeping uses internal integer source-row ids, not GeoDataFrame
 index labels. The GeoDataFrame index remains visible in `layer.features` for
-status/display. It can also be the semantic table join key only when SpatialData
-declares it as the instance identity by naming the index `instance_key`.
+status/display and is the semantic table join key for table-backed shapes
+styling.
 
 Coverage is intentionally asymmetric. Table rows for the selected shapes region
 must refer only to resolved shape instance identities; table instances that are
@@ -327,9 +332,9 @@ the rendered-row mapping from the shapes layer builder.
 Recommended steps:
 
 1. Check `table_metadata.annotates(shapes_name)`.
-2. Resolve the shapes instance identity from the GeoDataFrame column named
-   `instance_key`, or from the GeoDataFrame index when
-   `shapes_element.index.name == instance_key`. If both exist, require them to
+2. Resolve the shapes instance identity from the GeoDataFrame index. Require
+   `shapes_element.index.name == instance_key`. If `instance_key` is also
+   present as a GeoDataFrame column, require the column and index values to
    agree row by row.
 3. Use internal integer source row ids for rendered-row lookup, so duplicated
    GeoDataFrame index labels remain valid display metadata rather than internal
@@ -646,9 +651,10 @@ shape-column coloring behavior unchanged.
    - keep this slice alignment-only: return source-row/rendered-row values and
      table-coverage masks, but do not apply colors, write `layer.features`, or
      dispatch through the adapter yet;
-   - require a resolved shapes instance identity from either
-     `shapes_element[instance_key]` or a GeoDataFrame index named
-     `instance_key`;
+   - require the shapes instance identity to be stored in the GeoDataFrame
+     index, with `shapes_element.index.name == instance_key`; if
+     `instance_key` is also stored as a GeoDataFrame column, require it to
+     agree with the index row by row;
    - use internal integer source row ids for rendered-row mapping, while keeping
      the GeoDataFrame index as visible/status metadata;
    - use exact value matching between table and shapes instance values;
@@ -718,8 +724,8 @@ shape-column coloring behavior unchanged.
      Vars`, `TableColorSourceSpec` dispatch, and linked-table disabled states;
    - keep `_add_or_update_styled_shapes_layer(...)` responsible for surfacing
      table-backed alignment and validation errors as `Styled Shapes Error`,
-     including missing shape `instance_key` column, extra table instances, and
-     no selected-region table rows;
+     including missing or invalid shape `instance_key` index, extra table
+     instances, and no selected-region table rows;
    - update `build_styled_shapes_card_spec(...)` so the status text describes
      the selected source by source type:
      - direct shape-column source: `column "leiden"`;
@@ -776,38 +782,35 @@ shape-column coloring behavior unchanged.
    - add tests for primary shapes loading with duplicate GeoDataFrame indices,
      duplicated visible index values in `layer.features`, direct shape-column
      styling with duplicate GeoDataFrame indices, MultiPolygon expansion,
-     adapter bindings storing internal row ids, and table-backed styling with an
-     `instance_key` column while the GeoDataFrame index is duplicated.
+     adapter bindings storing internal row ids, and table-backed styling with
+     duplicate shape instance index values.
 
 7b. Shape instance identity source compatibility - completed
-   - after 7a, align table-backed shapes styling with SpatialData's accepted
-     shapes annotation patterns by resolving biological/table shape instance
-     identity independently from rendered-row source identity:
-     - if `shapes_element[instance_key]` exists as a GeoDataFrame column, use
-       that column;
-     - otherwise, if `shapes_element.index.name == instance_key`, use the
-       GeoDataFrame index;
-     - if both the column and a named index exist, require them to agree row by
-       row, or raise a clear error when they disagree;
+   - after 7a, simplify table-backed shapes styling by requiring the
+     biological/table shape instance identity to live in the GeoDataFrame index:
+     - require `shapes_element.index.name == instance_key`;
+     - allow `shapes_element[instance_key]` as a redundant GeoDataFrame column
+       only when it agrees with the named index row by row;
+     - ask users to set the GeoDataFrame index to the table instance identity
+       before table-backed styling;
    - keep exact value matching against `table.obs[instance_key]`;
    - keep allowing duplicate shape instance values, because multiple source
      geometries may represent the same biological instance and should receive
      the same table-backed value;
-   - when the GeoDataFrame index is used as the resolved instance identity, keep
-     displaying that source index in `layer.features` under the real index name
-     or `"index"` fallback. Do not hide or overwrite it just because it also
-     serves as the biological/table instance identity;
+   - keep displaying the source index in `layer.features` under the real index
+     name. This is also the biological/table instance identity for table-backed
+     styling;
    - if table-backed styling by `instance_key` would store the selected table
      value under the same feature name as the visible source-index feature,
      continue using the existing `__value` disambiguation, for example
      `instance_id` for the visible source index and `instance_id__value` for
      the selected table-backed style value;
-   - update error messages so they mention both accepted locations when neither
-     a matching column nor a matching index name is present;
-   - add tests for column-backed shape instances, index-backed shape instances
-     with unique and duplicate index values, matching column/index values,
-     disagreeing column/index values, and table instances missing from the
-     resolved shape instance identities.
+   - update error messages so they clearly tell users that table-backed shapes
+     styling requires a GeoDataFrame index named `instance_key`;
+   - add tests for index-backed shape instances with unique and duplicate index
+     values, matching and disagreeing redundant `instance_key` columns, missing
+     index names, and table instances missing from the resolved shape instance
+     identities.
 
 8. Shapes geometry preparation performance - completed
    - optimize `_prepare_napari_shapes_layer_inputs(...)` for large shapes

@@ -49,7 +49,7 @@ def build_object_classification_selection_status_card_spec(
         return _ObjectClassificationStatusCardSpec(
             title="No SpatialData Loaded",
             lines=(
-                "Load a SpatialData object through the Harpy Viewer widget, reader, or `Interactive(sdata)`.",
+                'Load a SpatialData object through the Harpy Viewer widget, reader, or "Interactive(sdata)".',
                 "This form updates automatically from the shared Harpy state.",
             ),
             kind="warning",
@@ -91,7 +91,7 @@ def build_object_classification_selection_status_card_spec(
             title="Selection Warning",
             lines=(
                 *layer_preparation_lines,
-                f"Bound to labels element `{selected_segmentation_name}`.",
+                f'Bound to labels element "{selected_segmentation_name}".',
                 "This labels layer is loaded, but no annotation table is linked to it.",
             ),
             kind="warning",
@@ -102,7 +102,7 @@ def build_object_classification_selection_status_card_spec(
             title="Selection Warning",
             lines=(
                 *layer_preparation_lines,
-                f"Bound to labels element `{selected_segmentation_name}`.",
+                f'Bound to labels element "{selected_segmentation_name}".',
                 table_binding_error,
             ),
             kind="warning",
@@ -113,7 +113,7 @@ def build_object_classification_selection_status_card_spec(
             title="Selection",
             lines=(
                 *layer_preparation_lines,
-                f"Bound to labels element `{selected_segmentation_name}`.",
+                f'Bound to labels element "{selected_segmentation_name}".',
                 "Click an object in the viewer.",
             ),
             kind="info",
@@ -123,7 +123,7 @@ def build_object_classification_selection_status_card_spec(
         return _ObjectClassificationStatusCardSpec(
             title="Selection Warning",
             lines=(
-                f"Bound to labels element `{selected_segmentation_name}`.",
+                f'Bound to labels element "{selected_segmentation_name}".',
                 missing_table_row_message,
             ),
             kind="warning",
@@ -133,7 +133,7 @@ def build_object_classification_selection_status_card_spec(
     return _ObjectClassificationStatusCardSpec(
         title="Selection Ready",
         lines=(
-            f"Bound to labels element `{selected_segmentation_name}`.",
+            f'Bound to labels element "{selected_segmentation_name}".',
             f"Current {instance_key_name}: {selected_instance_id}.",
             f"Current class: {current_class_label}.",
         ),
@@ -215,7 +215,7 @@ def _format_labels_layer_preparation_line(result: _LabelsLayerPreparationResult)
         return None
 
     verb = "Loaded" if result.kind == "loaded" else "Activated"
-    return f"{verb} labels element `{result.labels_name}` in coordinate system `{result.coordinate_system}`."
+    return f'{verb} labels element "{result.labels_name}" in coordinate system "{result.coordinate_system}".'
 
 
 def _format_prediction_scope(summary: ClassifierPreparationSummary) -> str:
@@ -227,8 +227,8 @@ def _format_prediction_scope(summary: ClassifierPreparationSummary) -> str:
 
 def _format_feature_matrix_line(feature_key: str, n_features: int | None) -> str:
     if n_features is None:
-        return f"Features: `{feature_key}`"
-    return f"Features: `{feature_key}`, {_format_count(n_features, 'feature')}"
+        return f'Features: "{feature_key}"'
+    return f'Features: "{feature_key}", {_format_count(n_features, "feature")}'
 
 
 def _format_count(count: int, singular: str, plural: str | None = None) -> str:

@@ -77,7 +77,7 @@ class _SelectionTableState:
 
         return (
             f"Selected {instance_key_name} {self.instance_id} is not present in annotation table "
-            f"`{self.table_name}` for labels element `{self.labels_name}` and cannot receive a user class."
+            f'"{self.table_name}" for labels element "{self.labels_name}" and cannot receive a user class.'
         )
 
 

@@ -9,6 +9,7 @@ import dask.dataframe as dd
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+from matplotlib.colors import to_rgba
 from napari.layers import Image, Shapes
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor
@@ -372,7 +373,7 @@ def test_viewer_widget_refreshes_cards_when_shared_sdata_changes(qtbot, sdata_bl
     assert widget.labels_cards[1].linked_table_combo.count() == 1
     assert widget.labels_cards[1].linked_table_combo.itemText(0) == "No linked tables"
     assert not widget.labels_cards[1].linked_table_combo.isEnabled()
-    assert "In coordinate system `global`" in widget.summary_label.text()
+    assert 'In coordinate system "global"' in widget.summary_label.text()
 
 
 def test_viewer_widget_points_section_populates_and_starts_value_loading(qtbot, monkeypatch) -> None:
@@ -1170,7 +1171,7 @@ def test_viewer_widget_coordinate_system_switch_prunes_old_harpy_layers(qtbot, m
     )
     widget._set_action_feedback(
         title="Labels Layer Created",
-        lines=["Created labels layer for `global_image`."],
+        lines=['Created labels layer for "global_image".'],
         kind="success",
     )
 
@@ -1265,7 +1266,7 @@ def test_viewer_widget_add_update_labels_loads_and_activates_layer(qtbot, sdata_
 
     assert len(viewer.layers) == 1
     _assert_action_feedback_card(widget, title="Labels Layer Created", kind="success")
-    assert "Created labels layer for `blobs_labels`" in widget.global_action_feedback_label.text()
+    assert 'Created labels layer for "blobs_labels"' in widget.global_action_feedback_label.text()
 
 
 def test_viewer_widget_add_update_labels_dispatches_to_styled_overlay_path(qtbot, monkeypatch, sdata_blobs) -> None:
@@ -1435,7 +1436,7 @@ def test_viewer_widget_styled_overlay_precondition_error_uses_error_card(qtbot, 
     first_card.add_update_button.click()
 
     _assert_action_feedback_card(widget, title="Styled Labels Error", kind="error")
-    assert "Select an observation column" in widget.global_action_feedback_label.text()
+    assert "The selected observation column is not available" in widget.global_action_feedback_label.text()
 
 
 def test_viewer_widget_add_update_image_loads_stack_layer(qtbot, sdata_blobs) -> None:
@@ -1459,7 +1460,7 @@ def test_viewer_widget_add_update_image_loads_stack_layer(qtbot, sdata_blobs) ->
     assert binding.image_display_mode == "stack"
     assert viewer.layers.selection.active is layer
     _assert_action_feedback_card(widget, title="Image Layer Created", kind="success")
-    assert "Created image layer for `blobs_image` in stack mode" in widget.global_action_feedback_label.text()
+    assert 'Created image layer for "blobs_image" in stack mode' in widget.global_action_feedback_label.text()
 
 
 def test_viewer_widget_add_update_image_reuses_existing_stack_layer(qtbot, sdata_blobs) -> None:
@@ -1558,7 +1559,7 @@ def test_viewer_widget_add_update_image_overlay_loads_reuses_and_replaces_layers
     first_layers = list(viewer.layers)
     assert [layer.name for layer in first_layers] == ["blobs_image[0]", "blobs_image[2]"]
     assert viewer.layers.selection.active is first_layers[0]
-    assert "Created image overlay for `blobs_image`" in widget.global_action_feedback_label.text()
+    assert 'Created image overlay for "blobs_image"' in widget.global_action_feedback_label.text()
 
     image_card.add_update_button.click()
 
@@ -1819,6 +1820,7 @@ def test_viewer_widget_add_update_shapes_with_table_source_dispatches_to_styled_
             skipped_geometry_count=0,
             unannotated_source_shape_count=1,
             unannotated_rendered_shape_count=1,
+            shapes_rendering_mode="points",
         )
 
     monkeypatch.setattr(widget.app_state.viewer_adapter, "ensure_styled_shapes_loaded", ensure_styled_shapes_loaded)
@@ -1836,6 +1838,7 @@ def test_viewer_widget_add_update_shapes_with_table_source_dispatches_to_styled_
     assert viewer.layers.selection.active is result_layer
     _assert_action_feedback_card(widget, title="Styled Shapes Created", kind="info")
     assert 'Created styled shapes layer for obs["cell_type"]' in widget.global_action_feedback_label.text()
+    assert "Rendered point-radius shapes as napari points for faster display." in widget.global_action_feedback_label.text()
     assert "Used the stored categorical palette." in widget.global_action_feedback_label.text()
     assert "Rendered 1 shape transparent because it has no row in the linked table." in (
         widget.global_action_feedback_label.text()
@@ -2009,6 +2012,30 @@ def test_viewer_widget_table_backed_styled_shapes_without_linked_table_is_feedba
     assert "has no linked table for table-driven coloring" in widget.global_action_feedback_label.text()
 
 
+def test_viewer_widget_table_backed_styled_shapes_missing_source_is_feedback(qtbot) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    sdata = _make_colorable_shapes_sdata(cell_type_colors=["red", "blue"])
+
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata)
+
+    request = ShapesLoadRequest(
+        shapes_name="cells",
+        table_name="table",
+        selected_source_kind="obs_column",
+        selected_color_source=None,
+        fill_shapes=False,
+    )
+
+    widget._add_or_update_shapes_layer(request)
+
+    _assert_action_feedback_card(widget, title="Styled Shapes Error", kind="error")
+    assert "The selected observation column is not available" in widget.global_action_feedback_label.text()
+
+
 def test_viewer_widget_table_backed_styled_shapes_alignment_error_is_feedback(qtbot, monkeypatch) -> None:
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)
@@ -2086,9 +2113,12 @@ def test_viewer_widget_add_update_shapes_loads_layer(qtbot, sdata_blobs) -> None
     assert binding.element_name == "blobs_circles"
     assert binding.coordinate_system == "global"
     assert viewer.layers.selection.active is layer
-    np.testing.assert_allclose(layer.face_color[:, 3], np.zeros(len(layer.data)))
+    np.testing.assert_allclose(layer.face_color, np.asarray([to_rgba("#00FFFF")] * len(layer.data)))
     _assert_action_feedback_card(widget, title="Shapes Layer Created", kind="success")
-    assert "Created shapes layer for `blobs_circles`." in widget.global_action_feedback_label.text()
+    assert 'Created shapes layer for "blobs_circles".' in widget.global_action_feedback_label.text()
+    assert "Rendered point-radius shapes as napari points for faster display." in (
+        widget.global_action_feedback_label.text()
+    )
 
 
 def test_viewer_widget_add_update_shapes_reuses_existing_layer(qtbot, sdata_blobs) -> None:
@@ -2144,6 +2174,7 @@ def test_viewer_widget_add_update_shapes_uses_selected_coordinate_system(qtbot, 
                 palette_source=None,
                 coercion_applied=False,
                 skipped_geometry_count=0,
+                shapes_rendering_mode="shapes",
             )
         ),
     )
@@ -2192,6 +2223,7 @@ def test_viewer_widget_add_update_shapes_reports_skipped_geometry_warning(qtbot,
             palette_source=None,
             coercion_applied=False,
             skipped_geometry_count=2,
+            shapes_rendering_mode="shapes",
         ),
     )
     monkeypatch.setattr(widget.app_state.viewer_adapter, "activate_layer", lambda layer: True)
@@ -2209,6 +2241,7 @@ def test_viewer_widget_add_update_shapes_reports_skipped_geometry_warning(qtbot,
     widget.shape_cards[0].add_update_button.click()
 
     _assert_action_feedback_card(widget, title="Shapes Layer Created With Warning", kind="warning")
+    assert "point-radius shapes as napari points" not in widget.global_action_feedback_label.text()
     assert "Skipped 2 empty, invalid, or unsupported geometries" in widget.global_action_feedback_label.text()
 
 

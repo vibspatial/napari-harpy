@@ -20,6 +20,9 @@ _POINTS_SIZE_SYNC_CALLBACK_ATTR = "_harpy_points_size_sync_callback"
 _POINTS_SYMBOL_SYNC_CALLBACK_ATTR = "_harpy_points_symbol_sync_callback"
 _POINTS_FACE_COLOR_SYNC_CALLBACK_ATTR = "_harpy_points_face_color_sync_callback"
 _POINTS_FACE_COLOR_OVERRIDE_ATTR = "_harpy_points_face_color_override"
+_POINT_RADIUS_SIZE_SYNC_CALLBACK_ATTR = "_harpy_point_radius_size_sync_callback"
+_POINT_RADIUS_ORIGINAL_SIZES_ATTR = "_harpy_point_radius_original_sizes"
+_POINT_RADIUS_REFERENCE_SIZE_ATTR = "_harpy_point_radius_reference_size"
 
 
 @dataclass(frozen=True)
@@ -84,7 +87,7 @@ def apply_points_selection_style(
     layer.symbol = layer.current_symbol
     layer.border_width = 0
     _connect_current_size_to_global_point_size(layer)
-    _connect_current_symbol_to_global_point_symbol(layer)
+    connect_current_symbol_to_global_point_symbol(layer)
 
     selected_value_count = len(selection.selected_values)
     if selected_value_count == 0 or selected_value_count > POINTS_SELECTION_MAX_CATEGORICAL_COLORS:
@@ -92,7 +95,7 @@ def apply_points_selection_style(
         layer.face_color = layer.current_face_color
         layer.current_border_color = layer.current_face_color
         layer.border_color = layer.face_color
-        _connect_current_face_color_to_global_point_face_color(layer)
+        connect_current_face_color_to_global_point_face_color(layer)
         return PointsStyleResult(
             color_mode="solid",
             categorical_coloring_disabled=selected_value_count > POINTS_SELECTION_MAX_CATEGORICAL_COLORS,
@@ -108,7 +111,7 @@ def apply_points_selection_style(
         layer.face_color = selection.index_column
         layer.border_color = layer.face_color
         if selected_value_count == 1:
-            _connect_current_face_color_to_global_point_face_color(layer)
+            connect_current_face_color_to_global_point_face_color(layer)
             if point_face_color is not None:
                 layer.current_face_color = point_face_color
 
@@ -132,7 +135,47 @@ def _connect_current_size_to_global_point_size(layer: Points) -> None:
     setattr(layer, _POINTS_SIZE_SYNC_CALLBACK_ATTR, _sync_current_size_to_all_points)
 
 
-def _connect_current_symbol_to_global_point_symbol(layer: Points) -> None:
+def connect_current_size_to_radius_scaled_point_size(layer: Points, radius_sizes: np.ndarray) -> None:
+    """Sync napari's current point size control as a radius-size scale factor."""
+    if getattr(layer, _POINT_RADIUS_SIZE_SYNC_CALLBACK_ATTR, None) is not None:
+        return
+
+    original_radius_sizes = np.asarray(radius_sizes, dtype=float)
+    if original_radius_sizes.ndim != 1:
+        original_radius_sizes = original_radius_sizes.reshape(-1)
+    if len(original_radius_sizes) != len(layer.data):
+        raise ValueError("Radius-derived point sizes must contain one value for each rendered point.")
+
+    valid_sizes = np.isfinite(original_radius_sizes) & (original_radius_sizes > 0)
+    if not np.all(valid_sizes):
+        raise ValueError("Radius-derived point sizes must be positive finite values.")
+
+    if np.allclose(original_radius_sizes, original_radius_sizes[0]):
+        reference_size = float(original_radius_sizes[0])
+    else:
+        reference_size = float(np.median(original_radius_sizes))
+    if not np.isfinite(reference_size) or reference_size <= 0:
+        raise ValueError("Radius-derived point sizes require a positive finite reference size.")
+
+    setattr(layer, _POINT_RADIUS_ORIGINAL_SIZES_ATTR, original_radius_sizes)
+    setattr(layer, _POINT_RADIUS_REFERENCE_SIZE_ATTR, reference_size)
+    layer.current_size = reference_size
+    layer.size = original_radius_sizes
+
+    def _sync_current_size_to_radius_scaled_points(_event: Any | None = None) -> None:
+        # Treat napari's scalar `current_size` as a scale target for the
+        # radius-derived size array. For example, with original sizes
+        # [4, 6, 8] and reference size 6, setting `current_size` to 12 applies
+        # scale 12 / 6 and produces [8, 12, 16], preserving relative radii.
+        point_size = _coerce_point_size(layer.current_size, default=reference_size)
+        layer.size = original_radius_sizes * (point_size / reference_size)
+
+    layer.events.current_size.connect(_sync_current_size_to_radius_scaled_points)
+    setattr(layer, _POINT_RADIUS_SIZE_SYNC_CALLBACK_ATTR, _sync_current_size_to_radius_scaled_points)
+
+
+def connect_current_symbol_to_global_point_symbol(layer: Points) -> None:
+    """Sync napari's current point symbol control to all points in a layer."""
     if getattr(layer, _POINTS_SYMBOL_SYNC_CALLBACK_ATTR, None) is not None:
         return
 
@@ -143,7 +186,8 @@ def _connect_current_symbol_to_global_point_symbol(layer: Points) -> None:
     setattr(layer, _POINTS_SYMBOL_SYNC_CALLBACK_ATTR, _sync_current_symbol_to_all_points)
 
 
-def _connect_current_face_color_to_global_point_face_color(layer: Points) -> None:
+def connect_current_face_color_to_global_point_face_color(layer: Points) -> None:
+    """Sync napari's current point face color control to all point colors."""
     if getattr(layer, _POINTS_FACE_COLOR_SYNC_CALLBACK_ATTR, None) is not None:
         return
 

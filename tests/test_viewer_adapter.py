@@ -28,6 +28,7 @@ from napari_harpy.viewer.adapter import (
     PointsLayerIdentity,
     ShapesLayerBinding,
     ViewerAdapter,
+    _prepare_napari_point_radius_shapes_layer_inputs,
     _prepare_napari_shapes_layer_inputs,
 )
 from napari_harpy.viewer.points_styling import POINTS_SELECTION_SOLID_COLOR
@@ -202,6 +203,20 @@ def make_colorable_shapes_sdata(shapes_name: str = "cell_boundaries") -> SimpleN
     return make_shapes_sdata(geodataframe, shapes_name=shapes_name)
 
 
+def make_colorable_point_radius_shapes_sdata(shapes_name: str = "cell_centroids") -> SimpleNamespace:
+    geodataframe = gpd.GeoDataFrame(
+        {
+            "radius": [2.0, 3.0],
+            "cell_type": pd.Categorical(["T", "B"], categories=["T", "B"]),
+            "cell_type_colors": ["#ff0000", "#00ff00"],
+            "score": [0.0, 1.0],
+        },
+        geometry=[Point(10, 20), Point(30, 40)],
+        index=["cell_1", "cell_2"],
+    )
+    return make_shapes_sdata(geodataframe, shapes_name=shapes_name)
+
+
 def make_table_backed_shapes_sdata() -> ShapesSpatialDataWithTables:
     geodataframe = gpd.GeoDataFrame(
         {"instance_id": ["cell_1", "cell_2", "cell_3"]},
@@ -210,8 +225,9 @@ def make_table_backed_shapes_sdata() -> ShapesSpatialDataWithTables:
             Polygon([(5, 0), (9, 0), (9, 4), (5, 4), (5, 0)]),
             Polygon([(10, 0), (14, 0), (14, 4), (10, 4), (10, 0)]),
         ],
-        index=["shape_1", "shape_2", "shape_3"],
+        index=["cell_1", "cell_2", "cell_3"],
     )
+    geodataframe.index.name = "instance_id"
     shapes = ShapesModel.parse(geodataframe, transformations={"global": Identity()})
     table = TableModel.parse(
         ad.AnnData(
@@ -230,6 +246,43 @@ def make_table_backed_shapes_sdata() -> ShapesSpatialDataWithTables:
     )
     table.uns["cell_type_colors"] = ["#ff0000", "#00ff00"]
     return ShapesSpatialDataWithTables(shapes={"cell_boundaries": shapes}, tables={"table": table})
+
+
+def make_table_backed_point_radius_shapes_sdata() -> ShapesSpatialDataWithTables:
+    geodataframe = gpd.GeoDataFrame(
+        {
+            "instance_id": ["cell_1", "cell_2", "cell_3"],
+            "radius": [2.0, 3.0, 4.0],
+        },
+        geometry=[Point(10, 20), Point(30, 40), Point(50, 60)],
+        index=["cell_1", "cell_2", "cell_3"],
+    )
+    geodataframe.index.name = "instance_id"
+    shapes = ShapesModel.parse(geodataframe, transformations={"global": Identity()})
+    table = TableModel.parse(
+        ad.AnnData(
+            X=np.asarray([[1.0], [2.0]]),
+            obs=pd.DataFrame(
+                {
+                    "region": ["cell_centroids", "cell_centroids"],
+                    "instance_id": ["cell_1", "cell_2"],
+                    "cell_type": pd.Categorical(["T", "B"], categories=["T", "B"]),
+                },
+                index=["obs_1", "obs_2"],
+            ),
+            var=pd.DataFrame(index=["GeneA"]),
+        ),
+        region="cell_centroids",
+        region_key="region",
+        instance_key="instance_id",
+    )
+    table.uns["cell_type_colors"] = ["#ff0000", "#00ff00"]
+    return ShapesSpatialDataWithTables(shapes={"cell_centroids": shapes}, tables={"table": table})
+
+
+def expected_radius_reference_size(sizes: np.ndarray) -> float:
+    sizes = np.asarray(sizes, dtype=float)
+    return float(sizes[0]) if np.allclose(sizes, sizes[0]) else float(np.median(sizes))
 
 
 def make_two_table_backed_shapes_sdata() -> ShapesSpatialDataWithTables:
@@ -254,7 +307,7 @@ def make_two_table_backed_shapes_sdata() -> ShapesSpatialDataWithTables:
     return sdata
 
 
-def get_shapes_binding(adapter: ViewerAdapter, layer: Shapes) -> ShapesLayerBinding:
+def get_shapes_binding(adapter: ViewerAdapter, layer: Shapes | Points) -> ShapesLayerBinding:
     binding = adapter.layer_bindings.get_binding(layer)
     assert isinstance(binding, ShapesLayerBinding)
     return binding
@@ -371,6 +424,7 @@ def test_layer_binding_registry_tracks_shapes_identity() -> None:
     assert binding.element_type == "shapes"
     assert binding.coordinate_system == "global"
     assert binding.shapes_role == "primary"
+    assert binding.shapes_rendering_mode == "shapes"
     assert binding.style_spec is None
     assert binding.source_row_id_by_rendered_row == (0,)
     assert binding.source_shapes_index_feature_name == "cell_id"
@@ -405,6 +459,7 @@ def test_layer_binding_registry_tracks_shapes_role_and_style_spec() -> None:
 
     assert isinstance(binding, ShapesLayerBinding)
     assert binding.shapes_role == "styled"
+    assert binding.shapes_rendering_mode == "shapes"
     assert binding.style_spec == style_spec
     assert binding.source_row_id_by_rendered_row == (0,)
     assert registry.find_bindings(
@@ -1792,6 +1847,7 @@ def test_viewer_adapter_ensure_shapes_loaded_adds_polygon_layer_and_registers_bi
     assert result.palette_source is None
     assert result.coercion_applied is False
     assert result.skipped_geometry_count == 0
+    assert result.shapes_rendering_mode == "shapes"
     assert layer in viewer.layers
     assert layer.name == "blobs_polygons"
     assert layer.shape_type == ["polygon"] * len(sdata_blobs.shapes["blobs_polygons"])
@@ -1833,11 +1889,12 @@ def test_viewer_adapter_ensure_shapes_loaded_expands_multipolygons_with_source_m
     assert len(layer.data) == len(expected_indices)
     assert layer.shape_type == ["polygon"] * len(expected_indices)
     binding = get_shapes_binding(adapter, layer)
+    assert binding.shapes_rendering_mode == "shapes"
     assert binding.source_row_id_by_rendered_row == tuple(expected_source_row_ids)
     assert tuple(layer.features["index"].to_list()) == tuple(expected_indices)
 
 
-def test_viewer_adapter_ensure_shapes_loaded_renders_circles_as_ellipses(sdata_blobs) -> None:
+def test_viewer_adapter_ensure_shapes_loaded_renders_circles_as_points(sdata_blobs) -> None:
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
 
@@ -1845,25 +1902,94 @@ def test_viewer_adapter_ensure_shapes_loaded_renders_circles_as_ellipses(sdata_b
     layer = result.layer
 
     circles = sdata_blobs.shapes["blobs_circles"]
-    first_circle = circles.iloc[0]
-    radius = float(first_circle["radius"])
-    y = float(first_circle.geometry.y)
-    x = float(first_circle.geometry.x)
-    expected_first_ellipse = np.asarray(
-        [
-            (y - radius, x - radius),
-            (y + radius, x - radius),
-            (y + radius, x + radius),
-            (y - radius, x + radius),
-        ],
-        dtype=float,
+    expected_coordinates = np.column_stack(
+        (
+            circles.geometry.y.to_numpy(dtype=float),
+            circles.geometry.x.to_numpy(dtype=float),
+        )
     )
 
-    assert layer.shape_type == ["ellipse"] * len(circles)
-    assert np.allclose(layer.data[0], expected_first_ellipse)
+    assert isinstance(layer, Points)
+    assert result.shapes_rendering_mode == "points"
+    np.testing.assert_allclose(layer.data, expected_coordinates)
+    expected_sizes = 2.0 * circles["radius"].to_numpy(dtype=float)
+    np.testing.assert_allclose(layer.size, expected_sizes)
+    assert layer.current_size == expected_radius_reference_size(expected_sizes)
+    np.testing.assert_allclose(layer.face_color, np.asarray([to_rgba("#00FFFF")] * len(circles)))
+    np.testing.assert_allclose(layer.border_color, np.asarray([to_rgba("#00FFFF")] * len(circles)))
+    assert layer.opacity == 0.8
     binding = get_shapes_binding(adapter, layer)
-    assert binding.source_row_id_by_rendered_row == tuple(range(len(circles)))
+    assert binding.element_type == "shapes"
+    assert binding.shapes_role == "primary"
+    assert binding.shapes_rendering_mode == "points"
+    assert binding.source_row_id_by_rendered_row == range(len(circles))
     assert tuple(layer.features["index"].to_list()) == tuple(circles.index.to_list())
+    status_value = layer.get_status(position=tuple(layer.data[0]))["value"]
+    assert "index:" in status_value
+    assert status_value.count("index:") == 1
+    assert adapter.get_loaded_primary_shapes_layer(sdata_blobs, "blobs_circles", "global") is layer
+
+
+def test_viewer_adapter_point_backed_primary_shapes_syncs_presentation_controls(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    result = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_circles", "global")
+    layer = result.layer
+    original_size = layer.size.copy()
+    reference_size = expected_radius_reference_size(original_size)
+
+    assert isinstance(layer, Points)
+    layer.current_symbol = "square"
+    layer.current_face_color = "red"
+    layer.current_size = 99.0
+
+    assert all(symbol.value == "square" for symbol in layer.symbol)
+    np.testing.assert_allclose(layer.face_color, np.asarray([to_rgba("red")] * len(layer.data)))
+    np.testing.assert_allclose(layer.border_color, layer.face_color)
+    np.testing.assert_allclose(layer.border_width, np.zeros(len(layer.data)))
+    np.testing.assert_allclose(layer.size, original_size * (99.0 / reference_size))
+
+    layer.current_size = 0.0
+    np.testing.assert_allclose(layer.size, original_size)
+
+
+def test_viewer_adapter_point_backed_fixed_radius_shapes_scale_like_point_size_control() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"radius": [5.0, 5.0]},
+        geometry=[Point(10, 20), Point(30, 40)],
+        index=["cell_1", "cell_2"],
+    )
+    sdata = make_shapes_sdata(geodataframe, shapes_name="cell_centroids")
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    result = adapter.ensure_shapes_loaded(sdata, "cell_centroids", "global")
+    layer = result.layer
+
+    assert isinstance(layer, Points)
+    assert layer.current_size == 10.0
+    np.testing.assert_allclose(layer.size, np.asarray([10.0, 10.0]))
+
+    layer.current_size = 25.0
+
+    np.testing.assert_allclose(layer.size, np.asarray([25.0, 25.0]))
+
+
+def test_viewer_adapter_ensure_shapes_loaded_reuses_point_radius_layer(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    first = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_circles", "global")
+    second = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_circles", "global")
+
+    assert isinstance(first.layer, Points)
+    assert first.layer is second.layer
+    assert first.created is True
+    assert second.created is False
+    assert second.shapes_rendering_mode == "points"
+    assert len(viewer.layers) == 1
+    assert get_shapes_binding(adapter, first.layer).shapes_rendering_mode == "points"
 
 
 def test_prepare_napari_shapes_layer_inputs_does_not_use_iterrows(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1884,6 +2010,116 @@ def test_prepare_napari_shapes_layer_inputs_does_not_use_iterrows(monkeypatch: p
     assert result.source_row_id_by_rendered_row == (0, 1)
     assert result.features["index"].to_list() == ["cell_1", "cell_2"]
     assert result.skipped_geometry_count == 0
+
+
+def test_prepare_napari_point_radius_shapes_layer_inputs_returns_points_arrays() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"radius": [1.5, 2.0]},
+        geometry=[Point(10, 20), Point(30, 40)],
+        index=["cell_1", "cell_2"],
+    )
+
+    result = _prepare_napari_point_radius_shapes_layer_inputs(geodataframe)
+
+    assert result is not None
+    np.testing.assert_allclose(result.coordinates, np.asarray([[20.0, 10.0], [40.0, 30.0]]))
+    np.testing.assert_allclose(result.sizes, np.asarray([3.0, 4.0]))
+    assert result.features["index"].to_list() == ["cell_1", "cell_2"]
+    assert result.source_shapes_index_feature_name == "index"
+    assert result.source_row_id_by_rendered_row == range(2)
+    assert result.skipped_geometry_count == 0
+
+
+def test_prepare_napari_point_radius_shapes_layer_inputs_preserves_duplicate_indices() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"radius": [1.0, 2.0]},
+        geometry=[Point(1, 2), Point(3, 4)],
+        index=["cell_1", "cell_1"],
+    )
+
+    result = _prepare_napari_point_radius_shapes_layer_inputs(geodataframe)
+
+    assert result is not None
+    assert result.features["index"].to_list() == ["cell_1", "cell_1"]
+    assert result.source_row_id_by_rendered_row == range(2)
+
+
+def test_prepare_napari_point_radius_shapes_layer_inputs_preserves_named_index() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"radius": [1.0]},
+        geometry=[Point(1, 2)],
+        index=["cell_1"],
+    )
+    geodataframe.index.name = "cell_ID"
+
+    result = _prepare_napari_point_radius_shapes_layer_inputs(geodataframe)
+
+    assert result is not None
+    assert result.source_shapes_index_feature_name == "cell_ID"
+    assert list(result.features.columns) == ["cell_ID"]
+    assert result.features["cell_ID"].to_list() == ["cell_1"]
+
+
+def test_prepare_napari_point_radius_shapes_layer_inputs_returns_none_without_radius() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"cell_type": ["T"]},
+        geometry=[Point(1, 2)],
+        index=["cell_1"],
+    )
+
+    assert _prepare_napari_point_radius_shapes_layer_inputs(geodataframe) is None
+
+
+def test_prepare_napari_point_radius_shapes_layer_inputs_returns_none_for_invalid_radius() -> None:
+    for radius in (0.0, -1.0, np.nan, np.inf, "not-a-radius"):
+        geodataframe = gpd.GeoDataFrame(
+            {"radius": [radius]},
+            geometry=[Point(1, 2)],
+            index=["cell_1"],
+        )
+
+        assert _prepare_napari_point_radius_shapes_layer_inputs(geodataframe) is None
+
+
+def test_prepare_napari_point_radius_shapes_layer_inputs_returns_none_for_mixed_geometries() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"radius": [1.0, 2.0]},
+        geometry=[Point(1, 2), Polygon([(0, 0), (2, 0), (2, 2), (0, 2), (0, 0)])],
+        index=["cell_1", "cell_2"],
+    )
+
+    assert _prepare_napari_point_radius_shapes_layer_inputs(geodataframe) is None
+
+
+def test_prepare_napari_point_radius_shapes_layer_inputs_returns_none_for_empty_geometry() -> None:
+    for geometry in (Point(), None):
+        geodataframe = gpd.GeoDataFrame(
+            {"radius": [1.0]},
+            geometry=[geometry],
+            index=["cell_1"],
+        )
+
+        assert _prepare_napari_point_radius_shapes_layer_inputs(geodataframe) is None
+
+
+def test_prepare_napari_point_radius_shapes_layer_inputs_does_not_use_iterrows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"radius": [1.0, 2.0]},
+        geometry=[Point(1, 2), Point(3, 4)],
+        index=["cell_1", "cell_2"],
+    )
+
+    def fail_iterrows(_self):
+        raise AssertionError("_prepare_napari_point_radius_shapes_layer_inputs should not call iterrows().")
+
+    monkeypatch.setattr(gpd.GeoDataFrame, "iterrows", fail_iterrows)
+
+    result = _prepare_napari_point_radius_shapes_layer_inputs(geodataframe)
+
+    assert result is not None
+    assert result.source_row_id_by_rendered_row == range(2)
 
 
 def test_viewer_adapter_ensure_shapes_loaded_preserves_polygon_holes() -> None:
@@ -2041,6 +2277,137 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_creates_registered_variant_w
     assert "style_value_kind" not in result.layer.metadata
 
 
+def test_viewer_adapter_ensure_styled_shapes_loaded_creates_point_backed_categorical_variant() -> None:
+    sdata = make_colorable_point_radius_shapes_sdata()
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = ShapeColumnColorSourceSpec(
+        source_kind="shape_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    result = adapter.ensure_styled_shapes_loaded(sdata, "cell_centroids", "global", style_spec)
+
+    assert result.created is True
+    assert result.value_kind == "categorical"
+    assert result.palette_source == "stored"
+    assert result.coercion_applied is False
+    assert result.shapes_rendering_mode == "points"
+    assert isinstance(result.layer, Points)
+    assert result.layer in viewer.layers
+    assert result.layer.name == "cell_centroids[shapes_column:cell_type]"
+    assert adapter.get_loaded_primary_shapes_layer(sdata, "cell_centroids", "global") is None
+    assert adapter.get_loaded_styled_shapes_layer(sdata, "cell_centroids", style_spec, "global") is result.layer
+    binding = get_shapes_binding(adapter, result.layer)
+    assert binding.shapes_role == "styled"
+    assert binding.shapes_rendering_mode == "points"
+    assert binding.style_spec == style_spec
+    assert binding.source_row_id_by_rendered_row == range(2)
+    assert binding.source_shapes_index_feature_name == "index"
+    assert list(result.layer.features.columns) == ["index", "cell_type"]
+    assert result.layer.features["index"].to_list() == ["cell_1", "cell_2"]
+    assert result.layer.features["cell_type"].to_list() == ["T", "B"]
+    np.testing.assert_allclose(result.layer.size, np.asarray([4.0, 6.0]))
+    assert result.layer.current_size == 5.0
+    result.layer.current_size = 15.0
+    np.testing.assert_allclose(result.layer.size, np.asarray([12.0, 18.0]))
+    np.testing.assert_allclose(result.layer.face_color[0], to_rgba("#ff0000"))
+    np.testing.assert_allclose(result.layer.border_color[1], to_rgba("#00ff00"))
+    np.testing.assert_allclose(result.layer.border_width, np.zeros(2))
+    status_value = result.layer.get_status(position=tuple(result.layer.data[0]))["value"]
+    assert "index:" in status_value
+    assert status_value.count("index:") == 1
+    assert "cell_type:" in status_value
+    assert status_value.count("cell_type:") == 1
+    assert status_value.index("index:") < status_value.index("cell_type:")
+
+
+def test_viewer_adapter_point_backed_shape_column_styling_keeps_data_driven_colors_after_ui_color_change() -> None:
+    sdata = make_colorable_point_radius_shapes_sdata()
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = ShapeColumnColorSourceSpec(
+        source_kind="shape_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    result = adapter.ensure_styled_shapes_loaded(sdata, "cell_centroids", "global", style_spec)
+    face_color = result.layer.face_color.copy()
+    border_color = result.layer.border_color.copy()
+
+    result.layer.current_size = 15.0
+    scaled_size = result.layer.size.copy()
+    result.layer.current_face_color = "red"
+    result.layer.current_symbol = "square"
+
+    np.testing.assert_allclose(result.layer.face_color, face_color)
+    np.testing.assert_allclose(result.layer.border_color, border_color)
+    np.testing.assert_allclose(result.layer.size, scaled_size)
+    assert all(symbol.value == "square" for symbol in result.layer.symbol)
+
+
+def test_viewer_adapter_ensure_styled_shapes_loaded_creates_point_backed_continuous_variant() -> None:
+    sdata = make_colorable_point_radius_shapes_sdata()
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = ShapeColumnColorSourceSpec(
+        source_kind="shape_column",
+        value_key="score",
+        value_kind="continuous",
+    )
+
+    first = adapter.ensure_styled_shapes_loaded(sdata, "cell_centroids", "global", style_spec)
+    first.layer.current_size = 12.0
+    scaled_size = first.layer.size.copy()
+    second = adapter.ensure_styled_shapes_loaded(sdata, "cell_centroids", "global", style_spec, fill=True)
+
+    assert isinstance(first.layer, Points)
+    assert first.layer is second.layer
+    assert first.created is True
+    assert second.created is False
+    assert first.value_kind == "continuous"
+    assert first.palette_source is None
+    assert first.coercion_applied is False
+    assert get_shapes_binding(adapter, first.layer).shapes_rendering_mode == "points"
+    assert list(first.layer.features.columns) == ["index", "score"]
+    assert first.layer.features["score"].to_list() == [0.0, 1.0]
+    np.testing.assert_allclose(first.layer.size, scaled_size)
+    np.testing.assert_allclose(first.layer.size, np.asarray([9.6, 14.4]))
+    np.testing.assert_allclose(first.layer.face_color, first.layer.border_color)
+    assert len(viewer.layers) == 1
+
+
+def test_viewer_adapter_point_backed_shape_column_styling_disambiguates_index_feature_collision() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {
+            "radius": [2.0],
+            "cell_type": pd.Categorical(["T"], categories=["T"]),
+            "cell_type_colors": ["#ff0000"],
+        },
+        geometry=[Point(10, 20)],
+        index=["cell_1"],
+    )
+    geodataframe.index.name = "cell_type"
+    sdata = make_shapes_sdata(geodataframe, shapes_name="cell_centroids")
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = ShapeColumnColorSourceSpec(
+        source_kind="shape_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    result = adapter.ensure_styled_shapes_loaded(sdata, "cell_centroids", "global", style_spec)
+
+    assert isinstance(result.layer, Points)
+    assert get_shapes_binding(adapter, result.layer).source_shapes_index_feature_name == "cell_type"
+    assert list(result.layer.features.columns) == ["cell_type", "cell_type__value"]
+    assert result.layer.features["cell_type"].to_list() == ["cell_1"]
+    assert result.layer.features["cell_type__value"].to_list() == ["T"]
+
+
 def test_viewer_adapter_ensure_styled_shapes_loaded_creates_table_backed_variant() -> None:
     sdata = make_table_backed_shapes_sdata()
     viewer = DummyViewer()
@@ -2067,12 +2434,141 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_creates_table_backed_variant
     assert binding.shapes_role == "styled"
     assert binding.style_spec == style_spec
     assert binding.source_row_id_by_rendered_row == (0, 1, 2)
-    assert list(result.layer.features.columns) == ["index", "cell_type"]
+    assert list(result.layer.features.columns) == ["instance_id", "cell_type"]
+    assert result.layer.features["instance_id"].to_list() == ["cell_1", "cell_2", "cell_3"]
     assert result.layer.features["cell_type"].to_list()[:2] == ["T", "B"]
     assert pd.isna(result.layer.features["cell_type"].iloc[2])
     np.testing.assert_allclose(result.layer.edge_color[0], (*to_rgba("#ff0000")[:3], 1.0))
     np.testing.assert_allclose(result.layer.edge_color[1], (*to_rgba("#00ff00")[:3], 1.0))
     assert result.layer.edge_color[2, 3] == 0.0
+
+
+def test_viewer_adapter_ensure_styled_shapes_loaded_creates_point_backed_table_variant() -> None:
+    sdata = make_table_backed_point_radius_shapes_sdata()
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    result = adapter.ensure_styled_shapes_loaded(sdata, "cell_centroids", "global", style_spec)
+    result.layer.current_size = 12.0
+    second = adapter.ensure_styled_shapes_loaded(sdata, "cell_centroids", "global", style_spec)
+
+    assert result.created is True
+    assert second.created is False
+    assert second.layer is result.layer
+    assert result.value_kind == "categorical"
+    assert result.palette_source == "stored"
+    assert result.coercion_applied is False
+    assert result.unannotated_source_shape_count == 1
+    assert result.unannotated_rendered_shape_count == 1
+    assert result.shapes_rendering_mode == "points"
+    assert isinstance(result.layer, Points)
+    assert result.layer in viewer.layers
+    assert result.layer.name == "cell_centroids[obs:cell_type]"
+    binding = get_shapes_binding(adapter, result.layer)
+    assert binding.shapes_role == "styled"
+    assert binding.shapes_rendering_mode == "points"
+    assert binding.style_spec == style_spec
+    assert binding.source_row_id_by_rendered_row == range(3)
+    assert list(result.layer.features.columns) == ["instance_id", "cell_type"]
+    assert result.layer.features["instance_id"].to_list() == ["cell_1", "cell_2", "cell_3"]
+    assert result.layer.features["cell_type"].to_list()[:2] == ["T", "B"]
+    assert pd.isna(result.layer.features["cell_type"].iloc[2])
+    np.testing.assert_allclose(result.layer.size, np.asarray([8.0, 12.0, 16.0]))
+    np.testing.assert_allclose(result.layer.face_color[0], to_rgba("#ff0000"))
+    np.testing.assert_allclose(result.layer.border_color[1], to_rgba("#00ff00"))
+    assert result.layer.face_color[2, 3] == 0.0
+    assert result.layer.border_color[2, 3] == 0.0
+    np.testing.assert_allclose(result.layer.border_width, np.zeros(3))
+    assert len(viewer.layers) == 1
+
+
+def test_viewer_adapter_point_backed_table_styling_keeps_data_driven_colors_after_ui_color_change() -> None:
+    sdata = make_table_backed_point_radius_shapes_sdata()
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    result = adapter.ensure_styled_shapes_loaded(sdata, "cell_centroids", "global", style_spec)
+    face_color = result.layer.face_color.copy()
+    border_color = result.layer.border_color.copy()
+
+    result.layer.current_size = 12.0
+    scaled_size = result.layer.size.copy()
+    result.layer.current_face_color = "red"
+    result.layer.current_symbol = "square"
+
+    np.testing.assert_allclose(result.layer.face_color, face_color)
+    np.testing.assert_allclose(result.layer.border_color, border_color)
+    np.testing.assert_allclose(result.layer.size, scaled_size)
+    assert all(symbol.value == "square" for symbol in result.layer.symbol)
+
+
+def test_viewer_adapter_point_backed_table_x_var_styling() -> None:
+    sdata = make_table_backed_point_radius_shapes_sdata()
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="x_var",
+        value_key="GeneA",
+        value_kind="continuous",
+    )
+
+    result = adapter.ensure_styled_shapes_loaded(sdata, "cell_centroids", "global", style_spec)
+
+    assert isinstance(result.layer, Points)
+    assert result.value_kind == "continuous"
+    assert result.palette_source is None
+    assert result.coercion_applied is False
+    assert result.unannotated_source_shape_count == 1
+    assert result.unannotated_rendered_shape_count == 1
+    assert result.layer.name == "cell_centroids[X:GeneA]"
+    assert get_shapes_binding(adapter, result.layer).shapes_rendering_mode == "points"
+    assert result.layer.features["instance_id"].to_list() == ["cell_1", "cell_2", "cell_3"]
+    assert result.layer.features["GeneA"].to_list()[:2] == [1.0, 2.0]
+    assert pd.isna(result.layer.features["GeneA"].iloc[2])
+    assert result.layer.face_color[0, 3] == 1.0
+    assert result.layer.face_color[1, 3] == 1.0
+    assert result.layer.face_color[2, 3] == 0.0
+
+
+def test_viewer_adapter_point_backed_table_instance_styling() -> None:
+    sdata = make_table_backed_point_radius_shapes_sdata()
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="instance_id",
+        value_kind="instance",
+    )
+
+    result = adapter.ensure_styled_shapes_loaded(sdata, "cell_centroids", "global", style_spec)
+
+    assert isinstance(result.layer, Points)
+    assert result.value_kind == "instance"
+    assert result.palette_source is None
+    assert result.coercion_applied is False
+    assert result.unannotated_source_shape_count == 1
+    assert result.unannotated_rendered_shape_count == 1
+    assert get_shapes_binding(adapter, result.layer).shapes_rendering_mode == "points"
+    assert result.layer.features["instance_id"].to_list() == ["cell_1", "cell_2", "cell_3"]
+    assert result.layer.features["instance_id__value"].to_list()[:2] == ["cell_1", "cell_2"]
+    assert pd.isna(result.layer.features["instance_id__value"].iloc[2])
+    assert result.layer.face_color[0, 3] == 1.0
+    assert result.layer.face_color[1, 3] == 1.0
+    assert result.layer.face_color[2, 3] == 0.0
 
 
 def test_viewer_adapter_table_backed_shapes_uses_named_index_as_instance_key() -> None:
@@ -2127,25 +2623,26 @@ def test_viewer_adapter_table_backed_shapes_uses_named_index_as_instance_key() -
     assert result.layer.edge_color[2, 3] == 0.0
 
 
-def test_viewer_adapter_table_backed_shapes_uses_internal_row_ids_with_duplicate_geodataframe_index() -> None:
+def test_viewer_adapter_table_backed_shapes_allows_duplicate_instance_index() -> None:
     geodataframe = gpd.GeoDataFrame(
-        {"instance_id": ["cell_1", "cell_2"]},
+        {},
         geometry=[
             Polygon([(0, 0), (4, 0), (4, 4), (0, 4), (0, 0)]),
             Polygon([(5, 0), (9, 0), (9, 4), (5, 4), (5, 0)]),
         ],
-        index=["duplicate", "duplicate"],
+        index=["cell_1", "cell_1"],
     )
+    geodataframe.index.name = "instance_id"
     shapes = ShapesModel.parse(geodataframe, transformations={"global": Identity()})
     table = TableModel.parse(
         ad.AnnData(
             obs=pd.DataFrame(
                 {
-                    "region": ["cell_boundaries", "cell_boundaries"],
-                    "instance_id": ["cell_1", "cell_2"],
-                    "cell_type": pd.Categorical(["T", "B"], categories=["T", "B"]),
+                    "region": ["cell_boundaries"],
+                    "instance_id": ["cell_1"],
+                    "cell_type": pd.Categorical(["T"], categories=["T", "B"]),
                 },
-                index=["obs_1", "obs_2"],
+                index=["obs_1"],
             )
         ),
         region="cell_boundaries",
@@ -2167,10 +2664,10 @@ def test_viewer_adapter_table_backed_shapes_uses_internal_row_ids_with_duplicate
 
     binding = get_shapes_binding(adapter, result.layer)
     assert binding.source_row_id_by_rendered_row == (0, 1)
-    assert result.layer.features["index"].to_list() == ["duplicate", "duplicate"]
-    assert result.layer.features["cell_type"].to_list() == ["T", "B"]
+    assert result.layer.features["instance_id"].to_list() == ["cell_1", "cell_1"]
+    assert result.layer.features["cell_type"].to_list() == ["T", "T"]
     np.testing.assert_allclose(result.layer.edge_color[0], (*to_rgba("#ff0000")[:3], 1.0))
-    np.testing.assert_allclose(result.layer.edge_color[1], (*to_rgba("#00ff00")[:3], 1.0))
+    np.testing.assert_allclose(result.layer.edge_color[1], (*to_rgba("#ff0000")[:3], 1.0))
 
 
 def test_viewer_adapter_ensure_styled_shapes_loaded_reuses_table_backed_variant_and_updates_fill() -> None:

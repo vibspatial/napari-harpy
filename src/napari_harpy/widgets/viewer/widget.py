@@ -132,7 +132,7 @@ class ViewerWidget(QWidget):
         self.open_sdata_button.clicked.connect(self._open_spatialdata)
 
         self.empty_state_label = QLabel(
-            "No SpatialData loaded. Use `Interactive(sdata)` for now; an in-widget open action will follow later."
+            'No SpatialData loaded. Use "Interactive(sdata)" for now; an in-widget open action will follow later.'
         )
         self.empty_state_label.setObjectName("viewer_widget_empty_state")
         self.empty_state_label.setWordWrap(True)
@@ -392,7 +392,7 @@ class ViewerWidget(QWidget):
         points_names = _get_points_in_coordinate_system(sdata, coordinate_system)
 
         self.summary_label.setText(
-            f"In coordinate system `{coordinate_system}`: "
+            f'In coordinate system "{coordinate_system}": '
             f"{len(image_names)} image element(s), {len(labels_names)} labels element(s), "
             f"{len(shapes_names)} shapes element(s), and {len(points_names)} points element(s)."
         )
@@ -690,19 +690,25 @@ class ViewerWidget(QWidget):
         if request.table_name is None:
             self._set_action_feedback(
                 title="Styled Labels Error",
-                lines=[f"Labels element `{request.labels_name}` has no linked table for table-driven coloring."],
+                lines=[f'Labels element "{request.labels_name}" has no linked table for table-driven coloring.'],
                 kind="error",
             )
             return
 
         if request.selected_color_source is None:
             if request.selected_source_kind == "obs_column":
-                missing_source = "an observation column"
+                line = (
+                    f"The selected observation column is not available in the linked table for "
+                    f'"{request.labels_name}". Pick another observation column.'
+                )
             else:
-                missing_source = "a var"
+                line = (
+                    f'The selected var is not available in the linked table for "{request.labels_name}". '
+                    "Pick another var."
+                )
             self._set_action_feedback(
                 title="Styled Labels Error",
-                lines=[f"Select {missing_source} to create a colored overlay for `{request.labels_name}`."],
+                lines=[line],
                 kind="error",
             )
             return
@@ -771,21 +777,30 @@ class ViewerWidget(QWidget):
         if request.selected_source_kind in {"obs_column", "x_var"} and request.table_name is None:
             self._set_action_feedback(
                 title="Styled Shapes Error",
-                lines=[f"Shapes element `{request.shapes_name}` has no linked table for table-driven coloring."],
+                lines=[f'Shapes element "{request.shapes_name}" has no linked table for table-driven coloring.'],
                 kind="error",
             )
             return
 
         if request.selected_color_source is None:
             if request.selected_source_kind == "obs_column":
-                missing_source = "an observation column"
+                line = (
+                    f"The selected observation column is not available in the linked table for "
+                    f'"{request.shapes_name}". Pick another observation column.'
+                )
             elif request.selected_source_kind == "x_var":
-                missing_source = "a var"
+                line = (
+                    f'The selected var is not available in the linked table for "{request.shapes_name}". '
+                    "Pick another var."
+                )
             else:
-                missing_source = "a shapes column"
+                line = (
+                    f'The selected shapes column is not available for "{request.shapes_name}". '
+                    "Pick another shapes column."
+                )
             self._set_action_feedback(
                 title="Styled Shapes Error",
-                lines=[f"Select {missing_source} to create a styled shapes layer for `{request.shapes_name}`."],
+                lines=[line],
                 kind="error",
             )
             return

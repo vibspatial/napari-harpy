@@ -1036,7 +1036,7 @@ class ObjectClassificationWidget(QWidget):
 
         if self.selected_table_name is not None and self.feature_matrix_combo.count() == 0:
             message = (
-                "Warning: the selected table does not contain any feature matrices in `.obsm`. "
+                'Warning: the selected table does not contain any feature matrices in ".obsm". '
                 "Add one before continuing."
             )
 
@@ -1232,12 +1232,12 @@ class ObjectClassificationWidget(QWidget):
             table_store_path = self._persistence_controller.selected_table_store_path
             destination = self.selected_spatialdata.path if table_store_path is None else table_store_path
             sync_tooltip = (
-                f"Write annotations, predictions, and classifier metadata for `{self.selected_table_name}` "
-                f"to `{destination}`."
+                f'Write annotations, predictions, and classifier metadata for "{self.selected_table_name}" '
+                f'to "{destination}".'
             )
             reload_tooltip = (
-                f"Discard the current in-memory `{self.selected_table_name}` table state and reload the table from "
-                f"`{destination}`."
+                f'Discard the current in-memory "{self.selected_table_name}" table state and reload the table from '
+                f'"{destination}".'
             )
             if self._persistence_controller.is_dirty:
                 sync_tooltip += " Unsynced local in-memory table changes are present."
@@ -1257,11 +1257,11 @@ class ObjectClassificationWidget(QWidget):
                 else "Choose an annotation table before changing the labels-layer coloring mode."
             )
         elif self.selected_color_by == COLOR_BY_USER_CLASS:
-            tooltip = "Color the labels layer by `user_class`."
+            tooltip = 'Color the labels layer by "user_class".'
         elif self.selected_color_by == COLOR_BY_PRED_CLASS:
-            tooltip = "Color the labels layer by `pred_class` using the stable user-class palette."
+            tooltip = 'Color the labels layer by "pred_class" using the stable user-class palette.'
         elif self.selected_color_by == COLOR_BY_PRED_CONFIDENCE:
-            tooltip = "Color the labels layer by continuous `pred_confidence` values."
+            tooltip = 'Color the labels layer by continuous "pred_confidence" values.'
         else:
             tooltip = "Choose how to color the labels layer."
 
@@ -1384,7 +1384,7 @@ class ObjectClassificationWidget(QWidget):
         if show_feedback:
             destination = self._selected_table_store_destination()
             message = feedback_message or (
-                f"Wrote `{self.selected_table_name}` annotations, predictions, and classifier metadata to `{destination}`."
+                f'Wrote "{self.selected_table_name}" annotations, predictions, and classifier metadata to "{destination}".'
             )
             self._set_persistence_feedback(message, error=False)
         self._update_selection_status()
@@ -1406,7 +1406,7 @@ class ObjectClassificationWidget(QWidget):
             source = self._selected_table_store_destination()
             self._reload_selected_table_from_zarr(
                 feedback_message=(
-                    f"Wrote local table state and reloaded `{self.selected_table_name}` table state from `{source}`."
+                    f'Wrote local table state and reloaded "{self.selected_table_name}" table state from "{source}".'
                 ),
             )
             return
@@ -1434,7 +1434,7 @@ class ObjectClassificationWidget(QWidget):
         self._bind_current_selection()
         self._classifier_controller.reset_after_reload()
         source = self._selected_table_store_destination()
-        message = feedback_message or f"Reloaded `{self.selected_table_name}` table state from `{source}`."
+        message = feedback_message or f'Reloaded "{self.selected_table_name}" table state from "{source}".'
         self._set_persistence_feedback(message, error=False)
         return True
 
@@ -1450,7 +1450,7 @@ class ObjectClassificationWidget(QWidget):
         layout.setSpacing(14)
 
         warning_message = (
-            f"Table `{escape(table_name)}` has in-memory changes that have not been written to zarr."
+            f'Table "{escape(table_name)}" has in-memory changes that have not been written to zarr.'
             if table_name is not None
             else "The selected table has in-memory changes that have not been written to zarr."
         )
@@ -1599,7 +1599,7 @@ class ObjectClassificationWidget(QWidget):
             return
 
         self._set_classifier_export_feedback(
-            f"Exported classifier with {bundle.n_features} feature columns to `{path}`.",
+            f'Exported classifier with {bundle.n_features} feature columns to "{path}".',
             error=False,
         )
         self._update_classifier_controls()
