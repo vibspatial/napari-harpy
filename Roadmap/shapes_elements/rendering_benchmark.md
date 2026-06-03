@@ -220,6 +220,9 @@ Non-goal:
      continuous RGBA helper;
    - update categorical shape style paths to use the vectorized categorical
      RGBA helper where categories and palettes are already resolved;
+   - update table-backed instance coloring to keep the RGBA array returned by
+     `label_colormap(...).map(...)` directly, instead of wrapping it in a
+     `pd.Series` of color tuples;
    - replace `_with_alpha(...)` in the shapes/points styling path with direct
      alpha assignment on the RGBA array;
    - preserve current semantics:
