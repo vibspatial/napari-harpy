@@ -160,6 +160,8 @@ def build_primary_shapes_loaded_card_spec(
     title = f"Shapes Layer {action}"
     kind: StatusCardKind = "success"
     lines = [f'{action} shapes layer for "{display_name}".']
+    if result.shapes_rendering_mode == "points":
+        lines.append("Rendered point-radius shapes as napari points for faster display.")
     if result.skipped_geometry_count:
         title = _with_warning_suffix(title)
         kind = "warning"
@@ -186,6 +188,8 @@ def build_styled_shapes_card_spec(
     shapes_name = request.shapes_name
     display_name, was_shortened = format_feedback_identifier(shapes_name)
     lines = [(f'{action} styled shapes layer for {source_text} on shapes element "{display_name}".')]
+    if result.shapes_rendering_mode == "points":
+        lines.append("Rendered point-radius shapes as napari points for faster display.")
     tooltip_message = (
         f'{action} styled shapes layer for {source_text} on shapes element "{shapes_name}".'
         if was_shortened

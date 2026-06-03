@@ -1348,14 +1348,16 @@ class ViewerAdapter(QObject):
         existing_layer = self._get_loaded_shapes_layer_for_coordinate_system(sdata, shapes_name, coordinate_system)
         if existing_layer is not None:
             binding = self._layer_bindings.get_binding(existing_layer)
-            skipped_geometry_count = binding.skipped_geometry_count if isinstance(binding, ShapesLayerBinding) else 0
+            if not isinstance(binding, ShapesLayerBinding):
+                raise ValueError("Loaded shapes layer is missing its Harpy shapes binding.")
             return ShapesLoadResult(
                 layer=existing_layer,
                 created=False,
                 value_kind=None,
                 palette_source=None,
                 coercion_applied=False,
-                skipped_geometry_count=skipped_geometry_count,
+                skipped_geometry_count=binding.skipped_geometry_count,
+                shapes_rendering_mode=binding.shapes_rendering_mode,
             )
 
         built_layer = _build_shapes_layer(
@@ -1384,6 +1386,7 @@ class ViewerAdapter(QObject):
             palette_source=None,
             coercion_applied=False,
             skipped_geometry_count=built_layer.skipped_geometry_count,
+            shapes_rendering_mode=built_layer.shapes_rendering_mode,
         )
 
     def ensure_styled_shapes_loaded(
@@ -1466,6 +1469,7 @@ class ViewerAdapter(QObject):
             unannotated_source_shape_count=style_result.unannotated_source_shape_count,
             unannotated_rendered_shape_count=style_result.unannotated_rendered_shape_count,
             skipped_geometry_count=binding.skipped_geometry_count,
+            shapes_rendering_mode=binding.shapes_rendering_mode,
         )
 
     def remove_labels_layer(self, sdata: SpatialData, labels_name: str, coordinate_system: str) -> Labels | None:

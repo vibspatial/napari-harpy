@@ -1842,6 +1842,7 @@ def test_viewer_adapter_ensure_shapes_loaded_adds_polygon_layer_and_registers_bi
     assert result.palette_source is None
     assert result.coercion_applied is False
     assert result.skipped_geometry_count == 0
+    assert result.shapes_rendering_mode == "shapes"
     assert layer in viewer.layers
     assert layer.name == "blobs_polygons"
     assert layer.shape_type == ["polygon"] * len(sdata_blobs.shapes["blobs_polygons"])
@@ -1904,6 +1905,7 @@ def test_viewer_adapter_ensure_shapes_loaded_renders_circles_as_points(sdata_blo
     )
 
     assert isinstance(layer, Points)
+    assert result.shapes_rendering_mode == "points"
     np.testing.assert_allclose(layer.data, expected_coordinates)
     np.testing.assert_allclose(layer.size, 2.0 * circles["radius"].to_numpy(dtype=float))
     np.testing.assert_allclose(layer.face_color, np.asarray([to_rgba("#00FFFF")] * len(circles)))
@@ -1952,6 +1954,7 @@ def test_viewer_adapter_ensure_shapes_loaded_reuses_point_radius_layer(sdata_blo
     assert first.layer is second.layer
     assert first.created is True
     assert second.created is False
+    assert second.shapes_rendering_mode == "points"
     assert len(viewer.layers) == 1
     assert get_shapes_binding(adapter, first.layer).shapes_rendering_mode == "points"
 
@@ -2257,6 +2260,7 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_creates_point_backed_categor
     assert result.value_kind == "categorical"
     assert result.palette_source == "stored"
     assert result.coercion_applied is False
+    assert result.shapes_rendering_mode == "points"
     assert isinstance(result.layer, Points)
     assert result.layer in viewer.layers
     assert result.layer.name == "cell_centroids[shapes_column:cell_type]"
@@ -2419,6 +2423,7 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_creates_point_backed_table_v
     assert result.coercion_applied is False
     assert result.unannotated_source_shape_count == 1
     assert result.unannotated_rendered_shape_count == 1
+    assert result.shapes_rendering_mode == "points"
     assert isinstance(result.layer, Points)
     assert result.layer in viewer.layers
     assert result.layer.name == "cell_centroids[obs:cell_type]"

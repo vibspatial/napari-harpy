@@ -41,6 +41,7 @@ SHAPES_EDGE_ALPHA = 1.0
 _SHAPES_EDGE_WIDTH_SYNC_CALLBACK_ATTR = "_harpy_shapes_edge_width_sync_callback"
 _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR = "_harpy_shapes_edge_color_sync_callback"
 ShapesStyleValueKind = ShapeColorValueKind | Literal["instance"]
+ShapesRenderingMode = Literal["shapes", "points"]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -67,6 +68,12 @@ class ShapesLoadResult(ShapesStyleResult):
     layer: Shapes | Points
     created: bool
     skipped_geometry_count: int = 0
+    shapes_rendering_mode: ShapesRenderingMode = "shapes"
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.shapes_rendering_mode not in ("shapes", "points"):
+            raise ValueError("Shapes load results require `shapes_rendering_mode` to be 'shapes' or 'points'.")
 
 
 @dataclass(frozen=True)

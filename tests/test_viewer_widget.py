@@ -9,6 +9,7 @@ import dask.dataframe as dd
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+from matplotlib.colors import to_rgba
 from napari.layers import Image, Shapes
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor
@@ -1819,6 +1820,7 @@ def test_viewer_widget_add_update_shapes_with_table_source_dispatches_to_styled_
             skipped_geometry_count=0,
             unannotated_source_shape_count=1,
             unannotated_rendered_shape_count=1,
+            shapes_rendering_mode="points",
         )
 
     monkeypatch.setattr(widget.app_state.viewer_adapter, "ensure_styled_shapes_loaded", ensure_styled_shapes_loaded)
@@ -1836,6 +1838,7 @@ def test_viewer_widget_add_update_shapes_with_table_source_dispatches_to_styled_
     assert viewer.layers.selection.active is result_layer
     _assert_action_feedback_card(widget, title="Styled Shapes Created", kind="info")
     assert 'Created styled shapes layer for obs["cell_type"]' in widget.global_action_feedback_label.text()
+    assert "Rendered point-radius shapes as napari points for faster display." in widget.global_action_feedback_label.text()
     assert "Used the stored categorical palette." in widget.global_action_feedback_label.text()
     assert "Rendered 1 shape transparent because it has no row in the linked table." in (
         widget.global_action_feedback_label.text()
@@ -2110,9 +2113,12 @@ def test_viewer_widget_add_update_shapes_loads_layer(qtbot, sdata_blobs) -> None
     assert binding.element_name == "blobs_circles"
     assert binding.coordinate_system == "global"
     assert viewer.layers.selection.active is layer
-    np.testing.assert_allclose(layer.face_color[:, 3], np.zeros(len(layer.data)))
+    np.testing.assert_allclose(layer.face_color, np.asarray([to_rgba("#00FFFF")] * len(layer.data)))
     _assert_action_feedback_card(widget, title="Shapes Layer Created", kind="success")
     assert 'Created shapes layer for "blobs_circles".' in widget.global_action_feedback_label.text()
+    assert "Rendered point-radius shapes as napari points for faster display." in (
+        widget.global_action_feedback_label.text()
+    )
 
 
 def test_viewer_widget_add_update_shapes_reuses_existing_layer(qtbot, sdata_blobs) -> None:
@@ -2168,6 +2174,7 @@ def test_viewer_widget_add_update_shapes_uses_selected_coordinate_system(qtbot, 
                 palette_source=None,
                 coercion_applied=False,
                 skipped_geometry_count=0,
+                shapes_rendering_mode="shapes",
             )
         ),
     )
@@ -2216,6 +2223,7 @@ def test_viewer_widget_add_update_shapes_reports_skipped_geometry_warning(qtbot,
             palette_source=None,
             coercion_applied=False,
             skipped_geometry_count=2,
+            shapes_rendering_mode="shapes",
         ),
     )
     monkeypatch.setattr(widget.app_state.viewer_adapter, "activate_layer", lambda layer: True)
@@ -2233,6 +2241,7 @@ def test_viewer_widget_add_update_shapes_reports_skipped_geometry_warning(qtbot,
     widget.shape_cards[0].add_update_button.click()
 
     _assert_action_feedback_card(widget, title="Shapes Layer Created With Warning", kind="warning")
+    assert "point-radius shapes as napari points" not in widget.global_action_feedback_label.text()
     assert "Skipped 2 empty, invalid, or unsupported geometries" in widget.global_action_feedback_label.text()
 
 

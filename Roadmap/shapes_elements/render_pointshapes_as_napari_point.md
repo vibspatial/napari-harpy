@@ -475,10 +475,11 @@ Add focused tests for:
        slice;
      - styled point-backed direct shape-column layers do not receive primary
        color sync, keep data-driven colors, and still sync symbol changes;
-     - styled point-backed table-backed layers do not receive primary color sync
-       keep palette/transparent-row semantics, and still sync symbol changes.
+     - styled point-backed table-backed layers do not receive primary color
+       sync, keep palette/transparent-row semantics, and still sync symbol
+       changes.
 
-7. Widget and feedback polish - specified
+7. Widget and feedback polish - completed
    - keep the shapes card controls unchanged:
      - do not add a separate "render as points" control;
      - keep direct shape-column and linked-table color-source controls at the
