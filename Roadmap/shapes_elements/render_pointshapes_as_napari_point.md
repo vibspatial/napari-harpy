@@ -537,7 +537,7 @@ Add focused tests for:
        feedback lines;
      - generic shapes feedback does not mention point-radius rendering.
 
-8. Point-backed radius-size scale control - specified
+8. Point-backed radius-size scale control - completed
    - make napari's point-size UI useful without destroying the source
      radius-derived sizes;
    - add a point-backed-shapes-specific size sync helper, separate from the

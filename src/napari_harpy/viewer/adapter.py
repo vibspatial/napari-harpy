@@ -37,6 +37,7 @@ from napari_harpy.viewer.points_styling import (
     apply_points_selection_style,
     build_points_selection_layer_name,
     connect_current_face_color_to_global_point_face_color,
+    connect_current_size_to_radius_scaled_point_size,
     connect_current_symbol_to_global_point_symbol,
 )
 from napari_harpy.viewer.shapes_styling import (
@@ -1907,6 +1908,7 @@ def _build_shapes_layer(
             face_color="#00FFFF",
             border_color="#00FFFF",
         )
+        connect_current_size_to_radius_scaled_point_size(layer, point_radius_inputs.sizes)
         connect_current_symbol_to_global_point_symbol(layer)
         # Styled variants pass `sync_edge_color=False`; keep color callbacks
         # primary-only so styled palettes stay data-driven.

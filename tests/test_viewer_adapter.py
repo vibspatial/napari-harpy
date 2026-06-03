@@ -280,6 +280,11 @@ def make_table_backed_point_radius_shapes_sdata() -> ShapesSpatialDataWithTables
     return ShapesSpatialDataWithTables(shapes={"cell_centroids": shapes}, tables={"table": table})
 
 
+def expected_radius_reference_size(sizes: np.ndarray) -> float:
+    sizes = np.asarray(sizes, dtype=float)
+    return float(sizes[0]) if np.allclose(sizes, sizes[0]) else float(np.median(sizes))
+
+
 def make_two_table_backed_shapes_sdata() -> ShapesSpatialDataWithTables:
     sdata = make_table_backed_shapes_sdata()
     table_b = TableModel.parse(
@@ -1907,7 +1912,9 @@ def test_viewer_adapter_ensure_shapes_loaded_renders_circles_as_points(sdata_blo
     assert isinstance(layer, Points)
     assert result.shapes_rendering_mode == "points"
     np.testing.assert_allclose(layer.data, expected_coordinates)
-    np.testing.assert_allclose(layer.size, 2.0 * circles["radius"].to_numpy(dtype=float))
+    expected_sizes = 2.0 * circles["radius"].to_numpy(dtype=float)
+    np.testing.assert_allclose(layer.size, expected_sizes)
+    assert layer.current_size == expected_radius_reference_size(expected_sizes)
     np.testing.assert_allclose(layer.face_color, np.asarray([to_rgba("#00FFFF")] * len(circles)))
     np.testing.assert_allclose(layer.border_color, np.asarray([to_rgba("#00FFFF")] * len(circles)))
     assert layer.opacity == 0.8
@@ -1930,6 +1937,7 @@ def test_viewer_adapter_point_backed_primary_shapes_syncs_presentation_controls(
     result = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_circles", "global")
     layer = result.layer
     original_size = layer.size.copy()
+    reference_size = expected_radius_reference_size(original_size)
 
     assert isinstance(layer, Points)
     layer.current_symbol = "square"
@@ -1940,7 +1948,32 @@ def test_viewer_adapter_point_backed_primary_shapes_syncs_presentation_controls(
     np.testing.assert_allclose(layer.face_color, np.asarray([to_rgba("red")] * len(layer.data)))
     np.testing.assert_allclose(layer.border_color, layer.face_color)
     np.testing.assert_allclose(layer.border_width, np.zeros(len(layer.data)))
+    np.testing.assert_allclose(layer.size, original_size * (99.0 / reference_size))
+
+    layer.current_size = 0.0
     np.testing.assert_allclose(layer.size, original_size)
+
+
+def test_viewer_adapter_point_backed_fixed_radius_shapes_scale_like_point_size_control() -> None:
+    geodataframe = gpd.GeoDataFrame(
+        {"radius": [5.0, 5.0]},
+        geometry=[Point(10, 20), Point(30, 40)],
+        index=["cell_1", "cell_2"],
+    )
+    sdata = make_shapes_sdata(geodataframe, shapes_name="cell_centroids")
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    result = adapter.ensure_shapes_loaded(sdata, "cell_centroids", "global")
+    layer = result.layer
+
+    assert isinstance(layer, Points)
+    assert layer.current_size == 10.0
+    np.testing.assert_allclose(layer.size, np.asarray([10.0, 10.0]))
+
+    layer.current_size = 25.0
+
+    np.testing.assert_allclose(layer.size, np.asarray([25.0, 25.0]))
 
 
 def test_viewer_adapter_ensure_shapes_loaded_reuses_point_radius_layer(sdata_blobs) -> None:
@@ -2276,6 +2309,9 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_creates_point_backed_categor
     assert result.layer.features["index"].to_list() == ["cell_1", "cell_2"]
     assert result.layer.features["cell_type"].to_list() == ["T", "B"]
     np.testing.assert_allclose(result.layer.size, np.asarray([4.0, 6.0]))
+    assert result.layer.current_size == 5.0
+    result.layer.current_size = 15.0
+    np.testing.assert_allclose(result.layer.size, np.asarray([12.0, 18.0]))
     np.testing.assert_allclose(result.layer.face_color[0], to_rgba("#ff0000"))
     np.testing.assert_allclose(result.layer.border_color[1], to_rgba("#00ff00"))
     np.testing.assert_allclose(result.layer.border_width, np.zeros(2))
@@ -2301,11 +2337,14 @@ def test_viewer_adapter_point_backed_shape_column_styling_keeps_data_driven_colo
     face_color = result.layer.face_color.copy()
     border_color = result.layer.border_color.copy()
 
+    result.layer.current_size = 15.0
+    scaled_size = result.layer.size.copy()
     result.layer.current_face_color = "red"
     result.layer.current_symbol = "square"
 
     np.testing.assert_allclose(result.layer.face_color, face_color)
     np.testing.assert_allclose(result.layer.border_color, border_color)
+    np.testing.assert_allclose(result.layer.size, scaled_size)
     assert all(symbol.value == "square" for symbol in result.layer.symbol)
 
 
@@ -2320,6 +2359,8 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_creates_point_backed_continu
     )
 
     first = adapter.ensure_styled_shapes_loaded(sdata, "cell_centroids", "global", style_spec)
+    first.layer.current_size = 12.0
+    scaled_size = first.layer.size.copy()
     second = adapter.ensure_styled_shapes_loaded(sdata, "cell_centroids", "global", style_spec, fill=True)
 
     assert isinstance(first.layer, Points)
@@ -2332,7 +2373,8 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_creates_point_backed_continu
     assert get_shapes_binding(adapter, first.layer).shapes_rendering_mode == "points"
     assert list(first.layer.features.columns) == ["index", "score"]
     assert first.layer.features["score"].to_list() == [0.0, 1.0]
-    np.testing.assert_allclose(first.layer.size, np.asarray([4.0, 6.0]))
+    np.testing.assert_allclose(first.layer.size, scaled_size)
+    np.testing.assert_allclose(first.layer.size, np.asarray([9.6, 14.4]))
     np.testing.assert_allclose(first.layer.face_color, first.layer.border_color)
     assert len(viewer.layers) == 1
 
@@ -2413,6 +2455,7 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_creates_point_backed_table_v
     )
 
     result = adapter.ensure_styled_shapes_loaded(sdata, "cell_centroids", "global", style_spec)
+    result.layer.current_size = 12.0
     second = adapter.ensure_styled_shapes_loaded(sdata, "cell_centroids", "global", style_spec)
 
     assert result.created is True
@@ -2436,7 +2479,7 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_creates_point_backed_table_v
     assert result.layer.features["instance_id"].to_list() == ["cell_1", "cell_2", "cell_3"]
     assert result.layer.features["cell_type"].to_list()[:2] == ["T", "B"]
     assert pd.isna(result.layer.features["cell_type"].iloc[2])
-    np.testing.assert_allclose(result.layer.size, np.asarray([4.0, 6.0, 8.0]))
+    np.testing.assert_allclose(result.layer.size, np.asarray([8.0, 12.0, 16.0]))
     np.testing.assert_allclose(result.layer.face_color[0], to_rgba("#ff0000"))
     np.testing.assert_allclose(result.layer.border_color[1], to_rgba("#00ff00"))
     assert result.layer.face_color[2, 3] == 0.0
@@ -2460,11 +2503,14 @@ def test_viewer_adapter_point_backed_table_styling_keeps_data_driven_colors_afte
     face_color = result.layer.face_color.copy()
     border_color = result.layer.border_color.copy()
 
+    result.layer.current_size = 12.0
+    scaled_size = result.layer.size.copy()
     result.layer.current_face_color = "red"
     result.layer.current_symbol = "square"
 
     np.testing.assert_allclose(result.layer.face_color, face_color)
     np.testing.assert_allclose(result.layer.border_color, border_color)
+    np.testing.assert_allclose(result.layer.size, scaled_size)
     assert all(symbol.value == "square" for symbol in result.layer.symbol)
 
 
