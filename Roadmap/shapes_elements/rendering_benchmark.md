@@ -170,9 +170,10 @@ Non-goal:
   geometry preparation is a separate concern, and point-radius shapes already
   use the napari `Points` fast path.
 
-1. Add a reusable benchmark script
-   - create a small script, for example
-     `scripts/benchmark_viewer_coloring.py`;
+1. Add a reusable benchmark script - completed
+   - added `scripts/benchmark_viewer_coloring.py`;
+   - run with:
+     `./.venv/bin/python scripts/benchmark_viewer_coloring.py --rows 100000 300000`;
    - benchmark synthetic `100k`, `300k`, and optionally `1M` rows;
    - include:
      - shared categorical and continuous color creation;
