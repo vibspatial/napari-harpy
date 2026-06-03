@@ -62,7 +62,7 @@ def build_feature_extraction_selection_status_card_spec(
         return _FeatureExtractionStatusCardSpec(
             title="No SpatialData Loaded",
             lines=(
-                "Load a SpatialData object through the Harpy Viewer widget, reader, or `Interactive(sdata)`.",
+                'Load a SpatialData object through the Harpy Viewer widget, reader, or "Interactive(sdata)".',
                 "This form updates automatically from the shared Harpy state.",
             ),
             kind="warning",

@@ -63,7 +63,7 @@ def test_build_points_layer_card_spec_reports_warnings() -> None:
 
     assert spec.title == "Points Layer Created With Warning"
     assert spec.kind == "warning"
-    assert spec.lines[0] == "Created points layer for `cells` by `cell_type` with 1,250 point(s)."
+    assert spec.lines[0] == 'Created points layer for "cells" by "cell_type" with 1,250 point(s).'
     assert "Only rendered a sampled subset." in spec.lines
     assert "Categorical coloring is disabled for 200 selected values" in spec.lines[-1]
 
@@ -89,7 +89,7 @@ def test_build_points_layer_card_spec_uses_tooltip_for_shortened_names() -> None
 
     assert spec.title == "Points Layer Updated"
     assert points_name not in spec.lines[0]
-    assert spec.tooltip_message == f"Updated points layer for `{points_name}` by `gene` with 12 point(s)."
+    assert spec.tooltip_message == f'Updated points layer for "{points_name}" by "gene" with 12 point(s).'
 
 
 def test_build_primary_labels_loaded_card_spec_uses_tooltip_for_shortened_names() -> None:
@@ -107,7 +107,7 @@ def test_build_primary_labels_loaded_card_spec_uses_tooltip_for_shortened_names(
     assert spec.title == "Labels Layer Created"
     assert spec.kind == "success"
     assert labels_name not in spec.lines[0]
-    assert spec.tooltip_message == f"Created labels layer for `{labels_name}`."
+    assert spec.tooltip_message == f'Created labels layer for "{labels_name}".'
 
 
 def test_build_styled_labels_card_spec_reports_stored_palette() -> None:
@@ -127,7 +127,7 @@ def test_build_styled_labels_card_spec_reports_stored_palette() -> None:
     assert spec.title == "Colored Overlay Created"
     assert spec.kind == "success"
     assert spec.lines == (
-        'Created colored overlay for obs["cell_type"] on labels element `blobs_labels`.',
+        'Created colored overlay for obs["cell_type"] on labels element "blobs_labels".',
         "Used the stored categorical palette.",
     )
 
@@ -148,7 +148,7 @@ def test_build_styled_labels_card_spec_uses_tooltip_for_shortened_names() -> Non
     spec = build_styled_labels_card_spec(request, result)
 
     assert labels_name not in spec.lines[0]
-    assert spec.tooltip_message == f'Created colored overlay for obs["cell_type"] on labels element `{labels_name}`.'
+    assert spec.tooltip_message == f'Created colored overlay for obs["cell_type"] on labels element "{labels_name}".'
 
 
 def test_build_styled_labels_card_spec_reports_instance_coloring() -> None:
@@ -201,7 +201,7 @@ def test_build_primary_shapes_loaded_card_spec_reports_skipped_geometries() -> N
     assert spec.title == "Shapes Layer Created With Warning"
     assert spec.kind == "warning"
     assert spec.lines == (
-        "Created shapes layer for `blobs_circles`.",
+        'Created shapes layer for "blobs_circles".',
         "Skipped 2 empty, invalid, or unsupported geometries while loading renderable shapes.",
     )
 
@@ -224,7 +224,7 @@ def test_build_styled_shapes_card_spec_combines_palette_and_geometry_warnings() 
     assert spec.title == "Styled Shapes Updated With Warning"
     assert spec.kind == "warning"
     assert spec.lines == (
-        'Updated styled shapes layer for column "cell_type" on shapes element `blobs_circles`.',
+        'Updated styled shapes layer for column "cell_type" on shapes element "blobs_circles".',
         "Used the default categorical palette because no stored palette was present.",
         "Skipped 1 empty, invalid, or unsupported geometries while loading renderable shapes.",
     )
@@ -250,7 +250,7 @@ def test_build_styled_shapes_card_spec_formats_table_obs_source() -> None:
     assert spec.title == "Styled Shapes Created"
     assert spec.kind == "success"
     assert spec.lines == (
-        'Created styled shapes layer for obs["cell_type"] on shapes element `blobs_circles`.',
+        'Created styled shapes layer for obs["cell_type"] on shapes element "blobs_circles".',
         "Used the stored categorical palette.",
     )
 
@@ -274,7 +274,7 @@ def test_build_styled_shapes_card_spec_formats_table_x_source() -> None:
 
     assert spec.title == "Styled Shapes Created"
     assert spec.kind == "success"
-    assert spec.lines == ('Created styled shapes layer for X[:, "GeneA"] on shapes element `blobs_circles`.',)
+    assert spec.lines == ('Created styled shapes layer for X[:, "GeneA"] on shapes element "blobs_circles".',)
 
 
 def test_build_styled_shapes_card_spec_reports_table_backed_instance_coloring() -> None:
@@ -297,7 +297,7 @@ def test_build_styled_shapes_card_spec_reports_table_backed_instance_coloring() 
     assert spec.title == "Styled Shapes Created"
     assert spec.kind == "success"
     assert spec.lines == (
-        'Created styled shapes layer for obs["instance_id"] on shapes element `blobs_circles`.',
+        'Created styled shapes layer for obs["instance_id"] on shapes element "blobs_circles".',
         "Used instance colors.",
     )
 
@@ -322,7 +322,7 @@ def test_build_styled_shapes_card_spec_reports_partial_table_coverage_as_info() 
     assert spec.title == "Styled Shapes Created"
     assert spec.kind == "info"
     assert spec.lines == (
-        'Created styled shapes layer for obs["cell_type"] on shapes element `blobs_circles`.',
+        'Created styled shapes layer for obs["cell_type"] on shapes element "blobs_circles".',
         "Used the stored categorical palette.",
         "Rendered 2 shapes transparent because 1 source shape has no row in the linked table.",
     )
@@ -346,7 +346,7 @@ def test_build_styled_shapes_card_spec_uses_tooltip_for_shortened_names() -> Non
 
     assert shapes_name not in spec.lines[0]
     assert (
-        spec.tooltip_message == f'Created styled shapes layer for column "cell_type" on shapes element `{shapes_name}`.'
+        spec.tooltip_message == f'Created styled shapes layer for column "cell_type" on shapes element "{shapes_name}".'
     )
 
 
@@ -381,7 +381,7 @@ def test_build_image_loaded_card_spec_reports_overlay_channels() -> None:
 
     assert spec.title == "Image Layer Created"
     assert spec.kind == "success"
-    assert spec.lines == ("Created image overlay for `blobs_image` with channels `DAPI`, `CD8`.",)
+    assert spec.lines == ('Created image overlay for "blobs_image" with channels "DAPI", "CD8".',)
 
 
 def test_build_image_loaded_card_spec_falls_back_to_overlay_channel_indices() -> None:
@@ -395,4 +395,4 @@ def test_build_image_loaded_card_spec_falls_back_to_overlay_channel_indices() ->
 
     spec = build_image_loaded_card_spec(request, result)
 
-    assert spec.lines == ("Created image overlay for `blobs_image` with channel `0`.",)
+    assert spec.lines == ('Created image overlay for "blobs_image" with channel "0".',)

@@ -412,7 +412,7 @@ class PointsController:
         worker.finished.connect(partial(self._on_value_worker_finished, job.job_id))
         self._set_state_status(
             PointsControllerState.LOADING_VALUES,
-            f"Points: loading values for `{job.points_name}` by `{job.index_column}`.",
+            f'Points: loading values for "{job.points_name}" by "{job.index_column}".',
             kind="info",
         )
         worker.start()
@@ -446,7 +446,7 @@ class PointsController:
         worker.finished.connect(partial(self._on_load_worker_finished, job.job_id))
         self._set_state_status(
             PointsControllerState.LOADING_SELECTION,
-            f"Points: loading selected `{job.value_source.value_table.index_column}` values.",
+            f'Points: loading selected "{job.value_source.value_table.index_column}" values.',
             kind="info",
         )
         worker.start()
@@ -541,7 +541,7 @@ class PointsController:
         value_count = len(result.value_table.values)
         self._set_state_status(
             PointsControllerState.VALUES_READY,
-            f"Points: loaded {value_count:,} values from `{result.identity.points_name}`.",
+            f'Points: loaded {value_count:,} values from "{result.identity.points_name}".',
             kind="success",
         )
         self._notify_value_source_loaded(result)
@@ -639,14 +639,14 @@ class PointsController:
         if self._current_value_source is not None:
             self._set_state_status(
                 PointsControllerState.VALUES_READY,
-                f"Points: values are ready for `{self._points_name}`.",
+                f'Points: values are ready for "{self._points_name}".',
                 kind="success",
             )
             return
 
         self._set_state_status(
             PointsControllerState.NO_POINTS_ELEMENT,
-            f"Points: ready to load values for `{self._points_name}`.",
+            f'Points: ready to load values for "{self._points_name}".',
             kind="info",
         )
 

@@ -1013,7 +1013,7 @@ def test_widget_shows_eligible_classifier_preparation_summary(qtbot, sdata_blobs
     assert "Training elements: 1 labels element" in preparation_text
     assert f"Prediction rows: {table.n_obs} rows" in preparation_text
     assert "Prediction scope: selected labels element" in preparation_text
-    assert "Features: `features_1`, 4 features" in preparation_text
+    assert 'Features: "features_1", 4 features' in preparation_text
     assert "Need at least" not in preparation_text
 
 
@@ -1401,7 +1401,7 @@ def test_widget_auto_loads_selected_segmentation_when_it_is_not_yet_loaded(qtbot
     assert viewer.layers.selection.active is viewer.layers[-1]
     assert widget._annotation_controller.labels_layer is viewer.layers[-1]
     assert widget._viewer_styling_controller.labels_layer is viewer.layers[-1]
-    assert "Loaded labels element `blobs_multiscale_labels` in coordinate system `global`." in (
+    assert 'Loaded labels element "blobs_multiscale_labels" in coordinate system "global".' in (
         widget.selection_status.text()
     )
     assert "This labels layer is loaded, but no annotation table is linked to it." in widget.selection_status.text()
@@ -1478,7 +1478,7 @@ def test_widget_handles_tables_without_obsm_entries(qtbot, sdata_blobs: SpatialD
     assert widget.selected_table_name == "table"
     assert widget.selected_feature_key is None
     assert not widget.validation_status.isHidden()
-    assert "does not contain any feature matrices in `.obsm`" in widget.validation_status.text()
+    assert 'does not contain any feature matrices in ".obsm"' in widget.validation_status.text()
 
 
 def test_widget_applies_user_class_to_picked_instance(qtbot, sdata_blobs: SpatialData) -> None:
@@ -1940,10 +1940,10 @@ def test_widget_enables_sync_for_backed_spatialdata(qtbot, backed_sdata_blobs: S
 
     assert widget.sync_button.isEnabled()
     assert widget.reload_button.isEnabled()
-    assert f"Write annotations, predictions, and classifier metadata for `table` to `{expected_table_path}`." in (
+    assert f'Write annotations, predictions, and classifier metadata for "table" to "{expected_table_path}".' in (
         sync_tooltip
     )
-    assert f"Discard the current in-memory `table` table state and reload the table from `{expected_table_path}`." in (
+    assert f'Discard the current in-memory "table" table state and reload the table from "{expected_table_path}".' in (
         reload_tooltip
     )
 
@@ -1999,7 +1999,7 @@ def test_widget_syncs_user_class_to_backed_zarr(qtbot, backed_sdata_blobs: Spati
     assert widget.reload_button.isEnabled()
     _assert_persistence_success_feedback(
         widget,
-        f"Wrote `table` annotations, predictions, and classifier metadata to `{expected_table_path}`.",
+        f'Wrote "table" annotations, predictions, and classifier metadata to "{expected_table_path}".',
     )
     assert isinstance(reread["table"].obs[USER_CLASS_COLUMN].dtype, pd.CategoricalDtype)
     assert list(reread["table"].obs[USER_CLASS_COLUMN].cat.categories) == [0, 3]
@@ -2108,7 +2108,7 @@ def test_widget_dirty_reload_can_write_then_reload(qtbot, monkeypatch, backed_sd
     assert reread["table"].obs.loc[disk_mask, USER_CLASS_COLUMN].tolist() == [3]
     _assert_persistence_success_feedback(
         widget,
-        f"Wrote local table state and reloaded `table` table state from `{expected_table_path}`.",
+        f'Wrote local table state and reloaded "table" table state from "{expected_table_path}".',
     )
 
 
@@ -2144,7 +2144,7 @@ def test_widget_dirty_reload_can_discard_local_edits(qtbot, monkeypatch, backed_
     assert widget._persistence_controller.is_dirty is False
     assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [0]
     assert reread["table"].obs.loc[disk_mask, USER_CLASS_COLUMN].tolist() == [0]
-    _assert_persistence_success_feedback(widget, f"Reloaded `table` table state from `{expected_table_path}`.")
+    _assert_persistence_success_feedback(widget, f'Reloaded "table" table state from "{expected_table_path}".')
 
 
 def test_widget_reloads_table_state_from_backed_zarr(qtbot, backed_sdata_blobs: SpatialData) -> None:
@@ -2174,7 +2174,7 @@ def test_widget_reloads_table_state_from_backed_zarr(qtbot, backed_sdata_blobs: 
         table.obs["instance_id"] == int(table.obs["instance_id"].iloc[-1])
     )
 
-    _assert_persistence_success_feedback(widget, f"Reloaded `table` table state from `{expected_table_path}`.")
+    _assert_persistence_success_feedback(widget, f'Reloaded "table" table state from "{expected_table_path}".')
     assert isinstance(table.obs[USER_CLASS_COLUMN].dtype, pd.CategoricalDtype)
     assert list(table.obs[USER_CLASS_COLUMN].cat.categories) == [0, 7]
     assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [7]
@@ -2212,7 +2212,7 @@ def test_widget_reload_falls_back_when_selected_feature_key_disappears(qtbot, ba
         widget.feature_matrix_combo.itemText(index) for index in range(widget.feature_matrix_combo.count())
     ]
 
-    _assert_persistence_success_feedback(widget, f"Reloaded `table` table state from `{expected_table_path}`.")
+    _assert_persistence_success_feedback(widget, f'Reloaded "table" table state from "{expected_table_path}".')
     assert feature_matrix_items == ["features_1"]
     assert widget.selected_feature_key == "features_1"
     assert "features_2" not in table.obsm
@@ -2298,7 +2298,7 @@ def test_widget_reload_freezes_classifier_worker_and_ignores_late_results(
     assert workers[0].quit_called is True
     assert widget._classifier_controller.is_training is False
     assert widget._classifier_controller.is_dirty is False
-    _assert_persistence_success_feedback(widget, f"Reloaded `table` table state from `{expected_table_path}`.")
+    _assert_persistence_success_feedback(widget, f'Reloaded "table" table state from "{expected_table_path}".')
     assert table.obs[PRED_CLASS_COLUMN].eq(7).all()
     assert table.obs[PRED_CONFIDENCE_COLUMN].eq(0.77).all()
     assert "Loaded predictions for" in widget.classifier_feedback.text()

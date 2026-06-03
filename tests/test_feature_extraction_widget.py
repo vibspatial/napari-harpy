@@ -1103,7 +1103,7 @@ def test_feature_extraction_widget_surfaces_duplicate_channel_names_as_batch_err
     assert widget.channel_selection_container.isHidden()
     assert widget.intensity_features_hint.text() == (
         "One or more selected images expose duplicate channel names. "
-        "Rename channels with `sdata.set_channel_names(...)` or choose a different image."
+        'Rename channels with "sdata.set_channel_names(...)" or choose a different image.'
     )
     assert bind_batch_calls
     args, kwargs = bind_batch_calls[-1]
@@ -1393,7 +1393,7 @@ def test_feature_extraction_widget_create_table_binding_matches_expected_control
     assert widget.calculate_button.toolTip() == ""
     controller_feedback_text = unescape(widget.controller_feedback.text())
     assert "Feature Extraction Ready" in controller_feedback_text
-    assert "ready to create table `features_table` and calculate." in controller_feedback_text
+    assert 'ready to create table "features_table" and calculate.' in controller_feedback_text
 
 
 def test_feature_extraction_widget_blocks_create_table_mode_for_missing_or_invalid_table_name(
@@ -1442,8 +1442,8 @@ def test_feature_extraction_widget_blocks_create_table_mode_for_table_name_colli
     assert widget.selected_table_mode == "create"
     assert widget.calculate_button.isEnabled() is False
     assert "Table Not Ready" in widget.selection_status.text()
-    assert "Table `table` already exists. Choose a different table name." in widget.selection_status.text()
-    assert "Table `table` already exists. Choose a different table name." in unescape(
+    assert 'Table "table" already exists. Choose a different table name.' in widget.selection_status.text()
+    assert 'Table "table" already exists. Choose a different table name.' in unescape(
         widget.calculate_button.toolTip()
     )
     assert widget._feature_extraction_controller.binding_state.triplets == ()

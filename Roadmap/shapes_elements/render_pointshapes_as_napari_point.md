@@ -419,29 +419,55 @@ Add focused tests for:
      - non-qualifying shapes elements still create a generic napari `Shapes`
        styled layer with `shapes_rendering_mode="shapes"`.
 
-6. Point-backed primary presentation controls - follow-up
-   - primary generic shapes currently connect napari presentation controls with:
-     - `_connect_current_edge_width_to_global_edge_width(layer)`;
-     - `_connect_current_edge_color_to_global_edge_color(layer)` when
+6. Point-backed primary presentation controls - specified
+   - scope: primary point-radius shapes layers that are rendered as napari
+     `Points`, i.e. `ShapesLayerBinding.shapes_role == "primary"` and
+     `shapes_rendering_mode == "points"`;
+   - keep generic napari `Shapes` behavior unchanged:
+     - primary generic shapes continue to sync
+       `_connect_current_edge_width_to_global_edge_width(layer)`;
+     - primary generic shapes continue to sync
+       `_connect_current_edge_color_to_global_edge_color(layer)` when
        `sync_edge_color=True`;
-   - for primary point-radius shapes rendered as napari `Points`, sync
-     presentation-only controls:
-     - `current_symbol -> symbol`, because symbol does not change the source
-       geometry semantics;
-     - `current_face_color -> face_color` and `border_color`, because primary
-       unstyled point-backed shapes use one presentation color;
-   - do not sync `current_size -> size` as an absolute overwrite for
-     point-backed shapes. Size is derived from the source `radius` column
-     (`size = 2 * radius`) and therefore carries geometry semantics. Applying
-     napari's absolute `current_size` globally would overwrite the
-     radius-derived sizes;
-   - implement size interaction separately as the radius-size scale factor in
-     Slice 8;
-   - avoid color/symbol sync for styled point-backed layers where colors are
-     data-driven;
-   - add tests that changing the relevant napari presentation control updates
-     all primary point-backed shapes consistently, and does not flatten styled
-     point-backed palettes.
+   - for primary point-backed shapes, add point-specific presentation sync
+     helpers, separate from the generic shapes helpers:
+     - sync `current_symbol -> symbol` for all points, because symbol is a
+       presentation choice and does not alter the source point/radius geometry;
+     - sync `current_face_color -> face_color` and `border_color` for all
+       points, because primary unstyled point-backed shapes use one
+       presentation color and should keep border color equal to face color;
+     - keep `border_width=0`, unless a later explicit design decision adds
+       visible point borders;
+   - do not sync `current_size -> size` as an absolute overwrite in this slice:
+     - point size is derived from the source `radius` column
+       (`size = 2 * radius`);
+     - writing a single absolute `current_size` into `layer.size` would destroy
+       variable-radius information;
+     - implement size interaction separately as the radius-size scale factor in
+       Slice 8;
+   - do not attach the primary point presentation sync callbacks to styled
+     point-backed shapes:
+     - direct shape-column and table-backed styled layers have data-driven
+       colors;
+     - user color changes must not flatten styled palettes or transparent
+       unannotated rows;
+     - styled point-backed layers may still preserve their existing symbol, but
+       they should not receive primary color sync callbacks;
+   - callbacks should be stored on the layer under private Harpy attribute
+     names, mirroring the existing generic shapes sync pattern, so they are not
+     garbage-collected;
+   - add tests for:
+     - changing `current_symbol` on a primary point-backed shapes layer updates
+       every point's `symbol`;
+     - changing `current_face_color` on a primary point-backed shapes layer
+       updates every point's `face_color` and `border_color`;
+     - changing presentation color keeps `border_width=0`;
+     - changing `current_size` does not overwrite radius-derived `size` in this
+       slice;
+     - styled point-backed direct shape-column layers do not receive primary
+       color sync and keep data-driven colors;
+     - styled point-backed table-backed layers do not receive primary color sync
+       and keep palette/transparent-row semantics.
 
 7. Widget and feedback polish
    - make the shapes card/status feedback distinguish between regular shapes

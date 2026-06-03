@@ -995,13 +995,13 @@ class FeatureExtractionWidget(QWidget):
         if blocked_restored_selection is not None:
             owner_coordinate_system, blocked_option = blocked_restored_selection
             fragments.append(
-                f"`{blocked_option.display_name}` already selected in `{owner_coordinate_system}`, "
+                f'"{blocked_option.display_name}" already selected in "{owner_coordinate_system}", '
                 "so choose a different labels element"
             )
         elif blocked_label_options_by_owner:
             if len(blocked_label_options_by_owner) == 1:
                 owner_coordinate_system, blocked_option = blocked_label_options_by_owner[0]
-                fragments.append(f"`{blocked_option.display_name}` already selected in `{owner_coordinate_system}`")
+                fragments.append(f'"{blocked_option.display_name}" already selected in "{owner_coordinate_system}"')
             else:
                 fragments.append(
                     f"{self._format_count_phrase(len(blocked_label_options_by_owner), 'labels element')} already selected in other cards"
@@ -1011,7 +1011,7 @@ class FeatureExtractionWidget(QWidget):
             transform_subject = "its" if unavailable_label_count == 1 else "their"
             fragments.append(
                 f"{self._format_count_phrase(unavailable_label_count, 'labels element')} unavailable because "
-                f"{transform_subject} supported transform relative to `{coordinate_system}` is not "
+                f'{transform_subject} supported transform relative to "{coordinate_system}" is not '
                 "translation-only or identity"
             )
 
@@ -1027,12 +1027,12 @@ class FeatureExtractionWidget(QWidget):
         if unavailable_image_count == 1:
             return (
                 "1 image unavailable because it does not have the same shape and transform relative "
-                f"to `{coordinate_system}` as the selected labels element."
+                f'to "{coordinate_system}" as the selected labels element.'
             )
 
         return (
             f"{unavailable_image_count} images unavailable because they do not have the same shape and "
-            f"transform relative to `{coordinate_system}` as the selected labels element."
+            f'transform relative to "{coordinate_system}" as the selected labels element.'
         )
 
     def _sync_remembered_card_selection_from_state(
@@ -1580,7 +1580,7 @@ class FeatureExtractionWidget(QWidget):
         if has_duplicate_channel_names:
             fragments.append(
                 "One or more selected images expose duplicate channel names. "
-                "Rename channels with `sdata.set_channel_names(...)` or choose a different image."
+                'Rename channels with "sdata.set_channel_names(...)" or choose a different image.'
             )
 
         if not fragments:
@@ -1630,7 +1630,7 @@ class FeatureExtractionWidget(QWidget):
 
             if not channel_names:
                 raise ValueError(
-                    f"Image `{image_option.image_name}` in `{coordinate_system}` does not expose channel names, "
+                    f'Image "{image_option.image_name}" in "{coordinate_system}" does not expose channel names, '
                     "but feature extraction expects images with an explicit channel axis."
                 )
 
@@ -2054,9 +2054,9 @@ class FeatureExtractionWidget(QWidget):
         layout.setSpacing(14)
 
         warning_message = (
-            f"Table `{escape(table_name)}` already contains `.obsm[{feature_key!r}]`."
+            f'Table "{escape(table_name)}" already contains ".obsm[{feature_key!r}]".'
             if table_name is not None
-            else f"The selected table already contains `.obsm[{feature_key!r}]`."
+            else f'The selected table already contains ".obsm[{feature_key!r}]".'
         )
         warning_card = QLabel(
             "<div>"
@@ -2213,7 +2213,7 @@ class FeatureExtractionWidget(QWidget):
             return f"Choose a valid table name. {error}"
 
         if table_name in self.selected_spatialdata.tables:
-            return f"Table `{table_name}` already exists. Choose a different table name."
+            return f'Table "{table_name}" already exists. Choose a different table name.'
 
         return None
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from html import escape
 from typing import Literal, cast
 
@@ -68,6 +69,7 @@ CHECKBOX_STYLESHEET = (
 )
 StatusCardKind = Literal["info", "warning", "success", "error"]
 STATUS_CARD_KINDS: tuple[StatusCardKind, ...] = ("info", "warning", "success", "error")
+_INLINE_BACKTICK_RE = re.compile(r"`([^`]+)`")
 
 
 def validate_status_card_kind(kind: str) -> StatusCardKind:
@@ -206,10 +208,16 @@ def create_form_label(text: str) -> QLabel:
 
 
 def format_tooltip(message: str) -> str:
+    message = format_feedback_text(message)
     escaped_message = (
         escape(message).replace("_", "_&#8203;").replace("/", "/&#8203;").replace("-", "-&#8203;").replace("\n", "<br>")
     )
     return f"<qt><div style='color: {TOOLTIP_TEXT_COLOR}; max-width: 360px;'>{escaped_message}</div></qt>"
+
+
+def format_feedback_text(message: str) -> str:
+    """Return text with napari-friendly inline identifier styling."""
+    return _INLINE_BACKTICK_RE.sub(r'"\1"', message)
 
 
 def format_feedback_identifier(name: str, *, max_length: int = 56) -> tuple[str, bool]:
@@ -238,7 +246,7 @@ def set_status_card(
         "error": {"text": "#b91c1c", "border": "#fecaca", "background": "#fef2f2"},
     }
     palette = palette_by_kind.get(kind, palette_by_kind["info"])
-    formatted_lines = "<br>".join(f"<span>{escape(line, quote=False)}</span>" for line in lines)
+    formatted_lines = "<br>".join(f"<span>{escape(format_feedback_text(line), quote=False)}</span>" for line in lines)
     label.setText(
         "<div>"
         f"<span style='font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;'>"

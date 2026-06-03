@@ -73,12 +73,12 @@ def build_points_layer_card_spec(
     display_name, was_shortened = format_feedback_identifier(points_name)
     lines = [
         (
-            f"{action} points layer for `{display_name}` by `{selection.index_column}` "
+            f'{action} points layer for "{display_name}" by "{selection.index_column}" '
             f"with {selection.loaded_count:,} point(s)."
         )
     ]
     tooltip_message = (
-        f"{action} points layer for `{points_name}` by `{selection.index_column}` "
+        f'{action} points layer for "{points_name}" by "{selection.index_column}" '
         f"with {selection.loaded_count:,} point(s)."
         if was_shortened
         else None
@@ -114,9 +114,9 @@ def build_primary_labels_loaded_card_spec(
     display_name, was_shortened = format_feedback_identifier(labels_name)
     return _ViewerStatusCardSpec(
         title=f"Labels Layer {action}",
-        lines=(f"{action} labels layer for `{display_name}`.",),
+        lines=(f'{action} labels layer for "{display_name}".',),
         kind="success",
-        tooltip_message=f"{action} labels layer for `{labels_name}`." if was_shortened else None,
+        tooltip_message=f'{action} labels layer for "{labels_name}".' if was_shortened else None,
     )
 
 
@@ -132,9 +132,9 @@ def build_styled_labels_card_spec(
     source_text = _format_table_color_source(selected_color_source)
     labels_name = request.labels_name
     display_name, was_shortened = format_feedback_identifier(labels_name)
-    lines = [(f"{action} colored overlay for {source_text} on labels element `{display_name}`.")]
+    lines = [(f'{action} colored overlay for {source_text} on labels element "{display_name}".')]
     tooltip_message = (
-        f"{action} colored overlay for {source_text} on labels element `{labels_name}`." if was_shortened else None
+        f'{action} colored overlay for {source_text} on labels element "{labels_name}".' if was_shortened else None
     )
     title = f"Colored Overlay {action}"
     kind = _append_palette_status_lines(
@@ -159,7 +159,7 @@ def build_primary_shapes_loaded_card_spec(
     display_name, was_shortened = format_feedback_identifier(shapes_name)
     title = f"Shapes Layer {action}"
     kind: StatusCardKind = "success"
-    lines = [f"{action} shapes layer for `{display_name}`."]
+    lines = [f'{action} shapes layer for "{display_name}".']
     if result.skipped_geometry_count:
         title = _with_warning_suffix(title)
         kind = "warning"
@@ -169,7 +169,7 @@ def build_primary_shapes_loaded_card_spec(
         title=title,
         lines=tuple(lines),
         kind=kind,
-        tooltip_message=f"{action} shapes layer for `{shapes_name}`." if was_shortened else None,
+        tooltip_message=f'{action} shapes layer for "{shapes_name}".' if was_shortened else None,
     )
 
 
@@ -185,9 +185,9 @@ def build_styled_shapes_card_spec(
     source_text = _format_shapes_color_source(selected_color_source)
     shapes_name = request.shapes_name
     display_name, was_shortened = format_feedback_identifier(shapes_name)
-    lines = [(f"{action} styled shapes layer for {source_text} on shapes element `{display_name}`.")]
+    lines = [(f'{action} styled shapes layer for {source_text} on shapes element "{display_name}".')]
     tooltip_message = (
-        f"{action} styled shapes layer for {source_text} on shapes element `{shapes_name}`."
+        f'{action} styled shapes layer for {source_text} on shapes element "{shapes_name}".'
         if was_shortened
         else None
     )
@@ -230,12 +230,12 @@ def build_image_loaded_card_spec(
     display_name, was_shortened = format_feedback_identifier(image_name)
     action = _created_updated_action(result.created)
     if result.mode == "stack":
-        line = f"{action} image layer for `{display_name}` in stack mode."
-        tooltip_line = f"{action} image layer for `{image_name}` in stack mode."
+        line = f'{action} image layer for "{display_name}" in stack mode.'
+        tooltip_line = f'{action} image layer for "{image_name}" in stack mode.'
     else:
         channel_text = _format_image_overlay_channels(result)
-        line = f"{action} image overlay for `{display_name}` with {channel_text}."
-        tooltip_line = f"{action} image overlay for `{image_name}` with {channel_text}."
+        line = f'{action} image overlay for "{display_name}" with {channel_text}.'
+        tooltip_line = f'{action} image overlay for "{image_name}" with {channel_text}.'
 
     return _ViewerStatusCardSpec(
         title=f"Image Layer {action}",
@@ -249,7 +249,7 @@ def _format_image_overlay_channels(result: ImageLoadResult) -> str:
     channel_names = tuple(getattr(result, "channel_names", ()))
     channel_values = channel_names or tuple(str(channel) for channel in result.channels)
     label = "channel" if len(channel_values) == 1 else "channels"
-    formatted_channels = ", ".join(f"`{channel}`" for channel in channel_values)
+    formatted_channels = ", ".join(f'"{channel}"' for channel in channel_values)
     return f"{label} {formatted_channels}"
 
 

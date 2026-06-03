@@ -428,12 +428,12 @@ class FeatureExtractionController:
         if job.triplet_count == 1:
             labels_name = job.labels_names[0]
             self._set_status(
-                f"Feature extraction: calculating `{job.feature_key}` for labels element `{labels_name}`.",
+                f'Feature extraction: calculating "{job.feature_key}" for labels element "{labels_name}".',
                 kind="info",
             )
         else:
             self._set_status(
-                f"Feature extraction: calculating `{job.feature_key}` for {job.triplet_count} extraction targets.",
+                f'Feature extraction: calculating "{job.feature_key}" for {job.triplet_count} extraction targets.',
                 kind="info",
             )
         worker.start()
@@ -628,7 +628,7 @@ class FeatureExtractionController:
 
         if self._create_table and self._selected_table_name is not None:
             self._set_status(
-                f"Feature extraction: ready to create table `{self._selected_table_name}` and calculate.",
+                f'Feature extraction: ready to create table "{self._selected_table_name}" and calculate.',
                 kind="success",
             )
             return
@@ -659,9 +659,9 @@ class FeatureExtractionController:
         self._notify_feature_matrix_written(result)
         self._set_status(
             "Feature extraction: "
-            f"wrote `{result.feature_key}` into table `{result.table_name}` as "
-            f"`.obsm[{result.feature_key!r}]` with metadata in "
-            f"`.uns[{_FEATURE_MATRICES_KEY!r}][{result.feature_key!r}]`.",
+            f'wrote "{result.feature_key}" into table "{result.table_name}" as '
+            f'".obsm[{result.feature_key!r}]" with metadata in '
+            f'".uns[{_FEATURE_MATRICES_KEY!r}][{result.feature_key!r}]".',
             kind="success",
         )
 
@@ -706,7 +706,7 @@ class FeatureExtractionController:
 
         if self._selected_table_name in self._selected_spatialdata.tables:
             return (
-                f"Feature extraction: table `{self._selected_table_name}` already exists. "
+                f'Feature extraction: table "{self._selected_table_name}" already exists. '
                 "Choose a different table name."
             )
 
