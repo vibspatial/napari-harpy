@@ -419,7 +419,7 @@ Add focused tests for:
      - non-qualifying shapes elements still create a generic napari `Shapes`
        styled layer with `shapes_rendering_mode="shapes"`.
 
-6. Point-backed primary presentation controls - specified
+6. Point-backed primary presentation controls - completed
    - scope: primary point-radius shapes layers that are rendered as napari
      `Points`, i.e. `ShapesLayerBinding.shapes_role == "primary"` and
      `shapes_rendering_mode == "points"`;
@@ -451,14 +451,17 @@ Add focused tests for:
        variable-radius information;
      - implement size interaction separately as the radius-size scale factor in
        Slice 8;
-   - do not attach the primary point presentation sync callbacks to styled
-     point-backed shapes:
+   - attach symbol sync to both primary and styled point-backed shapes:
+     - symbol is presentation-only and does not flatten data-driven colors;
+     - direct shape-column and table-backed styled point-backed layers should
+       still let the user change all point symbols from napari's UI;
+   - do not attach the point color sync callback to styled point-backed shapes:
      - direct shape-column and table-backed styled layers have data-driven
        colors;
      - user color changes must not flatten styled palettes or transparent
        unannotated rows;
-     - styled point-backed layers may still preserve their existing symbol, but
-       they should not receive primary color sync callbacks;
+     - styled point-backed layers should not receive primary color sync
+       callbacks;
    - callbacks should be stored on the layer under private Harpy attribute
      names, mirroring the existing generic shapes sync pattern, so they are not
      garbage-collected;
@@ -471,9 +474,9 @@ Add focused tests for:
      - changing `current_size` does not overwrite radius-derived `size` in this
        slice;
      - styled point-backed direct shape-column layers do not receive primary
-       color sync and keep data-driven colors;
+       color sync, keep data-driven colors, and still sync symbol changes;
      - styled point-backed table-backed layers do not receive primary color sync
-       and keep palette/transparent-row semantics.
+       keep palette/transparent-row semantics, and still sync symbol changes.
 
 7. Widget and feedback polish
    - make the shapes card/status feedback distinguish between regular shapes

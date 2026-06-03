@@ -84,7 +84,7 @@ def apply_points_selection_style(
     layer.symbol = layer.current_symbol
     layer.border_width = 0
     _connect_current_size_to_global_point_size(layer)
-    _connect_current_symbol_to_global_point_symbol(layer)
+    connect_current_symbol_to_global_point_symbol(layer)
 
     selected_value_count = len(selection.selected_values)
     if selected_value_count == 0 or selected_value_count > POINTS_SELECTION_MAX_CATEGORICAL_COLORS:
@@ -92,7 +92,7 @@ def apply_points_selection_style(
         layer.face_color = layer.current_face_color
         layer.current_border_color = layer.current_face_color
         layer.border_color = layer.face_color
-        _connect_current_face_color_to_global_point_face_color(layer)
+        connect_current_face_color_to_global_point_face_color(layer)
         return PointsStyleResult(
             color_mode="solid",
             categorical_coloring_disabled=selected_value_count > POINTS_SELECTION_MAX_CATEGORICAL_COLORS,
@@ -108,7 +108,7 @@ def apply_points_selection_style(
         layer.face_color = selection.index_column
         layer.border_color = layer.face_color
         if selected_value_count == 1:
-            _connect_current_face_color_to_global_point_face_color(layer)
+            connect_current_face_color_to_global_point_face_color(layer)
             if point_face_color is not None:
                 layer.current_face_color = point_face_color
 
@@ -132,7 +132,8 @@ def _connect_current_size_to_global_point_size(layer: Points) -> None:
     setattr(layer, _POINTS_SIZE_SYNC_CALLBACK_ATTR, _sync_current_size_to_all_points)
 
 
-def _connect_current_symbol_to_global_point_symbol(layer: Points) -> None:
+def connect_current_symbol_to_global_point_symbol(layer: Points) -> None:
+    """Sync napari's current point symbol control to all points in a layer."""
     if getattr(layer, _POINTS_SYMBOL_SYNC_CALLBACK_ATTR, None) is not None:
         return
 
@@ -143,7 +144,8 @@ def _connect_current_symbol_to_global_point_symbol(layer: Points) -> None:
     setattr(layer, _POINTS_SYMBOL_SYNC_CALLBACK_ATTR, _sync_current_symbol_to_all_points)
 
 
-def _connect_current_face_color_to_global_point_face_color(layer: Points) -> None:
+def connect_current_face_color_to_global_point_face_color(layer: Points) -> None:
+    """Sync napari's current point face color control to all point colors."""
     if getattr(layer, _POINTS_FACE_COLOR_SYNC_CALLBACK_ATTR, None) is not None:
         return
 

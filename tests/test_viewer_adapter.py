@@ -1921,6 +1921,26 @@ def test_viewer_adapter_ensure_shapes_loaded_renders_circles_as_points(sdata_blo
     assert adapter.get_loaded_primary_shapes_layer(sdata_blobs, "blobs_circles", "global") is layer
 
 
+def test_viewer_adapter_point_backed_primary_shapes_syncs_presentation_controls(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    result = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_circles", "global")
+    layer = result.layer
+    original_size = layer.size.copy()
+
+    assert isinstance(layer, Points)
+    layer.current_symbol = "square"
+    layer.current_face_color = "red"
+    layer.current_size = 99.0
+
+    assert all(symbol.value == "square" for symbol in layer.symbol)
+    np.testing.assert_allclose(layer.face_color, np.asarray([to_rgba("red")] * len(layer.data)))
+    np.testing.assert_allclose(layer.border_color, layer.face_color)
+    np.testing.assert_allclose(layer.border_width, np.zeros(len(layer.data)))
+    np.testing.assert_allclose(layer.size, original_size)
+
+
 def test_viewer_adapter_ensure_shapes_loaded_reuses_point_radius_layer(sdata_blobs) -> None:
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
@@ -2263,6 +2283,28 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_creates_point_backed_categor
     assert status_value.index("index:") < status_value.index("cell_type:")
 
 
+def test_viewer_adapter_point_backed_shape_column_styling_keeps_data_driven_colors_after_ui_color_change() -> None:
+    sdata = make_colorable_point_radius_shapes_sdata()
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = ShapeColumnColorSourceSpec(
+        source_kind="shape_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    result = adapter.ensure_styled_shapes_loaded(sdata, "cell_centroids", "global", style_spec)
+    face_color = result.layer.face_color.copy()
+    border_color = result.layer.border_color.copy()
+
+    result.layer.current_face_color = "red"
+    result.layer.current_symbol = "square"
+
+    np.testing.assert_allclose(result.layer.face_color, face_color)
+    np.testing.assert_allclose(result.layer.border_color, border_color)
+    assert all(symbol.value == "square" for symbol in result.layer.symbol)
+
+
 def test_viewer_adapter_ensure_styled_shapes_loaded_creates_point_backed_continuous_variant() -> None:
     sdata = make_colorable_point_radius_shapes_sdata()
     viewer = DummyViewer()
@@ -2396,6 +2438,29 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_creates_point_backed_table_v
     assert result.layer.border_color[2, 3] == 0.0
     np.testing.assert_allclose(result.layer.border_width, np.zeros(3))
     assert len(viewer.layers) == 1
+
+
+def test_viewer_adapter_point_backed_table_styling_keeps_data_driven_colors_after_ui_color_change() -> None:
+    sdata = make_table_backed_point_radius_shapes_sdata()
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    result = adapter.ensure_styled_shapes_loaded(sdata, "cell_centroids", "global", style_spec)
+    face_color = result.layer.face_color.copy()
+    border_color = result.layer.border_color.copy()
+
+    result.layer.current_face_color = "red"
+    result.layer.current_symbol = "square"
+
+    np.testing.assert_allclose(result.layer.face_color, face_color)
+    np.testing.assert_allclose(result.layer.border_color, border_color)
+    assert all(symbol.value == "square" for symbol in result.layer.symbol)
 
 
 def test_viewer_adapter_point_backed_table_x_var_styling() -> None:
