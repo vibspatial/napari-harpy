@@ -70,7 +70,6 @@ def _create_xenium_point_radius_shapes_zarr(sdata_path: Path) -> None:
     )
 
     adata_shapes = table.copy()
-    adata_shapes.obs_names = obs_names
     adata_shapes.obs[INSTANCE_KEY] = obs_names
     adata_shapes.obs[REGION_KEY] = pd.Categorical([SHAPES_NAME] * adata_shapes.n_obs)
 
