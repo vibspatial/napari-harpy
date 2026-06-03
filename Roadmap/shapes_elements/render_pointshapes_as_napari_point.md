@@ -356,8 +356,8 @@ Add focused tests for:
    - reuse the existing table-to-source-row alignment helper and semantics:
      - require `instance_key` to be stored in the shapes GeoDataFrame index,
        with `shapes_element.index.name == instance_key`;
-     - reject table-backed styling when `instance_key` is stored as a
-       GeoDataFrame column instead of the index;
+     - allow a redundant GeoDataFrame column named `instance_key` only when it
+       agrees with the named index row by row;
      - require exact matching between selected-region table instances and
        shapes instance identities;
      - allow duplicate shape instance identities, so multiple rendered points
