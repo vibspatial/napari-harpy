@@ -44,11 +44,14 @@ important ways:
 - table-backed styling requires the GeoDataFrame index name to match the
   table `instance_key`. A same-named GeoDataFrame column is allowed only when it
   matches the index exactly.
+- direct and table-backed shapes styling now build `Nx4` float RGBA arrays
+  directly for categorical, continuous, and instance colors;
+- styled `Shapes` and point-backed shapes assign alpha directly on RGBA arrays,
+  avoiding the old row-wise `_with_alpha(...)` conversion.
 
-The main remaining color-preparation hotspot is still likely continuous color
-generation. `continuous_colors_for_values(...)` and `_with_alpha(...)` still do
-row-wise Python work and may dominate large styled-shapes updates once geometry
-preparation is no longer the bottleneck.
+The main remaining color-preparation hotspot is likely labels continuous
+coloring. `continuous_colors_for_values(...)` is still retained for existing
+callers, and labels still need a final label-id-to-color dictionary for napari.
 
 ## Current Shape Coloring Path
 
@@ -111,7 +114,7 @@ continuous RGBA generation took about `0.006s` on the same synthetic input, so
 there is substantial optimization headroom if 300k-shape continuous coloring
 becomes a required target.
 
-## Fresh Synthetic Benchmark, June 3, 2026
+## Pre-Optimization Synthetic Benchmark, June 3, 2026
 
 Ran locally with `.venv/bin/python` on synthetic `N = 300_000` rows,
 `32` categories, and `5%` missing values unless noted otherwise. Timings report
@@ -215,7 +218,7 @@ Non-goal:
    - do not migrate labels/shapes callers in this slice. That is covered by the
      next slices.
 
-3. Update shapes and point-backed shapes to use RGBA arrays directly
+3. Update shapes and point-backed shapes to use RGBA arrays directly - completed
    - update `_build_continuous_shape_style(...)` to use the vectorized
      continuous RGBA helper;
    - update categorical shape style paths to use the vectorized categorical

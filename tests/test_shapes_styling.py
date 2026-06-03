@@ -1264,8 +1264,8 @@ def test_apply_shape_column_color_source_to_shapes_layer_allows_duplicate_source
 def test_apply_rendered_row_colors_to_shapes_layer_requires_one_color_per_rendered_row() -> None:
     layer = _make_shapes_layer(("cell_1", "cell_2"))
 
-    with pytest.raises(ValueError, match="one color for each rendered napari shape row"):
-        _apply_rendered_row_colors_to_shapes_layer(layer, pd.Series(["red"]))
+    with pytest.raises(ValueError, match="one RGBA color for each rendered napari shape row"):
+        _apply_rendered_row_colors_to_shapes_layer(layer, np.asarray([_rgba("red", 1.0)]))
 
 
 def test_build_styled_shapes_layer_name_returns_stable_shape_column_variant_name() -> None:
