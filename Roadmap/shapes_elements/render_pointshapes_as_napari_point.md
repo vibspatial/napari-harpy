@@ -556,6 +556,19 @@ Add focused tests for:
      - `reference_size`, used to translate napari's `current_size` control into
        a scale factor;
      - the callback itself, so it is not garbage-collected;
+   - keep the implementation performance-conscious for large point-radius
+     layers:
+     - avoid Python loops over points when installing the scale state;
+     - avoid materializing more copies of the size array than needed. Prefer
+       storing the existing radius-derived size array from point-radius
+       preparation as the unscaled size reference;
+     - computing `reference_size` should use vectorized numpy operations and
+       should not allocate per-point Python objects;
+     - `current_size` changes are allowed to be O(n), because updating every
+       displayed point size requires writing one size per point, but the
+       callback should perform exactly one vectorized multiply and one
+       assignment;
+     - do not do any size-scale work on color or symbol events;
    - choose a stable positive `reference_size` for the layer:
      - if all radii are equal, use that single diameter;
      - otherwise use a representative diameter such as the median finite
