@@ -478,16 +478,63 @@ Add focused tests for:
      - styled point-backed table-backed layers do not receive primary color sync
        keep palette/transparent-row semantics, and still sync symbol changes.
 
-7. Widget and feedback polish
-   - make the shapes card/status feedback distinguish between regular shapes
-     rendering and point-radius shapes rendered as points;
-   - keep the existing color-source controls unchanged at the data-model level;
-   - report point-radius rendering mode in successful load/status feedback;
-   - ensure errors from detection, fallback, and styled point-radius alignment
-     are user-facing and phrased in shapes terminology, not raw napari layer
-     terminology;
-   - add tests for widget request dispatch, status card feedback, and fallback
-     messages.
+7. Widget and feedback polish - specified
+   - keep the shapes card controls unchanged:
+     - do not add a separate "render as points" control;
+     - keep direct shape-column and linked-table color-source controls at the
+       shapes data-model level;
+     - point-radius rendering remains an adapter decision based on the selected
+       shapes element geometry and `radius` column;
+   - add rendering-mode information to the shapes load result:
+     - extend `ShapesLoadResult` with
+       `shapes_rendering_mode: Literal["shapes", "points"] = "shapes"` or the
+       existing adapter `ShapesRenderingMode` alias;
+     - set it from `_BuiltShapesLayer.shapes_rendering_mode` in
+       `ViewerAdapter.ensure_shapes_loaded(...)`;
+     - when returning an existing primary shapes layer, read the rendering mode
+       from its `ShapesLayerBinding`;
+     - set it from the styled layer binding in
+       `ViewerAdapter.ensure_styled_shapes_loaded(...)`;
+   - use the rendering mode only for user-facing feedback, not for color-source
+     API branching in the widget:
+     - primary regular shapes: keep the current message shape, e.g.
+       `Created shapes layer for "...".`;
+     - primary point-radius shapes: add a short second line such as
+       `Rendered point-radius shapes as napari points for faster display.`;
+     - styled regular shapes: keep the current message shape;
+     - styled point-radius shapes: add a short second line such as
+       `Rendered point-radius shapes as napari points while preserving shapes styling semantics.`;
+   - keep all terminology shapes-first:
+     - titles remain `Shapes Layer ...` and `Styled Shapes ...`;
+     - do not call these "points layers" in the title, because the source
+       element is still a SpatialData shapes element;
+     - mention napari points only as the rendering representation in the detail
+       line;
+   - preserve existing warning/info behavior:
+     - skipped geometry warnings still apply only to generic shapes fallback
+       paths;
+     - table-backed unannotated-shape info remains visible for styled layers;
+     - palette/coercion/instance-color feedback remains unchanged;
+   - errors should remain user-facing and shapes-first:
+     - point-radius detection failures should normally be silent fallback to
+       generic shapes rendering, not widget errors;
+     - explicit styling/alignment failures should keep `Styled Shapes Error`
+       and avoid raw napari-layer terminology where possible;
+   - add tests for:
+     - `ShapesLoadResult.shapes_rendering_mode` is `"points"` for primary
+       point-radius shapes and `"shapes"` for generic shapes;
+     - existing primary point-backed shapes return the saved rendering mode when
+       updated/reused;
+     - point-backed styled direct shape-column layers report
+       `shapes_rendering_mode == "points"` in their load result;
+     - point-backed styled table-backed layers report
+       `shapes_rendering_mode == "points"` in their load result;
+     - primary widget feedback for point-radius shapes includes the
+       point-radius-as-points detail line;
+     - styled widget feedback for point-backed shapes includes the
+       point-radius-as-points detail line while preserving palette/unannotated
+       feedback lines;
+     - generic shapes feedback does not mention point-radius rendering.
 
 8. Point-backed radius-size scale control - follow-up
    - make napari's point-size UI useful without destroying the source
