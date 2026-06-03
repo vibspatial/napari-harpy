@@ -183,16 +183,37 @@ Non-goal:
      - real napari `Points` categorical styling;
    - keep geometry construction out of the benchmark.
 
-2. Add vectorized RGBA helper APIs in `viewer/_styling.py`
+2. Add vectorized RGBA helper APIs in `viewer/_styling.py` - completed
    - add a continuous helper that returns an `Nx4` float RGBA array directly,
      for example `continuous_rgba_for_values(...)`;
    - add a categorical helper that returns an `Nx4` float RGBA array directly,
      for example `categorical_rgba_for_values(...)`;
+   - both helpers should return `float64` RGBA arrays aligned one-to-one with
+     the input `values`;
+   - preserve current continuous behavior:
+     - missing values use `missing_color`;
+     - all-missing input returns all `missing_color`;
+     - constant non-missing input maps to the colormap midpoint `0.5`;
+     - normalized values are clipped to `[0, 1]`;
+   - preserve current categorical behavior:
+     - missing values use `missing_color`;
+     - values not found in `categories` use `missing_color`;
+     - category matching still uses `normalize_category_value(...)`, including
+       numpy scalar normalization;
    - preserve the existing public behavior of `continuous_colors_for_values(...)`
      and `categorical_colors_for_values(...)` until callers have moved over;
-   - add focused tests comparing the new helpers against the old color results
-     for missing values, constant continuous values, categorical values, and
-     unknown categories.
+   - add focused tests, preferably in a dedicated styling test module, comparing
+     the new helpers against the old color results after converting old colors
+     with `matplotlib.colors.to_rgba(...)`;
+   - cover:
+     - continuous normal values with missing values;
+     - continuous constant values;
+     - continuous all-missing values;
+     - categorical normal values with missing values;
+     - categorical unknown values;
+     - numpy scalar category normalization;
+   - do not migrate labels/shapes callers in this slice. That is covered by the
+     next slices.
 
 3. Update shapes and point-backed shapes to use RGBA arrays directly
    - update `_build_continuous_shape_style(...)` to use the vectorized
