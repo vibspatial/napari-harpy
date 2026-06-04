@@ -10,7 +10,7 @@ from napari_harpy.viewer._styling import (
     continuous_colors_for_values,
     continuous_rgba_for_values,
 )
-from napari_harpy.viewer.labels_styling import _build_continuous_color_dict
+from napari_harpy.viewer.labels_styling import _build_categorical_color_dict, _build_continuous_color_dict
 
 
 def _colors_series_to_rgba(colors: pd.Series) -> np.ndarray:
@@ -98,3 +98,23 @@ def test_build_continuous_label_color_dict_uses_vectorized_rgba_and_preserves_ba
     np.testing.assert_allclose(color_dict[1], expected[0])
     np.testing.assert_allclose(color_dict[2], expected[1])
     np.testing.assert_allclose(color_dict[3], expected[2])
+
+
+def test_build_categorical_label_color_dict_uses_vectorized_rgba_and_preserves_background() -> None:
+    categories = ["T", "B"]
+    palette = ["#ff0000", "#00ff00"]
+    values = pd.Series(
+        ["T", "unknown", None, "B"],
+        index=pd.Index([1, 2, 3, 4], name="index"),
+        dtype="object",
+    )
+
+    color_dict = _build_categorical_color_dict(values, categories=categories, palette=palette)
+    expected = categorical_rgba_for_values(values, categories=categories, palette=palette)
+
+    assert color_dict[None] == "transparent"
+    assert color_dict[0] == "transparent"
+    np.testing.assert_allclose(color_dict[1], expected[0])
+    np.testing.assert_allclose(color_dict[2], expected[1])
+    np.testing.assert_allclose(color_dict[3], expected[2])
+    np.testing.assert_allclose(color_dict[4], expected[3])
