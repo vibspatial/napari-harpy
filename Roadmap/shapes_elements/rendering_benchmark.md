@@ -48,10 +48,12 @@ important ways:
   directly for categorical, continuous, and instance colors;
 - styled `Shapes` and point-backed shapes assign alpha directly on RGBA arrays,
   avoiding the old row-wise `_with_alpha(...)` conversion.
+- labels continuous coloring now builds vectorized RGBA values before
+  constructing the `DirectLabelColormap` dictionary.
 
-The main remaining color-preparation hotspot is likely labels continuous
-coloring. `continuous_colors_for_values(...)` is still retained for existing
-callers, and labels still need a final label-id-to-color dictionary for napari.
+The remaining planned labels work is categorical implementation alignment:
+`continuous_colors_for_values(...)` is still retained for existing callers, and
+labels still need a final label-id-to-color dictionary for napari.
 
 ## Current Shape Coloring Path
 
@@ -234,7 +236,7 @@ Non-goal:
      - `fill=False` keeps shapes faces transparent;
      - point-backed shapes keep face and border colors identical.
 
-4. Update labels continuous coloring
+4. Update labels continuous coloring - completed
    - use vectorized continuous RGBA generation before constructing the
      `DirectLabelColormap` dictionary;
    - leave categorical labels to the next alignment slice, because the
@@ -245,8 +247,8 @@ Non-goal:
      - instance coloring still uses napari's label colormap;
      - features remain aligned by positive label id.
 
-5. Align categorical labels with shared RGBA helper implementation
-   - optionally refactor `_build_categorical_color_dict(...)` to use
+5. Align categorical labels with shared RGBA helper implementation - completed
+   - refactor `_build_categorical_color_dict(...)` to use
      `categorical_rgba_for_values(...)` before constructing the
      `DirectLabelColormap` dictionary;
    - treat this as implementation alignment, not as a primary performance
