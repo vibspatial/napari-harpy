@@ -17,8 +17,8 @@ from napari_harpy.core.spatialdata import get_table, validate_table_binding
 from napari_harpy.viewer._styling import (
     StyledPaletteSource,
     build_string_categorical_values,
-    categorical_colors_for_values,
-    continuous_colors_for_values,
+    categorical_rgba_for_values,
+    continuous_rgba_for_values,
     default_categorical_palette_for_categories,
     is_string_like_series,
     normalize_category_value,
@@ -302,16 +302,16 @@ def _build_categorical_color_dict(
     palette: list[str],
 ) -> dict[int | None, Any]:
     color_dict: dict[int | None, Any] = {None: "transparent", 0: "transparent"}
-    colors = categorical_colors_for_values(values, categories=categories, palette=palette)
-    for instance_id, color in colors.items():
+    colors = categorical_rgba_for_values(values, categories=categories, palette=palette)
+    for instance_id, color in zip(values.index, colors, strict=True):
         color_dict[int(instance_id)] = color
     return color_dict
 
 
 def _build_continuous_color_dict(values: pd.Series) -> dict[int | None, Any]:
     color_dict: dict[int | None, Any] = {None: "transparent", 0: "transparent"}
-    colors = continuous_colors_for_values(values)
-    for instance_id, color in colors.items():
+    colors = continuous_rgba_for_values(values)
+    for instance_id, color in zip(values.index, colors, strict=True):
         color_dict[int(instance_id)] = color
     return color_dict
 

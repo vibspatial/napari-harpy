@@ -22,8 +22,8 @@ from napari_harpy.core.spatialdata import SpatialDataTableMetadata, get_table, g
 from napari_harpy.viewer._styling import (
     StyledPaletteSource,
     build_string_categorical_values,
-    categorical_colors_for_values,
-    continuous_colors_for_values,
+    categorical_rgba_for_values,
+    continuous_rgba_for_values,
     default_categorical_palette_for_categories,
     is_string_like_series,
     normalize_category_value,
@@ -609,7 +609,7 @@ def _build_categorical_shape_style(
     column_name: str,
     source_values: pd.Series,
     rendered_row_values: pd.Series,
-) -> tuple[ShapesStyleResult, pd.Series, pd.Series]:
+) -> tuple[ShapesStyleResult, np.ndarray, pd.Series]:
     """Build categorical colors from source-level values and rendered-row values.
 
     Parameters
@@ -629,6 +629,19 @@ def _build_categorical_shape_style(
         repeat one source value for multiple rendered polygon parts, and can be
         a subset of ``source_values`` when empty, invalid, or unsupported source
         geometries were skipped before rendering.
+
+    Returns
+    -------
+    ShapesStyleResult
+        Metadata describing the categorical styling decision, including palette
+        source and whether string/object values were coerced.
+    np.ndarray
+        ``Nx4`` float RGBA colors aligned one-to-one with rendered napari shape
+        rows. Alpha is left as the base color alpha here; layer-specific face,
+        edge, or border alpha is applied later.
+    pd.Series
+        Rendered-row categorical values to store in ``layer.features`` for
+        inspection and status display.
     """
     companion_palette_allowed = True
     coercion_applied = False
@@ -636,16 +649,22 @@ def _build_categorical_shape_style(
     if _is_categorical_dtype(source_values):
         normalized_source_values = _normalize_category_series(source_values)
         normalized_rendered_row_values = _normalize_category_series(rendered_row_values)
+        # Keep the original categorical series for color generation so
+        # `categorical_rgba_for_values(...)` can use pandas category codes.
+        # The normalized object series is still used for layer.features.
+        color_values = rendered_row_values
         categories = _present_categories(normalized_source_values, source_values.cat.categories)
     elif _is_bool_series(source_values):
         normalized_source_values = _normalize_category_series(source_values)
         normalized_rendered_row_values = _normalize_category_series(rendered_row_values)
+        color_values = normalized_rendered_row_values
         categories = _present_categories(normalized_source_values, [False, True])
     elif _is_exact_binary_integer_series(source_values):
         numeric_source_values = pd.to_numeric(source_values, errors="coerce").astype("Int64")
         numeric_rendered_row_values = pd.to_numeric(rendered_row_values, errors="coerce").astype("Int64")
         normalized_source_values = _normalize_category_series(numeric_source_values)
         normalized_rendered_row_values = _normalize_category_series(numeric_rendered_row_values)
+        color_values = numeric_rendered_row_values
         categories = _present_categories(normalized_source_values, [0, 1])
     elif is_string_like_series(source_values):
         normalized_rendered_row_values, categories = build_string_categorical_values(
@@ -659,11 +678,13 @@ def _build_categorical_shape_style(
             name=column_name,
             dtype="object",
         )
+        color_values = normalized_rendered_row_values
         companion_palette_allowed = False
         coercion_applied = True
     else:
         normalized_source_values = _normalize_category_series(source_values)
         normalized_rendered_row_values = _normalize_category_series(rendered_row_values)
+        color_values = normalized_rendered_row_values
         categories = list(pd.unique(normalized_source_values.dropna()))
         companion_palette_allowed = False
 
@@ -678,8 +699,8 @@ def _build_categorical_shape_style(
         palette_source = "default_missing"
         palette = default_categorical_palette_for_categories(categories)
 
-    rendered_row_colors = categorical_colors_for_values(
-        normalized_rendered_row_values,
+    rendered_row_colors = categorical_rgba_for_values(
+        color_values,
         categories=categories,
         palette=palette,
         missing_color=SHAPES_MISSING_BASE_COLOR,
@@ -697,9 +718,9 @@ def _build_categorical_shape_style(
 
 def _build_continuous_shape_style(
     rendered_row_values: pd.Series,
-) -> tuple[ShapesStyleResult, pd.Series, pd.Series]:
+) -> tuple[ShapesStyleResult, np.ndarray, pd.Series]:
     numeric_rendered_row_values = pd.to_numeric(rendered_row_values, errors="coerce").astype("float64")
-    rendered_row_colors = continuous_colors_for_values(
+    rendered_row_colors = continuous_rgba_for_values(
         numeric_rendered_row_values,
         missing_color=SHAPES_MISSING_BASE_COLOR,
     )
@@ -719,7 +740,7 @@ def _build_table_obs_shape_style(
     table: AnnData,
     aligned_values: _ShapeTableRowAlignment,
     column_name: str,
-) -> tuple[ShapesStyleResult, pd.Series, pd.Series]:
+) -> tuple[ShapesStyleResult, np.ndarray, pd.Series]:
     if column_name not in table.obs:
         raise ValueError(f"Observation column `{column_name}` is not available in the selected table.")
 
@@ -728,14 +749,22 @@ def _build_table_obs_shape_style(
 
     if _is_categorical_dtype(full_series):
         normalized_rendered_row_values = _normalize_category_series(rendered_row_values)
+        # Table-to-shapes alignment currently stores aligned values as an
+        # object Series, so rebuild a categorical Series with the table's
+        # original categories to use the fast categorical-code RGBA path.
+        color_values = pd.Series(
+            pd.Categorical(rendered_row_values, categories=full_series.cat.categories),
+            index=rendered_row_values.index,
+            name=rendered_row_values.name,
+        )
         categories = [normalize_category_value(value) for value in full_series.cat.categories]
         palette_source, palette = resolve_table_categorical_palette(
             table=table,
             column_name=column_name,
             categories=categories,
         )
-        rendered_row_colors = categorical_colors_for_values(
-            normalized_rendered_row_values,
+        rendered_row_colors = categorical_rgba_for_values(
+            color_values,
             categories=categories,
             palette=palette,
             missing_color=SHAPES_MISSING_BASE_COLOR,
@@ -756,7 +785,7 @@ def _build_table_obs_shape_style(
             column_name=column_name,
             categories=categories,
         )
-        rendered_row_colors = categorical_colors_for_values(
+        rendered_row_colors = categorical_rgba_for_values(
             normalized_rendered_row_values,
             categories=categories,
             palette=palette,
@@ -779,7 +808,7 @@ def _build_table_obs_shape_style(
             column_name=column_name,
             categories=categories,
         )
-        rendered_row_colors = categorical_colors_for_values(
+        rendered_row_colors = categorical_rgba_for_values(
             numeric_rendered_row_values,
             categories=categories,
             palette=palette,
@@ -798,7 +827,7 @@ def _build_table_obs_shape_style(
             row_values=rendered_row_values,
             column_name=column_name,
         )
-        rendered_row_colors = categorical_colors_for_values(
+        rendered_row_colors = categorical_rgba_for_values(
             string_rendered_row_values,
             categories=categories,
             palette=default_categorical_palette_for_categories(categories),
@@ -816,18 +845,16 @@ def _build_table_obs_shape_style(
 
 def _build_table_instance_shape_style(
     aligned_values: _ShapeTableRowAlignment,
-) -> tuple[ShapesStyleResult, pd.Series, pd.Series]:
+) -> tuple[ShapesStyleResult, np.ndarray, pd.Series]:
     rendered_row_values = aligned_values.rendered_row_values
     annotated_source_values = aligned_values.source_row_values.loc[aligned_values.source_row_has_table_row]
     rendered_row_codes = _instance_identity_codes(
         source_values=annotated_source_values,
         rendered_row_values=rendered_row_values,
     )
-    mapped_colors = label_colormap(background_value=0).map(rendered_row_codes.to_numpy(dtype=np.int64, copy=False))
-    rendered_row_colors = pd.Series(
-        [tuple(float(component) for component in color) for color in mapped_colors],
-        index=rendered_row_values.index,
-        dtype="object",
+    rendered_row_colors = np.asarray(
+        label_colormap(background_value=0).map(rendered_row_codes.to_numpy(dtype=np.int64, copy=False)),
+        dtype="float64",
     )
     return (
         ShapesStyleResult(
@@ -913,14 +940,22 @@ def _resolve_shape_categorical_palette(
 
 def _apply_rendered_row_colors_to_shapes_layer(
     layer: Shapes,
-    rendered_row_colors: pd.Series,
+    rendered_row_colors: np.ndarray,
     *,
     fill: bool = False,
 ) -> None:
-    if len(rendered_row_colors) != len(layer.data):
-        raise ValueError("Rendered-row colors must contain one color for each rendered napari shape row.")
-    layer.face_color = _with_alpha(rendered_row_colors, _styled_shapes_face_alpha(fill))
-    layer.edge_color = _with_alpha(rendered_row_colors, SHAPES_EDGE_ALPHA)
+    layer.face_color = _copy_rgba_with_alpha(
+        rendered_row_colors,
+        _styled_shapes_face_alpha(fill),
+        row_count=len(layer.data),
+        row_kind="shape",
+    )
+    layer.edge_color = _copy_rgba_with_alpha(
+        rendered_row_colors,
+        SHAPES_EDGE_ALPHA,
+        row_count=len(layer.data),
+        row_kind="shape",
+    )
     refresh = getattr(layer, "refresh", None)
     if callable(refresh):
         refresh()
@@ -928,12 +963,14 @@ def _apply_rendered_row_colors_to_shapes_layer(
 
 def _apply_rendered_row_colors_to_points_layer(
     layer: Points,
-    rendered_row_colors: pd.Series,
+    rendered_row_colors: np.ndarray,
 ) -> None:
-    if len(rendered_row_colors) != len(layer.data):
-        raise ValueError("Rendered-row colors must contain one color for each rendered napari point row.")
-
-    colors = _with_alpha(rendered_row_colors, SHAPES_EDGE_ALPHA)
+    colors = _copy_rgba_with_alpha(
+        rendered_row_colors,
+        SHAPES_EDGE_ALPHA,
+        row_count=len(layer.data),
+        row_kind="point",
+    )
     layer.face_color = colors
     layer.border_color = colors
     layer.border_width = 0
@@ -944,18 +981,26 @@ def _apply_rendered_row_colors_to_points_layer(
 
 def _apply_table_rendered_row_colors_to_shapes_layer(
     layer: Shapes,
-    rendered_row_colors: pd.Series,
+    rendered_row_colors: np.ndarray,
     *,
     rendered_row_has_table_row: np.ndarray,
     fill: bool = False,
 ) -> None:
-    if len(rendered_row_colors) != len(layer.data):
-        raise ValueError("Rendered-row colors must contain one color for each rendered napari shape row.")
     if len(rendered_row_has_table_row) != len(layer.data):
         raise ValueError("Rendered-row table coverage must contain one value for each rendered napari shape row.")
 
-    face_color = _with_alpha(rendered_row_colors, _styled_shapes_face_alpha(fill))
-    edge_color = _with_alpha(rendered_row_colors, SHAPES_EDGE_ALPHA)
+    face_color = _copy_rgba_with_alpha(
+        rendered_row_colors,
+        _styled_shapes_face_alpha(fill),
+        row_count=len(layer.data),
+        row_kind="shape",
+    )
+    edge_color = _copy_rgba_with_alpha(
+        rendered_row_colors,
+        SHAPES_EDGE_ALPHA,
+        row_count=len(layer.data),
+        row_kind="shape",
+    )
     # Unannotated shapes and annotated rows with missing selected values both
     # appear as missing in `rendered_row_values`, so color builders map both to
     # gray. Use the table-row coverage mask to keep missing table values gray
@@ -972,16 +1017,19 @@ def _apply_table_rendered_row_colors_to_shapes_layer(
 
 def _apply_table_rendered_row_colors_to_points_layer(
     layer: Points,
-    rendered_row_colors: pd.Series,
+    rendered_row_colors: np.ndarray,
     *,
     rendered_row_has_table_row: np.ndarray,
 ) -> None:
-    if len(rendered_row_colors) != len(layer.data):
-        raise ValueError("Rendered-row colors must contain one color for each rendered napari point row.")
     if len(rendered_row_has_table_row) != len(layer.data):
         raise ValueError("Rendered-row table coverage must contain one value for each rendered napari point row.")
 
-    colors = _with_alpha(rendered_row_colors, SHAPES_EDGE_ALPHA)
+    colors = _copy_rgba_with_alpha(
+        rendered_row_colors,
+        SHAPES_EDGE_ALPHA,
+        row_count=len(layer.data),
+        row_kind="point",
+    )
     # Keep the same distinction as table-backed Shapes layers: annotated rows
     # with missing selected values stay gray, while points with no table row are
     # transparent.
@@ -1016,11 +1064,12 @@ def _set_shape_style_feature(
     layer.features = features
 
 
-def _with_alpha(colors: pd.Series, alpha: float) -> np.ndarray:
-    rgba = np.zeros((len(colors), 4), dtype=float)
-    for row_index, color in enumerate(colors):
-        base_rgba = to_rgba(color)
-        rgba[row_index] = (base_rgba[0], base_rgba[1], base_rgba[2], alpha)
+def _copy_rgba_with_alpha(colors: np.ndarray, alpha: float, *, row_count: int, row_kind: str) -> np.ndarray:
+    rgba = np.asarray(colors, dtype="float64")
+    if rgba.shape != (row_count, 4):
+        raise ValueError(f"Rendered-row colors must contain one RGBA color for each rendered napari {row_kind} row.")
+    rgba = rgba.copy()
+    rgba[:, 3] = alpha
     return rgba
 
 
@@ -1032,6 +1081,12 @@ def _normalize_color(color: object) -> tuple[float, float, float, float] | None:
 
 
 def _normalize_category_series(values: pd.Series) -> pd.Series:
+    """Return object values suitable for layer.features/status display.
+
+    This is intentionally row-wise: pandas categorical `to_numpy()` can coerce
+    integer categories with missing values to floats, which makes hover/status
+    values less faithful to the source data.
+    """
     return pd.Series(
         [pd.NA if pd.isna(value) else normalize_category_value(value) for value in values],
         index=values.index,
