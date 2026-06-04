@@ -320,14 +320,25 @@ shapes should measure:
 - assignment of `face_color`, `edge_color`, and `features`;
 - napari layer rendering and interaction latency.
 
-## Recommendation
+## Completed Status
 
 For table-backed `.obs` and `X[:, var_name]` styling, the `instance_key` table
 join is unlikely to be the limiting factor for 300k simple shape instances.
 Point-radius geometry preparation has already been addressed by rendering
 qualifying elements as napari `Points`.
 
-The first remaining color-preparation improvement to consider is vectorizing
-continuous color generation and avoiding large intermediate object color
-`Series` where practical. A second nearby improvement would be vectorizing
-`_with_alpha(...)`, which currently converts color rows to RGBA in Python.
+The color-preparation refactor covered by this note is complete:
+
+- shared categorical and continuous RGBA helpers exist;
+- shapes and point-backed shapes use RGBA arrays directly;
+- labels continuous and categorical table-backed styling use the shared RGBA
+  helpers before constructing napari label colormaps;
+- real SpatialData points remain on the existing napari property-coloring path.
+
+Remaining performance questions should be tracked as separate follow-up issues:
+
+- large categorical `Labels` styling is dominated by napari
+  `DirectLabelColormap` construction/application for one color entry per label
+  id;
+- real `Points` categorical styling is dominated by napari property-color
+  mapping when assigning `layer.face_color = selection.index_column`.
