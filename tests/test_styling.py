@@ -10,6 +10,7 @@ from napari_harpy.viewer._styling import (
     continuous_colors_for_values,
     continuous_rgba_for_values,
 )
+from napari_harpy.viewer.labels_styling import _build_continuous_color_dict
 
 
 def _colors_series_to_rgba(colors: pd.Series) -> np.ndarray:
@@ -84,3 +85,16 @@ def test_categorical_rgba_for_values_matches_existing_numpy_scalar_normalization
     actual = categorical_rgba_for_values(values, categories=categories, palette=palette)
 
     np.testing.assert_allclose(actual, expected)
+
+
+def test_build_continuous_label_color_dict_uses_vectorized_rgba_and_preserves_background() -> None:
+    values = pd.Series([0.0, 10.0, np.nan], index=pd.Index([1, 2, 3], name="index"))
+
+    color_dict = _build_continuous_color_dict(values)
+    expected = continuous_rgba_for_values(values)
+
+    assert color_dict[None] == "transparent"
+    assert color_dict[0] == "transparent"
+    np.testing.assert_allclose(color_dict[1], expected[0])
+    np.testing.assert_allclose(color_dict[2], expected[1])
+    np.testing.assert_allclose(color_dict[3], expected[2])
