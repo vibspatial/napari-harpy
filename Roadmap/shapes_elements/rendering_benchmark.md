@@ -237,22 +237,35 @@ Non-goal:
 4. Update labels continuous coloring
    - use vectorized continuous RGBA generation before constructing the
      `DirectLabelColormap` dictionary;
-   - keep categorical labels lower priority, because the benchmark shows the
-     dict creation itself dominates and current categorical performance is
-     already acceptable;
+   - leave categorical labels to the next alignment slice, because the
+     benchmark shows the dict creation itself dominates and current categorical
+     performance is already acceptable;
    - preserve labels-specific behavior:
      - `None` and `0` stay transparent;
      - instance coloring still uses napari's label colormap;
      - features remain aligned by positive label id.
 
-5. Keep real points styling mostly unchanged
+5. Align categorical labels with shared RGBA helper implementation
+   - optionally refactor `_build_categorical_color_dict(...)` to use
+     `categorical_rgba_for_values(...)` before constructing the
+     `DirectLabelColormap` dictionary;
+   - treat this as implementation alignment, not as a primary performance
+     optimization, because labels still require a label-id-to-color dictionary;
+   - preserve categorical label behavior:
+     - `None` and `0` stay transparent;
+     - missing and unknown category values use the existing missing color;
+     - stored palettes from `table.uns` continue to resolve the same way;
+     - features remain aligned by positive label id;
+   - benchmark before/after to confirm categorical labels do not regress.
+
+6. Keep real points styling mostly unchanged
    - real SpatialData points currently use categorical value-selection styling;
    - keep `apply_points_selection_style(...)` as-is unless a later continuous
      points-coloring feature is added;
    - if continuous points coloring is added later, reuse the new vectorized
      RGBA helpers instead of introducing another row-wise color path.
 
-6. Acceptance criteria
+7. Acceptance criteria
    - existing viewer adapter, labels, shapes, and widget tests pass;
    - new helper tests prove color equivalence with current behavior;
    - benchmark script shows:
