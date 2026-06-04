@@ -260,8 +260,8 @@ Non-goal:
      - features remain aligned by positive label id;
    - benchmark before/after to confirm categorical labels do not regress.
 
-6. Keep real points styling mostly unchanged
-   - real SpatialData points currently use categorical value-selection styling;
+6. Keep real points styling mostly unchanged - completed
+   - real SpatialData points continue to use categorical value-selection styling;
    - keep `apply_points_selection_style(...)` as-is unless a later continuous
      points-coloring feature is added;
    - if continuous points coloring is added later, reuse the new vectorized
