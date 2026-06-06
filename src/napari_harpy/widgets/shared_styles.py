@@ -41,7 +41,12 @@ WIDGET_WARNING_BACKGROUND_COLOR = "#3f3325"
 WIDGET_WARNING_BORDER_COLOR = "#c99845"
 WIDGET_WARNING_HOVER_COLOR = "#4f402c"
 TOOLTIP_TEXT_COLOR = WIDGET_TEXT_COLOR
-FORM_LABEL_STYLESHEET = f"color: {WIDGET_TEXT_SECONDARY_COLOR}; font-weight: 600; padding-top: 6px;"
+FORM_LABEL_STYLESHEET = (
+    f"color: {WIDGET_TEXT_SECONDARY_COLOR}; "
+    "font-weight: 600; "
+    "padding-top: 6px; "
+    "background: transparent;"
+)
 ACTION_BUTTON_STYLESHEET = (
     "QPushButton {"
     f"background-color: {WIDGET_PANEL_COLOR}; "

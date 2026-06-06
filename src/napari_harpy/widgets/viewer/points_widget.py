@@ -59,6 +59,7 @@ _SELECTED_VALUES_EMPTY_STYLESHEET = (
     "font-weight: 500; "
     "padding: 4px 6px;}"
 )
+_INLINE_ROW_STYLESHEET = "QWidget { background: transparent; }"
 
 
 class PointsValueWidget(QFrame):
@@ -119,6 +120,7 @@ class PointsValueWidget(QFrame):
         self.add_value_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
 
         value_search_widget = QWidget()
+        value_search_widget.setStyleSheet(_INLINE_ROW_STYLESHEET)
         value_search_layout = QHBoxLayout(value_search_widget)
         value_search_layout.setContentsMargins(0, 0, 0, 0)
         value_search_layout.setSpacing(6)
@@ -139,6 +141,7 @@ class PointsValueWidget(QFrame):
         self.clear_selection_button.setToolTip("Clear selected point values")
 
         selected_values_widget = QWidget()
+        selected_values_widget.setStyleSheet(_INLINE_ROW_STYLESHEET)
         selected_values_layout = QHBoxLayout(selected_values_widget)
         selected_values_layout.setContentsMargins(0, 0, 0, 0)
         selected_values_layout.setSpacing(6)

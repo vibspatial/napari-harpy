@@ -43,6 +43,7 @@ _ELEMENT_DISCLOSURE_STYLESHEET = (
     f"border: 1px solid {WIDGET_BORDER_COLOR}; "
     "border-radius: 10px;}"
 )
+_DISCLOSURE_CONTENT_STYLESHEET = "QWidget { background: transparent; }"
 
 
 class _ElidedLabel(QLabel):
@@ -189,6 +190,7 @@ class _CollapsibleSectionWidget(QFrame):
 
         self.content_widget = QWidget()
         self.content_widget.setObjectName(f"{object_name}_content")
+        self.content_widget.setStyleSheet(_DISCLOSURE_CONTENT_STYLESHEET)
         self.content_layout = QVBoxLayout(self.content_widget)
         self.content_layout.setContentsMargins(0, 0, 0, 0)
         self.content_layout.setSpacing(8)
