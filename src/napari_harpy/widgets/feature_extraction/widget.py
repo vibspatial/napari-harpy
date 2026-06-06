@@ -62,8 +62,11 @@ from napari_harpy.widgets.shared_styles import (
     SECONDARY_BUTTON_STYLESHEET,
     WIDGET_BORDER_COLOR,
     WIDGET_PANEL_COLOR,
+    WIDGET_PANEL_SUBTLE_COLOR,
     WIDGET_TEXT_COLOR,
     WIDGET_TEXT_MUTED_COLOR,
+    WIDGET_WARNING_BACKGROUND_COLOR,
+    WIDGET_WARNING_BORDER_COLOR,
     WIDGET_WARNING_TEXT_COLOR,
     CompactComboBox,
     apply_scroll_content_surface,
@@ -104,8 +107,26 @@ _FEATURE_GROUP_STYLESHEET = (
     f"padding: 0 6px; color: {WIDGET_TEXT_COLOR}; background-color: {_WIDGET_SURFACE_COLOR};"
     "}"
 )
-_FEATURE_HINT_INFO_STYLESHEET = f"color: {WIDGET_TEXT_MUTED_COLOR}; font-size: 12px; font-weight: 500;"
-_FEATURE_HINT_WARNING_STYLESHEET = f"color: {WIDGET_WARNING_TEXT_COLOR}; font-size: 12px; font-weight: 600;"
+_FEATURE_HINT_INFO_STYLESHEET = (
+    "QLabel {"
+    f"background-color: {WIDGET_PANEL_SUBTLE_COLOR}; "
+    f"border: 1px solid {WIDGET_BORDER_COLOR}; "
+    "border-radius: 8px; "
+    f"color: {WIDGET_TEXT_MUTED_COLOR}; "
+    "font-size: 12px; "
+    "font-weight: 500; "
+    "padding: 6px 8px;}"
+)
+_FEATURE_HINT_WARNING_STYLESHEET = (
+    "QLabel {"
+    f"background-color: {WIDGET_WARNING_BACKGROUND_COLOR}; "
+    f"border: 1px solid {WIDGET_WARNING_BORDER_COLOR}; "
+    "border-radius: 8px; "
+    f"color: {WIDGET_WARNING_TEXT_COLOR}; "
+    "font-size: 12px; "
+    "font-weight: 600; "
+    "padding: 6px 8px;}"
+)
 _CHANNEL_SELECTION_PANEL_STYLESHEET = "QWidget { background: transparent; }"
 _NO_IMAGE_TEXT = "No image"
 _INTENSITY_FEATURES = ("sum", "mean", "var", "min", "max", "kurtosis", "skew")
@@ -840,7 +861,7 @@ class FeatureExtractionWidget(QWidget):
         note_label = QLabel()
         note_label.setObjectName(object_name)
         note_label.setWordWrap(True)
-        note_label.setStyleSheet(_FEATURE_HINT_INFO_STYLESHEET)
+        note_label.setStyleSheet(_FEATURE_HINT_WARNING_STYLESHEET)
         note_label.hide()
         return note_label
 
