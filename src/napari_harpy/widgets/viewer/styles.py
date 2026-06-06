@@ -5,6 +5,7 @@ from napari_harpy.widgets.shared_styles import (
     WIDGET_ACCENT_SOFT_COLOR,
     WIDGET_BORDER_COLOR,
     WIDGET_PANEL_COLOR,
+    WIDGET_TEXT_MUTED_COLOR,
     WIDGET_TEXT_SECONDARY_COLOR,
     build_input_control_stylesheet,
 )
@@ -26,4 +27,4 @@ CARD_TITLE_STYLESHEET = (
     "padding: 6px 10px;}"
 )
 SUMMARY_LABEL_STYLESHEET = f"color: {WIDGET_TEXT_SECONDARY_COLOR}; font-weight: 500;"
-EMPTY_STATE_STYLESHEET = "color: #64748b; font-weight: 500;"
+EMPTY_STATE_STYLESHEET = f"color: {WIDGET_TEXT_MUTED_COLOR}; font-weight: 500;"

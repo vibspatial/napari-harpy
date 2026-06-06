@@ -24,6 +24,7 @@ from napari_harpy.core._color_source import (
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     CHECKBOX_STYLESHEET,
+    COMPLETER_POPUP_STYLESHEET,
     CompactComboBox,
     build_input_control_stylesheet,
     create_form_label,
@@ -118,6 +119,7 @@ class _ShapesCardWidget(QFrame):
         self._color_source_completer = QCompleter(self._color_source_completer_model, self.color_source_value_input)
         self._color_source_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self._color_source_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self._color_source_completer.popup().setStyleSheet(COMPLETER_POPUP_STYLESHEET)
         self.color_source_value_input.setCompleter(self._color_source_completer)
 
         self.action_hint_label = QLabel()

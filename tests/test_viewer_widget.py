@@ -25,7 +25,7 @@ from napari_harpy._points_value_index import PointsValueSelection, PointsValueTa
 from napari_harpy.core._color_source import ShapeColumnColorSourceSpec, TableColorSourceSpec
 from napari_harpy.viewer.adapter import PointsLayerIdentity
 from napari_harpy.viewer.shapes_styling import SHAPES_FACE_ALPHA
-from napari_harpy.widgets.shared_styles import WIDGET_MIN_WIDTH
+from napari_harpy.widgets.shared_styles import STATUS_CARD_PALETTE, WIDGET_MIN_WIDTH
 from napari_harpy.widgets.viewer.disclosure import _ElidedLabel, _ElidedToolButton
 from napari_harpy.widgets.viewer.image_widget import QColorDialog, _OverlayColorButton
 from napari_harpy.widgets.viewer.points_controller import PointsLoadRequest
@@ -66,10 +66,7 @@ class DummyViewer:
 
 
 _FEEDBACK_BACKGROUND_BY_KIND = {
-    "info": "#eef6ff",
-    "warning": "#fffbeb",
-    "success": "#ecfdf5",
-    "error": "#fef2f2",
+    kind: palette["background"] for kind, palette in STATUS_CARD_PALETTE.items()
 }
 
 

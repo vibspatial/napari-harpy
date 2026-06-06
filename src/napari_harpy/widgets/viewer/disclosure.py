@@ -11,7 +11,6 @@ from napari_harpy.widgets.shared_styles import (
     WIDGET_BORDER_STRONG_COLOR,
     WIDGET_PANEL_COLOR,
     WIDGET_PANEL_MUTED_COLOR,
-    WIDGET_PANEL_SUBTLE_COLOR,
     WIDGET_TEXT_COLOR,
     format_tooltip,
 )
@@ -39,10 +38,10 @@ _DISCLOSURE_BUTTON_STYLESHEET = (
 )
 _ELEMENT_DISCLOSURE_STYLESHEET = (
     "QFrame[harpyViewerDisclosureRow='true'] {"
-    f"background-color: {WIDGET_PANEL_SUBTLE_COLOR}; "
-    f"border: 1px solid {WIDGET_BORDER_COLOR}; "
-    "border-radius: 10px;}"
+    "background: transparent; "
+    "border: 0px;}"
 )
+_DISCLOSURE_CONTENT_STYLESHEET = "QWidget { background: transparent; }"
 
 
 class _ElidedLabel(QLabel):
@@ -189,6 +188,7 @@ class _CollapsibleSectionWidget(QFrame):
 
         self.content_widget = QWidget()
         self.content_widget.setObjectName(f"{object_name}_content")
+        self.content_widget.setStyleSheet(_DISCLOSURE_CONTENT_STYLESHEET)
         self.content_layout = QVBoxLayout(self.content_widget)
         self.content_layout.setContentsMargins(0, 0, 0, 0)
         self.content_layout.setSpacing(8)
@@ -245,7 +245,7 @@ class _DisclosureElementWidget(QFrame):
         self.setStyleSheet(_ELEMENT_DISCLOSURE_STYLESHEET)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
         self.toggle_button = _ElidedToolButton(title)

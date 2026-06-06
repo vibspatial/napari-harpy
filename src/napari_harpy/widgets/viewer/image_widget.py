@@ -22,14 +22,16 @@ from napari_harpy.widgets.shared_styles import (
     CHECKBOX_STYLESHEET,
     WIDGET_ACCENT_BORDER_COLOR,
     WIDGET_BORDER_STRONG_COLOR,
+    WIDGET_TEXT_MUTED_COLOR,
+    WIDGET_WARNING_TEXT_COLOR,
     format_tooltip,
 )
 from napari_harpy.widgets.viewer.disclosure import _ElidedLabel
 from napari_harpy.widgets.viewer.styles import CARD_TITLE_STYLESHEET, DETAIL_PANEL_STYLESHEET, EMPTY_STATE_STYLESHEET
 
-_CHANNEL_WARNING_STYLESHEET = "color: #b45309; font-weight: 600;"
+_CHANNEL_WARNING_STYLESHEET = f"color: {WIDGET_WARNING_TEXT_COLOR}; font-weight: 600;"
 _CHANNEL_PANEL_STYLESHEET = "QWidget { background: transparent; }"
-_SUBSECTION_LABEL_STYLESHEET = "color: #64748b; font-size: 11px; font-weight: 600;"
+_SUBSECTION_LABEL_STYLESHEET = f"color: {WIDGET_TEXT_MUTED_COLOR}; font-size: 11px; font-weight: 600;"
 _MAX_VISIBLE_OVERLAY_CHANNELS = 5
 _OVERLAY_COLOR_BUTTON_WIDTH = 34
 _OVERLAY_COLOR_BUTTON_HEIGHT = 22

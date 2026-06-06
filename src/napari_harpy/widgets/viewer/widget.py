@@ -43,6 +43,7 @@ from napari_harpy.viewer.points_styling import PointsLoadResult
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     WIDGET_MIN_WIDTH,
+    WIDGET_TEXT_COLOR,
     StatusCardKind,
     apply_scroll_content_surface,
     apply_widget_surface,
@@ -967,7 +968,7 @@ class ViewerWidget(QWidget):
             return logo_label
 
         logo_label.setText("napari-harpy")
-        logo_label.setStyleSheet("color: #111827; font-size: 18px; font-weight: 600;")
+        logo_label.setStyleSheet(f"color: {WIDGET_TEXT_COLOR}; font-size: 18px; font-weight: 600;")
         return logo_label
 
 

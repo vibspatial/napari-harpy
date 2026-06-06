@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from enum import Enum
-from html import escape
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -74,8 +73,12 @@ from napari_harpy.widgets.shared_styles import (
     CHECKBOX_STYLESHEET as _CHECKBOX_STYLESHEET,
 )
 from napari_harpy.widgets.shared_styles import (
+    PRIMARY_BUTTON_STYLESHEET,
+    SECONDARY_BUTTON_STYLESHEET,
+    WARNING_BUTTON_STYLESHEET,
     WIDGET_BORDER_COLOR,
     WIDGET_PANEL_COLOR,
+    WIDGET_WARNING_TEXT_COLOR,
     CompactComboBox,
     StatusCardKind,
     apply_scroll_content_surface,
@@ -330,7 +333,7 @@ class ObjectClassificationWidget(QWidget):
         self.validation_status = QLabel()
         self.validation_status.setObjectName("validation_status")
         self.validation_status.setWordWrap(True)
-        self.validation_status.setStyleSheet("color: #b45309; font-weight: 600;")
+        self.validation_status.setStyleSheet(f"color: {WIDGET_WARNING_TEXT_COLOR}; font-weight: 600;")
         self.validation_status.hide()
 
         self.selection_status = QLabel()
@@ -1450,26 +1453,13 @@ class ObjectClassificationWidget(QWidget):
         layout.setSpacing(14)
 
         warning_message = (
-            f'Table "{escape(table_name)}" has in-memory changes that have not been written to zarr.'
+            f'Table "{table_name}" has in-memory changes that have not been written to zarr.'
             if table_name is not None
             else "The selected table has in-memory changes that have not been written to zarr."
         )
-        warning_card = QLabel(
-            "<div>"
-            "<span style='font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;'>"
-            "Unsynced Changes</span><br>"
-            f"<span>{warning_message}</span>"
-            "</div>"
-        )
+        warning_card = QLabel()
         warning_card.setWordWrap(True)
-        warning_card.setStyleSheet(
-            "font-weight: 500; "
-            "color: #b45309; "
-            "background-color: #fffbeb; "
-            "border: 1px solid #fde68a; "
-            "border-radius: 10px; "
-            "padding: 12px 14px;"
-        )
+        set_status_card(warning_card, title="Unsynced Changes", lines=[warning_message], kind="warning")
         layout.addWidget(warning_card)
 
         button_row = QHBoxLayout()
@@ -1479,35 +1469,9 @@ class ObjectClassificationWidget(QWidget):
         discard_button = QPushButton("Reload table state and discard local edits")
         cancel_button = QPushButton("Cancel")
 
-        write_button.setStyleSheet(
-            "QPushButton {"
-            "background-color: #166534; "
-            "color: white; "
-            "border: 1px solid #166534; "
-            "border-radius: 6px; "
-            "padding: 7px 14px; "
-            "font-weight: 600;}"
-            "QPushButton:hover { background-color: #15803d; border-color: #15803d; }"
-        )
-        discard_button.setStyleSheet(
-            "QPushButton {"
-            "background-color: #fffbeb; "
-            "color: #9a3412; "
-            "border: 1px solid #fde68a; "
-            "border-radius: 6px; "
-            "padding: 7px 14px; "
-            "font-weight: 600;}"
-            "QPushButton:hover { background-color: #fef3c7; }"
-        )
-        cancel_button.setStyleSheet(
-            "QPushButton {"
-            "background-color: #f9fafb; "
-            "color: #111827; "
-            "border: 1px solid #d1d5db; "
-            "border-radius: 6px; "
-            "padding: 7px 14px;}"
-            "QPushButton:hover { background-color: #f3f4f6; }"
-        )
+        write_button.setStyleSheet(PRIMARY_BUTTON_STYLESHEET)
+        discard_button.setStyleSheet(WARNING_BUTTON_STYLESHEET)
+        cancel_button.setStyleSheet(SECONDARY_BUTTON_STYLESHEET)
 
         button_row.addWidget(write_button)
         button_row.addWidget(discard_button)

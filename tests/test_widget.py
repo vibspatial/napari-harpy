@@ -38,7 +38,7 @@ from napari_harpy.widgets.object_classification.controller import (
 from napari_harpy.widgets.object_classification.widget import (
     ObjectClassificationWidget as HarpyWidget,
 )
-from napari_harpy.widgets.shared_styles import WIDGET_MIN_WIDTH
+from napari_harpy.widgets.shared_styles import STATUS_CARD_PALETTE, WIDGET_MIN_WIDTH
 from napari_harpy.widgets.viewer.widget import ViewerWidget
 
 
@@ -152,11 +152,7 @@ def _add_feature_table_for_labels(
     sdata.tables[table_name] = table
 
 
-_SUCCESS_FEEDBACK_STYLE = {
-    "text": "#047857",
-    "border": "#a7f3d0",
-    "background": "#ecfdf5",
-}
+_SUCCESS_FEEDBACK_STYLE = STATUS_CARD_PALETTE["success"]
 
 
 def _assert_persistence_success_feedback(widget: HarpyWidget, expected_message: str) -> None:
@@ -972,7 +968,7 @@ def test_widget_shows_classifier_preparation_hidden_write_notice_for_table_wide_
     assert "Some prediction updates may not be visible in the current selection." in (
         widget.classifier_preparation_status.text()
     )
-    assert "color: #047857" in widget.classifier_preparation_status.styleSheet()
+    assert f"color: {STATUS_CARD_PALETTE['success']['text']}" in widget.classifier_preparation_status.styleSheet()
 
 
 def test_widget_omits_hidden_write_line_for_effectively_selected_prediction_scope(
@@ -1628,7 +1624,7 @@ def test_widget_warns_when_selected_label_is_missing_from_annotation_table(
     widget._apply_current_class()
 
     assert "Selected cell_id 5 is not present in annotation table" in widget.annotation_feedback.text()
-    assert "#b45309" in widget.annotation_feedback.styleSheet()
+    assert STATUS_CARD_PALETTE["warning"]["text"] in widget.annotation_feedback.styleSheet()
     assert USER_CLASS_COLUMN not in table.obs
     assert warnings == [widget._annotation_controller.missing_table_row_message]
     assert warnings[0] in widget.annotation_feedback.text()
