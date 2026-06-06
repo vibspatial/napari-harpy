@@ -927,7 +927,7 @@ class FeatureExtractionWidget(QWidget):
         image_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
         image_note_label = self._create_triplet_card_note_label(f"feature_extraction_image_note_{coordinate_system}")
 
-        layout.addWidget(self._create_form_label("Labels element"))
+        layout.addWidget(self._create_form_label("Labels"))
         layout.addWidget(segmentation_combo)
         layout.addWidget(segmentation_note_label)
         layout.addWidget(self._create_form_label("Image"))
