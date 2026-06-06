@@ -4,7 +4,6 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from html import escape
 from typing import TYPE_CHECKING, Literal
 
 from qtpy.QtCore import QSignalBlocker, Qt
@@ -59,9 +58,13 @@ from napari_harpy.widgets.shared_styles import (
     CHECKBOX_STYLESHEET as _FEATURE_CHECKBOX_STYLESHEET,
 )
 from napari_harpy.widgets.shared_styles import (
+    PRIMARY_BUTTON_STYLESHEET,
+    SECONDARY_BUTTON_STYLESHEET,
     WIDGET_BORDER_COLOR,
     WIDGET_PANEL_COLOR,
     WIDGET_TEXT_COLOR,
+    WIDGET_TEXT_MUTED_COLOR,
+    WIDGET_WARNING_TEXT_COLOR,
     CompactComboBox,
     apply_scroll_content_surface,
     apply_widget_surface,
@@ -101,8 +104,8 @@ _FEATURE_GROUP_STYLESHEET = (
     f"padding: 0 6px; color: {WIDGET_TEXT_COLOR}; background-color: {_WIDGET_SURFACE_COLOR};"
     "}"
 )
-_FEATURE_HINT_INFO_STYLESHEET = "color: #6b7280; font-size: 12px; font-weight: 500;"
-_FEATURE_HINT_WARNING_STYLESHEET = "color: #b45309; font-size: 12px; font-weight: 600;"
+_FEATURE_HINT_INFO_STYLESHEET = f"color: {WIDGET_TEXT_MUTED_COLOR}; font-size: 12px; font-weight: 500;"
+_FEATURE_HINT_WARNING_STYLESHEET = f"color: {WIDGET_WARNING_TEXT_COLOR}; font-size: 12px; font-weight: 600;"
 _CHANNEL_SELECTION_PANEL_STYLESHEET = "QWidget { background: transparent; }"
 _NO_IMAGE_TEXT = "No image"
 _INTENSITY_FEATURES = ("sum", "mean", "var", "min", "max", "kurtosis", "skew")
@@ -2054,26 +2057,17 @@ class FeatureExtractionWidget(QWidget):
         layout.setSpacing(14)
 
         warning_message = (
-            f'Table "{escape(table_name)}" already contains ".obsm[{feature_key!r}]".'
+            f'Table "{table_name}" already contains ".obsm[{feature_key!r}]".'
             if table_name is not None
             else f'The selected table already contains ".obsm[{feature_key!r}]".'
         )
-        warning_card = QLabel(
-            "<div>"
-            "<span style='font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;'>"
-            "Existing Feature Matrix</span><br>"
-            f"<span>{warning_message}</span><br>"
-            "<span>Do you want to replace it?</span>"
-            "</div>"
-        )
+        warning_card = QLabel()
         warning_card.setWordWrap(True)
-        warning_card.setStyleSheet(
-            "font-weight: 500; "
-            "color: #b45309; "
-            "background-color: #fffbeb; "
-            "border: 1px solid #fde68a; "
-            "border-radius: 10px; "
-            "padding: 12px 14px;"
+        set_status_card(
+            warning_card,
+            title="Existing Feature Matrix",
+            lines=[warning_message, "Do you want to replace it?"],
+            kind="warning",
         )
         layout.addWidget(warning_card)
 
@@ -2084,25 +2078,8 @@ class FeatureExtractionWidget(QWidget):
         overwrite_button = QPushButton("Replace feature matrix")
         cancel_button = QPushButton("Cancel")
 
-        overwrite_button.setStyleSheet(
-            "QPushButton {"
-            "background-color: #166534; "
-            "color: white; "
-            "border: 1px solid #166534; "
-            "border-radius: 6px; "
-            "padding: 7px 14px; "
-            "font-weight: 600;}"
-            "QPushButton:hover { background-color: #15803d; border-color: #15803d; }"
-        )
-        cancel_button.setStyleSheet(
-            "QPushButton {"
-            "background-color: #f9fafb; "
-            "color: #111827; "
-            "border: 1px solid #d1d5db; "
-            "border-radius: 6px; "
-            "padding: 7px 14px;}"
-            "QPushButton:hover { background-color: #f3f4f6; }"
-        )
+        overwrite_button.setStyleSheet(PRIMARY_BUTTON_STYLESHEET)
+        cancel_button.setStyleSheet(SECONDARY_BUTTON_STYLESHEET)
 
         button_row.addWidget(overwrite_button)
         button_row.addWidget(cancel_button)

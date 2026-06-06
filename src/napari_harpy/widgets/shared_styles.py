@@ -16,20 +16,30 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-WIDGET_SURFACE_COLOR = "#f8fafc"
+WIDGET_SURFACE_COLOR = "#25272c"
 WIDGET_SURFACE_STYLESHEET = f"background-color: {WIDGET_SURFACE_COLOR};"
 WIDGET_MIN_WIDTH = 390
-WIDGET_PANEL_COLOR = "#ffffff"
-WIDGET_PANEL_MUTED_COLOR = "#f1f5f9"
-WIDGET_PANEL_SUBTLE_COLOR = "#f8fafc"
-WIDGET_BORDER_COLOR = "#d7dee8"
-WIDGET_BORDER_STRONG_COLOR = "#b8c4d2"
-WIDGET_TEXT_COLOR = "#0f172a"
-WIDGET_TEXT_MUTED_COLOR = "#64748b"
-WIDGET_TEXT_SECONDARY_COLOR = "#334155"
-WIDGET_ACCENT_COLOR = "#0891b2"
-WIDGET_ACCENT_SOFT_COLOR = "#e6f7fb"
-WIDGET_ACCENT_BORDER_COLOR = "#7dd3e8"
+WIDGET_PANEL_COLOR = "#30333a"
+WIDGET_PANEL_MUTED_COLOR = "#3a3e47"
+WIDGET_PANEL_SUBTLE_COLOR = "#2b2e34"
+WIDGET_BORDER_COLOR = "#4b515d"
+WIDGET_BORDER_STRONG_COLOR = "#67707f"
+WIDGET_TEXT_COLOR = "#f2f4f8"
+WIDGET_TEXT_MUTED_COLOR = "#aeb6c2"
+WIDGET_TEXT_SECONDARY_COLOR = "#d4d9e2"
+WIDGET_DISABLED_TEXT_COLOR = "#7f8794"
+WIDGET_DISABLED_BORDER_COLOR = "#414651"
+WIDGET_ACCENT_COLOR = "#9b7bea"
+WIDGET_ACCENT_SOFT_COLOR = "#3c3450"
+WIDGET_ACCENT_BORDER_COLOR = "#b196f3"
+WIDGET_PRESSED_COLOR = "#454a55"
+WIDGET_SUCCESS_COLOR = "#70c98a"
+WIDGET_SUCCESS_HOVER_COLOR = "#83d99b"
+WIDGET_PRIMARY_BUTTON_TEXT_COLOR = "#111827"
+WIDGET_WARNING_TEXT_COLOR = "#f0c36a"
+WIDGET_WARNING_BACKGROUND_COLOR = "#3f3325"
+WIDGET_WARNING_BORDER_COLOR = "#c99845"
+WIDGET_WARNING_HOVER_COLOR = "#4f402c"
 TOOLTIP_TEXT_COLOR = WIDGET_TEXT_COLOR
 FORM_LABEL_STYLESHEET = f"color: {WIDGET_TEXT_SECONDARY_COLOR}; font-weight: 600; padding-top: 6px;"
 ACTION_BUTTON_STYLESHEET = (
@@ -42,9 +52,9 @@ ACTION_BUTTON_STYLESHEET = (
     "padding: 4px 10px; "
     "min-height: 30px;}"
     f"QPushButton:hover {{ background-color: {WIDGET_PANEL_MUTED_COLOR}; border-color: {WIDGET_BORDER_STRONG_COLOR}; }}"
-    f"QPushButton:pressed {{ background-color: #e2e8f0; border-color: {WIDGET_BORDER_STRONG_COLOR}; }}"
+    f"QPushButton:pressed {{ background-color: {WIDGET_PRESSED_COLOR}; border-color: {WIDGET_BORDER_STRONG_COLOR}; }}"
     f"QPushButton:disabled {{ background-color: {WIDGET_PANEL_SUBTLE_COLOR}; "
-    "border-color: #e2e8f0; color: #94a3b8; }"
+    f"border-color: {WIDGET_DISABLED_BORDER_COLOR}; color: {WIDGET_DISABLED_TEXT_COLOR}; }}"
 )
 CHECKBOX_STYLESHEET = (
     "QCheckBox {"
@@ -52,7 +62,7 @@ CHECKBOX_STYLESHEET = (
     "font-weight: 500; "
     "spacing: 8px; "
     "background: transparent;}"
-    "QCheckBox:disabled { color: #9ca3af; }"
+    f"QCheckBox:disabled {{ color: {WIDGET_DISABLED_TEXT_COLOR}; }}"
     "QCheckBox::indicator {"
     "width: 16px; "
     "height: 16px; "
@@ -64,11 +74,50 @@ CHECKBOX_STYLESHEET = (
     f"border-color: {WIDGET_ACCENT_COLOR}; "
     f"background-color: {WIDGET_ACCENT_COLOR};}}"
     "QCheckBox::indicator:disabled {"
-    "border-color: #e2e8f0; "
+    f"border-color: {WIDGET_DISABLED_BORDER_COLOR}; "
     f"background-color: {WIDGET_PANEL_MUTED_COLOR};}}"
 )
 StatusCardKind = Literal["info", "warning", "success", "error"]
 STATUS_CARD_KINDS: tuple[StatusCardKind, ...] = ("info", "warning", "success", "error")
+STATUS_CARD_PALETTE: dict[StatusCardKind, dict[str, str]] = {
+    "info": {"text": "#9ecbff", "border": "#5f8fd9", "background": "#28384f"},
+    "warning": {
+        "text": WIDGET_WARNING_TEXT_COLOR,
+        "border": WIDGET_WARNING_BORDER_COLOR,
+        "background": WIDGET_WARNING_BACKGROUND_COLOR,
+    },
+    "success": {"text": "#8ee6a6", "border": WIDGET_SUCCESS_COLOR, "background": "#253b30"},
+    "error": {"text": "#ff9aa2", "border": "#e06c75", "background": "#4a2b31"},
+}
+PRIMARY_BUTTON_STYLESHEET = (
+    "QPushButton {"
+    f"background-color: {WIDGET_SUCCESS_COLOR}; "
+    f"color: {WIDGET_PRIMARY_BUTTON_TEXT_COLOR}; "
+    f"border: 1px solid {WIDGET_SUCCESS_COLOR}; "
+    "border-radius: 6px; "
+    "padding: 7px 14px; "
+    "font-weight: 600;}"
+    f"QPushButton:hover {{ background-color: {WIDGET_SUCCESS_HOVER_COLOR}; border-color: {WIDGET_SUCCESS_HOVER_COLOR}; }}"
+)
+WARNING_BUTTON_STYLESHEET = (
+    "QPushButton {"
+    f"background-color: {WIDGET_WARNING_BACKGROUND_COLOR}; "
+    f"color: {WIDGET_WARNING_TEXT_COLOR}; "
+    f"border: 1px solid {WIDGET_WARNING_BORDER_COLOR}; "
+    "border-radius: 6px; "
+    "padding: 7px 14px; "
+    "font-weight: 600;}"
+    f"QPushButton:hover {{ background-color: {WIDGET_WARNING_HOVER_COLOR}; }}"
+)
+SECONDARY_BUTTON_STYLESHEET = (
+    "QPushButton {"
+    f"background-color: {WIDGET_PANEL_COLOR}; "
+    f"color: {WIDGET_TEXT_COLOR}; "
+    f"border: 1px solid {WIDGET_BORDER_COLOR}; "
+    "border-radius: 6px; "
+    "padding: 7px 14px;}"
+    f"QPushButton:hover {{ background-color: {WIDGET_PANEL_MUTED_COLOR}; }}"
+)
 _INLINE_BACKTICK_RE = re.compile(r"`([^`]+)`")
 
 
@@ -96,8 +145,8 @@ def build_input_control_stylesheet(control_selector: str) -> str:
         "min-height: 20px;}"
         f"{disabled_selector} {{"
         f"background-color: {WIDGET_PANEL_MUTED_COLOR}; "
-        "border-color: #e2e8f0; "
-        "color: #9ca3af;}"
+        f"border-color: {WIDGET_DISABLED_BORDER_COLOR}; "
+        f"color: {WIDGET_DISABLED_TEXT_COLOR};}}"
         f"{focus_selector} {{"
         f"border-color: {WIDGET_ACCENT_COLOR}; "
         f"background-color: {WIDGET_PANEL_COLOR};}}"
@@ -239,13 +288,7 @@ def set_status_card(
     tooltip_message: str | None = None,
 ) -> None:
     """Render a compact titled status card into a QLabel."""
-    palette_by_kind = {
-        "info": {"text": "#1d4ed8", "border": "#bfdbfe", "background": "#eef6ff"},
-        "warning": {"text": "#b45309", "border": "#fde68a", "background": "#fffbeb"},
-        "success": {"text": "#047857", "border": "#a7f3d0", "background": "#ecfdf5"},
-        "error": {"text": "#b91c1c", "border": "#fecaca", "background": "#fef2f2"},
-    }
-    palette = palette_by_kind.get(kind, palette_by_kind["info"])
+    palette = STATUS_CARD_PALETTE.get(kind, STATUS_CARD_PALETTE["info"])
     formatted_lines = "<br>".join(f"<span>{escape(format_feedback_text(line), quote=False)}</span>" for line in lines)
     label.setText(
         "<div>"
