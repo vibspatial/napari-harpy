@@ -60,11 +60,10 @@ from napari_harpy.widgets.shared_styles import (
 from napari_harpy.widgets.shared_styles import (
     PRIMARY_BUTTON_STYLESHEET,
     SECONDARY_BUTTON_STYLESHEET,
+    STATUS_CARD_PALETTE,
     WIDGET_BORDER_COLOR,
     WIDGET_PANEL_COLOR,
-    WIDGET_PANEL_SUBTLE_COLOR,
     WIDGET_TEXT_COLOR,
-    WIDGET_TEXT_MUTED_COLOR,
     WIDGET_WARNING_BACKGROUND_COLOR,
     WIDGET_WARNING_BORDER_COLOR,
     WIDGET_WARNING_TEXT_COLOR,
@@ -107,12 +106,13 @@ _FEATURE_GROUP_STYLESHEET = (
     f"padding: 0 6px; color: {WIDGET_TEXT_COLOR}; background-color: {_WIDGET_SURFACE_COLOR};"
     "}"
 )
+_FEATURE_HINT_INFO_PALETTE = STATUS_CARD_PALETTE["info"]
 _FEATURE_HINT_INFO_STYLESHEET = (
     "QLabel {"
-    f"background-color: {WIDGET_PANEL_SUBTLE_COLOR}; "
-    f"border: 1px solid {WIDGET_BORDER_COLOR}; "
+    f"background-color: {_FEATURE_HINT_INFO_PALETTE['background']}; "
+    f"border: 1px solid {_FEATURE_HINT_INFO_PALETTE['border']}; "
     "border-radius: 8px; "
-    f"color: {WIDGET_TEXT_MUTED_COLOR}; "
+    f"color: {_FEATURE_HINT_INFO_PALETTE['text']}; "
     "font-size: 12px; "
     "font-weight: 500; "
     "padding: 6px 8px;}"
@@ -861,7 +861,7 @@ class FeatureExtractionWidget(QWidget):
         note_label = QLabel()
         note_label.setObjectName(object_name)
         note_label.setWordWrap(True)
-        note_label.setStyleSheet(_FEATURE_HINT_WARNING_STYLESHEET)
+        note_label.setStyleSheet(_FEATURE_HINT_INFO_STYLESHEET)
         note_label.hide()
         return note_label
 
