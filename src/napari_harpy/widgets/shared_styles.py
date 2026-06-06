@@ -32,6 +32,7 @@ WIDGET_DISABLED_BORDER_COLOR = "#414651"
 WIDGET_ACCENT_COLOR = "#9b7bea"
 WIDGET_ACCENT_SOFT_COLOR = "#3c3450"
 WIDGET_ACCENT_BORDER_COLOR = "#b196f3"
+WIDGET_SELECTION_COLOR = "#4b3f63"
 WIDGET_PRESSED_COLOR = "#454a55"
 WIDGET_SUCCESS_COLOR = "#70c98a"
 WIDGET_SUCCESS_HOVER_COLOR = "#83d99b"
@@ -81,6 +82,16 @@ CHECKBOX_STYLESHEET = (
     "QCheckBox::indicator:disabled {"
     f"border-color: {WIDGET_DISABLED_BORDER_COLOR}; "
     f"background-color: {WIDGET_PANEL_MUTED_COLOR};}}"
+)
+COMPLETER_POPUP_STYLESHEET = (
+    "QAbstractItemView {"
+    f"background-color: {WIDGET_PANEL_COLOR}; "
+    f"border: 1px solid {WIDGET_BORDER_COLOR}; "
+    f"color: {WIDGET_TEXT_COLOR}; "
+    f"selection-background-color: {WIDGET_SELECTION_COLOR}; "
+    f"selection-color: {WIDGET_TEXT_COLOR}; "
+    "outline: 0px;}"
+    "QAbstractItemView::item { padding: 4px 8px; }"
 )
 StatusCardKind = Literal["info", "warning", "success", "error"]
 STATUS_CARD_KINDS: tuple[StatusCardKind, ...] = ("info", "warning", "success", "error")

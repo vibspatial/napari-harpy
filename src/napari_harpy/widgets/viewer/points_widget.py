@@ -20,6 +20,7 @@ from napari_harpy._points_value_index import DEFAULT_RENDER_POINT_BUDGET
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     CHECKBOX_STYLESHEET,
+    COMPLETER_POPUP_STYLESHEET,
     WIDGET_BORDER_COLOR,
     WIDGET_PANEL_COLOR,
     WIDGET_PANEL_SUBTLE_COLOR,
@@ -111,6 +112,7 @@ class PointsValueWidget(QFrame):
         self._value_completer = QCompleter(self._value_completer_model, self.value_input)
         self._value_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self._value_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self._value_completer.popup().setStyleSheet(COMPLETER_POPUP_STYLESHEET)
         self.value_input.setCompleter(self._value_completer)
 
         self.add_value_button = QPushButton("Add")
