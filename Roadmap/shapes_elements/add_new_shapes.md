@@ -305,7 +305,7 @@ Suggested models:
 
 ```python
 @dataclass(frozen=True)
-class NewShapesElementRequest:
+class CreateShapesElementRequest:
     sdata: SpatialData
     shapes_name: str
     coordinate_system: str
@@ -314,7 +314,7 @@ class NewShapesElementRequest:
 
 
 @dataclass(frozen=True)
-class NewShapesElementResult:
+class CreateShapesElementResult:
     shapes_name: str
     coordinate_system: str
     row_count: int
@@ -332,14 +332,14 @@ def napari_shapes_layer_to_geodataframe(
     ...
 
 
-def save_new_shapes_element(
-    request: NewShapesElementRequest,
+def create_shapes_element_from_napari_shapes_layer(
+    request: CreateShapesElementRequest,
     layer: Shapes,
-) -> NewShapesElementResult:
+) -> CreateShapesElementResult:
     ...
 ```
 
-Rules for `save_new_shapes_element(...)`:
+Rules for `create_shapes_element_from_napari_shapes_layer(...)`:
 
 - reject missing `sdata`;
 - reject missing or unknown coordinate system;
@@ -436,8 +436,8 @@ Purpose:
 Code:
 
 - add `src/napari_harpy/core/shapes_annotation.py`;
-- add `NewShapesElementRequest`;
-- add `NewShapesElementResult`;
+- add `CreateShapesElementRequest`;
+- add `CreateShapesElementResult`;
 - add `napari_shapes_layer_to_geodataframe(...)`;
 - add focused tests in `tests/test_shapes_annotation.py`.
 
@@ -492,7 +492,7 @@ Purpose:
 
 Code:
 
-- add `save_new_shapes_element(...)` in
+- add `create_shapes_element_from_napari_shapes_layer(...)` in
   `src/napari_harpy/core/shapes_annotation.py`;
 - reuse `napari_shapes_layer_to_geodataframe(...)`;
 - use `ShapesModel.parse(...)` with an `Identity()` transform;
@@ -512,7 +512,8 @@ Behavior:
   ```
 
 - write the parsed element into `sdata.shapes[new_name]`;
-- return `NewShapesElementResult` with name, coordinate system, and row count;
+- return `CreateShapesElementResult` with name, coordinate system, and row
+  count;
 - do not create or link an `AnnData` table;
 - do not persist to a backed zarr store in this slice.
 
@@ -664,7 +665,7 @@ Purpose:
 Code:
 
 - connect the `Save new shapes element` button;
-- call `save_new_shapes_element(...)`;
+- call `create_shapes_element_from_napari_shapes_layer(...)`;
 - refresh relevant widget/viewer state after success;
 - extend widget tests.
 
