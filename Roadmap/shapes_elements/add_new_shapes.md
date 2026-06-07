@@ -221,9 +221,7 @@ Column rule:
 - write a geometry column;
 - initialize optional annotation metadata columns only when explicitly
   configured by the widget or future settings;
-- do not create table-linkage columns by default;
-- if a `radius` column is needed for circles, polygon rows should receive
-  missing radius values.
+- do not create table-linkage columns by default.
 
 Table rule:
 
@@ -237,12 +235,15 @@ Supported napari shape types:
 
 - `polygon` as Shapely `Polygon`;
 - `rectangle` as Shapely `Polygon`, if napari exposes it as a shape type;
-- circular `ellipse` as Shapely `Point` plus a positive `radius` column.
+- `ellipse` as a polygonal Shapely `Polygon` approximation.
 
-Polygon row semantics:
+Region row semantics:
 
-- each drawn napari polygon row is saved as one independent Shapely `Polygon`
+- each supported napari shape row is saved as one independent Shapely `Polygon`
   row;
+- all saved rows are region annotations represented as Shapely `Polygon`
+  geometries;
+- ellipse rows are saved as polygonal approximations of the ellipse boundary;
 - if the user draws one polygon inside another, save both as independent
   polygons;
 - do not infer polygon holes from nested polygons.
@@ -251,19 +252,19 @@ Unsupported napari shape types:
 
 - `line`;
 - `path`;
-- non-circular ellipses, unless Harpy explicitly converts them to polygonal
-  approximations;
 - shapes with too few vertices for a valid polygon;
 - empty rows;
 - rows containing non-finite coordinates.
 
-Circle handling:
+Ellipse handling:
 
-- napari circles are represented as `ellipse` rows;
-- accept an ellipse as a circle only when its displayed width and height are
-  equal within a small numeric tolerance;
-- store the center as `Point(x, y)`;
-- store the radius in display-coordinate units in a `radius` column.
+- napari ellipse rows are stored as four bounding-box vertices;
+- convert each ellipse to a deterministic Shapely `Polygon` approximation;
+- use a default of 64 boundary samples per ellipse unless implementation tests
+  show another value is preferable;
+- reject ellipse rows whose bounding box has zero, negative, or non-finite width
+  or height;
+- do not store circles or ellipses as `Point` plus `radius` in this workflow.
 
 Coordinate order:
 
@@ -333,6 +334,7 @@ class CreateShapesElementRequest:
     coordinate_system: str
     index_name: str = "instance_id"
     index_prefix: str = "shape"
+    ellipse_segments: int = 64
 
 
 @dataclass(frozen=True)
@@ -350,6 +352,7 @@ def napari_shapes_layer_to_geodataframe(
     *,
     index_name: str = "instance_id",
     index_prefix: str = "shape",
+    ellipse_segments: int = 64,
 ) -> gpd.GeoDataFrame:
     ...
 
@@ -366,6 +369,7 @@ Rules for `create_shapes_element_from_napari_shapes_layer(...)`:
 - reject missing `sdata`;
 - reject missing or unknown coordinate system;
 - reject empty shapes element names;
+- reject invalid ellipse segment counts;
 - reject duplicate shapes element names when creating the initial empty layer;
 - allow overwriting the locked widget-owned shapes element on repeated saves;
 - reject empty layers;
@@ -445,7 +449,7 @@ Use short, actionable feedback messages:
 - "Shapes element `<name>` already exists. Choose another name."
 - "Draw at least one supported shape before saving."
 - "Lines and paths cannot be saved as SpatialData shapes yet."
-- "Only circular ellipses can be saved as radius-backed circles."
+- "Ellipse row `<index>` cannot be converted to a valid polygon."
 - "Shape row `<index>` contains non-finite coordinates."
 - "Saved `<name>` with `<n>` shape(s) in coordinate system `<cs>`."
 
@@ -477,13 +481,14 @@ Behavior:
 - convert napari `polygon` rows into Shapely `Polygon` rows;
 - convert napari `rectangle` rows into Shapely `Polygon` rows, if represented
   as rectangles by napari;
-- convert circular napari `ellipse` rows into Shapely `Point` rows plus a
-  `radius` column;
+- convert napari `ellipse` rows into Shapely `Polygon` approximations;
 - reject `line` and `path` rows;
-- reject non-circular ellipses;
 - reject empty layers, empty rows, rows with too few vertices, and rows with
   non-finite coordinates;
-- save each drawn polygon row as an independent polygon;
+- reject ellipse rows whose bounding box has zero, negative, or non-finite width
+  or height;
+- reject invalid ellipse segment counts;
+- save each supported napari shape row as an independent polygon;
 - do not infer holes from nested polygons;
 - generate deterministic indices for new rows: `shape_0`, `shape_1`, ...;
 - store generated IDs in napari layer features under `instance_id`;
@@ -496,8 +501,7 @@ Acceptance:
 
 - supported napari shape rows convert to a valid `GeoDataFrame`;
 - unsupported rows raise clear `ValueError`s with actionable messages;
-- mixed polygons and circles preserve expected geometry rows and `radius`
-  values;
+- all converted geometry rows are Shapely `Polygon` instances;
 - generated indices are unique, stable, and named `instance_id`;
 - existing feature-backed `instance_id` values are preserved;
 - no `SpatialData` mutation happens in this slice.
@@ -506,8 +510,9 @@ Tests:
 
 - polygon conversion;
 - rectangle conversion, if the napari representation is available in tests;
-- circular ellipse conversion;
-- non-circular ellipse rejection;
+- ellipse polygonization;
+- ellipse bounding-box validation;
+- invalid ellipse segment count rejection;
 - line and path rejection;
 - empty layer rejection;
 - non-finite coordinate rejection;
