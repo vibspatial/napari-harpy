@@ -31,15 +31,14 @@ element instead of mutating an existing one.
 
 ## Non-Goals
 
-- Editing or overwriting an existing `sdata.shapes[...]` element.
+- Editing or overwriting arbitrary pre-existing `sdata.shapes[...]` elements.
 - Save-as-copy for an existing shapes element.
 - Reconciling shapes rows with existing `AnnData` tables.
 - Creating or linking a new annotation table.
 - Inferring shape identity from labels-linked tables.
 - Palette editing or styled-shapes authoring.
 - Supporting every napari shape type.
-- Persisting new shapes to backed zarr stores unless the SpatialData write API
-  path is proven and tested.
+- Manual backed zarr mutation outside `harpy.sh.add_shapes(...)`.
 
 ## Current Codebase Fit
 
@@ -125,10 +124,14 @@ coloring existing elements.
 10. User draws supported shapes.
 11. User clicks `Save new shapes element`.
 12. Harpy converts the layer to a `GeoDataFrame`.
-13. Harpy parses it into a SpatialData shapes model with an `Identity()`
-    transform to the selected coordinate system.
-14. Harpy writes it into `sdata.shapes[new_name]`.
-15. Harpy refreshes relevant UI state and reports success.
+13. Harpy writes it into `sdata.shapes[new_name]` with
+    `harpy.sh.add_shapes(..., overwrite=True)` and an `Identity()` transform to
+    the selected coordinate system.
+14. Harpy refreshes relevant UI state and reports success.
+15. The layer remains editable as the widget-owned primary annotation layer.
+16. User may continue editing, adding, or deleting shapes in the same layer.
+17. Each later `Save new shapes element` validates the same layer again and
+    overwrites the same locked `sdata.shapes[new_name]` element.
 
 If the user changes the coordinate-system selector after creating an annotation
 layer with unsaved shapes, the widget should show a warning dialog:
@@ -162,6 +165,11 @@ After the user creates an empty layer, the widget should lock the new element
 name for that pending layer. To use another name, the user should discard the
 pending unsaved layer and create a new one.
 
+After the first successful save, the layer remains the editable source for the
+locked shapes element name. Workflow A may overwrite that widget-owned element
+on later saves, but it must not be used to overwrite any unrelated pre-existing
+`sdata.shapes[...]` element.
+
 ## Data Semantics
 
 The saved shapes element should be interpreted in the selected display coordinate
@@ -170,7 +178,14 @@ system.
 Transform rule:
 
 ```python
-ShapesModel.parse(geodataframe, transformations={coordinate_system: Identity()})
+harpy.sh.add_shapes(
+    sdata,
+    input=geodataframe,
+    output_shapes_name=shapes_name,
+    transformations={coordinate_system: Identity()},
+    instance_key="instance_id",
+    overwrite=True,
+)
 ```
 
 Rationale:
@@ -181,9 +196,14 @@ Rationale:
 
 Index rule:
 
-- generate a fresh index for every saved row;
-- default index values should be deterministic and stable for the saved layer,
-  for example `shape_0`, `shape_1`, ...;
+- generate a stable `instance_id` for each new napari row;
+- store each generated `instance_id` in the napari layer features so repeated
+  saves can preserve row identity;
+- default index values should be deterministic for new rows, for example
+  `shape_0`, `shape_1`, ...;
+- after the first save, existing rows keep their assigned `instance_id`;
+- new rows receive the next unused `shape_N` value;
+- deleted rows disappear on the next save;
 - the generated index must be unique within the new `GeoDataFrame`;
 - the generated index name should be `instance_id`.
 
@@ -192,7 +212,9 @@ Rationale:
 - current table-backed shapes styling uses the `GeoDataFrame` index as the
   shape instance identity;
 - naming the index `instance_id` makes later explicit table-linking less
-  awkward, while still avoiding automatic table creation in this workflow.
+  awkward, while still avoiding automatic table creation in this workflow;
+- preserving `instance_id` values across repeated saves prevents inserts,
+  deletes, or row reordering from changing existing shape identities.
 
 Column rule:
 
@@ -343,10 +365,15 @@ Rules for `create_shapes_element_from_napari_shapes_layer(...)`:
 
 - reject missing `sdata`;
 - reject missing or unknown coordinate system;
-- reject empty or duplicate shapes element names;
+- reject empty shapes element names;
+- reject duplicate shapes element names when creating the initial empty layer;
+- allow overwriting the locked widget-owned shapes element on repeated saves;
 - reject empty layers;
 - validate all napari rows before mutating `sdata`;
-- parse the `GeoDataFrame` with `ShapesModel.parse(...)`;
+- assume the caller has already locked `request.shapes_name` to the
+  widget-owned layer created by Workflow A;
+- write the converted `GeoDataFrame` with
+  `harpy.sh.add_shapes(..., overwrite=True)`;
 - write only after validation succeeds;
 - return a small result object for widget feedback.
 
@@ -392,14 +419,18 @@ Plugin registration:
 
 In-memory behavior:
 
-- write the new shapes element into the in-memory `SpatialData` object;
-- if `sdata` is backed, report that the new shapes element is currently
-  in-memory unless a tested backed-write path is available.
+- write the shapes element through `harpy.sh.add_shapes(..., overwrite=True)`;
+- allow repeated saves for the same widget-owned, locked element name;
+- reject attempts to use Workflow A to overwrite unrelated existing shapes
+  elements.
 
 Backed-store behavior:
 
-- add explicit backed zarr persistence for new shapes elements;
-- use SpatialData's supported write API rather than manual zarr mutation;
+- use `harpy.sh.add_shapes(..., overwrite=True)`, which backs the resulting
+  shapes element to zarr when `sdata` is backed;
+- keep the same locked-name rule as in memory: repeated saves may overwrite the
+  widget-owned element, but the initial create flow must not target a
+  pre-existing unrelated element;
 - add tests that write a backed store, save a new shapes element, reload, and
   confirm geometry plus transformations survive.
 
@@ -454,7 +485,10 @@ Behavior:
   non-finite coordinates;
 - save each drawn polygon row as an independent polygon;
 - do not infer holes from nested polygons;
-- generate deterministic indices: `shape_0`, `shape_1`, ...;
+- generate deterministic indices for new rows: `shape_0`, `shape_1`, ...;
+- store generated IDs in napari layer features under `instance_id`;
+- preserve existing `instance_id` feature values across repeated conversions;
+- assign new rows the next unused `shape_N` value;
 - name the generated index `instance_id`;
 - swap napari `(y, x)` vertices to Shapely `(x, y)` coordinates.
 
@@ -465,6 +499,7 @@ Acceptance:
 - mixed polygons and circles preserve expected geometry rows and `radius`
   values;
 - generated indices are unique, stable, and named `instance_id`;
+- existing feature-backed `instance_id` values are preserved;
 - no `SpatialData` mutation happens in this slice.
 
 Tests:
@@ -477,16 +512,18 @@ Tests:
 - empty layer rejection;
 - non-finite coordinate rejection;
 - index naming and generation;
+- preservation of existing `instance_id` feature values;
+- next-unused `shape_N` assignment after deletion or insertion;
 - coordinate order conversion;
 - nested polygons remain independent rows.
 
-### Slice 2: Core Save Into In-Memory SpatialData
+### Slice 2: Core Save Into SpatialData
 
 Status: proposed
 
 Purpose:
 
-- add the write-back core for creating a new in-memory `sdata.shapes[...]`
+- add the write-back core for creating or updating the locked `sdata.shapes[...]`
   element;
 - validate everything before mutating `sdata`.
 
@@ -495,32 +532,38 @@ Code:
 - add `create_shapes_element_from_napari_shapes_layer(...)` in
   `src/napari_harpy/core/shapes_annotation.py`;
 - reuse `napari_shapes_layer_to_geodataframe(...)`;
-- use `ShapesModel.parse(...)` with an `Identity()` transform;
+- use `harpy.sh.add_shapes(..., overwrite=True)` with an `Identity()`
+  transform;
 - extend `tests/test_shapes_annotation.py`.
 
 Behavior:
 
 - reject missing `sdata`;
 - reject missing or unknown coordinate system;
-- reject empty or duplicate shapes element names;
+- reject empty shapes element names;
 - reject empty layers;
 - validate all napari rows before mutating `sdata`;
-- parse the `GeoDataFrame` with:
+- write the converted `GeoDataFrame` with:
 
   ```python
-  ShapesModel.parse(geodataframe, transformations={coordinate_system: Identity()})
+  harpy.sh.add_shapes(
+      sdata,
+      input=geodataframe,
+      output_shapes_name=shapes_name,
+      transformations={coordinate_system: Identity()},
+      instance_key="instance_id",
+      overwrite=True,
+  )
   ```
 
-- write the parsed element into `sdata.shapes[new_name]`;
 - return `CreateShapesElementResult` with name, coordinate system, and row
   count;
 - do not create or link an `AnnData` table;
-- do not persist to a backed zarr store in this slice.
+- rely on `harpy.sh.add_shapes(...)` for backed writes when `sdata` is backed.
 
 Acceptance:
 
 - validates request and layer;
-- rejects duplicate names before mutation;
 - rejects validation failures before mutation;
 - writes `sdata.shapes[new_name]`;
 - stores `Identity()` to the selected coordinate system;
@@ -530,13 +573,14 @@ Acceptance:
 Tests:
 
 - saving writes `sdata.shapes[new_name]`;
-- duplicate names are rejected before mutation;
 - missing `sdata` is rejected;
 - missing coordinate system is rejected;
 - unknown coordinate system is rejected;
 - failed conversion does not mutate `sdata.shapes`;
 - the new element has an `Identity()` transform to the selected coordinate
   system;
+- repeated saves overwrite the locked element and preserve existing
+  `instance_id` values;
 - no annotation table is created implicitly.
 
 ### Slice 3: Widget Shell And Shared Coordinate System
@@ -675,6 +719,8 @@ Behavior:
 - reject saving if there is no pending layer;
 - reject saving if the pending layer binding no longer matches the widget
   request;
+- reject initial layer creation if the requested name already exists in
+  `sdata.shapes`;
 - pass the selected coordinate system and locked element name to the core save
   helper;
 - show actionable conversion/save errors in the status area;
@@ -685,8 +731,11 @@ Behavior:
   ```
 
 - after successful save, keep the newly saved element registered as the source
-  element for the layer or refresh the viewer state by a clearly documented
-  policy;
+  element for the editable widget-owned layer;
+- keep the layer editable after save;
+- allow later saves from the same widget-owned layer to overwrite the same
+  locked `sdata.shapes[...]` element;
+- preserve existing `instance_id` values across repeated saves;
 - do not accept styled shapes layers as save sources.
 
 Acceptance:
@@ -694,6 +743,7 @@ Acceptance:
 - save validates the widget-owned primary layer;
 - successful save writes the new element;
 - successful save reports row count and coordinate system;
+- a saved layer can be edited and saved again to the same locked element name;
 - errors are shown as clear widget feedback;
 - no styled layer can be saved by this workflow.
 
@@ -702,7 +752,10 @@ Tests:
 - save calls the core save helper with the selected coordinate system;
 - save passes the locked new shapes element name;
 - save feedback reports row count and coordinate system;
-- duplicate-name validation is still enforced before save;
+- duplicate-name validation is enforced before initial layer creation;
+- repeated save preserves `instance_id` values for existing rows;
+- repeated save assigns new `instance_id` values only to newly-added rows;
+- repeated save removes deleted rows from the saved element;
 - unsupported shape errors are displayed without mutating `sdata`;
 - styled shapes layers are not offered or accepted as save sources.
 
@@ -738,16 +791,19 @@ Tests:
   support is added;
 - `Interactive(..., widgets="all")` behavior is covered if changed.
 
-### Slice 7: Backed Persistence Follow-Up
+### Slice 7: Backed Persistence Verification
 
-Status: deferred
+Status: proposed
 
-Add zarr persistence once the supported SpatialData write API for adding a new
-shapes element to an existing backed store is verified.
+Verify backed persistence for the `harpy.sh.add_shapes(..., overwrite=True)`
+write path used by Workflow A.
 
 Behavior:
 
-- use SpatialData's supported write API rather than manual zarr mutation;
+- use `harpy.sh.add_shapes(..., overwrite=True)` rather than manual zarr
+  mutation;
+- allow repeated saves to overwrite the same widget-owned, locked shapes
+  element;
 - keep in-memory and backed behavior distinct in user feedback;
 - document whether saving to backed stores is immediate or requires a separate
   persist action.
@@ -760,6 +816,7 @@ Acceptance:
 Tests:
 
 - a backed `SpatialData` can persist a new shapes element to zarr;
+- repeated backed saves overwrite the same locked shapes element;
 - reloading the store preserves the new element name;
 - reloading preserves geometry and row index;
 - reloading preserves the `Identity()` transform for the selected coordinate
@@ -775,8 +832,11 @@ Tests:
 - The saved element uses an `Identity()` transform to the selected coordinate
   system.
 - Generated shape indices are unique and stable.
+- Existing shape `instance_id` values are preserved across repeated saves.
 - Unsupported shape types are rejected before mutation.
-- Duplicate shapes element names are rejected before mutation.
+- Duplicate shapes element names are rejected before initial layer creation.
 - No annotation table is created implicitly.
-- Existing shapes elements are not modified by this workflow.
+- The widget-owned saved layer remains editable and can be saved again to the
+  same locked element name.
+- Arbitrary pre-existing shapes elements are not modified by this workflow.
 - Styled shapes layers are never used as write-back sources.
