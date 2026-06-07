@@ -121,6 +121,28 @@ def test_harpy_app_state_emits_sdata_changed(qtbot, sdata_blobs) -> None:
     assert state.sdata is None
 
 
+def test_harpy_app_state_set_same_sdata_preserves_layers(monkeypatch) -> None:
+    sdata = object()
+    state = HarpyAppState()
+    removed_sdata_calls: list[object] = []
+
+    monkeypatch.setattr(app_state_module, "get_coordinate_system_names_from_sdata", lambda sdata: ["global"])
+    monkeypatch.setattr(
+        state.viewer_adapter,
+        "remove_layers_for_sdata",
+        lambda sdata: removed_sdata_calls.append(sdata) or [],
+    )
+
+    state.set_sdata(sdata)
+    removed_sdata_calls.clear()
+
+    state.set_sdata(sdata)
+
+    assert state.sdata is sdata
+    assert state.coordinate_system == "global"
+    assert removed_sdata_calls == []
+
+
 def test_harpy_app_state_emits_feature_matrix_written_and_marks_table_dirty(qtbot, sdata_blobs) -> None:
     state = HarpyAppState()
     event = FeatureMatrixWrittenEvent(
