@@ -100,7 +100,7 @@ class HarpyAppState(QObject):
         old_sdata = self.sdata
         old_coordinate_system = self.coordinate_system
 
-        if old_sdata is not None:
+        if old_sdata is not None and old_sdata is not sdata:
             self.viewer_adapter.remove_layers_for_sdata(old_sdata)
 
         self.sdata = sdata
