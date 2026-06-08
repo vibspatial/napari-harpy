@@ -801,7 +801,7 @@ Status: proposed
 
 Purpose:
 
-- create and track the widget-owned pending annotation layer;
+- create and track the widget-owned annotation layer;
 - register the layer as a primary Harpy shapes layer;
 - handle coordinate-system changes that would discard unsaved annotations.
 
@@ -814,12 +814,12 @@ Code:
 - prefer a shared helper in `viewer.adapter` for those presentation settings if
   the implementation would otherwise duplicate private viewer defaults;
 - use existing viewer adapter layer removal/unregistration APIs where possible;
-- track one pending widget-owned layer at a time, with state equivalent to:
+- track one widget-owned annotation layer at a time, with state equivalent to:
 
   ```python
-  self._pending_layer: Shapes | None
-  self._pending_shapes_name: str | None
-  self._pending_coordinate_system: str | None
+  self._annotation_layer: Shapes | None
+  self._annotation_shapes_name: str | None
+  self._annotation_coordinate_system: str | None
   ```
 
 - extend widget tests.
@@ -849,17 +849,17 @@ Behavior:
   - `shapes_role="primary"`;
   - `style_spec=None`;
 - activate the created layer;
-- lock the new element name while the pending layer exists;
+- lock the new element name while the annotation layer exists;
 - track the layer as widget-owned;
-- disable `Create layer` while the pending layer exists;
+- disable `Create layer` while the annotation layer exists;
 - keep `Save shapes` disabled in this slice. Slice 6 owns enabling and wiring
   save behavior;
 - show feedback that the empty layer has been created and the user can draw
   shapes before saving;
 - leave viewer-created styled shapes layers untouched;
-- if there is no pending layer, coordinate-system changes follow the Slice 3
+- if there is no annotation layer, coordinate-system changes follow the Slice 3
   shared app-state sync behavior;
-- if the user changes coordinate system with a pending unsaved layer, confirm
+- if the user changes coordinate system with an unsaved annotation layer, confirm
   before publishing the new coordinate system to `HarpyAppState`;
 - show the confirmation message:
 
@@ -868,11 +868,11 @@ Behavior:
   ```
 
 - cancelling the warning keeps the current coordinate-system selection and
-  preserves the pending layer without updating `app_state.coordinate_system`;
-- confirming the warning removes the pending layer, unregisters its Harpy
+  preserves the annotation layer without updating `app_state.coordinate_system`;
+- confirming the warning removes the annotation layer, unregisters its Harpy
   binding, updates `app_state.coordinate_system`, and lets the user create a new
   layer;
-- manual deletion of the pending napari layer is handled in Slice 5.
+- manual deletion of the annotation layer is handled in Slice 5.
 
 Acceptance:
 
@@ -880,12 +880,12 @@ Acceptance:
 - empty layer visual defaults match unstyled primary polygon shapes loaded
   through the viewer;
 - element name is locked after layer creation;
-- only one pending widget-owned layer can exist at a time;
-- `Create layer` is disabled while the pending layer exists;
+- only one widget-owned annotation layer can exist at a time;
+- `Create layer` is disabled while the annotation layer exists;
 - `Save shapes` remains disabled until Slice 6;
 - changing coordinate system after layer creation requires confirmation and
-  discards the pending unsaved layer;
-- cancelling the coordinate-system warning preserves the pending layer and
+  discards the unsaved annotation layer;
+- cancelling the coordinate-system warning preserves the annotation layer and
   leaves shared app state unchanged;
 - styled shapes layers are not modified by this workflow.
 
@@ -899,30 +899,30 @@ Tests:
 - create layer registers a primary shapes binding;
 - create layer activates the new layer;
 - create layer locks the name input;
-- create layer disables creating a second pending layer;
+- create layer disables creating a second annotation layer;
 - `Save shapes` remains disabled after layer creation;
-- cancelling the coordinate-system warning preserves the pending layer and
+- cancelling the coordinate-system warning preserves the annotation layer and
   keeps the previous coordinate-system selection and app state;
-- confirming the coordinate-system warning removes the pending layer,
+- confirming the coordinate-system warning removes the annotation layer,
   unregisters its Harpy binding, and updates shared app state;
 - styled shapes layers are not removed or re-registered by this workflow.
 
-### Slice 5: Pending Layer Removal Listener
+### Slice 5: Annotation Layer Removal Listener
 
 Status: proposed
 
 Purpose:
 
-- keep widget state synchronized when the user manually deletes the pending
-  annotation layer from napari's layer list;
+- keep widget state synchronized when the user manually deletes the annotation
+  layer from napari's layer list;
 - add a scoped guard so widget-driven coordinate-system discard does not
-  double-handle the pending layer removal event.
+  double-handle the annotation layer removal event.
 
 Code:
 
-- add a pending-layer removal listener, using napari layer events or existing
+- add an annotation-layer removal listener, using napari layer events or existing
   viewer-adapter lifecycle APIs where possible;
-- only react when the removed layer is the widget-owned pending layer;
+- only react when the removed layer is the widget-owned annotation layer;
 - add a scoped flag, for example:
 
   ```python
@@ -934,8 +934,8 @@ Code:
   ```python
   self._is_handling_coordinate_system_change = True
   try:
-      remove_pending_layer()
-      clear_pending_state()
+      remove_annotation_layer()
+      clear_annotation_state()
       update_app_state_coordinate_system()
   finally:
       self._is_handling_coordinate_system_change = False
@@ -954,33 +954,33 @@ Code:
 
 Behavior:
 
-- if the user manually deletes the pending napari layer, clear pending-layer
+- if the user manually deletes the annotation layer, clear annotation-layer
   state, unlock the name input, disable save, and allow creating a new layer
   when preflight is valid;
-- if the widget removes the pending layer while confirming a coordinate-system
+- if the widget removes the annotation layer while confirming a coordinate-system
   discard, the layer-removal listener must not perform duplicate cleanup;
-- unregister the pending layer binding if it is still registered when manual
+- unregister the annotation layer binding if it is still registered when manual
   deletion is detected;
 - leave viewer-created styled shapes layers untouched.
 
 Acceptance:
 
-- manual deletion of the pending layer clears widget pending state;
+- manual deletion of the annotation layer clears widget annotation state;
 - manual deletion unlocks the name input and refreshes create/save button state;
 - coordinate-system discard does not double-handle layer removal callbacks;
-- unrelated layer removals do not affect pending-layer state;
+- unrelated layer removals do not affect annotation-layer state;
 - styled shapes layers are not removed or re-registered by this workflow.
 
 Tests:
 
-- manual deletion of the pending layer clears pending state and unlocks the name
+- manual deletion of the annotation layer clears annotation state and unlocks the name
   input;
-- manual deletion unregisters the pending primary shapes binding if needed;
+- manual deletion unregisters the annotation primary shapes binding if needed;
 - manual deletion refreshes `Create layer` and `Save shapes` enablement;
-- coordinate-system discard sets the guard while removing the pending layer;
+- coordinate-system discard sets the guard while removing the annotation layer;
 - layer removal emitted during coordinate-system discard does not duplicate
   cleanup or rebinding work;
-- removing an unrelated layer does not clear pending state;
+- removing an unrelated layer does not clear annotation state;
 - styled shapes layers are not removed or re-registered by this workflow.
 
 ### Slice 6: Save Button And Feedback
@@ -989,7 +989,7 @@ Status: proposed
 
 Purpose:
 
-- connect the widget-owned pending layer to the core save helper;
+- connect the widget-owned annotation layer to the core save helper;
 - report save results and validation failures in the widget.
 
 Code:
@@ -1002,8 +1002,8 @@ Code:
 Behavior:
 
 - save only from the widget-owned primary layer;
-- reject saving if there is no pending layer;
-- reject saving if the pending layer binding no longer matches the widget
+- reject saving if there is no annotation layer;
+- reject saving if the annotation layer binding no longer matches the widget
   request;
 - reject initial layer creation if the requested name already exists in
   `sdata.shapes`;
