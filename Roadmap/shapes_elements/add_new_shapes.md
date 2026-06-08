@@ -797,7 +797,7 @@ Tests:
 
 ### Slice 4: Empty Layer Lifecycle
 
-Status: proposed
+Status: implemented
 
 Purpose:
 
@@ -999,6 +999,9 @@ Purpose:
 Code:
 
 - connect the `Save new shapes element` button;
+- introduce `_refresh_save_shapes_state()` separately from
+  `_refresh_create_layer_state()` so save readiness and layer-creation
+  readiness do not become one overloaded status/update path;
 - call `create_shapes_element_from_napari_shapes_layer(...)`;
 - refresh relevant widget/viewer state after success;
 - extend widget tests.

@@ -10,6 +10,7 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -35,6 +36,7 @@ from napari_harpy.widgets.shared_styles import (
 
 if TYPE_CHECKING:
     import napari
+    from napari.layers import Shapes
     from spatialdata import SpatialData
 
 
@@ -56,6 +58,9 @@ class ShapesAnnotation(QWidget):
         self._coordinate_systems: list[str] = []
         self._selected_coordinate_system: str | None = None
         self._validated_shapes_name: str | None = None
+        self._annotation_layer: Shapes | None = None
+        self._annotation_shapes_name: str | None = None
+        self._annotation_coordinate_system: str | None = None
         self._logo_path = get_logo_path()
 
         root_layout = QVBoxLayout(self)
@@ -130,6 +135,7 @@ class ShapesAnnotation(QWidget):
         self._app_state.coordinate_system_changed.connect(self._on_app_state_coordinate_system_changed)
         self.coordinate_system_combo.currentIndexChanged.connect(self._on_coordinate_system_changed)
         self.name_edit.textChanged.connect(self._on_shapes_name_changed)
+        self.create_layer_button.clicked.connect(self._on_create_layer_clicked)
         self.refresh_from_sdata(self._app_state.sdata)
 
     @property
@@ -154,6 +160,15 @@ class ShapesAnnotation(QWidget):
 
     def refresh_from_sdata(self, sdata: SpatialData | None) -> None:
         """Refresh coordinate-system choices from shared SpatialData state."""
+        # App-state sdata replacement removes registered layers before this
+        # widget refreshes, so clear stale annotation UI state when our tracked
+        # layer has already disappeared from the Harpy binding registry.
+        if (
+            self._annotation_layer is not None
+            and self._app_state.viewer_adapter.layer_bindings.get_binding(self._annotation_layer) is None
+        ):
+            self._clear_annotation_state()
+
         with QSignalBlocker(self.coordinate_system_combo):
             self.coordinate_system_combo.clear()
 
@@ -168,7 +183,7 @@ class ShapesAnnotation(QWidget):
 
         self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
         self._set_selected_coordinate_system(self.coordinate_system_combo.currentIndex())
-        self._refresh_preflight_state()
+        self._refresh_create_layer_state()
 
     def _on_sdata_changed(self, sdata: SpatialData | None) -> None:
         self.refresh_from_sdata(sdata)
@@ -177,19 +192,59 @@ class ShapesAnnotation(QWidget):
         del event
         self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
         self._set_selected_coordinate_system(self.coordinate_system_combo.currentIndex())
-        self._refresh_preflight_state()
+        self._refresh_create_layer_state()
 
     def _on_coordinate_system_changed(self, index: int) -> None:
         coordinate_system = self.coordinate_system_combo.itemData(index)
+        next_coordinate_system = coordinate_system if isinstance(coordinate_system, str) else None
+        if self._annotation_layer is not None:
+            if next_coordinate_system == self._app_state.coordinate_system:
+                return
+            # `False` means the user cancelled the discard warning, so restore
+            # the previous coordinate-system selection and keep the layer.
+            if not self._confirm_discard_annotation_layer():
+                self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
+                self._set_selected_coordinate_system(self.coordinate_system_combo.currentIndex())
+                self._refresh_create_layer_state()
+                return
+            self._remove_annotation_layer()
+            self._clear_annotation_state()
+
         # Publish the UI choice to shared app state. `_on_app_state_coordinate_system_changed(...)`
-        # owns local selection and preflight refresh so all sources follow one path.
-        self._app_state.set_coordinate_system(
-            coordinate_system if isinstance(coordinate_system, str) else None,
-            source=_SOURCE,
-        )
+        # owns local selection and create-layer refresh so all sources follow one path.
+        self._app_state.set_coordinate_system(next_coordinate_system, source=_SOURCE)
 
     def _on_shapes_name_changed(self, _text: str) -> None:
-        self._refresh_preflight_state()
+        self._refresh_create_layer_state()
+
+    def _on_create_layer_clicked(self) -> None:
+        if self._annotation_layer is not None:
+            return
+
+        self._refresh_create_layer_state()
+        sdata = self._app_state.sdata
+        shapes_name = self._validated_shapes_name
+        coordinate_system = self._selected_coordinate_system
+        if sdata is None or shapes_name is None or coordinate_system is None:
+            return
+
+        try:
+            layer = self._app_state.viewer_adapter.create_empty_primary_shapes_layer(
+                sdata,
+                shapes_name,
+                coordinate_system,
+            )
+        except ValueError as error:
+            self._set_status(title="Could Not Create Layer", lines=[str(error)], kind="warning")
+            self._set_action_enabled(create_enabled=False)
+            return
+
+        self._annotation_layer = layer
+        self._annotation_shapes_name = shapes_name
+        self._annotation_coordinate_system = coordinate_system
+        self.name_edit.setEnabled(False)
+        self._app_state.viewer_adapter.activate_layer(layer)
+        self._refresh_create_layer_state()
 
     def _sync_coordinate_system_combo_selection(self, coordinate_system: str | None) -> None:
         with QSignalBlocker(self.coordinate_system_combo):
@@ -204,11 +259,21 @@ class ShapesAnnotation(QWidget):
         coordinate_system = self.coordinate_system_combo.itemData(index)
         self._selected_coordinate_system = coordinate_system if isinstance(coordinate_system, str) else None
 
-    def _refresh_preflight_state(self) -> None:
-        """Update create-layer readiness from current sdata, coordinate system, and name."""
+    def _refresh_create_layer_state(self) -> None:
+        """Update layer-creation readiness from current sdata, coordinate system, and name."""
         sdata = self._app_state.sdata
         coordinate_system = self._selected_coordinate_system
         self._validated_shapes_name = None
+
+        if self._annotation_layer is not None:
+            self._validated_shapes_name = self._annotation_shapes_name
+            self._set_status(
+                title="Annotation Layer Created",
+                lines=["Draw shapes in the viewer, then save them when the save step is available."],
+                kind="info",
+            )
+            self._set_action_enabled(create_enabled=False)
+            return
 
         if sdata is None:
             self._set_status(
@@ -271,6 +336,32 @@ class ShapesAnnotation(QWidget):
 
     def _set_status(self, *, title: str, lines: list[str], kind: str) -> None:
         set_status_card(self.status_label, title=title, lines=lines, kind=kind)
+
+    def _confirm_discard_annotation_layer(self) -> bool:
+        response = QMessageBox.warning(
+            self,
+            "Discard Unsaved Shape Annotations",
+            "Changing coordinate system will delete the current unsaved shape annotations.",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        return response == QMessageBox.StandardButton.Ok
+
+    def _remove_annotation_layer(self) -> None:
+        sdata = self._app_state.sdata
+        if sdata is None or self._annotation_shapes_name is None or self._annotation_coordinate_system is None:
+            return
+        self._app_state.viewer_adapter.remove_shapes_layer(
+            sdata,
+            self._annotation_shapes_name,
+            self._annotation_coordinate_system,
+        )
+
+    def _clear_annotation_state(self) -> None:
+        self._annotation_layer = None
+        self._annotation_shapes_name = None
+        self._annotation_coordinate_system = None
+        self.name_edit.setEnabled(True)
 
     def _create_header_logo(self) -> QLabel:
         logo_label = QLabel()

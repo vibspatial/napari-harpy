@@ -1390,6 +1390,30 @@ class ViewerAdapter(QObject):
             shapes_rendering_mode=built_layer.shapes_rendering_mode,
         )
 
+    def create_empty_primary_shapes_layer(
+        self,
+        sdata: SpatialData,
+        shapes_name: str,
+        coordinate_system: str,
+    ) -> Shapes:
+        """Create and register an empty primary polygon shapes layer."""
+        existing_layer = self._get_loaded_shapes_layer_for_coordinate_system(sdata, shapes_name, coordinate_system)
+        if existing_layer is not None:
+            raise ValueError(
+                f"Shapes layer `{shapes_name}` is already loaded in coordinate system `{coordinate_system}`."
+            )
+
+        layer = _build_empty_primary_shapes_layer(name=shapes_name)
+        _add_layer_to_viewer(self._viewer, layer)
+        self.register_shapes_layer(
+            layer,
+            sdata=sdata,
+            shapes_name=shapes_name,
+            coordinate_system=coordinate_system,
+            shapes_rendering_mode="shapes",
+        )
+        return layer
+
     def ensure_styled_shapes_loaded(
         self,
         sdata: SpatialData,
@@ -1952,6 +1976,21 @@ def _build_shapes_layer(
         source_row_id_by_rendered_row=napari_layer_inputs.source_row_id_by_rendered_row,
         skipped_geometry_count=napari_layer_inputs.skipped_geometry_count,
     )
+
+
+def _build_empty_primary_shapes_layer(*, name: str) -> _HarpyShapes:
+    layer = _HarpyShapes(
+        [],
+        ndim=2,
+        name=name,
+        edge_color="#00FFFF",
+        face_color="#00000000",
+        edge_width=1,
+        opacity=0.8,
+    )
+    _connect_current_edge_width_to_global_edge_width(layer)
+    _connect_current_edge_color_to_global_edge_color(layer)
+    return layer
 
 
 def _prepare_napari_shapes_layer_inputs(shapes_element: Any) -> _NapariShapesLayerInputs:
