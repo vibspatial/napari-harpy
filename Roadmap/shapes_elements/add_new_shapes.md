@@ -837,6 +837,10 @@ Behavior:
 - confirming the warning removes the pending layer, unregisters its Harpy
   binding, updates `app_state.coordinate_system`, and lets the user create a new
   layer.
+- if Slice 4 introduces layer lifecycle listeners, add a scoped
+  `_is_handling_coordinate_system_change`-style guard so layer removal events
+  emitted during coordinate-system discard do not trigger duplicate cleanup or
+  rebinding work.
 
 Acceptance:
 
@@ -855,6 +859,8 @@ Tests:
   keeps the previous coordinate-system selection;
 - confirming the coordinate-system warning removes the pending layer,
   unregisters its Harpy binding, and updates shared app state;
+- coordinate-system discard does not double-handle layer removal callbacks when
+  layer lifecycle listeners are present;
 - styled shapes layers are not removed or re-registered by this workflow.
 
 ### Slice 5: Save Button And Feedback

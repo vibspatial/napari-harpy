@@ -156,18 +156,18 @@ class ShapesAnnotation(QWidget):
         """Refresh coordinate-system choices from shared SpatialData state."""
         with QSignalBlocker(self.coordinate_system_combo):
             self.coordinate_system_combo.clear()
+
             if sdata is None:
                 self._coordinate_systems = []
                 self.coordinate_system_combo.setEnabled(False)
-                self._selected_coordinate_system = None
-                self.coordinate_system_combo.setCurrentIndex(-1)
             else:
                 self._coordinate_systems = get_coordinate_system_names_from_sdata(sdata)
                 for coordinate_system in self._coordinate_systems:
                     self.coordinate_system_combo.addItem(coordinate_system, coordinate_system)
                 self.coordinate_system_combo.setEnabled(bool(self._coordinate_systems))
-                self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
 
+        self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
+        self._set_selected_coordinate_system(self.coordinate_system_combo.currentIndex())
         self._refresh_preflight_state()
 
     def _on_sdata_changed(self, sdata: SpatialData | None) -> None:
@@ -175,8 +175,8 @@ class ShapesAnnotation(QWidget):
 
     def _on_app_state_coordinate_system_changed(self, event: CoordinateSystemChangedEvent) -> None:
         del event
-        with QSignalBlocker(self.coordinate_system_combo):
-            self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
+        self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
+        self._set_selected_coordinate_system(self.coordinate_system_combo.currentIndex())
         self._refresh_preflight_state()
 
     def _on_coordinate_system_changed(self, index: int) -> None:
@@ -185,23 +185,27 @@ class ShapesAnnotation(QWidget):
             coordinate_system if isinstance(coordinate_system, str) else None,
             source=_SOURCE,
         )
-        self._selected_coordinate_system = self._app_state.coordinate_system
+        self._set_selected_coordinate_system(index)
         self._refresh_preflight_state()
 
     def _on_shapes_name_changed(self, _text: str) -> None:
         self._refresh_preflight_state()
 
     def _sync_coordinate_system_combo_selection(self, coordinate_system: str | None) -> None:
-        if coordinate_system is None:
-            self.coordinate_system_combo.setCurrentIndex(-1)
-            self._selected_coordinate_system = None
-            return
+        with QSignalBlocker(self.coordinate_system_combo):
+            if coordinate_system is None:
+                self.coordinate_system_combo.setCurrentIndex(-1)
+                return
 
-        index = self.coordinate_system_combo.findData(coordinate_system)
-        self.coordinate_system_combo.setCurrentIndex(index)
-        self._selected_coordinate_system = coordinate_system if index >= 0 else None
+            index = self.coordinate_system_combo.findData(coordinate_system)
+            self.coordinate_system_combo.setCurrentIndex(index)
+
+    def _set_selected_coordinate_system(self, index: int) -> None:
+        coordinate_system = self.coordinate_system_combo.itemData(index)
+        self._selected_coordinate_system = coordinate_system if isinstance(coordinate_system, str) else None
 
     def _refresh_preflight_state(self) -> None:
+        """Update create-layer readiness from current sdata, coordinate system, and name."""
         sdata = self._app_state.sdata
         coordinate_system = self._selected_coordinate_system
         self._validated_shapes_name = None
