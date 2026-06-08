@@ -125,13 +125,14 @@ coloring existing elements.
 11. User clicks `Save new shapes element`.
 12. Harpy converts the layer to a `GeoDataFrame`.
 13. Harpy writes it into `sdata.shapes[new_name]` with
-    `harpy.sh.add_shapes(..., overwrite=True)` and an `Identity()` transform to
+    `harpy.sh.add_shapes(..., overwrite=False)` and an `Identity()` transform to
     the selected coordinate system.
 14. Harpy refreshes relevant UI state and reports success.
 15. The layer remains editable as the widget-owned primary annotation layer.
 16. User may continue editing, adding, or deleting shapes in the same layer.
 17. Each later `Save new shapes element` validates the same layer again and
-    overwrites the same locked `sdata.shapes[new_name]` element.
+    writes with `overwrite=True` to replace the same locked
+    `sdata.shapes[new_name]` element.
 
 If the user changes the coordinate-system selector after creating an annotation
 layer with unsaved shapes, the widget should show a warning dialog:
@@ -166,9 +167,9 @@ name for that pending layer. To use another name, the user should discard the
 pending unsaved layer and create a new one.
 
 After the first successful save, the layer remains the editable source for the
-locked shapes element name. Workflow A may overwrite that widget-owned element
-on later saves, but it must not be used to overwrite any unrelated pre-existing
-`sdata.shapes[...]` element.
+locked shapes element name. Workflow A passes `overwrite=True` on later saves of
+that widget-owned element, but it must not use `overwrite=True` to target any
+unrelated pre-existing `sdata.shapes[...]` element.
 
 ## Data Semantics
 
@@ -179,12 +180,12 @@ Transform rule:
 
 ```python
 harpy.sh.add_shapes(
-    sdata,
+    request.sdata,
     input=geodataframe,
-    output_shapes_name=shapes_name,
-    transformations={coordinate_system: Identity()},
-    instance_key="instance_id",
-    overwrite=True,
+    output_shapes_name=request.shapes_name,
+    transformations={request.coordinate_system: Identity()},
+    instance_key=request.index_name,
+    overwrite=request.overwrite,
 )
 ```
 
@@ -192,7 +193,9 @@ Rationale:
 
 - the user drew directly in the displayed coordinate frame;
 - no inverse transform is needed for this create-new workflow;
-- the saved coordinate values are already in the selected coordinate system.
+- the saved coordinate values are already in the selected coordinate system;
+- the first save uses `overwrite=False`; repeated saves from the same
+  widget-owned, locked layer use `overwrite=True`.
 
 Index rule:
 
@@ -332,6 +335,7 @@ class CreateShapesElementRequest:
     sdata: SpatialData
     shapes_name: str
     coordinate_system: str
+    overwrite: bool = False
     index_name: str = "instance_id"
     index_prefix: str = "shape"
     ellipse_segments: int = 64
@@ -370,14 +374,15 @@ Rules for `create_shapes_element_from_napari_shapes_layer(...)`:
 - reject missing or unknown coordinate system;
 - reject empty shapes element names;
 - reject invalid ellipse segment counts;
-- reject duplicate shapes element names when creating the initial empty layer;
-- allow overwriting the locked widget-owned shapes element on repeated saves;
+- reject duplicate shapes element names when `request.overwrite` is `False`;
+- allow overwriting `request.shapes_name` when `request.overwrite` is `True`;
 - reject empty layers;
 - validate all napari rows before mutating `sdata`;
-- assume the caller has already locked `request.shapes_name` to the
-  widget-owned layer created by Workflow A;
+- treat `request.overwrite` as the explicit caller decision for replacement;
+- the widget decides when it is legitimate to pass `overwrite=True`, usually
+  after the first successful save of its locked layer;
 - write the converted `GeoDataFrame` with
-  `harpy.sh.add_shapes(..., overwrite=True)`;
+  `harpy.sh.add_shapes(..., overwrite=request.overwrite)`;
 - write only after validation succeeds;
 - return a small result object for widget feedback.
 
@@ -423,15 +428,18 @@ Plugin registration:
 
 In-memory behavior:
 
-- write the shapes element through `harpy.sh.add_shapes(..., overwrite=True)`;
-- allow repeated saves for the same widget-owned, locked element name;
+- write the shapes element through
+  `harpy.sh.add_shapes(..., overwrite=request.overwrite)`;
+- reject existing shapes element names when `request.overwrite` is `False`;
+- allow repeated saves for the same widget-owned, locked element name by
+  passing `request.overwrite=True`;
 - reject attempts to use Workflow A to overwrite unrelated existing shapes
   elements.
 
 Backed-store behavior:
 
-- use `harpy.sh.add_shapes(..., overwrite=True)`, which backs the resulting
-  shapes element to zarr when `sdata` is backed;
+- use `harpy.sh.add_shapes(..., overwrite=request.overwrite)`, which backs the
+  resulting shapes element to zarr when `sdata` is backed;
 - keep the same locked-name rule as in memory: repeated saves may overwrite the
   widget-owned element, but the initial create flow must not target a
   pre-existing unrelated element;
@@ -549,6 +557,8 @@ Code:
 - add `create_shapes_element_from_napari_shapes_layer(...)` in
   `src/napari_harpy/core/shapes_annotation.py`;
 - reuse `napari_shapes_layer_to_geodataframe(...)`;
+- import `get_coordinate_system_names_from_sdata` from
+  `napari_harpy.core.spatialdata`;
 - import `harpy as hp`;
 - import `Identity` from `spatialdata.transformations`;
 - extend `tests/test_shapes_annotation.py`.
@@ -559,11 +569,17 @@ Behavior:
   - `sdata` is missing;
   - `shapes_name` is not a non-empty string after stripping whitespace;
   - `coordinate_system` is not a non-empty string after stripping whitespace;
+  - `overwrite` is not a boolean;
   - `index_name` is not a non-empty string;
   - `index_prefix` is not a non-empty string;
   - `ellipse_segments` is invalid;
-- reject unknown coordinate systems by checking available transformations across
-  `sdata` before mutating `sdata`;
+- reject unknown coordinate systems by checking
+  `get_coordinate_system_names_from_sdata(request.sdata)` before mutating
+  `sdata`;
+- reject existing `sdata.shapes[request.shapes_name]` targets when
+  `request.overwrite` is `False`;
+- allow replacing `sdata.shapes[request.shapes_name]` when
+  `request.overwrite` is `True`;
 - convert the napari layer with `napari_shapes_layer_to_geodataframe(...)`;
 - treat conversion errors as validation failures and leave `sdata.shapes`
   unchanged;
@@ -578,15 +594,13 @@ Behavior:
       output_shapes_name=request.shapes_name,
       transformations={request.coordinate_system: Identity()},
       instance_key=request.index_name,
-      overwrite=True,
+      overwrite=request.overwrite,
   )
   ```
 
-- use `overwrite=True` so repeated saves from the same widget-owned, locked
-  layer replace the same shapes element;
-- do not perform arbitrary overwrite authorization in this core helper. The
-  widget slice must prevent the initial create flow from targeting unrelated
-  pre-existing shapes element names;
+- treat `request.overwrite` as the core replacement policy;
+- do not infer widget ownership in this core helper. The widget slice decides
+  when it is legitimate to pass `overwrite=True`;
 - return `CreateShapesElementResult` with name, coordinate system, and row
   count;
 - do not create or link an `AnnData` table;
@@ -607,7 +621,8 @@ Acceptance:
 - writes `sdata.shapes[new_name]`;
 - stores `Identity()` to the selected coordinate system;
 - preserves the generated row index;
-- calls `hp.sh.add_shapes(...)` with `overwrite=True`;
+- rejects name collisions when `request.overwrite` is `False`;
+- calls `hp.sh.add_shapes(...)` with `overwrite=request.overwrite`;
 - returns row-count feedback.
 
 Tests:
@@ -618,15 +633,17 @@ Tests:
 - blank coordinate systems are rejected;
 - missing coordinate system is rejected;
 - unknown coordinate system is rejected;
+- non-boolean overwrite values are rejected;
+- existing shapes names are rejected when `overwrite=False`;
 - invalid index names are rejected;
 - invalid index prefixes are rejected;
 - invalid ellipse segment counts are rejected before mutation;
 - failed conversion does not mutate `sdata.shapes`;
 - the new element has an `Identity()` transform to the selected coordinate
   system;
-- repeated saves overwrite the locked element and preserve existing
-  `instance_id` values;
-- `hp.sh.add_shapes(...)` is called with `overwrite=True`;
+- repeated saves with `overwrite=True` overwrite the locked element and
+  preserve existing `instance_id` values;
+- `hp.sh.add_shapes(...)` is called with `overwrite=request.overwrite`;
 - when `sdata` is backed, saving persists through the Harpy write path;
 - no annotation table is created implicitly.
 
@@ -780,8 +797,8 @@ Behavior:
 - after successful save, keep the newly saved element registered as the source
   element for the editable widget-owned layer;
 - keep the layer editable after save;
-- allow later saves from the same widget-owned layer to overwrite the same
-  locked `sdata.shapes[...]` element;
+- pass `overwrite=False` on the first save and `overwrite=True` on later saves
+  from the same widget-owned layer;
 - preserve existing `instance_id` values across repeated saves;
 - do not accept styled shapes layers as save sources.
 
@@ -842,15 +859,15 @@ Tests:
 
 Status: proposed
 
-Verify backed persistence for the `harpy.sh.add_shapes(..., overwrite=True)`
-write path used by Workflow A.
+Verify backed persistence for the `harpy.sh.add_shapes(...)` write path used by
+Workflow A.
 
 Behavior:
 
-- use `harpy.sh.add_shapes(..., overwrite=True)` rather than manual zarr
-  mutation;
-- allow repeated saves to overwrite the same widget-owned, locked shapes
-  element;
+- use `harpy.sh.add_shapes(..., overwrite=request.overwrite)` rather than
+  manual zarr mutation;
+- verify the first-save `overwrite=False` path and the repeated-save
+  `overwrite=True` path for the same widget-owned, locked shapes element;
 - keep in-memory and backed behavior distinct in user feedback;
 - document whether saving to backed stores is immediate or requires a separate
   persist action.
@@ -863,7 +880,8 @@ Acceptance:
 Tests:
 
 - a backed `SpatialData` can persist a new shapes element to zarr;
-- repeated backed saves overwrite the same locked shapes element;
+- repeated backed saves with `overwrite=True` overwrite the same locked shapes
+  element;
 - reloading the store preserves the new element name;
 - reloading preserves geometry and row index;
 - reloading preserves the `Identity()` transform for the selected coordinate
