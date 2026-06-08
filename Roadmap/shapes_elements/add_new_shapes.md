@@ -460,7 +460,17 @@ usable state and should avoid taking dependencies on later slices.
 
 ### Slice 1: Core Conversion
 
-Status: proposed
+Status: implemented
+
+Implemented in:
+
+- `src/napari_harpy/core/shapes_annotation.py`;
+- `tests/test_shapes_annotation.py`.
+
+Verified with:
+
+- `.venv/bin/pytest tests/test_shapes_annotation.py`;
+- `.venv/bin/ruff check src/napari_harpy/core/shapes_annotation.py tests/test_shapes_annotation.py`.
 
 Purpose:
 
