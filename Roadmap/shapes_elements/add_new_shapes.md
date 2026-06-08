@@ -822,6 +822,10 @@ Code:
   self._annotation_coordinate_system: str | None
   ```
 
+- `_annotation_coordinate_system` stores the coordinate system that was active
+  when the annotation layer was created. The current UI selection may change
+  later, but the unsaved geometry still belongs to the layer's original
+  coordinate frame and save/removal should use that frozen value.
 - extend widget tests.
 
 Behavior:
