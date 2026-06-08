@@ -181,12 +181,12 @@ class ShapesAnnotation(QWidget):
 
     def _on_coordinate_system_changed(self, index: int) -> None:
         coordinate_system = self.coordinate_system_combo.itemData(index)
+        # Publish the UI choice to shared app state. `_on_app_state_coordinate_system_changed(...)`
+        # owns local selection and preflight refresh so all sources follow one path.
         self._app_state.set_coordinate_system(
             coordinate_system if isinstance(coordinate_system, str) else None,
             source=_SOURCE,
         )
-        self._set_selected_coordinate_system(index)
-        self._refresh_preflight_state()
 
     def _on_shapes_name_changed(self, _text: str) -> None:
         self._refresh_preflight_state()

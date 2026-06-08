@@ -728,6 +728,8 @@ class ObjectClassificationWidget(QWidget):
 
     def _on_coordinate_system_changed(self, index: int) -> None:
         coordinate_system = self.coordinate_system_combo.itemData(index)
+        # Publish the UI choice to shared app state. `_on_app_state_coordinate_system_changed(...)`
+        # owns local selection and downstream refresh so all sources follow one path.
         self._app_state.set_coordinate_system(
             coordinate_system if isinstance(coordinate_system, str) else None,
             source="object_classification_widget",
