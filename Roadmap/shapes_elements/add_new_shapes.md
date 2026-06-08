@@ -540,41 +540,65 @@ Purpose:
 
 - add the write-back core for creating or updating the locked `sdata.shapes[...]`
   element;
-- validate everything before mutating `sdata`.
+- validate everything before mutating `sdata`;
+- keep this slice UI-free. Widget ownership and initial name locking are
+  enforced by later widget slices.
 
 Code:
 
 - add `create_shapes_element_from_napari_shapes_layer(...)` in
   `src/napari_harpy/core/shapes_annotation.py`;
 - reuse `napari_shapes_layer_to_geodataframe(...)`;
-- use `harpy.sh.add_shapes(..., overwrite=True)` with an `Identity()`
-  transform;
+- import `harpy as hp`;
+- import `Identity` from `spatialdata.transformations`;
 - extend `tests/test_shapes_annotation.py`.
 
 Behavior:
 
-- reject missing `sdata`;
-- reject missing or unknown coordinate system;
-- reject empty shapes element names;
-- reject empty layers;
-- validate all napari rows before mutating `sdata`;
-- write the converted `GeoDataFrame` with:
+- reject invalid request fields before touching the napari layer:
+  - `sdata` is missing;
+  - `shapes_name` is not a non-empty string after stripping whitespace;
+  - `coordinate_system` is not a non-empty string after stripping whitespace;
+  - `index_name` is not a non-empty string;
+  - `index_prefix` is not a non-empty string;
+  - `ellipse_segments` is invalid;
+- reject unknown coordinate systems by checking available transformations across
+  `sdata` before mutating `sdata`;
+- convert the napari layer with `napari_shapes_layer_to_geodataframe(...)`;
+- treat conversion errors as validation failures and leave `sdata.shapes`
+  unchanged;
+- call `harpy.sh.add_shapes(...)` only after request validation and conversion
+  succeed;
+- write with:
 
   ```python
-  harpy.sh.add_shapes(
-      sdata,
+  hp.sh.add_shapes(
+      request.sdata,
       input=geodataframe,
-      output_shapes_name=shapes_name,
-      transformations={coordinate_system: Identity()},
-      instance_key="instance_id",
+      output_shapes_name=request.shapes_name,
+      transformations={request.coordinate_system: Identity()},
+      instance_key=request.index_name,
       overwrite=True,
   )
   ```
 
+- use `overwrite=True` so repeated saves from the same widget-owned, locked
+  layer replace the same shapes element;
+- do not perform arbitrary overwrite authorization in this core helper. The
+  widget slice must prevent the initial create flow from targeting unrelated
+  pre-existing shapes element names;
 - return `CreateShapesElementResult` with name, coordinate system, and row
   count;
 - do not create or link an `AnnData` table;
 - rely on `harpy.sh.add_shapes(...)` for backed writes when `sdata` is backed.
+
+Mutation boundary:
+
+- `napari_shapes_layer_to_geodataframe(...)` may write stable `instance_id`
+  values back to `layer.features`;
+- `sdata` must not be mutated until request validation and conversion succeed;
+- if `hp.sh.add_shapes(...)` raises, propagate the error and leave widget
+  feedback to the caller.
 
 Acceptance:
 
@@ -583,19 +607,27 @@ Acceptance:
 - writes `sdata.shapes[new_name]`;
 - stores `Identity()` to the selected coordinate system;
 - preserves the generated row index;
+- calls `hp.sh.add_shapes(...)` with `overwrite=True`;
 - returns row-count feedback.
 
 Tests:
 
 - saving writes `sdata.shapes[new_name]`;
 - missing `sdata` is rejected;
+- blank shapes names are rejected;
+- blank coordinate systems are rejected;
 - missing coordinate system is rejected;
 - unknown coordinate system is rejected;
+- invalid index names are rejected;
+- invalid index prefixes are rejected;
+- invalid ellipse segment counts are rejected before mutation;
 - failed conversion does not mutate `sdata.shapes`;
 - the new element has an `Identity()` transform to the selected coordinate
   system;
 - repeated saves overwrite the locked element and preserve existing
   `instance_id` values;
+- `hp.sh.add_shapes(...)` is called with `overwrite=True`;
+- when `sdata` is backed, saving persists through the Harpy write path;
 - no annotation table is created implicitly.
 
 ### Slice 3: Widget Shell And Shared Coordinate System
