@@ -810,12 +810,23 @@ Code:
 - extend `ShapesAnnotation` layer creation behavior;
 - use `ViewerAdapter.register_shapes_layer(...)`;
 - use existing viewer adapter layer removal/unregistration APIs where possible;
+- track one pending widget-owned layer at a time, with state equivalent to:
+
+  ```python
+  self._pending_layer: Shapes | None
+  self._pending_shapes_name: str | None
+  self._pending_coordinate_system: str | None
+  ```
+
 - extend widget tests.
 
 Behavior:
 
 - create an empty napari `Shapes` layer only after the name, `sdata`, and
   coordinate system are valid;
+- use the validated name as the locked `sdata.shapes[...]` target name;
+- name the napari layer predictably, preferably with the validated shapes
+  element name;
 - register the layer as:
   - `element_type="shapes"`;
   - `element_name=new_name`;
@@ -825,45 +836,133 @@ Behavior:
 - activate the created layer;
 - lock the new element name while the pending layer exists;
 - track the layer as widget-owned;
+- disable `Create layer` while the pending layer exists;
+- keep `Save shapes` disabled in this slice. Slice 6 owns enabling and wiring
+  save behavior;
+- show feedback that the empty layer has been created and the user can draw
+  shapes before saving;
 - leave viewer-created styled shapes layers untouched;
-- when the user changes coordinate system with a pending unsaved layer, show:
+- if there is no pending layer, coordinate-system changes follow the Slice 3
+  shared app-state sync behavior;
+- if the user changes coordinate system with a pending unsaved layer, confirm
+  before publishing the new coordinate system to `HarpyAppState`;
+- show the confirmation message:
 
   ```text
   Changing coordinate system will delete the current unsaved shape annotations.
   ```
 
 - cancelling the warning keeps the current coordinate-system selection and
-  preserves the pending layer;
+  preserves the pending layer without updating `app_state.coordinate_system`;
 - confirming the warning removes the pending layer, unregisters its Harpy
   binding, updates `app_state.coordinate_system`, and lets the user create a new
-  layer.
-- if Slice 4 introduces layer lifecycle listeners, add a scoped
-  `_is_handling_coordinate_system_change`-style guard so layer removal events
-  emitted during coordinate-system discard do not trigger duplicate cleanup or
-  rebinding work.
+  layer;
+- manual deletion of the pending napari layer is handled in Slice 5.
 
 Acceptance:
 
 - new layer is created, registered as primary, and activated;
 - element name is locked after layer creation;
+- only one pending widget-owned layer can exist at a time;
+- `Create layer` is disabled while the pending layer exists;
+- `Save shapes` remains disabled until Slice 6;
 - changing coordinate system after layer creation requires confirmation and
   discards the pending unsaved layer;
+- cancelling the coordinate-system warning preserves the pending layer and
+  leaves shared app state unchanged;
 - styled shapes layers are not modified by this workflow.
 
 Tests:
 
+- create layer adds an empty napari `Shapes` layer;
 - create layer registers a primary shapes binding;
 - create layer activates the new layer;
 - create layer locks the name input;
+- create layer disables creating a second pending layer;
+- `Save shapes` remains disabled after layer creation;
 - cancelling the coordinate-system warning preserves the pending layer and
-  keeps the previous coordinate-system selection;
+  keeps the previous coordinate-system selection and app state;
 - confirming the coordinate-system warning removes the pending layer,
   unregisters its Harpy binding, and updates shared app state;
-- coordinate-system discard does not double-handle layer removal callbacks when
-  layer lifecycle listeners are present;
 - styled shapes layers are not removed or re-registered by this workflow.
 
-### Slice 5: Save Button And Feedback
+### Slice 5: Pending Layer Removal Listener
+
+Status: proposed
+
+Purpose:
+
+- keep widget state synchronized when the user manually deletes the pending
+  annotation layer from napari's layer list;
+- add a scoped guard so widget-driven coordinate-system discard does not
+  double-handle the pending layer removal event.
+
+Code:
+
+- add a pending-layer removal listener, using napari layer events or existing
+  viewer-adapter lifecycle APIs where possible;
+- only react when the removed layer is the widget-owned pending layer;
+- add a scoped flag, for example:
+
+  ```python
+  self._is_handling_coordinate_system_change = False
+  ```
+
+- wrap coordinate-system discard cleanup with:
+
+  ```python
+  self._is_handling_coordinate_system_change = True
+  try:
+      remove_pending_layer()
+      clear_pending_state()
+      update_app_state_coordinate_system()
+  finally:
+      self._is_handling_coordinate_system_change = False
+  ```
+
+- make the removal callback ignore widget-driven coordinate-system discard:
+
+  ```python
+  def _on_layer_removed(...):
+      if self._is_handling_coordinate_system_change:
+          return
+      ...
+  ```
+
+- extend widget tests.
+
+Behavior:
+
+- if the user manually deletes the pending napari layer, clear pending-layer
+  state, unlock the name input, disable save, and allow creating a new layer
+  when preflight is valid;
+- if the widget removes the pending layer while confirming a coordinate-system
+  discard, the layer-removal listener must not perform duplicate cleanup;
+- unregister the pending layer binding if it is still registered when manual
+  deletion is detected;
+- leave viewer-created styled shapes layers untouched.
+
+Acceptance:
+
+- manual deletion of the pending layer clears widget pending state;
+- manual deletion unlocks the name input and refreshes create/save button state;
+- coordinate-system discard does not double-handle layer removal callbacks;
+- unrelated layer removals do not affect pending-layer state;
+- styled shapes layers are not removed or re-registered by this workflow.
+
+Tests:
+
+- manual deletion of the pending layer clears pending state and unlocks the name
+  input;
+- manual deletion unregisters the pending primary shapes binding if needed;
+- manual deletion refreshes `Create layer` and `Save shapes` enablement;
+- coordinate-system discard sets the guard while removing the pending layer;
+- layer removal emitted during coordinate-system discard does not duplicate
+  cleanup or rebinding work;
+- removing an unrelated layer does not clear pending state;
+- styled shapes layers are not removed or re-registered by this workflow.
+
+### Slice 6: Save Button And Feedback
 
 Status: proposed
 
@@ -925,7 +1024,7 @@ Tests:
 - unsupported shape errors are displayed without mutating `sdata`;
 - styled shapes layers are not offered or accepted as save sources.
 
-### Slice 6: Launcher Wiring
+### Slice 7: Launcher Wiring
 
 Status: proposed
 
@@ -951,7 +1050,7 @@ Tests:
   support is added;
 - `Interactive(..., widgets="all")` behavior is covered if changed.
 
-### Slice 7: Backed Persistence Verification
+### Slice 8: Backed Persistence Verification
 
 Status: proposed
 
