@@ -689,13 +689,15 @@ Purpose:
 
 - add the dedicated widget shell;
 - make coordinate-system selection match existing shared app-state behavior;
-- prepare validation and feedback without creating layers yet.
+- prepare name validation and feedback without creating layers yet.
 
 Code:
 
 - add `src/napari_harpy/widgets/shapes_annotation/__init__.py`;
 - add `src/napari_harpy/widgets/shapes_annotation/widget.py`;
-- expose `ShapesAnnotation`;
+- expose a `ShapesAnnotation` widget class;
+- construct the widget with the napari viewer and bind shared state with
+  `get_or_create_app_state(viewer)`;
 - add widget tests, likely in `tests/test_shapes_annotation_widget.py`.
 
 Behavior:
@@ -703,15 +705,37 @@ Behavior:
 - use `get_or_create_app_state(viewer)`;
 - listen to `sdata_changed`;
 - listen to `coordinate_system_changed`;
-- populate the coordinate-system selector from loaded `sdata`;
+- populate the coordinate-system selector from
+  `get_coordinate_system_names_from_sdata(sdata)`;
+- store the coordinate-system name as both combo-box display text and item data;
 - initialize the selector from `app_state.coordinate_system` when available;
 - update `app_state.coordinate_system` when the user chooses a different
-  coordinate system;
+  coordinate system, using `source="shapes_annotation_widget"`;
 - refresh when another widget changes `app_state.coordinate_system`;
-- validate the new element name as the user types;
-- disable create/save controls when `sdata` or coordinate system is missing;
-- show clear status text for missing `sdata`, missing coordinate system, empty
-  names, and duplicate names.
+- update the selector with `QSignalBlocker` when responding to external
+  app-state changes;
+- validate the new shapes element name as the user types:
+  - name is non-empty after stripping whitespace;
+  - name is a valid SpatialData element name;
+  - name does not already exist in `sdata.shapes`;
+- expose `Create layer` and `Save shapes` controls, but do not create or save
+  layers in this slice;
+- enable `Create layer` only when `sdata`, coordinate system, and element name
+  are valid;
+- keep `Save shapes` disabled because no widget-owned pending layer can exist
+  yet;
+- show deterministic status text for missing `sdata`, missing coordinate
+  system, empty names, invalid names, duplicate names, and ready-to-create
+  state.
+
+Out of scope:
+
+- do not create napari layers;
+- do not register layer bindings;
+- do not show the coordinate-system-change discard warning yet. That warning
+  belongs to the pending-layer slice because Slice 3 cannot create unsaved
+  annotations;
+- do not call `create_shapes_element_from_napari_shapes_layer(...)`.
 
 Acceptance:
 
@@ -719,7 +743,10 @@ Acceptance:
 - coordinate-system controls reflect loaded `sdata`;
 - coordinate-system controls reflect shared app-state changes;
 - user coordinate-system selection updates shared app state;
-- create/save controls reflect `sdata`, coordinate-system, and name validity;
+- `Create layer` enablement reflects `sdata`, coordinate-system, and name
+  validity;
+- `Save shapes` remains disabled in this slice;
+- name validation is preflight-only and does not mutate `sdata`;
 - no napari layer is created in this slice.
 
 Tests:
@@ -731,7 +758,12 @@ Tests:
 - coordinate-system selector initializes from `app_state.coordinate_system`;
 - user coordinate-system selection updates `app_state.coordinate_system`;
 - external `coordinate_system_changed` events update the selector;
-- duplicate-name validation is shown before layer creation.
+- empty-name validation is shown before layer creation;
+- invalid-name validation is shown before layer creation;
+- duplicate-name validation is shown before layer creation;
+- `Create layer` enables only when preflight state is valid;
+- `Save shapes` remains disabled;
+- no napari layer is created.
 
 ### Slice 4: Empty Layer Lifecycle
 
