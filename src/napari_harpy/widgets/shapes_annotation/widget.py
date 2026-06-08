@@ -5,12 +5,12 @@ from typing import TYPE_CHECKING
 from qtpy.QtCore import QSignalBlocker, Qt
 from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import (
+    QDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -24,6 +24,7 @@ from napari_harpy.core.validation import normalize_spatialdata_name
 from napari_harpy.widgets.shared_styles import (
     PRIMARY_BUTTON_STYLESHEET,
     SECONDARY_BUTTON_STYLESHEET,
+    WARNING_BUTTON_STYLESHEET,
     WIDGET_MIN_WIDTH,
     WIDGET_TEXT_COLOR,
     CompactComboBox,
@@ -338,14 +339,44 @@ class ShapesAnnotation(QWidget):
         set_status_card(self.status_label, title=title, lines=lines, kind=kind)
 
     def _confirm_discard_annotation_layer(self) -> bool:
-        response = QMessageBox.warning(
-            self,
-            "Discard Unsaved Shape Annotations",
-            "Changing coordinate system will delete the current unsaved shape annotations.",
-            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Cancel,
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Discard Unsaved Shape Annotations")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(560)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        warning_card = QLabel()
+        warning_card.setWordWrap(True)
+        set_status_card(
+            warning_card,
+            title="Discard Unsaved Annotations",
+            lines=["Changing coordinate system will delete the current unsaved shape annotations."],
+            kind="warning",
         )
-        return response == QMessageBox.StandardButton.Ok
+        layout.addWidget(warning_card)
+
+        button_row = QHBoxLayout()
+        button_row.setSpacing(10)
+        button_row.addStretch(1)
+
+        discard_button = QPushButton("Discard annotations")
+        cancel_button = QPushButton("Cancel")
+
+        discard_button.setStyleSheet(WARNING_BUTTON_STYLESHEET)
+        cancel_button.setStyleSheet(SECONDARY_BUTTON_STYLESHEET)
+
+        button_row.addWidget(discard_button)
+        button_row.addWidget(cancel_button)
+        layout.addLayout(button_row)
+
+        discard_button.clicked.connect(dialog.accept)
+        cancel_button.clicked.connect(dialog.reject)
+        cancel_button.setDefault(True)
+
+        return dialog.exec() == QDialog.DialogCode.Accepted
 
     def _remove_annotation_layer(self) -> None:
         sdata = self._app_state.sdata
