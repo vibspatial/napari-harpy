@@ -80,6 +80,7 @@ def test_napari_shapes_layer_to_geodataframe_rejects_non_finite_coordinates() ->
 
     with pytest.raises(ValueError, match="non-finite coordinates"):
         napari_shapes_layer_to_geodataframe(layer)
+    assert "instance_id" not in layer.features.columns
 
 
 def test_napari_shapes_layer_to_geodataframe_rejects_too_few_polygon_vertices() -> None:

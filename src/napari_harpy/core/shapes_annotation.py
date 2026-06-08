@@ -60,7 +60,6 @@ def napari_shapes_layer_to_geodataframe(
         index_name=index_name,
         index_prefix=index_prefix,
     )
-    layer.features = features
 
     geometries: list[Polygon] = []
     for row_index, (vertices, shape_type) in enumerate(zip(data, shape_types, strict=True)):
@@ -79,6 +78,10 @@ def napari_shapes_layer_to_geodataframe(
             )
             continue
         raise ValueError(f"Shape row `{row_index}` has unsupported napari shape type `{shape_type}`.")
+
+    # Only write generated IDs back after every geometry row validates, so
+    # failed conversions leave the napari layer metadata untouched.
+    layer.features = features
 
     geodataframe_data = {
         column: features[column].tolist()
