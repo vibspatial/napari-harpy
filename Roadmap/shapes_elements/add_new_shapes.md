@@ -607,7 +607,23 @@ Behavior:
 - return `CreateShapesElementResult` with name, coordinate system, and row
   count;
 - do not create or link an `AnnData` table;
-- rely on `harpy.sh.add_shapes(...)` for backed writes when `sdata` is backed.
+- use `harpy.sh.add_shapes(...)` as the backed-capable write path. Slice 2 does
+  not add manual zarr mutation and does not own full backed-store roundtrip
+  verification.
+
+Save order:
+
+1. Validate request-only fields before touching the napari layer: `sdata`,
+   `shapes_name`, `coordinate_system`, `overwrite`, `index_name`,
+   `index_prefix`, and `ellipse_segments`.
+2. Validate target collision policy: if `request.overwrite` is `False` and
+   `request.shapes_name` already exists in `request.sdata.shapes`, fail before
+   conversion.
+3. Convert the napari layer with `napari_shapes_layer_to_geodataframe(...)`.
+   Conversion may update `layer.features` with stable `instance_id` values after
+   all geometry rows validate.
+4. If conversion succeeds, call `hp.sh.add_shapes(...)`. This mutates
+   `request.sdata`.
 
 Mutation boundary:
 
@@ -647,7 +663,7 @@ Tests:
 - repeated saves with `overwrite=True` overwrite the locked element and
   preserve existing `instance_id` values;
 - `hp.sh.add_shapes(...)` is called with `overwrite=request.overwrite`;
-- when `sdata` is backed, saving persists through the Harpy write path;
+- no manual zarr write path is introduced;
 - no annotation table is created implicitly.
 
 ### Slice 3: Widget Shell And Shared Coordinate System
@@ -864,6 +880,10 @@ Status: proposed
 
 Verify backed persistence for the `harpy.sh.add_shapes(...)` write path used by
 Workflow A.
+
+Slice 2 only ensures the save helper uses Harpy's backed-capable API; this
+slice verifies the actual backed zarr behavior by writing, reloading, and
+checking the saved element.
 
 Behavior:
 
