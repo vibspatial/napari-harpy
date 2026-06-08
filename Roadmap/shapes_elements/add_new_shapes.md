@@ -206,6 +206,9 @@ Index rule:
   `shape_0`, `shape_1`, ...;
 - after the first save, existing rows keep their assigned `instance_id`;
 - new rows receive the next unused `shape_N` value;
+- when napari copies a generated `shape_N` value into a newly drawn row, treat
+  the later duplicate as a new row and assign a fresh `shape_N`;
+- duplicate custom/manual `instance_id` values remain invalid;
 - deleted rows disappear on the next save;
 - the generated index must be unique within the new `GeoDataFrame`;
 - the generated index name should be `instance_id`.
@@ -338,7 +341,6 @@ class CreateShapesElementRequest:
     overwrite: bool = False
     index_name: str = "instance_id"
     index_prefix: str = "shape"
-    ellipse_segments: int = 64
 
 
 @dataclass(frozen=True)
@@ -512,6 +514,9 @@ Behavior:
 - store generated IDs in napari layer features under `instance_id`;
 - preserve existing `instance_id` feature values across repeated conversions;
 - assign new rows the next unused `shape_N` value;
+- assign fresh IDs for duplicate generated `shape_N` values copied by napari
+  into newly drawn rows;
+- reject duplicate custom/manual `instance_id` values;
 - name the generated index `instance_id`;
 - swap napari `(y, x)` vertices to Shapely `(x, y)` coordinates.
 
@@ -537,12 +542,24 @@ Tests:
 - index naming and generation;
 - preservation of existing `instance_id` feature values;
 - next-unused `shape_N` assignment after deletion or insertion;
+- copied generated `shape_N` duplicates receive fresh IDs;
+- duplicate custom/manual `instance_id` values are rejected;
 - coordinate order conversion;
 - nested polygons remain independent rows.
 
 ### Slice 2: Core Save Into SpatialData
 
-Status: proposed
+Status: implemented
+
+Implemented in:
+
+- `src/napari_harpy/core/shapes_annotation.py`;
+- `tests/test_shapes_annotation.py`.
+
+Verified with:
+
+- `.venv/bin/pytest tests/test_shapes_annotation.py`;
+- `.venv/bin/ruff check src/napari_harpy/core/shapes_annotation.py tests/test_shapes_annotation.py`.
 
 Purpose:
 
@@ -572,7 +589,6 @@ Behavior:
   - `overwrite` is not a boolean;
   - `index_name` is not a non-empty string;
   - `index_prefix` is not a non-empty string;
-  - `ellipse_segments` is invalid;
 - reject unknown coordinate systems by checking
   `get_coordinate_system_names_from_sdata(request.sdata)` before mutating
   `sdata`;
@@ -615,7 +631,7 @@ Save order:
 
 1. Validate request-only fields before touching the napari layer: `sdata`,
    `shapes_name`, `coordinate_system`, `overwrite`, `index_name`,
-   `index_prefix`, and `ellipse_segments`.
+   and `index_prefix`.
 2. Validate target collision policy: if `request.overwrite` is `False` and
    `request.shapes_name` already exists in `request.sdata.shapes`, fail before
    conversion.
@@ -656,7 +672,6 @@ Tests:
 - existing shapes names are rejected when `overwrite=False`;
 - invalid index names are rejected;
 - invalid index prefixes are rejected;
-- invalid ellipse segment counts are rejected before mutation;
 - failed conversion does not mutate `sdata.shapes`;
 - the new element has an `Identity()` transform to the selected coordinate
   system;

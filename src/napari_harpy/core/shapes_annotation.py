@@ -5,10 +5,15 @@ from numbers import Integral
 from typing import TYPE_CHECKING
 
 import geopandas as gpd
+import harpy as hp
 import numpy as np
 import pandas as pd
 from napari.layers import Shapes
 from shapely.geometry import Polygon
+from spatialdata.transformations import Identity
+
+from napari_harpy.core.spatialdata import get_coordinate_system_names_from_sdata
+from napari_harpy.core.validation import normalize_spatialdata_dataframe_column_name, normalize_spatialdata_name
 
 if TYPE_CHECKING:
     from spatialdata import SpatialData
@@ -25,9 +30,9 @@ class CreateShapesElementRequest:
     sdata: SpatialData
     shapes_name: str
     coordinate_system: str
+    overwrite: bool = False
     index_name: str = DEFAULT_SHAPES_INDEX_NAME
     index_prefix: str = DEFAULT_SHAPES_INDEX_PREFIX
-    ellipse_segments: int = DEFAULT_ELLIPSE_SEGMENTS
 
 
 @dataclass(frozen=True)
@@ -35,6 +40,55 @@ class CreateShapesElementResult:
     shapes_name: str
     coordinate_system: str
     row_count: int
+
+
+def create_shapes_element_from_napari_shapes_layer(
+    request: CreateShapesElementRequest,
+    layer: Shapes,
+) -> CreateShapesElementResult:
+    """Create or update one SpatialData shapes element from a napari Shapes layer."""
+    sdata = request.sdata
+    if sdata is None:
+        raise ValueError("Create shapes element request requires a SpatialData object.")
+
+    shapes_name = _normalize_spatialdata_name_field(request.shapes_name, field_name="`shapes_name`")
+    coordinate_system = _normalize_string_field(request.coordinate_system, field_name="`coordinate_system`")
+    if not isinstance(request.overwrite, bool):
+        raise ValueError("`overwrite` must be a boolean.")
+    index_name = _normalize_dataframe_column_name_field(request.index_name, field_name="`index_name`")
+    index_prefix = _normalize_string_field(request.index_prefix, field_name="`index_prefix`")
+
+    available_coordinate_systems = get_coordinate_system_names_from_sdata(sdata)
+    if coordinate_system not in available_coordinate_systems:
+        available = ", ".join(f"`{name}`" for name in available_coordinate_systems) or "none"
+        raise ValueError(
+            f"Coordinate system `{coordinate_system}` is not available in the selected SpatialData object. "
+            f"Available coordinate systems: {available}."
+        )
+
+    if not request.overwrite and shapes_name in sdata.shapes:
+        raise ValueError(f"Shapes element `{shapes_name}` already exists. Set `overwrite=True` to replace it.")
+
+    geodataframe = napari_shapes_layer_to_geodataframe(
+        layer,
+        index_name=index_name,
+        index_prefix=index_prefix,
+    )
+
+    _ = hp.sh.add_shapes(
+        sdata,
+        input=geodataframe,
+        output_shapes_name=shapes_name,
+        transformations={coordinate_system: Identity()},
+        instance_key=index_name,
+        overwrite=request.overwrite,
+    )
+
+    return CreateShapesElementResult(
+        shapes_name=shapes_name,
+        coordinate_system=coordinate_system,
+        row_count=len(geodataframe),
+    )
 
 
 def napari_shapes_layer_to_geodataframe(
@@ -99,6 +153,27 @@ def napari_shapes_layer_to_geodataframe(
     return geodataframe
 
 
+def _normalize_spatialdata_name_field(value: object, *, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a non-empty string.")
+    return normalize_spatialdata_name(value, field_name)
+
+
+def _normalize_dataframe_column_name_field(value: object, *, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a non-empty string.")
+    return normalize_spatialdata_dataframe_column_name(value, field_name)
+
+
+def _normalize_string_field(value: object, *, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a non-empty string.")
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{field_name} must be a non-empty string.")
+    return normalized
+
+
 def _validate_ellipse_segments(ellipse_segments: int) -> None:
     if (
         isinstance(ellipse_segments, bool)
@@ -121,9 +196,10 @@ def _build_features_with_instance_ids(
     semantic row index. Harpy keeps the future GeoDataFrame index values in a
     named features column, usually ``instance_id``. Existing values are
     preserved for repeated saves, missing values from newly drawn rows are
-    filled with unique ``shape_N`` IDs, and the completed values can then be
-    written back to ``layer.features`` before becoming the saved GeoDataFrame
-    index.
+    filled with unique ``shape_N`` IDs, and duplicate generated IDs copied by
+    napari into new rows are treated as missing. The completed values can then
+    be written back to ``layer.features`` before becoming the saved
+    GeoDataFrame index.
     """
     features = features.copy()
     features = features.reindex(range(row_count)).reset_index(drop=True)
@@ -132,16 +208,33 @@ def _build_features_with_instance_ids(
 
     raw_values = features[index_name].tolist()
     existing_values = [_normalize_instance_id(value) for value in raw_values]
-    present_values = [value for value in existing_values if value is not None]
-    duplicate_values = sorted({value for value in present_values if present_values.count(value) > 1})
+    normalized_values: list[str | None] = []
+    used_values: set[str] = set()
+    duplicate_values: set[str] = set()
+    for value in existing_values:
+        if value is None:
+            normalized_values.append(None)
+            continue
+        if value in used_values:
+            # Napari can copy current feature defaults into newly drawn rows.
+            # Keep the first generated ID untouched, then treat later duplicate
+            # generated IDs as missing so they get fresh IDs below.
+            # Non-generated duplicates are collected in `duplicate_values` and
+            # rejected after this loop.
+            if _is_generated_instance_id(value, index_prefix=index_prefix):
+                normalized_values.append(None)
+                continue
+            duplicate_values.add(value)
+        used_values.add(value)
+        normalized_values.append(value)
+
     if duplicate_values:
-        preview = ", ".join(f"`{value}`" for value in duplicate_values[:5])
+        preview = ", ".join(f"`{value}`" for value in sorted(duplicate_values)[:5])
         raise ValueError(f"`{index_name}` values must be unique before saving shapes: {preview}.")
 
-    used_values = set(present_values)
     next_suffix = _next_generated_suffix(used_values, index_prefix=index_prefix)
     instance_ids: list[str] = []
-    for value in existing_values:
+    for value in normalized_values:
         if value is None:
             value = f"{index_prefix}_{next_suffix}"
             while value in used_values:
@@ -160,6 +253,12 @@ def _normalize_instance_id(value: object) -> str | None:
         return None
     normalized = str(value)
     return normalized if normalized else None
+
+
+def _is_generated_instance_id(value: str, *, index_prefix: str) -> bool:
+    prefix = f"{index_prefix}_"
+    suffix_text = value.removeprefix(prefix)
+    return value.startswith(prefix) and suffix_text.isdecimal()
 
 
 def _next_generated_suffix(values: set[str], *, index_prefix: str) -> int:
