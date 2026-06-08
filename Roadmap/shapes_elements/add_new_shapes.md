@@ -809,6 +809,10 @@ Code:
 
 - extend `ShapesAnnotation` layer creation behavior;
 - use `ViewerAdapter.register_shapes_layer(...)`;
+- create the empty annotation layer with the same primary unstyled polygon
+  shapes presentation settings used by the viewer's shapes-loading path;
+- prefer a shared helper in `viewer.adapter` for those presentation settings if
+  the implementation would otherwise duplicate private viewer defaults;
 - use existing viewer adapter layer removal/unregistration APIs where possible;
 - track one pending widget-owned layer at a time, with state equivalent to:
 
@@ -827,6 +831,17 @@ Behavior:
 - use the validated name as the locked `sdata.shapes[...]` target name;
 - name the napari layer predictably, preferably with the validated shapes
   element name;
+- initialize the empty layer with the same visual defaults as unstyled primary
+  polygon shapes loaded by `ViewerAdapter.ensure_shapes_loaded(...)`:
+  - `edge_color="#00FFFF"`;
+  - `face_color="#00000000"`;
+  - `edge_width=1`;
+  - `opacity=0.8`;
+- connect the same primary-shapes presentation callbacks used by the viewer so
+  changes to `current_edge_width` and `current_edge_color` apply to all shapes
+  in the annotation layer;
+- this workflow creates a region-annotation `Shapes` layer, not a point-radius
+  `Points` layer;
 - register the layer as:
   - `element_type="shapes"`;
   - `element_name=new_name`;
@@ -862,6 +877,8 @@ Behavior:
 Acceptance:
 
 - new layer is created, registered as primary, and activated;
+- empty layer visual defaults match unstyled primary polygon shapes loaded
+  through the viewer;
 - element name is locked after layer creation;
 - only one pending widget-owned layer can exist at a time;
 - `Create layer` is disabled while the pending layer exists;
@@ -875,6 +892,10 @@ Acceptance:
 Tests:
 
 - create layer adds an empty napari `Shapes` layer;
+- create layer uses edge color `#00FFFF`, transparent face color, edge width
+  `1`, and opacity `0.8`;
+- create layer applies the primary-shapes edge-width and edge-color sync
+  callbacks;
 - create layer registers a primary shapes binding;
 - create layer activates the new layer;
 - create layer locks the name input;
