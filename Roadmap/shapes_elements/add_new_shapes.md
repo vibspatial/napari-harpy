@@ -588,7 +588,7 @@ Behavior:
 - write with:
 
   ```python
-  hp.sh.add_shapes(
+  _ = hp.sh.add_shapes(
       request.sdata,
       input=geodataframe,
       output_shapes_name=request.shapes_name,
@@ -601,6 +601,9 @@ Behavior:
 - treat `request.overwrite` as the core replacement policy;
 - do not infer widget ownership in this core helper. The widget slice decides
   when it is legitimate to pass `overwrite=True`;
+- intentionally ignore the return value from `hp.sh.add_shapes(...)`. The helper
+  treats the Harpy call as a side-effecting write and callers continue using
+  `request.sdata`;
 - return `CreateShapesElementResult` with name, coordinate system, and row
   count;
 - do not create or link an `AnnData` table;
