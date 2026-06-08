@@ -421,10 +421,11 @@ Widget behavior:
 
 Plugin registration:
 
-- add a `napari-harpy.shapes_annotation` command to `napari.yaml`;
-- expose the widget as `Shapes Annotation`;
+- add a `napari-harpy.shapes_annotation` command to `napari.yaml` as part of
+  Slice 3;
+- expose the widget as `Shapes Annotation` as part of Slice 3;
 - optionally add an `Interactive(..., widgets="shapes_annotation")` selection
-  id once the widget is available.
+  id in the launcher wiring slice.
 
 ## Persistence Policy
 
@@ -683,7 +684,21 @@ Tests:
 
 ### Slice 3: Widget Shell And Shared Coordinate System
 
-Status: proposed
+Status: implemented
+
+Implemented in:
+
+- `src/napari_harpy/widgets/shapes_annotation/__init__.py`;
+- `src/napari_harpy/widgets/shapes_annotation/widget.py`;
+- `src/napari_harpy/napari.yaml`;
+- `src/napari_harpy/widgets/__init__.py`;
+- `tests/test_package.py`;
+- `tests/test_shapes_annotation_widget.py`.
+
+Verified with:
+
+- `.venv/bin/pytest tests/test_package.py tests/test_shapes_annotation_widget.py tests/test_shapes_annotation.py`;
+- `.venv/bin/ruff check src/napari_harpy/widgets/shapes_annotation/widget.py src/napari_harpy/widgets/shapes_annotation/__init__.py src/napari_harpy/widgets/__init__.py tests/test_shapes_annotation_widget.py tests/test_package.py`.
 
 Purpose:
 
@@ -696,8 +711,14 @@ Code:
 - add `src/napari_harpy/widgets/shapes_annotation/__init__.py`;
 - add `src/napari_harpy/widgets/shapes_annotation/widget.py`;
 - expose a `ShapesAnnotation` widget class;
+- show the standard napari-harpy header logo used by the other widgets;
+- add a `napari-harpy.shapes_annotation` command to
+  `src/napari_harpy/napari.yaml`;
+- expose the command as a napari widget contribution with display name
+  `Shapes Annotation`;
 - construct the widget with the napari viewer and bind shared state with
   `get_or_create_app_state(viewer)`;
+- update lazy widget exports in `src/napari_harpy/widgets/__init__.py`;
 - add widget tests, likely in `tests/test_shapes_annotation_widget.py`.
 
 Behavior:
@@ -708,6 +729,7 @@ Behavior:
 - populate the coordinate-system selector from
   `get_coordinate_system_names_from_sdata(sdata)`;
 - store the coordinate-system name as both combo-box display text and item data;
+- display the shared Harpy logo at the top of the widget;
 - initialize the selector from `app_state.coordinate_system` when available;
 - update `app_state.coordinate_system` when the user chooses a different
   coordinate system, using `source="shapes_annotation_widget"`;
@@ -718,6 +740,8 @@ Behavior:
   - name is non-empty after stripping whitespace;
   - name is a valid SpatialData element name;
   - name does not already exist in `sdata.shapes`;
+- make the widget discoverable from napari's plugin widget menu as
+  `Shapes Annotation`;
 - expose `Create layer` and `Save shapes` controls, but do not create or save
   layers in this slice;
 - enable `Create layer` only when `sdata`, coordinate system, and element name
@@ -740,18 +764,22 @@ Out of scope:
 Acceptance:
 
 - widget shares app state;
+- widget displays the standard Harpy logo header;
 - coordinate-system controls reflect loaded `sdata`;
 - coordinate-system controls reflect shared app-state changes;
 - user coordinate-system selection updates shared app state;
 - `Create layer` enablement reflects `sdata`, coordinate-system, and name
   validity;
 - `Save shapes` remains disabled in this slice;
+- `Shapes Annotation` appears as a napari widget contribution;
+- lazy widget exports include `ShapesAnnotation`;
 - name validation is preflight-only and does not mutate `sdata`;
 - no napari layer is created in this slice.
 
 Tests:
 
 - widget shares `HarpyAppState` with the viewer;
+- widget includes the standard Harpy logo header;
 - controls disable when no `sdata` is loaded;
 - controls disable when no coordinate system is selected;
 - coordinate-system selector is populated from loaded `sdata`;
@@ -763,6 +791,8 @@ Tests:
 - duplicate-name validation is shown before layer creation;
 - `Create layer` enables only when preflight state is valid;
 - `Save shapes` remains disabled;
+- `napari.yaml` contributes `Shapes Annotation`;
+- package lazy exports include `ShapesAnnotation`;
 - no napari layer is created.
 
 ### Slice 4: Empty Layer Lifecycle
@@ -889,34 +919,28 @@ Tests:
 - unsupported shape errors are displayed without mutating `sdata`;
 - styled shapes layers are not offered or accepted as save sources.
 
-### Slice 6: Plugin And Launcher Wiring
+### Slice 6: Launcher Wiring
 
 Status: proposed
 
-Expose the widget through napari plugin metadata and, if desired, through
-`Interactive`.
+Expose the widget through `Interactive` if a programmatic launcher shortcut is
+desired. The napari plugin widget contribution is part of Slice 3.
 
 Code:
 
-- add a `napari-harpy.shapes_annotation` command to
-  `src/napari_harpy/napari.yaml`;
-- expose the widget as `Shapes Annotation`;
-- update lazy widget exports in `src/napari_harpy/widgets/__init__.py`;
 - optionally add an `Interactive(..., widgets="shapes_annotation")` selection
-  id once the widget is available.
+  id;
+- document whether `Interactive(..., widgets="all")` should include this
+  mutating annotation widget.
 
 Acceptance:
 
-- `Shapes Annotation` appears as a napari widget contribution;
-- lazy widget exports include `ShapesAnnotation`;
 - launcher selection tests cover the new widget id if added;
 - `Interactive(..., widgets="all")` behavior is updated intentionally, either
   including or excluding the annotation widget by documented choice.
 
 Tests:
 
-- `napari.yaml` contributes `Shapes Annotation`;
-- package lazy exports include `ShapesAnnotation`;
 - `Interactive(..., widgets="shapes_annotation")` docks the widget if launcher
   support is added;
 - `Interactive(..., widgets="all")` behavior is covered if changed.

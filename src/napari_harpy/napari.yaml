@@ -17,6 +17,9 @@ contributions:
     - id: napari-harpy.object_classification
       title: Open object classification widget
       python_name: napari_harpy.widgets.object_classification.widget:ObjectClassificationWidget
+    - id: napari-harpy.shapes_annotation
+      title: Open shapes annotation widget
+      python_name: napari_harpy.widgets.shapes_annotation.widget:ShapesAnnotation
   widgets:
     - command: napari-harpy.viewer
       display_name: Viewer
@@ -24,6 +27,8 @@ contributions:
       display_name: Feature Extraction
     - command: napari-harpy.object_classification
       display_name: Object Classification
+    - command: napari-harpy.shapes_annotation
+      display_name: Shapes Annotation
   readers:
     - command: napari-harpy.read_spatialdata_store
       filename_patterns:
