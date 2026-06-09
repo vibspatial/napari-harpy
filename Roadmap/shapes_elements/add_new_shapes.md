@@ -1323,8 +1323,13 @@ Code:
   - `coordinate_system`;
   - `source="shapes_annotation_widget"`;
 - make `ViewerWidget` listen to the app-state signal;
-- when the event matches the viewer's current `sdata`, refresh the Viewer
-  widget's element summaries/cards for the current coordinate system;
+- when the event matches the viewer's current `sdata` and current coordinate
+  system, refresh only the Viewer widget's shapes section;
+- keep the refresh scoped to:
+  - recomputing shapes names for the current coordinate system;
+  - rebuilding shapes cards/rows;
+  - updating the shapes group count and empty-state visibility;
+  - updating the coordinate-system summary text so the shapes count is current;
 - avoid emitting `sdata_changed`, because the `SpatialData` object identity did
   not change;
 - extend app-state, viewer-widget, and annotation-widget tests.
@@ -1334,12 +1339,14 @@ Behavior:
 - first save from the Annotation widget emits a shapes-element-written event;
 - later saves from the same locked annotation layer emit the same event shape;
 - Viewer widget refreshes its shapes section when the event refers to the
-  current `sdata`;
+  current `sdata` and current coordinate system;
 - Viewer widget ignores events for a different `SpatialData` object;
+- Viewer widget ignores events for a different coordinate system;
 - Viewer widget should preserve the current coordinate-system selection while
   refreshing the displayed element lists;
 - if the saved shapes element is in the currently selected coordinate system,
   it should appear in the Viewer widget's shapes section after the save;
+- image, labels, and points cards should not be rebuilt by this event;
 - this event does not automatically load the newly saved shapes layer into the
   napari viewer. It only refreshes Viewer widget availability/status so the user
   can choose to add/update it from the Viewer widget if desired;
@@ -1358,10 +1365,12 @@ Rationale:
 Acceptance:
 
 - saving a new shapes element from Annotation causes Viewer widget state to
-  refresh;
+  refresh its shapes section;
 - repeated saves also notify Viewer widget state;
 - Viewer widget ignores events for other `SpatialData` objects;
+- Viewer widget ignores events for other coordinate systems;
 - current coordinate-system selection is preserved;
+- image, labels, and points sections are not rebuilt;
 - no napari layer is loaded automatically by the event;
 - tests cover the event emission and viewer refresh path.
 
@@ -1370,8 +1379,11 @@ Tests:
 - `HarpyAppState` exposes and emits a shapes-element-written event;
 - Annotation-widget first save emits a `ShapesElementWrittenEvent`;
 - Annotation-widget repeated save emits a `ShapesElementWrittenEvent`;
-- Viewer widget listens to the event and refreshes its shapes section;
+- Viewer widget listens to the event and refreshes only its shapes section;
 - Viewer widget ignores events for a non-current `sdata`;
+- Viewer widget ignores events for a non-current coordinate system;
+- Viewer widget updates shapes count/empty state and summary text;
+- Viewer widget does not rebuild image, labels, or points sections;
 - save notification does not call viewer-adapter layer loading APIs.
 
 ### Slice 9: Viewer Refresh On Object Classification Table Writes
