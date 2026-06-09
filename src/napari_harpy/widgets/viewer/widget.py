@@ -8,7 +8,6 @@ from pandas.api.types import is_bool_dtype, is_numeric_dtype, is_object_dtype, i
 from qtpy.QtCore import QSignalBlocker, Qt
 from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import (
-    QComboBox,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -46,6 +45,7 @@ from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     WIDGET_MIN_WIDTH,
     WIDGET_TEXT_COLOR,
+    CompactComboBox,
     StatusCardKind,
     apply_scroll_content_surface,
     apply_widget_surface,
@@ -151,7 +151,7 @@ class ViewerWidget(QWidget):
         selector_layout.setHorizontalSpacing(12)
         selector_layout.setVerticalSpacing(10)
 
-        self.coordinate_system_combo = QComboBox()
+        self.coordinate_system_combo = CompactComboBox()
         self.coordinate_system_combo.setObjectName("viewer_widget_coordinate_system_combo")
         self.coordinate_system_combo.currentIndexChanged.connect(self._on_coordinate_system_changed)
         self.coordinate_system_combo.setStyleSheet(INPUT_CONTROL_STYLESHEET)

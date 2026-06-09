@@ -29,7 +29,11 @@ from napari_harpy._points_value_index import PointsValueSelection, PointsValueTa
 from napari_harpy.core._color_source import ShapeColumnColorSourceSpec, TableColorSourceSpec
 from napari_harpy.viewer.adapter import PointsLayerIdentity
 from napari_harpy.viewer.shapes_styling import SHAPES_FACE_ALPHA
-from napari_harpy.widgets.shared_styles import STATUS_CARD_PALETTE, WIDGET_MIN_WIDTH
+from napari_harpy.widgets.shared_styles import (
+    STATUS_CARD_PALETTE,
+    WIDGET_MIN_WIDTH,
+    CompactComboBox,
+)
 from napari_harpy.widgets.viewer.disclosure import _ElidedLabel, _ElidedToolButton
 from napari_harpy.widgets.viewer.image_widget import QColorDialog, _OverlayColorButton
 from napari_harpy.widgets.viewer.points_controller import PointsLoadRequest
@@ -235,6 +239,10 @@ def test_viewer_widget_can_be_instantiated(qtbot) -> None:
     assert widget.summary_label.text() == "No SpatialData loaded."
     assert widget.coordinate_system_combo.count() == 0
     assert not widget.coordinate_system_combo.isEnabled()
+    assert isinstance(widget.coordinate_system_combo, CompactComboBox)
+    assert widget.coordinate_system_combo.sizeAdjustPolicy() == (
+        QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+    )
     assert widget.image_cards == []
     assert widget.labels_cards == []
     assert widget.shape_cards == []
