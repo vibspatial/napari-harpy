@@ -22,7 +22,7 @@ from napari_harpy._resources import get_logo_path
 from napari_harpy.core.spatialdata import get_coordinate_system_names_from_sdata
 from napari_harpy.core.validation import normalize_spatialdata_name
 from napari_harpy.widgets.shared_styles import (
-    PRIMARY_BUTTON_STYLESHEET,
+    ACTION_BUTTON_STYLESHEET,
     SECONDARY_BUTTON_STYLESHEET,
     WARNING_BUTTON_STYLESHEET,
     WIDGET_MIN_WIDTH,
@@ -114,12 +114,12 @@ class ShapesAnnotation(QWidget):
         self.create_layer_button = QPushButton("Create layer")
         self.create_layer_button.setObjectName("shapes_annotation_create_layer_button")
         self.create_layer_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.create_layer_button.setStyleSheet(PRIMARY_BUTTON_STYLESHEET)
+        self.create_layer_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
 
         self.save_shapes_button = QPushButton("Save shapes")
         self.save_shapes_button.setObjectName("shapes_annotation_save_shapes_button")
         self.save_shapes_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.save_shapes_button.setStyleSheet(SECONDARY_BUTTON_STYLESHEET)
+        self.save_shapes_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
 
         button_row.addWidget(self.create_layer_button)
         button_row.addWidget(self.save_shapes_button)
