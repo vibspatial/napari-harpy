@@ -1294,10 +1294,15 @@ Purpose:
 
 Code:
 
-- add a small app-state event model, for example:
+- add a small app-state event model:
 
   ```python
-  ShapesElementWrittenEvent
+  ShapesElementWrittenEvent(
+      sdata=sdata,
+      shapes_name=shapes_name,
+      coordinate_system=coordinate_system,
+      source="shapes_annotation_widget",
+  )
   ```
 
 - add a `HarpyAppState` signal such as:
@@ -1316,7 +1321,6 @@ Code:
   - `sdata`;
   - `shapes_name`;
   - `coordinate_system`;
-  - whether the save created or updated the locked element;
   - `source="shapes_annotation_widget"`;
 - make `ViewerWidget` listen to the app-state signal;
 - when the event matches the viewer's current `sdata`, refresh the Viewer
@@ -1327,9 +1331,8 @@ Code:
 
 Behavior:
 
-- first save from the Annotation widget emits a shapes-element-written event
-  with change kind `created`;
-- later saves from the same locked annotation layer emit change kind `updated`;
+- first save from the Annotation widget emits a shapes-element-written event;
+- later saves from the same locked annotation layer emit the same event shape;
 - Viewer widget refreshes its shapes section when the event refers to the
   current `sdata`;
 - Viewer widget ignores events for a different `SpatialData` object;
@@ -1365,8 +1368,8 @@ Acceptance:
 Tests:
 
 - `HarpyAppState` exposes and emits a shapes-element-written event;
-- Annotation-widget first save emits `created`;
-- Annotation-widget repeated save emits `updated`;
+- Annotation-widget first save emits a `ShapesElementWrittenEvent`;
+- Annotation-widget repeated save emits a `ShapesElementWrittenEvent`;
 - Viewer widget listens to the event and refreshes its shapes section;
 - Viewer widget ignores events for a non-current `sdata`;
 - save notification does not call viewer-adapter layer loading APIs.
