@@ -225,25 +225,36 @@ Confirmed discard behavior depends on how the edit layer was created:
 - edit-existing layer created by the Annotation widget: remove the layer and
   unregister its binding;
 - edit-existing layer adopted from an already-loaded primary viewer layer:
-  remove the layer, unregister its binding, and re-load the saved shapes element
-  from current `sdata` through the normal viewer loading path, for example
-  `ViewerAdapter.ensure_shapes_loaded(...)`.
+  reload the saved shapes element from current `sdata` into the same napari
+  layer object.
 
 Rationale:
 
 - discard should not leave unsaved edits visible in the viewer;
-- remove-and-reensure is simpler and safer than trying to reset all napari
-  `Shapes` layer internals in place;
-- reusing the viewer loading path keeps geometry conversion, source-index
-  features, source-row mappings, and presentation defaults consistent with the
-  rest of the viewer.
+- adopted primary layers may have user-visible viewer state such as layer order,
+  visibility, opacity, and selection context. Discard should not disrupt that
+  state;
+- reload-in-place behaves like reverting unsaved edits on the existing layer,
+  which is the least surprising behavior for a professional annotation workflow.
 
-Tradeoff:
+Reload-in-place requirements for adopted primary layers:
 
-- adopted-layer discard may create a fresh napari layer object and may reset
-  layer order, selection, and presentation tweaks. This is acceptable for the
-  first implementation because the saved `sdata` state is restored clearly and
-  safely.
+- keep the same napari layer object;
+- keep the same layer position in the viewer;
+- keep the existing layer binding object or update it in place;
+- preserve presentation state where possible, including layer name, visibility,
+  opacity, blending, and selection;
+- replace the layer's editable shape state from the saved SpatialData element,
+  including `data`, `shape_type`, and `features`;
+- rebuild the binding's source-row mapping metadata from the saved element so
+  later saves continue to use the correct source identities;
+- if the saved element no longer passes edit-existing validation, fail the
+  discard with actionable feedback rather than leaving a half-reverted layer.
+
+The implementation should reuse the same conversion logic as the viewer loading
+path, but expose it as a helper that prepares napari shapes payloads without
+adding a new layer. The Annotation widget can then apply that payload to the
+adopted layer in place.
 
 ## Geometry And Identity Scope
 
@@ -484,8 +495,8 @@ that do not map one source row to one rendered editable napari row.
 
 ## Likely Reusable Pieces
 
-- `ViewerAdapter.ensure_shapes_loaded(...)` or nearby shape-loading code for
-  converting existing SpatialData shapes into napari layer data.
+- Viewer shape-loading conversion code for preparing napari `Shapes` payloads
+  from existing SpatialData shapes without necessarily adding a new layer.
 - `ViewerAdapter.register_shapes_layer(...)` for registering the editable layer
   as a primary shapes layer.
 - `napari_shapes_layer_to_geodataframe(...)` for converting edited layer data
