@@ -7,6 +7,7 @@ from typing import Literal
 from napari_harpy.widgets.shared_styles import StatusCardKind, format_feedback_identifier, validate_status_card_kind
 
 _FeatureExtractionTableBlocker = Literal["choose_table", "no_eligible", "invalid", "create_invalid"] | None
+_COORDINATE_SYSTEM_STATUS_MAX_LENGTH = 28
 
 
 @dataclass(frozen=True)
@@ -177,7 +178,7 @@ def _format_entry_line(
     *,
     shorten: bool,
 ) -> tuple[str, bool]:
-    coordinate_system, coordinate_shortened = _format_identifier(entry.coordinate_system, shorten=shorten)
+    coordinate_system, coordinate_shortened = _format_coordinate_system(entry.coordinate_system, shorten=shorten)
     if entry.blocking_reason is not None:
         if shorten or entry.labels_name is None:
             return f"{coordinate_system}: {entry.blocking_reason}", coordinate_shortened
@@ -202,3 +203,9 @@ def _format_identifier(name: str, *, shorten: bool) -> tuple[str, bool]:
     if not shorten:
         return name, False
     return format_feedback_identifier(name)
+
+
+def _format_coordinate_system(name: str, *, shorten: bool) -> tuple[str, bool]:
+    if not shorten:
+        return name, False
+    return format_feedback_identifier(name, max_length=_COORDINATE_SYSTEM_STATUS_MAX_LENGTH)

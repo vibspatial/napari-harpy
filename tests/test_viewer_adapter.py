@@ -32,7 +32,11 @@ from napari_harpy.viewer.adapter import (
     _prepare_napari_shapes_layer_inputs,
 )
 from napari_harpy.viewer.points_styling import POINTS_SELECTION_SOLID_COLOR
-from napari_harpy.viewer.shapes_styling import SHAPES_FACE_ALPHA
+from napari_harpy.viewer.shapes_styling import (
+    _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR,
+    _SHAPES_EDGE_WIDTH_SYNC_CALLBACK_ATTR,
+    SHAPES_FACE_ALPHA,
+)
 
 
 class DummyEventEmitter:
@@ -810,6 +814,33 @@ def test_viewer_adapter_remove_layers_outside_coordinate_system_removes_only_non
     assert adapter.layer_bindings.get_binding(remove_labels_layer) is None
     assert adapter.layer_bindings.get_binding(remove_shapes_layer) is None
     assert adapter.layer_bindings.get_binding(external_layer) is None
+
+
+def test_viewer_adapter_create_empty_primary_shapes_layer_registers_and_styles_layer(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    layer = adapter.create_empty_primary_shapes_layer(sdata_blobs, "new_regions", "global")
+
+    assert list(viewer.layers) == [layer]
+    assert isinstance(layer, Shapes)
+    assert layer.name == "new_regions"
+    assert len(layer.data) == 0
+    assert layer.ndim == 2
+    assert layer.current_edge_width == 1
+    np.testing.assert_allclose(to_rgba(layer.current_edge_color), to_rgba("#00FFFF"))
+    np.testing.assert_allclose(to_rgba(layer.current_face_color), to_rgba("#00000000"))
+    assert layer.opacity == 0.8
+    assert hasattr(layer, _SHAPES_EDGE_WIDTH_SYNC_CALLBACK_ATTR)
+    assert hasattr(layer, _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR)
+
+    binding = adapter.layer_bindings.get_binding(layer)
+    assert isinstance(binding, ShapesLayerBinding)
+    assert binding.element_name == "new_regions"
+    assert binding.coordinate_system == "global"
+    assert binding.shapes_role == "primary"
+    assert binding.shapes_rendering_mode == "shapes"
+    assert binding.style_spec is None
 
 
 def test_viewer_adapter_remove_layers_for_sdata_removes_only_matching_registered_layers(sdata_blobs) -> None:

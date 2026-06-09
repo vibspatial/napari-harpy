@@ -194,6 +194,7 @@ def test_build_primary_shapes_loaded_card_spec_reports_skipped_geometries() -> N
         palette_source=None,
         coercion_applied=False,
         skipped_geometry_count=2,
+        shapes_rendering_mode="shapes",
     )
 
     spec = build_primary_shapes_loaded_card_spec(request, result)
@@ -217,6 +218,7 @@ def test_build_styled_shapes_card_spec_combines_palette_and_geometry_warnings() 
         palette_source="default_missing",
         coercion_applied=False,
         skipped_geometry_count=1,
+        shapes_rendering_mode="shapes",
     )
 
     spec = build_styled_shapes_card_spec(request, result)
@@ -243,6 +245,7 @@ def test_build_styled_shapes_card_spec_formats_table_obs_source() -> None:
         skipped_geometry_count=0,
         unannotated_source_shape_count=0,
         unannotated_rendered_shape_count=0,
+        shapes_rendering_mode="shapes",
     )
 
     spec = build_styled_shapes_card_spec(request, result)
@@ -268,6 +271,7 @@ def test_build_styled_shapes_card_spec_formats_table_x_source() -> None:
         skipped_geometry_count=0,
         unannotated_source_shape_count=0,
         unannotated_rendered_shape_count=0,
+        shapes_rendering_mode="shapes",
     )
 
     spec = build_styled_shapes_card_spec(request, result)
@@ -290,6 +294,7 @@ def test_build_styled_shapes_card_spec_reports_table_backed_instance_coloring() 
         skipped_geometry_count=0,
         unannotated_source_shape_count=0,
         unannotated_rendered_shape_count=0,
+        shapes_rendering_mode="shapes",
     )
 
     spec = build_styled_shapes_card_spec(request, result)
@@ -315,6 +320,7 @@ def test_build_styled_shapes_card_spec_reports_partial_table_coverage_as_info() 
         skipped_geometry_count=0,
         unannotated_source_shape_count=1,
         unannotated_rendered_shape_count=2,
+        shapes_rendering_mode="shapes",
     )
 
     spec = build_styled_shapes_card_spec(request, result)
@@ -340,6 +346,7 @@ def test_build_styled_shapes_card_spec_uses_tooltip_for_shortened_names() -> Non
         palette_source=None,
         coercion_applied=False,
         skipped_geometry_count=0,
+        shapes_rendering_mode="shapes",
     )
 
     spec = build_styled_shapes_card_spec(request, result)

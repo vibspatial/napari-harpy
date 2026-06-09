@@ -32,6 +32,7 @@ class UserClassAnnotationChange:
 
     instance_id: int
     class_id: int
+    user_class_was_available_as_color_source: bool = True
 
 
 @dataclass(frozen=True)
@@ -319,12 +320,14 @@ class AnnotationController:
             logger.warning(message)
             return message
 
+        user_class_was_available_as_color_source = USER_CLASS_COLUMN in state.table.obs
         set_user_class_for_rows(state.table, matching_rows, int(class_id))
         if self._on_annotation_changed is not None:
             self._on_annotation_changed(
                 UserClassAnnotationChange(
                     instance_id=int(state.instance_id),
                     class_id=int(class_id),
+                    user_class_was_available_as_color_source=user_class_was_available_as_color_source,
                 )
             )
         return None

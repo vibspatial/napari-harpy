@@ -8,7 +8,6 @@ from pandas.api.types import is_bool_dtype, is_numeric_dtype, is_object_dtype, i
 from qtpy.QtCore import QSignalBlocker, Qt
 from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import (
-    QComboBox,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -22,9 +21,11 @@ from qtpy.QtWidgets import (
 from spatialdata import read_zarr
 
 from napari_harpy._app_state import (
+    ClassificationTableWrittenEvent,
     CoordinateSystemChangedEvent,
     FeatureMatrixWrittenEvent,
     HarpyAppState,
+    ShapesElementWrittenEvent,
     get_or_create_app_state,
 )
 from napari_harpy._resources import get_logo_path
@@ -44,10 +45,12 @@ from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     WIDGET_MIN_WIDTH,
     WIDGET_TEXT_COLOR,
+    CompactComboBox,
     StatusCardKind,
     apply_scroll_content_surface,
     apply_widget_surface,
     create_form_label,
+    format_feedback_identifier,
     set_status_card,
 )
 from napari_harpy.widgets.viewer.disclosure import _CollapsibleSectionWidget, _DisclosureElementWidget
@@ -69,12 +72,14 @@ from napari_harpy.widgets.viewer.status_card import (
 from napari_harpy.widgets.viewer.styles import (
     EMPTY_STATE_STYLESHEET,
     INPUT_CONTROL_STYLESHEET,
-    SUMMARY_LABEL_STYLESHEET,
 )
 
 if TYPE_CHECKING:
     import napari
     from spatialdata import SpatialData
+
+
+_SUMMARY_COORDINATE_SYSTEM_MAX_LENGTH = 32
 
 
 class ViewerWidget(QWidget):
@@ -142,14 +147,13 @@ class ViewerWidget(QWidget):
         self.summary_label = QLabel("No SpatialData loaded.")
         self.summary_label.setObjectName("viewer_widget_summary")
         self.summary_label.setWordWrap(True)
-        self.summary_label.setStyleSheet(SUMMARY_LABEL_STYLESHEET)
 
         selector_layout = QFormLayout()
         selector_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         selector_layout.setHorizontalSpacing(12)
         selector_layout.setVerticalSpacing(10)
 
-        self.coordinate_system_combo = QComboBox()
+        self.coordinate_system_combo = CompactComboBox()
         self.coordinate_system_combo.setObjectName("viewer_widget_coordinate_system_combo")
         self.coordinate_system_combo.currentIndexChanged.connect(self._on_coordinate_system_changed)
         self.coordinate_system_combo.setStyleSheet(INPUT_CONTROL_STYLESHEET)
@@ -262,6 +266,11 @@ class ViewerWidget(QWidget):
         # Feature extraction can create new annotating tables; refresh Viewer
         # linked-table choices when that happens in the active sdata.
         self._app_state.feature_matrix_written.connect(self._on_feature_matrix_written)
+        # Object classification can add/update colorable table columns.
+        self._app_state.classification_table_written.connect(self._on_classification_table_written)
+        # Annotation can create/update shapes elements inside the active sdata;
+        # refresh only the Viewer shapes section when that happens.
+        self._app_state.shapes_element_written.connect(self._on_shapes_element_written)
         self.refresh_from_sdata(self._app_state.sdata)
 
     @property
@@ -328,6 +337,27 @@ class ViewerWidget(QWidget):
         self._refresh_labels_card_linked_tables()
         self._refresh_shapes_card_linked_tables()
 
+    def _on_classification_table_written(self, event: object) -> None:
+        """Refresh table color-source controls after classification table writes."""
+        if not isinstance(event, ClassificationTableWrittenEvent):
+            return
+        if event.sdata is not self._app_state.sdata:
+            return
+
+        self._refresh_labels_card_linked_tables()
+        self._refresh_shapes_card_linked_tables()
+
+    def _on_shapes_element_written(self, event: object) -> None:
+        """Refresh the shapes section after same-session annotation writes."""
+        if not isinstance(event, ShapesElementWrittenEvent):
+            return
+        if event.sdata is not self._app_state.sdata:
+            return
+        if event.coordinate_system != self._app_state.coordinate_system:
+            return
+
+        self._refresh_shapes_section()
+
     def _open_spatialdata(self, _checked: bool = False) -> None:
         selected_path = QFileDialog.getExistingDirectory(
             self,
@@ -358,7 +388,12 @@ class ViewerWidget(QWidget):
 
             if sdata is None:
                 self.empty_state_label.show()
-                self.summary_label.setText("No SpatialData loaded.")
+                set_status_card(
+                    self.summary_label,
+                    title="No SpatialData Loaded",
+                    lines=["No SpatialData loaded."],
+                    kind="info",
+                )
                 self.coordinate_system_combo.setEnabled(False)
                 self._clear_cards()
                 self._update_section_empty_states([], [], [], [])
@@ -382,9 +417,19 @@ class ViewerWidget(QWidget):
             self._clear_cards()
             self._update_section_empty_states([], [], [], [])
             if sdata is None:
-                self.summary_label.setText("No SpatialData loaded.")
+                set_status_card(
+                    self.summary_label,
+                    title="No SpatialData Loaded",
+                    lines=["No SpatialData loaded."],
+                    kind="info",
+                )
             else:
-                self.summary_label.setText("No coordinate system selected.")
+                set_status_card(
+                    self.summary_label,
+                    title="Current View",
+                    lines=["No coordinate system selected."],
+                    kind="info",
+                )
             return
 
         labels_names = _get_labels_in_coordinate_system(sdata, coordinate_system)
@@ -392,16 +437,71 @@ class ViewerWidget(QWidget):
         shapes_names = _get_shapes_in_coordinate_system(sdata, coordinate_system)
         points_names = _get_points_in_coordinate_system(sdata, coordinate_system)
 
-        self.summary_label.setText(
-            f'In coordinate system "{coordinate_system}": '
-            f"{len(image_names)} image element(s), {len(labels_names)} labels element(s), "
-            f"{len(shapes_names)} shapes element(s), and {len(points_names)} points element(s)."
+        self._set_coordinate_system_summary(
+            coordinate_system,
+            image_names=image_names,
+            labels_names=labels_names,
+            shapes_names=shapes_names,
+            points_names=points_names,
         )
         self._rebuild_image_cards(sdata, image_names)
         self._rebuild_labels_cards(sdata, labels_names)
         self._rebuild_shapes_cards(sdata, shapes_names)
         self._refresh_points_section(sdata, points_names)
         self._update_section_empty_states(image_names, labels_names, shapes_names, points_names)
+
+    def _refresh_shapes_section(self) -> None:
+        sdata = self._app_state.sdata
+        coordinate_system = self._app_state.coordinate_system
+        if sdata is None or not coordinate_system:
+            return
+
+        image_names = _get_images_in_coordinate_system(sdata, coordinate_system)
+        labels_names = _get_labels_in_coordinate_system(sdata, coordinate_system)
+        shapes_names = _get_shapes_in_coordinate_system(sdata, coordinate_system)
+        points_names = _get_points_in_coordinate_system(sdata, coordinate_system)
+
+        self._set_coordinate_system_summary(
+            coordinate_system,
+            image_names=image_names,
+            labels_names=labels_names,
+            shapes_names=shapes_names,
+            points_names=points_names,
+        )
+        self._rebuild_shapes_cards(sdata, shapes_names)
+        self.shapes_group.set_count(len(shapes_names))
+        self.shapes_empty_label.setVisible(not shapes_names)
+        self.shapes_section.setVisible(bool(shapes_names))
+
+    def _set_coordinate_system_summary(
+        self,
+        coordinate_system: str,
+        *,
+        image_names: list[str],
+        labels_names: list[str],
+        shapes_names: list[str],
+        points_names: list[str],
+    ) -> None:
+        display_coordinate_system, coordinate_system_shortened = format_feedback_identifier(
+            coordinate_system,
+            max_length=_SUMMARY_COORDINATE_SYSTEM_MAX_LENGTH,
+        )
+        full_summary = (
+            f'In coordinate system "{coordinate_system}": '
+            f"{len(image_names)} image element(s), {len(labels_names)} labels element(s), "
+            f"{len(shapes_names)} shapes element(s), and {len(points_names)} points element(s)."
+        )
+        set_status_card(
+            self.summary_label,
+            title="Current View",
+            lines=[
+                f'"{display_coordinate_system}": '
+                f"{len(image_names)} image element(s), {len(labels_names)} labels element(s), "
+                f"{len(shapes_names)} shapes element(s), and {len(points_names)} points element(s)."
+            ],
+            kind="info",
+            tooltip_message=full_summary if coordinate_system_shortened else None,
+        )
 
     def _rebuild_image_cards(self, sdata: SpatialData, image_names: list[str]) -> None:
         _clear_layout(self.images_section_layout)

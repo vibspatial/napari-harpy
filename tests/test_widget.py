@@ -24,7 +24,7 @@ import napari_harpy.widgets.object_classification.annotation_controller as annot
 import napari_harpy.widgets.object_classification.controller as classifier_module
 import napari_harpy.widgets.object_classification.widget as widget_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
-from napari_harpy._app_state import FeatureMatrixWrittenEvent, get_or_create_app_state
+from napari_harpy._app_state import ClassificationTableWrittenEvent, FeatureMatrixWrittenEvent, get_or_create_app_state
 from napari_harpy.core.annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
 from napari_harpy.core.class_palette import default_class_colors
 from napari_harpy.core.classifier_export import DEFAULT_CLASSIFIER_EXPORT_SUFFIX, read_classifier_export_bundle
@@ -1484,6 +1484,8 @@ def test_widget_applies_user_class_to_picked_instance(qtbot, sdata_blobs: Spatia
     widget = HarpyWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
+    emitted_events: list[object] = []
+    widget.app_state.classification_table_written.connect(emitted_events.append)
 
     layer.selected_label = 5
     widget.class_spinbox.setValue(3)
@@ -1501,6 +1503,39 @@ def test_widget_applies_user_class_to_picked_instance(qtbot, sdata_blobs: Spatia
     assert "adata" not in layer.metadata
     assert "Current class: 3." in widget.selection_status.text()
     assert "Assigned class 3" in widget.annotation_feedback.text()
+    assert emitted_events == [
+        ClassificationTableWrittenEvent(
+            sdata=sdata_blobs,
+            table_name="table",
+            columns=(USER_CLASS_COLUMN,),
+            source="object_classification_widget",
+        )
+    ]
+
+
+def test_widget_does_not_emit_table_written_when_user_class_is_already_color_source(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs["table"]
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical([0] * table.n_obs, categories=[0])
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+    emitted_events: list[object] = []
+    widget.app_state.classification_table_written.connect(emitted_events.append)
+
+    layer.selected_label = 5
+    widget.class_spinbox.setValue(3)
+    widget.apply_class_button.click()
+
+    mask = (table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5)
+
+    assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
+    assert emitted_events == []
 
 
 def test_widget_apply_shortcut_applies_user_class_to_picked_instance(qtbot, sdata_blobs: SpatialData) -> None:
@@ -2435,6 +2470,8 @@ def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs:
     widget = HarpyWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
+    emitted_events: list[object] = []
+    widget.app_state.classification_table_written.connect(emitted_events.append)
     widget.auto_train_checkbox.setChecked(True)
 
     layer.selected_label = 1
@@ -2446,6 +2483,14 @@ def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs:
     widget.apply_class_button.click()
 
     qtbot.waitUntil(lambda: table.obs[PRED_CLASS_COLUMN].astype("string").ne("0").any(), timeout=5000)
+    qtbot.waitUntil(
+        lambda: any(
+            isinstance(event, ClassificationTableWrittenEvent)
+            and event.columns == (PRED_CLASS_COLUMN, PRED_CONFIDENCE_COLUMN)
+            for event in emitted_events
+        ),
+        timeout=5000,
+    )
 
     pred_class = table.obs.set_index("instance_id")[PRED_CLASS_COLUMN]
     assert isinstance(table.obs[PRED_CLASS_COLUMN].dtype, pd.CategoricalDtype)
@@ -2456,6 +2501,12 @@ def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs:
     assert "adata" not in layer.metadata
     assert "model is up to date" in widget.classifier_feedback.text()
     assert table.uns[CLASSIFIER_CONFIG_KEY]["trained"] is True
+    assert ClassificationTableWrittenEvent(
+        sdata=sdata_blobs,
+        table_name="table",
+        columns=(PRED_CLASS_COLUMN, PRED_CONFIDENCE_COLUMN),
+        source="object_classification_widget",
+    ) in emitted_events
 
 
 def test_widget_colors_predictions_using_pred_class_palette_in_pred_class_mode(qtbot, sdata_blobs: SpatialData) -> None:

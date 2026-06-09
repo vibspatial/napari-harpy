@@ -1,0 +1,2 @@
+"""Shapes annotation widget package."""
+

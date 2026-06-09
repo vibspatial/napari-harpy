@@ -10,9 +10,11 @@ import napari_harpy._interactive as interactive_module
 import napari_harpy.widgets.object_classification.widget as object_widget_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
 from napari_harpy._app_state import (
+    ClassificationTableWrittenEvent,
     CoordinateSystemChangedEvent,
     FeatureMatrixWrittenEvent,
     HarpyAppState,
+    ShapesElementWrittenEvent,
     get_or_create_app_state,
 )
 from napari_harpy.widgets.feature_extraction.widget import FeatureExtractionWidget
@@ -163,6 +165,37 @@ def test_harpy_app_state_emits_feature_matrix_written_and_marks_table_dirty(qtbo
     state.clear_table_dirty(sdata_blobs, "table")
 
     assert state.is_table_dirty(sdata_blobs, "table") is False
+
+
+def test_harpy_app_state_emits_shapes_element_written(qtbot, sdata_blobs) -> None:
+    state = HarpyAppState()
+    event = ShapesElementWrittenEvent(
+        sdata=sdata_blobs,
+        shapes_name="new_regions",
+        coordinate_system="global",
+    )
+
+    with qtbot.waitSignal(state.shapes_element_written) as blocker:
+        state.emit_shapes_element_written(event)
+
+    assert blocker.args == [event]
+
+
+def test_harpy_app_state_emits_classification_table_written_and_marks_table_dirty(qtbot, sdata_blobs) -> None:
+    state = HarpyAppState()
+    event = ClassificationTableWrittenEvent(
+        sdata=sdata_blobs,
+        table_name="table",
+        columns=("user_class",),
+    )
+
+    assert state.is_table_dirty(sdata_blobs, "table") is False
+
+    with qtbot.waitSignal(state.classification_table_written) as blocker:
+        state.emit_classification_table_written(event)
+
+    assert blocker.args == [event]
+    assert state.is_table_dirty(sdata_blobs, "table") is True
 
 
 def test_harpy_app_state_set_coordinate_system_emits_event_and_prunes_layers(qtbot, monkeypatch, sdata_blobs) -> None:
@@ -418,6 +451,7 @@ def test_interactive_headless_sets_sdata_without_running_event_loop(monkeypatch,
         ("napari-harpy", "Viewer", True),
         ("napari-harpy", "Feature Extraction", True),
         ("napari-harpy", "Object Classification", True),
+        ("napari-harpy", "Annotation", True),
     ]
 
 
@@ -439,6 +473,21 @@ def test_interactive_can_dock_a_single_widget(monkeypatch, sdata_blobs) -> None:
     assert viewer.window.calls == [("napari-harpy", "Viewer", True)]
 
 
+def test_interactive_can_dock_shapes_annotation_widget(monkeypatch, sdata_blobs) -> None:
+    viewer = DummyViewer()
+
+    monkeypatch.setattr(interactive_module.napari, "run", lambda: None)
+
+    interactive_module.Interactive(
+        sdata_blobs,
+        viewer=viewer,
+        headless=True,
+        widgets="shapes_annotation",
+    )
+
+    assert viewer.window.calls == [("napari-harpy", "Annotation", True)]
+
+
 def test_interactive_can_dock_a_widget_subset(monkeypatch, sdata_blobs) -> None:
     viewer = DummyViewer()
 
@@ -448,12 +497,32 @@ def test_interactive_can_dock_a_widget_subset(monkeypatch, sdata_blobs) -> None:
         sdata_blobs,
         viewer=viewer,
         headless=True,
-        widgets=("feature_extraction", "object_classification", "feature_extraction"),
+        widgets=("viewer", "shapes_annotation", "viewer"),
     )
 
     assert viewer.window.calls == [
+        ("napari-harpy", "Viewer", True),
+        ("napari-harpy", "Annotation", True),
+    ]
+
+
+def test_interactive_all_docks_every_harpy_widget(monkeypatch, sdata_blobs) -> None:
+    viewer = DummyViewer()
+
+    monkeypatch.setattr(interactive_module.napari, "run", lambda: None)
+
+    interactive_module.Interactive(
+        sdata_blobs,
+        viewer=viewer,
+        headless=True,
+        widgets="all",
+    )
+
+    assert viewer.window.calls == [
+        ("napari-harpy", "Viewer", True),
         ("napari-harpy", "Feature Extraction", True),
         ("napari-harpy", "Object Classification", True),
+        ("napari-harpy", "Annotation", True),
     ]
 
 
@@ -478,7 +547,7 @@ def test_interactive_rejects_unknown_widget_selection(monkeypatch, sdata_blobs) 
 
     monkeypatch.setattr(interactive_module.napari, "run", lambda: None)
 
-    with pytest.raises(ValueError, match="Unknown Harpy widget selection 'features'"):
+    with pytest.raises(ValueError, match=r"Unknown Harpy widget selection 'features'.*shapes_annotation"):
         interactive_module.Interactive(
             sdata_blobs,
             viewer=viewer,
@@ -504,4 +573,5 @@ def test_interactive_auto_runs_and_reuses_existing_plugin_widgets(monkeypatch, s
         ("napari-harpy", "Viewer", True),
         ("napari-harpy", "Feature Extraction", True),
         ("napari-harpy", "Object Classification", True),
+        ("napari-harpy", "Annotation", True),
     ]

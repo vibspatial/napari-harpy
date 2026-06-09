@@ -5,6 +5,7 @@ import sys
 import textwrap
 from importlib.resources import files
 
+import yaml
 from spatialdata import read_zarr
 
 import napari_harpy
@@ -78,6 +79,19 @@ def test_representative_lazy_attributes_resolve() -> None:
 def test_manifest_is_packaged_with_the_plugin() -> None:
     manifest = files("napari_harpy").joinpath("napari.yaml")
     assert manifest.is_file()
+
+
+def test_manifest_contributes_shapes_annotation_widget() -> None:
+    manifest = files("napari_harpy").joinpath("napari.yaml")
+    data = yaml.safe_load(manifest.read_text())
+
+    commands = {command["id"]: command for command in data["contributions"]["commands"]}
+    widgets = {widget["display_name"]: widget for widget in data["contributions"]["widgets"]}
+
+    assert commands["napari-harpy.shapes_annotation"]["python_name"] == (
+        "napari_harpy.widgets.shapes_annotation.widget:ShapesAnnotation"
+    )
+    assert widgets["Annotation"]["command"] == "napari-harpy.shapes_annotation"
 
 
 def test_blobs_multi_region_builds_a_multi_region_table() -> None:

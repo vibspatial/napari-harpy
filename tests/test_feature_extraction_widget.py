@@ -58,6 +58,10 @@ def get_coordinate_system_checkbox(widget: FeatureExtractionWidget, coordinate_s
     return widget._coordinate_system_checkboxes[coordinate_system]
 
 
+def _tooltip_text(widget) -> str:
+    return unescape(widget.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+
+
 def check_coordinate_system(widget: FeatureExtractionWidget, coordinate_system: str) -> None:
     get_coordinate_system_checkbox(widget, coordinate_system).setChecked(True)
 
@@ -170,6 +174,41 @@ def test_feature_extraction_widget_seeds_from_shared_sdata_on_construction(
     assert not widget._triplet_card_widgets_by_coordinate_system
     assert "Choose Coordinate Systems" in widget.selection_status.text()
     assert widget.selected_spatialdata is sdata_blobs
+
+
+def test_feature_extraction_widget_shortens_long_coordinate_system_checkbox_names(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    coordinate_system = "global_long_coordinate_system_name_" + "x" * 80
+    monkeypatch.setattr(
+        feature_extraction_widget_module,
+        "get_coordinate_system_names_from_sdata",
+        lambda sdata: [coordinate_system],
+    )
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+
+    widget = FeatureExtractionWidget(viewer)
+    qtbot.addWidget(widget)
+
+    checkbox = get_coordinate_system_checkbox(widget, coordinate_system)
+    assert checkbox.text() != coordinate_system
+    assert "…" in checkbox.text()
+    assert coordinate_system in _tooltip_text(checkbox)
+
+    check_coordinate_system(widget, coordinate_system)
+
+    triplet_card = widget._triplet_card_widgets_by_coordinate_system[coordinate_system].container
+    assert triplet_card.title() != coordinate_system
+    assert "…" in triplet_card.title()
+    assert coordinate_system in _tooltip_text(triplet_card)
+
+    selection_status_text = unescape(widget.selection_status.text())
+    assert "Batch Incomplete" in selection_status_text
+    assert coordinate_system not in selection_status_text
+    assert "…" in selection_status_text
+    assert coordinate_system in _tooltip_text(widget.selection_status)
 
 
 def test_feature_extraction_widget_refreshes_when_shared_sdata_changes(

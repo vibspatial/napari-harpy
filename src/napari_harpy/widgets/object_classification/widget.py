@@ -23,6 +23,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_harpy._app_state import (
+    ClassificationTableWrittenEvent,
     CoordinateSystemChangedEvent,
     FeatureMatrixWrittenEvent,
     HarpyAppState,
@@ -30,7 +31,7 @@ from napari_harpy._app_state import (
 )
 from napari_harpy._persistence import PersistenceController
 from napari_harpy._resources import get_logo_path
-from napari_harpy.core.annotation import UNLABELED_CLASS
+from napari_harpy.core.annotation import UNLABELED_CLASS, USER_CLASS_COLUMN
 from napari_harpy.core.classifier_export import DEFAULT_CLASSIFIER_EXPORT_SUFFIX
 from napari_harpy.core.spatialdata import (
     SpatialDataLabelsOption,
@@ -49,6 +50,8 @@ from napari_harpy.widgets.object_classification.annotation_controller import (
 from napari_harpy.widgets.object_classification.controller import (
     DEFAULT_PREDICTION_SCOPE,
     DEFAULT_TRAINING_SCOPE,
+    PRED_CLASS_COLUMN,
+    PRED_CONFIDENCE_COLUMN,
     ClassifierController,
     ClassifierScopeMode,
 )
@@ -728,6 +731,8 @@ class ObjectClassificationWidget(QWidget):
 
     def _on_coordinate_system_changed(self, index: int) -> None:
         coordinate_system = self.coordinate_system_combo.itemData(index)
+        # Publish the UI choice to shared app state. `_on_app_state_coordinate_system_changed(...)`
+        # owns local selection and downstream refresh so all sources follow one path.
         self._app_state.set_coordinate_system(
             coordinate_system if isinstance(coordinate_system, str) else None,
             source="object_classification_widget",
@@ -1513,6 +1518,12 @@ class ObjectClassificationWidget(QWidget):
 
     def _on_annotation_changed(self, change: UserClassAnnotationChange) -> None:
         self._mark_persistence_dirty()
+        # Only notify the Viewer when this annotation made `user_class`
+        # available as a new color source. Later edits only change values, and
+        # the row-scoped refresh below keeps the active labels layer in sync
+        # without rebuilding Viewer labels cards for each add/remove edit.
+        if not change.user_class_was_available_as_color_source:
+            self._emit_classification_table_written(columns=(USER_CLASS_COLUMN,))
         self._classifier_controller.mark_dirty(reason="the annotations changed")
         self._refresh_after_user_class_annotation(change)
         if self._auto_train_enabled:
@@ -1529,6 +1540,7 @@ class ObjectClassificationWidget(QWidget):
     def _on_classifier_prediction_state_changed(self) -> None:
         # Prediction changes are the classifier-owned table changes that affect
         # labels-layer coloring/features.
+        self._emit_classification_table_written(columns=(PRED_CLASS_COLUMN, PRED_CONFIDENCE_COLUMN))
         self._refresh_layer_styling()
 
     def _on_classifier_state_changed(self) -> None:
@@ -1626,6 +1638,19 @@ class ObjectClassificationWidget(QWidget):
     def _mark_persistence_dirty(self) -> None:
         self._persistence_controller.mark_dirty()
         self._set_persistence_feedback("")
+
+    def _emit_classification_table_written(self, *, columns: tuple[str, ...]) -> None:
+        if self.selected_spatialdata is None or self.selected_table_name is None or self._table_binding_error is not None:
+            return
+
+        self._app_state.emit_classification_table_written(
+            ClassificationTableWrittenEvent(
+                sdata=self.selected_spatialdata,
+                table_name=self.selected_table_name,
+                columns=columns,
+                source="object_classification_widget",
+            )
+        )
 
     def _selected_table_store_destination(self) -> Path | str | None:
         table_store_path = self._persistence_controller.selected_table_store_path
