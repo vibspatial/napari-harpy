@@ -215,6 +215,9 @@ Identity rules:
 - existing rows must keep their source index values across saves;
 - new rows drawn during the edit session get generated IDs only if they are
   missing a source index value;
+- generated IDs for new rows should use the existing create-new convention,
+  for example `shape_0`, `shape_1`, ...;
+- generated IDs must avoid collisions with all existing source index values;
 - deleted rows disappear on save;
 - duplicate custom/manual IDs remain invalid.
 
@@ -223,6 +226,47 @@ from:
 
 - create-new starts with no source rows and generates `shape_0`, `shape_1`, ...;
 - edit-existing starts from the existing shapes element index and preserves it.
+
+Index-name rules:
+
+- preserve the original GeoDataFrame index name when saving the edited element;
+- do not blindly use the napari feature column name as the saved GeoDataFrame
+  index name;
+- track both:
+
+  ```python
+  source_index_feature_name: str
+  source_geodataframe_index_name: str | None
+  ```
+
+- `source_index_feature_name` is the napari `layer.features` column that stores
+  row identity for editing and status display;
+- `source_geodataframe_index_name` is the name to restore on the saved
+  GeoDataFrame index.
+
+This distinction matters for unnamed GeoDataFrame indexes. The viewer currently
+stores unnamed source indexes in `layer.features["index"]` so napari can display
+and track them, but saving the edited element should restore
+`geodataframe.index.name is None`, not accidentally rename the index to
+`"index"`.
+
+Example:
+
+```python
+# Source element before editing:
+source.index.name is None
+source.index == ["cell_1", "cell_2"]
+
+# Editable napari layer:
+layer.features["index"] == ["cell_1", "cell_2"]
+
+# After the user draws one new polygon:
+layer.features["index"] == ["cell_1", "cell_2", "shape_0"]
+
+# Saved edited element:
+saved.index.name is None
+saved.index == ["cell_1", "cell_2", "shape_0"]
+```
 
 ## Open Specification Questions
 
