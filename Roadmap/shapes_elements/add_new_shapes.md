@@ -1279,7 +1279,99 @@ Tests:
   Classification, and Annotation;
 - unknown-widget error text includes `"shapes_annotation"` among valid options.
 
-### Slice 8: Backed Persistence Verification
+### Slice 8: Viewer Refresh On Annotation Save
+
+Status: proposed
+
+Purpose:
+
+- make the Viewer widget react when the Annotation widget creates or updates a
+  shapes element;
+- keep cross-widget synchronization routed through `HarpyAppState`, not direct
+  widget-to-widget references;
+- ensure newly saved shapes elements become visible in the Viewer widget's
+  element lists without requiring the user to reload `sdata`.
+
+Code:
+
+- add a small app-state event model, for example:
+
+  ```python
+  ShapesElementWrittenEvent
+  ```
+
+- add a `HarpyAppState` signal such as:
+
+  ```python
+  shapes_element_written = Signal(object)
+  ```
+
+- add a helper on `HarpyAppState`, for example:
+
+  ```python
+  emit_shapes_element_written(event)
+  ```
+
+- after a successful Annotation-widget save, emit the event with:
+  - `sdata`;
+  - `shapes_name`;
+  - `coordinate_system`;
+  - whether the save created or updated the locked element;
+  - `source="shapes_annotation_widget"`;
+- make `ViewerWidget` listen to the app-state signal;
+- when the event matches the viewer's current `sdata`, refresh the Viewer
+  widget's element summaries/cards for the current coordinate system;
+- avoid emitting `sdata_changed`, because the `SpatialData` object identity did
+  not change;
+- extend app-state, viewer-widget, and annotation-widget tests.
+
+Behavior:
+
+- first save from the Annotation widget emits a shapes-element-written event
+  with change kind `created`;
+- later saves from the same locked annotation layer emit change kind `updated`;
+- Viewer widget refreshes its shapes section when the event refers to the
+  current `sdata`;
+- Viewer widget ignores events for a different `SpatialData` object;
+- Viewer widget should preserve the current coordinate-system selection while
+  refreshing the displayed element lists;
+- if the saved shapes element is in the currently selected coordinate system,
+  it should appear in the Viewer widget's shapes section after the save;
+- this event does not automatically load the newly saved shapes layer into the
+  napari viewer. It only refreshes Viewer widget availability/status so the user
+  can choose to add/update it from the Viewer widget if desired;
+- Object Classification and Feature Extraction widgets do not need to react in
+  this slice.
+
+Rationale:
+
+- `sdata_changed` is too broad because saving a new shapes element mutates the
+  existing `SpatialData` object rather than replacing it;
+- a dedicated event keeps save feedback and viewer refresh synchronized without
+  coupling the Annotation widget to the Viewer widget implementation;
+- this mirrors the existing app-state pattern used for cross-widget feature
+  matrix writes.
+
+Acceptance:
+
+- saving a new shapes element from Annotation causes Viewer widget state to
+  refresh;
+- repeated saves also notify Viewer widget state;
+- Viewer widget ignores events for other `SpatialData` objects;
+- current coordinate-system selection is preserved;
+- no napari layer is loaded automatically by the event;
+- tests cover the event emission and viewer refresh path.
+
+Tests:
+
+- `HarpyAppState` exposes and emits a shapes-element-written event;
+- Annotation-widget first save emits `created`;
+- Annotation-widget repeated save emits `updated`;
+- Viewer widget listens to the event and refreshes its shapes section;
+- Viewer widget ignores events for a non-current `sdata`;
+- save notification does not call viewer-adapter layer loading APIs.
+
+### Slice 9: Backed Persistence Verification
 
 Status: proposed
 
