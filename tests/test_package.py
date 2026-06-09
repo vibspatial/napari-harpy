@@ -91,7 +91,7 @@ def test_manifest_contributes_shapes_annotation_widget() -> None:
     assert commands["napari-harpy.shapes_annotation"]["python_name"] == (
         "napari_harpy.widgets.shapes_annotation.widget:ShapesAnnotation"
     )
-    assert widgets["Shapes Annotation"]["command"] == "napari-harpy.shapes_annotation"
+    assert widgets["Annotation"]["command"] == "napari-harpy.shapes_annotation"
 
 
 def test_blobs_multi_region_builds_a_multi_region_table() -> None:

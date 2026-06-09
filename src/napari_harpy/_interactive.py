@@ -10,7 +10,7 @@ from napari_harpy._app_state import HarpyAppState, get_or_create_app_state
 if TYPE_CHECKING:
     from spatialdata import SpatialData
 
-HarpyWidgetId: TypeAlias = Literal["viewer", "feature_extraction", "object_classification"]
+HarpyWidgetId: TypeAlias = Literal["viewer", "feature_extraction", "object_classification", "shapes_annotation"]
 HarpyWidgetSelection: TypeAlias = Literal["all"] | HarpyWidgetId | Sequence[HarpyWidgetId]
 
 
@@ -30,10 +30,10 @@ class Interactive:
         If True, initialize state and dock widgets without starting the napari
         event loop.
     widgets
-        Which Harpy dock widgets to open. Possible values are ``"all"``,
-        ``"viewer"``, ``"feature_extraction"``, and
-        ``"object_classification"``. Pass a tuple of widget ids to open a
-        subset.
+        Which Harpy dock widgets to open. Defaults to ``"all"``. Possible
+        values are ``"all"``, ``"viewer"``, ``"feature_extraction"``,
+        ``"object_classification"``, and ``"shapes_annotation"``. Pass a tuple
+        of widget ids to open a subset. ``"all"`` opens every Harpy widget.
     """
 
     _PLUGIN_NAME = "napari-harpy"
@@ -41,11 +41,13 @@ class Interactive:
         "viewer": "Viewer",
         "feature_extraction": "Feature Extraction",
         "object_classification": "Object Classification",
+        "shapes_annotation": "Annotation",
     }
-    _DEFAULT_WIDGET_IDS: tuple[HarpyWidgetId, ...] = (
+    _ALL_WIDGET_IDS: tuple[HarpyWidgetId, ...] = (
         "viewer",
         "feature_extraction",
         "object_classification",
+        "shapes_annotation",
     )
 
     def __init__(
@@ -92,7 +94,7 @@ class Interactive:
     @classmethod
     def _normalize_widget_selection(cls, widgets: HarpyWidgetSelection) -> tuple[HarpyWidgetId, ...]:
         if widgets == "all":
-            return cls._DEFAULT_WIDGET_IDS
+            return cls._ALL_WIDGET_IDS
 
         if isinstance(widgets, str):
             cls._validate_widget_id(widgets)
