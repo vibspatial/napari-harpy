@@ -43,6 +43,7 @@ from napari_harpy.widgets.shared_styles import (
     apply_widget_surface,
     build_input_control_stylesheet,
     create_form_label,
+    format_feedback_identifier,
     set_status_card,
 )
 
@@ -55,6 +56,11 @@ if TYPE_CHECKING:
 _SOURCE = "shapes_annotation_widget"
 _INPUT_CONTROL_STYLESHEET = build_input_control_stylesheet("QComboBox, QLineEdit")
 _ANNOTATION_FIELD_MIN_WIDTH = 180
+_STATUS_IDENTIFIER_MAX_LENGTH = 32
+
+
+def _format_status_identifier(identifier: str) -> tuple[str, bool]:
+    return format_feedback_identifier(identifier, max_length=_STATUS_IDENTIFIER_MAX_LENGTH)
 
 
 class ShapesAnnotation(QWidget):
@@ -322,13 +328,20 @@ class ShapesAnnotation(QWidget):
                 source=_SOURCE,
             )
         )
+        visible_shapes_name, shapes_name_shortened = _format_status_identifier(result.shapes_name)
+        visible_coordinate_system, coordinate_system_shortened = _format_status_identifier(result.coordinate_system)
+        full_line = (
+            f'Saved "{result.shapes_name}" with {result.row_count} shape(s) '
+            f'in coordinate system "{result.coordinate_system}".'
+        )
         self._set_status(
             title="Shapes Saved",
             lines=[
-                f'Saved "{result.shapes_name}" with {result.row_count} shape(s) '
-                f'in coordinate system "{result.coordinate_system}".'
+                f'Saved "{visible_shapes_name}" with {result.row_count} shape(s) '
+                f'in coordinate system "{visible_coordinate_system}".'
             ],
             kind="success",
+            tooltip_lines=[full_line] if shapes_name_shortened or coordinate_system_shortened else None,
         )
 
     def _on_viewer_layer_removed(self, event: object) -> None:
@@ -417,20 +430,30 @@ class ShapesAnnotation(QWidget):
             return
 
         if shapes_name in sdata.shapes:
+            visible_shapes_name, shapes_name_shortened = _format_status_identifier(shapes_name)
+            full_line = f'Shapes element "{shapes_name}" already exists. Choose a different name.'
             self._set_status(
                 title="Name Already Exists",
-                lines=[f'Shapes element "{shapes_name}" already exists. Choose a different name.'],
+                lines=[f'Shapes element "{visible_shapes_name}" already exists. Choose a different name.'],
                 kind="warning",
+                tooltip_lines=[full_line] if shapes_name_shortened else None,
             )
             self.create_layer_button.setEnabled(False)
             self._refresh_save_shapes_state()
             return
 
         self._validated_shapes_name = shapes_name
+        visible_shapes_name, shapes_name_shortened = _format_status_identifier(shapes_name)
+        visible_coordinate_system, coordinate_system_shortened = _format_status_identifier(coordinate_system)
+        full_line = f'Create shapes layer "{shapes_name}" in coordinate system "{coordinate_system}".'
         self._set_status(
             title="Ready",
-            lines=[f'Create shapes layer "{shapes_name}" in coordinate system "{coordinate_system}".'],
+            lines=[
+                f'Create shapes layer "{visible_shapes_name}" '
+                f'in coordinate system "{visible_coordinate_system}".'
+            ],
             kind="info",
+            tooltip_lines=[full_line] if shapes_name_shortened or coordinate_system_shortened else None,
         )
         self.create_layer_button.setEnabled(True)
         self._refresh_save_shapes_state()
@@ -496,8 +519,16 @@ class ShapesAnnotation(QWidget):
             and getattr(binding, "source_shapes_index_feature_name", None) == DEFAULT_SHAPES_INDEX_NAME
         )
 
-    def _set_status(self, *, title: str, lines: list[str], kind: str) -> None:
-        set_status_card(self.status_label, title=title, lines=lines, kind=kind)
+    def _set_status(
+        self,
+        *,
+        title: str,
+        lines: list[str],
+        kind: str,
+        tooltip_lines: list[str] | None = None,
+    ) -> None:
+        tooltip_message = "\n".join(tooltip_lines) if tooltip_lines else None
+        set_status_card(self.status_label, title=title, lines=lines, kind=kind, tooltip_message=tooltip_message)
 
     def _confirm_discard_annotation_layer(self) -> bool:
         dialog = QDialog(self)

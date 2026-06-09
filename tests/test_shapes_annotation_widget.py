@@ -76,6 +76,10 @@ def _status_text(widget: ShapesAnnotation) -> str:
     return unescape(widget.status_label.text())
 
 
+def _tooltip_text(widget: ShapesAnnotation) -> str:
+    return unescape(widget.status_label.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+
+
 def _patch_coordinate_system_names(monkeypatch, coordinate_systems: list[str]) -> None:
     monkeypatch.setattr(
         shapes_annotation_widget_module,
@@ -244,6 +248,57 @@ def test_shapes_annotation_widget_validates_empty_invalid_and_duplicate_names(
     widget.name_edit.setText(existing_shapes_name)
     assert widget.create_layer_button.isEnabled() is False
     assert "Name Already Exists" in _status_text(widget)
+
+
+def test_shapes_annotation_widget_status_cards_shorten_long_identifiers(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    coordinate_system = "global_long_name_" + "x" * 80
+    shapes_name = "annotation_shapes_long_name_" + "y" * 80
+    _patch_coordinate_system_names(monkeypatch, [coordinate_system])
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    widget.name_edit.setText(shapes_name)
+
+    status = _status_text(widget)
+    assert "Ready" in status
+    assert shapes_name not in status
+    assert coordinate_system not in status
+    assert "…" in status
+    tooltip = _tooltip_text(widget)
+    assert shapes_name in tooltip
+    assert coordinate_system in tooltip
+
+    def fake_create_shapes_element(request, napari_layer):
+        del napari_layer
+        return CreateShapesElementResult(
+            shapes_name=request.shapes_name,
+            coordinate_system=request.coordinate_system,
+            row_count=2,
+        )
+
+    monkeypatch.setattr(
+        shapes_annotation_widget_module,
+        "create_shapes_element_from_napari_shapes_layer",
+        fake_create_shapes_element,
+    )
+    widget.create_layer_button.click()
+    widget.save_shapes_button.click()
+
+    status = _status_text(widget)
+    assert "Shapes Saved" in status
+    assert shapes_name not in status
+    assert coordinate_system not in status
+    assert "…" in status
+    tooltip = _tooltip_text(widget)
+    assert shapes_name in tooltip
+    assert coordinate_system in tooltip
 
 
 def test_shapes_annotation_widget_create_layer_adds_registered_active_empty_shapes_layer(

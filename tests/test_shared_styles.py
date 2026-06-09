@@ -1,6 +1,12 @@
+import pytest
 from qtpy.QtWidgets import QSizePolicy
 
-from napari_harpy.widgets.shared_styles import CompactComboBox, build_input_control_stylesheet, format_tooltip
+from napari_harpy.widgets.shared_styles import (
+    CompactComboBox,
+    build_input_control_stylesheet,
+    format_feedback_identifier,
+    format_tooltip,
+)
 
 
 def test_build_input_control_stylesheet_suffixes_each_selector_individually() -> None:
@@ -60,3 +66,16 @@ def test_format_tooltip_preserves_line_breaks_and_adds_soft_wrap_points() -> Non
     assert "max-width: 360px" in tooltip
     assert "_&#8203;" in tooltip
     assert "/&#8203;" in tooltip
+
+
+def test_format_feedback_identifier_respects_compact_max_length() -> None:
+    display_name, was_shortened = format_feedback_identifier("identifier_" + "x" * 80, max_length=32)
+
+    assert was_shortened is True
+    assert len(display_name) == 32
+    assert "…" in display_name
+
+
+def test_format_feedback_identifier_rejects_too_small_max_length() -> None:
+    with pytest.raises(ValueError, match="at least 4"):
+        format_feedback_identifier("identifier", max_length=3)

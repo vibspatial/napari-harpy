@@ -287,10 +287,12 @@ def format_feedback_text(message: str) -> str:
 
 def format_feedback_identifier(name: str, *, max_length: int = 56) -> tuple[str, bool]:
     """Return a visible identifier and whether it was shortened."""
+    if max_length < 4:
+        raise ValueError("`max_length` must be at least 4.")
     if len(name) <= max_length:
         return name, False
 
-    head_length = 32
+    head_length = min(32, max_length - 4)
     tail_length = max_length - head_length - 1
     return f"{name[:head_length]}…{name[-tail_length:]}", True
 
