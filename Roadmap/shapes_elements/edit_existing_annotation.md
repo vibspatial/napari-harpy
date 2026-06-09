@@ -268,6 +268,107 @@ saved.index.name is None
 saved.index == ["cell_1", "cell_2", "shape_0"]
 ```
 
+## Non-Geometry Column Rules
+
+Edit-existing should preserve non-geometry columns from the source shapes
+element.
+
+Rules:
+
+- existing rows preserve all non-geometry column values;
+- editing a row's geometry must not modify that row's metadata values;
+- deleted rows remove both geometry and metadata values;
+- newly added rows receive missing values for every copied non-geometry column;
+- missing values for newly added rows should use `pd.NA` where possible;
+- integer columns that need missing values should be converted to pandas
+  nullable integer dtypes, for example `int64` -> `Int64`;
+- boolean columns that need missing values should be converted to pandas
+  nullable boolean dtype;
+- categorical columns should keep their categories and use missing values for
+  new rows;
+- float columns may use regular `NaN`;
+- string/object columns may use `pd.NA`;
+- dtype changes must be deliberate and tested. Do not silently cast integer
+  metadata columns to float just because a new row has missing metadata.
+
+Example:
+
+```python
+# Source element before editing:
+source.index.name == "instance_id"
+source.index == ["cell_1", "cell_2"]
+source["class_id"] == [1, 2]  # int64
+source["name"] == ["a", "b"]
+
+# After user edits cell_1 geometry and draws one new polygon:
+saved.index == ["cell_1", "cell_2", "shape_0"]
+saved["class_id"] == [1, 2, pd.NA]  # nullable Int64, not float64
+saved["name"] == ["a", "b", pd.NA]
+```
+
+If preserving a source column's dtype is impossible or unsafe, the edit helper
+should fail with actionable feedback or document the intentional conversion.
+
+## Save Model
+
+Edit-existing saves should rebuild the full shapes element from the current
+napari layer state. They should not attempt partial row patching.
+
+Save behavior:
+
+- treat the editable napari layer as the source of truth for the edit session;
+- validate every current napari row before writing;
+- convert every current `layer.data` row back to Shapely geometry;
+- resolve row identity for every current napari row from
+  `layer.features[source_index_feature_name]`;
+- preserve non-geometry metadata for existing row identities;
+- assign generated IDs and missing metadata to newly added rows;
+- omit deleted rows from the rebuilt output;
+- construct one complete replacement `GeoDataFrame`;
+- restore `geodataframe.index.name` from `source_geodataframe_index_name`;
+- when `source_geodataframe_index_name is None`, keep the saved GeoDataFrame
+  index unnamed. Do not substitute `source_index_feature_name`;
+- write the complete replacement through `harpy.sh.add_shapes(...)` with
+  `overwrite=True`.
+
+Rationale:
+
+- napari does not provide a stable enough dirty-row contract for this workflow;
+- rows can be inserted, deleted, reordered, duplicated, or have copied feature
+  values;
+- a partial patch would need a separate edit journal or dirty-row model;
+- full replacement keeps the save behavior aligned with the existing
+  create-new workflow and backed persistence path.
+
+This means that even if the user only edits rows 5 and 7, the save helper still
+recalculates Shapely geometries for all rows currently present in the napari
+layer. Unchanged rows are expected to round-trip through napari geometry
+conversion.
+
+Conceptual save flow:
+
+```python
+geometries = convert_all_layer_rows_to_geometry(layer.data, layer.shape_type)
+row_ids = resolve_all_row_ids(layer.features[source_index_feature_name])
+metadata = align_source_metadata_to_row_ids(source_geodataframe, row_ids)
+edited = GeoDataFrame(metadata, geometry=geometries, index=row_ids)
+edited.index.name = source_geodataframe_index_name
+
+# `source_geodataframe_index_name` may be None for source elements whose index
+# was unnamed. In that case the saved index must remain unnamed.
+_ = hp.sh.add_shapes(
+    sdata,
+    input=edited,
+    output_shapes_name=shapes_name,
+    transformations={coordinate_system: Identity()},
+    instance_key=source_geodataframe_index_name,
+    overwrite=True,
+)
+```
+
+Tests must cover both named and unnamed source indexes so this save path does
+not drift from `index.name is None` to `index.name == "index"`.
+
 ## Open Specification Questions
 
 We should resolve these together before implementation:
