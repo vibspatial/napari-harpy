@@ -653,6 +653,30 @@ def test_shapes_annotation_widget_save_writes_real_shapes_element(
     assert "Shapes Saved" in _status_text(widget)
 
 
+def test_shapes_annotation_widget_keeps_ownership_when_viewer_adds_saved_primary_shapes(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
+    widget.create_layer_button.click()
+    layer = viewer.layers[0]
+    _add_polygon(layer)
+    widget.save_shapes_button.click()
+
+    result = widget.app_state.viewer_adapter.ensure_shapes_loaded(sdata_blobs, "new_regions", "global")
+
+    assert result.layer is layer
+    assert result.created is False
+    assert list(viewer.layers) == [layer]
+    assert widget._annotation_layer is layer
+    assert widget._annotation_shapes_name == "new_regions"
+    assert widget._annotation_coordinate_system == "global"
+    assert widget._annotation_has_been_saved is True
+    assert widget._annotation_layer_binding_matches()
+    assert widget.save_shapes_button.isEnabled() is True
+
+
 def test_shapes_annotation_widget_binding_mismatch_disables_save_without_calling_core(
     qtbot,
     monkeypatch,
