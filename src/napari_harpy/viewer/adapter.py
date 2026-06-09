@@ -1395,6 +1395,8 @@ class ViewerAdapter(QObject):
         sdata: SpatialData,
         shapes_name: str,
         coordinate_system: str,
+        *,
+        source_shapes_index_feature_name: str = DEFAULT_SHAPES_INDEX_FEATURE_NAME,
     ) -> Shapes:
         """Create and register an empty primary polygon shapes layer."""
         existing_layer = self._get_loaded_shapes_layer_for_coordinate_system(sdata, shapes_name, coordinate_system)
@@ -1403,7 +1405,10 @@ class ViewerAdapter(QObject):
                 f"Shapes layer `{shapes_name}` is already loaded in coordinate system `{coordinate_system}`."
             )
 
-        layer = _build_empty_primary_shapes_layer(name=shapes_name)
+        layer = _build_empty_primary_shapes_layer(
+            name=shapes_name,
+            source_shapes_index_feature_name=source_shapes_index_feature_name,
+        )
         _add_layer_to_viewer(self._viewer, layer)
         self.register_shapes_layer(
             layer,
@@ -1411,6 +1416,7 @@ class ViewerAdapter(QObject):
             shapes_name=shapes_name,
             coordinate_system=coordinate_system,
             shapes_rendering_mode="shapes",
+            source_shapes_index_feature_name=source_shapes_index_feature_name,
         )
         return layer
 
@@ -1978,11 +1984,16 @@ def _build_shapes_layer(
     )
 
 
-def _build_empty_primary_shapes_layer(*, name: str) -> _HarpyShapes:
+def _build_empty_primary_shapes_layer(
+    *,
+    name: str,
+    source_shapes_index_feature_name: str = DEFAULT_SHAPES_INDEX_FEATURE_NAME,
+) -> _HarpyShapes:
     layer = _HarpyShapes(
         [],
         ndim=2,
         name=name,
+        source_shapes_index_feature_name=source_shapes_index_feature_name,
         edge_color="#00FFFF",
         face_color="#00000000",
         edge_width=1,

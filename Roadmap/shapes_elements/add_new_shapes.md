@@ -989,7 +989,19 @@ Tests:
 
 ### Slice 6: Save Button And Feedback
 
-Status: proposed
+Status: implemented
+
+Implemented in:
+
+- `src/napari_harpy/widgets/shapes_annotation/widget.py`;
+- `src/napari_harpy/viewer/adapter.py`;
+- `tests/test_shapes_annotation_widget.py`.
+
+Verified with:
+
+- `.venv/bin/pytest tests/test_shapes_annotation.py tests/test_shapes_annotation_widget.py`;
+- `.venv/bin/pytest tests/test_viewer_adapter.py -k "empty_primary_shapes_layer or shapes"`;
+- `.venv/bin/ruff check src/napari_harpy/widgets/shapes_annotation/widget.py src/napari_harpy/viewer/adapter.py tests/test_shapes_annotation_widget.py`.
 
 Purpose:
 

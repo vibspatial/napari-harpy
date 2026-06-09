@@ -19,6 +19,12 @@ from qtpy.QtWidgets import (
 
 from napari_harpy._app_state import CoordinateSystemChangedEvent, HarpyAppState, get_or_create_app_state
 from napari_harpy._resources import get_logo_path
+from napari_harpy.core.shapes_annotation import (
+    DEFAULT_SHAPES_INDEX_NAME,
+    DEFAULT_SHAPES_INDEX_PREFIX,
+    CreateShapesElementRequest,
+    create_shapes_element_from_napari_shapes_layer,
+)
 from napari_harpy.core.spatialdata import get_coordinate_system_names_from_sdata
 from napari_harpy.core.validation import normalize_spatialdata_name
 from napari_harpy.widgets.shared_styles import (
@@ -62,6 +68,7 @@ class ShapesAnnotation(QWidget):
         self._annotation_layer: Shapes | None = None
         self._annotation_shapes_name: str | None = None
         self._annotation_coordinate_system: str | None = None
+        self._annotation_has_been_saved = False
         self._is_handling_coordinate_system_change = False
         self._logo_path = get_logo_path()
 
@@ -138,6 +145,7 @@ class ShapesAnnotation(QWidget):
         self.coordinate_system_combo.currentIndexChanged.connect(self._on_coordinate_system_changed)
         self.name_edit.textChanged.connect(self._on_shapes_name_changed)
         self.create_layer_button.clicked.connect(self._on_create_layer_clicked)
+        self.save_shapes_button.clicked.connect(self._on_save_shapes_clicked)
         layer_events = getattr(getattr(napari_viewer, "layers", None), "events", None)
         layer_removed_event = getattr(layer_events, "removed", None)
         layer_removed_connect = getattr(layer_removed_event, "connect", None)
@@ -246,18 +254,65 @@ class ShapesAnnotation(QWidget):
                 sdata,
                 shapes_name,
                 coordinate_system,
+                source_shapes_index_feature_name=DEFAULT_SHAPES_INDEX_NAME,
             )
         except ValueError as error:
             self._set_status(title="Could Not Create Layer", lines=[str(error)], kind="warning")
-            self._set_action_enabled(create_enabled=False)
+            self.create_layer_button.setEnabled(False)
+            self._refresh_save_shapes_state()
             return
 
         self._annotation_layer = layer
         self._annotation_shapes_name = shapes_name
         self._annotation_coordinate_system = coordinate_system
+        self._annotation_has_been_saved = False
         self.name_edit.setEnabled(False)
         self._app_state.viewer_adapter.activate_layer(layer)
         self._refresh_create_layer_state()
+
+    def _on_save_shapes_clicked(self) -> None:
+        self._refresh_save_shapes_state()
+        if not self.save_shapes_button.isEnabled():
+            return
+
+        sdata = self._app_state.sdata
+        layer = self._annotation_layer
+        shapes_name = self._annotation_shapes_name
+        coordinate_system = self._annotation_coordinate_system
+        if sdata is None or layer is None or shapes_name is None or coordinate_system is None:
+            return
+
+        # `self._annotation_has_been_saved` is the widget ownership boundary.
+        # Before the widget has saved once, `overwrite=False` protects against
+        # same-name elements created elsewhere. After a successful first save,
+        # repeated saves intentionally replace the locked widget-owned element
+        # name, even if external code changed that element in the meantime.
+        request = CreateShapesElementRequest(
+            sdata=sdata,
+            shapes_name=shapes_name,
+            coordinate_system=coordinate_system,
+            overwrite=self._annotation_has_been_saved,
+            index_name=DEFAULT_SHAPES_INDEX_NAME,
+            index_prefix=DEFAULT_SHAPES_INDEX_PREFIX,
+        )
+
+        try:
+            result = create_shapes_element_from_napari_shapes_layer(request, layer)
+        except ValueError as error:
+            self._refresh_save_shapes_state(update_status=False)
+            self._set_status(title="Could Not Save Shapes", lines=[str(error)], kind="warning")
+            return
+
+        self._annotation_has_been_saved = True
+        self._refresh_save_shapes_state(update_status=False)
+        self._set_status(
+            title="Shapes Saved",
+            lines=[
+                f'Saved "{result.shapes_name}" with {result.row_count} shape(s) '
+                f'in coordinate system "{result.coordinate_system}".'
+            ],
+            kind="success",
+        )
 
     def _on_viewer_layer_removed(self, event: object) -> None:
         # `_on_coordinate_system_changed(...)` removes the annotation layer
@@ -298,12 +353,8 @@ class ShapesAnnotation(QWidget):
 
         if self._annotation_layer is not None:
             self._validated_shapes_name = self._annotation_shapes_name
-            self._set_status(
-                title="Annotation Layer Created",
-                lines=["Draw shapes in the viewer, then save them when the save step is available."],
-                kind="info",
-            )
-            self._set_action_enabled(create_enabled=False)
+            self.create_layer_button.setEnabled(False)
+            self._refresh_save_shapes_state()
             return
 
         if sdata is None:
@@ -312,7 +363,8 @@ class ShapesAnnotation(QWidget):
                 lines=["Load a SpatialData object before creating shapes."],
                 kind="warning",
             )
-            self._set_action_enabled(create_enabled=False)
+            self.create_layer_button.setEnabled(False)
+            self._refresh_save_shapes_state()
             return
 
         if not self._coordinate_systems:
@@ -321,7 +373,8 @@ class ShapesAnnotation(QWidget):
                 lines=["The loaded SpatialData object does not expose any coordinate systems."],
                 kind="warning",
             )
-            self._set_action_enabled(create_enabled=False)
+            self.create_layer_button.setEnabled(False)
+            self._refresh_save_shapes_state()
             return
 
         if coordinate_system is None:
@@ -330,7 +383,8 @@ class ShapesAnnotation(QWidget):
                 lines=["Select a coordinate system before creating shapes."],
                 kind="warning",
             )
-            self._set_action_enabled(create_enabled=False)
+            self.create_layer_button.setEnabled(False)
+            self._refresh_save_shapes_state()
             return
 
         try:
@@ -341,16 +395,18 @@ class ShapesAnnotation(QWidget):
                 lines=[str(error)],
                 kind="warning",
             )
-            self._set_action_enabled(create_enabled=False)
+            self.create_layer_button.setEnabled(False)
+            self._refresh_save_shapes_state()
             return
 
         if shapes_name in sdata.shapes:
             self._set_status(
                 title="Name Already Exists",
-                lines=[f'Shapes element "{shapes_name}" already exists. Choose a new name.'],
+                lines=[f'Shapes element "{shapes_name}" already exists. Choose a different name.'],
                 kind="warning",
             )
-            self._set_action_enabled(create_enabled=False)
+            self.create_layer_button.setEnabled(False)
+            self._refresh_save_shapes_state()
             return
 
         self._validated_shapes_name = shapes_name
@@ -359,11 +415,71 @@ class ShapesAnnotation(QWidget):
             lines=[f'Create shapes layer "{shapes_name}" in coordinate system "{coordinate_system}".'],
             kind="info",
         )
-        self._set_action_enabled(create_enabled=True)
+        self.create_layer_button.setEnabled(True)
+        self._refresh_save_shapes_state()
 
-    def _set_action_enabled(self, *, create_enabled: bool) -> None:
-        self.create_layer_button.setEnabled(create_enabled)
+    def _refresh_save_shapes_state(self, *, update_status: bool = True) -> None:
+        """Update save readiness for the widget-owned annotation layer."""
         self.save_shapes_button.setEnabled(False)
+        layer = self._annotation_layer
+        if layer is None:
+            return
+
+        if self._app_state.sdata is None:
+            if update_status:
+                self._set_status(
+                    title="Cannot Save Shapes",
+                    lines=["Load a SpatialData object before saving shapes."],
+                    kind="warning",
+                )
+            return
+
+        if self._annotation_shapes_name is None or self._annotation_coordinate_system is None:
+            if update_status:
+                self._set_status(
+                    title="Cannot Save Shapes",
+                    lines=["The annotation layer is missing its locked save target."],
+                    kind="warning",
+                )
+            return
+
+        if not self._annotation_layer_binding_matches():
+            if update_status:
+                self._set_status(
+                    title="Cannot Save Shapes",
+                    lines=[
+                        "The annotation layer is no longer registered as the widget-owned primary shapes layer."
+                    ],
+                    kind="warning",
+                )
+            return
+
+        self.save_shapes_button.setEnabled(True)
+        if update_status:
+            self._set_status(
+                title="Annotation Layer Ready",
+                lines=["Draw shapes in the viewer, then click Save shapes."],
+                kind="info",
+            )
+
+    def _annotation_layer_binding_matches(self) -> bool:
+        layer = self._annotation_layer
+        sdata = self._app_state.sdata
+        if layer is None or sdata is None:
+            return False
+
+        binding = self._app_state.viewer_adapter.layer_bindings.get_binding(layer)
+        return (
+            binding is not None
+            and binding.element_type == "shapes"
+            and binding.element_name == self._annotation_shapes_name
+            and binding.coordinate_system == self._annotation_coordinate_system
+            and binding.sdata_id == id(sdata)
+            and getattr(binding, "shapes_role", None) == "primary"
+            and getattr(binding, "shapes_rendering_mode", None) == "shapes"
+            and getattr(binding, "style_spec", None) is None
+            and getattr(binding, "source_shapes_index_feature_name", None) == DEFAULT_SHAPES_INDEX_NAME
+        )
 
     def _set_status(self, *, title: str, lines: list[str], kind: str) -> None:
         set_status_card(self.status_label, title=title, lines=lines, kind=kind)
@@ -422,6 +538,7 @@ class ShapesAnnotation(QWidget):
         self._annotation_layer = None
         self._annotation_shapes_name = None
         self._annotation_coordinate_system = None
+        self._annotation_has_been_saved = False
         self.name_edit.setEnabled(True)
 
     def _create_header_logo(self) -> QLabel:
