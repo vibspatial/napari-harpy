@@ -204,6 +204,12 @@ def test_feature_extraction_widget_shortens_long_coordinate_system_checkbox_name
     assert "…" in triplet_card.title()
     assert coordinate_system in _tooltip_text(triplet_card)
 
+    selection_status_text = unescape(widget.selection_status.text())
+    assert "Batch Incomplete" in selection_status_text
+    assert coordinate_system not in selection_status_text
+    assert "…" in selection_status_text
+    assert coordinate_system in _tooltip_text(widget.selection_status)
+
 
 def test_feature_extraction_widget_refreshes_when_shared_sdata_changes(
     qtbot,
