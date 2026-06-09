@@ -54,6 +54,7 @@ if TYPE_CHECKING:
 
 _SOURCE = "shapes_annotation_widget"
 _INPUT_CONTROL_STYLESHEET = build_input_control_stylesheet("QComboBox, QLineEdit")
+_ANNOTATION_FIELD_MIN_WIDTH = 180
 
 
 class ShapesAnnotation(QWidget):
@@ -103,18 +104,21 @@ class ShapesAnnotation(QWidget):
 
         form_layout = QFormLayout()
         form_layout.setContentsMargins(0, 0, 0, 0)
-        form_layout.setSpacing(8)
-        form_layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        form_layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+        form_layout.setHorizontalSpacing(12)
+        form_layout.setVerticalSpacing(10)
 
-        self.coordinate_system_combo = CompactComboBox(minimum_contents_length=18)
+        self.coordinate_system_combo = CompactComboBox()
         self.coordinate_system_combo.setObjectName("shapes_annotation_coordinate_system_combo")
-        self.coordinate_system_combo.setPlaceholderText("Choose coordinate system")
         self.coordinate_system_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
+        self.coordinate_system_combo.setMinimumWidth(_ANNOTATION_FIELD_MIN_WIDTH)
 
         self.name_edit = QLineEdit()
         self.name_edit.setObjectName("shapes_annotation_name_edit")
         self.name_edit.setPlaceholderText("new_shapes")
         self.name_edit.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
+        self.name_edit.setMinimumWidth(_ANNOTATION_FIELD_MIN_WIDTH)
 
         form_layout.addRow(create_form_label("Coordinate System"), self.coordinate_system_combo)
         form_layout.addRow(create_form_label("Shapes Name"), self.name_edit)
@@ -460,9 +464,7 @@ class ShapesAnnotation(QWidget):
             if update_status:
                 self._set_status(
                     title="Cannot Save Shapes",
-                    lines=[
-                        "The annotation layer is no longer registered as the widget-owned primary shapes layer."
-                    ],
+                    lines=["The annotation layer is no longer registered as the widget-owned primary shapes layer."],
                     kind="warning",
                 )
             return

@@ -126,6 +126,7 @@ def test_shapes_annotation_widget_can_be_instantiated(qtbot) -> None:
     assert header_logo is not None
     pixmap = header_logo.pixmap()
     assert (pixmap is not None and not pixmap.isNull()) or header_logo.text() == "napari-harpy"
+    assert widget.coordinate_system_combo.minimumWidth() == widget.name_edit.minimumWidth()
     assert widget.coordinate_system_combo.count() == 0
     assert widget.coordinate_system_combo.isEnabled() is False
     assert widget.create_layer_button.isEnabled() is False
