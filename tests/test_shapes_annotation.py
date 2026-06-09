@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 from napari.layers import Shapes
 from shapely.geometry import Polygon
-from spatialdata import SpatialData
+from spatialdata import SpatialData, read_zarr
 from spatialdata.transformations import Identity, get_transformation
 
 import napari_harpy.core.shapes_annotation as shapes_annotation_module
@@ -289,6 +289,67 @@ def test_create_shapes_element_from_napari_shapes_layer_repeated_save_overwrites
     assert result.row_count == 2
     assert sdata_blobs.shapes["new_regions"].index.tolist() == ["shape_0", "shape_1"]
     assert layer.features["instance_id"].tolist() == ["shape_0", "shape_1"]
+
+
+def test_create_shapes_element_from_napari_shapes_layer_persists_backed_shapes_roundtrip(
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    layer = Shapes(ndim=2)
+    _add_polygon(layer)
+
+    result = create_shapes_element_from_napari_shapes_layer(
+        CreateShapesElementRequest(
+            sdata=backed_sdata_blobs,
+            shapes_name="new_regions",
+            coordinate_system="global",
+        ),
+        layer,
+    )
+
+    reread = read_zarr(backed_sdata_blobs.path)
+    shapes = reread.shapes["new_regions"]
+
+    assert result.row_count == 1
+    assert shapes.index.name == "instance_id"
+    assert shapes.index.tolist() == ["shape_0"]
+    assert shapes.geometry.iloc[0].equals(Polygon([(0, 0), (2, 0), (2, 2), (0, 2)]))
+    assert isinstance(get_transformation(shapes, get_all=True)["global"], Identity)
+
+
+def test_create_shapes_element_from_napari_shapes_layer_persists_backed_overwrite_roundtrip(
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    layer = Shapes(ndim=2)
+    _add_polygon(layer)
+    create_shapes_element_from_napari_shapes_layer(
+        CreateShapesElementRequest(
+            sdata=backed_sdata_blobs,
+            shapes_name="new_regions",
+            coordinate_system="global",
+        ),
+        layer,
+    )
+
+    _add_polygon(layer, offset=3)
+    result = create_shapes_element_from_napari_shapes_layer(
+        CreateShapesElementRequest(
+            sdata=backed_sdata_blobs,
+            shapes_name="new_regions",
+            coordinate_system="global",
+            overwrite=True,
+        ),
+        layer,
+    )
+
+    reread = read_zarr(backed_sdata_blobs.path)
+    shapes = reread.shapes["new_regions"]
+
+    assert result.row_count == 2
+    assert shapes.index.name == "instance_id"
+    assert shapes.index.tolist() == ["shape_0", "shape_1"]
+    assert shapes.geometry.iloc[0].equals(Polygon([(0, 0), (2, 0), (2, 2), (0, 2)]))
+    assert shapes.geometry.iloc[1].equals(Polygon([(0, 3), (2, 3), (2, 5), (0, 5)]))
+    assert isinstance(get_transformation(shapes, get_all=True)["global"], Identity)
 
 
 def test_create_shapes_element_from_napari_shapes_layer_calls_harpy_with_request_overwrite(

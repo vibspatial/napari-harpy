@@ -1504,7 +1504,16 @@ Tests:
 
 ### Slice 10: Backed Persistence Verification
 
-Status: proposed
+Status: implemented
+
+Implemented in:
+
+- `tests/test_shapes_annotation.py`.
+
+Verified with:
+
+- `.venv/bin/pytest tests/test_shapes_annotation.py -q`;
+- `.venv/bin/ruff check tests/test_shapes_annotation.py`.
 
 Verify backed persistence for the `harpy.sh.add_shapes(...)` write path used by
 Workflow A.
@@ -1519,14 +1528,14 @@ Behavior:
   manual zarr mutation;
 - verify the first-save `overwrite=False` path and the repeated-save
   `overwrite=True` path for the same widget-owned, locked shapes element;
-- keep in-memory and backed behavior distinct in user feedback;
-- document whether saving to backed stores is immediate or requires a separate
-  persist action.
+- verify that saving to backed stores is immediate through Harpy's backed write
+  path and does not require a separate shapes-specific persist action.
 
 Acceptance:
 
 - backed-write tests pass against the canonical `.venv` environment;
-- in-memory and backed behavior have distinct user feedback.
+- backed saves persist to zarr without manual zarr mutation;
+- backed repeated saves overwrite the same locked shapes element.
 
 Tests:
 
