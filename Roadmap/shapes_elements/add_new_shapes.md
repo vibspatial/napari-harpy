@@ -1008,6 +1008,9 @@ Code:
   layer can be created;
 - make `_refresh_save_shapes_state()` responsible for whether the current
   widget-owned annotation layer can be saved;
+- `_refresh_save_shapes_state()` should be a pure UI-state refresh method: it
+  must not call the core save helper, must not mutate `sdata`, and must not
+  write generated IDs into `layer.features`;
 - add explicit widget state for the save overwrite boundary, for example:
 
   ```python
@@ -1031,6 +1034,41 @@ Code:
   that element in the meantime;
 - refresh relevant widget/viewer state after success;
 - extend widget tests.
+
+`_refresh_save_shapes_state()` contract:
+
+- read:
+  - `self._app_state.sdata`;
+  - `self._annotation_layer`;
+  - `self._annotation_shapes_name`;
+  - `self._annotation_coordinate_system`;
+  - the annotation layer's current `ShapesLayerBinding`;
+- enable `Save shapes` only when all save-owner state is present and the layer
+  binding still matches the widget-owned annotation request;
+- disable `Save shapes` when there is no annotation layer, no loaded `sdata`, no
+  locked shapes name, no frozen coordinate system, or no matching primary
+  shapes binding;
+- when there is no annotation layer, leave the user-facing status to
+  `_refresh_create_layer_state()`;
+- when there is a valid annotation layer, show save-oriented status such as:
+
+  ```text
+  Draw shapes in the viewer, then click Save shapes.
+  ```
+
+- when the annotation layer exists but the binding is missing or mismatched,
+  disable `Save shapes` and show actionable warning feedback;
+- do not inspect the number or validity of napari shape rows. Empty layers,
+  unsupported shape types, and invalid geometry are validated by
+  `create_shapes_element_from_napari_shapes_layer(...)` when the user clicks
+  `Save shapes`;
+- run after:
+  - `refresh_from_sdata(...)`;
+  - creating an annotation layer;
+  - clearing annotation state;
+  - manual annotation-layer removal;
+  - successful save;
+  - failed save.
 
 Behavior:
 
