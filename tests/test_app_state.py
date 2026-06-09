@@ -10,6 +10,7 @@ import napari_harpy._interactive as interactive_module
 import napari_harpy.widgets.object_classification.widget as object_widget_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
 from napari_harpy._app_state import (
+    ClassificationTableWrittenEvent,
     CoordinateSystemChangedEvent,
     FeatureMatrixWrittenEvent,
     HarpyAppState,
@@ -178,6 +179,23 @@ def test_harpy_app_state_emits_shapes_element_written(qtbot, sdata_blobs) -> Non
         state.emit_shapes_element_written(event)
 
     assert blocker.args == [event]
+
+
+def test_harpy_app_state_emits_classification_table_written_and_marks_table_dirty(qtbot, sdata_blobs) -> None:
+    state = HarpyAppState()
+    event = ClassificationTableWrittenEvent(
+        sdata=sdata_blobs,
+        table_name="table",
+        columns=("user_class",),
+    )
+
+    assert state.is_table_dirty(sdata_blobs, "table") is False
+
+    with qtbot.waitSignal(state.classification_table_written) as blocker:
+        state.emit_classification_table_written(event)
+
+    assert blocker.args == [event]
+    assert state.is_table_dirty(sdata_blobs, "table") is True
 
 
 def test_harpy_app_state_set_coordinate_system_emits_event_and_prunes_layers(qtbot, monkeypatch, sdata_blobs) -> None:

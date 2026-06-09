@@ -20,7 +20,11 @@ from spatialdata.transformations import Identity
 
 import napari_harpy._app_state as app_state_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
-from napari_harpy._app_state import FeatureMatrixWrittenEvent, ShapesElementWrittenEvent
+from napari_harpy._app_state import (
+    ClassificationTableWrittenEvent,
+    FeatureMatrixWrittenEvent,
+    ShapesElementWrittenEvent,
+)
 from napari_harpy._points_value_index import PointsValueSelection, PointsValueTable
 from napari_harpy.core._color_source import ShapeColumnColorSourceSpec, TableColorSourceSpec
 from napari_harpy.viewer.adapter import PointsLayerIdentity
@@ -931,6 +935,122 @@ def test_viewer_widget_preserves_labels_card_color_source_selection_after_event(
     assert card.selected_source_kind == "obs_column"
     assert card.selected_color_source == color_sources_by_table["table"][0]
     assert card.action_hint_label.text() == 'Action: add/update colored overlay for obs["cell_type"]'
+
+
+def test_viewer_widget_refreshes_table_color_sources_from_classification_table_event(qtbot, monkeypatch) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    fake_sdata = object()
+    table_names_by_label = {"labels": ["table"]}
+    color_sources_by_table = {
+        "table": [
+            TableColorSourceSpec(
+                table_name="table",
+                source_kind="obs_column",
+                value_key="cell_type",
+                value_kind="categorical",
+            )
+        ]
+    }
+
+    qtbot.addWidget(widget)
+
+    _patch_coordinate_system_names(monkeypatch, ["global"])
+    _patch_viewer_widget_labels_tables(
+        monkeypatch,
+        labels_names=["labels"],
+        table_names_by_label=table_names_by_label,
+        color_sources_by_table=color_sources_by_table,
+    )
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(fake_sdata)
+
+    card = widget.labels_cards[0]
+    card.color_source_kind_combo.setCurrentIndex(1)
+    assert card._color_source_completer_model.stringList() == ["cell_type"]
+
+    color_sources_by_table["table"] = [
+        *color_sources_by_table["table"],
+        TableColorSourceSpec(
+            table_name="table",
+            source_kind="obs_column",
+            value_key="user_class",
+            value_kind="categorical",
+        ),
+        TableColorSourceSpec(
+            table_name="table",
+            source_kind="obs_column",
+            value_key="pred_class",
+            value_kind="categorical",
+        ),
+    ]
+
+    widget.app_state.emit_classification_table_written(
+        ClassificationTableWrittenEvent(
+            sdata=fake_sdata,
+            table_name="table",
+            columns=("user_class", "pred_class"),
+        )
+    )
+
+    assert card._color_source_completer_model.stringList() == ["cell_type", "user_class", "pred_class"]
+    assert card.selected_table_name == "table"
+    assert card.selected_source_kind == "obs_column"
+    assert len(viewer.layers) == 0
+
+
+def test_viewer_widget_ignores_classification_table_events_for_other_sdata(qtbot, monkeypatch) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    fake_sdata = object()
+    other_sdata = object()
+    table_names_by_label = {"labels": ["table"]}
+    color_sources_by_table = {
+        "table": [
+            TableColorSourceSpec(
+                table_name="table",
+                source_kind="obs_column",
+                value_key="cell_type",
+                value_kind="categorical",
+            )
+        ]
+    }
+
+    qtbot.addWidget(widget)
+
+    _patch_coordinate_system_names(monkeypatch, ["global"])
+    _patch_viewer_widget_labels_tables(
+        monkeypatch,
+        labels_names=["labels"],
+        table_names_by_label=table_names_by_label,
+        color_sources_by_table=color_sources_by_table,
+    )
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(fake_sdata)
+
+    card = widget.labels_cards[0]
+    card.color_source_kind_combo.setCurrentIndex(1)
+    color_sources_by_table["table"] = [
+        *color_sources_by_table["table"],
+        TableColorSourceSpec(
+            table_name="table",
+            source_kind="obs_column",
+            value_key="user_class",
+            value_kind="categorical",
+        ),
+    ]
+
+    widget.app_state.emit_classification_table_written(
+        ClassificationTableWrittenEvent(
+            sdata=other_sdata,
+            table_name="table",
+            columns=("user_class",),
+        )
+    )
+
+    assert card._color_source_completer_model.stringList() == ["cell_type"]
 
 
 def test_viewer_widget_refreshes_only_shapes_section_from_shapes_element_event(qtbot, monkeypatch) -> None:

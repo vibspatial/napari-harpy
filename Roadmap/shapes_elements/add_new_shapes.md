@@ -1402,35 +1402,55 @@ Tests:
 
 ### Slice 9: Viewer Refresh On Object Classification Table Writes
 
-Status: proposed
+Status: implemented
+
+Implemented in:
+
+- `src/napari_harpy/_app_state.py`;
+- `src/napari_harpy/widgets/object_classification/widget.py`;
+- `src/napari_harpy/widgets/viewer/widget.py`;
+- `tests/test_app_state.py`;
+- `tests/test_widget.py`;
+- `tests/test_viewer_widget.py`.
+
+Verified with:
+
+- `.venv/bin/pytest tests/test_app_state.py tests/test_widget.py tests/test_viewer_widget.py -q`;
+- `.venv/bin/ruff check src/napari_harpy/_app_state.py src/napari_harpy/widgets/object_classification/widget.py src/napari_harpy/widgets/viewer/widget.py tests/test_app_state.py tests/test_widget.py tests/test_viewer_widget.py`.
 
 Purpose:
 
 - fix the same cross-widget refresh class for Object Classification table
   writes;
 - make the Viewer widget react when Object Classification writes or updates
-  `user_class` or `pred_class` values;
+  `user_class`, `pred_class`, or `pred_confidence` values;
 - allow users to color labels/shapes from the Viewer widget by newly written
-  `user_class` or `pred_class` columns without reloading the `SpatialData`
-  object.
+  `user_class`, `pred_class`, or `pred_confidence` columns without reloading
+  the `SpatialData` object.
 
 Code:
 
-- add or reuse a semantic app-state event for table value writes that are not
-  feature-matrix creation events, for example:
+- add a semantic app-state event for table value writes that are not
+  feature-matrix creation events:
 
   ```python
-  ClassificationTableWrittenEvent
+  ClassificationTableWrittenEvent(
+      sdata=sdata,
+      table_name=table_name,
+      columns=("user_class",),
+      source="object_classification_widget",
+  )
   ```
 
 - emit the event from Object Classification when:
   - user annotation writes or updates `user_class`;
-  - classifier prediction writes or updates `pred_class`;
+  - classifier prediction writes or updates `pred_class` and
+    `pred_confidence`;
 - include enough event payload for Viewer refresh decisions:
   - `sdata`;
   - `table_name`;
-  - changed column names, for example `user_class` or `pred_class`;
-  - change kind, if useful;
+  - changed column names, for example `("user_class",)` or
+    `("pred_class", "pred_confidence")`;
   - `source="object_classification_widget"`;
 - make `ViewerWidget` listen to the app-state signal;
 - when the event matches the viewer's current `sdata`, refresh the relevant
@@ -1443,8 +1463,8 @@ Behavior:
 
 - after a `user_class` write, the Viewer widget can expose/use the updated
   `user_class` column without reloading `sdata`;
-- after a `pred_class` write, the Viewer widget can expose/use the updated
-  `pred_class` column without reloading `sdata`;
+- after prediction writes, the Viewer widget can expose/use the updated
+  `pred_class` and `pred_confidence` columns without reloading `sdata`;
 - Viewer widget ignores classification-table events for a different
   `SpatialData` object;
 - Object Classification keeps its existing local layer-refresh behavior for the
@@ -1466,7 +1486,8 @@ Rationale:
 Acceptance:
 
 - writing `user_class` in Object Classification notifies Viewer widget state;
-- writing `pred_class` in Object Classification notifies Viewer widget state;
+- writing `pred_class` and `pred_confidence` in Object Classification notifies
+  Viewer widget state;
 - Viewer widget ignores events for other `SpatialData` objects;
 - existing Object Classification layer styling refresh behavior remains intact;
 - no full `SpatialData` reload is required for Viewer color-by options to
@@ -1476,7 +1497,8 @@ Tests:
 
 - app state exposes and emits the classification-table-written event;
 - Object Classification emits the event after `user_class` writes;
-- Object Classification emits the event after `pred_class` writes;
+- Object Classification emits the event after `pred_class` and
+  `pred_confidence` writes;
 - Viewer widget listens to the event and refreshes table-linked color state;
 - Viewer widget ignores events for a non-current `sdata`.
 

@@ -22,6 +22,7 @@ from qtpy.QtWidgets import (
 from spatialdata import read_zarr
 
 from napari_harpy._app_state import (
+    ClassificationTableWrittenEvent,
     CoordinateSystemChangedEvent,
     FeatureMatrixWrittenEvent,
     HarpyAppState,
@@ -263,6 +264,8 @@ class ViewerWidget(QWidget):
         # Feature extraction can create new annotating tables; refresh Viewer
         # linked-table choices when that happens in the active sdata.
         self._app_state.feature_matrix_written.connect(self._on_feature_matrix_written)
+        # Object classification can add/update colorable table columns.
+        self._app_state.classification_table_written.connect(self._on_classification_table_written)
         # Annotation can create/update shapes elements inside the active sdata;
         # refresh only the Viewer shapes section when that happens.
         self._app_state.shapes_element_written.connect(self._on_shapes_element_written)
@@ -325,6 +328,16 @@ class ViewerWidget(QWidget):
     def _on_feature_matrix_written(self, event: object) -> None:
         """Refresh linked-table controls after same-session feature-matrix writes."""
         if not isinstance(event, FeatureMatrixWrittenEvent):
+            return
+        if event.sdata is not self._app_state.sdata:
+            return
+
+        self._refresh_labels_card_linked_tables()
+        self._refresh_shapes_card_linked_tables()
+
+    def _on_classification_table_written(self, event: object) -> None:
+        """Refresh table color-source controls after classification table writes."""
+        if not isinstance(event, ClassificationTableWrittenEvent):
             return
         if event.sdata is not self._app_state.sdata:
             return
