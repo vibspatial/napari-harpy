@@ -1,6 +1,6 @@
 # Add New Shapes Annotation Elements
 
-Status: proposed
+Status: implemented
 
 This roadmap extracts Workflow A from `annotation_shapes.md`: creating a brand
 new `sdata.shapes[...]` element from user-drawn napari shapes.
