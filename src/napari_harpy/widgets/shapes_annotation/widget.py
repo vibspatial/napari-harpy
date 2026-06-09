@@ -62,6 +62,7 @@ class ShapesAnnotation(QWidget):
         self._annotation_layer: Shapes | None = None
         self._annotation_shapes_name: str | None = None
         self._annotation_coordinate_system: str | None = None
+        self._is_handling_coordinate_system_change = False
         self._logo_path = get_logo_path()
 
         root_layout = QVBoxLayout(self)
@@ -137,6 +138,11 @@ class ShapesAnnotation(QWidget):
         self.coordinate_system_combo.currentIndexChanged.connect(self._on_coordinate_system_changed)
         self.name_edit.textChanged.connect(self._on_shapes_name_changed)
         self.create_layer_button.clicked.connect(self._on_create_layer_clicked)
+        layer_events = getattr(getattr(napari_viewer, "layers", None), "events", None)
+        layer_removed_event = getattr(layer_events, "removed", None)
+        layer_removed_connect = getattr(layer_removed_event, "connect", None)
+        if callable(layer_removed_connect):
+            layer_removed_connect(self._on_viewer_layer_removed)
         self.refresh_from_sdata(self._app_state.sdata)
 
     @property
@@ -208,8 +214,14 @@ class ShapesAnnotation(QWidget):
                 self._set_selected_coordinate_system(self.coordinate_system_combo.currentIndex())
                 self._refresh_create_layer_state()
                 return
-            self._remove_annotation_layer()
-            self._clear_annotation_state()
+            self._is_handling_coordinate_system_change = True
+            try:
+                self._remove_annotation_layer()
+                self._clear_annotation_state()
+                self._app_state.set_coordinate_system(next_coordinate_system, source=_SOURCE)
+            finally:
+                self._is_handling_coordinate_system_change = False
+            return
 
         # Publish the UI choice to shared app state. `_on_app_state_coordinate_system_changed(...)`
         # owns local selection and create-layer refresh so all sources follow one path.
@@ -245,6 +257,24 @@ class ShapesAnnotation(QWidget):
         self._annotation_coordinate_system = coordinate_system
         self.name_edit.setEnabled(False)
         self._app_state.viewer_adapter.activate_layer(layer)
+        self._refresh_create_layer_state()
+
+    def _on_viewer_layer_removed(self, event: object) -> None:
+        # `_on_coordinate_system_changed(...)` removes the annotation layer
+        # programmatically during coordinate-system discard and owns that cleanup
+        # path, so ignore the removal event it emits.
+        if self._is_handling_coordinate_system_change:
+            return
+
+        layer = getattr(event, "value", None)
+        if layer is not self._annotation_layer:
+            return
+
+        # The adapter also listens for layer removals, but callback order is not
+        # part of the contract. Unregister defensively in case the widget
+        # observes this event first.
+        self._app_state.viewer_adapter.unregister_layer(layer)
+        self._clear_annotation_state()
         self._refresh_create_layer_state()
 
     def _sync_coordinate_system_combo_selection(self, coordinate_system: str | None) -> None:

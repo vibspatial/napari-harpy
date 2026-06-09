@@ -913,7 +913,7 @@ Tests:
 
 ### Slice 5: Annotation Layer Removal Listener
 
-Status: proposed
+Status: implemented
 
 Purpose:
 

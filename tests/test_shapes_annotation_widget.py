@@ -345,3 +345,108 @@ def test_shapes_annotation_widget_clears_annotation_state_when_sdata_is_cleared(
     assert widget.create_layer_button.isEnabled() is False
     assert widget.save_shapes_button.isEnabled() is False
     assert "No SpatialData Loaded" in _status_text(widget)
+
+
+def test_shapes_annotation_widget_manual_annotation_layer_deletion_clears_state(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
+    widget.create_layer_button.click()
+    layer = viewer.layers[0]
+
+    viewer.layers.remove(layer)
+
+    assert list(viewer.layers) == []
+    assert widget.app_state.viewer_adapter.layer_bindings.get_binding(layer) is None
+    assert widget._annotation_layer is None
+    assert widget._annotation_shapes_name is None
+    assert widget._annotation_coordinate_system is None
+    assert widget.name_edit.isEnabled() is True
+    assert widget.create_layer_button.isEnabled() is True
+    assert widget.save_shapes_button.isEnabled() is False
+    assert "Ready" in _status_text(widget)
+
+
+def test_shapes_annotation_widget_removal_listener_defensively_unregisters_annotation_layer(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
+    widget.create_layer_button.click()
+    layer = viewer.layers[0]
+
+    widget._on_viewer_layer_removed(SimpleNamespace(value=layer))
+
+    assert widget.app_state.viewer_adapter.layer_bindings.get_binding(layer) is None
+    assert widget._annotation_layer is None
+    assert widget._annotation_shapes_name is None
+    assert widget._annotation_coordinate_system is None
+    assert widget.name_edit.isEnabled() is True
+    assert widget.create_layer_button.isEnabled() is True
+    assert widget.save_shapes_button.isEnabled() is False
+
+
+def test_shapes_annotation_widget_ignores_unrelated_layer_removal(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
+    widget.create_layer_button.click()
+    annotation_layer = viewer.layers[0]
+    unrelated_layer = Shapes(
+        [np.asarray([(0, 0), (0, 1), (1, 1)], dtype=float)],
+        shape_type="polygon",
+        name="unrelated",
+    )
+    viewer.add_layer(unrelated_layer)
+
+    viewer.layers.remove(unrelated_layer)
+
+    assert list(viewer.layers) == [annotation_layer]
+    assert widget.app_state.viewer_adapter.layer_bindings.get_binding(annotation_layer) is not None
+    assert widget._annotation_layer is annotation_layer
+    assert widget._annotation_shapes_name == "new_regions"
+    assert widget._annotation_coordinate_system == "global"
+    assert widget.name_edit.isEnabled() is False
+    assert widget.create_layer_button.isEnabled() is False
+    assert widget.save_shapes_button.isEnabled() is False
+
+
+def test_shapes_annotation_widget_coordinate_discard_guard_avoids_duplicate_cleanup(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    _patch_coordinate_system_names(monkeypatch, ["global", "local"])
+    viewer = DummyViewer()
+    widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
+    widget.create_layer_button.click()
+    monkeypatch.setattr(widget, "_confirm_discard_annotation_layer", lambda: True)
+    remove_guard_values: list[bool] = []
+    clear_call_count = 0
+    original_remove_annotation_layer = widget._remove_annotation_layer
+    original_clear_annotation_state = widget._clear_annotation_state
+
+    def remove_annotation_layer() -> None:
+        remove_guard_values.append(widget._is_handling_coordinate_system_change)
+        original_remove_annotation_layer()
+
+    def clear_annotation_state() -> None:
+        nonlocal clear_call_count
+        clear_call_count += 1
+        original_clear_annotation_state()
+
+    monkeypatch.setattr(widget, "_remove_annotation_layer", remove_annotation_layer)
+    monkeypatch.setattr(widget, "_clear_annotation_state", clear_annotation_state)
+
+    widget.coordinate_system_combo.setCurrentIndex(1)
+
+    assert remove_guard_values == [True]
+    assert clear_call_count == 1
+    assert widget._is_handling_coordinate_system_change is False
+    assert widget.app_state.coordinate_system == "local"
+    assert list(viewer.layers) == []
