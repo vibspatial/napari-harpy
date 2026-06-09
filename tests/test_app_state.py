@@ -13,6 +13,7 @@ from napari_harpy._app_state import (
     CoordinateSystemChangedEvent,
     FeatureMatrixWrittenEvent,
     HarpyAppState,
+    ShapesElementWrittenEvent,
     get_or_create_app_state,
 )
 from napari_harpy.widgets.feature_extraction.widget import FeatureExtractionWidget
@@ -163,6 +164,20 @@ def test_harpy_app_state_emits_feature_matrix_written_and_marks_table_dirty(qtbo
     state.clear_table_dirty(sdata_blobs, "table")
 
     assert state.is_table_dirty(sdata_blobs, "table") is False
+
+
+def test_harpy_app_state_emits_shapes_element_written(qtbot, sdata_blobs) -> None:
+    state = HarpyAppState()
+    event = ShapesElementWrittenEvent(
+        sdata=sdata_blobs,
+        shapes_name="new_regions",
+        coordinate_system="global",
+    )
+
+    with qtbot.waitSignal(state.shapes_element_written) as blocker:
+        state.emit_shapes_element_written(event)
+
+    assert blocker.args == [event]
 
 
 def test_harpy_app_state_set_coordinate_system_emits_event_and_prunes_layers(qtbot, monkeypatch, sdata_blobs) -> None:

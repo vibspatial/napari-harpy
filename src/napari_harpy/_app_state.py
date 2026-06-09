@@ -54,6 +54,16 @@ class FeatureMatrixWrittenEvent:
 
 
 @dataclass(frozen=True)
+class ShapesElementWrittenEvent:
+    """Describe an in-place write to a shared `SpatialData.shapes` element."""
+
+    sdata: SpatialData
+    shapes_name: str
+    coordinate_system: str
+    source: str = "shapes_annotation_widget"
+
+
+@dataclass(frozen=True)
 class CoordinateSystemChangedEvent:
     """Describe a shared active coordinate-system change for one viewer session."""
 
@@ -72,10 +82,11 @@ class HarpyAppState(QObject):
     In particular, cross-widget updates that do not replace the loaded
     ``SpatialData`` object are published here as semantic app-state events. For
     example, ``FeatureExtractionWidget`` forwards successful feature-matrix
-    writes into ``feature_matrix_written``, and
-    ``ObjectClassificationWidget`` listens to that signal to refresh its
-    feature-matrix selector and dirty-state. The producing widget therefore
-    does not need to know which other widgets are consuming the update.
+    writes into ``feature_matrix_written``, ``ShapesAnnotation`` forwards
+    shapes element writes into ``shapes_element_written``, and consuming widgets
+    listen to those semantic signals to refresh only the state they own. The
+    producing widget therefore does not need to know which other widgets are
+    consuming the update.
 
     ``HarpyAppState`` also owns shared session-level dirty-table tracking, so
     in-memory table divergence from disk is modeled as shared viewer state
@@ -84,6 +95,7 @@ class HarpyAppState(QObject):
 
     sdata_changed = Signal(object)
     feature_matrix_written = Signal(object)
+    shapes_element_written = Signal(object)
     coordinate_system_changed = Signal(object)
 
     def __init__(self, viewer: object | None = None) -> None:
@@ -141,6 +153,10 @@ class HarpyAppState(QObject):
         """Broadcast that a feature matrix was written into a shared in-memory table."""
         self.mark_table_dirty(event.sdata, event.table_name)
         self.feature_matrix_written.emit(event)
+
+    def emit_shapes_element_written(self, event: ShapesElementWrittenEvent) -> None:
+        """Broadcast that a shapes element was written into the shared SpatialData."""
+        self.shapes_element_written.emit(event)
 
     def is_table_dirty(self, sdata: SpatialData | None, table_name: str | None) -> bool:
         """Return whether a selected in-memory table has unsynced local changes."""

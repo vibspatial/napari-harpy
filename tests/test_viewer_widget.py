@@ -20,7 +20,7 @@ from spatialdata.transformations import Identity
 
 import napari_harpy._app_state as app_state_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
-from napari_harpy._app_state import FeatureMatrixWrittenEvent
+from napari_harpy._app_state import FeatureMatrixWrittenEvent, ShapesElementWrittenEvent
 from napari_harpy._points_value_index import PointsValueSelection, PointsValueTable
 from napari_harpy.core._color_source import ShapeColumnColorSourceSpec, TableColorSourceSpec
 from napari_harpy.viewer.adapter import PointsLayerIdentity
@@ -931,6 +931,115 @@ def test_viewer_widget_preserves_labels_card_color_source_selection_after_event(
     assert card.selected_source_kind == "obs_column"
     assert card.selected_color_source == color_sources_by_table["table"][0]
     assert card.action_hint_label.text() == 'Action: add/update colored overlay for obs["cell_type"]'
+
+
+def test_viewer_widget_refreshes_only_shapes_section_from_shapes_element_event(qtbot, monkeypatch) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    fake_sdata = object()
+    names = {
+        "images": ["image"],
+        "labels": ["labels"],
+        "shapes": ["shape_a"],
+        "points": ["points"],
+    }
+
+    qtbot.addWidget(widget)
+
+    _patch_coordinate_system_names(monkeypatch, ["global"])
+    monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: names["images"])
+    monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: names["labels"])
+    monkeypatch.setattr(viewer_widget_module, "_get_shapes_in_coordinate_system", lambda sdata, coordinate_system: names["shapes"])
+    monkeypatch.setattr(viewer_widget_module, "_get_points_in_coordinate_system", lambda sdata, coordinate_system: names["points"])
+    monkeypatch.setattr(viewer_widget_module, "get_image_channel_names_from_sdata", lambda sdata, image_name: ["c0"])
+    monkeypatch.setattr(viewer_widget_module, "get_annotating_table_names", lambda sdata, element_name: [])
+    monkeypatch.setattr(viewer_widget_module, "get_table_color_source_options", lambda sdata, table_name: [])
+    monkeypatch.setattr(viewer_widget_module, "get_shape_column_color_source_options", lambda sdata, shapes_name: [])
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(fake_sdata)
+
+    assert [card.shapes_name for card in widget.shape_cards] == ["shape_a"]
+    image_rows = widget.image_rows
+    labels_rows = widget.labels_rows
+
+    def fail_if_rebuilt(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("non-shapes sections should not be rebuilt")
+
+    monkeypatch.setattr(widget, "_rebuild_image_cards", fail_if_rebuilt)
+    monkeypatch.setattr(widget, "_rebuild_labels_cards", fail_if_rebuilt)
+    monkeypatch.setattr(widget, "_refresh_points_section", fail_if_rebuilt)
+    names["shapes"] = ["shape_a", "new_regions"]
+
+    widget.app_state.emit_shapes_element_written(
+        ShapesElementWrittenEvent(
+            sdata=fake_sdata,
+            shapes_name="new_regions",
+            coordinate_system="global",
+        )
+    )
+
+    assert [card.shapes_name for card in widget.shape_cards] == ["shape_a", "new_regions"]
+    assert widget.image_rows == image_rows
+    assert widget.labels_rows == labels_rows
+    assert widget.shapes_section_title.full_text() == "Shapes (2)"
+    assert widget.shapes_empty_label.isHidden()
+    assert not widget.shapes_section.isHidden()
+    assert "2 shapes element(s)" in widget.summary_label.text()
+    assert len(viewer.layers) == 0
+
+
+def test_viewer_widget_ignores_shapes_element_events_for_other_sdata_or_coordinate_system(
+    qtbot,
+    monkeypatch,
+) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    fake_sdata = object()
+    other_sdata = object()
+    shapes_names = ["shape_a"]
+
+    qtbot.addWidget(widget)
+
+    _patch_coordinate_system_names(monkeypatch, ["global", "local"])
+    monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(
+        viewer_widget_module,
+        "_get_shapes_in_coordinate_system",
+        lambda sdata, coordinate_system: list(shapes_names),
+    )
+    monkeypatch.setattr(viewer_widget_module, "_get_points_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(viewer_widget_module, "get_annotating_table_names", lambda sdata, element_name: [])
+    monkeypatch.setattr(viewer_widget_module, "get_table_color_source_options", lambda sdata, table_name: [])
+    monkeypatch.setattr(viewer_widget_module, "get_shape_column_color_source_options", lambda sdata, shapes_name: [])
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(fake_sdata)
+
+    assert widget.app_state.coordinate_system == "global"
+    assert [card.shapes_name for card in widget.shape_cards] == ["shape_a"]
+
+    shapes_names[:] = ["shape_a", "new_regions"]
+    widget.app_state.emit_shapes_element_written(
+        ShapesElementWrittenEvent(
+            sdata=other_sdata,
+            shapes_name="new_regions",
+            coordinate_system="global",
+        )
+    )
+    widget.app_state.emit_shapes_element_written(
+        ShapesElementWrittenEvent(
+            sdata=fake_sdata,
+            shapes_name="new_regions",
+            coordinate_system="local",
+        )
+    )
+
+    assert [card.shapes_name for card in widget.shape_cards] == ["shape_a"]
+    assert widget.shapes_section_title.full_text() == "Shapes (1)"
+    assert "1 shapes element(s)" in widget.summary_label.text()
 
 
 def test_viewer_widget_image_mode_toggles_are_mutually_exclusive(qtbot, sdata_blobs) -> None:

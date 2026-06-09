@@ -12,7 +12,7 @@ from spatialdata import SpatialData
 
 import napari_harpy._app_state as app_state_module
 import napari_harpy.widgets.shapes_annotation.widget as shapes_annotation_widget_module
-from napari_harpy._app_state import get_or_create_app_state
+from napari_harpy._app_state import ShapesElementWrittenEvent, get_or_create_app_state
 from napari_harpy.core.shapes_annotation import CreateShapesElementResult
 from napari_harpy.viewer.adapter import ShapesLayerBinding
 from napari_harpy.viewer.shapes_styling import (
@@ -484,6 +484,8 @@ def test_shapes_annotation_widget_save_calls_core_with_locked_request_and_report
     layer = viewer.layers[0]
     captured_requests = []
     captured_layers = []
+    emitted_events: list[object] = []
+    widget.app_state.shapes_element_written.connect(emitted_events.append)
 
     def fake_create_shapes_element(request, napari_layer):
         captured_requests.append(request)
@@ -514,6 +516,14 @@ def test_shapes_annotation_widget_save_calls_core_with_locked_request_and_report
     assert request.index_prefix == "shape"
     assert widget._annotation_has_been_saved is True
     assert widget.save_shapes_button.isEnabled() is True
+    assert emitted_events == [
+        ShapesElementWrittenEvent(
+            sdata=sdata_blobs,
+            shapes_name="new_regions",
+            coordinate_system="global",
+            source="shapes_annotation_widget",
+        )
+    ]
     status = _status_text(widget)
     assert "Shapes Saved" in status
     assert 'Saved "new_regions" with 3 shape(s) in coordinate system "global".' in status
@@ -528,6 +538,8 @@ def test_shapes_annotation_widget_repeated_save_uses_overwrite_after_success(
     widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
     widget.create_layer_button.click()
     overwrites: list[bool] = []
+    emitted_events: list[object] = []
+    widget.app_state.shapes_element_written.connect(emitted_events.append)
 
     def fake_create_shapes_element(request, napari_layer):
         del napari_layer
@@ -549,6 +561,20 @@ def test_shapes_annotation_widget_repeated_save_uses_overwrite_after_success(
 
     assert overwrites == [False, True]
     assert widget._annotation_has_been_saved is True
+    assert emitted_events == [
+        ShapesElementWrittenEvent(
+            sdata=sdata_blobs,
+            shapes_name="new_regions",
+            coordinate_system="global",
+            source="shapes_annotation_widget",
+        ),
+        ShapesElementWrittenEvent(
+            sdata=sdata_blobs,
+            shapes_name="new_regions",
+            coordinate_system="global",
+            source="shapes_annotation_widget",
+        ),
+    ]
 
 
 def test_shapes_annotation_widget_failed_first_save_keeps_later_overwrite_false(

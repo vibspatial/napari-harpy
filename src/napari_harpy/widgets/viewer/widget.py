@@ -25,6 +25,7 @@ from napari_harpy._app_state import (
     CoordinateSystemChangedEvent,
     FeatureMatrixWrittenEvent,
     HarpyAppState,
+    ShapesElementWrittenEvent,
     get_or_create_app_state,
 )
 from napari_harpy._resources import get_logo_path
@@ -262,6 +263,9 @@ class ViewerWidget(QWidget):
         # Feature extraction can create new annotating tables; refresh Viewer
         # linked-table choices when that happens in the active sdata.
         self._app_state.feature_matrix_written.connect(self._on_feature_matrix_written)
+        # Annotation can create/update shapes elements inside the active sdata;
+        # refresh only the Viewer shapes section when that happens.
+        self._app_state.shapes_element_written.connect(self._on_shapes_element_written)
         self.refresh_from_sdata(self._app_state.sdata)
 
     @property
@@ -328,6 +332,17 @@ class ViewerWidget(QWidget):
         self._refresh_labels_card_linked_tables()
         self._refresh_shapes_card_linked_tables()
 
+    def _on_shapes_element_written(self, event: object) -> None:
+        """Refresh the shapes section after same-session annotation writes."""
+        if not isinstance(event, ShapesElementWrittenEvent):
+            return
+        if event.sdata is not self._app_state.sdata:
+            return
+        if event.coordinate_system != self._app_state.coordinate_system:
+            return
+
+        self._refresh_shapes_section()
+
     def _open_spatialdata(self, _checked: bool = False) -> None:
         selected_path = QFileDialog.getExistingDirectory(
             self,
@@ -392,16 +407,56 @@ class ViewerWidget(QWidget):
         shapes_names = _get_shapes_in_coordinate_system(sdata, coordinate_system)
         points_names = _get_points_in_coordinate_system(sdata, coordinate_system)
 
-        self.summary_label.setText(
-            f'In coordinate system "{coordinate_system}": '
-            f"{len(image_names)} image element(s), {len(labels_names)} labels element(s), "
-            f"{len(shapes_names)} shapes element(s), and {len(points_names)} points element(s)."
+        self._set_coordinate_system_summary(
+            coordinate_system,
+            image_names=image_names,
+            labels_names=labels_names,
+            shapes_names=shapes_names,
+            points_names=points_names,
         )
         self._rebuild_image_cards(sdata, image_names)
         self._rebuild_labels_cards(sdata, labels_names)
         self._rebuild_shapes_cards(sdata, shapes_names)
         self._refresh_points_section(sdata, points_names)
         self._update_section_empty_states(image_names, labels_names, shapes_names, points_names)
+
+    def _refresh_shapes_section(self) -> None:
+        sdata = self._app_state.sdata
+        coordinate_system = self._app_state.coordinate_system
+        if sdata is None or not coordinate_system:
+            return
+
+        image_names = _get_images_in_coordinate_system(sdata, coordinate_system)
+        labels_names = _get_labels_in_coordinate_system(sdata, coordinate_system)
+        shapes_names = _get_shapes_in_coordinate_system(sdata, coordinate_system)
+        points_names = _get_points_in_coordinate_system(sdata, coordinate_system)
+
+        self._set_coordinate_system_summary(
+            coordinate_system,
+            image_names=image_names,
+            labels_names=labels_names,
+            shapes_names=shapes_names,
+            points_names=points_names,
+        )
+        self._rebuild_shapes_cards(sdata, shapes_names)
+        self.shapes_group.set_count(len(shapes_names))
+        self.shapes_empty_label.setVisible(not shapes_names)
+        self.shapes_section.setVisible(bool(shapes_names))
+
+    def _set_coordinate_system_summary(
+        self,
+        coordinate_system: str,
+        *,
+        image_names: list[str],
+        labels_names: list[str],
+        shapes_names: list[str],
+        points_names: list[str],
+    ) -> None:
+        self.summary_label.setText(
+            f'In coordinate system "{coordinate_system}": '
+            f"{len(image_names)} image element(s), {len(labels_names)} labels element(s), "
+            f"{len(shapes_names)} shapes element(s), and {len(points_names)} points element(s)."
+        )
 
     def _rebuild_image_cards(self, sdata: SpatialData, image_names: list[str]) -> None:
         _clear_layout(self.images_section_layout)

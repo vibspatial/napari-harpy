@@ -17,7 +17,12 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from napari_harpy._app_state import CoordinateSystemChangedEvent, HarpyAppState, get_or_create_app_state
+from napari_harpy._app_state import (
+    CoordinateSystemChangedEvent,
+    HarpyAppState,
+    ShapesElementWrittenEvent,
+    get_or_create_app_state,
+)
 from napari_harpy._resources import get_logo_path
 from napari_harpy.core.shapes_annotation import (
     DEFAULT_SHAPES_INDEX_NAME,
@@ -305,6 +310,14 @@ class ShapesAnnotation(QWidget):
 
         self._annotation_has_been_saved = True
         self._refresh_save_shapes_state(update_status=False)
+        self._app_state.emit_shapes_element_written(
+            ShapesElementWrittenEvent(
+                sdata=sdata,
+                shapes_name=result.shapes_name,
+                coordinate_system=result.coordinate_system,
+                source=_SOURCE,
+            )
+        )
         self._set_status(
             title="Shapes Saved",
             lines=[
