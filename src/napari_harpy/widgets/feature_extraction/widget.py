@@ -895,9 +895,15 @@ class FeatureExtractionWidget(QWidget):
 
     def _create_triplet_card_widgets(self, coordinate_system: str) -> _FeatureExtractionTripletCardWidgets:
         """Create one visible triplet-card widget for a coordinate system."""
-        container = QGroupBox(coordinate_system)
+        visible_coordinate_system, coordinate_system_shortened = format_feedback_identifier(
+            coordinate_system,
+            max_length=_COORDINATE_SYSTEM_CHECKBOX_MAX_LENGTH,
+        )
+        container = QGroupBox(visible_coordinate_system)
         container.setObjectName(f"feature_extraction_triplet_card_{coordinate_system}")
         container.setStyleSheet(_FEATURE_GROUP_STYLESHEET)
+        if coordinate_system_shortened:
+            self._set_tooltip(container, coordinate_system)
 
         layout = QVBoxLayout(container)
         layout.setContentsMargins(12, 18, 12, 10)

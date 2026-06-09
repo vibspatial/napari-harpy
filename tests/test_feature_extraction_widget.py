@@ -197,6 +197,13 @@ def test_feature_extraction_widget_shortens_long_coordinate_system_checkbox_name
     assert "…" in checkbox.text()
     assert coordinate_system in _tooltip_text(checkbox)
 
+    check_coordinate_system(widget, coordinate_system)
+
+    triplet_card = widget._triplet_card_widgets_by_coordinate_system[coordinate_system].container
+    assert triplet_card.title() != coordinate_system
+    assert "…" in triplet_card.title()
+    assert coordinate_system in _tooltip_text(triplet_card)
+
 
 def test_feature_extraction_widget_refreshes_when_shared_sdata_changes(
     qtbot,
