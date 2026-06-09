@@ -170,6 +170,45 @@ This means the `Shapes` selector becomes the branch point:
 - `Create shapes...` + `New shapes name` -> Workflow A / create-new;
 - existing shapes element -> edit-existing.
 
+## Coordinate-System Session Lock
+
+Both create-new and edit-existing annotation sessions should lock the coordinate
+system when the editable layer is created or adopted.
+
+An active annotation session has one fixed save target:
+
+```python
+(sdata, shapes_name, coordinate_system)
+```
+
+For edit-existing, this means opening `cells` in coordinate system `global`
+must keep saving back to `cells` in `global` for the lifetime of that edit
+session. The session should not silently follow later shared app-state changes
+to another coordinate system.
+
+Behavior:
+
+- keep the coordinate-system selector visible and usable;
+- if no annotation layer is active, coordinate-system changes follow the normal
+  shared app-state behavior;
+- once an annotation layer is active, changing coordinate system requires
+  discard confirmation;
+- canceling the discard restores the selector to the locked session coordinate
+  system;
+- confirming the discard clears or reverts the active annotation session and
+  then applies the newly selected coordinate system;
+- save always uses the locked session coordinate system, not the latest global
+  app-state value.
+
+Rationale:
+
+- napari layer coordinates only make sense in the coordinate frame selected when
+  the layer was created or opened;
+- silently changing the save coordinate system would risk writing valid-looking
+  geometry to the wrong coordinate frame;
+- this matches the create-new workflow and keeps the Annotation widget's save
+  target explicit.
+
 ## Existing Loaded Primary Layer Rule
 
 If the selected edit target is already loaded in the viewer as a compatible
@@ -491,8 +530,6 @@ not drift from `index.name is None` to `index.name == "index"`.
 
 We should resolve these together before implementation:
 
-- Should edit sessions lock the coordinate system the same way create-new
-  sessions do?
 - Should saving always use `overwrite=True` once an existing element has been
   explicitly opened for editing?
 - Do we need conflict detection for backed stores or external mutations between
