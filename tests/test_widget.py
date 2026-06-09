@@ -1513,6 +1513,31 @@ def test_widget_applies_user_class_to_picked_instance(qtbot, sdata_blobs: Spatia
     ]
 
 
+def test_widget_does_not_emit_table_written_when_user_class_is_already_color_source(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs["table"]
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical([0] * table.n_obs, categories=[0])
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+    emitted_events: list[object] = []
+    widget.app_state.classification_table_written.connect(emitted_events.append)
+
+    layer.selected_label = 5
+    widget.class_spinbox.setValue(3)
+    widget.apply_class_button.click()
+
+    mask = (table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5)
+
+    assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
+    assert emitted_events == []
+
+
 def test_widget_apply_shortcut_applies_user_class_to_picked_instance(qtbot, sdata_blobs: SpatialData) -> None:
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])

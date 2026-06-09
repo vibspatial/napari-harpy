@@ -1518,7 +1518,12 @@ class ObjectClassificationWidget(QWidget):
 
     def _on_annotation_changed(self, change: UserClassAnnotationChange) -> None:
         self._mark_persistence_dirty()
-        self._emit_classification_table_written(columns=(USER_CLASS_COLUMN,))
+        # Only notify the Viewer when this annotation made `user_class`
+        # available as a new color source. Later edits only change values, and
+        # the row-scoped refresh below keeps the active labels layer in sync
+        # without rebuilding Viewer labels cards for each add/remove edit.
+        if not change.user_class_was_available_as_color_source:
+            self._emit_classification_table_written(columns=(USER_CLASS_COLUMN,))
         self._classifier_controller.mark_dirty(reason="the annotations changed")
         self._refresh_after_user_class_annotation(change)
         if self._auto_train_enabled:
