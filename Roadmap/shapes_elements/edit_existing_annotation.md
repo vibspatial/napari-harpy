@@ -64,9 +64,20 @@ Define an edit-existing workflow that lets a user:
 - open it as a widget-owned editable primary shapes layer;
 - edit, add, or delete supported polygon rows in napari;
 - save the edited layer back to the same `sdata.shapes[...]` element;
-- preserve stable `instance_id` values for unchanged rows;
+- preserve stable source index values for unchanged rows;
 - write through the same core conversion and Harpy-backed persistence path used
   by Workflow A.
+
+First implementation scope:
+
+- support editable flat polygon rows only;
+- require a unique GeoDataFrame index for editable shapes elements;
+- preserve the existing GeoDataFrame index values as row identity;
+- allow new napari rows to receive generated IDs, for example `shape_N`, when
+  they do not yet have a source index value;
+- reject shapes elements whose source-to-rendered-row mapping is not one-to-one;
+- reject shapes elements that contain `MultiPolygon`, point-radius circle rows,
+  empty/skipped geometries, unsupported geometries, or duplicate index values.
 
 ## Widget Placement
 
@@ -159,6 +170,60 @@ This means the `Shapes` selector becomes the branch point:
 - `Create shapes...` + `New shapes name` -> Workflow A / create-new;
 - existing shapes element -> edit-existing.
 
+## Geometry And Identity Scope
+
+The first edit-existing implementation should be conservative. It should only
+open shapes elements that can round-trip one source `GeoDataFrame` row to one
+napari `Shapes` row and back again.
+
+Eligible source geometry:
+
+- Shapely `Polygon` rows;
+- Shapely `Polygon` rows with holes, because these are rendered as one napari
+  polygon path and remain one source row;
+- rows whose GeoDataFrame index is unique.
+
+Rejected source geometry:
+
+- `MultiPolygon` rows;
+- geometry collections that expand into multiple polygons;
+- point-plus-radius circle rows rendered as napari `Points` or ellipse-like
+  shapes;
+- empty geometries;
+- invalid geometries that cannot be rendered as exactly one editable polygon
+  row;
+- unsupported geometry types such as `LineString`;
+- duplicate GeoDataFrame index values.
+
+Rationale:
+
+- the viewer currently expands a `MultiPolygon` source row into multiple napari
+  polygon rows;
+- the viewer keeps enough source-row mapping for display and styling, but not
+  enough edit semantics to decide how arbitrary add/delete/edit operations
+  should be grouped back into multipart geometries;
+- the current save conversion writes one saved polygon row per napari row;
+- allowing multipart rows in the first edit-existing slice would risk silently
+  changing one `MultiPolygon` source row into several independent polygon rows.
+
+Identity rules:
+
+- for existing rows, use the source GeoDataFrame index value already present in
+  `layer.features`;
+- use the source index feature column tracked by the layer binding, for example
+  `binding.source_shapes_index_feature_name`;
+- existing rows must keep their source index values across saves;
+- new rows drawn during the edit session get generated IDs only if they are
+  missing a source index value;
+- deleted rows disappear on save;
+- duplicate custom/manual IDs remain invalid.
+
+This differs from create-new Workflow A only in where the first row IDs come
+from:
+
+- create-new starts with no source rows and generates `shape_0`, `shape_1`, ...;
+- edit-existing starts from the existing shapes element index and preserves it.
+
 ## Open Specification Questions
 
 We should resolve these together before implementation:
@@ -174,10 +239,32 @@ We should resolve these together before implementation:
   explicitly opened for editing?
 - Do we need conflict detection for backed stores or external mutations between
   opening and saving?
-- Which shapes elements are eligible for editing when they are linked to
-  tables?
 - Should table-linked shapes edits be blocked, allowed with warnings, or handled
   in a later table-reconciliation workflow?
+
+## Deferred: Multipart Edit Roundtrip
+
+Full multipart editing should be a follow-up workflow.
+
+To safely support `MultiPolygon` edit round-trips later, Harpy likely needs an
+explicit part-aware edit model, such as hidden per-row features for:
+
+- source instance ID;
+- source row id;
+- source part id;
+- source geometry kind.
+
+That follow-up must define how to handle:
+
+- editing one part of a `MultiPolygon`;
+- deleting one part of a `MultiPolygon`;
+- adding a new part to an existing multipart row;
+- splitting one multipart row into independent rows;
+- merging independent rows into one multipart geometry;
+- preserving table linkage for multipart rows.
+
+Until that is specified and tested, edit-existing should reject shapes elements
+that do not map one source row to one rendered editable napari row.
 
 ## Likely Reusable Pieces
 
