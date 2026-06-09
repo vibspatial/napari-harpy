@@ -994,15 +994,41 @@ Status: proposed
 Purpose:
 
 - connect the widget-owned annotation layer to the core save helper;
-- report save results and validation failures in the widget.
+- report save results and validation failures in the widget;
+- keep the widget-owned layer editable after the first successful save and use
+  repeated saves to update the same locked `sdata.shapes[...]` element.
 
 Code:
 
-- connect the `Save new shapes element` button;
+- connect the `Save shapes` button;
 - introduce `_refresh_save_shapes_state()` separately from
   `_refresh_create_layer_state()` so save readiness and layer-creation
   readiness do not become one overloaded status/update path;
+- keep `_refresh_create_layer_state()` responsible for whether a new empty
+  layer can be created;
+- make `_refresh_save_shapes_state()` responsible for whether the current
+  widget-owned annotation layer can be saved;
+- add explicit widget state for the save overwrite boundary, for example:
+
+  ```python
+  self._annotation_has_been_saved = False
+  ```
+
+- set that state to `False` when creating a new empty annotation layer;
+- clear that state when the annotation layer is discarded, manually removed, or
+  replaced by a new `sdata`;
+- set that state to `True` only after
+  `create_shapes_element_from_napari_shapes_layer(...)` succeeds;
+- before wiring save, align the annotation-layer binding with the save identity
+  field by using `DEFAULT_SHAPES_INDEX_NAME` / `"instance_id"` as the
+  `source_shapes_index_feature_name` for widget-created annotation layers;
 - call `create_shapes_element_from_napari_shapes_layer(...)`;
+- add an inline comment near the save-request construction explaining that
+  `overwrite=self._annotation_has_been_saved` is the widget ownership boundary:
+  before the first successful save, same-name external creations are protected
+  by `overwrite=False`; after the widget has saved once, repeated saves
+  intentionally overwrite the locked element name even if external code changed
+  that element in the meantime;
 - refresh relevant widget/viewer state after success;
 - extend widget tests.
 
@@ -1012,10 +1038,46 @@ Behavior:
 - reject saving if there is no annotation layer;
 - reject saving if the annotation layer binding no longer matches the widget
   request;
+- reject saving if the binding is not:
+  - `element_type="shapes"`;
+  - `shapes_role="primary"`;
+  - `shapes_rendering_mode="shapes"`;
+  - `style_spec=None`;
+  - the same locked shapes element name;
+  - the same frozen annotation coordinate system;
 - reject initial layer creation if the requested name already exists in
   `sdata.shapes`;
-- pass the selected coordinate system and locked element name to the core save
-  helper;
+- pass the frozen annotation coordinate system and locked element name to the
+  core save helper, not a later transient combo-box value;
+- enable `Save shapes` only when a widget-owned annotation layer exists and its
+  binding still matches the locked annotation request;
+- do not require the save button to inspect shape row count. Empty-layer and
+  row-level validation should happen inside
+  `create_shapes_element_from_napari_shapes_layer(...)` so the widget can show
+  the core validation message;
+- build the request as:
+
+  ```python
+  CreateShapesElementRequest(
+      sdata=sdata,
+      shapes_name=self._annotation_shapes_name,
+      coordinate_system=self._annotation_coordinate_system,
+      overwrite=self._annotation_has_been_saved,
+      index_name=DEFAULT_SHAPES_INDEX_NAME,
+      index_prefix=DEFAULT_SHAPES_INDEX_PREFIX,
+  )
+  ```
+
+- pass `overwrite=False` on the first save from a newly-created annotation layer;
+- pass `overwrite=True` on later saves only after the first save of that same
+  locked layer has succeeded;
+- if another caller creates `sdata.shapes[name]` between layer creation and the
+  first save, let the first save fail with `overwrite=False` and show the core
+  collision error;
+- if another caller modifies or replaces `sdata.shapes[name]` after this widget
+  has saved the locked annotation layer once, the next widget save may replace
+  that external change. Workflow A does not add extra external-conflict
+  detection beyond the first-save `overwrite=False` guard;
 - show actionable conversion/save errors in the status area;
 - show:
 
@@ -1026,9 +1088,9 @@ Behavior:
 - after successful save, keep the newly saved element registered as the source
   element for the editable widget-owned layer;
 - keep the layer editable after save;
-- pass `overwrite=False` on the first save and `overwrite=True` on later saves
-  from the same widget-owned layer;
 - preserve existing `instance_id` values across repeated saves;
+- after repeated saves, deleted napari rows disappear from the saved
+  `sdata.shapes[...]` element because the whole locked element is replaced;
 - do not accept styled shapes layers as save sources.
 
 Acceptance:
@@ -1037,19 +1099,33 @@ Acceptance:
 - successful save writes the new element;
 - successful save reports row count and coordinate system;
 - a saved layer can be edited and saved again to the same locked element name;
+- the first successful save flips later saves to `overwrite=True`;
+- failed first saves do not flip later saves to `overwrite=True`;
 - errors are shown as clear widget feedback;
 - no styled layer can be saved by this workflow.
 
 Tests:
 
-- save calls the core save helper with the selected coordinate system;
+- save calls the core save helper with the frozen annotation coordinate system;
 - save passes the locked new shapes element name;
+- save uses the frozen annotation coordinate system if the combo-box state later
+  diverges;
+- save passes `index_name="instance_id"` and `index_prefix="shape"`;
+- widget-created annotation layers are registered with
+  `source_shapes_index_feature_name="instance_id"`;
+- `Save shapes` is disabled before an annotation layer exists;
+- `Save shapes` is enabled after a valid widget-owned annotation layer exists;
 - save feedback reports row count and coordinate system;
 - duplicate-name validation is enforced before initial layer creation;
+- first save passes `overwrite=False`;
+- successful first save makes the next save pass `overwrite=True`;
+- failed first save keeps the next save at `overwrite=False`;
 - repeated save preserves `instance_id` values for existing rows;
 - repeated save assigns new `instance_id` values only to newly-added rows;
 - repeated save removes deleted rows from the saved element;
 - unsupported shape errors are displayed without mutating `sdata`;
+- empty-layer errors are displayed as widget feedback;
+- binding mismatch errors are displayed without calling the core save helper;
 - styled shapes layers are not offered or accepted as save sources.
 
 ### Slice 7: Launcher Wiring
