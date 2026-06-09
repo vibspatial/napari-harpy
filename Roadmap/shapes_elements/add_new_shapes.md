@@ -1371,7 +1371,87 @@ Tests:
 - Viewer widget ignores events for a non-current `sdata`;
 - save notification does not call viewer-adapter layer loading APIs.
 
-### Slice 9: Backed Persistence Verification
+### Slice 9: Viewer Refresh On Object Classification Table Writes
+
+Status: proposed
+
+Purpose:
+
+- fix the same cross-widget refresh class for Object Classification table
+  writes;
+- make the Viewer widget react when Object Classification writes or updates
+  `user_class` or `pred_class` values;
+- allow users to color labels/shapes from the Viewer widget by newly written
+  `user_class` or `pred_class` columns without reloading the `SpatialData`
+  object.
+
+Code:
+
+- add or reuse a semantic app-state event for table value writes that are not
+  feature-matrix creation events, for example:
+
+  ```python
+  ClassificationTableWrittenEvent
+  ```
+
+- emit the event from Object Classification when:
+  - user annotation writes or updates `user_class`;
+  - classifier prediction writes or updates `pred_class`;
+- include enough event payload for Viewer refresh decisions:
+  - `sdata`;
+  - `table_name`;
+  - changed column names, for example `user_class` or `pred_class`;
+  - change kind, if useful;
+  - `source="object_classification_widget"`;
+- make `ViewerWidget` listen to the app-state signal;
+- when the event matches the viewer's current `sdata`, refresh the relevant
+  table-linked Viewer widget state so new or changed color-by columns are
+  visible;
+- avoid using `sdata_changed`, because Object Classification mutates tables
+  inside the existing `SpatialData` object rather than replacing it.
+
+Behavior:
+
+- after a `user_class` write, the Viewer widget can expose/use the updated
+  `user_class` column without reloading `sdata`;
+- after a `pred_class` write, the Viewer widget can expose/use the updated
+  `pred_class` column without reloading `sdata`;
+- Viewer widget ignores classification-table events for a different
+  `SpatialData` object;
+- Object Classification keeps its existing local layer-refresh behavior for the
+  actively managed labels layer;
+- the app-state event is only for other widgets, especially Viewer, that need
+  to discover table changes made inside the same `SpatialData` object.
+
+Rationale:
+
+- this mirrors the existing `feature_matrix_written` app-state pattern, where
+  Feature Extraction writes a table and Viewer/Object Classification refresh
+  their table-aware UI;
+- `user_class` and `pred_class` writes have the same object-identity issue as
+  annotation shapes saves: the `SpatialData` object is mutated in place, so
+  listeners need a semantic event rather than an `sdata_changed` event;
+- this issue is adjacent to Slice 8 because both slices keep Viewer widget state
+  synchronized with in-place writes performed by another widget.
+
+Acceptance:
+
+- writing `user_class` in Object Classification notifies Viewer widget state;
+- writing `pred_class` in Object Classification notifies Viewer widget state;
+- Viewer widget ignores events for other `SpatialData` objects;
+- existing Object Classification layer styling refresh behavior remains intact;
+- no full `SpatialData` reload is required for Viewer color-by options to
+  reflect `user_class` or `pred_class`.
+
+Tests:
+
+- app state exposes and emits the classification-table-written event;
+- Object Classification emits the event after `user_class` writes;
+- Object Classification emits the event after `pred_class` writes;
+- Viewer widget listens to the event and refreshes table-linked color state;
+- Viewer widget ignores events for a non-current `sdata`.
+
+### Slice 10: Backed Persistence Verification
 
 Status: proposed
 
