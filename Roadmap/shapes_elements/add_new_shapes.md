@@ -424,8 +424,8 @@ Plugin registration:
 - add a `napari-harpy.shapes_annotation` command to `napari.yaml` as part of
   Slice 3;
 - expose the widget as `Shapes Annotation` as part of Slice 3;
-- optionally add an `Interactive(..., widgets="shapes_annotation")` selection
-  id in the launcher wiring slice.
+- add an `Interactive(..., widgets="shapes_annotation")` selection id in the
+  launcher wiring slice.
 
 ## Persistence Policy
 
@@ -1182,27 +1182,98 @@ Tests:
 
 Status: proposed
 
-Expose the widget through `Interactive` if a programmatic launcher shortcut is
-desired. The napari plugin widget contribution is part of Slice 3.
+Purpose:
+
+- expose `ShapesAnnotation()` through the programmatic `Interactive(...)`
+  launcher;
+- keep the napari plugin menu contribution from Slice 3 as-is;
+- make `Interactive(...)` default to opening only the Viewer widget;
+- make explicit `Interactive(..., widgets="all")` open every Harpy widget,
+  including the mutating shapes-annotation widget.
 
 Code:
 
-- optionally add an `Interactive(..., widgets="shapes_annotation")` selection
-  id;
-- document whether `Interactive(..., widgets="all")` should include this
-  mutating annotation widget.
+- update `src/napari_harpy/_interactive.py`;
+- add `"shapes_annotation"` to `HarpyWidgetId`;
+- add the display mapping:
+
+  ```python
+  "shapes_annotation": "Shapes Annotation"
+  ```
+
+- split launcher semantics into two explicit sets:
+
+  ```python
+  _DEFAULT_WIDGET_IDS = ("viewer",)
+
+  _ALL_WIDGET_IDS = (
+      "viewer",
+      "feature_extraction",
+      "object_classification",
+      "shapes_annotation",
+  )
+  ```
+
+- change the `Interactive` constructor default from `widgets="all"` to
+  `widgets="viewer"`;
+- add a short inline comment explaining that the default launcher opens only the
+  Viewer widget, while explicit `widgets="all"` means all available Harpy
+  widgets, including write-back annotation widgets;
+- update the `Interactive` docstring so valid widget ids include
+  `"shapes_annotation"`;
+- update the `Interactive` docstring so the default is documented as
+  `widgets="viewer"` and `widgets="all"` is documented as opening all Harpy
+  widgets;
+- extend `tests/test_app_state.py`.
+
+Behavior:
+
+- `Interactive(...)` with no explicit `widgets` argument docks only the Viewer
+  widget;
+- `Interactive(..., widgets="shapes_annotation")` docks only the Shapes
+  Annotation widget;
+- `Interactive(..., widgets=("viewer", "shapes_annotation"))` docks both in the
+  requested order;
+- duplicate widget ids are still deduplicated while preserving order;
+- `Interactive(..., widgets="all")` docks:
+  - `Viewer`;
+  - `Feature Extraction`;
+  - `Object Classification`;
+  - `Shapes Annotation`;
+- unknown-widget errors list `"shapes_annotation"` as a valid explicit option;
+- `headless=True` keeps the existing behavior: set shared `sdata`, dock selected
+  widgets, and do not call `napari.run()`.
+
+Rationale:
+
+- the napari plugin menu already exposes `Shapes Annotation`;
+- adding an explicit launcher id is useful for notebooks and tests;
+- defaulting to `widgets="viewer"` keeps notebook launcher startup conservative;
+- making `widgets="all"` literal is clearer once the user explicitly requests
+  all Harpy widgets.
 
 Acceptance:
 
-- launcher selection tests cover the new widget id if added;
-- `Interactive(..., widgets="all")` behavior is updated intentionally, either
-  including or excluding the annotation widget by documented choice.
+- `Interactive(...)` docks only `Viewer` by default;
+- `Interactive(..., widgets="shapes_annotation")` docks `Shapes Annotation`;
+- `Interactive(..., widgets=("viewer", "shapes_annotation"))` docks both widgets
+  in order;
+- `Interactive(..., widgets="all")` docks all four Harpy widgets, including
+  `Shapes Annotation`;
+- unknown-widget validation recognizes `"shapes_annotation"` as valid;
+- no napari manifest changes are needed in this slice.
 
 Tests:
 
-- `Interactive(..., widgets="shapes_annotation")` docks the widget if launcher
-  support is added;
-- `Interactive(..., widgets="all")` behavior is covered if changed.
+- `Interactive(...)` without a `widgets` argument docks only
+  `("napari-harpy", "Viewer", True)`;
+- `Interactive(..., widgets="shapes_annotation")` docks
+  `("napari-harpy", "Shapes Annotation", True)`;
+- mixed widget selection with `"shapes_annotation"` preserves order and
+  deduplicates repeated ids;
+- `Interactive(..., widgets="all")` docks Viewer, Feature Extraction, Object
+  Classification, and Shapes Annotation;
+- unknown-widget error text includes `"shapes_annotation"` among valid options.
 
 ### Slice 8: Backed Persistence Verification
 
