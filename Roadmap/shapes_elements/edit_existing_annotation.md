@@ -170,6 +170,81 @@ This means the `Shapes` selector becomes the branch point:
 - `Create shapes...` + `New shapes name` -> Workflow A / create-new;
 - existing shapes element -> edit-existing.
 
+## Existing Loaded Primary Layer Rule
+
+If the selected edit target is already loaded in the viewer as a compatible
+primary shapes layer, the Annotation widget should adopt that layer as the edit
+session layer. It should not create a duplicate primary layer for the same
+`sdata`, shapes element, and coordinate system.
+
+Adoption requirements:
+
+- the loaded layer has a Harpy `ShapesLayerBinding`;
+- the binding matches the selected `sdata`, shapes name, and coordinate system;
+- `binding.shapes_role == "primary"`;
+- `binding.shapes_rendering_mode == "shapes"`;
+- the layer is a napari `Shapes` layer, not a point-radius `Points` layer;
+- `binding.style_spec is None`;
+- `binding.skipped_geometry_count == 0`;
+- `binding.source_row_id_by_rendered_row` is one-to-one with the current layer
+  rows;
+- the layer passes the edit-existing geometry and identity validation described
+  below.
+
+Behavior:
+
+- do not create a second primary layer for the same edit target;
+- store the adopted layer in `_annotation_layer`;
+- record that the layer was adopted from a pre-existing viewer primary layer,
+  not created by the Annotation widget;
+- lock the selected shapes name and coordinate system for the edit session;
+- lock the source index feature name and source GeoDataFrame index name for the
+  edit session;
+- activate the adopted layer in napari;
+- save the adopted layer with the edit-existing save path and `overwrite=True`;
+- keep styled layers separate. Styled layers may coexist, but they are never
+  adopted as edit sources.
+
+Rationale:
+
+- the viewer adapter already treats primary shapes layers as the canonical
+  visible layer for a shapes element in one coordinate system;
+- creating a second primary layer for the same element would make ownership,
+  registry lookup, and save behavior ambiguous;
+- adopting a compatible primary layer keeps the viewer and Annotation widget
+  pointed at the same editable object.
+
+## Discard And Target Switching
+
+Switching coordinate system or switching the `Shapes` target while an annotation
+layer is active should require discard confirmation.
+
+Confirmed discard behavior depends on how the edit layer was created:
+
+- create-new annotation layer: remove the layer and unregister its binding;
+- edit-existing layer created by the Annotation widget: remove the layer and
+  unregister its binding;
+- edit-existing layer adopted from an already-loaded primary viewer layer:
+  remove the layer, unregister its binding, and re-load the saved shapes element
+  from current `sdata` through the normal viewer loading path, for example
+  `ViewerAdapter.ensure_shapes_loaded(...)`.
+
+Rationale:
+
+- discard should not leave unsaved edits visible in the viewer;
+- remove-and-reensure is simpler and safer than trying to reset all napari
+  `Shapes` layer internals in place;
+- reusing the viewer loading path keeps geometry conversion, source-index
+  features, source-row mappings, and presentation defaults consistent with the
+  rest of the viewer.
+
+Tradeoff:
+
+- adopted-layer discard may create a fresh napari layer object and may reset
+  layer order, selection, and presentation tweaks. This is acceptable for the
+  first implementation because the saved `sdata` state is restored clearly and
+  safely.
+
 ## Geometry And Identity Scope
 
 The first edit-existing implementation should be conservative. It should only
@@ -373,11 +448,7 @@ not drift from `index.name is None` to `index.name == "index"`.
 
 We should resolve these together before implementation:
 
-- What happens if the target shapes element is already loaded in the viewer as a
-  primary layer?
 - What happens if a styled layer exists for the same shapes element?
-- Should opening an existing element reuse an existing compatible primary layer
-  or create a dedicated editable annotation layer?
 - Should edit sessions lock the coordinate system the same way create-new
   sessions do?
 - Should saving always use `overwrite=True` once an existing element has been
