@@ -84,6 +84,14 @@ def _assert_action_feedback_card(widget: ViewerWidget, *, title: str, kind: str)
     assert not widget.global_action_feedback_label.isHidden()
 
 
+def _label_text(label) -> str:
+    return unescape(label.text())
+
+
+def _tooltip_text(label) -> str:
+    return unescape(label.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+
+
 def _patch_coordinate_system_names(monkeypatch, coordinate_systems: list[str]) -> None:
     monkeypatch.setattr(
         viewer_widget_module,
@@ -236,7 +244,8 @@ def test_viewer_widget_can_be_instantiated(qtbot) -> None:
     assert widget._logo_path.is_file()
     assert widget.app_state.sdata is None
     assert not widget.empty_state_label.isHidden()
-    assert widget.summary_label.text() == "No SpatialData loaded."
+    assert "No SpatialData Loaded" in _label_text(widget.summary_label)
+    assert "No SpatialData loaded." in _label_text(widget.summary_label)
     assert widget.coordinate_system_combo.count() == 0
     assert not widget.coordinate_system_combo.isEnabled()
     assert isinstance(widget.coordinate_system_combo, CompactComboBox)
@@ -382,7 +391,37 @@ def test_viewer_widget_refreshes_cards_when_shared_sdata_changes(qtbot, sdata_bl
     assert widget.labels_cards[1].linked_table_combo.count() == 1
     assert widget.labels_cards[1].linked_table_combo.itemText(0) == "No linked tables"
     assert not widget.labels_cards[1].linked_table_combo.isEnabled()
-    assert 'In coordinate system "global"' in widget.summary_label.text()
+    assert "Current View" in _label_text(widget.summary_label)
+    assert '"global":' in _label_text(widget.summary_label)
+    assert widget.summary_label.toolTip() == ""
+
+
+def test_viewer_widget_summary_card_shortens_long_coordinate_system(
+    qtbot,
+    monkeypatch,
+    sdata_blobs,
+) -> None:
+    coordinate_system = "global_long_coordinate_system_name_" + "x" * 80
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    qtbot.addWidget(widget)
+    _patch_coordinate_system_names(monkeypatch, [coordinate_system])
+    monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(viewer_widget_module, "_get_shapes_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(viewer_widget_module, "_get_points_in_coordinate_system", lambda sdata, coordinate_system: [])
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata_blobs)
+
+    summary = _label_text(widget.summary_label)
+    assert "Current View" in summary
+    assert coordinate_system not in summary
+    assert "…" in summary
+    assert "0 image element(s)" in summary
+    tooltip = _tooltip_text(widget.summary_label)
+    assert coordinate_system in tooltip
+    assert 'In coordinate system "' in tooltip
 
 
 def test_viewer_widget_points_section_populates_and_starts_value_loading(qtbot, monkeypatch) -> None:

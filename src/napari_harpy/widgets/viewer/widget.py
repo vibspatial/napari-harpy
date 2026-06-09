@@ -50,6 +50,7 @@ from napari_harpy.widgets.shared_styles import (
     apply_scroll_content_surface,
     apply_widget_surface,
     create_form_label,
+    format_feedback_identifier,
     set_status_card,
 )
 from napari_harpy.widgets.viewer.disclosure import _CollapsibleSectionWidget, _DisclosureElementWidget
@@ -71,12 +72,14 @@ from napari_harpy.widgets.viewer.status_card import (
 from napari_harpy.widgets.viewer.styles import (
     EMPTY_STATE_STYLESHEET,
     INPUT_CONTROL_STYLESHEET,
-    SUMMARY_LABEL_STYLESHEET,
 )
 
 if TYPE_CHECKING:
     import napari
     from spatialdata import SpatialData
+
+
+_SUMMARY_COORDINATE_SYSTEM_MAX_LENGTH = 32
 
 
 class ViewerWidget(QWidget):
@@ -144,7 +147,6 @@ class ViewerWidget(QWidget):
         self.summary_label = QLabel("No SpatialData loaded.")
         self.summary_label.setObjectName("viewer_widget_summary")
         self.summary_label.setWordWrap(True)
-        self.summary_label.setStyleSheet(SUMMARY_LABEL_STYLESHEET)
 
         selector_layout = QFormLayout()
         selector_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
@@ -386,7 +388,12 @@ class ViewerWidget(QWidget):
 
             if sdata is None:
                 self.empty_state_label.show()
-                self.summary_label.setText("No SpatialData loaded.")
+                set_status_card(
+                    self.summary_label,
+                    title="No SpatialData Loaded",
+                    lines=["No SpatialData loaded."],
+                    kind="info",
+                )
                 self.coordinate_system_combo.setEnabled(False)
                 self._clear_cards()
                 self._update_section_empty_states([], [], [], [])
@@ -410,9 +417,19 @@ class ViewerWidget(QWidget):
             self._clear_cards()
             self._update_section_empty_states([], [], [], [])
             if sdata is None:
-                self.summary_label.setText("No SpatialData loaded.")
+                set_status_card(
+                    self.summary_label,
+                    title="No SpatialData Loaded",
+                    lines=["No SpatialData loaded."],
+                    kind="info",
+                )
             else:
-                self.summary_label.setText("No coordinate system selected.")
+                set_status_card(
+                    self.summary_label,
+                    title="Current View",
+                    lines=["No coordinate system selected."],
+                    kind="info",
+                )
             return
 
         labels_names = _get_labels_in_coordinate_system(sdata, coordinate_system)
@@ -465,10 +482,25 @@ class ViewerWidget(QWidget):
         shapes_names: list[str],
         points_names: list[str],
     ) -> None:
-        self.summary_label.setText(
+        display_coordinate_system, coordinate_system_shortened = format_feedback_identifier(
+            coordinate_system,
+            max_length=_SUMMARY_COORDINATE_SYSTEM_MAX_LENGTH,
+        )
+        full_summary = (
             f'In coordinate system "{coordinate_system}": '
             f"{len(image_names)} image element(s), {len(labels_names)} labels element(s), "
             f"{len(shapes_names)} shapes element(s), and {len(points_names)} points element(s)."
+        )
+        set_status_card(
+            self.summary_label,
+            title="Current View",
+            lines=[
+                f'"{display_coordinate_system}": '
+                f"{len(image_names)} image element(s), {len(labels_names)} labels element(s), "
+                f"{len(shapes_names)} shapes element(s), and {len(points_names)} points element(s)."
+            ],
+            kind="info",
+            tooltip_message=full_summary if coordinate_system_shortened else None,
         )
 
     def _rebuild_image_cards(self, sdata: SpatialData, image_names: list[str]) -> None:
