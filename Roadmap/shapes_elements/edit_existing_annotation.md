@@ -214,6 +214,38 @@ Rationale:
 - adopting a compatible primary layer keeps the viewer and Annotation widget
   pointed at the same editable object.
 
+## Styled Layer Rule
+
+Styled shapes layers should be ignored by the edit-existing workflow.
+
+The viewer registry can distinguish them from editable primary layers through
+the `ShapesLayerBinding`:
+
+- primary editable shapes have `binding.shapes_role == "primary"` and
+  `binding.style_spec is None`;
+- styled shapes have `binding.shapes_role == "styled"` and a non-null
+  `binding.style_spec`.
+
+Behavior:
+
+- if only styled layers exist for the selected shapes element, create or load a
+  separate primary editable layer for the edit session;
+- if both a primary layer and styled layers exist, adopt only the compatible
+  primary layer;
+- never adopt a styled layer as `_annotation_layer`;
+- do not remove, restyle, or otherwise mutate styled layers when opening an
+  edit session;
+- after save, rely on the existing `ShapesElementWrittenEvent`/viewer refresh
+  path to let viewer-owned styled layers refresh if that behavior is needed.
+
+Rationale:
+
+- styled layers are viewer presentation variants, not canonical edit targets;
+- styled layers may be table-colored or shape-column-colored and carry
+  presentation-specific state that should not become part of annotation save
+  semantics;
+- keeping styled and primary layers separate avoids ambiguous ownership.
+
 ## Discard And Target Switching
 
 Switching coordinate system or switching the `Shapes` target while an annotation
@@ -459,7 +491,6 @@ not drift from `index.name is None` to `index.name == "index"`.
 
 We should resolve these together before implementation:
 
-- What happens if a styled layer exists for the same shapes element?
 - Should edit sessions lock the coordinate system the same way create-new
   sessions do?
 - Should saving always use `overwrite=True` once an existing element has been
