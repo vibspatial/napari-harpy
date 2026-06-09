@@ -72,6 +72,7 @@ from napari_harpy.widgets.shared_styles import (
     apply_widget_surface,
     build_input_control_stylesheet,
     create_form_label,
+    format_feedback_identifier,
     format_tooltip,
     set_status_card,
 )
@@ -149,6 +150,7 @@ _DEFAULT_NEW_TABLE_NAME = "features_table"
 _CREATE_TABLE_OPTION_TEXT = "Create table..."
 _MAX_VISIBLE_EXTRACTION_CHANNELS = 5
 _FEATURE_GROUPS_TOP_SPACING = 12
+_COORDINATE_SYSTEM_CHECKBOX_MAX_LENGTH = 20
 _CHOOSE_SEGMENTATION_TEXT = "Choose a labels element"
 ElementIdentity = tuple[int, str]
 
@@ -172,10 +174,7 @@ class _FeatureExtractionTableComboData:
                 raise ValueError("Existing table combo data requires a table name.")
             return
 
-        if (
-            self.mode is _FeatureExtractionTableComboMode.CREATE_TABLE
-            and self.table_name is not None
-        ):
+        if self.mode is _FeatureExtractionTableComboMode.CREATE_TABLE and self.table_name is not None:
             raise ValueError("Create-table combo data cannot carry a table name.")
 
     @classmethod
@@ -1386,9 +1385,15 @@ class FeatureExtractionWidget(QWidget):
         self._clear_coordinate_system_checkboxes()
         checked_coordinate_systems = set(self._checked_coordinate_systems)
         for coordinate_system in self._coordinate_systems:
-            checkbox = QCheckBox(coordinate_system)
+            visible_coordinate_system, coordinate_system_shortened = format_feedback_identifier(
+                coordinate_system,
+                max_length=_COORDINATE_SYSTEM_CHECKBOX_MAX_LENGTH,
+            )
+            checkbox = QCheckBox(visible_coordinate_system)
             checkbox.setObjectName(f"feature_extraction_coordinate_system_checkbox_{coordinate_system}")
             checkbox.setStyleSheet(_FEATURE_CHECKBOX_STYLESHEET)
+            if coordinate_system_shortened:
+                self._set_tooltip(checkbox, coordinate_system)
             checkbox.setChecked(coordinate_system in checked_coordinate_systems)
             checkbox.toggled.connect(
                 lambda checked, current_coordinate_system=coordinate_system: (
@@ -1930,7 +1935,9 @@ class FeatureExtractionWidget(QWidget):
         return f"{_DEFAULT_NEW_TABLE_NAME}_{uuid.uuid4()}"
 
     def _ensure_new_table_name_suggestion(self) -> None:
-        current_name = self._new_table_name if self._new_table_name is not None else self.new_table_name_line_edit.text()
+        current_name = (
+            self._new_table_name if self._new_table_name is not None else self.new_table_name_line_edit.text()
+        )
         if current_name.strip():
             if self.new_table_name_line_edit.text() != current_name:
                 with QSignalBlocker(self.new_table_name_line_edit):
