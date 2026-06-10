@@ -1063,6 +1063,9 @@ Work:
     - source index is unique and non-missing;
     - source geometries satisfy the Geometry And Identity Scope section;
     - the rendered layer maps one source row to one napari row;
+  - reuse the core edit-existing validation rules rather than duplicating them
+    in the widget. If needed, expose a small core helper so opening validation
+    and save conversion reject the same source shapes elements;
   - call `ViewerAdapter.ensure_shapes_loaded(sdata, shapes_name, coordinate_system)`;
   - if `ShapesLoadResult.created is False`, treat the layer as
     `layer_origin="adopted_primary"`;
