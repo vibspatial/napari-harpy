@@ -471,6 +471,35 @@ should fail with actionable feedback or document the intentional conversion.
 Edit-existing saves should rebuild the full shapes element from the current
 napari layer state. They should not attempt partial row patching.
 
+Overwrite policy:
+
+- edit-existing saves always call `harpy.sh.add_shapes(...)` with
+  `overwrite=True`;
+- the target element already exists by definition, because the user explicitly
+  selected it as the edit target;
+- using `overwrite=False` would make accepted edit-existing saves fail by
+  construction;
+- create-new keeps its separate first-save guard with `overwrite=False`.
+
+Conflict policy:
+
+- edit-existing does not perform conflict detection for external mutations
+  between opening and saving;
+- once a shapes element is opened in the Annotation widget, the active edit
+  session is authoritative for that element at save time;
+- saving replaces the target `sdata.shapes[...]` element in memory and in the
+  backed store through Harpy;
+- source metadata is preserved from the snapshot used when the edit session was
+  opened, so external metadata changes made after opening may be overwritten;
+- external references, such as a notebook-held GeoDataFrame object, may become
+  stale after the widget saves;
+- users are responsible for coordinating external notebook writes with active
+  Annotation edit sessions.
+
+Future conflict detection or merge behavior should be specified as a separate
+workflow. It should not change the accepted edit-existing write path from
+`overwrite=True`.
+
 Save behavior:
 
 - treat the editable napari layer as the source of truth for the edit session;
@@ -530,10 +559,6 @@ not drift from `index.name is None` to `index.name == "index"`.
 
 We should resolve these together before implementation:
 
-- Should saving always use `overwrite=True` once an existing element has been
-  explicitly opened for editing?
-- Do we need conflict detection for backed stores or external mutations between
-  opening and saving?
 - Should table-linked shapes edits be blocked, allowed with warnings, or handled
   in a later table-reconciliation workflow?
 
