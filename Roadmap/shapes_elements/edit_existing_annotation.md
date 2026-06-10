@@ -597,6 +597,348 @@ Rationale:
 
 No open specification questions remain before implementation planning.
 
+## Implementation Slices
+
+The implementation should be split so each slice keeps the existing create-new
+Workflow A usable. Avoid a large widget rewrite that mixes UI, conversion, and
+persistence in one step.
+
+### Slice 1: Core Edit Conversion And Metadata Alignment
+
+Status: pending
+
+Goal: add core helpers that can rebuild an edited shapes `GeoDataFrame` from a
+napari `Shapes` layer while preserving existing source row identity and
+non-geometry metadata.
+
+Likely files:
+
+- `src/napari_harpy/core/shapes_annotation.py`;
+- `tests/test_shapes_annotation.py`.
+
+Work:
+
+- add validation for edit-existing source shapes elements:
+  - unique source index;
+  - supported `Polygon` rows only;
+  - no `MultiPolygon`, point-radius rows, empty geometries, unsupported
+    geometries, or one-source-row-to-many-rendered-row mappings;
+- add a row-identity helper that:
+  - reads existing row IDs from `layer.features[source_index_feature_name]`;
+  - preserves existing source index values;
+  - assigns generated `shape_N` IDs only to new rows with missing row identity;
+  - avoids collisions with all existing row IDs;
+  - preserves `source_geodataframe_index_name`, including `None`;
+- add metadata alignment helpers that:
+  - preserve non-geometry columns for existing row IDs;
+  - drop metadata for deleted rows;
+  - fill metadata for new rows with missing values;
+  - convert integer and boolean metadata columns to nullable pandas dtypes when
+    new missing values are needed;
+  - preserve categorical columns where possible;
+- keep `napari_shapes_layer_to_geodataframe(...)` behavior for create-new
+  unchanged unless a shared lower-level geometry conversion helper is extracted.
+
+Done when:
+
+- core tests cover named and unnamed source indexes;
+- new rows get stable generated IDs without renaming unnamed indexes to
+  `"index"`;
+- deleted rows disappear;
+- integer metadata columns do not silently become float columns;
+- unsupported geometry fails before writing.
+
+### Slice 2: Core Edit-Existing Save API
+
+Status: pending
+
+Goal: add an explicit core save helper for edit-existing rather than overloading
+the create-new request contract.
+
+Likely files:
+
+- `src/napari_harpy/core/shapes_annotation.py`;
+- `tests/test_shapes_annotation.py`.
+
+Suggested API shape:
+
+```python
+@dataclass(frozen=True)
+class EditShapesElementRequest:
+    sdata: SpatialData
+    shapes_name: str
+    coordinate_system: str
+    source_geodataframe: gpd.GeoDataFrame
+    source_index_feature_name: str
+    source_geodataframe_index_name: str | None
+    index_prefix: str = DEFAULT_SHAPES_INDEX_PREFIX
+```
+
+```python
+def edit_shapes_element_from_napari_shapes_layer(
+    request: EditShapesElementRequest,
+    layer: Shapes,
+) -> EditShapesElementResult:
+    ...
+```
+
+Work:
+
+- validate request-only fields before touching the napari layer;
+- require `request.shapes_name` to exist in `request.sdata.shapes`;
+- always write with `overwrite=True`;
+- use the Slice 1 helpers to rebuild the complete replacement GeoDataFrame;
+- write through `harpy.sh.add_shapes(...)`;
+- return a result with `shapes_name`, `coordinate_system`, and row count;
+- keep conflict detection out of scope.
+
+Done when:
+
+- edit-existing can save an edited in-memory shapes element;
+- edit-existing can overwrite an existing backed zarr shapes element;
+- external concurrent mutations are not checked or merged;
+- create-new tests still pass unchanged.
+
+### Slice 3: Viewer Adapter Payload And In-Place Revert Helpers
+
+Status: pending
+
+Goal: expose viewer-adapter helpers that prepare existing shapes as napari layer
+payloads without necessarily adding a new layer, then use the same preparation
+for load and revert.
+
+Likely files:
+
+- `src/napari_harpy/viewer/adapter.py`;
+- viewer adapter tests if present or focused widget tests.
+
+Work:
+
+- extract the current `_prepare_napari_shapes_layer_inputs(...)` /
+  `_build_shapes_layer(...)` path into a reusable payload helper;
+- keep primary layer loading behavior unchanged;
+- add a helper that can apply a saved-shapes payload to an existing napari
+  `Shapes` layer in place;
+- update or preserve the existing `ShapesLayerBinding` in place after revert;
+- preserve layer object identity and viewer layer order during in-place revert;
+- ensure the helper exposes:
+  - `data`;
+  - `shape_type`;
+  - `features`;
+  - `source_row_id_by_rendered_row`;
+  - `source_shapes_index_feature_name`;
+  - skipped geometry count;
+  - rendering mode.
+
+Done when:
+
+- `ensure_shapes_loaded(...)` still behaves as before;
+- an adopted primary shapes layer can be reverted to saved `sdata` state without
+  creating a new napari layer object;
+- binding metadata after revert matches the saved element.
+
+### Slice 4: Annotation Target Selector UI
+
+Status: pending
+
+Goal: replace the create-new-only name field with a `Shapes` target selector
+while preserving the current create-new workflow.
+
+Likely files:
+
+- `src/napari_harpy/widgets/shapes_annotation/widget.py`;
+- `tests/test_shapes_annotation_widget.py`.
+
+Work:
+
+- add `_ShapesAnnotationTargetMode` and `_ShapesAnnotationTarget` item data;
+- replace the visible `Shapes Name` row with:
+  - `Shapes` compact combo box;
+  - conditional `New shapes name` line edit;
+- populate the combo with existing shapes in the selected coordinate system plus
+  `Create shapes...`;
+- follow the Feature Extraction widget's `Create table...` pattern;
+- preserve selection across refreshes where possible;
+- keep long names compact and expose full names through tooltips;
+- update create-layer readiness so create-new validates the new name while
+  edit-existing validates the selected existing target.
+
+Done when:
+
+- Workflow A still works through `Create shapes...`;
+- selecting an existing shapes element enters edit-existing mode;
+- switching the target while an annotation layer is active routes through
+  discard confirmation.
+
+### Slice 5: Edit Session Opening And Adoption
+
+Status: pending
+
+Goal: create or adopt the editable primary layer for edit-existing sessions.
+
+Likely files:
+
+- `src/napari_harpy/widgets/shapes_annotation/widget.py`;
+- `src/napari_harpy/viewer/adapter.py` if a small adapter lookup helper is
+  useful;
+- `tests/test_shapes_annotation_widget.py`.
+
+Work:
+
+- add explicit annotation session state, for example:
+  - mode: create-new or edit-existing;
+  - layer origin: created-by-annotation, loaded-by-annotation, or adopted-primary;
+  - locked shapes name;
+  - locked coordinate system;
+  - source index feature name;
+  - source GeoDataFrame index name;
+  - source metadata snapshot for edit-existing;
+  - table-linked warning state;
+- when opening an existing target:
+  - adopt a compatible loaded primary layer if one exists;
+  - ignore styled layers;
+  - otherwise load/create one primary editable shapes layer through the viewer
+    adapter;
+  - reject incompatible targets with actionable status feedback;
+- activate the editable layer in napari;
+- lock the selected target for the active session.
+
+Done when:
+
+- existing compatible primary layers are adopted, not duplicated;
+- styled layers are never adopted;
+- only one annotation layer is active;
+- the widget can open an eligible existing polygon-only shapes element.
+
+### Slice 6: Edit Save Integration And Feedback
+
+Status: pending
+
+Goal: wire create-new and edit-existing save paths into one Annotation widget
+without blurring their overwrite rules.
+
+Likely files:
+
+- `src/napari_harpy/widgets/shapes_annotation/widget.py`;
+- `tests/test_shapes_annotation_widget.py`;
+- `tests/test_shapes_annotation.py`.
+
+Work:
+
+- route save by active session mode:
+  - create-new uses `create_shapes_element_from_napari_shapes_layer(...)`;
+  - edit-existing uses the new edit-existing core helper;
+- keep create-new first save at `overwrite=False`;
+- use edit-existing `overwrite=True` from the first save;
+- emit `ShapesElementWrittenEvent` after both create-new and edit-existing
+  saves;
+- show a table-linked warning when opening or saving table-linked shapes;
+- keep save feedback concise and use shortened identifiers/tooltips for long
+  names.
+
+Done when:
+
+- saving an edited existing layer updates `sdata.shapes[shapes_name]`;
+- new rows, deleted rows, edited geometries, and preserved metadata are visible
+  after reload;
+- Viewer shapes cards refresh through the existing event path;
+- table-linked saves warn but do not block.
+
+### Slice 7: Discard, Target Switching, And Revert In Place
+
+Status: pending
+
+Goal: make coordinate-system changes, target changes, and manual layer removal
+safe for both create-new and edit-existing sessions.
+
+Likely files:
+
+- `src/napari_harpy/widgets/shapes_annotation/widget.py`;
+- `src/napari_harpy/viewer/adapter.py`;
+- `tests/test_shapes_annotation_widget.py`.
+
+Work:
+
+- extend discard confirmation to `Shapes` target changes;
+- keep the current coordinate-system session lock behavior;
+- for create-new layers, discard removes the layer and unregisters it;
+- for edit-existing layers loaded by Annotation, discard removes the layer and
+  unregisters it;
+- for adopted primary layers, discard reloads saved `sdata` geometry into the
+  same napari layer object;
+- use a scoped guard so programmatic layer removals/reverts do not double-handle
+  viewer layer removal callbacks;
+- preserve layer order and presentation state during adopted-layer revert.
+
+Done when:
+
+- canceling discard leaves the active edit session untouched;
+- confirming discard clears or reverts the active session correctly;
+- adopted-layer discard preserves the napari layer object and viewer order;
+- manual deletion of the active annotation layer clears widget state.
+
+### Slice 8: Viewer Integration Audit
+
+Status: pending
+
+Goal: verify that edit-existing saves interact correctly with the Viewer widget
+and existing loaded layers.
+
+Likely files:
+
+- `src/napari_harpy/widgets/viewer/widget.py`;
+- `src/napari_harpy/viewer/adapter.py`;
+- `tests/test_viewer_widget.py`;
+- `tests/test_shapes_annotation_widget.py`.
+
+Work:
+
+- confirm `ShapesElementWrittenEvent` refreshes the shapes section after
+  edit-existing saves;
+- confirm the edited primary layer remains registered and usable after save;
+- confirm linked-table choices refresh from current `sdata`;
+- document or implement behavior for already-loaded styled layers after the
+  underlying shapes element changes. The current spec allows styled layers to
+  be ignored as edit targets, but loaded styled layers may need explicit refresh
+  or user-triggered update after save.
+
+Done when:
+
+- Viewer cards show the edited shapes element after save;
+- adding/updating the primary layer from the Viewer does not steal Annotation
+  session ownership;
+- any styled-layer stale-state behavior is either tested or explicitly deferred.
+
+### Slice 9: Backed Persistence And Regression Coverage
+
+Status: pending
+
+Goal: prove the whole edit-existing workflow survives backed stores and the
+edge cases called out in this roadmap.
+
+Likely files:
+
+- `tests/test_shapes_annotation.py`;
+- `tests/test_shapes_annotation_widget.py`;
+- possibly `tests/test_viewer_widget.py`.
+
+Work:
+
+- write backed zarr tests for edit-existing save and reload;
+- test named and unnamed GeoDataFrame indexes;
+- test metadata preservation and nullable dtype behavior;
+- test added rows, deleted rows, and geometry edits;
+- test rejection of unsupported/multipart/empty geometries;
+- test table-linked warning behavior without table mutation;
+- test adopted primary layer discard/revert in place;
+- keep create-new Workflow A regression coverage green.
+
+Done when:
+
+- edit-existing tests pass in memory and backed mode;
+- create-new annotation tests still pass;
+- viewer refresh tests cover the same-session save path.
+
 ## Deferred: Multipart Edit Roundtrip
 
 Full multipart editing should be a follow-up workflow.
