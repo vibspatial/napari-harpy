@@ -107,7 +107,9 @@ are different:
 
 - create-new keeps the current first-save guard:
   - first save uses `overwrite=False`;
-  - later saves of the widget-owned locked layer use `overwrite=True`;
+  - after a successful first save, the saved element exists in
+    `sdata.shapes[...]` and the active session can transition to edit-existing
+    semantics for later saves;
 - edit-existing has an explicit existing target selected by the user, so save
   can use `overwrite=True` from the start.
 
@@ -399,7 +401,9 @@ Index-name rules:
 - `source_index_feature_name` is the napari `layer.features` column that stores
   row identity for editing and status display;
 - `source_geodataframe_index_name` is the name to restore on the saved
-  GeoDataFrame index.
+  GeoDataFrame index. It can be tracked in widget session state, but the core
+  conversion helper should derive it from `source_geodataframe.index.name`
+  rather than taking it as a separate public argument.
 
 This distinction matters for unnamed GeoDataFrame indexes. The viewer currently
 stores unnamed source indexes in `layer.features["index"]` so napari can display
@@ -511,8 +515,8 @@ Save behavior:
 - assign generated IDs and missing metadata to newly added rows;
 - omit deleted rows from the rebuilt output;
 - construct one complete replacement `GeoDataFrame`;
-- restore `geodataframe.index.name` from `source_geodataframe_index_name`;
-- when `source_geodataframe_index_name is None`, keep the saved GeoDataFrame
+- restore `geodataframe.index.name` from `source_geodataframe.index.name`;
+- when `source_geodataframe.index.name is None`, keep the saved GeoDataFrame
   index unnamed. Do not substitute `source_index_feature_name`;
 - write the complete replacement through `harpy.sh.add_shapes(...)` with
   `overwrite=True`.
@@ -538,16 +542,16 @@ geometries = convert_all_layer_rows_to_geometry(layer.data, layer.shape_type)
 row_ids = resolve_all_row_ids(layer.features[source_index_feature_name])
 metadata = align_source_metadata_to_row_ids(source_geodataframe, row_ids)
 edited = GeoDataFrame(metadata, geometry=geometries, index=row_ids)
-edited.index.name = source_geodataframe_index_name
+edited.index.name = source_geodataframe.index.name
 
-# `source_geodataframe_index_name` may be None for source elements whose index
+# `source_geodataframe.index.name` may be None for source elements whose index
 # was unnamed. In that case the saved index must remain unnamed.
 _ = hp.sh.add_shapes(
     sdata,
     input=edited,
     output_shapes_name=shapes_name,
     transformations={coordinate_system: Identity()},
-    instance_key=source_geodataframe_index_name,
+    instance_key=source_geodataframe.index.name,
     overwrite=True,
 )
 ```
@@ -618,6 +622,34 @@ Likely files:
 
 Work:
 
+- keep one public napari-layer-to-GeoDataFrame conversion helper:
+  `napari_shapes_layer_to_geodataframe(...)`;
+- extend `napari_shapes_layer_to_geodataframe(...)` with optional edit-existing
+  inputs instead of adding a second public helper:
+
+  ```python
+  def napari_shapes_layer_to_geodataframe(
+      layer: Shapes,
+      *,
+      index_name: str = DEFAULT_SHAPES_INDEX_NAME,
+      index_prefix: str = DEFAULT_SHAPES_INDEX_PREFIX,
+      source_geodataframe: gpd.GeoDataFrame | None = None,
+      source_index_feature_name: str | None = None,
+      ellipse_segments: int = DEFAULT_ELLIPSE_SEGMENTS,
+  ) -> gpd.GeoDataFrame:
+      ...
+  ```
+
+- in create-new mode, `source_geodataframe is None` and the helper keeps the
+  current behavior: row identity comes from `index_name`, new IDs use
+  `index_prefix`, and the saved index name is `index_name`;
+- in edit-existing mode, `source_geodataframe` is provided and
+  `source_index_feature_name` is required:
+  - row identity is read from `layer.features[source_index_feature_name]`;
+  - source metadata is copied from `source_geodataframe`;
+  - the saved index name is `source_geodataframe.index.name`, including `None`;
+  - there is no separate public `source_geodataframe_index_name` argument,
+    because that value belongs to the source GeoDataFrame itself;
 - add validation for edit-existing source shapes elements:
   - unique source index;
   - supported `Polygon` rows only;
@@ -628,7 +660,6 @@ Work:
   - preserves existing source index values;
   - assigns generated `shape_N` IDs only to new rows with missing row identity;
   - avoids collisions with all existing row IDs;
-  - preserves `source_geodataframe_index_name`, including `None`;
 - add metadata alignment helpers that:
   - preserve non-geometry columns for existing row IDs;
   - drop metadata for deleted rows;
@@ -636,8 +667,10 @@ Work:
   - convert integer and boolean metadata columns to nullable pandas dtypes when
     new missing values are needed;
   - preserve categorical columns where possible;
+- set the output GeoDataFrame index name from `source_geodataframe.index.name`
+  in edit-existing mode, including `None`;
 - keep `napari_shapes_layer_to_geodataframe(...)` behavior for create-new
-  unchanged unless a shared lower-level geometry conversion helper is extracted.
+  unchanged unless edit-existing inputs are provided.
 
 Done when:
 
@@ -670,7 +703,6 @@ class EditShapesElementRequest:
     coordinate_system: str
     source_geodataframe: gpd.GeoDataFrame
     source_index_feature_name: str
-    source_geodataframe_index_name: str | None
     index_prefix: str = DEFAULT_SHAPES_INDEX_PREFIX
 ```
 
@@ -687,7 +719,10 @@ Work:
 - validate request-only fields before touching the napari layer;
 - require `request.shapes_name` to exist in `request.sdata.shapes`;
 - always write with `overwrite=True`;
-- use the Slice 1 helpers to rebuild the complete replacement GeoDataFrame;
+- call `napari_shapes_layer_to_geodataframe(...)` with
+  `source_geodataframe=request.source_geodataframe` and
+  `source_index_feature_name=request.source_index_feature_name` to rebuild the
+  complete replacement GeoDataFrame;
 - write through `harpy.sh.add_shapes(...)`;
 - return a result with `shapes_name`, `coordinate_system`, and row count;
 - keep conflict detection out of scope.
@@ -826,10 +861,14 @@ Likely files:
 Work:
 
 - route save by active session mode:
-  - create-new uses `create_shapes_element_from_napari_shapes_layer(...)`;
+  - create-new first save uses `create_shapes_element_from_napari_shapes_layer(...)`;
   - edit-existing uses the new edit-existing core helper;
 - keep create-new first save at `overwrite=False`;
-- use edit-existing `overwrite=True` from the first save;
+- after successful create-new first save, transition the active session to
+  edit-existing semantics by storing the saved GeoDataFrame snapshot and source
+  index feature name;
+- use edit-existing `overwrite=True` for existing targets and for repeated saves
+  after create-new first save;
 - emit `ShapesElementWrittenEvent` after both create-new and edit-existing
   saves;
 - show a table-linked warning when opening or saving table-linked shapes;
@@ -971,8 +1010,8 @@ that do not map one source row to one rendered editable napari row.
   as a primary shapes layer.
 - `napari_shapes_layer_to_geodataframe(...)` for converting edited layer data
   back to `GeoDataFrame`.
-- `create_shapes_element_from_napari_shapes_layer(...)` for write-back with
-  `overwrite=True`.
+- `create_shapes_element_from_napari_shapes_layer(...)` for create-new first
+  save with `overwrite=False`.
 - `ShapesElementWrittenEvent` for notifying the Viewer widget after save.
 - Existing annotation-layer removal and coordinate-system discard guards from
   `ShapesAnnotation`.
