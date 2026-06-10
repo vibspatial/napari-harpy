@@ -555,12 +555,47 @@ _ = hp.sh.add_shapes(
 Tests must cover both named and unnamed source indexes so this save path does
 not drift from `index.name is None` to `index.name == "index"`.
 
+## Table-Linked Shapes Policy
+
+Edit-existing should allow shapes elements that are annotated by one or more
+tables, but it should warn the user that table reconciliation is out of scope
+for this workflow.
+
+Rules:
+
+- do not block opening or saving a table-linked shapes element;
+- when the selected shapes element has annotating tables, show a warning before
+  or during the edit session;
+- save only the shapes element;
+- do not add, remove, reorder, or modify rows in linked tables;
+- do not try to repair table metadata or table instance IDs;
+- adding a shape may create a shapes row without a linked table row;
+- deleting a shape may leave table rows whose instance IDs no longer exist in
+  the shapes element.
+
+Viewer responsibility:
+
+- the Viewer widget already discovers linked tables from SpatialData table
+  metadata;
+- table-backed shapes styling already performs stricter table-to-shapes
+  alignment checks when styling is requested;
+- shapes rows without matching table rows can be rendered transparent with
+  viewer status feedback;
+- table rows whose instance IDs are missing from the shapes element are surfaced
+  as viewer styling errors.
+
+Rationale:
+
+- blocking all table-linked shapes edits would make the edit workflow too
+  restrictive;
+- table reconciliation has workflow-specific semantics and should not be hidden
+  inside the Annotation widget's geometry save path;
+- keeping Annotation responsible only for shapes geometry and row identity keeps
+  the save model understandable.
+
 ## Open Specification Questions
 
-We should resolve these together before implementation:
-
-- Should table-linked shapes edits be blocked, allowed with warnings, or handled
-  in a later table-reconciliation workflow?
+No open specification questions remain before implementation planning.
 
 ## Deferred: Multipart Edit Roundtrip
 
