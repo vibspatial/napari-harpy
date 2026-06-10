@@ -73,8 +73,8 @@ First implementation scope:
 - support editable flat polygon rows only;
 - require a unique GeoDataFrame index for editable shapes elements;
 - preserve the existing GeoDataFrame index values as row identity;
-- allow new napari rows to receive generated IDs, for example `shape_N`, when
-  they do not yet have a source index value;
+- allow new napari rows to receive generated IDs, for example
+  `__annotation_N`, when they do not yet have a source index value;
 - reject shapes elements whose source-to-rendered-row mapping is not one-to-one;
 - reject shapes elements that contain `MultiPolygon`, point-radius circle rows,
   empty/skipped geometries, unsupported geometries, or duplicate index values.
@@ -392,7 +392,7 @@ Identity rules:
 - new rows drawn during the edit session get generated IDs only if they are
   missing a source index value;
 - generated IDs for new rows should use the existing create-new convention,
-  for example `shape_0`, `shape_1`, ...;
+  for example `__annotation_0`, `__annotation_1`, ...;
 - generated IDs must avoid collisions with all existing source index values;
 - deleted rows disappear on save;
 - duplicate custom/manual IDs remain invalid.
@@ -400,7 +400,7 @@ Identity rules:
 This differs from create-new Workflow A only in where the first row IDs come
 from:
 
-- create-new starts with no source rows and generates `shape_0`, `shape_1`, ...;
+- create-new starts with no source rows and generates `__annotation_0`, `__annotation_1`, ...;
 - edit-existing starts from the existing shapes element index and preserves it.
 
 Index-name rules:
@@ -439,11 +439,11 @@ source.index == ["cell_1", "cell_2"]
 layer.features["index"] == ["cell_1", "cell_2"]
 
 # After the user draws one new polygon:
-layer.features["index"] == ["cell_1", "cell_2", "shape_0"]
+layer.features["index"] == ["cell_1", "cell_2", "__annotation_0"]
 
 # Saved edited element:
 saved.index.name is None
-saved.index == ["cell_1", "cell_2", "shape_0"]
+saved.index == ["cell_1", "cell_2", "__annotation_0"]
 ```
 
 ## Non-Geometry Column Rules
@@ -479,7 +479,7 @@ source["class_id"] == [1, 2]  # int64
 source["name"] == ["a", "b"]
 
 # After user edits cell_1 geometry and draws one new polygon:
-saved.index == ["cell_1", "cell_2", "shape_0"]
+saved.index == ["cell_1", "cell_2", "__annotation_0"]
 saved["class_id"] == [1, 2, pd.NA]  # nullable Int64, not float64
 saved["name"] == ["a", "b", pd.NA]
 ```
@@ -626,7 +626,7 @@ persistence in one step.
 
 ### Slice 1: Core Edit Conversion And Metadata Alignment
 
-Status: pending
+Status: implemented
 
 Goal: add core helpers that can rebuild an edited shapes `GeoDataFrame` from a
 napari `Shapes` layer while preserving existing source row identity and
@@ -707,7 +707,7 @@ Work:
 - add a row-identity helper that:
   - reads existing row IDs from `layer.features[source_index_feature_name]`;
   - preserves existing source index values;
-  - assigns generated `shape_N` IDs only to new rows with missing row identity;
+  - assigns generated `__annotation_N` IDs only to new rows with missing row identity;
   - avoids collisions with all existing row IDs;
 - add metadata alignment helpers that:
   - preserve non-geometry columns for existing row IDs;

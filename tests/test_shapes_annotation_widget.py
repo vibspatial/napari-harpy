@@ -569,7 +569,7 @@ def test_shapes_annotation_widget_save_calls_core_with_locked_request_and_report
     assert request.coordinate_system == "global"
     assert request.overwrite is False
     assert request.index_name == "instance_id"
-    assert request.index_prefix == "shape"
+    assert request.index_prefix == "__annotation"
     assert widget._annotation_has_been_saved is True
     assert widget.save_shapes_button.isEnabled() is True
     assert emitted_events == [
@@ -703,8 +703,8 @@ def test_shapes_annotation_widget_save_writes_real_shapes_element(
 
     assert "new_regions" in sdata_blobs.shapes
     assert sdata_blobs.shapes["new_regions"].index.name == "instance_id"
-    assert sdata_blobs.shapes["new_regions"].index.tolist() == ["shape_0"]
-    assert layer.features["instance_id"].tolist() == ["shape_0"]
+    assert sdata_blobs.shapes["new_regions"].index.tolist() == ["__annotation_0"]
+    assert layer.features["instance_id"].tolist() == ["__annotation_0"]
     assert widget._annotation_has_been_saved is True
     assert "Shapes Saved" in _status_text(widget)
 

@@ -203,11 +203,11 @@ Index rule:
 - store each generated `instance_id` in the napari layer features so repeated
   saves can preserve row identity;
 - default index values should be deterministic for new rows, for example
-  `shape_0`, `shape_1`, ...;
+  `__annotation_0`, `__annotation_1`, ...;
 - after the first save, existing rows keep their assigned `instance_id`;
-- new rows receive the next unused `shape_N` value;
-- when napari copies a generated `shape_N` value into a newly drawn row, treat
-  the later duplicate as a new row and assign a fresh `shape_N`;
+- new rows receive the next unused `__annotation_N` value;
+- when napari copies a generated `__annotation_N` value into a newly drawn row,
+  treat the later duplicate as a new row and assign a fresh `__annotation_N`;
 - duplicate custom/manual `instance_id` values remain invalid;
 - deleted rows disappear on the next save;
 - the generated index must be unique within the new `GeoDataFrame`;
@@ -340,7 +340,7 @@ class CreateShapesElementRequest:
     coordinate_system: str
     overwrite: bool = False
     index_name: str = "instance_id"
-    index_prefix: str = "shape"
+    index_prefix: str = "__annotation"
 
 
 @dataclass(frozen=True)
@@ -357,7 +357,7 @@ def napari_shapes_layer_to_geodataframe(
     layer: Shapes,
     *,
     index_name: str = "instance_id",
-    index_prefix: str = "shape",
+    index_prefix: str = "__annotation",
     ellipse_segments: int = 64,
 ) -> gpd.GeoDataFrame:
     ...
@@ -511,11 +511,11 @@ Behavior:
 - reject invalid ellipse segment counts;
 - save each supported napari shape row as an independent polygon;
 - do not infer holes from nested polygons;
-- generate deterministic indices for new rows: `shape_0`, `shape_1`, ...;
+- generate deterministic indices for new rows: `__annotation_0`, `__annotation_1`, ...;
 - store generated IDs in napari layer features under `instance_id`;
 - preserve existing `instance_id` feature values across repeated conversions;
-- assign new rows the next unused `shape_N` value;
-- assign fresh IDs for duplicate generated `shape_N` values copied by napari
+- assign new rows the next unused `__annotation_N` value;
+- assign fresh IDs for duplicate generated `__annotation_N` values copied by napari
   into newly drawn rows;
 - reject duplicate custom/manual `instance_id` values;
 - name the generated index `instance_id`;
@@ -542,8 +542,8 @@ Tests:
 - non-finite coordinate rejection;
 - index naming and generation;
 - preservation of existing `instance_id` feature values;
-- next-unused `shape_N` assignment after deletion or insertion;
-- copied generated `shape_N` duplicates receive fresh IDs;
+- next-unused `__annotation_N` assignment after deletion or insertion;
+- copied generated `__annotation_N` duplicates receive fresh IDs;
 - duplicate custom/manual `instance_id` values are rejected;
 - coordinate order conversion;
 - nested polygons remain independent rows.
@@ -1160,7 +1160,7 @@ Tests:
 - save passes the locked new shapes element name;
 - save uses the frozen annotation coordinate system if the combo-box state later
   diverges;
-- save passes `index_name="instance_id"` and `index_prefix="shape"`;
+- save passes `index_name="instance_id"` and `index_prefix="__annotation"`;
 - widget-created annotation layers are registered with
   `source_shapes_index_feature_name="instance_id"`;
 - `Save shapes` is disabled before an annotation layer exists;

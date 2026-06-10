@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 
 DEFAULT_SHAPES_INDEX_NAME = "instance_id"
-DEFAULT_SHAPES_INDEX_PREFIX = "shape"
+DEFAULT_SHAPES_INDEX_PREFIX = "__annotation"
 DEFAULT_ELLIPSE_SEGMENTS = 64
 MIN_ELLIPSE_SEGMENTS = 8
 
@@ -40,6 +40,28 @@ class CreateShapesElementResult:
     shapes_name: str
     coordinate_system: str
     row_count: int
+
+
+@dataclass(frozen=True)
+class NewShapesLayerConversion:
+    index_name: str = DEFAULT_SHAPES_INDEX_NAME
+    index_prefix: str = DEFAULT_SHAPES_INDEX_PREFIX
+
+
+@dataclass(frozen=True)
+class ExistingShapesLayerConversion:
+    """Conversion context for saving edits to an existing shapes element.
+
+    ``source_index_feature_name`` names the napari ``layer.features`` column
+    that stores source row identity. It is intentionally separate from
+    ``source_geodataframe.index.name`` because unnamed GeoDataFrame indexes are
+    stored in napari under a fallback feature column such as ``"index"`` but
+    must still save back with ``geodataframe.index.name is None``.
+    """
+
+    source_geodataframe: gpd.GeoDataFrame
+    source_index_feature_name: str
+    index_prefix: str = DEFAULT_SHAPES_INDEX_PREFIX
 
 
 def create_shapes_element_from_napari_shapes_layer(
@@ -71,8 +93,10 @@ def create_shapes_element_from_napari_shapes_layer(
 
     geodataframe = napari_shapes_layer_to_geodataframe(
         layer,
-        index_name=index_name,
-        index_prefix=index_prefix,
+        conversion=NewShapesLayerConversion(
+            index_name=index_name,
+            index_prefix=index_prefix,
+        ),
     )
 
     _ = hp.sh.add_shapes(
@@ -94,12 +118,17 @@ def create_shapes_element_from_napari_shapes_layer(
 def napari_shapes_layer_to_geodataframe(
     layer: Shapes,
     *,
-    index_name: str = DEFAULT_SHAPES_INDEX_NAME,
-    index_prefix: str = DEFAULT_SHAPES_INDEX_PREFIX,
+    conversion: NewShapesLayerConversion | ExistingShapesLayerConversion | None = None,
     ellipse_segments: int = DEFAULT_ELLIPSE_SEGMENTS,
 ) -> gpd.GeoDataFrame:
-    """Convert one editable napari Shapes layer into a polygon GeoDataFrame."""
+    """Convert one editable napari Shapes layer into a polygon GeoDataFrame.
+
+    This also synchronizes row-identity metadata back into ``layer.features``.
+    Missing generated IDs are filled before the GeoDataFrame is returned, so
+    repeated saves can keep stable row identity.
+    """
     _validate_ellipse_segments(ellipse_segments)
+    conversion = _normalize_shapes_layer_conversion(conversion)
 
     data = list(layer.data)
     shape_types = [str(shape_type).lower() for shape_type in layer.shape_type]
@@ -107,13 +136,6 @@ def napari_shapes_layer_to_geodataframe(
         raise ValueError("Draw at least one supported shape before saving.")
     if len(shape_types) != len(data):
         raise ValueError("Napari shapes layer has inconsistent data and shape-type lengths.")
-
-    features = _build_features_with_instance_ids(
-        layer.features,
-        row_count=len(data),
-        index_name=index_name,
-        index_prefix=index_prefix,
-    )
 
     geometries: list[Polygon] = []
     for row_index, (vertices, shape_type) in enumerate(zip(data, shape_types, strict=True)):
@@ -133,10 +155,44 @@ def napari_shapes_layer_to_geodataframe(
             continue
         raise ValueError(f"Shape row `{row_index}` has unsupported napari shape type `{shape_type}`.")
 
+    if isinstance(conversion, NewShapesLayerConversion):
+        features = _build_features_with_instance_ids(
+            layer.features,
+            row_count=len(data),
+            index_name=conversion.index_name,
+            index_prefix=conversion.index_prefix,
+        )
+        geodataframe = _new_shapes_geodataframe_from_features(
+            features,
+            geometries=geometries,
+            index_name=conversion.index_name,
+        )
+    else:
+        features = _build_features_with_source_instance_ids(
+            layer.features,
+            row_count=len(data),
+            source_index_feature_name=conversion.source_index_feature_name,
+            source_index_values=conversion.source_geodataframe.index,
+            index_prefix=conversion.index_prefix,
+        )
+        geodataframe = _edited_shapes_geodataframe_from_source(
+            conversion.source_geodataframe,
+            row_ids=features[conversion.source_index_feature_name].tolist(),
+            geometries=geometries,
+        )
+
     # Only write generated IDs back after every geometry row validates, so
     # failed conversions leave the napari layer metadata untouched.
     layer.features = features
+    return geodataframe
 
+
+def _new_shapes_geodataframe_from_features(
+    features: pd.DataFrame,
+    *,
+    geometries: list[Polygon],
+    index_name: str,
+) -> gpd.GeoDataFrame:
     geodataframe_data = {
         column: features[column].tolist()
         for column in features.columns
@@ -151,6 +207,26 @@ def napari_shapes_layer_to_geodataframe(
         index=pd.Index(instance_ids.to_list(), name=index_name),
     )
     return geodataframe
+
+
+def _edited_shapes_geodataframe_from_source(
+    source_geodataframe: gpd.GeoDataFrame,
+    *,
+    row_ids: list[object],
+    geometries: list[Polygon],
+) -> gpd.GeoDataFrame:
+    row_index = pd.Index(row_ids, name=source_geodataframe.index.name)
+    geometry_column_name = source_geodataframe.geometry.name
+    geodataframe_data = {
+        column: _align_source_column_to_row_ids(source_geodataframe[column], row_index)
+        for column in source_geodataframe.columns
+        if column != geometry_column_name
+    }
+    return gpd.GeoDataFrame(
+        geodataframe_data,
+        geometry=geometries,
+        index=row_index,
+    )
 
 
 def _normalize_spatialdata_name_field(value: object, *, field_name: str) -> str:
@@ -183,6 +259,70 @@ def _validate_ellipse_segments(ellipse_segments: int) -> None:
         raise ValueError(f"`ellipse_segments` must be an integer greater than or equal to {MIN_ELLIPSE_SEGMENTS}.")
 
 
+def _normalize_shapes_layer_conversion(
+    conversion: NewShapesLayerConversion | ExistingShapesLayerConversion | None,
+) -> NewShapesLayerConversion | ExistingShapesLayerConversion:
+    if conversion is None:
+        return NewShapesLayerConversion()
+    if isinstance(conversion, NewShapesLayerConversion):
+        return NewShapesLayerConversion(
+            index_name=_normalize_dataframe_column_name_field(conversion.index_name, field_name="`index_name`"),
+            index_prefix=_normalize_string_field(conversion.index_prefix, field_name="`index_prefix`"),
+        )
+    if isinstance(conversion, ExistingShapesLayerConversion):
+        source_geodataframe = _validate_existing_shapes_source_geodataframe(conversion.source_geodataframe)
+        return ExistingShapesLayerConversion(
+            source_geodataframe=source_geodataframe,
+            source_index_feature_name=_normalize_feature_column_name_field(
+                conversion.source_index_feature_name,
+                field_name="`source_index_feature_name`",
+            ),
+            index_prefix=_normalize_string_field(conversion.index_prefix, field_name="`index_prefix`"),
+        )
+    raise ValueError("`conversion` must be a NewShapesLayerConversion or ExistingShapesLayerConversion.")
+
+
+def _normalize_feature_column_name_field(value: object, *, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a non-empty string.")
+    if not value.strip():
+        raise ValueError(f"{field_name} must be a non-empty string.")
+    return value
+
+
+def _validate_existing_shapes_source_geodataframe(source_geodataframe: object) -> gpd.GeoDataFrame:
+    if not isinstance(source_geodataframe, gpd.GeoDataFrame):
+        raise ValueError("`source_geodataframe` must be a GeoDataFrame.")
+
+    try:
+        geometry_values = source_geodataframe.geometry
+    except AttributeError as error:
+        raise ValueError("`source_geodataframe` must have an active geometry column.") from error
+
+    if not source_geodataframe.index.is_unique:
+        raise ValueError("`source_geodataframe` index values must be unique for editing.")
+    if _index_has_missing_values(source_geodataframe.index):
+        raise ValueError("`source_geodataframe` index values must not be missing for editing.")
+
+    for row_position, geometry in enumerate(geometry_values):
+        if not isinstance(geometry, Polygon):
+            raise ValueError(
+                "Edit-existing shapes elements must contain Shapely Polygon geometries only. "
+                f"Source row `{row_position}` has unsupported geometry `{type(geometry).__name__}`."
+            )
+        if geometry.is_empty or not geometry.is_valid or geometry.area <= 0:
+            raise ValueError(f"Source polygon row `{row_position}` cannot be edited because it is empty or invalid.")
+
+    return source_geodataframe
+
+
+def _index_has_missing_values(index: pd.Index) -> bool:
+    missing_values = pd.isna(index)
+    if isinstance(missing_values, bool | np.bool_):
+        return bool(missing_values)
+    return bool(np.asarray(missing_values, dtype=bool).any())
+
+
 def _build_features_with_instance_ids(
     features: pd.DataFrame,
     *,
@@ -196,10 +336,10 @@ def _build_features_with_instance_ids(
     semantic row index. Harpy keeps the future GeoDataFrame index values in a
     named features column, usually ``instance_id``. Existing values are
     preserved for repeated saves, missing values from newly drawn rows are
-    filled with unique ``shape_N`` IDs, and duplicate generated IDs copied by
-    napari into new rows are treated as missing. The completed values can then
-    be written back to ``layer.features`` before becoming the saved
-    GeoDataFrame index.
+    filled with unique generated IDs such as ``__annotation_0``, and duplicate
+    generated IDs copied by napari into new rows are treated as missing. The
+    completed values can then be written back to ``layer.features`` before
+    becoming the saved GeoDataFrame index.
     """
     features = features.copy()
     features = features.reindex(range(row_count)).reset_index(drop=True)
@@ -248,11 +388,94 @@ def _build_features_with_instance_ids(
     return features
 
 
+def _build_features_with_source_instance_ids(
+    features: pd.DataFrame,
+    *,
+    row_count: int,
+    source_index_feature_name: str,
+    source_index_values: pd.Index,
+    index_prefix: str,
+) -> pd.DataFrame:
+    """Return layer features with stable source row IDs for edit-existing saves.
+
+    The first pass validates and normalizes existing feature values: real
+    duplicates are rejected, while duplicated generated IDs such as
+    `__annotation_0` are treated as missing because napari may copy feature
+    values to new rows. The second pass fills all missing values with the next
+    unused generated ID.
+    """
+    features = features.copy()
+    features = features.reindex(range(row_count)).reset_index(drop=True)
+    if source_index_feature_name not in features.columns:
+        raise ValueError(
+            f"Napari shapes layer is missing source index feature column `{source_index_feature_name}`."
+        )
+
+    raw_values = features[source_index_feature_name].tolist()
+    existing_values = [_normalize_source_instance_id(value) for value in raw_values]
+    normalized_values: list[object | None] = []
+    used_current_values: set[object] = set()
+    duplicate_values: set[object] = set()
+    for value in existing_values:
+        if value is None:
+            normalized_values.append(None)
+            continue
+        if value in used_current_values:
+            if isinstance(value, str) and _is_generated_instance_id(value, index_prefix=index_prefix):
+                normalized_values.append(None)
+                continue
+            duplicate_values.add(value)
+        used_current_values.add(value)
+        normalized_values.append(value)
+
+    if duplicate_values:
+        preview = ", ".join(f"`{value}`" for value in sorted(duplicate_values, key=str)[:5])
+        raise ValueError(
+            f"`{source_index_feature_name}` values must be unique before saving shapes: {preview}."
+        )
+
+    used_values = set(source_index_values.tolist()) | used_current_values
+    next_suffix = _next_generated_suffix(used_values, index_prefix=index_prefix)
+    instance_ids: list[object] = []
+    for value in normalized_values:
+        if value is None:
+            value = f"{index_prefix}_{next_suffix}"
+            while value in used_values:
+                next_suffix += 1
+                value = f"{index_prefix}_{next_suffix}"
+            used_values.add(value)
+            next_suffix += 1
+        instance_ids.append(value)
+
+    features[source_index_feature_name] = instance_ids
+    return features
+
+
 def _normalize_instance_id(value: object) -> str | None:
     if value is None or pd.isna(value):
         return None
     normalized = str(value)
     return normalized if normalized else None
+
+
+def _normalize_source_instance_id(value: object) -> object | None:
+    if _is_missing_scalar(value):
+        return None
+    if isinstance(value, str) and not value:
+        return None
+    return value
+
+
+def _is_missing_scalar(value: object) -> bool:
+    if value is None:
+        return True
+    try:
+        missing = pd.isna(value)
+    except (TypeError, ValueError):
+        return False
+    if isinstance(missing, bool | np.bool_):
+        return bool(missing)
+    return False
 
 
 def _is_generated_instance_id(value: str, *, index_prefix: str) -> bool:
@@ -261,10 +484,12 @@ def _is_generated_instance_id(value: str, *, index_prefix: str) -> bool:
     return value.startswith(prefix) and suffix_text.isdecimal()
 
 
-def _next_generated_suffix(values: set[str], *, index_prefix: str) -> int:
+def _next_generated_suffix(values: set[object], *, index_prefix: str) -> int:
     prefix = f"{index_prefix}_"
     suffixes: list[int] = []
     for value in values:
+        if not isinstance(value, str):
+            continue
         if not value.startswith(prefix):
             continue
         suffix_text = value.removeprefix(prefix)
@@ -325,3 +550,21 @@ def _make_valid_polygon(coordinates_xy: np.ndarray, *, row_index: int, shape_nam
 def _has_positive_finite_length(vector: np.ndarray) -> bool:
     length = float(np.linalg.norm(vector))
     return np.isfinite(length) and length > 0
+
+
+def _align_source_column_to_row_ids(source_column: pd.Series, row_index: pd.Index) -> pd.Series:
+    has_new_rows = not row_index.isin(source_column.index).all()
+    column = source_column
+    if has_new_rows:
+        if pd.api.types.is_integer_dtype(column.dtype):
+            column = column.astype("Int64")
+        elif pd.api.types.is_bool_dtype(column.dtype):
+            column = column.astype("boolean")
+
+    aligned = column.reindex(row_index)
+    if has_new_rows and (
+        pd.api.types.is_object_dtype(aligned.dtype) or pd.api.types.is_string_dtype(aligned.dtype)
+    ):
+        new_row_mask = ~row_index.isin(source_column.index)
+        aligned.iloc[np.flatnonzero(new_row_mask)] = pd.NA
+    return aligned
