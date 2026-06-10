@@ -863,28 +863,73 @@ Likely files:
 
 Work:
 
-- extract the current `_prepare_napari_shapes_layer_inputs(...)` /
-  `_build_shapes_layer(...)` path into a reusable payload helper;
-- keep primary layer loading behavior unchanged;
-- add a helper that can apply a saved-shapes payload to an existing napari
-  `Shapes` layer in place;
-- update or preserve the existing `ShapesLayerBinding` in place after revert;
-- preserve layer object identity and viewer layer order during in-place revert;
-- ensure the helper exposes:
+- split `_build_shapes_layer(...)` into two steps:
+  - prepare a saved-shapes payload from `sdata`, `shapes_name`, and
+    `coordinate_system`;
+  - create a new napari layer from that payload;
+- reuse the payload preparation step for both normal primary-layer loading and
+  in-place revert;
+- keep `ensure_shapes_loaded(...)` behavior unchanged by still constructing a
+  new primary layer from the prepared payload;
+- add a viewer-adapter method that reverts an existing primary polygon
+  `Shapes` layer to the current saved `SpatialData` state in place, for
+  example:
+
+  ```python
+  def revert_shapes_layer_to_saved_state(
+      self,
+      layer: Shapes,
+      *,
+      sdata: SpatialData,
+      shapes_name: str,
+      coordinate_system: str,
+  ) -> ShapesLayerBinding:
+      ...
+  ```
+
+- have the payload expose:
   - `data`;
-  - `shape_type`;
+  - `shape_types`;
   - `features`;
   - `source_row_id_by_rendered_row`;
   - `source_shapes_index_feature_name`;
   - skipped geometry count;
   - rendering mode.
+- support in-place revert for normal polygon `Shapes` payloads only;
+- reject point-radius shapes for in-place annotation revert because those are
+  represented as napari `Points` layers in the primary viewer path;
+- ignore styled shapes layers for this workflow. Styled layers are separate
+  viewer-only representations and are distinguishable from primary shapes via
+  `ShapesLayerBinding.shapes_role`;
+- validate that the layer being reverted is a primary shapes layer bound to the
+  requested `sdata`, shapes name, and coordinate system;
+- apply the payload without removing or re-adding the napari layer:
+  - update geometry data;
+  - update napari shape types;
+  - update `layer.features`;
+  - preserve layer object identity;
+  - preserve viewer layer order;
+  - preserve presentation where possible, including name, colors, edge width,
+    and opacity;
+- refresh the `ShapesLayerBinding` metadata by re-registering the same layer
+  object with `register_shapes_layer(...)`. The registry is keyed by layer
+  identity, so re-registering the same layer replaces the binding without
+  changing viewer layer order.
+
+The in-place helper is a saved-data revert, not a style reset. Its job is to
+put the geometry and row metadata back in sync with `sdata` while leaving the
+viewer presentation stable.
 
 Done when:
 
 - `ensure_shapes_loaded(...)` still behaves as before;
 - an adopted primary shapes layer can be reverted to saved `sdata` state without
   creating a new napari layer object;
-- binding metadata after revert matches the saved element.
+- the reverted layer is the same Python object and remains at the same position
+  in `viewer.layers`;
+- binding metadata after revert matches the saved element;
+- attempting to use the in-place revert helper on styled shapes or point-radius
+  shapes fails with a clear error.
 
 ### Slice 4: Annotation Target Selector UI
 
