@@ -735,7 +735,8 @@ Done when:
 Status: pending
 
 Goal: add an explicit core save helper for edit-existing rather than overloading
-the create-new request contract.
+the create-new request contract. The save helper should treat the edited napari
+layer as the authoritative replacement for the target shapes element.
 
 Likely files:
 
@@ -753,6 +754,13 @@ class EditShapesElementRequest:
     source_geodataframe: gpd.GeoDataFrame
     source_index_feature_name: str
     index_prefix: str = DEFAULT_SHAPES_INDEX_PREFIX
+
+
+@dataclass(frozen=True)
+class EditShapesElementResult:
+    shapes_name: str
+    coordinate_system: str
+    row_count: int
 ```
 
 ```python
@@ -767,19 +775,42 @@ Work:
 
 - validate request-only fields before touching the napari layer;
 - require `request.shapes_name` to exist in `request.sdata.shapes`;
-- always write with `overwrite=True`;
+- require `request.coordinate_system` to be available for the target shapes
+  element;
 - call `napari_shapes_layer_to_geodataframe(...)` with
-  `source_geodataframe=request.source_geodataframe` and
-  `source_index_feature_name=request.source_index_feature_name` to rebuild the
-  complete replacement GeoDataFrame;
-- write through `harpy.sh.add_shapes(...)`;
+  `ExistingShapesLayerConversion(...)` to rebuild the complete replacement
+  GeoDataFrame:
+
+  ```python
+  geodataframe = napari_shapes_layer_to_geodataframe(
+      layer,
+      conversion=ExistingShapesLayerConversion(
+          source_geodataframe=request.source_geodataframe,
+          source_index_feature_name=request.source_index_feature_name,
+          index_prefix=request.index_prefix,
+      ),
+  )
+  ```
+
+- write through `harpy.sh.add_shapes(...)` with `overwrite=True`;
+- pass `instance_key=geodataframe.index.name`, including `None` for unnamed
+  source indexes;
+- pass `transformations={request.coordinate_system: Identity()}`;
+- document that the napari layer geometry is assumed to already be expressed in
+  `request.coordinate_system`; this matches the viewer adapter, which transforms
+  vector shapes into the selected coordinate system before creating the napari
+  layer;
 - return a result with `shapes_name`, `coordinate_system`, and row count;
-- keep conflict detection out of scope.
+- keep conflict detection out of scope: if external code changed the same
+  shapes element after the edit session was opened, the widget save still
+  overwrites it.
 
 Done when:
 
 - edit-existing can save an edited in-memory shapes element;
 - edit-existing can overwrite an existing backed zarr shapes element;
+- unnamed source indexes round-trip with `geodataframe.index.name is None`;
+- the source row identity feature column is synced back into `layer.features`;
 - external concurrent mutations are not checked or merged;
 - create-new tests still pass unchanged.
 
