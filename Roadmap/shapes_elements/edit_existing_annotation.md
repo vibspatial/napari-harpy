@@ -1013,17 +1013,16 @@ Work:
 - add explicit active annotation session state. A concrete shape can be:
 
   ```python
-  _AnnotationSessionMode = Literal["create_new", "edit_existing"]
-  _AnnotationLayerOrigin = Literal[
+  _ShapesAnnotationLayerOrigin = Literal[
       "created_by_annotation",
       "loaded_by_annotation",
       "adopted_primary",
   ]
 
   @dataclass(frozen=True)
-  class _AnnotationSession:
-      mode: _AnnotationSessionMode
-      layer_origin: _AnnotationLayerOrigin
+  class _ShapesAnnotationSession:
+      mode: _ShapesAnnotationTargetMode
+      layer_origin: _ShapesAnnotationLayerOrigin
       shapes_name: str
       coordinate_system: str
       source_index_feature_name: str
@@ -1036,6 +1035,15 @@ Work:
           return self.layer_origin in {"loaded_by_annotation", "adopted_primary"}
   ```
 
+- `_ShapesAnnotationLayerOrigin` records where the active napari layer came
+  from:
+  - `created_by_annotation`: the Annotation widget created a new empty layer for
+    Workflow A;
+  - `loaded_by_annotation`: the widget loaded an existing saved shapes element
+    that was not already visible;
+  - `adopted_primary`: the target shapes element was already visible as a
+    compatible primary layer, and the Annotation widget took that layer over for
+    editing;
 - `layer_origin` records how the edit layer entered the session, while
   `reload_on_discard` exposes the behavior discard needs:
   - `created_by_annotation` -> remove without reload;
@@ -1095,9 +1103,22 @@ Implementation notes:
 - `ViewerAdapter.ensure_shapes_loaded(...)` already adopts compatible loaded
   primary layers and ignores styled layers through
   `get_loaded_primary_shapes_layer(...)`;
-- the current `_on_create_layer_clicked(...)` can either be renamed to a
-  target-neutral handler or kept internally while it dispatches by selected
-  target. The user-facing button text should become target-aware;
+- rename the current `_on_create_layer_clicked(...)` handler to the
+  target-neutral `_on_open_annotation_clicked(...)`. It should dispatch by the
+  selected target:
+
+  ```python
+  if target.mode == "create_new":
+      self._open_create_new_annotation_layer()
+  else:
+      self._open_existing_annotation_layer()
+  ```
+
+  The user-facing button text should also become target-aware;
+- update the button text whenever the selected `Shapes` target changes or
+  readiness is refreshed:
+  - `Create shapes...` target -> `Create layer`;
+  - existing shapes target -> `Open layer`;
 - status feedback should be actionable:
   - incompatible geometry -> explain that only one-row-to-one-polygon shapes
     can be edited for now;
