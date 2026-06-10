@@ -6,9 +6,9 @@ import pandas as pd
 import pytest
 from napari.layers import Shapes
 from shapely.geometry import MultiPolygon, Point, Polygon
-from spatialdata import SpatialData, read_zarr
+from spatialdata import SpatialData, read_zarr, transform
 from spatialdata.models import ShapesModel
-from spatialdata.transformations import Identity, get_transformation
+from spatialdata.transformations import Identity, Translation, get_transformation
 
 import napari_harpy.core.shapes_annotation as shapes_annotation_module
 from napari_harpy.core.shapes_annotation import (
@@ -54,8 +54,11 @@ def _make_shapes_sdata(
     *,
     shapes_name: str = "regions",
     coordinate_system: str = "global",
+    transformations: dict[str, object] | None = None,
 ) -> SpatialData:
-    shapes = ShapesModel.parse(geodataframe, transformations={coordinate_system: Identity()})
+    if transformations is None:
+        transformations = {coordinate_system: Identity()}
+    shapes = ShapesModel.parse(geodataframe, transformations=transformations)
     return SpatialData(shapes={shapes_name: shapes})
 
 
@@ -421,6 +424,54 @@ def test_edit_shapes_element_from_napari_shapes_layer_overwrites_existing_shapes
     assert pd.isna(edited["class_id"].iloc[1])
     assert layer.features["instance_id"].tolist() == ["cell_2", "__annotation_0"]
     assert isinstance(get_transformation(edited, get_all=True)["global"], Identity)
+
+
+def test_edit_shapes_element_from_napari_shapes_layer_preserves_other_coordinate_systems() -> None:
+    source = gpd.GeoDataFrame(
+        geometry=[_source_polygon()],
+        index=pd.Index(["cell_1"], name="instance_id"),
+    )
+    sdata = _make_shapes_sdata(
+        source,
+        transformations={
+            "global": Translation([100, 50], axes=("x", "y")),
+            "global_micron": Translation([10, 20], axes=("x", "y")),
+        },
+    )
+    layer = Shapes(
+        [
+            np.asarray(
+                [
+                    [50.0, 100.0],
+                    [50.0, 102.0],
+                    [52.0, 102.0],
+                    [52.0, 100.0],
+                ]
+            )
+        ],
+        shape_type="polygon",
+    )
+    layer.features["instance_id"] = ["cell_1"]
+
+    edit_shapes_element_from_napari_shapes_layer(
+        EditShapesElementRequest(
+            sdata=sdata,
+            shapes_name="regions",
+            coordinate_system="global",
+            source_geodataframe=source,
+            source_index_feature_name="instance_id",
+        ),
+        layer,
+    )
+
+    edited = sdata.shapes["regions"]
+    edited_transformations = get_transformation(edited, get_all=True)
+    assert set(edited_transformations) == {"global", "global_micron"}
+    assert isinstance(edited_transformations["global"], Identity)
+    assert edited.geometry.iloc[0].bounds == pytest.approx((100.0, 50.0, 102.0, 52.0))
+    assert transform(edited, to_coordinate_system="global_micron").geometry.iloc[0].bounds == pytest.approx(
+        (10.0, 20.0, 12.0, 22.0)
+    )
 
 
 @pytest.mark.parametrize(

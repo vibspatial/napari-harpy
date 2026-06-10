@@ -10,7 +10,12 @@ import numpy as np
 import pandas as pd
 from napari.layers import Shapes
 from shapely.geometry import Polygon
-from spatialdata.transformations import Identity, get_transformation
+from spatialdata.transformations import (
+    BaseTransformation,
+    Identity,
+    get_transformation,
+    get_transformation_between_coordinate_systems,
+)
 
 from napari_harpy.core.spatialdata import get_coordinate_system_names_from_sdata
 from napari_harpy.core.validation import normalize_spatialdata_dataframe_column_name, normalize_spatialdata_name
@@ -132,10 +137,11 @@ def edit_shapes_element_from_napari_shapes_layer(
     """Overwrite an existing SpatialData shapes element from an edited napari layer.
 
     The napari layer is assumed to contain coordinates already transformed into
-    ``request.coordinate_system``. Saving therefore stores those transformed
-    coordinates directly and replaces the target transform for that coordinate
-    system with ``Identity()``. Non-identity source transforms are flattened into
-    the saved geometry.
+    ``request.coordinate_system``. The Harpy viewer widget/adapter does this
+    when loading vector shapes into napari. Saving therefore stores those
+    transformed coordinates directly with ``Identity()`` for that coordinate
+    system, while preserving the target element's other original coordinate
+    systems by deriving replacement transforms before the overwrite.
     """
     sdata = request.sdata
     if sdata is None:
@@ -152,13 +158,11 @@ def edit_shapes_element_from_napari_shapes_layer(
     if shapes_name not in sdata.shapes:
         raise ValueError(f"Shapes element `{shapes_name}` does not exist and cannot be edited.")
 
-    target_transformations = get_transformation(sdata.shapes[shapes_name], get_all=True)
-    if coordinate_system not in target_transformations:
-        available = ", ".join(f"`{name}`" for name in target_transformations) or "none"
-        raise ValueError(
-            f"Coordinate system `{coordinate_system}` is not available for shapes element `{shapes_name}`. "
-            f"Available coordinate systems: {available}."
-        )
+    transformations = _build_edit_shapes_transformations(
+        sdata,
+        shapes_name=shapes_name,
+        coordinate_system=coordinate_system,
+    )
 
     geodataframe = napari_shapes_layer_to_geodataframe(
         layer,
@@ -174,9 +178,10 @@ def edit_shapes_element_from_napari_shapes_layer(
         input=geodataframe,
         output_shapes_name=shapes_name,
         # The viewer adapter gives napari transformed vector coordinates. Saving
-        # writes those coordinates as-is in the selected coordinate system,
-        # flattening any previous non-identity transform into the geometry.
-        transformations={coordinate_system: Identity()},
+        # writes those coordinates as-is in the selected coordinate system, then
+        # keeps the original coordinate-system availability through transforms
+        # derived before the target element is overwritten.
+        transformations=transformations,
         instance_key=geodataframe.index.name,
         overwrite=True,
     )
@@ -186,6 +191,37 @@ def edit_shapes_element_from_napari_shapes_layer(
         coordinate_system=coordinate_system,
         row_count=len(geodataframe),
     )
+
+
+def _build_edit_shapes_transformations(
+    sdata: SpatialData,
+    *,
+    shapes_name: str,
+    coordinate_system: str,
+) -> dict[str, BaseTransformation]:
+    target_element = sdata.shapes[shapes_name]
+    original_transformations = get_transformation(target_element, get_all=True)
+    if coordinate_system not in original_transformations:
+        available = ", ".join(f"`{name}`" for name in original_transformations) or "none"
+        raise ValueError(
+            f"Coordinate system `{coordinate_system}` is not available for shapes element `{shapes_name}`. "
+            f"Available coordinate systems: {available}."
+        )
+
+    transformations: dict[str, BaseTransformation] = {}
+    for target_coordinate_system in original_transformations:
+        if target_coordinate_system == coordinate_system:
+            # Edited layer coordinates are already flattened into this
+            # coordinate system, so the replacement element is identity here.
+            transformations[target_coordinate_system] = Identity()
+            continue
+        transformations[target_coordinate_system] = get_transformation_between_coordinate_systems(
+            sdata,
+            coordinate_system,
+            target_coordinate_system,
+            intermediate_coordinate_systems=target_element,
+        )
+    return transformations
 
 
 def napari_shapes_layer_to_geodataframe(
