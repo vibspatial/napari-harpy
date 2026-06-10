@@ -1005,30 +1005,116 @@ Likely files:
 
 Work:
 
-- add explicit annotation session state, for example:
-  - mode: create-new or edit-existing;
-  - layer origin: created-by-annotation, loaded-by-annotation, or adopted-primary;
-  - locked shapes name;
-  - locked coordinate system;
-  - source index feature name;
-  - source GeoDataFrame index name;
-  - source metadata snapshot for edit-existing;
-  - table-linked warning state;
-- when opening an existing target:
-  - adopt a compatible loaded primary layer if one exists;
-  - ignore styled layers;
-  - otherwise load/create one primary editable shapes layer through the viewer
-    adapter;
-  - reject incompatible targets with actionable status feedback;
-- activate the editable layer in napari;
-- lock the selected target for the active session.
+- introduce target-aware opening from the existing action button:
+  - `Create shapes...` target keeps the current create-new behavior;
+  - edit-existing target opens the selected existing shapes element;
+  - button text should be target-aware, for example `Create layer` for
+    create-new and `Open layer` for edit-existing;
+- add explicit active annotation session state. A concrete shape can be:
+
+  ```python
+  _AnnotationSessionMode = Literal["create_new", "edit_existing"]
+  _AnnotationLayerOrigin = Literal[
+      "created_by_annotation",
+      "loaded_by_annotation",
+      "adopted_primary",
+  ]
+
+  @dataclass(frozen=True)
+  class _AnnotationSession:
+      mode: _AnnotationSessionMode
+      layer_origin: _AnnotationLayerOrigin
+      shapes_name: str
+      coordinate_system: str
+      source_index_feature_name: str
+      source_geodataframe: gpd.GeoDataFrame | None = None
+      source_geodataframe_index_name: str | None = None
+      table_linked: bool = False
+
+      @property
+      def reload_on_discard(self) -> bool:
+          return self.layer_origin in {"loaded_by_annotation", "adopted_primary"}
+  ```
+
+- `layer_origin` records how the edit layer entered the session, while
+  `reload_on_discard` exposes the behavior discard needs:
+  - `created_by_annotation` -> remove without reload;
+  - `loaded_by_annotation` -> remove dirty layer and reload clean saved layer;
+  - `adopted_primary` -> remove dirty layer and reload clean saved layer;
+- for create-new opening:
+  - create the empty primary shapes layer exactly as today through
+    `ViewerAdapter.create_empty_primary_shapes_layer(...)`;
+  - create a session with `mode="create_new"` and
+    `layer_origin="created_by_annotation"`;
+  - keep `source_geodataframe is None`;
+- for edit-existing opening:
+  - validate `sdata`, selected coordinate system, and
+    `_ShapesAnnotationTarget.edit_existing(...)`;
+  - validate the source shapes element before exposing it as editable:
+    - source is a GeoDataFrame-like shapes element;
+    - source index is unique and non-missing;
+    - source geometries satisfy the Geometry And Identity Scope section;
+    - the rendered layer maps one source row to one napari row;
+  - call `ViewerAdapter.ensure_shapes_loaded(sdata, shapes_name, coordinate_system)`;
+  - if `ShapesLoadResult.created is False`, treat the layer as
+    `layer_origin="adopted_primary"`;
+  - if `ShapesLoadResult.created is True`, treat the layer as
+    `layer_origin="loaded_by_annotation"`;
+  - require the returned layer to be a napari `Shapes` layer, not a
+    point-radius `Points` compatibility layer;
+  - require the Harpy binding to match the selected `sdata`, shapes name,
+    coordinate system, primary role, `shapes_rendering_mode == "shapes"`,
+    `style_spec is None`, and `skipped_geometry_count == 0`;
+  - require `binding.source_row_id_by_rendered_row` to be one-to-one with the
+    source GeoDataFrame rows;
+  - store `binding.source_shapes_index_feature_name` in the session as
+    `source_index_feature_name`;
+  - store a defensive source GeoDataFrame snapshot in the session for Slice 6
+    save metadata alignment;
+  - store `source_geodataframe.index.name` in the session for clarity, while
+    still letting the GeoDataFrame itself remain the source of truth;
+  - detect whether the shapes element has annotating tables and store a
+    `table_linked` flag so the UI can warn without blocking;
+- ignore styled layers:
+  - do not adopt styled shapes layers;
+  - do not remove or restyle them;
+  - if only styled layers exist, `ensure_shapes_loaded(...)` should still load
+    a separate primary editable layer;
+- activate the editable layer in napari after successful create/open;
+- lock the active session target:
+  - changing coordinate system or changing `Shapes` target routes through the
+    existing discard confirmation;
+  - cancel restores the locked combo target;
+  - confirm uses Slice 3 discard/reload behavior;
+- keep save disabled for edit-existing sessions until Slice 6 wires the
+  edit-existing save path. This avoids accidentally using the create-new save
+  helper on an existing source element.
+
+Implementation notes:
+
+- `ViewerAdapter.ensure_shapes_loaded(...)` already adopts compatible loaded
+  primary layers and ignores styled layers through
+  `get_loaded_primary_shapes_layer(...)`;
+- the current `_on_create_layer_clicked(...)` can either be renamed to a
+  target-neutral handler or kept internally while it dispatches by selected
+  target. The user-facing button text should become target-aware;
+- status feedback should be actionable:
+  - incompatible geometry -> explain that only one-row-to-one-polygon shapes
+    can be edited for now;
+  - point-radius rendering mode -> explain that circle-like shapes are not
+    editable through this workflow yet;
+  - table-linked shapes -> warn that edits are allowed but linked tables may
+    become out of sync if rows are removed.
 
 Done when:
 
 - existing compatible primary layers are adopted, not duplicated;
 - styled layers are never adopted;
 - only one annotation layer is active;
-- the widget can open an eligible existing polygon-only shapes element.
+- the widget can open an eligible existing polygon-only shapes element;
+- edit-existing open activates the editable layer and locks target/coordinate
+  system;
+- edit-existing save remains disabled until Slice 6.
 
 ### Slice 6: Edit Save Integration And Feedback
 
