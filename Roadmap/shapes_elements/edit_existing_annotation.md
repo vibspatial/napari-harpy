@@ -895,7 +895,7 @@ Done when:
 
 ### Slice 4: Annotation Target Selector UI
 
-Status: pending
+Status: implemented
 
 Goal: replace the create-new-only name field with a `Shapes` target selector
 while preserving the current create-new workflow.

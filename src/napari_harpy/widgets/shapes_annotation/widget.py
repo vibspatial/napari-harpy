@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal
 
 from qtpy.QtCore import QSignalBlocker, Qt
 from qtpy.QtGui import QPixmap
@@ -30,7 +31,10 @@ from napari_harpy.core.shapes_annotation import (
     CreateShapesElementRequest,
     create_shapes_element_from_napari_shapes_layer,
 )
-from napari_harpy.core.spatialdata import get_coordinate_system_names_from_sdata
+from napari_harpy.core.spatialdata import (
+    get_coordinate_system_names_from_sdata,
+    get_spatialdata_shapes_options_for_coordinate_system_from_sdata,
+)
 from napari_harpy.core.validation import normalize_spatialdata_name
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
@@ -44,6 +48,7 @@ from napari_harpy.widgets.shared_styles import (
     build_input_control_stylesheet,
     create_form_label,
     format_feedback_identifier,
+    format_tooltip,
     set_status_card,
 )
 
@@ -57,14 +62,44 @@ _SOURCE = "shapes_annotation_widget"
 _INPUT_CONTROL_STYLESHEET = build_input_control_stylesheet("QComboBox, QLineEdit")
 _ANNOTATION_FIELD_MIN_WIDTH = 180
 _STATUS_IDENTIFIER_MAX_LENGTH = 32
+_CREATE_SHAPES_OPTION_TEXT = "Create shapes..."
+_DEFAULT_NEW_SHAPES_NAME = "new_shapes"
+_ShapesAnnotationTargetMode = Literal["create_new", "edit_existing"]
 
 
 def _format_status_identifier(identifier: str) -> tuple[str, bool]:
     return format_feedback_identifier(identifier, max_length=_STATUS_IDENTIFIER_MAX_LENGTH)
 
 
+@dataclass(frozen=True)
+class _ShapesAnnotationTarget:
+    mode: _ShapesAnnotationTargetMode
+    existing_shapes_name: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.mode == "create_new":
+            if self.existing_shapes_name is not None:
+                raise ValueError("Create-new shapes targets cannot carry an existing shapes name.")
+            return
+
+        if self.mode == "edit_existing":
+            if self.existing_shapes_name is None or not self.existing_shapes_name.strip():
+                raise ValueError("Edit-existing shapes targets require a shapes name.")
+            return
+
+        raise ValueError(f"Unknown shapes annotation target mode: {self.mode!r}.")
+
+    @classmethod
+    def create_new(cls) -> _ShapesAnnotationTarget:
+        return cls(mode="create_new")
+
+    @classmethod
+    def edit_existing(cls, shapes_name: str) -> _ShapesAnnotationTarget:
+        return cls(mode="edit_existing", existing_shapes_name=shapes_name)
+
+
 class ShapesAnnotation(QWidget):
-    """Widget shell for creating new SpatialData shapes elements."""
+    """Widget shell for annotating SpatialData shapes elements."""
 
     def __init__(self, napari_viewer: napari.Viewer | None = None) -> None:
         super().__init__()
@@ -76,6 +111,8 @@ class ShapesAnnotation(QWidget):
         self._app_state = get_or_create_app_state(napari_viewer)
         self._coordinate_systems: list[str] = []
         self._selected_coordinate_system: str | None = None
+        self._selected_shapes_target: _ShapesAnnotationTarget | None = None
+        self._eligible_existing_shapes_names: list[str] = []
         self._validated_shapes_name: str | None = None
         self._annotation_layer: Shapes | None = None
         self._annotation_shapes_name: str | None = None
@@ -121,14 +158,23 @@ class ShapesAnnotation(QWidget):
         self.coordinate_system_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
         self.coordinate_system_combo.setMinimumWidth(_ANNOTATION_FIELD_MIN_WIDTH)
 
+        self.shapes_combo = CompactComboBox()
+        self.shapes_combo.setObjectName("shapes_annotation_shapes_combo")
+        self.shapes_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
+        self.shapes_combo.setMinimumWidth(_ANNOTATION_FIELD_MIN_WIDTH)
+
+        self.new_shapes_name_label = create_form_label("New shapes name")
+        self.new_shapes_name_label.setObjectName("shapes_annotation_new_shapes_name_label")
+
         self.name_edit = QLineEdit()
-        self.name_edit.setObjectName("shapes_annotation_name_edit")
-        self.name_edit.setPlaceholderText("new_shapes")
+        self.name_edit.setObjectName("shapes_annotation_new_shapes_name_edit")
+        self.name_edit.setPlaceholderText(_DEFAULT_NEW_SHAPES_NAME)
         self.name_edit.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
         self.name_edit.setMinimumWidth(_ANNOTATION_FIELD_MIN_WIDTH)
 
         form_layout.addRow(create_form_label("Coordinate System"), self.coordinate_system_combo)
-        form_layout.addRow(create_form_label("Shapes Name"), self.name_edit)
+        form_layout.addRow(create_form_label("Shapes"), self.shapes_combo)
+        form_layout.addRow(self.new_shapes_name_label, self.name_edit)
 
         button_row = QHBoxLayout()
         button_row.setContentsMargins(0, 0, 0, 0)
@@ -159,6 +205,7 @@ class ShapesAnnotation(QWidget):
         self._app_state.sdata_changed.connect(self._on_sdata_changed)
         self._app_state.coordinate_system_changed.connect(self._on_app_state_coordinate_system_changed)
         self.coordinate_system_combo.currentIndexChanged.connect(self._on_coordinate_system_changed)
+        self.shapes_combo.currentIndexChanged.connect(self._on_shapes_target_changed)
         self.name_edit.textChanged.connect(self._on_shapes_name_changed)
         self.create_layer_button.clicked.connect(self._on_create_layer_clicked)
         self.save_shapes_button.clicked.connect(self._on_save_shapes_clicked)
@@ -186,7 +233,7 @@ class ShapesAnnotation(QWidget):
 
     @property
     def selected_shapes_name(self) -> str | None:
-        """Return the validated new shapes element name."""
+        """Return the currently validated shapes element name."""
         return self._validated_shapes_name
 
     def refresh_from_sdata(self, sdata: SpatialData | None) -> None:
@@ -214,6 +261,7 @@ class ShapesAnnotation(QWidget):
 
         self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
         self._set_selected_coordinate_system(self.coordinate_system_combo.currentIndex())
+        self._refresh_shapes_targets()
         self._refresh_create_layer_state()
 
     def _on_sdata_changed(self, sdata: SpatialData | None) -> None:
@@ -223,6 +271,7 @@ class ShapesAnnotation(QWidget):
         del event
         self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
         self._set_selected_coordinate_system(self.coordinate_system_combo.currentIndex())
+        self._refresh_shapes_targets()
         self._refresh_create_layer_state()
 
     def _on_coordinate_system_changed(self, index: int) -> None:
@@ -246,6 +295,20 @@ class ShapesAnnotation(QWidget):
         # owns local selection and create-layer refresh so all sources follow one path.
         self._app_state.set_coordinate_system(next_coordinate_system, source=_SOURCE)
 
+    def _on_shapes_target_changed(self, index: int) -> None:
+        next_target = self._shapes_target_from_combo_index(index)
+        if self._annotation_layer is not None:
+            if next_target == self._selected_shapes_target:
+                return
+            if not self._confirm_discard_annotation_layer():
+                self._sync_shapes_target_combo_selection(self._selected_shapes_target)
+                self._refresh_create_layer_state()
+                return
+            self._discard_annotation_layer()
+
+        self._set_selected_shapes_target_from_combo(index)
+        self._refresh_create_layer_state()
+
     def _on_shapes_name_changed(self, _text: str) -> None:
         self._refresh_create_layer_state()
 
@@ -254,6 +317,9 @@ class ShapesAnnotation(QWidget):
             return
 
         self._refresh_create_layer_state()
+        if self._selected_shapes_target is None or self._selected_shapes_target.mode != "create_new":
+            return
+
         sdata = self._app_state.sdata
         shapes_name = self._validated_shapes_name
         coordinate_system = self._selected_coordinate_system
@@ -278,7 +344,7 @@ class ShapesAnnotation(QWidget):
         self._annotation_coordinate_system = coordinate_system
         self._annotation_has_been_saved = False
         self._annotation_reload_on_discard = False
-        self.name_edit.setEnabled(False)
+        self._set_create_name_controls_visible(True)
         self._app_state.viewer_adapter.activate_layer(layer)
         self._refresh_create_layer_state()
 
@@ -317,6 +383,9 @@ class ShapesAnnotation(QWidget):
 
         self._annotation_has_been_saved = True
         self._annotation_reload_on_discard = True
+        # After create-new first save, and after later overwrite/edit saves,
+        # keep the target selector pinned to the saved shapes element.
+        self._refresh_shapes_targets(preferred_target=_ShapesAnnotationTarget.edit_existing(result.shapes_name))
         self._refresh_save_shapes_state(update_status=False)
         self._app_state.emit_shapes_element_written(
             ShapesElementWrittenEvent(
@@ -373,10 +442,92 @@ class ShapesAnnotation(QWidget):
         coordinate_system = self.coordinate_system_combo.itemData(index)
         self._selected_coordinate_system = coordinate_system if isinstance(coordinate_system, str) else None
 
+    def _refresh_shapes_targets(self, *, preferred_target: _ShapesAnnotationTarget | None = None) -> None:
+        previous_target = preferred_target if preferred_target is not None else self._selected_shapes_target
+        sdata = self._app_state.sdata
+        coordinate_system = self._selected_coordinate_system
+
+        if sdata is None or coordinate_system is None:
+            self._eligible_existing_shapes_names = []
+        else:
+            self._eligible_existing_shapes_names = [
+                option.shapes_name
+                for option in get_spatialdata_shapes_options_for_coordinate_system_from_sdata(
+                    sdata=sdata,
+                    coordinate_system=coordinate_system,
+                )
+            ]
+
+        with QSignalBlocker(self.shapes_combo):
+            self.shapes_combo.clear()
+            for shapes_name in self._eligible_existing_shapes_names:
+                visible_shapes_name, shortened = _format_status_identifier(shapes_name)
+                target = _ShapesAnnotationTarget.edit_existing(shapes_name)
+                self.shapes_combo.addItem(visible_shapes_name, target)
+                if shortened:
+                    self.shapes_combo.setItemData(
+                        self.shapes_combo.count() - 1,
+                        format_tooltip(shapes_name),
+                        Qt.ItemDataRole.ToolTipRole,
+                    )
+
+            if sdata is not None and coordinate_system is not None:
+                self.shapes_combo.addItem(_CREATE_SHAPES_OPTION_TEXT, _ShapesAnnotationTarget.create_new())
+
+            self.shapes_combo.setEnabled(self.shapes_combo.count() > 0)
+
+            next_index = self._find_shapes_target_combo_index(previous_target)
+            if next_index < 0:
+                next_index = self._find_shapes_target_combo_index(_ShapesAnnotationTarget.create_new())
+            self.shapes_combo.setCurrentIndex(next_index)
+
+        self._set_selected_shapes_target_from_combo(self.shapes_combo.currentIndex())
+
+    def _find_shapes_target_combo_index(self, target: _ShapesAnnotationTarget | None) -> int:
+        if target is None:
+            return -1
+        for index in range(self.shapes_combo.count()):
+            if self.shapes_combo.itemData(index) == target:
+                return index
+        return -1
+
+    def _sync_shapes_target_combo_selection(self, target: _ShapesAnnotationTarget | None) -> None:
+        with QSignalBlocker(self.shapes_combo):
+            if target is None:
+                self.shapes_combo.setCurrentIndex(-1)
+                return
+
+            self.shapes_combo.setCurrentIndex(self._find_shapes_target_combo_index(target))
+        self._set_selected_shapes_target_from_combo(self.shapes_combo.currentIndex())
+
+    def _shapes_target_from_combo_index(self, index: int) -> _ShapesAnnotationTarget | None:
+        item_data = self.shapes_combo.itemData(index) if 0 <= index < self.shapes_combo.count() else None
+        return item_data if isinstance(item_data, _ShapesAnnotationTarget) else None
+
+    def _set_selected_shapes_target_from_combo(self, index: int) -> None:
+        target = self._shapes_target_from_combo_index(index)
+        self._selected_shapes_target = target
+        is_create_new = target is not None and target.mode == "create_new"
+        self._set_create_name_controls_visible(is_create_new)
+        self._refresh_shapes_combo_tooltip()
+
+    def _set_create_name_controls_visible(self, is_visible: bool) -> None:
+        self.new_shapes_name_label.setVisible(is_visible)
+        self.name_edit.setVisible(is_visible)
+        self.name_edit.setEnabled(is_visible and self._annotation_layer is None)
+
+    def _refresh_shapes_combo_tooltip(self) -> None:
+        target = self._selected_shapes_target
+        if target is not None and target.mode == "edit_existing" and target.existing_shapes_name is not None:
+            self.shapes_combo.setToolTip(format_tooltip(target.existing_shapes_name))
+            return
+        self.shapes_combo.setToolTip("")
+
     def _refresh_create_layer_state(self) -> None:
         """Update layer-creation readiness from current sdata, coordinate system, and name."""
         sdata = self._app_state.sdata
         coordinate_system = self._selected_coordinate_system
+        target = self._selected_shapes_target
         self._validated_shapes_name = None
 
         if self._annotation_layer is not None:
@@ -411,6 +562,47 @@ class ShapesAnnotation(QWidget):
                 lines=["Select a coordinate system before creating shapes."],
                 kind="warning",
             )
+            self.create_layer_button.setEnabled(False)
+            self._refresh_save_shapes_state()
+            return
+
+        if target is None:
+            self._set_status(
+                title="Choose Shapes Target",
+                lines=["Select whether to create a new shapes element or edit an existing one."],
+                kind="warning",
+            )
+            self.create_layer_button.setEnabled(False)
+            self._refresh_save_shapes_state()
+            return
+
+        if target.mode == "edit_existing":
+            shapes_name = target.existing_shapes_name
+            if shapes_name is None or shapes_name not in sdata.shapes or shapes_name not in self._eligible_existing_shapes_names:
+                self._set_status(
+                    title="Shapes Unavailable",
+                    lines=["The selected shapes element is no longer available in this coordinate system."],
+                    kind="warning",
+                )
+                self.create_layer_button.setEnabled(False)
+                self._refresh_save_shapes_state()
+                return
+
+            self._validated_shapes_name = shapes_name
+            visible_shapes_name, shapes_name_shortened = _format_status_identifier(shapes_name)
+            visible_coordinate_system, coordinate_system_shortened = _format_status_identifier(coordinate_system)
+            full_line = f'Shapes element "{shapes_name}" is available in coordinate system "{coordinate_system}".'
+            self._set_status(
+                title="Existing Shapes Selected",
+                lines=[
+                    f'Shapes element "{visible_shapes_name}" is available '
+                    f'in coordinate system "{visible_coordinate_system}".'
+                ],
+                kind="info",
+                tooltip_lines=[full_line] if shapes_name_shortened or coordinate_system_shortened else None,
+            )
+            # Opening/adopting existing layers is Slice 5; this slice only
+            # introduces and validates the target selector state.
             self.create_layer_button.setEnabled(False)
             self._refresh_save_shapes_state()
             return
@@ -603,7 +795,9 @@ class ShapesAnnotation(QWidget):
         self._annotation_coordinate_system = None
         self._annotation_has_been_saved = False
         self._annotation_reload_on_discard = False
-        self.name_edit.setEnabled(True)
+        self._set_create_name_controls_visible(
+            self._selected_shapes_target is not None and self._selected_shapes_target.mode == "create_new"
+        )
 
     def _create_header_logo(self) -> QLabel:
         logo_label = QLabel()
