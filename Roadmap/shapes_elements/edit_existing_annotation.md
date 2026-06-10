@@ -361,6 +361,16 @@ Rejected source geometry:
 - unsupported geometry types such as `LineString`;
 - duplicate GeoDataFrame index values.
 
+Editable napari row types:
+
+- during an edit session, the napari layer may contain `polygon`, `rectangle`,
+  or `ellipse` rows;
+- all supported editable napari rows are converted back to saved Shapely
+  `Polygon` geometries;
+- this does not relax source eligibility. The source shapes element must still
+  start from flat Shapely `Polygon` rows so one source row maps to one editable
+  napari row.
+
 Rationale:
 
 - the viewer currently expands a `MultiPolygon` source row into multiple napari
@@ -688,9 +698,12 @@ Work:
     because that value belongs to the source GeoDataFrame itself;
 - add validation for edit-existing source shapes elements:
   - unique source index;
-  - supported `Polygon` rows only;
+  - source geometry rows are Shapely `Polygon` rows only;
   - no `MultiPolygon`, point-radius rows, empty geometries, unsupported
     geometries, or one-source-row-to-many-rendered-row mappings;
+- keep editable napari row support aligned with create-new conversion:
+  `polygon`, `rectangle`, and `ellipse` rows can be saved as Shapely
+  `Polygon` geometries;
 - add a row-identity helper that:
   - reads existing row IDs from `layer.features[source_index_feature_name]`;
   - preserves existing source index values;
