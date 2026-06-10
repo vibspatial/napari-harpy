@@ -795,11 +795,43 @@ Work:
 - write through `harpy.sh.add_shapes(...)` with `overwrite=True`;
 - pass `instance_key=geodataframe.index.name`, including `None` for unnamed
   source indexes;
-- pass `transformations={request.coordinate_system: Identity()}`;
 - document that the napari layer geometry is assumed to already be expressed in
   `request.coordinate_system`; this matches the viewer adapter, which transforms
   vector shapes into the selected coordinate system before creating the napari
   layer;
+- before overwriting the target shapes element, derive the replacement
+  transformations from the original target element:
+
+  ```python
+  target_element = request.sdata.shapes[request.shapes_name]
+  original_transformations = get_transformation(target_element, get_all=True)
+  transformations = {}
+  for target_coordinate_system in original_transformations:
+      if target_coordinate_system == request.coordinate_system:
+          transformations[target_coordinate_system] = Identity()
+      else:
+          transformations[target_coordinate_system] = (
+              get_transformation_between_coordinate_systems(
+                  request.sdata,
+                  request.coordinate_system,
+                  target_coordinate_system,
+                  intermediate_coordinate_systems=target_element,
+              )
+          )
+  ```
+
+- pass this full `transformations` dictionary to `harpy.sh.add_shapes(...)`;
+- this flattens the edited geometry into `request.coordinate_system` while
+  preserving the shapes element's availability in every coordinate system that
+  was defined on the original target element;
+- if the original element had transforms `E -> global` and `E -> global_micron`,
+  and the edit happens in `global`, then the saved geometry is stored in
+  `global` coordinates with `global: Identity()`, while `global_micron` is
+  recalculated as `global -> E -> global_micron`, i.e. the inverse of the
+  original `E -> global` followed by the original `E -> global_micron`;
+- if SpatialData cannot derive a transform for one of the original coordinate
+  systems, fail before writing rather than silently dropping that coordinate
+  system;
 - return a result with `shapes_name`, `coordinate_system`, and row count;
 - keep conflict detection out of scope: if external code changed the same
   shapes element after the edit session was opened, the widget save still
@@ -811,6 +843,8 @@ Done when:
 - edit-existing can overwrite an existing backed zarr shapes element;
 - unnamed source indexes round-trip with `geodataframe.index.name is None`;
 - the source row identity feature column is synced back into `layer.features`;
+- original coordinate-system availability is preserved by deriving replacement
+  transforms before overwrite;
 - external concurrent mutations are not checked or merged;
 - create-new tests still pass unchanged.
 
