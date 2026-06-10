@@ -920,6 +920,13 @@ The in-place helper is a saved-data revert, not a style reset. Its job is to
 put the geometry and row metadata back in sync with `sdata` while leaving the
 viewer presentation stable.
 
+This helper is used when the Annotation widget has adopted an existing primary
+shapes layer, the user edits it, then chooses a different annotation target or
+coordinate system and confirms the discard dialog. In that case the edited
+napari layer is dirty relative to saved `sdata`; discard should restore the
+same layer object from the saved shapes element instead of removing and
+re-adding it.
+
 Done when:
 
 - `ensure_shapes_loaded(...)` still behaves as before;
