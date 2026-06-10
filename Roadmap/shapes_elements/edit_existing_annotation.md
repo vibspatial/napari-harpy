@@ -302,39 +302,29 @@ layer is active should require discard confirmation.
 Confirmed discard behavior depends on how the edit layer was created:
 
 - create-new annotation layer: remove the layer and unregister its binding;
-- edit-existing layer created by the Annotation widget: remove the layer and
-  unregister its binding;
-- edit-existing layer adopted from an already-loaded primary viewer layer:
-  reload the saved shapes element from current `sdata` into the same napari
-  layer object.
+- edit-existing annotation layer, whether adopted from an already-loaded primary
+  viewer layer or loaded by the Annotation widget: remove the dirty primary
+  layer, unregister its binding, then reload a clean primary layer from current
+  saved `sdata` through the normal viewer adapter load path.
 
 Rationale:
 
 - discard should not leave unsaved edits visible in the viewer;
-- adopted primary layers may have user-visible viewer state such as layer order,
-  visibility, opacity, and selection context. Discard should not disrupt that
-  state;
-- reload-in-place behaves like reverting unsaved edits on the existing layer,
-  which is the least surprising behavior for a professional annotation workflow.
+- remove-and-reload is simpler than in-place revert and reuses the current,
+  well-tested viewer adapter path;
+- the tradeoff is accepted: the reloaded layer is a new napari layer object and
+  may reset presentation state or layer order according to normal viewer loading
+  behavior.
 
-Reload-in-place requirements for adopted primary layers:
+Reload requirements for edit-existing discard:
 
-- keep the same napari layer object;
-- keep the same layer position in the viewer;
-- keep the existing layer binding object or update it in place;
-- preserve presentation state where possible, including layer name, visibility,
-  opacity, blending, and selection;
-- replace the layer's editable shape state from the saved SpatialData element,
-  including `data`, `shape_type`, and `features`;
-- rebuild the binding's source-row mapping metadata from the saved element so
-  later saves continue to use the correct source identities;
-- if the saved element no longer passes edit-existing validation, fail the
-  discard with actionable feedback rather than leaving a half-reverted layer.
-
-The implementation should reuse the same conversion logic as the viewer loading
-path, but expose it as a helper that prepares napari shapes payloads without
-adding a new layer. The Annotation widget can then apply that payload to the
-adopted layer in place.
+- call `ViewerAdapter.remove_shapes_layer(sdata, shapes_name, coordinate_system)`
+  for the dirty primary layer;
+- call `ViewerAdapter.ensure_shapes_loaded(sdata, shapes_name, coordinate_system)`
+  to load a fresh primary layer from saved `sdata`;
+- ensure the old dirty layer no longer has a Harpy binding;
+- ensure the fresh clean layer has a primary `ShapesLayerBinding`;
+- do not introduce a separate in-place payload helper for this workflow.
 
 ## Geometry And Identity Scope
 
@@ -848,95 +838,59 @@ Done when:
 - external concurrent mutations are not checked or merged;
 - create-new tests still pass unchanged.
 
-### Slice 3: Viewer Adapter Payload And In-Place Revert Helpers
+### Slice 3: Viewer Adapter Reload On Discard
 
 Status: pending
 
-Goal: expose viewer-adapter helpers that prepare existing shapes as napari layer
-payloads without necessarily adding a new layer, then use the same preparation
-for load and revert.
+Goal: keep discard handling for adopted existing shapes layers simple by
+removing the dirty primary layer and loading a fresh primary shapes layer from
+the saved `SpatialData` state.
 
 Likely files:
 
-- `src/napari_harpy/viewer/adapter.py`;
-- viewer adapter tests if present or focused widget tests.
+- `src/napari_harpy/widgets/shapes_annotation/widget.py`;
+- `tests/test_shapes_annotation_widget.py`;
+- viewer adapter tests only if a small adapter convenience wrapper is added.
 
 Work:
 
-- split `_build_shapes_layer(...)` into two steps:
-  - prepare a saved-shapes payload from `sdata`, `shapes_name`, and
-    `coordinate_system`;
-  - create a new napari layer from that payload;
-- reuse the payload preparation step for both normal primary-layer loading and
-  in-place revert;
-- keep `ensure_shapes_loaded(...)` behavior unchanged by still constructing a
-  new primary layer from the prepared payload;
-- add a viewer-adapter method that reverts an existing primary polygon
-  `Shapes` layer to the current saved `SpatialData` state in place, for
-  example:
-
-  ```python
-  def revert_shapes_layer_to_saved_state(
-      self,
-      layer: Shapes,
-      *,
-      sdata: SpatialData,
-      shapes_name: str,
-      coordinate_system: str,
-  ) -> ShapesLayerBinding:
-      ...
-  ```
-
-- have the payload expose:
-  - `data`;
-  - `shape_types`;
-  - `features`;
-  - `source_row_id_by_rendered_row`;
-  - `source_shapes_index_feature_name`;
-  - skipped geometry count;
-  - rendering mode.
-- support in-place revert for normal polygon `Shapes` payloads only;
-- reject point-radius shapes for in-place annotation revert because those are
-  represented as napari `Points` layers in the primary viewer path;
+- do not refactor `_build_shapes_layer(...)` or
+  `_prepare_napari_shapes_layer_inputs(...)` for this workflow;
+- rely on the existing viewer adapter loading path:
+  - `ViewerAdapter.remove_shapes_layer(sdata, shapes_name, coordinate_system)`
+    removes the dirty primary layer and unregisters its binding;
+  - `ViewerAdapter.ensure_shapes_loaded(sdata, shapes_name, coordinate_system)`
+    loads a fresh primary layer from the current saved shapes element;
+- use this reload path when the Annotation widget has adopted an existing
+  primary shapes layer, the user edits it, then chooses another annotation
+  target or coordinate system and confirms the discard dialog;
+- keep create-new discard behavior separate:
+  - create-new annotation layer: remove the unsaved layer;
+  - adopted existing annotation layer: remove and reload from saved `sdata`;
+- accept that the reloaded layer is a new napari layer object. The simple reload
+  path may reset layer presentation and may reinsert the layer according to the
+  normal adapter loading behavior;
 - ignore styled shapes layers for this workflow. Styled layers are separate
   viewer-only representations and are distinguishable from primary shapes via
   `ShapesLayerBinding.shapes_role`;
-- validate that the layer being reverted is a primary shapes layer bound to the
-  requested `sdata`, shapes name, and coordinate system;
-- apply the payload without removing or re-adding the napari layer:
-  - update geometry data;
-  - update napari shape types;
-  - update `layer.features`;
-  - preserve layer object identity;
-  - preserve viewer layer order;
-  - preserve presentation where possible, including name, colors, edge width,
-    and opacity;
-- refresh the `ShapesLayerBinding` metadata by re-registering the same layer
-  object with `register_shapes_layer(...)`. The registry is keyed by layer
-  identity, so re-registering the same layer replaces the binding without
-  changing viewer layer order.
+- point-radius shapes should not reach edit-existing annotation because source
+  eligibility remains polygon-only. If they do appear, the normal open/edit
+  validation should reject them before discard/reload logic matters.
 
-The in-place helper is a saved-data revert, not a style reset. Its job is to
-put the geometry and row metadata back in sync with `sdata` while leaving the
-viewer presentation stable.
-
-This helper is used when the Annotation widget has adopted an existing primary
-shapes layer, the user edits it, then chooses a different annotation target or
-coordinate system and confirms the discard dialog. In that case the edited
-napari layer is dirty relative to saved `sdata`; discard should restore the
-same layer object from the saved shapes element instead of removing and
-re-adding it.
+The discard clean state is the current saved state in `sdata`. For backed
+stores, this means the state visible through the active `SpatialData` object and
+its backed store at the time of reload. The Annotation widget is not responsible
+for conflict detection or merging external edits here.
 
 Done when:
 
 - `ensure_shapes_loaded(...)` still behaves as before;
-- an adopted primary shapes layer can be reverted to saved `sdata` state without
-  creating a new napari layer object;
-- the reverted layer is the same Python object and remains at the same position
-  in `viewer.layers`;
-- binding metadata after revert matches the saved element;
-- attempting to use the in-place revert helper on styled shapes or point-radius
-  shapes fails with a clear error.
+- confirming discard for an adopted existing primary shapes layer removes the
+  dirty layer and loads a fresh layer from saved `sdata`;
+- the old dirty layer has no remaining Harpy binding after discard;
+- the fresh layer has a correct primary `ShapesLayerBinding`;
+- create-new discard still removes the unsaved annotation layer without trying
+  to reload a saved element.
 
 ### Slice 4: Annotation Target Selector UI
 
@@ -1069,19 +1023,19 @@ Work:
 - extend discard confirmation to `Shapes` target changes;
 - keep the current coordinate-system session lock behavior;
 - for create-new layers, discard removes the layer and unregisters it;
-- for edit-existing layers loaded by Annotation, discard removes the layer and
-  unregisters it;
-- for adopted primary layers, discard reloads saved `sdata` geometry into the
-  same napari layer object;
-- use a scoped guard so programmatic layer removals/reverts do not double-handle
+- for edit-existing layers, discard removes the dirty primary layer and reloads
+  a clean primary layer from saved `sdata`;
+- use a scoped guard so programmatic layer removals/reloads do not double-handle
   viewer layer removal callbacks;
-- preserve layer order and presentation state during adopted-layer revert.
+- accept the normal viewer adapter reload behavior for layer object identity,
+  order, and presentation.
 
 Done when:
 
 - canceling discard leaves the active edit session untouched;
 - confirming discard clears or reverts the active session correctly;
-- adopted-layer discard preserves the napari layer object and viewer order;
+- edit-existing discard replaces the dirty layer with a freshly loaded clean
+  layer from saved `sdata`;
 - manual deletion of the active annotation layer clears widget state.
 
 ### Slice 8: Viewer Integration Audit
@@ -1172,8 +1126,9 @@ that do not map one source row to one rendered editable napari row.
 
 ## Likely Reusable Pieces
 
-- Viewer shape-loading conversion code for preparing napari `Shapes` payloads
-  from existing SpatialData shapes without necessarily adding a new layer.
+- `ViewerAdapter.ensure_shapes_loaded(...)` and
+  `ViewerAdapter.remove_shapes_layer(...)` for reloading saved primary shapes
+  layers on discard.
 - `ViewerAdapter.register_shapes_layer(...)` for registering the editable layer
   as a primary shapes layer.
 - `napari_shapes_layer_to_geodataframe(...)` for converting edited layer data
