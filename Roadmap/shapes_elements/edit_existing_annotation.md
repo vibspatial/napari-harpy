@@ -110,6 +110,8 @@ are different:
   - after a successful first save, the saved element exists in
     `sdata.shapes[...]` and the active session can transition to edit-existing
     semantics for later saves;
+  - the `Shapes` dropdown should switch from `Create shapes...` to the newly
+    saved shapes element, and `New shapes name` should hide;
 - edit-existing has an explicit existing target selected by the user, so save
   can use `overwrite=True` from the start.
 
@@ -171,6 +173,11 @@ This means the `Shapes` selector becomes the branch point:
 
 - `Create shapes...` + `New shapes name` -> Workflow A / create-new;
 - existing shapes element -> edit-existing.
+
+After a successful create-new first save, the newly created element should be
+selected in the `Shapes` dropdown. The existing napari layer remains active and
+editable, but the session is now treated as edit-existing for that saved shapes
+element.
 
 ## Coordinate-System Session Lock
 
@@ -867,6 +874,8 @@ Work:
 - after successful create-new first save, transition the active session to
   edit-existing semantics by storing the saved GeoDataFrame snapshot and source
   index feature name;
+- after successful create-new first save, refresh the `Shapes` dropdown, select
+  the newly saved shapes element, and hide `New shapes name`;
 - use edit-existing `overwrite=True` for existing targets and for repeated saves
   after create-new first save;
 - emit `ShapesElementWrittenEvent` after both create-new and edit-existing
