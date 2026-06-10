@@ -36,7 +36,7 @@ class CreateShapesElementRequest:
 
 
 @dataclass(frozen=True)
-class CreateShapesElementResult:
+class AnnotateShapesElementResult:
     shapes_name: str
     coordinate_system: str
     row_count: int
@@ -67,7 +67,7 @@ class ExistingShapesLayerConversion:
 def create_shapes_element_from_napari_shapes_layer(
     request: CreateShapesElementRequest,
     layer: Shapes,
-) -> CreateShapesElementResult:
+) -> AnnotateShapesElementResult:
     """Create or update one SpatialData shapes element from a napari Shapes layer."""
     sdata = request.sdata
     if sdata is None:
@@ -108,7 +108,7 @@ def create_shapes_element_from_napari_shapes_layer(
         overwrite=request.overwrite,
     )
 
-    return CreateShapesElementResult(
+    return AnnotateShapesElementResult(
         shapes_name=shapes_name,
         coordinate_system=coordinate_system,
         row_count=len(geodataframe),

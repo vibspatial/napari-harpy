@@ -13,7 +13,7 @@ from spatialdata import SpatialData
 import napari_harpy._app_state as app_state_module
 import napari_harpy.widgets.shapes_annotation.widget as shapes_annotation_widget_module
 from napari_harpy._app_state import ShapesElementWrittenEvent, get_or_create_app_state
-from napari_harpy.core.shapes_annotation import CreateShapesElementResult
+from napari_harpy.core.shapes_annotation import AnnotateShapesElementResult
 from napari_harpy.viewer.adapter import ShapesLayerBinding
 from napari_harpy.viewer.shapes_styling import (
     _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR,
@@ -277,7 +277,7 @@ def test_shapes_annotation_widget_status_cards_shorten_long_identifiers(
 
     def fake_create_shapes_element(request, napari_layer):
         del napari_layer
-        return CreateShapesElementResult(
+        return AnnotateShapesElementResult(
             shapes_name=request.shapes_name,
             coordinate_system=request.coordinate_system,
             row_count=2,
@@ -546,7 +546,7 @@ def test_shapes_annotation_widget_save_calls_core_with_locked_request_and_report
     def fake_create_shapes_element(request, napari_layer):
         captured_requests.append(request)
         captured_layers.append(napari_layer)
-        return CreateShapesElementResult(
+        return AnnotateShapesElementResult(
             shapes_name=request.shapes_name,
             coordinate_system=request.coordinate_system,
             row_count=3,
@@ -600,7 +600,7 @@ def test_shapes_annotation_widget_repeated_save_uses_overwrite_after_success(
     def fake_create_shapes_element(request, napari_layer):
         del napari_layer
         overwrites.append(request.overwrite)
-        return CreateShapesElementResult(
+        return AnnotateShapesElementResult(
             shapes_name=request.shapes_name,
             coordinate_system=request.coordinate_system,
             row_count=1,
@@ -648,7 +648,7 @@ def test_shapes_annotation_widget_failed_first_save_keeps_later_overwrite_false(
         overwrites.append(request.overwrite)
         if len(overwrites) == 1:
             raise ValueError("same-name element appeared externally")
-        return CreateShapesElementResult(
+        return AnnotateShapesElementResult(
             shapes_name=request.shapes_name,
             coordinate_system=request.coordinate_system,
             row_count=1,

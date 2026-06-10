@@ -344,7 +344,7 @@ class CreateShapesElementRequest:
 
 
 @dataclass(frozen=True)
-class CreateShapesElementResult:
+class AnnotateShapesElementResult:
     shapes_name: str
     coordinate_system: str
     row_count: int
@@ -366,7 +366,7 @@ def napari_shapes_layer_to_geodataframe(
 def create_shapes_element_from_napari_shapes_layer(
     request: CreateShapesElementRequest,
     layer: Shapes,
-) -> CreateShapesElementResult:
+) -> AnnotateShapesElementResult:
     ...
 ```
 
@@ -493,7 +493,7 @@ Code:
 
 - add `src/napari_harpy/core/shapes_annotation.py`;
 - add `CreateShapesElementRequest`;
-- add `CreateShapesElementResult`;
+- add `AnnotateShapesElementResult`;
 - add `napari_shapes_layer_to_geodataframe(...)`;
 - add focused tests in `tests/test_shapes_annotation.py`.
 
@@ -621,7 +621,7 @@ Behavior:
 - intentionally ignore the return value from `hp.sh.add_shapes(...)`. The helper
   treats the Harpy call as a side-effecting write and callers continue using
   `request.sdata`;
-- return `CreateShapesElementResult` with name, coordinate system, and row
+- return `AnnotateShapesElementResult` with name, coordinate system, and row
   count;
 - do not create or link an `AnnData` table;
 - use `harpy.sh.add_shapes(...)` as the backed-capable write path. Slice 2 does

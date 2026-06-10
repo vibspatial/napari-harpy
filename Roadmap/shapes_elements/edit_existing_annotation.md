@@ -757,7 +757,7 @@ class EditShapesElementRequest:
 
 
 @dataclass(frozen=True)
-class EditShapesElementResult:
+class AnnotateShapesElementResult:
     shapes_name: str
     coordinate_system: str
     row_count: int
@@ -767,7 +767,7 @@ class EditShapesElementResult:
 def edit_shapes_element_from_napari_shapes_layer(
     request: EditShapesElementRequest,
     layer: Shapes,
-) -> EditShapesElementResult:
+) -> AnnotateShapesElementResult:
     ...
 ```
 
