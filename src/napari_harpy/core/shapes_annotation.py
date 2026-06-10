@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 from napari.layers import Shapes
 from shapely.geometry import Polygon
-from spatialdata.transformations import Identity
+from spatialdata.transformations import Identity, get_transformation
 
 from napari_harpy.core.spatialdata import get_coordinate_system_names_from_sdata
 from napari_harpy.core.validation import normalize_spatialdata_dataframe_column_name, normalize_spatialdata_name
@@ -32,6 +32,16 @@ class CreateShapesElementRequest:
     coordinate_system: str
     overwrite: bool = False
     index_name: str = DEFAULT_SHAPES_INDEX_NAME
+    index_prefix: str = DEFAULT_SHAPES_INDEX_PREFIX
+
+
+@dataclass(frozen=True)
+class EditShapesElementRequest:
+    sdata: SpatialData
+    shapes_name: str
+    coordinate_system: str
+    source_geodataframe: gpd.GeoDataFrame
+    source_index_feature_name: str
     index_prefix: str = DEFAULT_SHAPES_INDEX_PREFIX
 
 
@@ -106,6 +116,69 @@ def create_shapes_element_from_napari_shapes_layer(
         transformations={coordinate_system: Identity()},
         instance_key=index_name,
         overwrite=request.overwrite,
+    )
+
+    return AnnotateShapesElementResult(
+        shapes_name=shapes_name,
+        coordinate_system=coordinate_system,
+        row_count=len(geodataframe),
+    )
+
+
+def edit_shapes_element_from_napari_shapes_layer(
+    request: EditShapesElementRequest,
+    layer: Shapes,
+) -> AnnotateShapesElementResult:
+    """Overwrite an existing SpatialData shapes element from an edited napari layer.
+
+    The napari layer is assumed to contain coordinates already transformed into
+    ``request.coordinate_system``. Saving therefore stores those transformed
+    coordinates directly and replaces the target transform for that coordinate
+    system with ``Identity()``. Non-identity source transforms are flattened into
+    the saved geometry.
+    """
+    sdata = request.sdata
+    if sdata is None:
+        raise ValueError("Edit shapes element request requires a SpatialData object.")
+
+    shapes_name = _normalize_spatialdata_name_field(request.shapes_name, field_name="`shapes_name`")
+    coordinate_system = _normalize_string_field(request.coordinate_system, field_name="`coordinate_system`")
+    source_index_feature_name = _normalize_feature_column_name_field(
+        request.source_index_feature_name,
+        field_name="`source_index_feature_name`",
+    )
+    index_prefix = _normalize_string_field(request.index_prefix, field_name="`index_prefix`")
+
+    if shapes_name not in sdata.shapes:
+        raise ValueError(f"Shapes element `{shapes_name}` does not exist and cannot be edited.")
+
+    target_transformations = get_transformation(sdata.shapes[shapes_name], get_all=True)
+    if coordinate_system not in target_transformations:
+        available = ", ".join(f"`{name}`" for name in target_transformations) or "none"
+        raise ValueError(
+            f"Coordinate system `{coordinate_system}` is not available for shapes element `{shapes_name}`. "
+            f"Available coordinate systems: {available}."
+        )
+
+    geodataframe = napari_shapes_layer_to_geodataframe(
+        layer,
+        conversion=ExistingShapesLayerConversion(
+            source_geodataframe=request.source_geodataframe,
+            source_index_feature_name=source_index_feature_name,
+            index_prefix=index_prefix,
+        ),
+    )
+
+    _ = hp.sh.add_shapes(
+        sdata,
+        input=geodataframe,
+        output_shapes_name=shapes_name,
+        # The viewer adapter gives napari transformed vector coordinates. Saving
+        # writes those coordinates as-is in the selected coordinate system,
+        # flattening any previous non-identity transform into the geometry.
+        transformations={coordinate_system: Identity()},
+        instance_key=geodataframe.index.name,
+        overwrite=True,
     )
 
     return AnnotateShapesElementResult(

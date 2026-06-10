@@ -7,14 +7,17 @@ import pytest
 from napari.layers import Shapes
 from shapely.geometry import MultiPolygon, Point, Polygon
 from spatialdata import SpatialData, read_zarr
+from spatialdata.models import ShapesModel
 from spatialdata.transformations import Identity, get_transformation
 
 import napari_harpy.core.shapes_annotation as shapes_annotation_module
 from napari_harpy.core.shapes_annotation import (
     CreateShapesElementRequest,
+    EditShapesElementRequest,
     ExistingShapesLayerConversion,
     NewShapesLayerConversion,
     create_shapes_element_from_napari_shapes_layer,
+    edit_shapes_element_from_napari_shapes_layer,
     napari_shapes_layer_to_geodataframe,
 )
 
@@ -44,6 +47,16 @@ def _source_polygon(offset: float = 0.0) -> Polygon:
             (offset + 0.0, 2.0),
         ]
     )
+
+
+def _make_shapes_sdata(
+    geodataframe: gpd.GeoDataFrame,
+    *,
+    shapes_name: str = "regions",
+    coordinate_system: str = "global",
+) -> SpatialData:
+    shapes = ShapesModel.parse(geodataframe, transformations={coordinate_system: Identity()})
+    return SpatialData(shapes={shapes_name: shapes})
 
 
 def test_napari_shapes_layer_to_geodataframe_converts_polygon_coordinates() -> None:
@@ -372,6 +385,189 @@ def test_napari_shapes_layer_to_geodataframe_edit_existing_rejects_missing_sourc
         )
 
     assert "instance_id" not in layer.features.columns
+
+
+def test_edit_shapes_element_from_napari_shapes_layer_overwrites_existing_shapes_element() -> None:
+    source = gpd.GeoDataFrame(
+        {"class_id": [1, 2]},
+        geometry=[_source_polygon(0), _source_polygon(3)],
+        index=pd.Index(["cell_1", "cell_2"], name="instance_id"),
+    )
+    sdata = _make_shapes_sdata(source)
+    layer = Shapes(ndim=2)
+    _add_polygon(layer, offset=10)
+    _add_polygon(layer, offset=20)
+    layer.features["instance_id"] = ["cell_2", np.nan]
+
+    result = edit_shapes_element_from_napari_shapes_layer(
+        EditShapesElementRequest(
+            sdata=sdata,
+            shapes_name="regions",
+            coordinate_system="global",
+            source_geodataframe=source,
+            source_index_feature_name="instance_id",
+        ),
+        layer,
+    )
+
+    edited = sdata.shapes["regions"]
+    assert result.shapes_name == "regions"
+    assert result.coordinate_system == "global"
+    assert result.row_count == 2
+    assert edited.index.name == "instance_id"
+    assert edited.index.tolist() == ["cell_2", "__annotation_0"]
+    assert edited["class_id"].dtype == "Int64"
+    assert edited["class_id"].iloc[0] == 2
+    assert pd.isna(edited["class_id"].iloc[1])
+    assert layer.features["instance_id"].tolist() == ["cell_2", "__annotation_0"]
+    assert isinstance(get_transformation(edited, get_all=True)["global"], Identity)
+
+
+@pytest.mark.parametrize(
+    ("request_kwargs", "message"),
+    [
+        ({"sdata": None}, "SpatialData object"),
+        ({"shapes_name": "missing"}, "does not exist"),
+        ({"coordinate_system": "missing"}, "not available"),
+        ({"source_index_feature_name": "   "}, "non-empty string"),
+        ({"index_prefix": "   "}, "non-empty string"),
+    ],
+)
+def test_edit_shapes_element_from_napari_shapes_layer_rejects_invalid_request_before_layer_mutation(
+    request_kwargs: dict[str, object],
+    message: str,
+) -> None:
+    source = gpd.GeoDataFrame(
+        {"class_id": [1]},
+        geometry=[_source_polygon()],
+        index=pd.Index(["cell_1"], name="instance_id"),
+    )
+    sdata = _make_shapes_sdata(source)
+    layer = Shapes(ndim=2)
+    _add_polygon(layer)
+    layer.features["instance_id"] = ["cell_1"]
+    kwargs = {
+        "sdata": sdata,
+        "shapes_name": "regions",
+        "coordinate_system": "global",
+        "source_geodataframe": source,
+        "source_index_feature_name": "instance_id",
+    } | request_kwargs
+
+    with pytest.raises(ValueError, match=message):
+        edit_shapes_element_from_napari_shapes_layer(EditShapesElementRequest(**kwargs), layer)
+
+    assert layer.features["instance_id"].tolist() == ["cell_1"]
+    assert sdata.shapes["regions"].index.tolist() == ["cell_1"]
+
+
+def test_edit_shapes_element_from_napari_shapes_layer_preserves_unnamed_source_index() -> None:
+    source = gpd.GeoDataFrame(
+        {"class_id": [1]},
+        geometry=[_source_polygon()],
+        index=pd.Index(["cell_1"]),
+    )
+    sdata = _make_shapes_sdata(source)
+    layer = Shapes(ndim=2)
+    _add_polygon(layer)
+    _add_polygon(layer, offset=3)
+    layer.features["index"] = ["cell_1", np.nan]
+
+    edit_shapes_element_from_napari_shapes_layer(
+        EditShapesElementRequest(
+            sdata=sdata,
+            shapes_name="regions",
+            coordinate_system="global",
+            source_geodataframe=source,
+            source_index_feature_name="index",
+        ),
+        layer,
+    )
+
+    edited = sdata.shapes["regions"]
+    assert edited.index.name is None
+    assert edited.index.tolist() == ["cell_1", "__annotation_0"]
+    assert layer.features["index"].tolist() == ["cell_1", "__annotation_0"]
+
+
+def test_edit_shapes_element_from_napari_shapes_layer_persists_backed_overwrite_roundtrip(tmp_path) -> None:
+    source = gpd.GeoDataFrame(
+        {"class_id": [1, 2]},
+        geometry=[_source_polygon(0), _source_polygon(3)],
+        index=pd.Index(["cell_1", "cell_2"], name="instance_id"),
+    )
+    path = tmp_path / "shapes.zarr"
+    _make_shapes_sdata(source).write(path)
+    backed_sdata = read_zarr(path)
+    layer = Shapes(ndim=2)
+    _add_polygon(layer, offset=10)
+    _add_polygon(layer, offset=20)
+    layer.features["instance_id"] = ["cell_2", np.nan]
+
+    result = edit_shapes_element_from_napari_shapes_layer(
+        EditShapesElementRequest(
+            sdata=backed_sdata,
+            shapes_name="regions",
+            coordinate_system="global",
+            source_geodataframe=backed_sdata.shapes["regions"],
+            source_index_feature_name="instance_id",
+        ),
+        layer,
+    )
+
+    reread = read_zarr(path)
+    edited = reread.shapes["regions"]
+    assert result.row_count == 2
+    assert edited.index.name == "instance_id"
+    assert edited.index.tolist() == ["cell_2", "__annotation_0"]
+    assert edited["class_id"].dtype == "Int64"
+    assert edited["class_id"].iloc[0] == 2
+    assert pd.isna(edited["class_id"].iloc[1])
+    assert isinstance(get_transformation(edited, get_all=True)["global"], Identity)
+
+
+def test_edit_shapes_element_from_napari_shapes_layer_calls_harpy_with_overwrite_and_index_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = gpd.GeoDataFrame(
+        geometry=[_source_polygon()],
+        index=pd.Index(["cell_1"]),
+    )
+    sdata = _make_shapes_sdata(source)
+    layer = Shapes(ndim=2)
+    _add_polygon(layer)
+    layer.features["index"] = ["cell_1"]
+    captured_kwargs: dict[str, object] = {}
+
+    def fake_add_shapes(sdata: SpatialData, **kwargs):
+        captured_kwargs["sdata"] = sdata
+        captured_kwargs.update(kwargs)
+        return sdata
+
+    monkeypatch.setattr(shapes_annotation_module.hp.sh, "add_shapes", fake_add_shapes)
+
+    result = edit_shapes_element_from_napari_shapes_layer(
+        EditShapesElementRequest(
+            sdata=sdata,
+            shapes_name="regions",
+            coordinate_system="global",
+            source_geodataframe=source,
+            source_index_feature_name="index",
+        ),
+        layer,
+    )
+
+    assert result.row_count == 1
+    assert captured_kwargs["sdata"] is sdata
+    assert captured_kwargs["output_shapes_name"] == "regions"
+    assert captured_kwargs["instance_key"] is None
+    assert captured_kwargs["overwrite"] is True
+    written = captured_kwargs["input"]
+    assert isinstance(written, gpd.GeoDataFrame)
+    assert written.index.name is None
+    transformations = captured_kwargs["transformations"]
+    assert isinstance(transformations, dict)
+    assert isinstance(transformations["global"], Identity)
 
 
 def test_create_shapes_element_from_napari_shapes_layer_writes_shapes_element(sdata_blobs: SpatialData) -> None:

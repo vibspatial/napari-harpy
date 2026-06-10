@@ -732,7 +732,7 @@ Done when:
 
 ### Slice 2: Core Edit-Existing Save API
 
-Status: pending
+Status: implemented
 
 Goal: add an explicit core save helper for edit-existing rather than overloading
 the create-new request contract. The save helper should treat the edited napari
