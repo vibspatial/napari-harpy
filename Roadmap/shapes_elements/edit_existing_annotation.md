@@ -631,30 +631,59 @@ Work:
 
 - keep one public napari-layer-to-GeoDataFrame conversion helper:
   `napari_shapes_layer_to_geodataframe(...)`;
-- extend `napari_shapes_layer_to_geodataframe(...)` with optional edit-existing
-  inputs instead of adding a second public helper:
+- add explicit conversion context dataclasses so the helper supports create-new
+  and edit-existing without a bloated keyword-only signature:
+
+  ```python
+  @dataclass(frozen=True)
+  class NewShapesLayerConversion:
+      index_name: str = DEFAULT_SHAPES_INDEX_NAME
+      index_prefix: str = DEFAULT_SHAPES_INDEX_PREFIX
+
+
+  @dataclass(frozen=True)
+  class ExistingShapesLayerConversion:
+      """Conversion context for saving edits to an existing shapes element.
+
+      `source_index_feature_name` names the napari `layer.features` column that
+      stores source row identity. It is intentionally separate from
+      `source_geodataframe.index.name`, because unnamed GeoDataFrame indexes are
+      stored in napari under a fallback feature column such as `"index"` but
+      must still save back with `geodataframe.index.name is None`.
+      """
+
+      source_geodataframe: gpd.GeoDataFrame
+      source_index_feature_name: str
+      index_prefix: str = DEFAULT_SHAPES_INDEX_PREFIX
+  ```
+
+- extend `napari_shapes_layer_to_geodataframe(...)` with one optional
+  conversion object instead of adding a second public helper:
 
   ```python
   def napari_shapes_layer_to_geodataframe(
       layer: Shapes,
       *,
-      index_name: str = DEFAULT_SHAPES_INDEX_NAME,
-      index_prefix: str = DEFAULT_SHAPES_INDEX_PREFIX,
-      source_geodataframe: gpd.GeoDataFrame | None = None,
-      source_index_feature_name: str | None = None,
+      conversion: NewShapesLayerConversion | ExistingShapesLayerConversion | None = None,
       ellipse_segments: int = DEFAULT_ELLIPSE_SEGMENTS,
   ) -> gpd.GeoDataFrame:
       ...
   ```
 
-- in create-new mode, `source_geodataframe is None` and the helper keeps the
-  current behavior: row identity comes from `index_name`, new IDs use
-  `index_prefix`, and the saved index name is `index_name`;
-- in edit-existing mode, `source_geodataframe` is provided and
-  `source_index_feature_name` is required:
-  - row identity is read from `layer.features[source_index_feature_name]`;
-  - source metadata is copied from `source_geodataframe`;
-  - the saved index name is `source_geodataframe.index.name`, including `None`;
+- `conversion is None` should behave like
+  `NewShapesLayerConversion()` for backwards-compatible create-new behavior;
+- in create-new mode, row identity comes from
+  `NewShapesLayerConversion.index_name`, new IDs use
+  `NewShapesLayerConversion.index_prefix`, and the saved index name is
+  `NewShapesLayerConversion.index_name`;
+- in edit-existing mode:
+  - row identity is read from
+    `layer.features[ExistingShapesLayerConversion.source_index_feature_name]`;
+  - source metadata is copied from
+    `ExistingShapesLayerConversion.source_geodataframe`;
+  - the saved index name is
+    `ExistingShapesLayerConversion.source_geodataframe.index.name`, including
+    `None`;
   - there is no separate public `source_geodataframe_index_name` argument,
     because that value belongs to the source GeoDataFrame itself;
 - add validation for edit-existing source shapes elements:
