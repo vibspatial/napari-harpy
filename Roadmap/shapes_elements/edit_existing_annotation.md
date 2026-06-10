@@ -908,23 +908,87 @@ Likely files:
 Work:
 
 - add `_ShapesAnnotationTargetMode` and `_ShapesAnnotationTarget` item data;
-- replace the visible `Shapes Name` row with:
+- define the target item API concretely in
+  `src/napari_harpy/widgets/shapes_annotation/widget.py`:
+
+  ```python
+  _ShapesAnnotationTargetMode = Literal["create_new", "edit_existing"]
+
+
+  @dataclass(frozen=True)
+  class _ShapesAnnotationTarget:
+      mode: _ShapesAnnotationTargetMode
+      existing_shapes_name: str | None = None
+
+      @classmethod
+      def create_new(cls) -> _ShapesAnnotationTarget:
+          return cls(mode="create_new")
+
+      @classmethod
+      def edit_existing(cls, shapes_name: str) -> _ShapesAnnotationTarget:
+          return cls(mode="edit_existing", existing_shapes_name=shapes_name)
+  ```
+
+- `create_new` targets must have `existing_shapes_name is None`. The new
+  element name for create-new lives in the `New shapes name` text field, not in
+  the target object;
+- `edit_existing` targets must have a non-empty `existing_shapes_name`;
+- the combo-box display text and tooltip should be derived from the target when
+  populating the combo rather than stored in the target object;
+- replace the current visible `Shapes Name` row with:
   - `Shapes` compact combo box;
-  - conditional `New shapes name` line edit;
-- populate the combo with existing shapes in the selected coordinate system plus
-  `Create shapes...`;
+  - conditional `New shapes name` line edit shown/enabled only when the selected
+    target is `Create shapes...`;
+- rename the existing create-new text field label from `Shapes Name` to
+  `New shapes name`;
+- populate the `Shapes` combo whenever `sdata` or the selected coordinate
+  system changes:
+  - include existing shapes elements available in the selected coordinate
+    system;
+  - append `Create shapes...`;
+  - keep long names compact and expose full names through item tooltips;
+  - preserve the previous target selection if it is still valid;
+  - otherwise default to `Create shapes...`;
 - follow the Feature Extraction widget's `Create table...` pattern;
-- preserve selection across refreshes where possible;
-- keep long names compact and expose full names through tooltips;
-- update create-layer readiness so create-new validates the new name while
-  edit-existing validates the selected existing target.
+- expose a single current-target state on the widget so later slices can open
+  the selected target without reparsing combo-box text;
+- after create-new first save, Slice 6 should update this target state to
+  `_ShapesAnnotationTarget.edit_existing(result.shapes_name)`, refresh the
+  `Shapes` combo, select the newly saved element, and hide `New shapes name`;
+- update readiness rules:
+  - create-new target validates the `New shapes name` text exactly as the
+    current widget validates `Shapes Name`;
+  - edit-existing target validates that the selected shapes element still exists
+    and is available in the selected coordinate system;
+- keep Slice 4 scoped to selector UI and readiness only. Opening or adopting
+  the editable layer for an existing target belongs to Slice 5.
+
+Target switching while an annotation session is active:
+
+- if the selected target changes and there is no active annotation layer, update
+  target state immediately;
+- if an active annotation layer exists, show the same discard confirmation used
+  for coordinate-system changes;
+- canceling discard restores the `Shapes` combo to the locked session target and
+  leaves the active edit session untouched;
+- confirming discard uses the Slice 3 discard behavior, then applies the newly
+  selected target;
+- target-change discard must use the same scoped removal guard as
+  coordinate-system discard so programmatic layer removals do not double-clear
+  widget state.
 
 Done when:
 
 - Workflow A still works through `Create shapes...`;
-- selecting an existing shapes element enters edit-existing mode;
+- selecting an existing shapes element updates widget target state to
+  edit-existing mode;
+- selecting `Create shapes...` shows `New shapes name` and uses the existing
+  create-new validation path;
+- existing target selection hides/disables `New shapes name`;
+- target selection is preserved across refreshes where possible;
 - switching the target while an annotation layer is active routes through
-  discard confirmation.
+  discard confirmation;
+- canceling target-change discard restores the previous target selection.
 
 ### Slice 5: Edit Session Opening And Adoption
 
