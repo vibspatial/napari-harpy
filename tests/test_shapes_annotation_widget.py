@@ -339,6 +339,7 @@ def test_shapes_annotation_widget_create_layer_adds_registered_active_empty_shap
     assert widget._annotation_shapes_name == "new_regions"
     assert widget._annotation_coordinate_system == "global"
     assert widget._annotation_has_been_saved is False
+    assert widget._annotation_reload_on_discard is False
     assert widget.name_edit.isEnabled() is False
     assert widget.create_layer_button.isEnabled() is False
     assert widget.save_shapes_button.isEnabled() is True
@@ -393,6 +394,7 @@ def test_shapes_annotation_widget_confirming_coordinate_change_discards_annotati
     assert widget._annotation_shapes_name is None
     assert widget._annotation_coordinate_system is None
     assert widget._annotation_has_been_saved is False
+    assert widget._annotation_reload_on_discard is False
     assert widget.name_edit.isEnabled() is True
     assert widget.create_layer_button.isEnabled() is True
     assert widget.save_shapes_button.isEnabled() is False
@@ -509,7 +511,7 @@ def test_shapes_annotation_widget_coordinate_discard_guard_avoids_duplicate_clea
     original_clear_annotation_state = widget._clear_annotation_state
 
     def remove_annotation_layer() -> None:
-        remove_guard_values.append(widget._is_handling_coordinate_system_change)
+        remove_guard_values.append(widget._is_handling_annotation_discard)
         original_remove_annotation_layer()
 
     def clear_annotation_state() -> None:
@@ -524,9 +526,47 @@ def test_shapes_annotation_widget_coordinate_discard_guard_avoids_duplicate_clea
 
     assert remove_guard_values == [True]
     assert clear_call_count == 1
-    assert widget._is_handling_coordinate_system_change is False
+    assert widget._is_handling_annotation_discard is False
     assert widget.app_state.coordinate_system == "local"
     assert list(viewer.layers) == []
+
+
+def test_shapes_annotation_widget_discard_saved_annotation_layer_reloads_clean_primary_layer(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
+    widget.create_layer_button.click()
+    dirty_layer = viewer.layers[0]
+    _add_polygon(dirty_layer)
+    widget.save_shapes_button.click()
+    assert widget._annotation_reload_on_discard is True
+
+    _add_polygon(dirty_layer, offset=10)
+    assert len(dirty_layer.data) == 2
+
+    widget._discard_annotation_layer()
+
+    assert dirty_layer not in viewer.layers
+    assert widget.app_state.viewer_adapter.layer_bindings.get_binding(dirty_layer) is None
+    assert len(viewer.layers) == 1
+    clean_layer = viewer.layers[0]
+    assert clean_layer is not dirty_layer
+    assert isinstance(clean_layer, Shapes)
+    assert clean_layer.name == "new_regions"
+    assert len(clean_layer.data) == 1
+    binding = widget.app_state.viewer_adapter.layer_bindings.get_binding(clean_layer)
+    assert isinstance(binding, ShapesLayerBinding)
+    assert binding.element_name == "new_regions"
+    assert binding.coordinate_system == "global"
+    assert binding.shapes_role == "primary"
+    assert widget._annotation_layer is None
+    assert widget._annotation_shapes_name is None
+    assert widget._annotation_coordinate_system is None
+    assert widget._annotation_has_been_saved is False
+    assert widget._annotation_reload_on_discard is False
+    assert widget.name_edit.isEnabled() is True
 
 
 def test_shapes_annotation_widget_save_calls_core_with_locked_request_and_reports_success(
@@ -571,6 +611,7 @@ def test_shapes_annotation_widget_save_calls_core_with_locked_request_and_report
     assert request.index_name == "instance_id"
     assert request.index_prefix == "__annotation"
     assert widget._annotation_has_been_saved is True
+    assert widget._annotation_reload_on_discard is True
     assert widget.save_shapes_button.isEnabled() is True
     assert emitted_events == [
         ShapesElementWrittenEvent(
@@ -617,6 +658,7 @@ def test_shapes_annotation_widget_repeated_save_uses_overwrite_after_success(
 
     assert overwrites == [False, True]
     assert widget._annotation_has_been_saved is True
+    assert widget._annotation_reload_on_discard is True
     assert emitted_events == [
         ShapesElementWrittenEvent(
             sdata=sdata_blobs,
@@ -706,6 +748,7 @@ def test_shapes_annotation_widget_save_writes_real_shapes_element(
     assert sdata_blobs.shapes["new_regions"].index.tolist() == ["__annotation_0"]
     assert layer.features["instance_id"].tolist() == ["__annotation_0"]
     assert widget._annotation_has_been_saved is True
+    assert widget._annotation_reload_on_discard is True
     assert "Shapes Saved" in _status_text(widget)
 
 

@@ -840,7 +840,7 @@ Done when:
 
 ### Slice 3: Viewer Adapter Reload On Discard
 
-Status: pending
+Status: implemented
 
 Goal: keep discard handling for adopted existing shapes layers simple by
 removing the dirty primary layer and loading a fresh primary shapes layer from
@@ -865,8 +865,9 @@ Work:
   primary shapes layer, the user edits it, then chooses another annotation
   target or coordinate system and confirms the discard dialog;
 - keep create-new discard behavior separate:
-  - create-new annotation layer: remove the unsaved layer;
-  - adopted existing annotation layer: remove and reload from saved `sdata`;
+  - unsaved create-new annotation layer: remove the unsaved layer;
+  - saved or adopted existing annotation layer: remove and reload from saved
+    `sdata`;
 - accept that the reloaded layer is a new napari layer object. The simple reload
   path may reset layer presentation and may reinsert the layer according to the
   normal adapter loading behavior;
@@ -1005,7 +1006,7 @@ Done when:
 - Viewer shapes cards refresh through the existing event path;
 - table-linked saves warn but do not block.
 
-### Slice 7: Discard, Target Switching, And Revert In Place
+### Slice 7: Discard, Target Switching, And Reload
 
 Status: pending
 

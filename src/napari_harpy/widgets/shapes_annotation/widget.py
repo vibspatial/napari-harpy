@@ -81,7 +81,8 @@ class ShapesAnnotation(QWidget):
         self._annotation_shapes_name: str | None = None
         self._annotation_coordinate_system: str | None = None
         self._annotation_has_been_saved = False
-        self._is_handling_coordinate_system_change = False
+        self._annotation_reload_on_discard = False
+        self._is_handling_annotation_discard = False
         self._logo_path = get_logo_path()
 
         root_layout = QVBoxLayout(self)
@@ -237,13 +238,8 @@ class ShapesAnnotation(QWidget):
                 self._set_selected_coordinate_system(self.coordinate_system_combo.currentIndex())
                 self._refresh_create_layer_state()
                 return
-            self._is_handling_coordinate_system_change = True
-            try:
-                self._remove_annotation_layer()
-                self._clear_annotation_state()
-                self._app_state.set_coordinate_system(next_coordinate_system, source=_SOURCE)
-            finally:
-                self._is_handling_coordinate_system_change = False
+            self._discard_annotation_layer()
+            self._app_state.set_coordinate_system(next_coordinate_system, source=_SOURCE)
             return
 
         # Publish the UI choice to shared app state. `_on_app_state_coordinate_system_changed(...)`
@@ -281,6 +277,7 @@ class ShapesAnnotation(QWidget):
         self._annotation_shapes_name = shapes_name
         self._annotation_coordinate_system = coordinate_system
         self._annotation_has_been_saved = False
+        self._annotation_reload_on_discard = False
         self.name_edit.setEnabled(False)
         self._app_state.viewer_adapter.activate_layer(layer)
         self._refresh_create_layer_state()
@@ -319,6 +316,7 @@ class ShapesAnnotation(QWidget):
             return
 
         self._annotation_has_been_saved = True
+        self._annotation_reload_on_discard = True
         self._refresh_save_shapes_state(update_status=False)
         self._app_state.emit_shapes_element_written(
             ShapesElementWrittenEvent(
@@ -346,9 +344,9 @@ class ShapesAnnotation(QWidget):
 
     def _on_viewer_layer_removed(self, event: object) -> None:
         # `_on_coordinate_system_changed(...)` removes the annotation layer
-        # programmatically during coordinate-system discard and owns that cleanup
-        # path, so ignore the removal event it emits.
-        if self._is_handling_coordinate_system_change:
+        # programmatically through `_discard_annotation_layer(...)` and owns that
+        # cleanup path, so ignore the removal event it emits.
+        if self._is_handling_annotation_discard:
             return
 
         layer = getattr(event, "value", None)
@@ -580,11 +578,31 @@ class ShapesAnnotation(QWidget):
             self._annotation_coordinate_system,
         )
 
+    def _discard_annotation_layer(self) -> None:
+        """Discard the active annotation session, reloading saved layers when needed."""
+        sdata = self._app_state.sdata
+        shapes_name = self._annotation_shapes_name
+        coordinate_system = self._annotation_coordinate_system
+        reload_on_discard = self._annotation_reload_on_discard
+
+        self._is_handling_annotation_discard = True
+        try:
+            self._remove_annotation_layer()
+            if reload_on_discard and sdata is not None and shapes_name is not None and coordinate_system is not None:
+                try:
+                    self._app_state.viewer_adapter.ensure_shapes_loaded(sdata, shapes_name, coordinate_system)
+                except ValueError as error:
+                    self._set_status(title="Could Not Reload Shapes", lines=[str(error)], kind="warning")
+            self._clear_annotation_state()
+        finally:
+            self._is_handling_annotation_discard = False
+
     def _clear_annotation_state(self) -> None:
         self._annotation_layer = None
         self._annotation_shapes_name = None
         self._annotation_coordinate_system = None
         self._annotation_has_been_saved = False
+        self._annotation_reload_on_discard = False
         self.name_edit.setEnabled(True)
 
     def _create_header_logo(self) -> QLabel:
