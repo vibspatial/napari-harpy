@@ -1232,41 +1232,17 @@ Done when:
 - programmatic target refreshes do not trigger accidental open/discard flows;
 - existing Slice 5 tests are updated to expect auto-open behavior.
 
-### Slice 5b: Clean Snapshot For Discard Warnings
+### Slice 5b: Annotation Layer Snapshot/Fingerprint Helpers
 
 Status: pending
 
-Goal: avoid showing the discard warning when the active annotation layer has no
-save-relevant changes.
+Goal: implement and test the low-level clean-state snapshot machinery without
+changing Annotation widget discard behavior yet.
 
-Current behavior is intentionally conservative: coordinate-system changes and
-`Shapes` target changes ask for discard confirmation whenever
-`_annotation_layer is not None`. This protects user edits, but it is annoying
-when the layer is still clean, for example:
-
-- a newly created empty annotation layer with no drawn shapes;
-- an existing shapes layer opened for editing but not changed;
-- a layer immediately after successful save;
-- a create-new layer after first save when the selector has switched to the
-  saved edit-existing target.
-
-Do not introduce a dirty-row model for this workflow. Napari does not provide a
-stable enough row-level dirty contract, and the Annotation widget saves the
-whole layer anyway.
-
-Concrete design:
-
-- track a layer-level clean snapshot of save-relevant state;
-- establish the clean snapshot when:
-  - a create-new annotation layer is created;
-  - an existing shapes layer is opened or adopted;
-  - save succeeds;
-- before coordinate-system or `Shapes` target discard, compare the current
-  layer state with the clean snapshot;
-- show the discard dialog only when the current layer differs from the clean
-  snapshot;
-- if the layer is clean, close the Annotation session silently without using
-  the dirty discard/reload path for saved or existing layers.
+Do not introduce a dirty-row model. Napari does not provide a stable enough
+row-level dirty contract, and the Annotation widget saves the whole layer
+anyway. This slice should answer only one question: "does the current
+save-relevant layer state match a previously captured clean state?"
 
 Suggested widget state:
 
@@ -1341,9 +1317,90 @@ The clean snapshot should include only data that affects persistence:
 - napari shape types;
 - `layer.features`, especially the source row identity feature column.
 
-The clean snapshot should ignore visual-only layer state that is not persisted
+The snapshot should ignore visual-only layer state that is not persisted
 by the Annotation workflow, such as current selection, active mode, edge color,
 face color, opacity, and other styling.
+
+Suggested helpers:
+
+Implement these helpers in a small widget-local module, for example:
+
+```text
+src/napari_harpy/widgets/shapes_annotation/_snapshot.py
+```
+
+Keep them out of `core/shapes_annotation.py`: the snapshot is about napari
+layer UI/session state, not SpatialData conversion or persistence. Also avoid
+growing `widget.py` with byte-level hashing details.
+
+```python
+def _capture_annotation_layer_snapshot(layer: Shapes) -> _ShapesAnnotationLayerSnapshot:
+    ...
+
+
+def _annotation_layer_snapshots_equal(
+    left: _ShapesAnnotationLayerSnapshot,
+    right: _ShapesAnnotationLayerSnapshot,
+) -> bool:
+    ...
+```
+
+`_annotation_layer_snapshots_equal(...)` should compare:
+
+```python
+return (
+    left.row_count == right.row_count
+    and left.geometry_digest == right.geometry_digest
+    and left.features.equals(right.features)
+)
+```
+
+Done when:
+
+- the snapshot helper handles empty layers;
+- capturing the same unchanged layer twice produces equal snapshots;
+- moving a vertex changes `geometry_digest`;
+- changing a row's napari shape type changes `geometry_digest`;
+- adding or deleting a row changes `row_count` and/or `geometry_digest`;
+- changing the source row identity feature value changes the stored
+  `features`;
+- changing feature column order, names, dtypes, values, or missing values is
+  detected by DataFrame equality;
+- changing visual-only state such as selection, mode, edge color, face color,
+  opacity, or edge width does not change the snapshot;
+- no Annotation widget discard flow changes in this slice.
+
+### Slice 5c: Clean Snapshot For Discard Warnings
+
+Status: pending
+
+Goal: avoid showing the discard warning when the active annotation layer has no
+save-relevant changes, using the Slice 5b snapshot helpers.
+
+Current behavior is intentionally conservative: coordinate-system changes and
+`Shapes` target changes ask for discard confirmation whenever
+`_annotation_layer is not None`. This protects user edits, but it is annoying
+when the layer is still clean, for example:
+
+- a newly created empty annotation layer with no drawn shapes;
+- an existing shapes layer opened for editing but not changed;
+- a layer immediately after successful save;
+- a create-new layer after first save when the selector has switched to the
+  saved edit-existing target.
+
+Concrete design:
+
+- track a layer-level clean snapshot of save-relevant state;
+- establish the clean snapshot when:
+  - a create-new annotation layer is created;
+  - an existing shapes layer is opened or adopted;
+  - save succeeds;
+- before coordinate-system or `Shapes` target discard, compare the current
+  layer state with the clean snapshot;
+- show the discard dialog only when the current layer differs from the clean
+  snapshot;
+- if the layer is clean, close the Annotation session silently without using
+  the dirty discard/reload path for saved or existing layers.
 
 Napari `Shapes` layers expose `data` and `features` events, so the widget may
 also maintain an eager `_annotation_dirty` flag for immediate UI feedback.
@@ -1357,16 +1414,9 @@ Implementation notes:
   should not be reused as the dirty flag;
 - add a separate clean-state concept, for example
   `_annotation_clean_snapshot`, `_annotation_dirty`, or both;
-- add a focused helper, for example:
-
-  ```python
-  def _capture_annotation_layer_snapshot(layer: Shapes) -> _ShapesAnnotationLayerSnapshot:
-      ...
-
-  def _annotation_layer_has_unsaved_changes(self) -> bool:
-      ...
-  ```
-
+- add a widget helper, for example
+  `_annotation_layer_has_unsaved_changes()`, that uses the Slice 5b snapshot
+  helpers;
 - `_annotation_layer_has_unsaved_changes()` should return `False` when there is
   no active layer or no clean snapshot, and should compare the current layer to
   the stored clean snapshot otherwise;
