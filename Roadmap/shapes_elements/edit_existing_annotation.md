@@ -1265,35 +1265,81 @@ Concrete design:
   layer state with the clean snapshot;
 - show the discard dialog only when the current layer differs from the clean
   snapshot;
-- if the layer is clean, discard/switch silently using the normal Slice 3
-  discard behavior.
+- if the layer is clean, close the Annotation session silently without using
+  the dirty discard/reload path for saved or existing layers.
 
 Suggested widget state:
 
 ```python
 @dataclass(frozen=True)
 class _ShapesAnnotationLayerSnapshot:
-    shape_types: tuple[str, ...]
-    data: tuple[tuple[tuple[float, ...], ...], ...]
+    row_count: int
+    geometry_digest: str
     features: pd.DataFrame
 ```
 
-The exact storage format can differ, but the snapshot helper should:
+The snapshot should be a compact fingerprint of save-relevant state, not a full
+copy of all geometry and feature data. This avoids keeping a second large copy
+of dense annotations in memory while still allowing a robust equality check.
+Geometry is the potentially large part, so store it as a digest. The current
+viewer adapter keeps `layer.features` small, typically just the source row
+identity column, so store a normalized copy of `layer.features` directly for
+clarity.
 
-- copy values out of the layer rather than keeping references to mutable napari
-  objects;
-- normalize vertex arrays to a deterministic tuple/list representation so
-  equality does not depend on object identity;
-- copy `layer.features`, reset row order to match `layer.data`, and compare it
-  with a pandas-aware equality check rather than raw object identity;
+- compute stable digests from layer values rather than keeping references to
+  mutable napari geometry objects;
+- include `row_count` so row insertions/deletions are cheap to detect and easy
+  to reason about;
+- compute `geometry_digest` from every row's ordered napari shape type plus
+  vertex array metadata and values. Do not store a separate shape-type digest;
+  shape type is part of the geometry fingerprint;
+- copy `layer.features`, reindex to `range(row_count)`, and reset its index so
+  feature comparison is based on napari row order rather than DataFrame index
+  identity;
 - tolerate empty layers.
+
+Geometry digest rules:
+
+- for each geometry row, hash an explicit row separator, the shape type, the
+  vertex array shape, normalized dtype, and raw contiguous bytes;
+- normalize floating arrays to `float64` before hashing so equivalent numeric
+  coordinates do not differ only because one array is `float32`;
+- normalize integer arrays to `int64` if integer arrays appear;
+- do not round floating values. A tiny vertex movement should count as an edit;
+- include separators between shape, dtype, and value payloads so concatenated
+  strings cannot collide accidentally. For example, hash labelled fields such
+  as `b"shape:"`, `b"\0dtype:"`, and `b"\0values:"` so inputs like `"1", "23"`
+  cannot be encoded the same way as `"12", "3"`.
+
+Feature snapshot rules:
+
+- store a copied `DataFrame`, not a digest;
+- reset the `DataFrame` index to row order before storing it;
+- compare with pandas-aware equality, for example
+  `current.features.equals(clean.features)`;
+- include column order, column names, dtypes, values, and missing values through
+  the `DataFrame` itself;
+- today this is expected to be small because loaded shapes layers store the
+  source row identity feature column. Other source GeoDataFrame metadata is
+  preserved from the session's `source_geodataframe`, not from `layer.features`.
+
+The discard check should compare snapshots by value:
+
+```python
+current = _capture_annotation_layer_snapshot(layer)
+clean = self._annotation_clean_snapshot
+has_unsaved_changes = (
+    current.row_count != clean.row_count
+    or current.geometry_digest != clean.geometry_digest
+    or not current.features.equals(clean.features)
+)
+```
 
 The clean snapshot should include only data that affects persistence:
 
 - napari shape geometry data;
 - napari shape types;
-- the source row identity feature column;
-- other feature columns that are preserved into the saved GeoDataFrame.
+- `layer.features`, especially the source row identity feature column.
 
 The clean snapshot should ignore visual-only layer state that is not persisted
 by the Annotation workflow, such as current selection, active mode, edge color,
@@ -1338,12 +1384,30 @@ Implementation notes:
   if self._annotation_layer_has_unsaved_changes():
       show_discard_dialog()
   else:
-      discard_without_warning()
+      close_clean_annotation_session()
   ```
 
 - make discard dialog copy context-aware:
   - coordinate-system switch: mention changing coordinate system;
   - `Shapes` target switch: mention switching annotation target.
+
+Clean close behavior:
+
+- clean close is different from dirty discard;
+- dirty discard restores the last saved state and may remove/reload a layer;
+- clean close releases widget ownership of an already-clean annotation session;
+- for a clean unsaved create-new layer, remove the layer because it has no
+  corresponding saved `sdata.shapes[...]` element;
+- for a clean existing edit session, do not remove or reload the layer. Leave
+  the primary shapes layer in the viewer exactly where it is and clear only the
+  Annotation widget's session state;
+- for a clean create-new layer after first save, treat it like a clean existing
+  edit session: leave the saved primary layer in place and clear the widget
+  session state;
+- leaving clean saved/existing layers in place preserves napari layer order and
+  avoids the target-switch layer reordering caused by remove-and-reload;
+- after clean close, the next selected target can open or adopt its own layer
+  normally.
 
 Coordinate-system switch behavior:
 
@@ -1355,7 +1419,7 @@ Coordinate-system switch behavior:
     selected coordinate system to shared app state;
 - if the active annotation layer is clean:
   - do not show a dialog;
-  - close/discard the active annotation session through the normal cleanup path;
+  - clean-close the active annotation session;
   - apply the newly selected coordinate system to shared app state.
 
 `Shapes` target switch behavior:
@@ -1368,17 +1432,39 @@ Coordinate-system switch behavior:
     requested target;
 - if the active annotation layer is clean:
   - do not show a dialog;
-  - close/discard the active annotation session through the normal cleanup path;
+  - clean-close the active annotation session;
   - select the newly requested target.
 
 Clean close still needs to clear widget-owned annotation state. It should not
-leave the widget thinking it owns a layer that has just been released, removed,
-or reloaded.
+leave the widget thinking it owns a layer that has been released back to the
+viewer, or an unsaved create-new layer that has been removed.
+
+Implementation notes for clean close:
+
+- add a separate helper rather than routing clean sessions through
+  `_discard_annotation_layer()`, for example:
+
+  ```python
+  def _close_clean_annotation_session(self) -> None:
+      ...
+  ```
+
+- `_close_clean_annotation_session()` should clear `_annotation_layer`,
+  `_annotation_session`, clean snapshot state, save state, and any cached
+  annotation name/coordinate-system fields owned by the widget;
+- it should remove the layer only for clean unsaved create-new sessions;
+- it should not call `ViewerAdapter.remove_shapes_layer(...)` or
+  `ViewerAdapter.ensure_shapes_loaded(...)` for clean saved/existing sessions;
+- manual layer-removal listeners should keep working: if the user removes the
+  layer directly in napari, the widget still clears its session state as it does
+  today.
 
 Done when:
 
 - switching away from an empty create-new layer does not show a warning;
 - switching away immediately after save does not show a warning;
+- switching between clean existing targets does not reorder the previously
+  opened clean layer;
 - switching away after adding, deleting, or editing shapes still shows a
   warning;
 - canceling a dirty discard keeps the current session untouched;
@@ -1408,6 +1494,9 @@ Work:
 - after successful create-new first save, transition the active session to
   edit-existing semantics by storing the saved GeoDataFrame snapshot and source
   shapes index feature name;
+- this transition must rebuild or update `_annotation_session` itself so
+  `_annotation_session.mode == "edit_existing"`. It is not enough for the
+  `Shapes` dropdown target to point at `_ShapesAnnotationTarget.edit_existing`;
 - after successful create-new first save, refresh the `Shapes` dropdown, select
   the newly saved shapes element, and hide `New shapes name`;
 - remove the temporary `_annotation_reload_on_discard` bridge once create-new
@@ -1428,6 +1517,8 @@ Work:
 Done when:
 
 - saving an edited existing layer updates `sdata.shapes[shapes_name]`;
+- after create-new first save, the active layer remains editable and
+  `_annotation_session.mode == "edit_existing"` for subsequent saves;
 - new rows, deleted rows, edited geometries, and preserved metadata are visible
   after reload;
 - Viewer shapes cards refresh through the existing event path;
