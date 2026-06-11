@@ -1147,6 +1147,91 @@ Done when:
   system;
 - edit-existing save remains disabled until Slice 6.
 
+### Slice 5a: Auto-Open Existing Shapes Target
+
+Status: pending
+
+Goal: selecting an existing shapes element in the `Shapes` dropdown should open
+it immediately as the active annotation layer. The user should not need to
+select a shapes element and then click `Open layer`.
+
+This slice supersedes the Slice 5 button behavior for edit-existing targets:
+
+- the action button text should become `Create layer` again;
+- `Create layer` is only for the `Create shapes...` branch;
+- when the selected `Shapes` target is an existing shapes element, `Create
+  layer` is disabled because the layer opens automatically from the dropdown
+  selection;
+- there should no longer be a user-facing `Open layer` button state.
+
+Target-selection behavior:
+
+- if no annotation layer is active and the user selects an existing shapes
+  element:
+  - set `_selected_shapes_target` to the selected edit-existing target;
+  - immediately call the existing edit-opening path, for example
+    `_open_existing_annotation_layer()`;
+  - on success, activate the opened/adopted layer and lock the session target
+    exactly as Slice 5 already specifies;
+  - on failure, show the existing `Could Not Open Shapes` warning, keep no
+    active annotation session, keep `Create layer` disabled, and let the user
+    choose another target or `Create shapes...`;
+- if no annotation layer is active and the user selects `Create shapes...`:
+  - show `New shapes name`;
+  - enable `Create layer` only when the new name is valid;
+  - do not create a layer until the user clicks `Create layer`;
+- if an annotation layer is active and the user selects a different existing
+  target:
+  - use the current discard confirmation behavior before changing targets;
+  - cancel restores the previous `Shapes` selection and keeps the active session
+    untouched;
+  - confirm discards/reloads the current session, selects the requested existing
+    target, and immediately opens that target;
+- if an annotation layer is active and the user selects `Create shapes...`:
+  - use the current discard confirmation behavior before changing targets;
+  - cancel restores the previous `Shapes` selection and keeps the active session
+    untouched;
+  - confirm discards/reloads the current session, switches to create-new mode,
+    shows `New shapes name`, and waits for the user to click `Create layer`.
+
+Programmatic refresh behavior:
+
+- combo refreshes and syncs must not accidentally auto-open layers;
+- `_refresh_shapes_targets(...)` and `_sync_shapes_target_combo_selection(...)`
+  should keep using signal blocking or an equivalent guard;
+- after create-new first save, refreshing the `Shapes` selector to the saved
+  element should pin the UI selection but must not discard/reopen the active
+  layer;
+- auto-open should run only from an actual target-selection change that the
+  widget is ready to handle.
+
+Status and button behavior:
+
+- existing target selected and opened successfully:
+  - status should say the existing shapes layer is opened for editing;
+  - `Create layer` disabled;
+  - `Save shapes` remains disabled until Slice 6 wires edit-existing save;
+- existing target selected but opening failed:
+  - status should explain why the target cannot be opened;
+  - `Create layer` disabled;
+  - `Save shapes` disabled;
+- `Create shapes...` selected:
+  - status should use the existing create-new readiness messages;
+  - `Create layer` enabled only for a valid new shapes name;
+  - `Save shapes` disabled until a layer exists and contains saveable shapes.
+
+Done when:
+
+- selecting an eligible existing shapes element opens/adopts the layer without
+  pressing a second button;
+- compatible already-loaded primary layers are still adopted, not duplicated;
+- selecting an ineligible existing shapes element shows a warning and does not
+  create an active session;
+- selecting `Create shapes...` still requires pressing `Create layer`;
+- `Create layer` is never used as an `Open layer` action;
+- programmatic target refreshes do not trigger accidental open/discard flows;
+- existing Slice 5 tests are updated to expect auto-open behavior.
+
 ### Slice 5b: Clean Snapshot For Discard Warnings
 
 Status: pending
@@ -1169,7 +1254,7 @@ Do not introduce a dirty-row model for this workflow. Napari does not provide a
 stable enough row-level dirty contract, and the Annotation widget saves the
 whole layer anyway.
 
-Preferred design:
+Concrete design:
 
 - track a layer-level clean snapshot of save-relevant state;
 - establish the clean snapshot when:
@@ -1182,6 +1267,26 @@ Preferred design:
   snapshot;
 - if the layer is clean, discard/switch silently using the normal Slice 3
   discard behavior.
+
+Suggested widget state:
+
+```python
+@dataclass(frozen=True)
+class _ShapesAnnotationLayerSnapshot:
+    shape_types: tuple[str, ...]
+    data: tuple[tuple[tuple[float, ...], ...], ...]
+    features: pd.DataFrame
+```
+
+The exact storage format can differ, but the snapshot helper should:
+
+- copy values out of the layer rather than keeping references to mutable napari
+  objects;
+- normalize vertex arrays to a deterministic tuple/list representation so
+  equality does not depend on object identity;
+- copy `layer.features`, reset row order to match `layer.data`, and compare it
+  with a pandas-aware equality check rather than raw object identity;
+- tolerate empty layers.
 
 The clean snapshot should include only data that affects persistence:
 
@@ -1206,6 +1311,22 @@ Implementation notes:
   should not be reused as the dirty flag;
 - add a separate clean-state concept, for example
   `_annotation_clean_snapshot`, `_annotation_dirty`, or both;
+- add a focused helper, for example:
+
+  ```python
+  def _capture_annotation_layer_snapshot(layer: Shapes) -> _ShapesAnnotationLayerSnapshot:
+      ...
+
+  def _annotation_layer_has_unsaved_changes(self) -> bool:
+      ...
+  ```
+
+- `_annotation_layer_has_unsaved_changes()` should return `False` when there is
+  no active layer or no clean snapshot, and should compare the current layer to
+  the stored clean snapshot otherwise;
+- if an eager `_annotation_dirty` flag is added from `layer.events.data` or
+  `layer.events.features`, use it as an optimization/UI hint only. The final
+  discard decision should still be allowed to compare the snapshot directly;
 - after successful save, replace the clean snapshot with the current layer
   state;
 - after create-new first save, the `Shapes` selector still jumps to the saved
@@ -1223,6 +1344,36 @@ Implementation notes:
 - make discard dialog copy context-aware:
   - coordinate-system switch: mention changing coordinate system;
   - `Shapes` target switch: mention switching annotation target.
+
+Coordinate-system switch behavior:
+
+- if the active annotation layer has unsaved changes:
+  - show the context-aware discard dialog;
+  - cancel restores the previous coordinate-system selector value and keeps the
+    active session untouched;
+  - confirm uses existing discard/reload behavior, then applies the newly
+    selected coordinate system to shared app state;
+- if the active annotation layer is clean:
+  - do not show a dialog;
+  - close/discard the active annotation session through the normal cleanup path;
+  - apply the newly selected coordinate system to shared app state.
+
+`Shapes` target switch behavior:
+
+- if the active annotation layer has unsaved changes:
+  - show the context-aware discard dialog;
+  - cancel restores the previous target selector value and keeps the active
+    session untouched;
+  - confirm uses existing discard/reload behavior, then selects the newly
+    requested target;
+- if the active annotation layer is clean:
+  - do not show a dialog;
+  - close/discard the active annotation session through the normal cleanup path;
+  - select the newly requested target.
+
+Clean close still needs to clear widget-owned annotation state. It should not
+leave the widget thinking it owns a layer that has just been released, removed,
+or reloaded.
 
 Done when:
 
