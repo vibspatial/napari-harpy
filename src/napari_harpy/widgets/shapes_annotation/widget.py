@@ -285,7 +285,7 @@ class ShapesAnnotation(QWidget):
         self.coordinate_system_combo.currentIndexChanged.connect(self._on_coordinate_system_changed)
         self.shapes_combo.currentIndexChanged.connect(self._on_shapes_target_changed)
         self.name_edit.textChanged.connect(self._on_shapes_name_changed)
-        self.create_layer_button.clicked.connect(self._on_open_annotation_clicked)
+        self.create_layer_button.clicked.connect(self._on_create_layer_clicked)
         self.save_shapes_button.clicked.connect(self._on_save_shapes_clicked)
         layer_events = getattr(getattr(napari_viewer, "layers", None), "events", None)
         layer_removed_event = getattr(layer_events, "removed", None)
@@ -386,24 +386,22 @@ class ShapesAnnotation(QWidget):
 
         self._set_selected_shapes_target_from_combo(index)
         self._refresh_create_layer_state()
+        if next_target is not None and next_target.mode == "edit_existing" and self._annotation_layer is None:
+            self._open_existing_annotation_layer()
 
     def _on_shapes_name_changed(self, _text: str) -> None:
         self._refresh_create_layer_state()
 
-    def _on_open_annotation_clicked(self) -> None:
+    def _on_create_layer_clicked(self) -> None:
         if self._annotation_layer is not None:
             return
 
         self._refresh_create_layer_state()
         target = self._selected_shapes_target
-        if target is None:
+        if target is None or target.mode != "create_new":
             return
 
-        if target.mode == "create_new":
-            self._open_create_new_annotation_layer()
-            return
-
-        self._open_existing_annotation_layer()
+        self._open_create_new_annotation_layer()
 
     def _open_create_new_annotation_layer(self) -> None:
         sdata = self._app_state.sdata
@@ -722,9 +720,7 @@ class ShapesAnnotation(QWidget):
         coordinate_system = self._selected_coordinate_system
         target = self._selected_shapes_target
         self._validated_shapes_name = None
-        self.create_layer_button.setText(
-            "Open layer" if target is not None and target.mode == "edit_existing" else "Create layer"
-        )
+        self.create_layer_button.setText("Create layer")
 
         if self._annotation_layer is not None:
             self._validated_shapes_name = self._annotation_shapes_name
@@ -791,13 +787,13 @@ class ShapesAnnotation(QWidget):
             self._set_status(
                 title="Ready",
                 lines=[
-                    f'Open shapes layer "{visible_shapes_name}" '
+                    f'Selected shapes layer "{visible_shapes_name}" '
                     f'in coordinate system "{visible_coordinate_system}".'
                 ],
                 kind="info",
                 tooltip_lines=[full_line] if shapes_name_shortened or coordinate_system_shortened else None,
             )
-            self.create_layer_button.setEnabled(True)
+            self.create_layer_button.setEnabled(False)
             self._refresh_save_shapes_state()
             return
 

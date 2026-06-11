@@ -1149,7 +1149,7 @@ Done when:
 
 ### Slice 5a: Auto-Open Existing Shapes Target
 
-Status: pending
+Status: implemented
 
 Goal: selecting an existing shapes element in the `Shapes` dropdown should open
 it immediately as the active annotation layer. The user should not need to
