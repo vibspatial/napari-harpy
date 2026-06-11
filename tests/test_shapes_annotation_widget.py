@@ -205,9 +205,10 @@ def test_shapes_annotation_widget_shapes_selector_can_select_existing_target(
     assert widget.selected_shapes_name == existing_shapes_name
     assert widget.name_edit.isHidden() is True
     assert widget.name_edit.isEnabled() is False
-    assert widget.create_layer_button.isEnabled() is False
+    assert widget.create_layer_button.text() == "Open layer"
+    assert widget.create_layer_button.isEnabled() is True
     assert widget.save_shapes_button.isEnabled() is False
-    assert "Existing Shapes Selected" in _status_text(widget)
+    assert "Ready" in _status_text(widget)
 
 
 def test_shapes_annotation_widget_shapes_selector_defaults_back_to_create_when_existing_disappears(
@@ -507,9 +508,89 @@ def test_shapes_annotation_widget_confirming_target_change_discards_annotation_l
         existing_shapes_name
     )
     assert widget.name_edit.isHidden() is True
+    assert widget.create_layer_button.text() == "Open layer"
+    assert widget.create_layer_button.isEnabled() is True
+    assert widget.save_shapes_button.isEnabled() is False
+    assert "Ready" in _status_text(widget)
+
+
+def test_shapes_annotation_widget_open_existing_target_loads_edit_session_layer(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, "blobs_polygons"))
+
+    widget.create_layer_button.click()
+
+    assert len(viewer.layers) == 1
+    layer = viewer.layers[0]
+    assert isinstance(layer, Shapes)
+    assert widget._annotation_layer is layer
+    assert widget._annotation_shapes_name == "blobs_polygons"
+    assert widget._annotation_coordinate_system == "global"
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.mode == "edit_existing"
+    assert widget._annotation_session.layer_origin == "loaded_by_annotation"
+    assert widget._annotation_session.shapes_name == "blobs_polygons"
+    assert widget._annotation_session.coordinate_system == "global"
+    assert widget._annotation_session.source_shapes_index_feature_name == "index"
+    assert widget._annotation_session.source_geodataframe is not sdata_blobs.shapes["blobs_polygons"]
+    assert widget._annotation_session.source_geodataframe is not None
+    assert widget._annotation_session.source_geodataframe.index.equals(sdata_blobs.shapes["blobs_polygons"].index)
+    assert widget._annotation_session.source_geodataframe_index_name == sdata_blobs.shapes["blobs_polygons"].index.name
+    assert widget._annotation_session.table_linked is False
+    assert widget._annotation_reload_on_discard is True
+    assert viewer.layers.selection.active is layer
     assert widget.create_layer_button.isEnabled() is False
     assert widget.save_shapes_button.isEnabled() is False
-    assert "Existing Shapes Selected" in _status_text(widget)
+    assert "Existing Shapes Opened" in _status_text(widget)
+
+
+def test_shapes_annotation_widget_open_existing_target_adopts_loaded_primary_layer(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    load_result = app_state.viewer_adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, "blobs_polygons"))
+
+    widget.create_layer_button.click()
+
+    assert len(viewer.layers) == 1
+    assert widget._annotation_layer is load_result.layer
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.layer_origin == "adopted_primary"
+    assert viewer.layers.selection.active is load_result.layer
+
+
+def test_shapes_annotation_widget_open_existing_target_rejects_multipolygon_source(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, "blobs_multipolygons"))
+
+    widget.create_layer_button.click()
+
+    assert list(viewer.layers) == []
+    assert widget._annotation_layer is None
+    assert widget._annotation_session is None
+    assert widget.create_layer_button.isEnabled() is False
+    assert "Could Not Open Shapes" in _status_text(widget)
+    assert "Polygon geometries only" in _status_text(widget)
 
 
 def test_shapes_annotation_widget_clears_annotation_state_when_sdata_is_cleared(

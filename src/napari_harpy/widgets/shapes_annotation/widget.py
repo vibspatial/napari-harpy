@@ -1,8 +1,19 @@
+"""Annotation widget for creating or editing SpatialData shapes elements.
+
+The widget keeps target selection separate from active edit sessions:
+`_ShapesAnnotationTarget` represents the current UI dropdown choice before a
+layer is opened, while `_ShapesAnnotationSession` represents the locked save
+target and source metadata after a layer has been created, loaded, or adopted.
+This prevents changing the dropdown from silently changing the active layer's
+save target.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+from napari.layers import Shapes
 from qtpy.QtCore import QSignalBlocker, Qt
 from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import (
@@ -30,12 +41,15 @@ from napari_harpy.core.shapes_annotation import (
     DEFAULT_SHAPES_INDEX_PREFIX,
     CreateShapesElementRequest,
     create_shapes_element_from_napari_shapes_layer,
+    validate_existing_shapes_source_geodataframe,
 )
 from napari_harpy.core.spatialdata import (
+    get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
     get_spatialdata_shapes_options_for_coordinate_system_from_sdata,
 )
 from napari_harpy.core.validation import normalize_spatialdata_name
+from napari_harpy.viewer.adapter import ShapesLayerBinding
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     SECONDARY_BUTTON_STYLESHEET,
@@ -53,8 +67,8 @@ from napari_harpy.widgets.shared_styles import (
 )
 
 if TYPE_CHECKING:
+    import geopandas as gpd
     import napari
-    from napari.layers import Shapes
     from spatialdata import SpatialData
 
 
@@ -65,6 +79,11 @@ _STATUS_IDENTIFIER_MAX_LENGTH = 32
 _CREATE_SHAPES_OPTION_TEXT = "Create shapes..."
 _DEFAULT_NEW_SHAPES_NAME = "new_shapes"
 _ShapesAnnotationTargetMode = Literal["create_new", "edit_existing"]
+_ShapesAnnotationLayerOrigin = Literal[
+    "created_by_annotation",
+    "loaded_by_annotation",
+    "adopted_primary",
+]
 
 
 def _format_status_identifier(identifier: str) -> tuple[str, bool]:
@@ -98,6 +117,64 @@ class _ShapesAnnotationTarget:
         return cls(mode="edit_existing", existing_shapes_name=shapes_name)
 
 
+@dataclass(frozen=True)
+class _ShapesAnnotationSession:
+    """Locked save target and source metadata for one annotation session.
+
+    Attributes
+    ----------
+    mode
+        Whether the active layer belongs to create-new or edit-existing
+        annotation workflow.
+    layer_origin
+        How the active napari layer entered the session. This determines
+        discard behavior: create-new layers can be removed, while existing
+        layers should be reloaded from saved SpatialData after discard.
+    shapes_name
+        The locked `sdata.shapes[...]` element name this session saves to.
+    coordinate_system
+        The locked coordinate system whose transformed coordinates are shown in
+        the editable napari layer and used when saving.
+    source_shapes_index_feature_name
+        Feature column on the napari layer that stores each row's source
+        GeoDataFrame index value. SpatialData keeps row identity in the
+        GeoDataFrame index; napari keeps it in `layer.features`.
+    source_geodataframe
+        Defensive snapshot of the source GeoDataFrame for edit-existing
+        sessions. It is used to preserve non-geometry columns and source index
+        metadata when saving edits. Create-new sessions keep this as `None`
+        because there is no source GeoDataFrame before the first save. After
+        first save, the saved element can be treated as the source for later
+        overwrite saves.
+    source_geodataframe_index_name
+        Derived name of the source GeoDataFrame index, if any. It is exposed as
+        a property so the session keeps `source_geodataframe` as the single
+        source of truth for source index metadata.
+    table_linked
+        Whether one or more SpatialData tables annotate this shapes element.
+        Linked tables do not block editing, but the widget can warn that row
+        additions or deletions may leave tables out of sync.
+    """
+
+    mode: _ShapesAnnotationTargetMode
+    layer_origin: _ShapesAnnotationLayerOrigin
+    shapes_name: str
+    coordinate_system: str
+    source_shapes_index_feature_name: str
+    source_geodataframe: gpd.GeoDataFrame | None = None
+    table_linked: bool = False
+
+    @property
+    def reload_on_discard(self) -> bool:
+        return self.layer_origin in {"loaded_by_annotation", "adopted_primary"}
+
+    @property
+    def source_geodataframe_index_name(self) -> str | None:
+        if self.source_geodataframe is None:
+            return None
+        return self.source_geodataframe.index.name
+
+
 class ShapesAnnotation(QWidget):
     """Widget shell for annotating SpatialData shapes elements."""
 
@@ -114,6 +191,7 @@ class ShapesAnnotation(QWidget):
         self._selected_shapes_target: _ShapesAnnotationTarget | None = None
         self._eligible_existing_shapes_names: list[str] = []
         self._validated_shapes_name: str | None = None
+        self._annotation_session: _ShapesAnnotationSession | None = None
         self._annotation_layer: Shapes | None = None
         self._annotation_shapes_name: str | None = None
         self._annotation_coordinate_system: str | None = None
@@ -207,7 +285,7 @@ class ShapesAnnotation(QWidget):
         self.coordinate_system_combo.currentIndexChanged.connect(self._on_coordinate_system_changed)
         self.shapes_combo.currentIndexChanged.connect(self._on_shapes_target_changed)
         self.name_edit.textChanged.connect(self._on_shapes_name_changed)
-        self.create_layer_button.clicked.connect(self._on_create_layer_clicked)
+        self.create_layer_button.clicked.connect(self._on_open_annotation_clicked)
         self.save_shapes_button.clicked.connect(self._on_save_shapes_clicked)
         layer_events = getattr(getattr(napari_viewer, "layers", None), "events", None)
         layer_removed_event = getattr(layer_events, "removed", None)
@@ -312,14 +390,22 @@ class ShapesAnnotation(QWidget):
     def _on_shapes_name_changed(self, _text: str) -> None:
         self._refresh_create_layer_state()
 
-    def _on_create_layer_clicked(self) -> None:
+    def _on_open_annotation_clicked(self) -> None:
         if self._annotation_layer is not None:
             return
 
         self._refresh_create_layer_state()
-        if self._selected_shapes_target is None or self._selected_shapes_target.mode != "create_new":
+        target = self._selected_shapes_target
+        if target is None:
             return
 
+        if target.mode == "create_new":
+            self._open_create_new_annotation_layer()
+            return
+
+        self._open_existing_annotation_layer()
+
+    def _open_create_new_annotation_layer(self) -> None:
         sdata = self._app_state.sdata
         shapes_name = self._validated_shapes_name
         coordinate_system = self._selected_coordinate_system
@@ -342,11 +428,118 @@ class ShapesAnnotation(QWidget):
         self._annotation_layer = layer
         self._annotation_shapes_name = shapes_name
         self._annotation_coordinate_system = coordinate_system
+        self._annotation_session = _ShapesAnnotationSession(
+            mode="create_new",
+            layer_origin="created_by_annotation",
+            shapes_name=shapes_name,
+            coordinate_system=coordinate_system,
+            source_shapes_index_feature_name=DEFAULT_SHAPES_INDEX_NAME,
+        )
         self._annotation_has_been_saved = False
         self._annotation_reload_on_discard = False
         self._set_create_name_controls_visible(True)
         self._app_state.viewer_adapter.activate_layer(layer)
         self._refresh_create_layer_state()
+
+    def _open_existing_annotation_layer(self) -> None:
+        sdata = self._app_state.sdata
+        target = self._selected_shapes_target
+        coordinate_system = self._selected_coordinate_system
+        shapes_name = self._validated_shapes_name
+        if (
+            sdata is None
+            or coordinate_system is None
+            or target is None
+            or target.mode != "edit_existing"
+            or shapes_name is None
+        ):
+            return
+
+        load_result = None
+        try:
+            source_geodataframe = validate_existing_shapes_source_geodataframe(sdata.shapes[shapes_name])
+            load_result = self._app_state.viewer_adapter.ensure_shapes_loaded(
+                sdata,
+                shapes_name,
+                coordinate_system,
+            )
+            layer = load_result.layer
+            binding = self._validate_opened_existing_shapes_layer(
+                layer,
+                source_row_count=len(source_geodataframe),
+                shapes_name=shapes_name,
+                coordinate_system=coordinate_system,
+            )
+        except ValueError as error:
+            if load_result is not None and load_result.created:
+                self._app_state.viewer_adapter.remove_shapes_layer(sdata, shapes_name, coordinate_system)
+            self._set_status(title="Could Not Open Shapes", lines=[str(error)], kind="warning")
+            self.create_layer_button.setEnabled(False)
+            self._refresh_save_shapes_state()
+            return
+
+        table_linked = bool(get_annotating_table_names(sdata, shapes_name))
+        self._annotation_layer = layer
+        self._annotation_shapes_name = shapes_name
+        self._annotation_coordinate_system = coordinate_system
+        self._annotation_session = _ShapesAnnotationSession(
+            mode="edit_existing",
+            layer_origin="loaded_by_annotation" if load_result.created else "adopted_primary",
+            shapes_name=shapes_name,
+            coordinate_system=coordinate_system,
+            source_shapes_index_feature_name=binding.source_shapes_index_feature_name,
+            source_geodataframe=source_geodataframe.copy(deep=True),
+            table_linked=table_linked,
+        )
+        self._annotation_has_been_saved = True
+        self._annotation_reload_on_discard = self._annotation_session.reload_on_discard
+        self._app_state.viewer_adapter.activate_layer(layer)
+        self._refresh_create_layer_state()
+
+    def _validate_opened_existing_shapes_layer(
+        self,
+        layer: object,
+        *,
+        source_row_count: int,
+        shapes_name: str,
+        coordinate_system: str,
+    ) -> ShapesLayerBinding:
+        if not isinstance(layer, Shapes):
+            raise ValueError("This shapes element is rendered as points and cannot be edited as polygon annotations yet.")
+
+        binding = self._app_state.viewer_adapter.layer_bindings.get_binding(layer)
+        if not isinstance(binding, ShapesLayerBinding):
+            raise ValueError("Opened shapes layer is missing its Harpy shapes binding.")
+
+        if (
+            binding.element_type != "shapes"
+            or binding.element_name != shapes_name
+            or binding.coordinate_system != coordinate_system
+            or binding.sdata_id != id(self._app_state.sdata)
+            or binding.shapes_role != "primary"
+            or binding.shapes_rendering_mode != "shapes"
+            or binding.style_spec is not None
+        ):
+            raise ValueError("Opened shapes layer is not a compatible primary shapes layer.")
+
+        if binding.skipped_geometry_count:
+            raise ValueError(
+                "This shapes element cannot be edited because one or more source geometries were skipped while loading."
+            )
+
+        # `validate_existing_shapes_source_geodataframe(...)` already rejects
+        # MultiPolygons explicitly. This binding check is the rendered-layer
+        # guardrail: every source row must still map to exactly one napari row,
+        # with no splitting, skipped rows, or reordering.
+        if list(binding.source_row_id_by_rendered_row) != list(range(source_row_count)):
+            raise ValueError(
+                "This shapes element cannot be edited because one source row does not map to exactly one napari shape."
+            )
+
+        if binding.source_shapes_index_feature_name not in layer.features.columns:
+            raise ValueError("Opened shapes layer is missing the source row identity feature column.")
+
+        return binding
 
     def _on_save_shapes_clicked(self) -> None:
         self._refresh_save_shapes_state()
@@ -529,6 +722,9 @@ class ShapesAnnotation(QWidget):
         coordinate_system = self._selected_coordinate_system
         target = self._selected_shapes_target
         self._validated_shapes_name = None
+        self.create_layer_button.setText(
+            "Open layer" if target is not None and target.mode == "edit_existing" else "Create layer"
+        )
 
         if self._annotation_layer is not None:
             self._validated_shapes_name = self._annotation_shapes_name
@@ -593,17 +789,15 @@ class ShapesAnnotation(QWidget):
             visible_coordinate_system, coordinate_system_shortened = _format_status_identifier(coordinate_system)
             full_line = f'Shapes element "{shapes_name}" is available in coordinate system "{coordinate_system}".'
             self._set_status(
-                title="Existing Shapes Selected",
+                title="Ready",
                 lines=[
-                    f'Shapes element "{visible_shapes_name}" is available '
+                    f'Open shapes layer "{visible_shapes_name}" '
                     f'in coordinate system "{visible_coordinate_system}".'
                 ],
                 kind="info",
                 tooltip_lines=[full_line] if shapes_name_shortened or coordinate_system_shortened else None,
             )
-            # Opening/adopting existing layers is Slice 5; this slice only
-            # introduces and validates the target selector state.
-            self.create_layer_button.setEnabled(False)
+            self.create_layer_button.setEnabled(True)
             self._refresh_save_shapes_state()
             return
 
@@ -679,6 +873,33 @@ class ShapesAnnotation(QWidget):
                     title="Cannot Save Shapes",
                     lines=["The annotation layer is no longer registered as the widget-owned primary shapes layer."],
                     kind="warning",
+            )
+            return
+
+        if self._annotation_session is not None and self._annotation_session.mode == "edit_existing":
+            if update_status:
+                visible_shapes_name, shapes_name_shortened = _format_status_identifier(
+                    self._annotation_session.shapes_name
+                )
+                visible_coordinate_system, coordinate_system_shortened = _format_status_identifier(
+                    self._annotation_session.coordinate_system
+                )
+                full_line = (
+                    f'Edit shapes layer "{self._annotation_session.shapes_name}" '
+                    f'in coordinate system "{self._annotation_session.coordinate_system}".'
+                )
+                lines = [
+                    f'Edit shapes layer "{visible_shapes_name}" '
+                    f'in coordinate system "{visible_coordinate_system}".'
+                ]
+                if self._annotation_session.table_linked:
+                    lines.append("Linked tables may become out of sync if rows are removed.")
+                lines.append("Saving existing shapes will be enabled in the next implementation slice.")
+                self._set_status(
+                    title="Existing Shapes Opened",
+                    lines=lines,
+                    kind="info",
+                    tooltip_lines=[full_line] if shapes_name_shortened or coordinate_system_shortened else None,
                 )
             return
 
@@ -697,6 +918,11 @@ class ShapesAnnotation(QWidget):
             return False
 
         binding = self._app_state.viewer_adapter.layer_bindings.get_binding(layer)
+        source_shapes_index_feature_name = (
+            self._annotation_session.source_shapes_index_feature_name
+            if self._annotation_session is not None
+            else DEFAULT_SHAPES_INDEX_NAME
+        )
         return (
             binding is not None
             and binding.element_type == "shapes"
@@ -706,7 +932,7 @@ class ShapesAnnotation(QWidget):
             and getattr(binding, "shapes_role", None) == "primary"
             and getattr(binding, "shapes_rendering_mode", None) == "shapes"
             and getattr(binding, "style_spec", None) is None
-            and getattr(binding, "source_shapes_index_feature_name", None) == DEFAULT_SHAPES_INDEX_NAME
+            and getattr(binding, "source_shapes_index_feature_name", None) == source_shapes_index_feature_name
         )
 
     def _set_status(
@@ -775,7 +1001,9 @@ class ShapesAnnotation(QWidget):
         sdata = self._app_state.sdata
         shapes_name = self._annotation_shapes_name
         coordinate_system = self._annotation_coordinate_system
-        reload_on_discard = self._annotation_reload_on_discard
+        reload_on_discard = self._annotation_reload_on_discard or (
+            self._annotation_session.reload_on_discard if self._annotation_session is not None else False
+        )
 
         self._is_handling_annotation_discard = True
         try:
@@ -790,6 +1018,7 @@ class ShapesAnnotation(QWidget):
             self._is_handling_annotation_discard = False
 
     def _clear_annotation_state(self) -> None:
+        self._annotation_session = None
         self._annotation_layer = None
         self._annotation_shapes_name = None
         self._annotation_coordinate_system = None

@@ -214,7 +214,7 @@ def test_napari_shapes_layer_to_geodataframe_edit_existing_preserves_metadata_an
         layer,
         conversion=ExistingShapesLayerConversion(
             source_geodataframe=source,
-            source_index_feature_name="instance_id",
+            source_shapes_index_feature_name="instance_id",
         ),
     )
 
@@ -249,7 +249,7 @@ def test_napari_shapes_layer_to_geodataframe_edit_existing_preserves_unnamed_sou
         layer,
         conversion=ExistingShapesLayerConversion(
             source_geodataframe=source,
-            source_index_feature_name="index",
+            source_shapes_index_feature_name="index",
         ),
     )
 
@@ -271,7 +271,7 @@ def test_napari_shapes_layer_to_geodataframe_edit_existing_saves_editable_rectan
         layer,
         conversion=ExistingShapesLayerConversion(
             source_geodataframe=source,
-            source_index_feature_name="instance_id",
+            source_shapes_index_feature_name="instance_id",
         ),
         ellipse_segments=16,
     )
@@ -296,7 +296,7 @@ def test_napari_shapes_layer_to_geodataframe_edit_existing_assigns_new_ids_for_c
         layer,
         conversion=ExistingShapesLayerConversion(
             source_geodataframe=source,
-            source_index_feature_name="instance_id",
+            source_shapes_index_feature_name="instance_id",
         ),
     )
 
@@ -331,7 +331,7 @@ def test_napari_shapes_layer_to_geodataframe_edit_existing_rejects_invalid_sourc
             layer,
             conversion=ExistingShapesLayerConversion(
                 source_geodataframe=source,
-                source_index_feature_name="instance_id",
+                source_shapes_index_feature_name="instance_id",
             ),
         )
 
@@ -363,7 +363,7 @@ def test_napari_shapes_layer_to_geodataframe_edit_existing_rejects_unsupported_s
             layer,
             conversion=ExistingShapesLayerConversion(
                 source_geodataframe=source,
-                source_index_feature_name="instance_id",
+                source_shapes_index_feature_name="instance_id",
             ),
         )
 
@@ -383,7 +383,7 @@ def test_napari_shapes_layer_to_geodataframe_edit_existing_rejects_missing_sourc
             layer,
             conversion=ExistingShapesLayerConversion(
                 source_geodataframe=source,
-                source_index_feature_name="instance_id",
+                source_shapes_index_feature_name="instance_id",
             ),
         )
 
@@ -408,7 +408,7 @@ def test_edit_shapes_element_from_napari_shapes_layer_overwrites_existing_shapes
             shapes_name="regions",
             coordinate_system="global",
             source_geodataframe=source,
-            source_index_feature_name="instance_id",
+            source_shapes_index_feature_name="instance_id",
         ),
         layer,
     )
@@ -459,7 +459,7 @@ def test_edit_shapes_element_from_napari_shapes_layer_preserves_other_coordinate
             shapes_name="regions",
             coordinate_system="global",
             source_geodataframe=source,
-            source_index_feature_name="instance_id",
+            source_shapes_index_feature_name="instance_id",
         ),
         layer,
     )
@@ -480,7 +480,7 @@ def test_edit_shapes_element_from_napari_shapes_layer_preserves_other_coordinate
         ({"sdata": None}, "SpatialData object"),
         ({"shapes_name": "missing"}, "does not exist"),
         ({"coordinate_system": "missing"}, "not available"),
-        ({"source_index_feature_name": "   "}, "non-empty string"),
+        ({"source_shapes_index_feature_name": "   "}, "non-empty string"),
         ({"index_prefix": "   "}, "non-empty string"),
     ],
 )
@@ -502,7 +502,7 @@ def test_edit_shapes_element_from_napari_shapes_layer_rejects_invalid_request_be
         "shapes_name": "regions",
         "coordinate_system": "global",
         "source_geodataframe": source,
-        "source_index_feature_name": "instance_id",
+        "source_shapes_index_feature_name": "instance_id",
     } | request_kwargs
 
     with pytest.raises(ValueError, match=message):
@@ -530,7 +530,7 @@ def test_edit_shapes_element_from_napari_shapes_layer_preserves_unnamed_source_i
             shapes_name="regions",
             coordinate_system="global",
             source_geodataframe=source,
-            source_index_feature_name="index",
+            source_shapes_index_feature_name="index",
         ),
         layer,
     )
@@ -561,7 +561,7 @@ def test_edit_shapes_element_from_napari_shapes_layer_persists_backed_overwrite_
             shapes_name="regions",
             coordinate_system="global",
             source_geodataframe=backed_sdata.shapes["regions"],
-            source_index_feature_name="instance_id",
+            source_shapes_index_feature_name="instance_id",
         ),
         layer,
     )
@@ -603,7 +603,7 @@ def test_edit_shapes_element_from_napari_shapes_layer_calls_harpy_with_overwrite
             shapes_name="regions",
             coordinate_system="global",
             source_geodataframe=source,
-            source_index_feature_name="index",
+            source_shapes_index_feature_name="index",
         ),
         layer,
     )

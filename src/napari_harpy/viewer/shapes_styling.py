@@ -174,7 +174,7 @@ def apply_shape_column_color_source_to_shapes_layer(
         layer,
         feature_values,
         style_column_name=style_spec.value_key,
-        source_index_feature_name=source_shapes_index_feature_name,
+        source_shapes_index_feature_name=source_shapes_index_feature_name,
     )
     return style_result
 
@@ -289,7 +289,7 @@ def apply_table_color_source_to_shapes_layer(
         layer,
         feature_values,
         style_column_name=style_spec.value_key,
-        source_index_feature_name=source_shapes_index_feature_name,
+        source_shapes_index_feature_name=source_shapes_index_feature_name,
     )
     return style_result
 
@@ -586,7 +586,7 @@ def _connect_current_edge_color_to_global_edge_color(layer: Shapes) -> None:
     setattr(layer, _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR, _sync_current_edge_color_to_all_shapes)
 
 
-def disambiguate_shape_style_feature_name(style_column_name: str, source_index_feature_name: str) -> str:
+def disambiguate_shape_style_feature_name(style_column_name: str, source_shapes_index_feature_name: str) -> str:
     """Return the layer.features column name for a selected shape style value.
 
     GeoPandas and SpatialData allow a shapes GeoDataFrame to have both an
@@ -598,7 +598,7 @@ def disambiguate_shape_style_feature_name(style_column_name: str, source_index_f
     collide with the source-index feature column, so the selected style value
     is stored as ``cell_id__value``.
     """
-    if style_column_name == source_index_feature_name:
+    if style_column_name == source_shapes_index_feature_name:
         return f"{style_column_name}__value"
     return style_column_name
 
@@ -1051,9 +1051,9 @@ def _set_shape_style_feature(
     values: pd.Series,
     *,
     style_column_name: str,
-    source_index_feature_name: str,
+    source_shapes_index_feature_name: str,
 ) -> None:
-    feature_name = disambiguate_shape_style_feature_name(style_column_name, source_index_feature_name)
+    feature_name = disambiguate_shape_style_feature_name(style_column_name, source_shapes_index_feature_name)
     features = layer.features.copy()
     if len(features) == 0 and len(values) > 0:
         features = pd.DataFrame(index=pd.RangeIndex(len(values)))

@@ -46,7 +46,7 @@ class EditShapesElementRequest:
     shapes_name: str
     coordinate_system: str
     source_geodataframe: gpd.GeoDataFrame
-    source_index_feature_name: str
+    source_shapes_index_feature_name: str
     index_prefix: str = DEFAULT_SHAPES_INDEX_PREFIX
 
 
@@ -67,7 +67,7 @@ class NewShapesLayerConversion:
 class ExistingShapesLayerConversion:
     """Conversion context for saving edits to an existing shapes element.
 
-    ``source_index_feature_name`` names the napari ``layer.features`` column
+    ``source_shapes_index_feature_name`` names the napari ``layer.features`` column
     that stores source row identity. It is intentionally separate from
     ``source_geodataframe.index.name`` because unnamed GeoDataFrame indexes are
     stored in napari under a fallback feature column such as ``"index"`` but
@@ -75,7 +75,7 @@ class ExistingShapesLayerConversion:
     """
 
     source_geodataframe: gpd.GeoDataFrame
-    source_index_feature_name: str
+    source_shapes_index_feature_name: str
     index_prefix: str = DEFAULT_SHAPES_INDEX_PREFIX
 
 
@@ -149,9 +149,9 @@ def edit_shapes_element_from_napari_shapes_layer(
 
     shapes_name = _normalize_spatialdata_name_field(request.shapes_name, field_name="`shapes_name`")
     coordinate_system = _normalize_string_field(request.coordinate_system, field_name="`coordinate_system`")
-    source_index_feature_name = _normalize_feature_column_name_field(
-        request.source_index_feature_name,
-        field_name="`source_index_feature_name`",
+    source_shapes_index_feature_name = _normalize_feature_column_name_field(
+        request.source_shapes_index_feature_name,
+        field_name="`source_shapes_index_feature_name`",
     )
     index_prefix = _normalize_string_field(request.index_prefix, field_name="`index_prefix`")
 
@@ -168,7 +168,7 @@ def edit_shapes_element_from_napari_shapes_layer(
         layer,
         conversion=ExistingShapesLayerConversion(
             source_geodataframe=request.source_geodataframe,
-            source_index_feature_name=source_index_feature_name,
+            source_shapes_index_feature_name=source_shapes_index_feature_name,
             index_prefix=index_prefix,
         ),
     )
@@ -280,13 +280,13 @@ def napari_shapes_layer_to_geodataframe(
         features = _build_features_with_source_instance_ids(
             layer.features,
             row_count=len(data),
-            source_index_feature_name=conversion.source_index_feature_name,
+            source_shapes_index_feature_name=conversion.source_shapes_index_feature_name,
             source_index_values=conversion.source_geodataframe.index,
             index_prefix=conversion.index_prefix,
         )
         geodataframe = _edited_shapes_geodataframe_from_source(
             conversion.source_geodataframe,
-            row_ids=features[conversion.source_index_feature_name].tolist(),
+            row_ids=features[conversion.source_shapes_index_feature_name].tolist(),
             geometries=geometries,
         )
 
@@ -294,6 +294,11 @@ def napari_shapes_layer_to_geodataframe(
     # failed conversions leave the napari layer metadata untouched.
     layer.features = features
     return geodataframe
+
+
+def validate_existing_shapes_source_geodataframe(source_geodataframe: object) -> gpd.GeoDataFrame:
+    """Return an edit-eligible source GeoDataFrame or raise a user-facing error."""
+    return _validate_existing_shapes_source_geodataframe(source_geodataframe)
 
 
 def _new_shapes_geodataframe_from_features(
@@ -382,9 +387,9 @@ def _normalize_shapes_layer_conversion(
         source_geodataframe = _validate_existing_shapes_source_geodataframe(conversion.source_geodataframe)
         return ExistingShapesLayerConversion(
             source_geodataframe=source_geodataframe,
-            source_index_feature_name=_normalize_feature_column_name_field(
-                conversion.source_index_feature_name,
-                field_name="`source_index_feature_name`",
+            source_shapes_index_feature_name=_normalize_feature_column_name_field(
+                conversion.source_shapes_index_feature_name,
+                field_name="`source_shapes_index_feature_name`",
             ),
             index_prefix=_normalize_string_field(conversion.index_prefix, field_name="`index_prefix`"),
         )
@@ -501,7 +506,7 @@ def _build_features_with_source_instance_ids(
     features: pd.DataFrame,
     *,
     row_count: int,
-    source_index_feature_name: str,
+    source_shapes_index_feature_name: str,
     source_index_values: pd.Index,
     index_prefix: str,
 ) -> pd.DataFrame:
@@ -515,12 +520,12 @@ def _build_features_with_source_instance_ids(
     """
     features = features.copy()
     features = features.reindex(range(row_count)).reset_index(drop=True)
-    if source_index_feature_name not in features.columns:
+    if source_shapes_index_feature_name not in features.columns:
         raise ValueError(
-            f"Napari shapes layer is missing source index feature column `{source_index_feature_name}`."
+            f"Napari shapes layer is missing source index feature column `{source_shapes_index_feature_name}`."
         )
 
-    raw_values = features[source_index_feature_name].tolist()
+    raw_values = features[source_shapes_index_feature_name].tolist()
     existing_values = [_normalize_source_instance_id(value) for value in raw_values]
     normalized_values: list[object | None] = []
     used_current_values: set[object] = set()
@@ -540,7 +545,7 @@ def _build_features_with_source_instance_ids(
     if duplicate_values:
         preview = ", ".join(f"`{value}`" for value in sorted(duplicate_values, key=str)[:5])
         raise ValueError(
-            f"`{source_index_feature_name}` values must be unique before saving shapes: {preview}."
+            f"`{source_shapes_index_feature_name}` values must be unique before saving shapes: {preview}."
         )
 
     used_values = set(source_index_values.tolist()) | used_current_values
@@ -556,7 +561,7 @@ def _build_features_with_source_instance_ids(
             next_suffix += 1
         instance_ids.append(value)
 
-    features[source_index_feature_name] = instance_ids
+    features[source_shapes_index_feature_name] = instance_ids
     return features
 
 

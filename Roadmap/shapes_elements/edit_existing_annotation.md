@@ -398,19 +398,21 @@ Index-name rules:
 - preserve the original GeoDataFrame index name when saving the edited element;
 - do not blindly use the napari feature column name as the saved GeoDataFrame
   index name;
-- track both:
+- track the napari source identity feature column, and derive the GeoDataFrame
+  index name from the source snapshot:
 
   ```python
-  source_index_feature_name: str
-  source_geodataframe_index_name: str | None
+  source_shapes_index_feature_name: str
+  source_geodataframe: gpd.GeoDataFrame
   ```
 
-- `source_index_feature_name` is the napari `layer.features` column that stores
+- `source_shapes_index_feature_name` is the napari `layer.features` column that stores
   row identity for editing and status display;
 - `source_geodataframe_index_name` is the name to restore on the saved
-  GeoDataFrame index. It can be tracked in widget session state, but the core
-  conversion helper should derive it from `source_geodataframe.index.name`
-  rather than taking it as a separate public argument.
+  GeoDataFrame index. It should be derived from
+  `source_geodataframe.index.name`, including in widget session state if exposed
+  as a convenience property, rather than stored as a separate field that can
+  drift from the snapshot.
 
 This distinction matters for unnamed GeoDataFrame indexes. The viewer currently
 stores unnamed source indexes in `layer.features["index"]` so napari can display
@@ -517,14 +519,14 @@ Save behavior:
 - validate every current napari row before writing;
 - convert every current `layer.data` row back to Shapely geometry;
 - resolve row identity for every current napari row from
-  `layer.features[source_index_feature_name]`;
+  `layer.features[source_shapes_index_feature_name]`;
 - preserve non-geometry metadata for existing row identities;
 - assign generated IDs and missing metadata to newly added rows;
 - omit deleted rows from the rebuilt output;
 - construct one complete replacement `GeoDataFrame`;
 - restore `geodataframe.index.name` from `source_geodataframe.index.name`;
 - when `source_geodataframe.index.name is None`, keep the saved GeoDataFrame
-  index unnamed. Do not substitute `source_index_feature_name`;
+  index unnamed. Do not substitute `source_shapes_index_feature_name`;
 - write the complete replacement through `harpy.sh.add_shapes(...)` with
   `overwrite=True`.
 
@@ -546,7 +548,7 @@ Conceptual save flow:
 
 ```python
 geometries = convert_all_layer_rows_to_geometry(layer.data, layer.shape_type)
-row_ids = resolve_all_row_ids(layer.features[source_index_feature_name])
+row_ids = resolve_all_row_ids(layer.features[source_shapes_index_feature_name])
 metadata = align_source_metadata_to_row_ids(source_geodataframe, row_ids)
 edited = GeoDataFrame(metadata, geometry=geometries, index=row_ids)
 edited.index.name = source_geodataframe.index.name
@@ -645,7 +647,7 @@ Work:
   class ExistingShapesLayerConversion:
       """Conversion context for saving edits to an existing shapes element.
 
-      `source_index_feature_name` names the napari `layer.features` column that
+      `source_shapes_index_feature_name` names the napari `layer.features` column that
       stores source row identity. It is intentionally separate from
       `source_geodataframe.index.name`, because unnamed GeoDataFrame indexes are
       stored in napari under a fallback feature column such as `"index"` but
@@ -653,7 +655,7 @@ Work:
       """
 
       source_geodataframe: gpd.GeoDataFrame
-      source_index_feature_name: str
+      source_shapes_index_feature_name: str
       index_prefix: str = DEFAULT_SHAPES_INDEX_PREFIX
   ```
 
@@ -678,7 +680,7 @@ Work:
   `NewShapesLayerConversion.index_name`;
 - in edit-existing mode:
   - row identity is read from
-    `layer.features[ExistingShapesLayerConversion.source_index_feature_name]`;
+    `layer.features[ExistingShapesLayerConversion.source_shapes_index_feature_name]`;
   - source metadata is copied from
     `ExistingShapesLayerConversion.source_geodataframe`;
   - the saved index name is
@@ -695,7 +697,7 @@ Work:
   `polygon`, `rectangle`, and `ellipse` rows can be saved as Shapely
   `Polygon` geometries;
 - add a row-identity helper that:
-  - reads existing row IDs from `layer.features[source_index_feature_name]`;
+  - reads existing row IDs from `layer.features[source_shapes_index_feature_name]`;
   - preserves existing source index values;
   - assigns generated `__annotation_N` IDs only to new rows with missing row identity;
   - avoids collisions with all existing row IDs;
@@ -742,7 +744,7 @@ class EditShapesElementRequest:
     shapes_name: str
     coordinate_system: str
     source_geodataframe: gpd.GeoDataFrame
-    source_index_feature_name: str
+    source_shapes_index_feature_name: str
     index_prefix: str = DEFAULT_SHAPES_INDEX_PREFIX
 
 
@@ -776,7 +778,7 @@ Work:
       layer,
       conversion=ExistingShapesLayerConversion(
           source_geodataframe=request.source_geodataframe,
-          source_index_feature_name=request.source_index_feature_name,
+          source_shapes_index_feature_name=request.source_shapes_index_feature_name,
           index_prefix=request.index_prefix,
       ),
   )
@@ -992,7 +994,7 @@ Done when:
 
 ### Slice 5: Edit Session Opening And Adoption
 
-Status: pending
+Status: implemented
 
 Goal: create or adopt the editable primary layer for edit-existing sessions.
 
@@ -1025,14 +1027,19 @@ Work:
       layer_origin: _ShapesAnnotationLayerOrigin
       shapes_name: str
       coordinate_system: str
-      source_index_feature_name: str
+      source_shapes_index_feature_name: str
       source_geodataframe: gpd.GeoDataFrame | None = None
-      source_geodataframe_index_name: str | None = None
       table_linked: bool = False
 
       @property
       def reload_on_discard(self) -> bool:
           return self.layer_origin in {"loaded_by_annotation", "adopted_primary"}
+
+      @property
+      def source_geodataframe_index_name(self) -> str | None:
+          if self.source_geodataframe is None:
+              return None
+          return self.source_geodataframe.index.name
   ```
 
 - `_ShapesAnnotationLayerOrigin` records where the active napari layer came
@@ -1079,7 +1086,7 @@ Work:
   - require `binding.source_row_id_by_rendered_row` to be one-to-one with the
     source GeoDataFrame rows;
   - store `binding.source_shapes_index_feature_name` in the session as
-    `source_index_feature_name`;
+    `source_shapes_index_feature_name`;
   - store a defensive source GeoDataFrame snapshot in the session for Slice 6
     save metadata alignment;
   - store `source_geodataframe.index.name` in the session for clarity, while
@@ -1140,6 +1147,94 @@ Done when:
   system;
 - edit-existing save remains disabled until Slice 6.
 
+### Slice 5b: Clean Snapshot For Discard Warnings
+
+Status: pending
+
+Goal: avoid showing the discard warning when the active annotation layer has no
+save-relevant changes.
+
+Current behavior is intentionally conservative: coordinate-system changes and
+`Shapes` target changes ask for discard confirmation whenever
+`_annotation_layer is not None`. This protects user edits, but it is annoying
+when the layer is still clean, for example:
+
+- a newly created empty annotation layer with no drawn shapes;
+- an existing shapes layer opened for editing but not changed;
+- a layer immediately after successful save;
+- a create-new layer after first save when the selector has switched to the
+  saved edit-existing target.
+
+Do not introduce a dirty-row model for this workflow. Napari does not provide a
+stable enough row-level dirty contract, and the Annotation widget saves the
+whole layer anyway.
+
+Preferred design:
+
+- track a layer-level clean snapshot of save-relevant state;
+- establish the clean snapshot when:
+  - a create-new annotation layer is created;
+  - an existing shapes layer is opened or adopted;
+  - save succeeds;
+- before coordinate-system or `Shapes` target discard, compare the current
+  layer state with the clean snapshot;
+- show the discard dialog only when the current layer differs from the clean
+  snapshot;
+- if the layer is clean, discard/switch silently using the normal Slice 3
+  discard behavior.
+
+The clean snapshot should include only data that affects persistence:
+
+- napari shape geometry data;
+- napari shape types;
+- the source row identity feature column;
+- other feature columns that are preserved into the saved GeoDataFrame.
+
+The clean snapshot should ignore visual-only layer state that is not persisted
+by the Annotation workflow, such as current selection, active mode, edge color,
+face color, opacity, and other styling.
+
+Napari `Shapes` layers expose `data` and `features` events, so the widget may
+also maintain an eager `_annotation_dirty` flag for immediate UI feedback.
+However, the discard decision should still be allowed to recompute/compare the
+snapshot directly. This keeps the behavior robust if a napari event is missed or
+if widget code updates `layer.features` programmatically.
+
+Implementation notes:
+
+- `self._annotation_has_been_saved` must remain the overwrite/ownership flag; it
+  should not be reused as the dirty flag;
+- add a separate clean-state concept, for example
+  `_annotation_clean_snapshot`, `_annotation_dirty`, or both;
+- after successful save, replace the clean snapshot with the current layer
+  state;
+- after create-new first save, the `Shapes` selector still jumps to the saved
+  element and the session enters edit-existing semantics, but the snapshot
+  should also be refreshed so switching away immediately does not warn;
+- target-switch and coordinate-system-switch code should ask:
+
+  ```python
+  if self._annotation_layer_has_unsaved_changes():
+      show_discard_dialog()
+  else:
+      discard_without_warning()
+  ```
+
+- make discard dialog copy context-aware:
+  - coordinate-system switch: mention changing coordinate system;
+  - `Shapes` target switch: mention switching annotation target.
+
+Done when:
+
+- switching away from an empty create-new layer does not show a warning;
+- switching away immediately after save does not show a warning;
+- switching away after adding, deleting, or editing shapes still shows a
+  warning;
+- canceling a dirty discard keeps the current session untouched;
+- confirming a dirty discard keeps the existing Slice 3 discard/reload
+  behavior;
+- visual-only changes do not trigger discard warnings.
+
 ### Slice 6: Edit Save Integration And Feedback
 
 Status: pending
@@ -1161,9 +1256,16 @@ Work:
 - keep create-new first save at `overwrite=False`;
 - after successful create-new first save, transition the active session to
   edit-existing semantics by storing the saved GeoDataFrame snapshot and source
-  index feature name;
+  shapes index feature name;
 - after successful create-new first save, refresh the `Shapes` dropdown, select
   the newly saved shapes element, and hide `New shapes name`;
+- remove the temporary `_annotation_reload_on_discard` bridge once create-new
+  first save rebuilds the session as a real edit-existing session:
+  - discard behavior should derive from `_annotation_session.reload_on_discard`;
+  - `created_by_annotation` before first save still discards by removing the
+    unsaved layer;
+  - after first save, the rebuilt session should have an origin that reloads
+    saved `sdata` on discard;
 - use edit-existing `overwrite=True` for existing targets and for repeated saves
   after create-new first save;
 - emit `ShapesElementWrittenEvent` after both create-new and edit-existing

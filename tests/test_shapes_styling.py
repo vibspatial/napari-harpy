@@ -38,23 +38,23 @@ def _shape_vertices(offset: float) -> np.ndarray:
 def _make_shapes_layer(
     source_indices: tuple[object, ...],
     *,
-    source_index_feature_name: str = "index",
+    source_shapes_index_feature_name: str = "index",
 ) -> Shapes:
     return Shapes(
         [_shape_vertices(float(index)) for index in range(len(source_indices))],
         shape_type=["polygon"] * len(source_indices),
-        features=pd.DataFrame({source_index_feature_name: list(source_indices)}),
+        features=pd.DataFrame({source_shapes_index_feature_name: list(source_indices)}),
     )
 
 
 def _make_points_layer(
     source_indices: tuple[object, ...],
     *,
-    source_index_feature_name: str = "index",
+    source_shapes_index_feature_name: str = "index",
 ) -> Points:
     return Points(
         np.asarray([[float(index), float(index + 10)] for index in range(len(source_indices))], dtype=float),
-        features=pd.DataFrame({source_index_feature_name: list(source_indices)}),
+        features=pd.DataFrame({source_shapes_index_feature_name: list(source_indices)}),
         size=np.asarray([4.0 + index for index in range(len(source_indices))], dtype=float),
     )
 
@@ -613,7 +613,7 @@ def test_apply_table_color_source_to_shapes_layer_uses_table_categorical_palette
         )
     )
     table.uns["cell_type_colors"] = ["red", "blue"]
-    layer = _make_shapes_layer(("cell_1", "cell_1", "cell_2", "cell_3"), source_index_feature_name="instance_id")
+    layer = _make_shapes_layer(("cell_1", "cell_1", "cell_2", "cell_3"), source_shapes_index_feature_name="instance_id")
     style_spec = TableColorSourceSpec(
         table_name="table",
         source_kind="obs_column",
@@ -682,7 +682,7 @@ def test_apply_table_color_source_to_shapes_layer_colors_point_backed_shapes() -
         )
     )
     table.uns["cell_type_colors"] = ["red", "blue"]
-    layer = _make_points_layer(("cell_1", "cell_2", "cell_3"), source_index_feature_name="instance_id")
+    layer = _make_points_layer(("cell_1", "cell_2", "cell_3"), source_shapes_index_feature_name="instance_id")
     original_size = layer.size.copy()
     original_symbol = layer.symbol.copy()
     style_spec = TableColorSourceSpec(
@@ -738,7 +738,7 @@ def test_apply_table_color_source_to_shapes_layer_colors_string_instances_with_l
             index=["obs_1", "obs_2"],
         )
     )
-    layer = _make_shapes_layer(("cell_1", "cell_1", "cell_2"), source_index_feature_name="instance_id")
+    layer = _make_shapes_layer(("cell_1", "cell_1", "cell_2"), source_shapes_index_feature_name="instance_id")
     style_spec = TableColorSourceSpec(
         table_name="table",
         source_kind="obs_column",
@@ -787,7 +787,7 @@ def test_apply_table_color_source_to_shapes_layer_uses_positive_integer_instance
             index=["obs_1", "obs_2"],
         )
     )
-    layer = _make_shapes_layer((5, 10, 15), source_index_feature_name="instance_id")
+    layer = _make_shapes_layer((5, 10, 15), source_shapes_index_feature_name="instance_id")
     style_spec = TableColorSourceSpec(
         table_name="table",
         source_kind="obs_column",
@@ -837,7 +837,7 @@ def test_apply_table_color_source_to_shapes_layer_colors_sparse_x_var_continuous
         ),
         var=pd.DataFrame(index=["GeneA", "GeneB"]),
     )
-    layer = _make_shapes_layer(("cell_1", "cell_2", "cell_3"), source_index_feature_name="instance_id")
+    layer = _make_shapes_layer(("cell_1", "cell_2", "cell_3"), source_shapes_index_feature_name="instance_id")
     style_spec = TableColorSourceSpec(
         table_name="table",
         source_kind="x_var",
@@ -888,7 +888,7 @@ def test_apply_table_color_source_to_shapes_layer_coerces_string_obs_to_temporar
         )
     )
     table.uns["free_text_colors"] = ["red", "blue"]
-    layer = _make_shapes_layer(("cell_1", "cell_2"), source_index_feature_name="instance_id")
+    layer = _make_shapes_layer(("cell_1", "cell_2"), source_shapes_index_feature_name="instance_id")
     style_spec = TableColorSourceSpec(
         table_name="table",
         source_kind="obs_column",
@@ -926,7 +926,7 @@ def test_apply_table_color_source_to_shapes_layer_disambiguates_style_feature_fr
             index=["obs_1"],
         )
     )
-    layer = _make_shapes_layer(("cell_1",), source_index_feature_name="instance_id")
+    layer = _make_shapes_layer(("cell_1",), source_shapes_index_feature_name="instance_id")
     style_spec = TableColorSourceSpec(
         table_name="table",
         source_kind="obs_column",
@@ -1215,7 +1215,7 @@ def test_apply_shape_column_color_source_to_shapes_layer_disambiguates_style_fea
         index=["cell_1"],
     )
     geodataframe.index.name = "cell_id"
-    layer = _make_shapes_layer(("cell_1",), source_index_feature_name="cell_id")
+    layer = _make_shapes_layer(("cell_1",), source_shapes_index_feature_name="cell_id")
     style_spec = ShapeColumnColorSourceSpec(
         source_kind="shape_column",
         value_key="cell_id",
