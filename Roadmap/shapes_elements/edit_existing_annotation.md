@@ -1769,7 +1769,107 @@ Done when:
 - save, discard, reload, binding validation, and manual layer-removal tests
   still pass.
 
-### Slice 8: Discard, Target Switching, And Reload
+### Slice 8: Adopt Viewer-Loaded Selected Shapes Target
+
+Status: pending
+
+Goal: keep the Annotation widget in sync when the Viewer widget loads the
+currently selected existing shapes element.
+
+Problem:
+
+- the Annotation widget can have an existing shapes element selected in the
+  `Shapes` dropdown without an active annotation session;
+- the Viewer widget can then load that same shapes element as a primary shapes
+  layer;
+- visually, the user can edit that layer in napari, but Annotation has not
+  adopted it as `_annotation_layer`, so `Save shapes` remains disabled until the
+  user changes the `Shapes` selection away and back.
+
+Design:
+
+- do not reintroduce a required `Open layer` / `Edit layer` button for
+  edit-existing targets;
+- add an explicit ViewerAdapter or shared app-state notification that fires
+  after a primary shapes layer has been registered, not merely after napari has
+  inserted the raw layer;
+- avoid relying on raw `viewer.layers.events.inserted` in the Annotation widget,
+  because the adapter adds the napari layer before registering its Harpy
+  binding;
+- have the Annotation widget listen for the post-registration event and
+  reconcile its selected target against the registered layer.
+
+Likely files:
+
+- `src/napari_harpy/viewer/adapter.py`;
+- `src/napari_harpy/_app_state.py`, if the event belongs in shared app state;
+- `src/napari_harpy/widgets/shapes_annotation/widget.py`;
+- `tests/test_shapes_annotation_widget.py`;
+- possibly `tests/test_viewer_widget.py`.
+
+Work:
+
+- introduce a small event/signal for primary shapes layer registration or load,
+  for example after `ViewerAdapter.ensure_shapes_loaded(...)` has successfully
+  registered a primary shapes layer;
+- include enough event payload to identify the layer:
+  - `sdata`;
+  - `shapes_name`;
+  - `coordinate_system`;
+  - optionally the napari layer or binding;
+- in Annotation, handle the event only when:
+  - no annotation session is active;
+  - the selected `Shapes` target is `edit_existing`;
+  - the selected target name matches the event shapes name;
+  - the selected coordinate system matches the event coordinate system;
+  - the event refers to the current `sdata`;
+  - the registered layer is a compatible primary shapes layer;
+- adopt the matching layer through the same validation/session setup path used
+  when an existing target is opened from the Annotation widget;
+- ignore styled layers and non-matching primary layers;
+- keep create-new sessions unaffected.
+
+Concrete event contract:
+
+- prefer a specific event name such as `primary_shapes_layer_registered` over a
+  broader `primary_shapes_layers_changed` signal;
+- emit it only after the primary shapes layer has been registered in the Harpy
+  layer binding registry;
+- Annotation listens to that event and handles it with this guard:
+
+  ```python
+  self._annotation_layer is None
+  self._selected_shapes_target is not None
+  self._selected_shapes_target.mode == "edit_existing"
+  event.shapes_name == self._selected_shapes_target.shapes_name
+  event.coordinate_system == self._selected_coordinate_system
+  event.sdata is self._app_state.sdata
+  ```
+
+- if the guard passes, call the existing adoption path:
+
+  ```python
+  self._open_existing_annotation_layer()
+  ```
+
+- because the Viewer has already loaded and registered the layer,
+  `ViewerAdapter.ensure_shapes_loaded(...)` should return `created=False`
+  inside `_open_existing_annotation_layer(...)`, and Annotation should adopt the
+  existing compatible primary layer instead of creating a duplicate.
+
+Done when:
+
+- if the Viewer loads the shapes element currently selected in Annotation,
+  Annotation adopts that layer and enables `Save shapes` without requiring the
+  user to change the dropdown selection;
+- loading a different shapes element in the Viewer does not affect Annotation;
+- loading a styled layer does not affect Annotation;
+- an active annotation session is never stolen or replaced by a Viewer load
+  event;
+- tests cover the selected-target adoption case and the non-matching/no-steal
+  cases.
+
+### Slice 9: Discard, Target Switching, And Reload
 
 Status: pending
 
@@ -1802,7 +1902,7 @@ Done when:
   layer from saved `sdata`;
 - manual deletion of the active annotation layer clears widget state.
 
-### Slice 9: Viewer Integration Audit
+### Slice 10: Viewer Integration Audit
 
 Status: pending
 
@@ -1834,7 +1934,7 @@ Done when:
   session ownership;
 - any styled-layer stale-state behavior is either tested or explicitly deferred.
 
-### Slice 10: Backed Persistence And Regression Coverage
+### Slice 11: Backed Persistence And Regression Coverage
 
 Status: pending
 
