@@ -573,9 +573,27 @@ class ShapesAnnotation(QWidget):
             # is rebuilt as edit-existing so later saves overwrite through the
             # edit path.
             if session.mode == "create_new":
-                result = self._save_create_new_annotation_layer(sdata=sdata, layer=layer, session=session)
+                request = CreateShapesElementRequest(
+                    sdata=sdata,
+                    shapes_name=session.shapes_name,
+                    coordinate_system=session.coordinate_system,
+                    overwrite=False,
+                    index_name=DEFAULT_SHAPES_INDEX_NAME,
+                    index_prefix=DEFAULT_SHAPES_INDEX_PREFIX,
+                )
+                result = create_shapes_element_from_napari_shapes_layer(request, layer)
             else:
-                result = self._save_existing_annotation_layer(sdata=sdata, layer=layer, session=session)
+                if session.source_geodataframe is None:
+                    raise ValueError("Existing shapes session is missing its source GeoDataFrame metadata.")
+                request = EditShapesElementRequest(
+                    sdata=sdata,
+                    shapes_name=session.shapes_name,
+                    coordinate_system=session.coordinate_system,
+                    source_geodataframe=session.source_geodataframe,
+                    source_shapes_index_feature_name=session.source_shapes_index_feature_name,
+                    index_prefix=DEFAULT_SHAPES_INDEX_PREFIX,
+                )
+                result = edit_shapes_element_from_napari_shapes_layer(request, layer)
             self._update_annotation_session_after_successful_save(
                 sdata=sdata,
                 layer=layer,
@@ -612,43 +630,6 @@ class ShapesAnnotation(QWidget):
             kind="success",
             tooltip_lines=[full_line] if shapes_name_shortened or coordinate_system_shortened else None,
         )
-
-    def _save_create_new_annotation_layer(
-        self,
-        *,
-        sdata: SpatialData,
-        layer: Shapes,
-        session: _ShapesAnnotationSession,
-    ) -> AnnotateShapesElementResult:
-        request = CreateShapesElementRequest(
-            sdata=sdata,
-            shapes_name=session.shapes_name,
-            coordinate_system=session.coordinate_system,
-            overwrite=False,
-            index_name=DEFAULT_SHAPES_INDEX_NAME,
-            index_prefix=DEFAULT_SHAPES_INDEX_PREFIX,
-        )
-        return create_shapes_element_from_napari_shapes_layer(request, layer)
-
-    def _save_existing_annotation_layer(
-        self,
-        *,
-        sdata: SpatialData,
-        layer: Shapes,
-        session: _ShapesAnnotationSession,
-    ) -> AnnotateShapesElementResult:
-        if session.source_geodataframe is None:
-            raise ValueError("Existing shapes session is missing its source GeoDataFrame metadata.")
-
-        request = EditShapesElementRequest(
-            sdata=sdata,
-            shapes_name=session.shapes_name,
-            coordinate_system=session.coordinate_system,
-            source_geodataframe=session.source_geodataframe,
-            source_shapes_index_feature_name=session.source_shapes_index_feature_name,
-            index_prefix=DEFAULT_SHAPES_INDEX_PREFIX,
-        )
-        return edit_shapes_element_from_napari_shapes_layer(request, layer)
 
     def _update_annotation_session_after_successful_save(
         self,
