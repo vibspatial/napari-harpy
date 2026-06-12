@@ -1561,42 +1561,154 @@ Likely files:
 
 Work:
 
-- route save by active session mode:
-  - create-new first save uses `create_shapes_element_from_napari_shapes_layer(...)`;
-  - edit-existing uses the new edit-existing core helper;
-- keep create-new first save at `overwrite=False`;
-- after successful create-new first save, transition the active session to
-  edit-existing semantics by storing the saved GeoDataFrame snapshot and source
-  shapes index feature name;
-- this transition must rebuild or update `_annotation_session` itself so
-  `_annotation_session.mode == "edit_existing"`. It is not enough for the
-  `Shapes` dropdown target to point at `_ShapesAnnotationTarget.edit_existing`;
-- after successful create-new first save, refresh the `Shapes` dropdown, select
-  the newly saved shapes element, and hide `New shapes name`;
-- remove the temporary `_annotation_reload_on_discard` bridge once create-new
-  first save rebuilds the session as a real edit-existing session:
-  - discard behavior should derive from `_annotation_session.reload_on_discard`;
-  - `created_by_annotation` before first save still discards by removing the
-    unsaved layer;
-  - after first save, the rebuilt session should have an origin that reloads
-    saved `sdata` on discard;
-- use edit-existing `overwrite=True` for existing targets and for repeated saves
-  after create-new first save;
-- emit `ShapesElementWrittenEvent` after both create-new and edit-existing
-  saves;
-- show a table-linked warning when opening or saving table-linked shapes;
-- keep save feedback concise and use shortened identifiers/tooltips for long
-  names.
+- import and use the Slice 2 core edit-save API:
+
+  ```python
+  from napari_harpy.core.shapes_annotation import (
+      EditShapesElementRequest,
+      edit_shapes_element_from_napari_shapes_layer,
+  )
+  ```
+
+- route `_on_save_shapes_clicked(...)` by the active
+  `_ShapesAnnotationSession.mode`:
+  - `create_new`: call `create_shapes_element_from_napari_shapes_layer(...)`;
+  - `edit_existing`: call `edit_shapes_element_from_napari_shapes_layer(...)`;
+- do not infer save mode from the `Shapes` combo selection. The combo is UI
+  target state; `_annotation_session` is the locked save contract for the
+  active layer;
+- keep create-new first save at `overwrite=False` through
+  `CreateShapesElementRequest`;
+- use edit-existing `overwrite=True` through `EditShapesElementRequest` for:
+  - existing targets opened from `sdata.shapes[...]`;
+  - repeated saves after a create-new first save has succeeded.
+
+Save-button state:
+
+- `_refresh_save_shapes_state(...)` should enable `Save shapes` for both
+  create-new and edit-existing sessions when:
+  - a widget-owned annotation layer exists;
+  - `sdata`, locked shapes name, and locked coordinate system exist;
+  - the layer binding still matches the widget-owned primary shapes binding;
+  - edit-existing sessions have a non-`None` `source_geodataframe`;
+- remove the temporary "Saving existing shapes will be enabled in the next
+  implementation slice." status line;
+- for edit-existing sessions, show an informational status such as
+  `Edit shapes layer "<name>" in coordinate system "<coordinate_system>".`;
+- for table-linked edit sessions, append a warning line, but do not disable
+  save. The Annotation widget writes geometry only; table reconciliation remains
+  outside this slice.
+
+Edit-existing save request:
+
+```python
+request = EditShapesElementRequest(
+    sdata=sdata,
+    shapes_name=session.shapes_name,
+    coordinate_system=session.coordinate_system,
+    source_geodataframe=session.source_geodataframe,
+    source_shapes_index_feature_name=session.source_shapes_index_feature_name,
+)
+```
+
+- pass the locked session coordinate system, not the current app-state
+  coordinate system;
+- pass the session source GeoDataFrame snapshot so non-geometry columns and
+  source index metadata can be aligned during conversion;
+- pass the locked source shapes index feature column, because napari stores row
+  identity in `layer.features` while SpatialData stores it in the GeoDataFrame
+  index.
+
+After every successful save:
+
+- set `_annotation_has_been_saved = True`;
+- refresh `_annotation_clean_snapshot` from the current napari layer so clean
+  target or coordinate-system switches do not warn immediately after save;
+- refresh the `Shapes` dropdown with
+  `_ShapesAnnotationTarget.edit_existing(result.shapes_name)` selected;
+- emit `ShapesElementWrittenEvent` so the Viewer widget refreshes its shapes
+  section;
+- show concise success feedback with shortened identifiers and full tooltips for
+  long shapes names or coordinate-system names.
+
+After successful edit-existing save:
+
+- read the saved shapes element back from `sdata.shapes[result.shapes_name]`;
+- validate it with `validate_existing_shapes_source_geodataframe(...)`;
+- replace `_annotation_session.source_geodataframe` with a defensive deep copy
+  of that saved GeoDataFrame;
+- keep `_annotation_session.source_shapes_index_feature_name` unchanged;
+- keep `_annotation_session.mode == "edit_existing"`;
+- keep `_annotation_session.layer_origin` unchanged.
+
+After successful create-new first save:
+
+- read the newly saved shapes element from `sdata.shapes[result.shapes_name]`;
+- validate it with `validate_existing_shapes_source_geodataframe(...)`;
+- rebuild `_annotation_session` as an edit-existing session:
+
+  ```python
+  _ShapesAnnotationSession(
+      mode="edit_existing",
+      layer_origin="loaded_by_annotation",
+      shapes_name=result.shapes_name,
+      coordinate_system=result.coordinate_system,
+      source_shapes_index_feature_name=DEFAULT_SHAPES_INDEX_NAME,
+      source_geodataframe=saved_geodataframe.copy(deep=True),
+      table_linked=bool(get_annotating_table_names(sdata, result.shapes_name)),
+  )
+  ```
+
+- use `layer_origin="loaded_by_annotation"` for the rebuilt session so dirty
+  discard after first save reloads from saved `sdata` instead of treating the
+  layer as an unsaved scratch layer;
+- select the newly saved element in the `Shapes` dropdown and hide
+  `New shapes name`;
+- keep the existing napari layer active and editable.
+
+Cleanup:
+
+- remove `_annotation_reload_on_discard` and derive discard/reload behavior from
+  `_annotation_session.reload_on_discard`;
+- `created_by_annotation` before first save still discards by removing the
+  unsaved layer;
+- after first save, the rebuilt edit-existing session reloads saved `sdata` on
+  dirty discard.
 
 Done when:
 
 - saving an edited existing layer updates `sdata.shapes[shapes_name]`;
 - after create-new first save, the active layer remains editable and
   `_annotation_session.mode == "edit_existing"` for subsequent saves;
+- repeated saves after create-new first save use the edit-existing save helper;
+- repeated edit-existing saves use the latest saved GeoDataFrame as the source
+  metadata snapshot;
 - new rows, deleted rows, edited geometries, and preserved metadata are visible
   after reload;
 - Viewer shapes cards refresh through the existing event path;
-- table-linked saves warn but do not block.
+- table-linked saves warn but do not block;
+- dirty discard after create-new first save reloads the saved shapes element
+  instead of removing the layer as an unsaved scratch layer.
+
+Suggested tests:
+
+- edit-existing save is enabled once an existing editable shapes layer is
+  opened;
+- edit-existing save updates geometry in `sdata.shapes[...]` and emits one
+  `ShapesElementWrittenEvent`;
+- edit-existing save preserves non-geometry columns and source index values;
+- adding a new row to an edit-existing layer assigns a generated
+  `__annotation_N` index value and keeps existing row IDs stable;
+- deleting a row from an edit-existing layer removes it from the saved
+  GeoDataFrame;
+- after create-new first save:
+  - the `Shapes` selector selects the newly saved element;
+  - `New shapes name` is hidden;
+  - `_annotation_session.mode == "edit_existing"`;
+  - a second save uses the edit-existing request path;
+- table-linked edit save shows a warning line but remains enabled;
+- switching target or coordinate system immediately after save does not show a
+  discard warning.
 
 ### Slice 7: Discard, Target Switching, And Reload
 
