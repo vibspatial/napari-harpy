@@ -1234,7 +1234,7 @@ Done when:
 
 ### Slice 5b: Annotation Layer Snapshot/Fingerprint Helpers
 
-Status: pending
+Status: implemented
 
 Goal: implement and test the low-level clean-state snapshot machinery without
 changing Annotation widget discard behavior yet.
@@ -1250,31 +1250,31 @@ Suggested widget state:
 @dataclass(frozen=True)
 class _ShapesAnnotationLayerSnapshot:
     row_count: int
-    geometry_digest: str
+    geometry_hash: str
     features: pd.DataFrame
 ```
 
 The snapshot should be a compact fingerprint of save-relevant state, not a full
 copy of all geometry and feature data. This avoids keeping a second large copy
 of dense annotations in memory while still allowing a robust equality check.
-Geometry is the potentially large part, so store it as a digest. The current
+Geometry is the potentially large part, so store it as a hash. The current
 viewer adapter keeps `layer.features` small, typically just the source row
 identity column, so store a normalized copy of `layer.features` directly for
 clarity.
 
-- compute stable digests from layer values rather than keeping references to
+- compute a stable hash from layer values rather than keeping references to
   mutable napari geometry objects;
 - include `row_count` so row insertions/deletions are cheap to detect and easy
   to reason about;
-- compute `geometry_digest` from every row's ordered napari shape type plus
-  vertex array metadata and values. Do not store a separate shape-type digest;
+- compute `geometry_hash` from every row's ordered napari shape type plus
+  vertex array metadata and values. Do not store a separate shape-type hash;
   shape type is part of the geometry fingerprint;
 - copy `layer.features`, reindex to `range(row_count)`, and reset its index so
   feature comparison is based on napari row order rather than DataFrame index
   identity;
 - tolerate empty layers.
 
-Geometry digest rules:
+Geometry hash rules:
 
 - for each geometry row, hash an explicit row separator, the shape type, the
   vertex array shape, normalized dtype, and raw contiguous bytes;
@@ -1306,7 +1306,7 @@ current = _capture_annotation_layer_snapshot(layer)
 clean = self._annotation_clean_snapshot
 has_unsaved_changes = (
     current.row_count != clean.row_count
-    or current.geometry_digest != clean.geometry_digest
+    or current.geometry_hash != clean.geometry_hash
     or not current.features.equals(clean.features)
 )
 ```
@@ -1332,6 +1332,8 @@ src/napari_harpy/widgets/shapes_annotation/_snapshot.py
 Keep them out of `core/shapes_annotation.py`: the snapshot is about napari
 layer UI/session state, not SpatialData conversion or persistence. Also avoid
 growing `widget.py` with byte-level hashing details.
+Use private names inside this private helper module as well, matching the
+current Annotation widget style for internal dataclasses and helper functions.
 
 ```python
 def _capture_annotation_layer_snapshot(layer: Shapes) -> _ShapesAnnotationLayerSnapshot:
@@ -1350,7 +1352,7 @@ def _annotation_layer_snapshots_equal(
 ```python
 return (
     left.row_count == right.row_count
-    and left.geometry_digest == right.geometry_digest
+    and left.geometry_hash == right.geometry_hash
     and left.features.equals(right.features)
 )
 ```
@@ -1359,9 +1361,9 @@ Done when:
 
 - the snapshot helper handles empty layers;
 - capturing the same unchanged layer twice produces equal snapshots;
-- moving a vertex changes `geometry_digest`;
-- changing a row's napari shape type changes `geometry_digest`;
-- adding or deleting a row changes `row_count` and/or `geometry_digest`;
+- moving a vertex changes `geometry_hash`;
+- changing a row's napari shape type changes `geometry_hash`;
+- adding or deleting a row changes `row_count` and/or `geometry_hash`;
 - changing the source row identity feature value changes the stored
   `features`;
 - changing feature column order, names, dtypes, values, or missing values is
