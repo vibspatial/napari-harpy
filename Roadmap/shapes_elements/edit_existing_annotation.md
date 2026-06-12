@@ -1443,6 +1443,28 @@ Implementation notes:
   - coordinate-system switch: mention changing coordinate system;
   - `Shapes` target switch: mention switching annotation target.
 
+Concrete discard-dialog API:
+
+```python
+def _confirm_discard_annotation_layer(
+    self,
+    *,
+    context: Literal["coordinate_system", "target"],
+) -> bool:
+    if context == "coordinate_system":
+        lines = ["Changing coordinate system will discard the current unsaved shape annotations."]
+    else:
+        lines = ["Switching shapes target will discard the current unsaved shape annotations."]
+    ...
+```
+
+Call sites:
+
+- `_on_coordinate_system_changed(...)` should call
+  `_confirm_discard_annotation_layer(context="coordinate_system")`;
+- `_on_shapes_target_changed(...)` should call
+  `_confirm_discard_annotation_layer(context="target")`.
+
 Clean close behavior:
 
 - clean close is different from dirty discard;
