@@ -1548,7 +1548,7 @@ Done when:
 
 ### Slice 6: Edit Save Integration And Feedback
 
-Status: pending
+Status: implemented
 
 Goal: wire create-new and edit-existing save paths into one Annotation widget
 without blurring their overwrite rules.
@@ -1710,7 +1710,66 @@ Suggested tests:
 - switching target or coordinate system immediately after save does not show a
   discard warning.
 
-### Slice 7: Discard, Target Switching, And Reload
+### Slice 7: Annotation Session Target Properties Cleanup
+
+Status: pending
+
+Goal: make `_ShapesAnnotationSession` the single source of truth for the locked
+annotation target name and coordinate system.
+
+Likely files:
+
+- `src/napari_harpy/widgets/shapes_annotation/widget.py`;
+- `tests/test_shapes_annotation_widget.py`.
+
+Work:
+
+- remove the standalone mutable fields:
+
+  ```python
+  self._annotation_shapes_name: str | None
+  self._annotation_coordinate_system: str | None
+  ```
+
+- replace them with read-only widget properties derived from the active
+  session:
+
+  ```python
+  @property
+  def _annotation_shapes_name(self) -> str | None:
+      return None if self._annotation_session is None else self._annotation_session.shapes_name
+
+  @property
+  def _annotation_coordinate_system(self) -> str | None:
+      return None if self._annotation_session is None else self._annotation_session.coordinate_system
+  ```
+
+- update code that currently assigns `_annotation_shapes_name` and
+  `_annotation_coordinate_system` to assign or rebuild `_annotation_session`
+  instead;
+- keep existing call sites that only read `_annotation_shapes_name` or
+  `_annotation_coordinate_system` working through the properties;
+- update tests so they still assert the exposed locked target, but no longer
+  depend on separate mutable fields.
+
+Rationale:
+
+- after Slice 6, `_annotation_session` is the locked save contract;
+- keeping separate mutable target fields risks drift between
+  `_annotation_session.shapes_name` and `_annotation_shapes_name`, or between
+  `_annotation_session.coordinate_system` and `_annotation_coordinate_system`;
+- read-only properties preserve the current code readability while removing the
+  duplicate state.
+
+Done when:
+
+- `_annotation_shapes_name` and `_annotation_coordinate_system` are derived
+  properties;
+- no code assigns to those names directly;
+- save, discard, reload, binding validation, and manual layer-removal tests
+  still pass.
+
+### Slice 8: Discard, Target Switching, And Reload
 
 Status: pending
 
@@ -1743,7 +1802,7 @@ Done when:
   layer from saved `sdata`;
 - manual deletion of the active annotation layer clears widget state.
 
-### Slice 8: Viewer Integration Audit
+### Slice 9: Viewer Integration Audit
 
 Status: pending
 
@@ -1775,7 +1834,7 @@ Done when:
   session ownership;
 - any styled-layer stale-state behavior is either tested or explicitly deferred.
 
-### Slice 9: Backed Persistence And Regression Coverage
+### Slice 10: Backed Persistence And Regression Coverage
 
 Status: pending
 

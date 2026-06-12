@@ -208,7 +208,7 @@ def test_shapes_annotation_widget_shapes_selector_auto_opens_existing_target(
     assert widget.name_edit.isEnabled() is False
     assert widget.create_layer_button.text() == "Create layer"
     assert widget.create_layer_button.isEnabled() is False
-    assert widget.save_shapes_button.isEnabled() is False
+    assert widget.save_shapes_button.isEnabled() is True
     assert "Existing Shapes Opened" in _status_text(widget)
 
 
@@ -336,6 +336,7 @@ def test_shapes_annotation_widget_status_cards_shorten_long_identifiers(
 
     def fake_create_shapes_element(request, napari_layer):
         del napari_layer
+        request.sdata.shapes[request.shapes_name] = request.sdata.shapes["blobs_polygons"].copy()
         return AnnotateShapesElementResult(
             shapes_name=request.shapes_name,
             coordinate_system=request.coordinate_system,
@@ -398,7 +399,8 @@ def test_shapes_annotation_widget_create_layer_adds_registered_active_empty_shap
     assert widget._annotation_shapes_name == "new_regions"
     assert widget._annotation_coordinate_system == "global"
     assert widget._annotation_has_been_saved is False
-    assert widget._annotation_reload_on_discard is False
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.reload_on_discard is False
     assert widget.name_edit.isEnabled() is False
     assert widget.create_layer_button.isEnabled() is False
     assert widget.save_shapes_button.isEnabled() is True
@@ -465,7 +467,7 @@ def test_shapes_annotation_widget_clean_coordinate_change_closes_empty_create_la
     assert widget._annotation_shapes_name is None
     assert widget._annotation_coordinate_system is None
     assert widget._annotation_has_been_saved is False
-    assert widget._annotation_reload_on_discard is False
+    assert widget._annotation_session is None
     assert widget.name_edit.isEnabled() is True
     assert widget.create_layer_button.isEnabled() is True
     assert widget.save_shapes_button.isEnabled() is False
@@ -538,7 +540,7 @@ def test_shapes_annotation_widget_clean_target_change_closes_empty_create_layer_
     assert widget.name_edit.isHidden() is True
     assert widget.create_layer_button.text() == "Create layer"
     assert widget.create_layer_button.isEnabled() is False
-    assert widget.save_shapes_button.isEnabled() is False
+    assert widget.save_shapes_button.isEnabled() is True
     assert "Existing Shapes Opened" in _status_text(widget)
 
 
@@ -629,10 +631,10 @@ def test_shapes_annotation_widget_open_existing_target_loads_edit_session_layer(
     assert widget._annotation_session.source_geodataframe.index.equals(sdata_blobs.shapes["blobs_polygons"].index)
     assert widget._annotation_session.source_geodataframe_index_name == sdata_blobs.shapes["blobs_polygons"].index.name
     assert widget._annotation_session.table_linked is False
-    assert widget._annotation_reload_on_discard is True
+    assert widget._annotation_session.reload_on_discard is True
     assert viewer.layers.selection.active is layer
     assert widget.create_layer_button.isEnabled() is False
-    assert widget.save_shapes_button.isEnabled() is False
+    assert widget.save_shapes_button.isEnabled() is True
     assert "Existing Shapes Opened" in _status_text(widget)
 
 
@@ -672,6 +674,49 @@ def test_shapes_annotation_widget_open_existing_target_rejects_multipolygon_sour
     assert widget.create_layer_button.isEnabled() is False
     assert "Could Not Open Shapes" in _status_text(widget)
     assert "Polygon geometries only" in _status_text(widget)
+
+
+def test_shapes_annotation_widget_edit_existing_save_updates_shapes_element_and_session_snapshot(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+    shapes_name = "blobs_polygons"
+    original_index = sdata_blobs.shapes[shapes_name].index.to_list()
+    emitted_events: list[object] = []
+    widget.app_state.shapes_element_written.connect(emitted_events.append)
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, shapes_name))
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    assert widget.save_shapes_button.isEnabled() is True
+
+    _add_polygon(layer, offset=100)
+    layer.features.loc[len(layer.features) - 1, "index"] = None
+    widget.save_shapes_button.click()
+
+    saved_geodataframe = sdata_blobs.shapes[shapes_name]
+    assert saved_geodataframe.index.to_list() == [*original_index, "__annotation_0"]
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.mode == "edit_existing"
+    assert widget._annotation_session.source_geodataframe is not saved_geodataframe
+    assert widget._annotation_session.source_geodataframe is not None
+    assert widget._annotation_session.source_geodataframe.index.equals(saved_geodataframe.index)
+    assert widget._annotation_session.source_shapes_index_feature_name == "index"
+    assert widget._annotation_session.reload_on_discard is True
+    assert emitted_events == [
+        ShapesElementWrittenEvent(
+            sdata=sdata_blobs,
+            shapes_name=shapes_name,
+            coordinate_system="global",
+            source="shapes_annotation_widget",
+        )
+    ]
+    assert "Shapes Saved" in _status_text(widget)
 
 
 def test_shapes_annotation_widget_clears_annotation_state_when_sdata_is_cleared(
@@ -816,7 +861,8 @@ def test_shapes_annotation_widget_discard_saved_annotation_layer_reloads_clean_p
     dirty_layer = viewer.layers[0]
     _add_polygon(dirty_layer)
     widget.save_shapes_button.click()
-    assert widget._annotation_reload_on_discard is True
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.reload_on_discard is True
 
     _add_polygon(dirty_layer, offset=10)
     assert len(dirty_layer.data) == 2
@@ -840,7 +886,7 @@ def test_shapes_annotation_widget_discard_saved_annotation_layer_reloads_clean_p
     assert widget._annotation_shapes_name is None
     assert widget._annotation_coordinate_system is None
     assert widget._annotation_has_been_saved is False
-    assert widget._annotation_reload_on_discard is False
+    assert widget._annotation_session is None
     assert widget.name_edit.isHidden() is True
     assert widget.name_edit.isEnabled() is False
 
@@ -862,6 +908,7 @@ def test_shapes_annotation_widget_save_calls_core_with_locked_request_and_report
     def fake_create_shapes_element(request, napari_layer):
         captured_requests.append(request)
         captured_layers.append(napari_layer)
+        request.sdata.shapes[request.shapes_name] = request.sdata.shapes["blobs_polygons"].copy()
         return AnnotateShapesElementResult(
             shapes_name=request.shapes_name,
             coordinate_system=request.coordinate_system,
@@ -887,7 +934,9 @@ def test_shapes_annotation_widget_save_calls_core_with_locked_request_and_report
     assert request.index_name == "instance_id"
     assert request.index_prefix == "__annotation"
     assert widget._annotation_has_been_saved is True
-    assert widget._annotation_reload_on_discard is True
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.mode == "edit_existing"
+    assert widget._annotation_session.reload_on_discard is True
     assert widget.save_shapes_button.isEnabled() is True
     assert emitted_events == [
         ShapesElementWrittenEvent(
@@ -902,7 +951,7 @@ def test_shapes_annotation_widget_save_calls_core_with_locked_request_and_report
     assert 'Saved "new_regions" with 3 shape(s) in coordinate system "global".' in status
 
 
-def test_shapes_annotation_widget_repeated_save_uses_overwrite_after_success(
+def test_shapes_annotation_widget_repeated_save_uses_edit_helper_after_create_success(
     qtbot,
     monkeypatch,
     sdata_blobs: SpatialData,
@@ -910,31 +959,46 @@ def test_shapes_annotation_widget_repeated_save_uses_overwrite_after_success(
     viewer = DummyViewer()
     widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
     widget.create_layer_button.click()
-    overwrites: list[bool] = []
+    _add_polygon(viewer.layers[0])
+    original_create_shapes_element = shapes_annotation_widget_module.create_shapes_element_from_napari_shapes_layer
+    original_edit_shapes_element = shapes_annotation_widget_module.edit_shapes_element_from_napari_shapes_layer
+    create_overwrites: list[bool] = []
+    edit_requests = []
     emitted_events: list[object] = []
     widget.app_state.shapes_element_written.connect(emitted_events.append)
 
     def fake_create_shapes_element(request, napari_layer):
-        del napari_layer
-        overwrites.append(request.overwrite)
-        return AnnotateShapesElementResult(
-            shapes_name=request.shapes_name,
-            coordinate_system=request.coordinate_system,
-            row_count=1,
-        )
+        create_overwrites.append(request.overwrite)
+        return original_create_shapes_element(request, napari_layer)
+
+    def fake_edit_shapes_element(request, napari_layer):
+        edit_requests.append(request)
+        return original_edit_shapes_element(request, napari_layer)
 
     monkeypatch.setattr(
         shapes_annotation_widget_module,
         "create_shapes_element_from_napari_shapes_layer",
         fake_create_shapes_element,
     )
+    monkeypatch.setattr(
+        shapes_annotation_widget_module,
+        "edit_shapes_element_from_napari_shapes_layer",
+        fake_edit_shapes_element,
+    )
 
     widget.save_shapes_button.click()
     widget.save_shapes_button.click()
 
-    assert overwrites == [False, True]
+    assert create_overwrites == [False]
+    assert len(edit_requests) == 1
+    assert edit_requests[0].sdata is sdata_blobs
+    assert edit_requests[0].shapes_name == "new_regions"
+    assert edit_requests[0].coordinate_system == "global"
+    assert edit_requests[0].source_shapes_index_feature_name == "instance_id"
     assert widget._annotation_has_been_saved is True
-    assert widget._annotation_reload_on_discard is True
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.mode == "edit_existing"
+    assert widget._annotation_session.reload_on_discard is True
     assert emitted_events == [
         ShapesElementWrittenEvent(
             sdata=sdata_blobs,
@@ -966,6 +1030,7 @@ def test_shapes_annotation_widget_failed_first_save_keeps_later_overwrite_false(
         overwrites.append(request.overwrite)
         if len(overwrites) == 1:
             raise ValueError("same-name element appeared externally")
+        request.sdata.shapes[request.shapes_name] = request.sdata.shapes["blobs_polygons"].copy()
         return AnnotateShapesElementResult(
             shapes_name=request.shapes_name,
             coordinate_system=request.coordinate_system,
@@ -1026,7 +1091,12 @@ def test_shapes_annotation_widget_save_writes_real_shapes_element(
     assert list(viewer.layers) == [layer]
     assert widget._annotation_layer is layer
     assert widget._annotation_has_been_saved is True
-    assert widget._annotation_reload_on_discard is True
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.mode == "edit_existing"
+    assert widget._annotation_session.reload_on_discard is True
+    assert widget._annotation_session.source_geodataframe is not sdata_blobs.shapes["new_regions"]
+    assert widget._annotation_session.source_geodataframe is not None
+    assert widget._annotation_session.source_geodataframe.index.tolist() == ["__annotation_0"]
     assert widget._selected_shapes_target == shapes_annotation_widget_module._ShapesAnnotationTarget.edit_existing(
         "new_regions"
     )
