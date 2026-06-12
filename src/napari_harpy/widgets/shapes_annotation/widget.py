@@ -201,8 +201,6 @@ class ShapesAnnotation(QWidget):
         self._validated_shapes_name: str | None = None
         self._annotation_session: _ShapesAnnotationSession | None = None
         self._annotation_layer: Shapes | None = None
-        self._annotation_shapes_name: str | None = None
-        self._annotation_coordinate_system: str | None = None
         self._annotation_has_been_saved = False
         self._annotation_clean_snapshot: _ShapesAnnotationLayerSnapshot | None = None
         # Suppress `_on_viewer_layer_removed(...)` while this widget removes
@@ -308,6 +306,16 @@ class ShapesAnnotation(QWidget):
     def app_state(self) -> HarpyAppState:
         """Return the shared per-viewer Harpy app state."""
         return self._app_state
+
+    @property
+    def _annotation_shapes_name(self) -> str | None:
+        session = self._annotation_session
+        return None if session is None else session.shapes_name
+
+    @property
+    def _annotation_coordinate_system(self) -> str | None:
+        session = self._annotation_session
+        return None if session is None else session.coordinate_system
 
     @property
     def selected_spatialdata(self) -> SpatialData | None:
@@ -441,8 +449,6 @@ class ShapesAnnotation(QWidget):
             return
 
         self._annotation_layer = layer
-        self._annotation_shapes_name = shapes_name
-        self._annotation_coordinate_system = coordinate_system
         self._annotation_session = _ShapesAnnotationSession(
             mode="create_new",
             layer_origin="created_by_annotation",
@@ -495,8 +501,6 @@ class ShapesAnnotation(QWidget):
 
         table_linked = bool(get_annotating_table_names(sdata, shapes_name))
         self._annotation_layer = layer
-        self._annotation_shapes_name = shapes_name
-        self._annotation_coordinate_system = coordinate_system
         self._annotation_session = _ShapesAnnotationSession(
             mode="edit_existing",
             layer_origin="loaded_by_annotation" if load_result.created else "adopted_primary",
@@ -646,8 +650,6 @@ class ShapesAnnotation(QWidget):
             layer_origin = "loaded_by_annotation"
             source_shapes_index_feature_name = DEFAULT_SHAPES_INDEX_NAME
 
-        self._annotation_shapes_name = result.shapes_name
-        self._annotation_coordinate_system = result.coordinate_system
         self._annotation_session = _ShapesAnnotationSession(
             mode="edit_existing",
             layer_origin=layer_origin,
@@ -1121,8 +1123,6 @@ class ShapesAnnotation(QWidget):
     def _clear_annotation_state(self) -> None:
         self._annotation_session = None
         self._annotation_layer = None
-        self._annotation_shapes_name = None
-        self._annotation_coordinate_system = None
         self._annotation_has_been_saved = False
         self._annotation_clean_snapshot = None
         self._set_create_name_controls_visible(

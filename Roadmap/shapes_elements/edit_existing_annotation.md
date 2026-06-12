@@ -1712,7 +1712,7 @@ Suggested tests:
 
 ### Slice 7: Annotation Session Target Properties Cleanup
 
-Status: pending
+Status: implemented
 
 Goal: make `_ShapesAnnotationSession` the single source of truth for the locked
 annotation target name and coordinate system.
