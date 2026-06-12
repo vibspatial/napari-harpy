@@ -811,6 +811,28 @@ class ViewerAdapter(QObject):
         self._handle_registered_binding(binding)
         return binding
 
+    def sync_primary_shapes_layer_binding(
+        self,
+        layer: Shapes,
+        *,
+        sdata: SpatialData,
+        shapes_name: str,
+        coordinate_system: str,
+        source_row_id_by_rendered_row: SourceRowIdByRenderedRow,
+        source_shapes_index_feature_name: str,
+    ) -> ShapesLayerBinding:
+        """Refresh a loaded primary shapes layer binding without emitting a registration event."""
+        return self._layer_bindings.register_shapes_layer(
+            layer,
+            element_name=shapes_name,
+            coordinate_system=coordinate_system,
+            sdata=sdata,
+            shapes_role="primary",
+            shapes_rendering_mode="shapes",
+            source_row_id_by_rendered_row=source_row_id_by_rendered_row,
+            source_shapes_index_feature_name=source_shapes_index_feature_name,
+        )
+
     def _handle_registered_binding(self, binding: LayerBinding) -> None:
         if _is_primary_labels_binding(binding) and self._is_layer_loaded_in_viewer(binding.layer):
             self.primary_labels_layers_changed.emit()

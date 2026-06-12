@@ -702,12 +702,11 @@ class ShapesAnnotation(QWidget):
         # SpatialData element. The same live layer can now represent a
         # different row count and source-index feature name than when it was
         # first registered.
-        self._app_state.viewer_adapter.register_shapes_layer(
+        self._app_state.viewer_adapter.sync_primary_shapes_layer_binding(
             layer,
             sdata=sdata,
             shapes_name=result.shapes_name,
             coordinate_system=result.coordinate_system,
-            shapes_rendering_mode="shapes",
             source_row_id_by_rendered_row=range(len(saved_geodataframe)),
             source_shapes_index_feature_name=source_shapes_index_feature_name,
         )

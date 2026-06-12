@@ -1184,6 +1184,27 @@ def test_shapes_annotation_widget_save_writes_real_shapes_element(
     assert "Shapes Saved" in _status_text(widget)
 
 
+def test_shapes_annotation_widget_save_syncs_binding_without_primary_registration_event(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
+    emitted_bindings: list[object] = []
+    widget.app_state.viewer_adapter.primary_shapes_layer_registered.connect(emitted_bindings.append)
+    widget.create_layer_button.click()
+    layer = viewer.layers[0]
+    emitted_bindings.clear()
+    _add_polygon(layer)
+
+    widget.save_shapes_button.click()
+
+    assert emitted_bindings == []
+    binding = widget.app_state.viewer_adapter.layer_bindings.get_binding(layer)
+    assert isinstance(binding, ShapesLayerBinding)
+    assert list(binding.source_row_id_by_rendered_row) == [0]
+
+
 def test_shapes_annotation_widget_saved_create_new_layer_can_be_reopened_after_target_switch(
     qtbot,
     sdata_blobs: SpatialData,
