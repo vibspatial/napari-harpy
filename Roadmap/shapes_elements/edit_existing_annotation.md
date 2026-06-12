@@ -1374,7 +1374,7 @@ Done when:
 
 ### Slice 5c: Clean Snapshot For Discard Warnings
 
-Status: pending
+Status: implemented
 
 Goal: avoid showing the discard warning when the active annotation layer has no
 save-relevant changes, using the Slice 5b snapshot helpers.

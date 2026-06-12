@@ -50,6 +50,11 @@ from napari_harpy.core.spatialdata import (
 )
 from napari_harpy.core.validation import normalize_spatialdata_name
 from napari_harpy.viewer.adapter import ShapesLayerBinding
+from napari_harpy.widgets.shapes_annotation._snapshot import (
+    _annotation_layer_snapshots_equal,
+    _capture_annotation_layer_snapshot,
+    _ShapesAnnotationLayerSnapshot,
+)
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     SECONDARY_BUTTON_STYLESHEET,
@@ -197,7 +202,10 @@ class ShapesAnnotation(QWidget):
         self._annotation_coordinate_system: str | None = None
         self._annotation_has_been_saved = False
         self._annotation_reload_on_discard = False
-        self._is_handling_annotation_discard = False
+        self._annotation_clean_snapshot: _ShapesAnnotationLayerSnapshot | None = None
+        # Suppress `_on_viewer_layer_removed(...)` while this widget removes
+        # an annotation layer itself during discard or clean session teardown.
+        self._is_handling_annotation_layer_removal = False
         self._logo_path = get_logo_path()
 
         root_layout = QVBoxLayout(self)
@@ -358,14 +366,18 @@ class ShapesAnnotation(QWidget):
         if self._annotation_layer is not None:
             if next_coordinate_system == self._app_state.coordinate_system:
                 return
-            # `False` means the user cancelled the discard warning, so restore
-            # the previous coordinate-system selection and keep the layer.
-            if not self._confirm_discard_annotation_layer():
-                self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
-                self._set_selected_coordinate_system(self.coordinate_system_combo.currentIndex())
-                self._refresh_create_layer_state()
-                return
-            self._discard_annotation_layer()
+            if self._annotation_layer_has_unsaved_changes():
+                # `False` means the user cancelled the discard warning, so
+                # restore the previous coordinate-system selection and keep the
+                # layer.
+                if not self._confirm_discard_annotation_layer(context="coordinate_system"):
+                    self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
+                    self._set_selected_coordinate_system(self.coordinate_system_combo.currentIndex())
+                    self._refresh_create_layer_state()
+                    return
+                self._discard_annotation_layer()
+            else:
+                self._close_clean_annotation_session()
             self._app_state.set_coordinate_system(next_coordinate_system, source=_SOURCE)
             return
 
@@ -378,11 +390,14 @@ class ShapesAnnotation(QWidget):
         if self._annotation_layer is not None:
             if next_target == self._selected_shapes_target:
                 return
-            if not self._confirm_discard_annotation_layer():
-                self._sync_shapes_target_combo_selection(self._selected_shapes_target)
-                self._refresh_create_layer_state()
-                return
-            self._discard_annotation_layer()
+            if self._annotation_layer_has_unsaved_changes():
+                if not self._confirm_discard_annotation_layer(context="target"):
+                    self._sync_shapes_target_combo_selection(self._selected_shapes_target)
+                    self._refresh_create_layer_state()
+                    return
+                self._discard_annotation_layer()
+            else:
+                self._close_clean_annotation_session()
 
         self._set_selected_shapes_target_from_combo(index)
         self._refresh_create_layer_state()
@@ -435,6 +450,7 @@ class ShapesAnnotation(QWidget):
         )
         self._annotation_has_been_saved = False
         self._annotation_reload_on_discard = False
+        self._annotation_clean_snapshot = _capture_annotation_layer_snapshot(layer)
         self._set_create_name_controls_visible(True)
         self._app_state.viewer_adapter.activate_layer(layer)
         self._refresh_create_layer_state()
@@ -491,6 +507,7 @@ class ShapesAnnotation(QWidget):
         )
         self._annotation_has_been_saved = True
         self._annotation_reload_on_discard = self._annotation_session.reload_on_discard
+        self._annotation_clean_snapshot = _capture_annotation_layer_snapshot(layer)
         self._app_state.viewer_adapter.activate_layer(layer)
         self._refresh_create_layer_state()
 
@@ -574,6 +591,7 @@ class ShapesAnnotation(QWidget):
 
         self._annotation_has_been_saved = True
         self._annotation_reload_on_discard = True
+        self._annotation_clean_snapshot = _capture_annotation_layer_snapshot(layer)
         # After create-new first save, and after later overwrite/edit saves,
         # keep the target selector pinned to the saved shapes element.
         self._refresh_shapes_targets(preferred_target=_ShapesAnnotationTarget.edit_existing(result.shapes_name))
@@ -603,10 +621,11 @@ class ShapesAnnotation(QWidget):
         )
 
     def _on_viewer_layer_removed(self, event: object) -> None:
-        # `_on_coordinate_system_changed(...)` removes the annotation layer
-        # programmatically through `_discard_annotation_layer(...)` and owns that
-        # cleanup path, so ignore the removal event it emits.
-        if self._is_handling_annotation_discard:
+        # Coordinate-system and shapes-target changes can remove the annotation
+        # layer programmatically through `_discard_annotation_layer(...)` or
+        # `_close_clean_annotation_session(...)`; those paths own cleanup, so
+        # ignore the layer-removal event they emit.
+        if self._is_handling_annotation_layer_removal:
             return
 
         layer = getattr(event, "value", None)
@@ -942,7 +961,14 @@ class ShapesAnnotation(QWidget):
         tooltip_message = "\n".join(tooltip_lines) if tooltip_lines else None
         set_status_card(self.status_label, title=title, lines=lines, kind=kind, tooltip_message=tooltip_message)
 
-    def _confirm_discard_annotation_layer(self) -> bool:
+    def _confirm_discard_annotation_layer(self, *, context: Literal["coordinate_system", "target"]) -> bool:
+        if context == "coordinate_system":
+            message = "Changing coordinate system will discard the current unsaved shape annotations."
+        elif context == "target":
+            message = "Switching shapes target will discard the current unsaved shape annotations."
+        else:
+            raise ValueError(f"Unknown discard context: {context!r}.")
+
         dialog = QDialog(self)
         dialog.setWindowTitle("Discard Unsaved Shape Annotations")
         dialog.setModal(True)
@@ -957,7 +983,7 @@ class ShapesAnnotation(QWidget):
         set_status_card(
             warning_card,
             title="Discard Unsaved Annotations",
-            lines=["Changing coordinate system will delete the current unsaved shape annotations."],
+            lines=[message],
             kind="warning",
         )
         layout.addWidget(warning_card)
@@ -1001,7 +1027,7 @@ class ShapesAnnotation(QWidget):
             self._annotation_session.reload_on_discard if self._annotation_session is not None else False
         )
 
-        self._is_handling_annotation_discard = True
+        self._is_handling_annotation_layer_removal = True
         try:
             self._remove_annotation_layer()
             if reload_on_discard and sdata is not None and shapes_name is not None and coordinate_system is not None:
@@ -1011,7 +1037,31 @@ class ShapesAnnotation(QWidget):
                     self._set_status(title="Could Not Reload Shapes", lines=[str(error)], kind="warning")
             self._clear_annotation_state()
         finally:
-            self._is_handling_annotation_discard = False
+            self._is_handling_annotation_layer_removal = False
+
+    def _close_clean_annotation_session(self) -> None:
+        """Release a clean annotation session without dirty discard/reload work."""
+        should_remove_layer = self._annotation_layer is not None and not self._annotation_has_been_saved
+
+        self._is_handling_annotation_layer_removal = True
+        try:
+            if should_remove_layer:
+                self._remove_annotation_layer()
+            self._clear_annotation_state()
+        finally:
+            self._is_handling_annotation_layer_removal = False
+
+    def _annotation_layer_has_unsaved_changes(self) -> bool:
+        layer = self._annotation_layer
+        clean_snapshot = self._annotation_clean_snapshot
+        if layer is None or clean_snapshot is None:
+            return False
+
+        try:
+            current_snapshot = _capture_annotation_layer_snapshot(layer)
+        except ValueError:
+            return True
+        return not _annotation_layer_snapshots_equal(current_snapshot, clean_snapshot)
 
     def _clear_annotation_state(self) -> None:
         self._annotation_session = None
@@ -1020,6 +1070,7 @@ class ShapesAnnotation(QWidget):
         self._annotation_coordinate_system = None
         self._annotation_has_been_saved = False
         self._annotation_reload_on_discard = False
+        self._annotation_clean_snapshot = None
         self._set_create_name_controls_visible(
             self._selected_shapes_target is not None and self._selected_shapes_target.mode == "create_new"
         )

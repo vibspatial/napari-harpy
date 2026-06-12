@@ -415,10 +415,18 @@ def test_shapes_annotation_widget_cancelling_coordinate_change_preserves_annotat
     widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
     widget.create_layer_button.click()
     layer = viewer.layers[0]
-    monkeypatch.setattr(widget, "_confirm_discard_annotation_layer", lambda: False)
+    _add_polygon(layer)
+    discard_contexts: list[str] = []
+
+    def cancel_discard(*, context: str) -> bool:
+        discard_contexts.append(context)
+        return False
+
+    monkeypatch.setattr(widget, "_confirm_discard_annotation_layer", cancel_discard)
 
     widget.coordinate_system_combo.setCurrentIndex(1)
 
+    assert discard_contexts == ["coordinate_system"]
     assert widget.app_state.coordinate_system == "global"
     assert widget.coordinate_system_combo.currentText() == "global"
     assert widget.selected_coordinate_system == "global"
@@ -430,7 +438,7 @@ def test_shapes_annotation_widget_cancelling_coordinate_change_preserves_annotat
     assert widget.save_shapes_button.isEnabled() is True
 
 
-def test_shapes_annotation_widget_confirming_coordinate_change_discards_annotation_layer(
+def test_shapes_annotation_widget_clean_coordinate_change_closes_empty_create_layer_without_warning(
     qtbot,
     monkeypatch,
     sdata_blobs: SpatialData,
@@ -440,7 +448,11 @@ def test_shapes_annotation_widget_confirming_coordinate_change_discards_annotati
     widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
     widget.create_layer_button.click()
     layer = viewer.layers[0]
-    monkeypatch.setattr(widget, "_confirm_discard_annotation_layer", lambda: True)
+
+    def fail_if_confirmed(*, context: str) -> bool:
+        raise AssertionError(f"Clean coordinate-system switch should not warn: {context}")
+
+    monkeypatch.setattr(widget, "_confirm_discard_annotation_layer", fail_if_confirmed)
 
     widget.coordinate_system_combo.setCurrentIndex(1)
 
@@ -470,10 +482,18 @@ def test_shapes_annotation_widget_cancelling_target_change_preserves_annotation_
     widget.create_layer_button.click()
     layer = viewer.layers[0]
     existing_shapes_name = "blobs_polygons"
-    monkeypatch.setattr(widget, "_confirm_discard_annotation_layer", lambda: False)
+    _add_polygon(layer)
+    discard_contexts: list[str] = []
+
+    def cancel_discard(*, context: str) -> bool:
+        discard_contexts.append(context)
+        return False
+
+    monkeypatch.setattr(widget, "_confirm_discard_annotation_layer", cancel_discard)
 
     widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, existing_shapes_name))
 
+    assert discard_contexts == ["target"]
     assert widget.shapes_combo.currentText() == "Create shapes..."
     assert widget._selected_shapes_target == shapes_annotation_widget_module._ShapesAnnotationTarget.create_new()
     assert list(viewer.layers) == [layer]
@@ -485,7 +505,7 @@ def test_shapes_annotation_widget_cancelling_target_change_preserves_annotation_
     assert widget.save_shapes_button.isEnabled() is True
 
 
-def test_shapes_annotation_widget_confirming_target_change_discards_annotation_layer(
+def test_shapes_annotation_widget_clean_target_change_closes_empty_create_layer_without_warning(
     qtbot,
     monkeypatch,
     sdata_blobs: SpatialData,
@@ -495,7 +515,11 @@ def test_shapes_annotation_widget_confirming_target_change_discards_annotation_l
     widget.create_layer_button.click()
     layer = viewer.layers[0]
     existing_shapes_name = "blobs_polygons"
-    monkeypatch.setattr(widget, "_confirm_discard_annotation_layer", lambda: True)
+
+    def fail_if_confirmed(*, context: str) -> bool:
+        raise AssertionError(f"Clean target switch should not warn: {context}")
+
+    monkeypatch.setattr(widget, "_confirm_discard_annotation_layer", fail_if_confirmed)
 
     widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, existing_shapes_name))
 
@@ -516,6 +540,65 @@ def test_shapes_annotation_widget_confirming_target_change_discards_annotation_l
     assert widget.create_layer_button.isEnabled() is False
     assert widget.save_shapes_button.isEnabled() is False
     assert "Existing Shapes Opened" in _status_text(widget)
+
+
+def test_shapes_annotation_widget_clean_saved_target_change_keeps_saved_layer_without_warning(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
+    widget.create_layer_button.click()
+    saved_layer = viewer.layers[0]
+    _add_polygon(saved_layer)
+    widget.save_shapes_button.click()
+
+    def fail_if_confirmed(*, context: str) -> bool:
+        raise AssertionError(f"Clean saved target switch should not warn: {context}")
+
+    monkeypatch.setattr(widget, "_confirm_discard_annotation_layer", fail_if_confirmed)
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, "blobs_polygons"))
+
+    assert saved_layer in viewer.layers
+    assert widget.app_state.viewer_adapter.layer_bindings.get_binding(saved_layer) is not None
+    assert widget._annotation_shapes_name == "blobs_polygons"
+    assert widget._annotation_layer is not saved_layer
+    assert len(viewer.layers) == 2
+
+
+def test_shapes_annotation_widget_clean_existing_target_switch_preserves_layer_order(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    sdata_blobs.shapes["other_polygons"] = sdata_blobs.shapes["blobs_polygons"].copy()
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    def fail_if_confirmed(*, context: str) -> bool:
+        raise AssertionError(f"Clean existing target switch should not warn: {context}")
+
+    monkeypatch.setattr(widget, "_confirm_discard_annotation_layer", fail_if_confirmed)
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, "blobs_polygons"))
+    blobs_layer = widget._annotation_layer
+    assert blobs_layer is not None
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, "other_polygons"))
+    other_layer = widget._annotation_layer
+    assert other_layer is not None
+    assert other_layer is not blobs_layer
+    assert list(viewer.layers) == [blobs_layer, other_layer]
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, "blobs_polygons"))
+
+    assert widget._annotation_layer is blobs_layer
+    assert list(viewer.layers) == [blobs_layer, other_layer]
 
 
 def test_shapes_annotation_widget_open_existing_target_loads_edit_session_layer(
@@ -695,14 +778,15 @@ def test_shapes_annotation_widget_coordinate_discard_guard_avoids_duplicate_clea
     viewer = DummyViewer()
     widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
     widget.create_layer_button.click()
-    monkeypatch.setattr(widget, "_confirm_discard_annotation_layer", lambda: True)
+    _add_polygon(viewer.layers[0])
+    monkeypatch.setattr(widget, "_confirm_discard_annotation_layer", lambda *, context: True)
     remove_guard_values: list[bool] = []
     clear_call_count = 0
     original_remove_annotation_layer = widget._remove_annotation_layer
     original_clear_annotation_state = widget._clear_annotation_state
 
     def remove_annotation_layer() -> None:
-        remove_guard_values.append(widget._is_handling_annotation_discard)
+        remove_guard_values.append(widget._is_handling_annotation_layer_removal)
         original_remove_annotation_layer()
 
     def clear_annotation_state() -> None:
@@ -717,7 +801,7 @@ def test_shapes_annotation_widget_coordinate_discard_guard_avoids_duplicate_clea
 
     assert remove_guard_values == [True]
     assert clear_call_count == 1
-    assert widget._is_handling_annotation_discard is False
+    assert widget._is_handling_annotation_layer_removal is False
     assert widget.app_state.coordinate_system == "local"
     assert list(viewer.layers) == []
 
