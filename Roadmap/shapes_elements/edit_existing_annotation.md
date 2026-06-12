@@ -1771,7 +1771,7 @@ Done when:
 
 ### Slice 8: Adopt Viewer-Loaded Selected Shapes Target
 
-Status: pending
+Status: implemented
 
 Goal: keep the Annotation widget in sync when the Viewer widget loads the
 currently selected existing shapes element.

@@ -206,6 +206,9 @@ class ShapesAnnotation(QWidget):
         # Suppress `_on_viewer_layer_removed(...)` while this widget removes
         # an annotation layer itself during discard or clean session teardown.
         self._is_handling_annotation_layer_removal = False
+        # Ignore primary-shapes registration events emitted by open operations
+        # that this widget started itself.
+        self._is_opening_annotation_layer = False
         self._logo_path = get_logo_path()
 
         root_layout = QVBoxLayout(self)
@@ -290,6 +293,7 @@ class ShapesAnnotation(QWidget):
 
         self._app_state.sdata_changed.connect(self._on_sdata_changed)
         self._app_state.coordinate_system_changed.connect(self._on_app_state_coordinate_system_changed)
+        self._app_state.viewer_adapter.primary_shapes_layer_registered.connect(self._on_primary_shapes_layer_registered)
         self.coordinate_system_combo.currentIndexChanged.connect(self._on_coordinate_system_changed)
         self.shapes_combo.currentIndexChanged.connect(self._on_shapes_target_changed)
         self.name_edit.textChanged.connect(self._on_shapes_name_changed)
@@ -417,6 +421,39 @@ class ShapesAnnotation(QWidget):
     def _on_shapes_name_changed(self, _text: str) -> None:
         self._refresh_create_layer_state()
 
+    def _on_primary_shapes_layer_registered(self, binding: object) -> None:
+        if (
+            self._is_opening_annotation_layer
+            or self._annotation_layer is not None
+            or self._annotation_session is not None
+        ):
+            return
+        if not isinstance(binding, ShapesLayerBinding):
+            return
+
+        sdata = self._app_state.sdata
+        target = self._selected_shapes_target
+        coordinate_system = self._selected_coordinate_system
+        if (
+            sdata is None
+            or target is None
+            or target.mode != "edit_existing"
+            or target.existing_shapes_name is None
+            or coordinate_system is None
+        ):
+            return
+
+        if (
+            binding.sdata_id != id(sdata)
+            or binding.element_name != target.existing_shapes_name
+            or binding.coordinate_system != coordinate_system
+            or binding.shapes_role != "primary"
+        ):
+            return
+
+        self._refresh_create_layer_state()
+        self._open_existing_annotation_layer()
+
     def _on_create_layer_clicked(self) -> None:
         if self._annotation_layer is not None:
             return
@@ -479,11 +516,20 @@ class ShapesAnnotation(QWidget):
         load_result = None
         try:
             source_geodataframe = validate_existing_shapes_source_geodataframe(sdata.shapes[shapes_name])
-            load_result = self._app_state.viewer_adapter.ensure_shapes_loaded(
-                sdata,
-                shapes_name,
-                coordinate_system,
-            )
+            # `ensure_shapes_loaded(...)` emits `primary_shapes_layer_registered`
+            # when it creates/registers a layer. This widget handles that
+            # signal by calling `_open_existing_annotation_layer(...)` for
+            # matching selected targets, so suppress the emitted event while
+            # this method is already setting up the session.
+            self._is_opening_annotation_layer = True
+            try:
+                load_result = self._app_state.viewer_adapter.ensure_shapes_loaded(
+                    sdata,
+                    shapes_name,
+                    coordinate_system,
+                )
+            finally:
+                self._is_opening_annotation_layer = False
             layer = load_result.layer
             binding = self._validate_opened_existing_shapes_layer(
                 layer,
@@ -524,7 +570,9 @@ class ShapesAnnotation(QWidget):
         coordinate_system: str,
     ) -> ShapesLayerBinding:
         if not isinstance(layer, Shapes):
-            raise ValueError("This shapes element is rendered as points and cannot be edited as polygon annotations yet.")
+            raise ValueError(
+                "This shapes element is rendered as points and cannot be edited as polygon annotations yet."
+            )
 
         binding = self._app_state.viewer_adapter.layer_bindings.get_binding(layer)
         if not isinstance(binding, ShapesLayerBinding):
@@ -649,6 +697,20 @@ class ShapesAnnotation(QWidget):
         if previous_session.mode == "create_new":
             layer_origin = "loaded_by_annotation"
             source_shapes_index_feature_name = DEFAULT_SHAPES_INDEX_NAME
+
+        # Bring the Harpy registry back in sync with the just-saved
+        # SpatialData element. The same live layer can now represent a
+        # different row count and source-index feature name than when it was
+        # first registered.
+        self._app_state.viewer_adapter.register_shapes_layer(
+            layer,
+            sdata=sdata,
+            shapes_name=result.shapes_name,
+            coordinate_system=result.coordinate_system,
+            shapes_rendering_mode="shapes",
+            source_row_id_by_rendered_row=range(len(saved_geodataframe)),
+            source_shapes_index_feature_name=source_shapes_index_feature_name,
+        )
 
         self._annotation_session = _ShapesAnnotationSession(
             mode="edit_existing",
@@ -831,7 +893,11 @@ class ShapesAnnotation(QWidget):
 
         if target.mode == "edit_existing":
             shapes_name = target.existing_shapes_name
-            if shapes_name is None or shapes_name not in sdata.shapes or shapes_name not in self._eligible_existing_shapes_names:
+            if (
+                shapes_name is None
+                or shapes_name not in sdata.shapes
+                or shapes_name not in self._eligible_existing_shapes_names
+            ):
                 self._set_status(
                     title="Shapes Unavailable",
                     lines=["The selected shapes element is no longer available in this coordinate system."],
@@ -848,8 +914,7 @@ class ShapesAnnotation(QWidget):
             self._set_status(
                 title="Ready",
                 lines=[
-                    f'Selected shapes layer "{visible_shapes_name}" '
-                    f'in coordinate system "{visible_coordinate_system}".'
+                    f'Selected shapes layer "{visible_shapes_name}" in coordinate system "{visible_coordinate_system}".'
                 ],
                 kind="info",
                 tooltip_lines=[full_line] if shapes_name_shortened or coordinate_system_shortened else None,
@@ -889,10 +954,7 @@ class ShapesAnnotation(QWidget):
         full_line = f'Create shapes layer "{shapes_name}" in coordinate system "{coordinate_system}".'
         self._set_status(
             title="Ready",
-            lines=[
-                f'Create shapes layer "{visible_shapes_name}" '
-                f'in coordinate system "{visible_coordinate_system}".'
-            ],
+            lines=[f'Create shapes layer "{visible_shapes_name}" in coordinate system "{visible_coordinate_system}".'],
             kind="info",
             tooltip_lines=[full_line] if shapes_name_shortened or coordinate_system_shortened else None,
         )
@@ -930,7 +992,7 @@ class ShapesAnnotation(QWidget):
                     title="Cannot Save Shapes",
                     lines=["The annotation layer is no longer registered as the widget-owned primary shapes layer."],
                     kind="warning",
-            )
+                )
             return
 
         session = self._annotation_session
@@ -960,12 +1022,10 @@ class ShapesAnnotation(QWidget):
                     session.coordinate_system
                 )
                 full_line = (
-                    f'Edit shapes layer "{session.shapes_name}" '
-                    f'in coordinate system "{session.coordinate_system}".'
+                    f'Edit shapes layer "{session.shapes_name}" in coordinate system "{session.coordinate_system}".'
                 )
                 lines = [
-                    f'Edit shapes layer "{visible_shapes_name}" '
-                    f'in coordinate system "{visible_coordinate_system}".'
+                    f'Edit shapes layer "{visible_shapes_name}" in coordinate system "{visible_coordinate_system}".'
                 ]
                 if session.table_linked:
                     lines.append("Linked tables may become out of sync if rows are removed.")
@@ -1082,7 +1142,9 @@ class ShapesAnnotation(QWidget):
         sdata = self._app_state.sdata
         shapes_name = self._annotation_shapes_name
         coordinate_system = self._annotation_coordinate_system
-        reload_on_discard = self._annotation_session.reload_on_discard if self._annotation_session is not None else False
+        reload_on_discard = (
+            self._annotation_session.reload_on_discard if self._annotation_session is not None else False
+        )
 
         self._is_handling_annotation_layer_removal = True
         try:

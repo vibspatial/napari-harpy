@@ -690,6 +690,9 @@ class ViewerAdapter(QObject):
     # Used by consumers that depend on the annotation-capable labels-layer
     # lifecycle, currently ObjectClassificationWidget.
     primary_labels_layers_changed = Signal()
+    # Emitted after a primary shapes layer has a Harpy binding while loaded in
+    # the viewer. Consumers can rely on the binding registry being ready.
+    primary_shapes_layer_registered = Signal(object)
     active_layer_changed = Signal(object)
 
     def __init__(self, viewer: Any | None = None, layer_bindings: LayerBindingRegistry | None = None) -> None:
@@ -811,6 +814,8 @@ class ViewerAdapter(QObject):
     def _handle_registered_binding(self, binding: LayerBinding) -> None:
         if _is_primary_labels_binding(binding) and self._is_layer_loaded_in_viewer(binding.layer):
             self.primary_labels_layers_changed.emit()
+        if _is_primary_shapes_binding(binding) and self._is_layer_loaded_in_viewer(binding.layer):
+            self.primary_shapes_layer_registered.emit(binding)
 
     def unregister_layer(self, layer: Layer) -> LayerBinding | None:
         """Remove a layer from the shared binding registry."""
@@ -2347,6 +2352,10 @@ def _is_points_binding(binding: LayerBinding | None) -> TypeGuard[PointsLayerBin
 
 def _is_primary_labels_binding(binding: LayerBinding | None) -> TypeGuard[LabelsLayerBinding]:
     return isinstance(binding, LabelsLayerBinding) and binding.labels_role == "primary"
+
+
+def _is_primary_shapes_binding(binding: LayerBinding | None) -> TypeGuard[ShapesLayerBinding]:
+    return isinstance(binding, ShapesLayerBinding) and binding.shapes_role == "primary"
 
 
 def _is_pickable_primary_labels_layer(layer: Layer, binding: LayerBinding | None) -> bool:
