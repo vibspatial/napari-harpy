@@ -1929,6 +1929,26 @@ Native napari layer behavior:
   napari `Shapes` layers;
 - do not treat this as a Viewer-loaded Harpy layer. It has no binding, no
   SpatialData identity, and no saved shapes element yet;
+- raw napari insertion is earlier than Harpy registration for several
+  Harpy-managed load paths. Do not immediately interpret "currently unbound" as
+  "native";
+- on raw `layers.events.inserted`, schedule the adoption check with
+  `QTimer.singleShot(0, ...)` instead of adopting synchronously. This lets the
+  current event-loop turn finish, giving Harpy adapter code a chance to call
+  `register_shapes_layer(...)` for Harpy-created or Viewer-loaded layers;
+- the final "is this still unbound?" check must happen at adoption time. If the
+  layer has gained a Harpy binding by then, ignore it;
+
+  ```python
+  QTimer.singleShot(0, lambda: self._maybe_adopt_native_shapes_layer(layer))
+
+  def _maybe_adopt_native_shapes_layer(self, layer: object) -> None:
+      binding = self._app_state.viewer_adapter.layer_bindings.get_binding(layer)
+      if binding is not None:
+          return
+      ...
+  ```
+
 - the native layer may be empty or may already contain annotations, for example
   when the user imported an existing shapes layer through napari;
 - require a loaded `sdata` and selected coordinate system. If either is
@@ -1940,6 +1960,9 @@ Native napari layer behavior:
 - seed `New shapes name` from the native napari layer name;
 - normalize that name through the same SpatialData-name validation path used by
   create-new;
+- `normalize_spatialdata_name(...)` validates rather than sanitizes. If the
+  native napari display name is empty or invalid as a SpatialData key, fall back
+  to the normal create-new default, for example `new_shapes`;
 - if the normalized name collides with an existing `sdata.shapes[...]` element,
   generate a unique suffix before filling the text field;
 - the adopted napari layer name should be set to the generated shapes name for
