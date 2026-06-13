@@ -835,10 +835,48 @@ def test_shapes_annotation_widget_manual_annotation_layer_deletion_clears_state(
     assert widget._annotation_shapes_name is None
     assert widget._annotation_coordinate_system is None
     assert widget._annotation_has_been_saved is False
+    assert widget._selected_shapes_target == shapes_annotation_widget_module._ShapesAnnotationTarget.create_new()
+    assert widget.shapes_combo.currentText() == "Create shapes..."
     assert widget.name_edit.isEnabled() is True
     assert widget.create_layer_button.isEnabled() is True
     assert widget.save_shapes_button.isEnabled() is False
     assert "Ready" in _status_text(widget)
+
+
+def test_shapes_annotation_widget_manual_existing_layer_deletion_resets_selector_and_can_reopen(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+    existing_shapes_name = "blobs_polygons"
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, existing_shapes_name))
+    removed_layer = widget._annotation_layer
+
+    assert removed_layer is not None
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.shapes_name == existing_shapes_name
+
+    viewer.layers.remove(removed_layer)
+
+    assert widget.app_state.viewer_adapter.layer_bindings.get_binding(removed_layer) is None
+    assert widget._annotation_layer is None
+    assert widget._annotation_session is None
+    assert widget._selected_shapes_target == shapes_annotation_widget_module._ShapesAnnotationTarget.create_new()
+    assert widget.shapes_combo.currentText() == "Create shapes..."
+    assert _combo_index_for_text(widget.shapes_combo, existing_shapes_name) >= 0
+    assert widget.save_shapes_button.isEnabled() is False
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, existing_shapes_name))
+
+    assert widget._annotation_layer is not None
+    assert widget._annotation_layer is not removed_layer
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.shapes_name == existing_shapes_name
+    assert widget.save_shapes_button.isEnabled() is True
 
 
 def test_shapes_annotation_widget_removal_listener_defensively_unregisters_annotation_layer(

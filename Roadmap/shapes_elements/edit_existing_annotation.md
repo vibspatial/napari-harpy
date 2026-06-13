@@ -1871,7 +1871,7 @@ Done when:
 
 ### Slice 9: Manual Annotation Layer Removal
 
-Status: pending
+Status: implemented
 
 Goal: keep Annotation's UI state aligned with manual napari layer-list actions.
 

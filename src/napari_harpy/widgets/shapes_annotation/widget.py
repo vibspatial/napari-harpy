@@ -740,6 +740,7 @@ class ShapesAnnotation(QWidget):
         # observes this event first.
         self._app_state.viewer_adapter.unregister_layer(layer)
         self._clear_annotation_state()
+        self._refresh_shapes_targets(preferred_target=_ShapesAnnotationTarget.create_new())
         self._refresh_create_layer_state()
 
     def _sync_coordinate_system_combo_selection(self, coordinate_system: str | None) -> None:
