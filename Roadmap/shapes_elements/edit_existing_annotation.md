@@ -1869,7 +1869,154 @@ Done when:
 - tests cover the selected-target adoption case and the non-matching/no-steal
   cases.
 
-### Slice 9: Discard, Target Switching, And Reload
+### Slice 9: Manual Annotation Layer Removal
+
+Status: pending
+
+Goal: keep Annotation's UI state aligned with manual napari layer-list actions.
+
+This follows Slice 8, which handles Viewer-loaded Harpy primary shapes layers.
+This slice covers the case where an Annotation-owned or Annotation-adopted
+shapes layer is manually removed from the napari layer list.
+
+Manual removal behavior:
+
+- if the active annotation layer is removed manually from the napari layer
+  list, clear the active annotation session as we do today;
+- additionally reset the `Shapes` selector so the removed target is no longer
+  shown as selected by Annotation;
+- prefer falling back to `Create shapes...` when available;
+- keep the removed shapes element listed as an existing option if it still
+  exists in `sdata.shapes[...]`, but do not keep it selected;
+- clear or refresh save/create status so the UI no longer suggests Annotation
+  owns the removed layer;
+- continue to defensively unregister the layer binding because widget and
+  adapter layer-removal callback order is not guaranteed.
+
+Rationale:
+
+- after manual removal, Annotation no longer has a live editable layer;
+- leaving the removed element selected makes the widget look half-attached to a
+  layer it no longer owns;
+- selecting the element again can reopen/adopt it through the normal
+  edit-existing path.
+
+Likely files:
+
+- `src/napari_harpy/widgets/shapes_annotation/widget.py`;
+- `tests/test_shapes_annotation_widget.py`.
+
+Done when:
+
+- manually deleting the active Annotation layer clears the session and switches
+  the `Shapes` selector away from that removed target;
+- the removed target remains available in the dropdown if it still exists in
+  `sdata.shapes[...]`;
+- selecting that target again reopens it through the normal edit-existing path;
+- tests cover manual-removal selector reset and reopen behavior.
+
+### Slice 10: Native Napari-Created Shapes Layer Adoption
+
+Status: pending
+
+Goal: allow Annotation to adopt a native napari `Shapes` layer created through
+napari's own UI when the widget is already in a valid create-new context.
+
+Native napari-created layer behavior:
+
+- listen for raw napari `layers.events.inserted` only for unbound native
+  napari `Shapes` layers;
+- do not treat this as a Viewer-loaded Harpy layer. It has no binding, no
+  SpatialData identity, and no saved shapes element yet;
+- require a loaded `sdata` and selected coordinate system. If either is
+  missing, ignore the native layer because Annotation has no meaningful save
+  target;
+- interpret a native napari-created `Shapes` layer as intent to create a new
+  Annotation shapes element;
+- switch the Annotation widget to `Create shapes...`;
+- seed `New shapes name` from the native napari layer name;
+- normalize that name through the same SpatialData-name validation path used by
+  create-new;
+- if the normalized name collides with an existing `sdata.shapes[...]` element,
+  generate a unique suffix before filling the text field;
+- register the adopted native layer as a primary shapes layer for the generated
+  new shapes name and selected coordinate system;
+- initialize the same create-new session state as
+  `_open_create_new_annotation_layer(...)`, but using the native layer instead
+  of creating an empty layer;
+- native-layer adoption must be atomic. Once Annotation decides to handle the
+  inserted native layer, it immediately:
+  - switches the `Shapes` selector to `Create shapes...`;
+  - fills `New shapes name`;
+  - registers that existing native layer as the Harpy primary layer;
+  - stores it in `_annotation_layer`;
+  - creates the create-new `_annotation_session`;
+  - disables `Create layer`;
+  - makes `Save shapes` the next meaningful action;
+- keep `Save shapes` disabled until the layer contains at least one supported
+  shape, exactly like the normal create-new path;
+- if the inserted layer is not a napari `Shapes` layer or already has a Harpy
+  binding, ignore it.
+
+Active-session behavior:
+
+- if no annotation session is active, adopt the native layer immediately when
+  the save context is valid;
+- if an annotation session is active and clean:
+  - close the clean session through the existing clean-session path;
+  - switch to `Create shapes...`;
+  - seed the new name from the native layer name;
+  - adopt the native layer;
+- if an annotation session is active and dirty:
+  - show the same discard warning used for target switching;
+  - if the user cancels, keep the current annotation session and leave the
+    native layer unbound in the viewer;
+  - if the user confirms discard, discard or reload the current session through
+    the existing discard path, then switch to `Create shapes...`, seed the name,
+    and adopt the native layer.
+
+Guardrails:
+
+- do not auto-adopt native layers when no `sdata` is loaded;
+- do not auto-adopt native layers when no coordinate system is selected;
+- do not auto-adopt native layers that are already Harpy-managed;
+- do not silently discard a dirty annotation session;
+- do not save automatically. Adoption only prepares the layer for the normal
+  `Save shapes` action.
+
+Out of scope:
+
+- if the Annotation widget was not open when the native napari `Shapes` layer
+  was created, it will miss the `layers.events.inserted` event. Ignore this
+  case for now rather than scanning existing unbound native layers on widget
+  startup.
+
+Likely files:
+
+- `src/napari_harpy/widgets/shapes_annotation/widget.py`;
+- `src/napari_harpy/viewer/adapter.py`, if a small adapter helper is useful for
+  binding an existing unbound napari `Shapes` layer as a primary shapes layer;
+- `tests/test_shapes_annotation_widget.py`.
+
+Done when:
+
+- creating a native napari `Shapes` layer with loaded `sdata` and selected
+  coordinate system switches Annotation to `Create shapes...`, fills
+  `New shapes name`, adopts the layer, and uses the normal save path;
+- after adoption, `Create layer` is disabled and `Save shapes` is the next
+  meaningful action;
+- name normalization and collision suffixing are tested;
+- clean active sessions are closed before adopting the native layer;
+- dirty active sessions require discard confirmation;
+- canceling discard keeps the current session and leaves the native layer
+  unbound;
+- confirming discard adopts the native layer after the current session is
+  discarded or reloaded;
+- native napari `Shapes` layers are ignored when Annotation has no valid save
+  context;
+- already Harpy-managed layers are ignored by this native-layer path.
+
+### Slice 11: Discard, Target Switching, And Reload
 
 Status: pending
 
@@ -1902,7 +2049,7 @@ Done when:
   layer from saved `sdata`;
 - manual deletion of the active annotation layer clears widget state.
 
-### Slice 10: Viewer Integration Audit
+### Slice 12: Viewer Integration Audit
 
 Status: pending
 
@@ -1934,7 +2081,7 @@ Done when:
   session ownership;
 - any styled-layer stale-state behavior is either tested or explicitly deferred.
 
-### Slice 11: Backed Persistence And Regression Coverage
+### Slice 13: Backed Persistence And Regression Coverage
 
 Status: pending
 
