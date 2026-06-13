@@ -1942,6 +1942,10 @@ Native napari layer behavior:
   create-new;
 - if the normalized name collides with an existing `sdata.shapes[...]` element,
   generate a unique suffix before filling the text field;
+- the adopted napari layer name should be set to the generated shapes name for
+  clarity, but Harpy identity must come from the binding, not from the final
+  napari display name. Do not attempt to enforce layer-list uniqueness beyond
+  letting napari apply its normal naming behavior;
 - register the adopted native layer as a primary shapes layer for the generated
   new shapes name and selected coordinate system;
 - initialize the same create-new session state as
