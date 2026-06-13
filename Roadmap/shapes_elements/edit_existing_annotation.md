@@ -1915,23 +1915,26 @@ Done when:
 - selecting that target again reopens it through the normal edit-existing path;
 - tests cover manual-removal selector reset and reopen behavior.
 
-### Slice 10: Native Napari-Created Shapes Layer Adoption
+### Slice 10: Native Napari Shapes Layer Adoption
 
 Status: pending
 
-Goal: allow Annotation to adopt a native napari `Shapes` layer created through
-napari's own UI when the widget is already in a valid create-new context.
+Goal: allow Annotation to adopt a native napari `Shapes` layer that was created
+or imported into napari outside Harpy when the widget is already in a valid
+create-new context.
 
-Native napari-created layer behavior:
+Native napari layer behavior:
 
 - listen for raw napari `layers.events.inserted` only for unbound native
   napari `Shapes` layers;
 - do not treat this as a Viewer-loaded Harpy layer. It has no binding, no
   SpatialData identity, and no saved shapes element yet;
+- the native layer may be empty or may already contain annotations, for example
+  when the user imported an existing shapes layer through napari;
 - require a loaded `sdata` and selected coordinate system. If either is
   missing, ignore the native layer because Annotation has no meaningful save
   target;
-- interpret a native napari-created `Shapes` layer as intent to create a new
+- interpret a native unbound napari `Shapes` layer as intent to create a new
   Annotation shapes element;
 - switch the Annotation widget to `Create shapes...`;
 - seed `New shapes name` from the native napari layer name;
@@ -1954,9 +1957,23 @@ Native napari-created layer behavior:
   - disables `Create layer`;
   - makes `Save shapes` the next meaningful action;
 - keep `Save shapes` disabled until the layer contains at least one supported
-  shape, exactly like the normal create-new path;
+  shape, exactly like the normal create-new path. Imported non-empty layers can
+  therefore become save-ready immediately if they pass the normal save checks;
 - if the inserted layer is not a napari `Shapes` layer or already has a Harpy
   binding, ignore it.
+
+Validation boundary:
+
+- adoption should not fully validate every row up front;
+- save conversion remains responsible for rejecting unsupported napari shape
+  types, non-finite coordinates, duplicate source IDs, or other invalid
+  annotation data;
+- adoption should perform only cheap guard checks needed to decide ownership,
+  such as "is this an unbound napari `Shapes` layer?" and "is the layer
+  compatible with the 2D annotation workflow?";
+- if a non-empty imported layer contains unsupported data, adoption can still
+  succeed, but `Save shapes` should report the existing conversion error when
+  the user tries to save.
 
 Active-session behavior:
 
@@ -2000,12 +2017,15 @@ Likely files:
 
 Done when:
 
-- creating a native napari `Shapes` layer with loaded `sdata` and selected
-  coordinate system switches Annotation to `Create shapes...`, fills
+- creating or importing a native napari `Shapes` layer with loaded `sdata` and
+  selected coordinate system switches Annotation to `Create shapes...`, fills
   `New shapes name`, adopts the layer, and uses the normal save path;
 - after adoption, `Create layer` is disabled and `Save shapes` is the next
   meaningful action;
 - name normalization and collision suffixing are tested;
+- imported non-empty layers can be saved through the normal create-new path;
+- imported layers with unsupported content fail at save time with the normal
+  conversion feedback;
 - clean active sessions are closed before adopting the native layer;
 - dirty active sessions require discard confirmation;
 - canceling discard keeps the current session and leaves the native layer
