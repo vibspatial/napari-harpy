@@ -697,6 +697,8 @@ class ShapesAnnotation(QWidget):
         if previous_session.mode == "create_new":
             layer_origin = "loaded_by_annotation"
             source_shapes_index_feature_name = DEFAULT_SHAPES_INDEX_NAME
+            # The typed create-new name has now been consumed by the saved
+            # element, so reset the hidden field before it is shown again.
             self._clear_consumed_new_shapes_name()
 
         # Bring the Harpy registry back in sync with the just-saved
