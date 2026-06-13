@@ -1219,7 +1219,13 @@ def test_shapes_annotation_widget_save_writes_real_shapes_element(
     )
     assert widget.shapes_combo.currentText() == "new_regions"
     assert widget.name_edit.isHidden() is True
+    assert widget.name_edit.text() == ""
     assert "Shapes Saved" in _status_text(widget)
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, "Create shapes..."))
+
+    assert widget.name_edit.isHidden() is False
+    assert widget.name_edit.text() == ""
 
 
 def test_shapes_annotation_widget_save_syncs_binding_without_primary_registration_event(

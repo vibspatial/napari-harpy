@@ -697,6 +697,7 @@ class ShapesAnnotation(QWidget):
         if previous_session.mode == "create_new":
             layer_origin = "loaded_by_annotation"
             source_shapes_index_feature_name = DEFAULT_SHAPES_INDEX_NAME
+            self._clear_consumed_new_shapes_name()
 
         # Bring the Harpy registry back in sync with the just-saved
         # SpatialData element. The same live layer can now represent a
@@ -722,6 +723,10 @@ class ShapesAnnotation(QWidget):
         )
         self._annotation_has_been_saved = True
         self._annotation_clean_snapshot = _capture_annotation_layer_snapshot(layer)
+
+    def _clear_consumed_new_shapes_name(self) -> None:
+        with QSignalBlocker(self.name_edit):
+            self.name_edit.clear()
 
     def _on_viewer_layer_removed(self, event: object) -> None:
         # Coordinate-system and shapes-target changes can remove the annotation
