@@ -2215,7 +2215,7 @@ Done when:
 
 ### Slice 14: Backed Persistence And Regression Coverage
 
-Status: pending
+Status: implemented
 
 Goal: prove the whole edit-existing workflow survives backed stores and the
 edge cases called out in this roadmap.
