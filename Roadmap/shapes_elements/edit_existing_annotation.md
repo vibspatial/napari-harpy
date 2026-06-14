@@ -2063,7 +2063,83 @@ Done when:
   context;
 - already Harpy-managed layers are ignored by this native-layer path.
 
-### Slice 11: Discard, Target Switching, And Reload
+### Slice 11: Adopted Native Layer Styling
+
+Status: pending
+
+Goal: make native napari `Shapes` layers adopted by Annotation use the same
+initial visual styling as Harpy-created primary shapes layers.
+
+Problem:
+
+- a shapes layer created or imported through napari's own UI keeps napari's
+  default style, for example gray edges and opaque white faces;
+- normal Annotation-created layers go through
+  `ViewerAdapter.create_empty_primary_shapes_layer(...)`, which uses Harpy's
+  primary-shapes style:
+  - cyan edge color;
+  - transparent face color;
+  - edge width `1`;
+  - opacity `0.8`;
+- after native-layer adoption, the user can annotate and save correctly, but the
+  drawing style does not match the rest of the Annotation workflow.
+
+Likely files:
+
+- `src/napari_harpy/viewer/adapter.py`;
+- possibly `src/napari_harpy/viewer/shapes_styling.py` if the shared styling
+  helper belongs there;
+- `src/napari_harpy/widgets/shapes_annotation/widget.py`;
+- `tests/test_shapes_annotation_widget.py`.
+
+Work:
+
+- introduce one reusable helper for applying the Harpy primary-shapes visual
+  defaults to an existing napari `Shapes` layer;
+- the helper should set the same presentation values used by
+  `_build_empty_primary_shapes_layer(...)` and primary shapes rendering:
+
+  ```python
+  layer.edge_color = "#00FFFF"
+  layer.face_color = "#00000000"
+  layer.edge_width = 1
+  layer.opacity = 0.8
+  ```
+
+- also set the corresponding napari "current" drawing values where available so
+  newly drawn shapes continue with the same style:
+
+  ```python
+  layer.current_edge_color = "#00FFFF"
+  layer.current_face_color = "#00000000"
+  layer.current_edge_width = 1
+  ```
+
+- connect the same primary-shapes sync callbacks used by Harpy-created layers:
+
+  ```python
+  _connect_current_edge_width_to_global_edge_width(layer)
+  _connect_current_edge_color_to_global_edge_color(layer)
+  ```
+
+- call this helper when Annotation adopts a native napari `Shapes` layer, before
+  or immediately after registering the layer as the widget-owned primary shapes
+  layer;
+- consider reusing the helper inside `_build_empty_primary_shapes_layer(...)`
+  and the primary `_build_shapes_layer(...)` path to keep the styling contract in
+  one place.
+
+Done when:
+
+- a native napari `Shapes` layer adopted by Annotation immediately displays with
+  the same cyan-edge, transparent-face style as an Annotation-created layer;
+- shapes drawn after adoption use the same current edge color, current face
+  color, and current edge width;
+- changing the current edge color or edge width still applies globally to the
+  adopted annotation layer;
+- Harpy-created primary shapes layers keep their existing behavior.
+
+### Slice 12: Discard, Target Switching, And Reload
 
 Status: pending
 
@@ -2096,7 +2172,7 @@ Done when:
   layer from saved `sdata`;
 - manual deletion of the active annotation layer clears widget state.
 
-### Slice 12: Viewer Integration Audit
+### Slice 13: Viewer Integration Audit
 
 Status: pending
 
@@ -2128,7 +2204,7 @@ Done when:
   session ownership;
 - any styled-layer stale-state behavior is either tested or explicitly deferred.
 
-### Slice 13: Backed Persistence And Regression Coverage
+### Slice 14: Backed Persistence And Regression Coverage
 
 Status: pending
 
