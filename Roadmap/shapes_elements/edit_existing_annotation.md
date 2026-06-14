@@ -2178,7 +2178,7 @@ Done when:
 
 ### Slice 13: Viewer Integration Audit
 
-Status: pending
+Status: implemented
 
 Goal: verify that edit-existing saves interact correctly with the Viewer widget
 and existing loaded layers.
@@ -2200,6 +2200,11 @@ Work:
   underlying shapes element changes. The current spec allows styled layers to
   be ignored as edit targets, but loaded styled layers may need explicit refresh
   or user-triggered update after save.
+
+Styled-layer refresh is explicitly deferred. After Annotation saves, Viewer
+cards refresh from current `sdata`, but already-loaded styled shapes layers are
+not rebuilt automatically and may remain stale until a future styled-layer
+invalidation workflow is specified.
 
 Done when:
 
