@@ -1,6 +1,6 @@
 # Edit Existing Shapes Annotation Elements
 
-Status: proposed
+Status: implemented
 
 This roadmap will specify the workflow for opening an existing
 `sdata.shapes[...]` element as an editable annotation layer, modifying it in
