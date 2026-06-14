@@ -4,11 +4,14 @@ from collections.abc import Callable
 from html import unescape
 from types import SimpleNamespace
 
+import anndata as ad
 import numpy as np
+import pandas as pd
 from matplotlib.colors import to_rgba
 from napari.layers import Shapes
 from qtpy.QtWidgets import QComboBox, QLabel
-from spatialdata import SpatialData
+from spatialdata import SpatialData, read_zarr
+from spatialdata.models import TableModel
 
 import napari_harpy._app_state as app_state_module
 import napari_harpy.widgets.shapes_annotation.widget as shapes_annotation_widget_module
@@ -139,6 +142,29 @@ def _native_polygon_layer(name: str) -> Shapes:
         shape_type="polygon",
         name=name,
     )
+
+
+def _add_dummy_table_annotating_shapes(sdata: SpatialData, *, shapes_name: str, table_name: str) -> ad.AnnData:
+    shapes = sdata.shapes[shapes_name]
+    index_values = shapes.index.to_list()
+    cell_types = np.resize(np.asarray(["T", "B"], dtype=object), len(index_values))
+    table = TableModel.parse(
+        ad.AnnData(
+            obs=pd.DataFrame(
+                {
+                    "region": [shapes_name] * len(index_values),
+                    "index": index_values,
+                    "cell_type": pd.Categorical(cell_types, categories=["T", "B"]),
+                },
+                index=[f"obs_{index}" for index in index_values],
+            )
+        ),
+        region=shapes_name,
+        region_key="region",
+        instance_key="index",
+    )
+    sdata.tables[table_name] = table
+    return table
 
 
 def test_shapes_annotation_widget_can_be_instantiated(qtbot) -> None:
@@ -816,6 +842,37 @@ def test_shapes_annotation_widget_edit_existing_save_updates_shapes_element_and_
     assert "Shapes Saved" in _status_text(widget)
 
 
+def test_shapes_annotation_widget_table_linked_edit_warns_without_mutating_table(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    shapes_name = "blobs_polygons"
+    table_name = "shapes_annotation_table"
+    table = _add_dummy_table_annotating_shapes(sdata_blobs, shapes_name=shapes_name, table_name=table_name)
+    original_obs = table.obs.copy(deep=True)
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, shapes_name))
+
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.table_linked is True
+    assert "Linked tables are not updated by Annotation and may go out of sync if rows are added or removed." in _status_text(widget)
+
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    _add_polygon(layer, offset=100)
+    layer.features.loc[len(layer.features) - 1, "index"] = None
+    widget.save_shapes_button.click()
+
+    assert sdata_blobs.tables[table_name] is table
+    pd.testing.assert_frame_equal(sdata_blobs.tables[table_name].obs, original_obs)
+    assert "Linked tables are not updated by Annotation and may go out of sync if rows are added or removed." in _status_text(widget)
+
+
 def test_shapes_annotation_widget_clears_annotation_state_when_sdata_is_cleared(
     qtbot,
     sdata_blobs: SpatialData,
@@ -1196,6 +1253,47 @@ def test_shapes_annotation_widget_discard_saved_annotation_layer_reloads_clean_p
     assert widget._annotation_session is None
     assert widget.name_edit.isHidden() is True
     assert widget.name_edit.isEnabled() is False
+
+
+def test_shapes_annotation_widget_backed_edit_existing_discard_reloads_clean_primary_layer(
+    qtbot,
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(backed_sdata_blobs)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+    shapes_name = "blobs_polygons"
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, shapes_name))
+    dirty_layer = widget._annotation_layer
+    assert isinstance(dirty_layer, Shapes)
+    initial_row_count = len(dirty_layer.data)
+
+    _add_polygon(dirty_layer, offset=100)
+    assert len(dirty_layer.data) == initial_row_count + 1
+
+    widget._discard_annotation_layer()
+
+    assert dirty_layer not in viewer.layers
+    assert app_state.viewer_adapter.layer_bindings.get_binding(dirty_layer) is None
+    assert len(viewer.layers) == 1
+    clean_layer = viewer.layers[0]
+    assert clean_layer is not dirty_layer
+    assert isinstance(clean_layer, Shapes)
+    assert clean_layer.name == shapes_name
+    assert len(clean_layer.data) == initial_row_count
+    binding = app_state.viewer_adapter.layer_bindings.get_binding(clean_layer)
+    assert isinstance(binding, ShapesLayerBinding)
+    assert binding.element_name == shapes_name
+    assert binding.coordinate_system == "global"
+    assert binding.shapes_role == "primary"
+    assert widget._annotation_layer is None
+    assert widget._annotation_session is None
+
+    reread = read_zarr(backed_sdata_blobs.path)
+    assert len(reread.shapes[shapes_name]) == initial_row_count
 
 
 def test_shapes_annotation_widget_save_calls_core_with_locked_request_and_reports_success(

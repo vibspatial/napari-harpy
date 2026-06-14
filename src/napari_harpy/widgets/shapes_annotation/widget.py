@@ -806,12 +806,15 @@ class ShapesAnnotation(QWidget):
             f'Saved "{result.shapes_name}" with {result.row_count} shape(s) '
             f'in coordinate system "{result.coordinate_system}".'
         )
+        lines = [
+            f'Saved "{visible_shapes_name}" with {result.row_count} shape(s) '
+            f'in coordinate system "{visible_coordinate_system}".'
+        ]
+        if self._annotation_session is not None and self._annotation_session.table_linked:
+            lines.append("Linked tables are not updated by Annotation and may go out of sync if rows are added or removed.")
         self._set_status(
             title="Shapes Saved",
-            lines=[
-                f'Saved "{visible_shapes_name}" with {result.row_count} shape(s) '
-                f'in coordinate system "{visible_coordinate_system}".'
-            ],
+            lines=lines,
             kind="success",
             tooltip_lines=[full_line] if shapes_name_shortened or coordinate_system_shortened else None,
         )
@@ -1168,7 +1171,7 @@ class ShapesAnnotation(QWidget):
                     f'Edit shapes layer "{visible_shapes_name}" in coordinate system "{visible_coordinate_system}".'
                 ]
                 if session.table_linked:
-                    lines.append("Linked tables may become out of sync if rows are removed.")
+                    lines.append("Linked tables are not updated by Annotation and may go out of sync if rows are added or removed.")
                 self._set_status(
                     title="Existing Shapes Opened",
                     lines=lines,

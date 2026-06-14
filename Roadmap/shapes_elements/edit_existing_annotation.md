@@ -2234,7 +2234,7 @@ Work:
 - test added rows, deleted rows, and geometry edits;
 - test rejection of unsupported/multipart/empty geometries;
 - test table-linked warning behavior without table mutation;
-- test adopted primary layer discard/revert in place;
+- test adopted primary layer discard/reload behavior;
 - keep create-new Workflow A regression coverage green.
 
 Done when:
