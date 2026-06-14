@@ -2145,7 +2145,7 @@ Done when:
 
 ### Slice 12: Discard, Target Switching, And Reload
 
-Status: pending
+Status: implemented
 
 Goal: make coordinate-system changes, target changes, and manual layer removal
 safe for both create-new and edit-existing sessions.
