@@ -2125,6 +2125,10 @@ Work:
 - call this helper when Annotation adopts a native napari `Shapes` layer, before
   or immediately after registering the layer as the widget-owned primary shapes
   layer;
+- apply the helper before capturing `_annotation_clean_snapshot`. The current
+  snapshot does not include style fields, but the lifecycle should still be:
+  adopt the native layer, normalize it into Annotation ownership, then capture
+  the clean annotation baseline;
 - consider reusing the helper inside `_build_empty_primary_shapes_layer(...)`
   and the primary `_build_shapes_layer(...)` path to keep the styling contract in
   one place.
