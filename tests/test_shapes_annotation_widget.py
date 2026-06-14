@@ -973,6 +973,12 @@ def test_shapes_annotation_widget_adopts_native_empty_shapes_layer(
     assert widget.shapes_combo.currentText() == "Create shapes..."
     assert widget.name_edit.text() == "native_shapes"
     assert native_layer.name == "native_shapes"
+    assert native_layer.current_edge_width == 1
+    np.testing.assert_allclose(to_rgba(native_layer.current_edge_color), to_rgba("#00FFFF"))
+    np.testing.assert_allclose(to_rgba(native_layer.current_face_color), to_rgba("#00000000"))
+    assert native_layer.opacity == 0.8
+    assert hasattr(native_layer, _SHAPES_EDGE_WIDTH_SYNC_CALLBACK_ATTR)
+    assert hasattr(native_layer, _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR)
     assert widget.create_layer_button.isEnabled() is False
     assert widget.save_shapes_button.isEnabled() is True
 
@@ -990,6 +996,10 @@ def test_shapes_annotation_widget_saves_adopted_native_nonempty_shapes_layer(
 
     viewer.add_layer(native_layer)
     qtbot.waitUntil(lambda: widget._annotation_layer is native_layer)
+    np.testing.assert_allclose(native_layer.edge_color[0], to_rgba("#00FFFF"))
+    np.testing.assert_allclose(native_layer.face_color[0], to_rgba("#00000000"))
+    np.testing.assert_allclose(to_rgba(native_layer.current_edge_color), to_rgba("#00FFFF"))
+    np.testing.assert_allclose(to_rgba(native_layer.current_face_color), to_rgba("#00000000"))
     widget.save_shapes_button.click()
 
     assert "native_import" in sdata_blobs.shapes

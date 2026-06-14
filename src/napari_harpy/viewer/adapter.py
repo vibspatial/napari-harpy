@@ -42,11 +42,12 @@ from napari_harpy.viewer.points_styling import (
 )
 from napari_harpy.viewer.shapes_styling import (
     ShapesLoadResult,
-    _connect_current_edge_color_to_global_edge_color,
-    _connect_current_edge_width_to_global_edge_width,
     apply_shape_column_color_source_to_shapes_layer,
     apply_table_color_source_to_shapes_layer,
     build_styled_shapes_layer_name,
+)
+from napari_harpy.viewer.shapes_styling import (
+    apply_primary_shapes_layer_style as _apply_primary_shapes_layer_style,
 )
 
 if TYPE_CHECKING:
@@ -810,6 +811,10 @@ class ViewerAdapter(QObject):
         )
         self._handle_registered_binding(binding)
         return binding
+
+    def apply_primary_shapes_layer_style(self, layer: Shapes) -> None:
+        """Apply Harpy's editable primary shapes presentation to one layer."""
+        _apply_primary_shapes_layer_style(layer)
 
     def sync_primary_shapes_layer_binding(
         self,
@@ -2019,17 +2024,11 @@ def _build_shapes_layer(
         shape_type=napari_layer_inputs.shape_types,
         features=napari_layer_inputs.features,
         source_shapes_index_feature_name=napari_layer_inputs.source_shapes_index_feature_name,
-        edge_color="#00FFFF",
-        face_color="#00000000",
-        edge_width=1,
-        opacity=0.8,
     )
-    _connect_current_edge_width_to_global_edge_width(layer)
     # Primary shapes own their edge color as presentation, while styled shapes
     # use edge color as a data-driven palette that should not be flattened by
     # napari's current edge-color control.
-    if sync_edge_color:
-        _connect_current_edge_color_to_global_edge_color(layer)
+    _apply_primary_shapes_layer_style(layer, sync_edge_color=sync_edge_color)
     return _BuiltShapesLayer(
         layer=layer,
         shapes_rendering_mode="shapes",
@@ -2049,13 +2048,8 @@ def _build_empty_primary_shapes_layer(
         ndim=2,
         name=name,
         source_shapes_index_feature_name=source_shapes_index_feature_name,
-        edge_color="#00FFFF",
-        face_color="#00000000",
-        edge_width=1,
-        opacity=0.8,
     )
-    _connect_current_edge_width_to_global_edge_width(layer)
-    _connect_current_edge_color_to_global_edge_color(layer)
+    _apply_primary_shapes_layer_style(layer)
     return layer
 
 

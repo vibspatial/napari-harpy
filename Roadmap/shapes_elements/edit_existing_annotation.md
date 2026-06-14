@@ -2065,7 +2065,7 @@ Done when:
 
 ### Slice 11: Adopted Native Layer Styling
 
-Status: pending
+Status: implemented
 
 Goal: make native napari `Shapes` layers adopted by Annotation use the same
 initial visual styling as Harpy-created primary shapes layers.

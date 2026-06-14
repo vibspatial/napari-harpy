@@ -544,6 +544,9 @@ class ShapesAnnotation(QWidget):
         with QSignalBlocker(self.name_edit):
             self.name_edit.setText(shapes_name)
         layer.name = shapes_name
+        # Normalize native napari layers into Annotation's visual contract before
+        # registering the layer and capturing the clean annotation baseline.
+        self._app_state.viewer_adapter.apply_primary_shapes_layer_style(layer)
 
         self._is_opening_annotation_layer = True
         try:
