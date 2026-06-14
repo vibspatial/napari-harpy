@@ -51,7 +51,10 @@ from napari_harpy.core.spatialdata import (
     get_coordinate_system_names_from_sdata,
     get_spatialdata_shapes_options_for_coordinate_system_from_sdata,
 )
-from napari_harpy.core.validation import normalize_spatialdata_name
+from napari_harpy.core.validation import (
+    normalize_spatialdata_name,
+    spatialdata_element_name_exists,
+)
 from napari_harpy.viewer.adapter import ShapesLayerBinding
 from napari_harpy.widgets.shapes_annotation._snapshot import (
     _annotation_layer_snapshots_equal,
@@ -530,7 +533,7 @@ class ShapesAnnotation(QWidget):
 
         shapes_name = base_name
         suffix = 1
-        while shapes_name in sdata.shapes:
+        while spatialdata_element_name_exists(sdata, shapes_name):
             shapes_name = f"{base_name}_{suffix}"
             suffix += 1
         return shapes_name
@@ -1072,7 +1075,7 @@ class ShapesAnnotation(QWidget):
             self._refresh_save_shapes_state()
             return
 
-        if shapes_name in sdata.shapes:
+        if spatialdata_element_name_exists(sdata, shapes_name):
             visible_shapes_name, shapes_name_shortened = _format_status_identifier(shapes_name)
             full_line = f'Shapes element "{shapes_name}" already exists. Choose a different name.'
             self._set_status(

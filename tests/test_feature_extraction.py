@@ -248,6 +248,24 @@ def test_feature_extraction_controller_blocks_create_table_name_collision(
     )
     assert controller._prepare_feature_extraction_job(8, overwrite_feature_key=False) is None
 
+    controller.bind(
+        sdata_blobs,
+        "blobs_labels",
+        None,
+        "TABLE",
+        "global",
+        ["area"],
+        "feature_matrix_1",
+        create_table=True,
+    )
+
+    assert controller.can_calculate is False
+    assert controller.status_kind == "warning"
+    assert controller.status_message == (
+        'Feature extraction: table "TABLE" already exists. Choose a different table name.'
+    )
+    assert controller._prepare_feature_extraction_job(8, overwrite_feature_key=False) is None
+
 
 def test_feature_extraction_controller_blocks_invalid_create_table_name(
     sdata_blobs: SpatialData,

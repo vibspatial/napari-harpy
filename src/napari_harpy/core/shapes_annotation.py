@@ -18,7 +18,11 @@ from spatialdata.transformations import (
 )
 
 from napari_harpy.core.spatialdata import get_coordinate_system_names_from_sdata
-from napari_harpy.core.validation import normalize_spatialdata_dataframe_column_name, normalize_spatialdata_name
+from napari_harpy.core.validation import (
+    normalize_spatialdata_dataframe_column_name,
+    normalize_spatialdata_name,
+    validate_new_spatialdata_element_name,
+)
 
 if TYPE_CHECKING:
     from spatialdata import SpatialData
@@ -103,8 +107,13 @@ def create_shapes_element_from_napari_shapes_layer(
             f"Available coordinate systems: {available}."
         )
 
-    if not request.overwrite and shapes_name in sdata.shapes:
-        raise ValueError(f"Shapes element `{shapes_name}` already exists. Set `overwrite=True` to replace it.")
+    # `overwrite=True` can still create a new element when no exact shapes key
+    # exists. Only exact-key replacement may bypass new-name availability
+    # validation; case variants or names used by another SpatialData element type
+    # must still be rejected as new-name collisions.
+    attempting_create_new_shapes = not request.overwrite or shapes_name not in sdata.shapes
+    if attempting_create_new_shapes:
+        validate_new_spatialdata_element_name(sdata, shapes_name, "Shapes element")
 
     geodataframe = napari_shapes_layer_to_geodataframe(
         layer,

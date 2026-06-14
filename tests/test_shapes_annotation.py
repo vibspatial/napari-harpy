@@ -716,6 +716,26 @@ def test_create_shapes_element_from_napari_shapes_layer_rejects_collision_withou
     assert "instance_id" not in layer.features.columns
 
 
+def test_create_shapes_element_from_napari_shapes_layer_rejects_case_variant_collision_before_conversion(
+    sdata_blobs: SpatialData,
+) -> None:
+    layer = Shapes(ndim=2)
+    _add_polygon(layer)
+    existing_shapes_name = next(iter(sdata_blobs.shapes))
+
+    with pytest.raises(ValueError, match="already exists"):
+        create_shapes_element_from_napari_shapes_layer(
+            CreateShapesElementRequest(
+                sdata=sdata_blobs,
+                shapes_name=existing_shapes_name.upper(),
+                coordinate_system="global",
+            ),
+            layer,
+        )
+
+    assert "instance_id" not in layer.features.columns
+
+
 def test_create_shapes_element_from_napari_shapes_layer_failed_conversion_leaves_sdata_unchanged(
     sdata_blobs: SpatialData,
 ) -> None:

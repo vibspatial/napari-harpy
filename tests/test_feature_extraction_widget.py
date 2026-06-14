@@ -1487,6 +1487,16 @@ def test_feature_extraction_widget_blocks_create_table_mode_for_table_name_colli
     )
     assert widget._feature_extraction_controller.binding_state.triplets == ()
 
+    widget.new_table_name_line_edit.setText("TABLE")
+
+    assert widget.calculate_button.isEnabled() is False
+    assert "Table Not Ready" in widget.selection_status.text()
+    assert 'Table "TABLE" already exists. Choose a different table name.' in widget.selection_status.text()
+    assert 'Table "TABLE" already exists. Choose a different table name.' in unescape(
+        widget.calculate_button.toolTip()
+    )
+    assert widget._feature_extraction_controller.binding_state.triplets == ()
+
 
 def test_feature_extraction_widget_uses_batch_table_error_as_status_tooltip(
     qtbot,

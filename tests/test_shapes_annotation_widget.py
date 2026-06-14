@@ -326,6 +326,10 @@ def test_shapes_annotation_widget_validates_empty_invalid_and_duplicate_names(
     assert widget.create_layer_button.isEnabled() is False
     assert "Name Already Exists" in _status_text(widget)
 
+    widget.name_edit.setText(existing_shapes_name.upper())
+    assert widget.create_layer_button.isEnabled() is False
+    assert "Name Already Exists" in _status_text(widget)
+
 
 def test_shapes_annotation_widget_status_cards_shorten_long_identifiers(
     qtbot,
@@ -1017,6 +1021,7 @@ def test_shapes_annotation_widget_native_name_falls_back_and_suffixes_collision(
     sdata_blobs: SpatialData,
 ) -> None:
     sdata_blobs.shapes["new_shapes"] = sdata_blobs.shapes["blobs_polygons"].copy()
+    sdata_blobs.shapes["New_Shapes_1"] = sdata_blobs.shapes["blobs_polygons"].copy()
     viewer = DummyViewer()
     app_state = get_or_create_app_state(viewer)
     app_state.set_sdata(sdata_blobs)
@@ -1029,9 +1034,9 @@ def test_shapes_annotation_widget_native_name_falls_back_and_suffixes_collision(
     qtbot.waitUntil(lambda: widget._annotation_layer is native_layer)
     binding = widget.app_state.viewer_adapter.layer_bindings.get_binding(native_layer)
     assert isinstance(binding, ShapesLayerBinding)
-    assert binding.element_name == "new_shapes_1"
-    assert widget.name_edit.text() == "new_shapes_1"
-    assert native_layer.name == "new_shapes_1"
+    assert binding.element_name == "new_shapes_2"
+    assert widget.name_edit.text() == "new_shapes_2"
+    assert native_layer.name == "new_shapes_2"
 
 
 def test_shapes_annotation_widget_deferred_native_adoption_ignores_harpy_loaded_shapes(

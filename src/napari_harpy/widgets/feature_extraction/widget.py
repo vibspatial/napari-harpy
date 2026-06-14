@@ -38,7 +38,10 @@ from napari_harpy.core.spatialdata import (
     validate_table_annotation_coverage,
     validate_table_region_instance_ids,
 )
-from napari_harpy.core.validation import normalize_spatialdata_name
+from napari_harpy.core.validation import (
+    normalize_spatialdata_name,
+    spatialdata_element_name_exists,
+)
 from napari_harpy.widgets.feature_extraction.controller import (
     FeatureExtractionBindingState,
     FeatureExtractionController,
@@ -1936,7 +1939,9 @@ class FeatureExtractionWidget(QWidget):
         self._set_create_table_name_controls_visible(False)
 
     def _suggest_new_table_name(self) -> str:
-        if self.selected_spatialdata is None or _DEFAULT_NEW_TABLE_NAME not in self.selected_spatialdata.tables:
+        if self.selected_spatialdata is None:
+            return _DEFAULT_NEW_TABLE_NAME
+        if not spatialdata_element_name_exists(self.selected_spatialdata, _DEFAULT_NEW_TABLE_NAME):
             return _DEFAULT_NEW_TABLE_NAME
         return f"{_DEFAULT_NEW_TABLE_NAME}_{uuid.uuid4()}"
 
@@ -2223,7 +2228,7 @@ class FeatureExtractionWidget(QWidget):
         except ValueError as error:
             return f"Choose a valid table name. {error}"
 
-        if table_name in self.selected_spatialdata.tables:
+        if spatialdata_element_name_exists(self.selected_spatialdata, table_name):
             return f'Table "{table_name}" already exists. Choose a different table name.'
 
         return None
