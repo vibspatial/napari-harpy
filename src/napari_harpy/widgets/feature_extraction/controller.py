@@ -22,7 +22,7 @@ from napari_harpy.core.feature_extraction import (
     _resolve_harpy_labels_name_parameter,
 )
 from napari_harpy.core.spatialdata import get_table
-from napari_harpy.core.validation import normalize_spatialdata_name
+from napari_harpy.core.validation import normalize_spatialdata_name, validate_new_spatialdata_element_name
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -704,11 +704,10 @@ class FeatureExtractionController:
         except ValueError as error:
             return f"Feature extraction: choose a valid table name. {error}"
 
-        if self._selected_table_name in self._selected_spatialdata.tables:
-            return (
-                f'Feature extraction: table "{self._selected_table_name}" already exists. '
-                "Choose a different table name."
-            )
+        try:
+            validate_new_spatialdata_element_name(self._selected_spatialdata, self._selected_table_name, "table")
+        except ValueError as error:
+            return f"Feature extraction: {error}"
 
         return None
 

@@ -843,6 +843,26 @@ def test_viewer_adapter_create_empty_primary_shapes_layer_registers_and_styles_l
     assert binding.style_spec is None
 
 
+def test_viewer_adapter_create_empty_primary_shapes_layer_removes_layer_if_registration_fails(
+    monkeypatch,
+    sdata_blobs,
+) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    def fail_register(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("registration failed")
+
+    monkeypatch.setattr(adapter, "register_shapes_layer", fail_register)
+
+    with pytest.raises(RuntimeError, match="registration failed"):
+        adapter.create_empty_primary_shapes_layer(sdata_blobs, "new_regions", "global")
+
+    assert list(viewer.layers) == []
+    assert adapter.layer_bindings.iter_bindings() == ()
+
+
 def test_viewer_adapter_remove_layers_for_sdata_removes_only_matching_registered_layers(sdata_blobs) -> None:
     removed_image_layer = make_image_layer(name="remove_image")
     removed_labels_layer = make_labels_layer(sdata=sdata_blobs)
@@ -1904,6 +1924,26 @@ def test_viewer_adapter_ensure_shapes_loaded_adds_polygon_layer_and_registers_bi
     assert labels_events == []
 
 
+def test_viewer_adapter_ensure_shapes_loaded_removes_layer_if_registration_fails(
+    monkeypatch,
+    sdata_blobs,
+) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    def fail_register(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("registration failed")
+
+    monkeypatch.setattr(adapter, "register_shapes_layer", fail_register)
+
+    with pytest.raises(RuntimeError, match="registration failed"):
+        adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
+
+    assert list(viewer.layers) == []
+    assert adapter.layer_bindings.iter_bindings() == ()
+
+
 def test_viewer_adapter_ensure_shapes_loaded_expands_multipolygons_with_source_mapping(sdata_blobs) -> None:
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)
@@ -2306,6 +2346,29 @@ def test_viewer_adapter_ensure_styled_shapes_loaded_creates_registered_variant_w
     assert "style_source_kind" not in result.layer.metadata
     assert "style_value_key" not in result.layer.metadata
     assert "style_value_kind" not in result.layer.metadata
+
+
+def test_viewer_adapter_ensure_styled_shapes_loaded_removes_layer_if_registration_fails(monkeypatch) -> None:
+    sdata = make_colorable_shapes_sdata()
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = ShapeColumnColorSourceSpec(
+        source_kind="shape_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    def fail_register(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("registration failed")
+
+    monkeypatch.setattr(adapter, "register_shapes_layer", fail_register)
+
+    with pytest.raises(RuntimeError, match="registration failed"):
+        adapter.ensure_styled_shapes_loaded(sdata, "cell_boundaries", "global", style_spec)
+
+    assert list(viewer.layers) == []
+    assert adapter.layer_bindings.iter_bindings() == ()
 
 
 def test_viewer_adapter_ensure_styled_shapes_loaded_creates_point_backed_categorical_variant() -> None:

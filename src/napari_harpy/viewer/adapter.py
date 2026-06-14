@@ -42,11 +42,12 @@ from napari_harpy.viewer.points_styling import (
 )
 from napari_harpy.viewer.shapes_styling import (
     ShapesLoadResult,
-    _connect_current_edge_color_to_global_edge_color,
-    _connect_current_edge_width_to_global_edge_width,
     apply_shape_column_color_source_to_shapes_layer,
     apply_table_color_source_to_shapes_layer,
     build_styled_shapes_layer_name,
+)
+from napari_harpy.viewer.shapes_styling import (
+    apply_primary_shapes_layer_style as _apply_primary_shapes_layer_style,
 )
 
 if TYPE_CHECKING:
@@ -690,6 +691,9 @@ class ViewerAdapter(QObject):
     # Used by consumers that depend on the annotation-capable labels-layer
     # lifecycle, currently ObjectClassificationWidget.
     primary_labels_layers_changed = Signal()
+    # Emitted after a primary shapes layer has a Harpy binding while loaded in
+    # the viewer. Consumers can rely on the binding registry being ready.
+    primary_shapes_layer_registered = Signal(object)
     active_layer_changed = Signal(object)
 
     def __init__(self, viewer: Any | None = None, layer_bindings: LayerBindingRegistry | None = None) -> None:
@@ -808,9 +812,37 @@ class ViewerAdapter(QObject):
         self._handle_registered_binding(binding)
         return binding
 
+    def apply_primary_shapes_layer_style(self, layer: Shapes) -> None:
+        """Apply Harpy's editable primary shapes presentation to one layer."""
+        _apply_primary_shapes_layer_style(layer)
+
+    def sync_primary_shapes_layer_binding(
+        self,
+        layer: Shapes,
+        *,
+        sdata: SpatialData,
+        shapes_name: str,
+        coordinate_system: str,
+        source_row_id_by_rendered_row: SourceRowIdByRenderedRow,
+        source_shapes_index_feature_name: str,
+    ) -> ShapesLayerBinding:
+        """Refresh a loaded primary shapes layer binding without emitting a registration event."""
+        return self._layer_bindings.register_shapes_layer(
+            layer,
+            element_name=shapes_name,
+            coordinate_system=coordinate_system,
+            sdata=sdata,
+            shapes_role="primary",
+            shapes_rendering_mode="shapes",
+            source_row_id_by_rendered_row=source_row_id_by_rendered_row,
+            source_shapes_index_feature_name=source_shapes_index_feature_name,
+        )
+
     def _handle_registered_binding(self, binding: LayerBinding) -> None:
         if _is_primary_labels_binding(binding) and self._is_layer_loaded_in_viewer(binding.layer):
             self.primary_labels_layers_changed.emit()
+        if _is_primary_shapes_binding(binding) and self._is_layer_loaded_in_viewer(binding.layer):
+            self.primary_shapes_layer_registered.emit(binding)
 
     def unregister_layer(self, layer: Layer) -> LayerBinding | None:
         """Remove a layer from the shared binding registry."""
@@ -1370,16 +1402,23 @@ class ViewerAdapter(QObject):
         )
         layer = built_layer.layer
         _add_layer_to_viewer(self._viewer, layer)
-        self.register_shapes_layer(
-            layer,
-            sdata=sdata,
-            shapes_name=shapes_name,
-            coordinate_system=coordinate_system,
-            shapes_rendering_mode=built_layer.shapes_rendering_mode,
-            source_row_id_by_rendered_row=built_layer.source_row_id_by_rendered_row,
-            source_shapes_index_feature_name=built_layer.source_shapes_index_feature_name,
-            skipped_geometry_count=built_layer.skipped_geometry_count,
-        )
+        try:
+            self.register_shapes_layer(
+                layer,
+                sdata=sdata,
+                shapes_name=shapes_name,
+                coordinate_system=coordinate_system,
+                shapes_rendering_mode=built_layer.shapes_rendering_mode,
+                source_row_id_by_rendered_row=built_layer.source_row_id_by_rendered_row,
+                source_shapes_index_feature_name=built_layer.source_shapes_index_feature_name,
+                skipped_geometry_count=built_layer.skipped_geometry_count,
+            )
+        except Exception:
+            # The layer is already visible in napari. Remove it so failed Harpy
+            # registration does not leave an unbound Harpy-created layer for the
+            # Annotation widget's native-layer adoption listener to react to.
+            _remove_layer_after_failed_registration(self._viewer, layer)
+            raise
         return ShapesLoadResult(
             layer=layer,
             created=True,
@@ -1410,14 +1449,21 @@ class ViewerAdapter(QObject):
             source_shapes_index_feature_name=source_shapes_index_feature_name,
         )
         _add_layer_to_viewer(self._viewer, layer)
-        self.register_shapes_layer(
-            layer,
-            sdata=sdata,
-            shapes_name=shapes_name,
-            coordinate_system=coordinate_system,
-            shapes_rendering_mode="shapes",
-            source_shapes_index_feature_name=source_shapes_index_feature_name,
-        )
+        try:
+            self.register_shapes_layer(
+                layer,
+                sdata=sdata,
+                shapes_name=shapes_name,
+                coordinate_system=coordinate_system,
+                shapes_rendering_mode="shapes",
+                source_shapes_index_feature_name=source_shapes_index_feature_name,
+            )
+        except Exception:
+            # The layer is already visible in napari. Remove it so failed Harpy
+            # registration does not leave an unbound Harpy-created layer for the
+            # Annotation widget's native-layer adoption listener to react to.
+            _remove_layer_after_failed_registration(self._viewer, layer)
+            raise
         return layer
 
     def ensure_styled_shapes_loaded(
@@ -1447,18 +1493,25 @@ class ViewerAdapter(QObject):
             )
             layer = built_layer.layer
             _add_layer_to_viewer(self._viewer, layer)
-            binding = self.register_shapes_layer(
-                layer,
-                sdata=sdata,
-                shapes_name=shapes_name,
-                coordinate_system=coordinate_system,
-                shapes_role="styled",
-                shapes_rendering_mode=built_layer.shapes_rendering_mode,
-                style_spec=style_spec,
-                source_row_id_by_rendered_row=built_layer.source_row_id_by_rendered_row,
-                source_shapes_index_feature_name=built_layer.source_shapes_index_feature_name,
-                skipped_geometry_count=built_layer.skipped_geometry_count,
-            )
+            try:
+                binding = self.register_shapes_layer(
+                    layer,
+                    sdata=sdata,
+                    shapes_name=shapes_name,
+                    coordinate_system=coordinate_system,
+                    shapes_role="styled",
+                    shapes_rendering_mode=built_layer.shapes_rendering_mode,
+                    style_spec=style_spec,
+                    source_row_id_by_rendered_row=built_layer.source_row_id_by_rendered_row,
+                    source_shapes_index_feature_name=built_layer.source_shapes_index_feature_name,
+                    skipped_geometry_count=built_layer.skipped_geometry_count,
+                )
+            except Exception:
+                # The layer is already visible in napari. Remove it so failed Harpy
+                # registration does not leave an unbound Harpy-created layer for the
+                # Annotation widget's native-layer adoption listener to react to.
+                _remove_layer_after_failed_registration(self._viewer, layer)
+                raise
         else:
             layer = existing_layer
             binding = self._layer_bindings.get_binding(layer)
@@ -1782,6 +1835,13 @@ def _remove_layer_from_viewer(viewer: Any | None, layer: Layer) -> None:
     raise ValueError("The provided viewer does not support removing layers.")
 
 
+def _remove_layer_after_failed_registration(viewer: Any | None, layer: Layer) -> None:
+    try:
+        _remove_layer_from_viewer(viewer, layer)
+    except (AttributeError, RuntimeError, TypeError, ValueError):  # pragma: no cover - defensive cleanup fallback
+        logger.debug("Could not remove napari layer after Harpy registration failed.", exc_info=True)
+
+
 def _get_stack_image_layer_data(element: DataArray | DataTree) -> tuple[DataArray | list[DataArray], bool]:
     """Prepare image data for one napari stack-mode image layer.
 
@@ -1964,17 +2024,11 @@ def _build_shapes_layer(
         shape_type=napari_layer_inputs.shape_types,
         features=napari_layer_inputs.features,
         source_shapes_index_feature_name=napari_layer_inputs.source_shapes_index_feature_name,
-        edge_color="#00FFFF",
-        face_color="#00000000",
-        edge_width=1,
-        opacity=0.8,
     )
-    _connect_current_edge_width_to_global_edge_width(layer)
     # Primary shapes own their edge color as presentation, while styled shapes
     # use edge color as a data-driven palette that should not be flattened by
     # napari's current edge-color control.
-    if sync_edge_color:
-        _connect_current_edge_color_to_global_edge_color(layer)
+    _apply_primary_shapes_layer_style(layer, sync_edge_color=sync_edge_color)
     return _BuiltShapesLayer(
         layer=layer,
         shapes_rendering_mode="shapes",
@@ -1994,13 +2048,8 @@ def _build_empty_primary_shapes_layer(
         ndim=2,
         name=name,
         source_shapes_index_feature_name=source_shapes_index_feature_name,
-        edge_color="#00FFFF",
-        face_color="#00000000",
-        edge_width=1,
-        opacity=0.8,
     )
-    _connect_current_edge_width_to_global_edge_width(layer)
-    _connect_current_edge_color_to_global_edge_color(layer)
+    _apply_primary_shapes_layer_style(layer)
     return layer
 
 
@@ -2347,6 +2396,10 @@ def _is_points_binding(binding: LayerBinding | None) -> TypeGuard[PointsLayerBin
 
 def _is_primary_labels_binding(binding: LayerBinding | None) -> TypeGuard[LabelsLayerBinding]:
     return isinstance(binding, LabelsLayerBinding) and binding.labels_role == "primary"
+
+
+def _is_primary_shapes_binding(binding: LayerBinding | None) -> TypeGuard[ShapesLayerBinding]:
+    return isinstance(binding, ShapesLayerBinding) and binding.shapes_role == "primary"
 
 
 def _is_pickable_primary_labels_layer(layer: Layer, binding: LayerBinding | None) -> bool:
