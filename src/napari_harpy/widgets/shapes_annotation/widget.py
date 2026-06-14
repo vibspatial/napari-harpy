@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from napari.layers import Shapes
-from qtpy.QtCore import QSignalBlocker, Qt
+from qtpy.QtCore import QSignalBlocker, Qt, QTimer
 from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import (
     QDialog,
@@ -56,6 +56,7 @@ from napari_harpy.viewer.adapter import ShapesLayerBinding
 from napari_harpy.widgets.shapes_annotation._snapshot import (
     _annotation_layer_snapshots_equal,
     _capture_annotation_layer_snapshot,
+    _empty_annotation_layer_snapshot,
     _ShapesAnnotationLayerSnapshot,
 )
 from napari_harpy.widgets.shared_styles import (
@@ -300,6 +301,10 @@ class ShapesAnnotation(QWidget):
         self.create_layer_button.clicked.connect(self._on_create_layer_clicked)
         self.save_shapes_button.clicked.connect(self._on_save_shapes_clicked)
         layer_events = getattr(getattr(napari_viewer, "layers", None), "events", None)
+        layer_inserted_event = getattr(layer_events, "inserted", None)
+        layer_inserted_connect = getattr(layer_inserted_event, "connect", None)
+        if callable(layer_inserted_connect):
+            layer_inserted_connect(self._on_viewer_layer_inserted)
         layer_removed_event = getattr(layer_events, "removed", None)
         layer_removed_connect = getattr(layer_removed_event, "connect", None)
         if callable(layer_removed_connect):
@@ -453,6 +458,128 @@ class ShapesAnnotation(QWidget):
 
         self._refresh_create_layer_state()
         self._open_existing_annotation_layer()
+
+    def _on_viewer_layer_inserted(self, event: object) -> None:
+        """Notice Shapes layers created or imported through napari's own UI."""
+        layer = getattr(event, "value", None)
+        if not isinstance(layer, Shapes):
+            return
+
+        # This hook lets Annotation react when the user creates or imports a
+        # Shapes layer through napari itself. Harpy-managed insertions are
+        # filtered out by the deferred binding check below.
+        # Harpy-managed shapes paths in `ViewerAdapter` call
+        # `_add_layer_to_viewer(self._viewer, layer)` before
+        # `self.register_shapes_layer(...)`. `_add_layer_to_viewer(...)` emits
+        # this raw insertion event, but Annotation should not adopt layers that
+        # were added by the ViewerAdapter. `QTimer.singleShot(0, ...)` queues the
+        # callback for the end of the current Qt event-loop turn, giving Harpy
+        # time to register its own binding before we decide whether this is still
+        # an unbound native napari layer.
+        QTimer.singleShot(0, lambda layer=layer: self._maybe_adopt_native_shapes_layer(layer))
+
+    def _maybe_adopt_native_shapes_layer(self, layer: object) -> None:
+        if not isinstance(layer, Shapes):
+            return
+        if not self._viewer_contains_layer(layer):
+            return
+        if self._app_state.viewer_adapter.layer_bindings.get_binding(layer) is not None:
+            return
+        if getattr(layer, "ndim", 2) != 2:
+            return
+
+        sdata = self._app_state.sdata
+        coordinate_system = self._selected_coordinate_system
+        if sdata is None or coordinate_system is None:
+            return
+
+        if self._annotation_layer is not None:
+            if self._annotation_layer_has_unsaved_changes():
+                if not self._confirm_discard_annotation_layer(context="target"):
+                    return
+                self._discard_annotation_layer()
+            else:
+                self._close_clean_annotation_session()
+
+        if not self._viewer_contains_layer(layer):
+            return
+        if self._app_state.viewer_adapter.layer_bindings.get_binding(layer) is not None:
+            return
+
+        shapes_name = self._unique_new_shapes_name_for_native_layer(layer)
+        self._adopt_native_shapes_layer(layer, shapes_name=shapes_name, coordinate_system=coordinate_system)
+
+    def _viewer_contains_layer(self, layer: object) -> bool:
+        layers = getattr(self._viewer, "layers", None)
+        if layers is None:
+            return False
+        try:
+            return any(candidate is layer for candidate in layers)
+        except TypeError:
+            return False
+
+    def _unique_new_shapes_name_for_native_layer(self, layer: Shapes) -> str:
+        sdata = self._app_state.sdata
+        if sdata is None:
+            return _DEFAULT_NEW_SHAPES_NAME
+
+        try:
+            base_name = normalize_spatialdata_name(getattr(layer, "name", ""), "Shapes element name")
+        except ValueError:
+            base_name = _DEFAULT_NEW_SHAPES_NAME
+
+        shapes_name = base_name
+        suffix = 1
+        while shapes_name in sdata.shapes:
+            shapes_name = f"{base_name}_{suffix}"
+            suffix += 1
+        return shapes_name
+
+    def _adopt_native_shapes_layer(self, layer: Shapes, *, shapes_name: str, coordinate_system: str) -> None:
+        sdata = self._app_state.sdata
+        if sdata is None:
+            return
+
+        self._refresh_shapes_targets(preferred_target=_ShapesAnnotationTarget.create_new())
+        with QSignalBlocker(self.name_edit):
+            self.name_edit.setText(shapes_name)
+        layer.name = shapes_name
+
+        self._is_opening_annotation_layer = True
+        try:
+            self._app_state.viewer_adapter.register_shapes_layer(
+                layer,
+                sdata=sdata,
+                shapes_name=shapes_name,
+                coordinate_system=coordinate_system,
+                shapes_rendering_mode="shapes",
+                source_shapes_index_feature_name=DEFAULT_SHAPES_INDEX_NAME,
+            )
+        finally:
+            self._is_opening_annotation_layer = False
+
+        self._annotation_layer = layer
+        self._annotation_session = _ShapesAnnotationSession(
+            mode="create_new",
+            layer_origin="created_by_annotation",
+            shapes_name=shapes_name,
+            coordinate_system=coordinate_system,
+            source_shapes_index_feature_name=DEFAULT_SHAPES_INDEX_NAME,
+        )
+        self._annotation_has_been_saved = False
+        self._annotation_clean_snapshot = self._initial_native_layer_clean_snapshot(layer)
+        self._set_create_name_controls_visible(True)
+        self._app_state.viewer_adapter.activate_layer(layer)
+        self._refresh_create_layer_state()
+
+    def _initial_native_layer_clean_snapshot(self, layer: Shapes) -> _ShapesAnnotationLayerSnapshot:
+        # Empty native layers should be clean as they are, including any empty
+        # feature schema. Non-empty native/imported layers are unsaved Harpy
+        # annotations, so compare them against an empty baseline and mark them
+        # dirty immediately until the user saves them.
+        if len(layer.data) == 0:
+            return _capture_annotation_layer_snapshot(layer)
+        return _empty_annotation_layer_snapshot()
 
     def _on_create_layer_clicked(self) -> None:
         if self._annotation_layer is not None:

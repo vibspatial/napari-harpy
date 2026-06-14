@@ -123,6 +123,24 @@ def _add_polygon(layer: Shapes, offset: float = 0.0) -> None:
     )
 
 
+def _native_polygon_layer(name: str) -> Shapes:
+    return Shapes(
+        [
+            np.asarray(
+                [
+                    [0.0, 0.0],
+                    [0.0, 2.0],
+                    [2.0, 2.0],
+                    [2.0, 0.0],
+                ],
+                dtype=float,
+            )
+        ],
+        shape_type="polygon",
+        name=name,
+    )
+
+
 def test_shapes_annotation_widget_can_be_instantiated(qtbot) -> None:
     widget = ShapesAnnotation()
 
@@ -925,6 +943,167 @@ def test_shapes_annotation_widget_ignores_unrelated_layer_removal(
     assert widget.name_edit.isEnabled() is False
     assert widget.create_layer_button.isEnabled() is False
     assert widget.save_shapes_button.isEnabled() is True
+
+
+def test_shapes_annotation_widget_adopts_native_empty_shapes_layer(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+    native_layer = Shapes([], shape_type="polygon", name="native_shapes")
+
+    viewer.add_layer(native_layer)
+
+    qtbot.waitUntil(lambda: widget._annotation_layer is native_layer)
+    binding = widget.app_state.viewer_adapter.layer_bindings.get_binding(native_layer)
+    assert isinstance(binding, ShapesLayerBinding)
+    assert binding.element_name == "native_shapes"
+    assert binding.coordinate_system == "global"
+    assert binding.shapes_role == "primary"
+    assert binding.shapes_rendering_mode == "shapes"
+    assert binding.source_shapes_index_feature_name == "instance_id"
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.mode == "create_new"
+    assert widget._annotation_session.shapes_name == "native_shapes"
+    assert widget._selected_shapes_target == shapes_annotation_widget_module._ShapesAnnotationTarget.create_new()
+    assert widget.shapes_combo.currentText() == "Create shapes..."
+    assert widget.name_edit.text() == "native_shapes"
+    assert native_layer.name == "native_shapes"
+    assert widget.create_layer_button.isEnabled() is False
+    assert widget.save_shapes_button.isEnabled() is True
+
+
+def test_shapes_annotation_widget_saves_adopted_native_nonempty_shapes_layer(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+    native_layer = _native_polygon_layer("native_import")
+
+    viewer.add_layer(native_layer)
+    qtbot.waitUntil(lambda: widget._annotation_layer is native_layer)
+    widget.save_shapes_button.click()
+
+    assert "native_import" in sdata_blobs.shapes
+    assert sdata_blobs.shapes["native_import"].index.tolist() == ["__annotation_0"]
+    assert native_layer.features["instance_id"].tolist() == ["__annotation_0"]
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.mode == "edit_existing"
+    assert widget._annotation_session.shapes_name == "native_import"
+    assert widget.shapes_combo.currentText() == "native_import"
+    assert widget.name_edit.text() == ""
+
+
+def test_shapes_annotation_widget_native_name_falls_back_and_suffixes_collision(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    sdata_blobs.shapes["new_shapes"] = sdata_blobs.shapes["blobs_polygons"].copy()
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+    native_layer = Shapes([], shape_type="polygon", name="bad/name")
+
+    viewer.add_layer(native_layer)
+
+    qtbot.waitUntil(lambda: widget._annotation_layer is native_layer)
+    binding = widget.app_state.viewer_adapter.layer_bindings.get_binding(native_layer)
+    assert isinstance(binding, ShapesLayerBinding)
+    assert binding.element_name == "new_shapes_1"
+    assert widget.name_edit.text() == "new_shapes_1"
+    assert native_layer.name == "new_shapes_1"
+
+
+def test_shapes_annotation_widget_deferred_native_adoption_ignores_harpy_loaded_shapes(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    result = widget.app_state.viewer_adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
+    qtbot.wait(10)
+
+    assert result.created is True
+    assert widget.app_state.viewer_adapter.layer_bindings.get_binding(result.layer) is not None
+    assert widget._annotation_layer is None
+    assert widget._annotation_session is None
+    assert widget._selected_shapes_target == shapes_annotation_widget_module._ShapesAnnotationTarget.create_new()
+
+
+def test_shapes_annotation_widget_native_adoption_cancel_keeps_dirty_session_unbound(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
+    widget.create_layer_button.click()
+    annotation_layer = viewer.layers[0]
+    _add_polygon(annotation_layer)
+    native_layer = Shapes([], shape_type="polygon", name="native_shapes")
+    confirm_calls: list[str] = []
+
+    def cancel_discard(*, context: str) -> bool:
+        confirm_calls.append(context)
+        return False
+
+    monkeypatch.setattr(widget, "_confirm_discard_annotation_layer", cancel_discard)
+
+    viewer.add_layer(native_layer)
+
+    qtbot.waitUntil(lambda: bool(confirm_calls))
+    assert confirm_calls == ["target"]
+    assert widget._annotation_layer is annotation_layer
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.shapes_name == "new_regions"
+    assert widget.app_state.viewer_adapter.layer_bindings.get_binding(native_layer) is None
+    assert native_layer in viewer.layers
+
+
+def test_shapes_annotation_widget_native_adoption_confirm_discards_dirty_session(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
+    widget.create_layer_button.click()
+    annotation_layer = viewer.layers[0]
+    _add_polygon(annotation_layer)
+    native_layer = Shapes([], shape_type="polygon", name="native_shapes")
+    confirm_calls: list[str] = []
+
+    def confirm_discard(*, context: str) -> bool:
+        confirm_calls.append(context)
+        return True
+
+    monkeypatch.setattr(widget, "_confirm_discard_annotation_layer", confirm_discard)
+
+    viewer.add_layer(native_layer)
+
+    qtbot.waitUntil(lambda: widget._annotation_layer is native_layer)
+    assert confirm_calls == ["target"]
+    assert annotation_layer not in viewer.layers
+    assert widget.app_state.viewer_adapter.layer_bindings.get_binding(annotation_layer) is None
+    assert widget.app_state.viewer_adapter.layer_bindings.get_binding(native_layer) is not None
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.mode == "create_new"
+    assert widget._annotation_session.shapes_name == "native_shapes"
+    assert widget.name_edit.text() == "native_shapes"
 
 
 def test_shapes_annotation_widget_coordinate_discard_guard_avoids_duplicate_cleanup(

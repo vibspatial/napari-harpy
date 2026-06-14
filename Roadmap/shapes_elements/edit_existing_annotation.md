@@ -1917,7 +1917,7 @@ Done when:
 
 ### Slice 10: Native Napari Shapes Layer Adoption
 
-Status: pending
+Status: implemented
 
 Goal: allow Annotation to adopt a native napari `Shapes` layer that was created
 or imported into napari outside Harpy when the widget is already in a valid

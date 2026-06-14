@@ -45,6 +45,14 @@ def _capture_annotation_layer_snapshot(layer: Shapes) -> _ShapesAnnotationLayerS
     )
 
 
+def _empty_annotation_layer_snapshot() -> _ShapesAnnotationLayerSnapshot:
+    return _ShapesAnnotationLayerSnapshot(
+        row_count=0,
+        geometry_hash=_geometry_hash([], ()),
+        features=pd.DataFrame(),
+    )
+
+
 def _annotation_layer_snapshots_equal(
     left: _ShapesAnnotationLayerSnapshot,
     right: _ShapesAnnotationLayerSnapshot,

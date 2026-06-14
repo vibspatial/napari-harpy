@@ -1397,16 +1397,23 @@ class ViewerAdapter(QObject):
         )
         layer = built_layer.layer
         _add_layer_to_viewer(self._viewer, layer)
-        self.register_shapes_layer(
-            layer,
-            sdata=sdata,
-            shapes_name=shapes_name,
-            coordinate_system=coordinate_system,
-            shapes_rendering_mode=built_layer.shapes_rendering_mode,
-            source_row_id_by_rendered_row=built_layer.source_row_id_by_rendered_row,
-            source_shapes_index_feature_name=built_layer.source_shapes_index_feature_name,
-            skipped_geometry_count=built_layer.skipped_geometry_count,
-        )
+        try:
+            self.register_shapes_layer(
+                layer,
+                sdata=sdata,
+                shapes_name=shapes_name,
+                coordinate_system=coordinate_system,
+                shapes_rendering_mode=built_layer.shapes_rendering_mode,
+                source_row_id_by_rendered_row=built_layer.source_row_id_by_rendered_row,
+                source_shapes_index_feature_name=built_layer.source_shapes_index_feature_name,
+                skipped_geometry_count=built_layer.skipped_geometry_count,
+            )
+        except Exception:
+            # The layer is already visible in napari. Remove it so failed Harpy
+            # registration does not leave an unbound Harpy-created layer for the
+            # Annotation widget's native-layer adoption listener to react to.
+            _remove_layer_after_failed_registration(self._viewer, layer)
+            raise
         return ShapesLoadResult(
             layer=layer,
             created=True,
@@ -1437,14 +1444,21 @@ class ViewerAdapter(QObject):
             source_shapes_index_feature_name=source_shapes_index_feature_name,
         )
         _add_layer_to_viewer(self._viewer, layer)
-        self.register_shapes_layer(
-            layer,
-            sdata=sdata,
-            shapes_name=shapes_name,
-            coordinate_system=coordinate_system,
-            shapes_rendering_mode="shapes",
-            source_shapes_index_feature_name=source_shapes_index_feature_name,
-        )
+        try:
+            self.register_shapes_layer(
+                layer,
+                sdata=sdata,
+                shapes_name=shapes_name,
+                coordinate_system=coordinate_system,
+                shapes_rendering_mode="shapes",
+                source_shapes_index_feature_name=source_shapes_index_feature_name,
+            )
+        except Exception:
+            # The layer is already visible in napari. Remove it so failed Harpy
+            # registration does not leave an unbound Harpy-created layer for the
+            # Annotation widget's native-layer adoption listener to react to.
+            _remove_layer_after_failed_registration(self._viewer, layer)
+            raise
         return layer
 
     def ensure_styled_shapes_loaded(
@@ -1474,18 +1488,25 @@ class ViewerAdapter(QObject):
             )
             layer = built_layer.layer
             _add_layer_to_viewer(self._viewer, layer)
-            binding = self.register_shapes_layer(
-                layer,
-                sdata=sdata,
-                shapes_name=shapes_name,
-                coordinate_system=coordinate_system,
-                shapes_role="styled",
-                shapes_rendering_mode=built_layer.shapes_rendering_mode,
-                style_spec=style_spec,
-                source_row_id_by_rendered_row=built_layer.source_row_id_by_rendered_row,
-                source_shapes_index_feature_name=built_layer.source_shapes_index_feature_name,
-                skipped_geometry_count=built_layer.skipped_geometry_count,
-            )
+            try:
+                binding = self.register_shapes_layer(
+                    layer,
+                    sdata=sdata,
+                    shapes_name=shapes_name,
+                    coordinate_system=coordinate_system,
+                    shapes_role="styled",
+                    shapes_rendering_mode=built_layer.shapes_rendering_mode,
+                    style_spec=style_spec,
+                    source_row_id_by_rendered_row=built_layer.source_row_id_by_rendered_row,
+                    source_shapes_index_feature_name=built_layer.source_shapes_index_feature_name,
+                    skipped_geometry_count=built_layer.skipped_geometry_count,
+                )
+            except Exception:
+                # The layer is already visible in napari. Remove it so failed Harpy
+                # registration does not leave an unbound Harpy-created layer for the
+                # Annotation widget's native-layer adoption listener to react to.
+                _remove_layer_after_failed_registration(self._viewer, layer)
+                raise
         else:
             layer = existing_layer
             binding = self._layer_bindings.get_binding(layer)
@@ -1807,6 +1828,13 @@ def _remove_layer_from_viewer(viewer: Any | None, layer: Layer) -> None:
         return
 
     raise ValueError("The provided viewer does not support removing layers.")
+
+
+def _remove_layer_after_failed_registration(viewer: Any | None, layer: Layer) -> None:
+    try:
+        _remove_layer_from_viewer(viewer, layer)
+    except (AttributeError, RuntimeError, TypeError, ValueError):  # pragma: no cover - defensive cleanup fallback
+        logger.debug("Could not remove napari layer after Harpy registration failed.", exc_info=True)
 
 
 def _get_stack_image_layer_data(element: DataArray | DataTree) -> tuple[DataArray | list[DataArray], bool]:
