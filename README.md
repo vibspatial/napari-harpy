@@ -10,8 +10,8 @@ Built around [`SpatialData`](https://spatialdata.scverse.org/en/stable/) and [`H
 
 `napari-harpy` is a napari plugin for viewing, exploring, and analyzing
 `SpatialData` datasets. It includes its own viewer for loading and
-browsing data inside napari, alongside feature extraction and interactive
-object classification workflows.
+browsing data inside napari, alongside annotation, feature extraction, and
+interactive object classification workflows.
 
 ## Installation
 
@@ -48,11 +48,12 @@ Interactive(sdata)
 This opens napari with the Harpy widgets docked and the
 `blobs_multi_region` dataset available in the shared viewer state.
 
-The current repository contains three working widgets:
+The current repository contains four working widgets:
 
 - `Viewer`
 - `Feature Extraction`
 - `Object Classification`
+- `Annotation`
 
 Today the plugin supports:
 
@@ -64,6 +65,7 @@ Today the plugin supports:
   labels element, as `.obsm[feature_key]`, with companion metadata in
   `.uns["feature_matrices"][feature_key]`
 - interactive manual annotation of instances in labels elements
+- interactive creation and editing of polygon shapes annotations
 - background `RandomForestClassifier` retraining on the selected feature
   matrix stored in `.obsm[feature_key]` of the `AnnData` table linked to the
   labels element
@@ -78,11 +80,11 @@ Today the plugin supports:
 Example napari-harpy session:
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/vibspatial/napari-harpy/main/docs/_static/Screenshot%202026-05-19%20at%2014.25.23.png" alt="napari-harpy viewer example screenshot" width="900">
+  <img src="https://raw.githubusercontent.com/vibspatial/napari-harpy/main/docs/_static/viewer.png" alt="napari-harpy viewer example screenshot" width="900">
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/vibspatial/napari-harpy/main/docs/_static/Screenshot%202026-05-09%20at%2021.31.53.png" alt="napari-harpy object classification example screenshot" width="900">
+  <img src="https://raw.githubusercontent.com/vibspatial/napari-harpy/main/docs/_static/object_classification.png" alt="napari-harpy object classification example screenshot" width="900">
 </p>
 
 ## Headless and Multi-Sample Workflows
@@ -134,6 +136,7 @@ Open the widgets from the napari plugin menu:
 - `Plugins -> napari-harpy -> Viewer`
 - `Plugins -> napari-harpy -> Feature Extraction`
 - `Plugins -> napari-harpy -> Object Classification`
+- `Plugins -> napari-harpy -> Annotation`
 
 ## Debug script
 
