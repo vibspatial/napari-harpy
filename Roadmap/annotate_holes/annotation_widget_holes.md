@@ -160,6 +160,65 @@ display encoding should remain compatible with the existing adapter:
 This contract should live in a shared geometry helper, not only in
 `viewer/adapter.py`, so both loading and saving use the same encoding rules.
 
+## Hole State Through The Current Pipeline
+
+Given the current codebase, hole information should be tracked in geometry, not
+in `layer.features` or in a separate sidecar structure.
+
+The intended Slice 1 lifecycle is:
+
+1. SpatialData stores one shapes row whose geometry is a Shapely `Polygon` with
+   direct interior rings.
+2. The viewer adapter renders that source row as one napari Shapes row.
+3. The napari row keeps hole topology inside `layer.data[row]` using the
+   existing `_polygon_to_napari_path(...)` encoding.
+4. `layer.features.iloc[row]` keeps row metadata, especially the source
+   GeoDataFrame index, but does not store hole boundaries.
+5. On save, `napari_shapes_layer_to_geodataframe(...)` decodes
+   `layer.data[row]` back into `shell` and `holes`.
+6. The saved GeoDataFrame receives `Polygon(shell, holes=holes)` as the row
+   geometry.
+7. `hp.sh.add_shapes(...)` writes that GeoDataFrame back into the SpatialData
+   object.
+
+The existing adapter already sets up this model when rendering source shapes.
+`_prepare_napari_shapes_layer_inputs(...)` appends one rendered napari row for
+each renderable source `Polygon`, and stores only the source index in
+`features`. For a simple `Polygon` with holes this remains one source row to
+one rendered row. That means the current widget validation and post-save
+binding refresh can stay one-to-one for Slice 1.
+
+The encoded napari path has this shape, after converting from napari `(y, x)`
+to Shapely `(x, y)`:
+
+```text
+A B C D A   E F G H E   A
+```
+
+Here `A B C D A` is the closed exterior shell, `E F G H E` is the closed
+interior ring, and the final `A` is the repeated shell-start anchor that
+separates the hole from any later rings. This is not based on consecutive
+duplicate vertices such as `vertex[i] == vertex[i + 1]`; the decoder looks for
+the shell-start anchor recurring later in the path, and for each hole to close
+on its own start coordinate.
+
+The repeated shell start is the separator that lets napari render the polygon
+with holes. Slice 1 should make the reverse operation explicit and shared:
+
+```python
+shell, holes = decode_napari_polygon_path(vertices)
+geometry = Polygon(shell, holes=holes)
+```
+
+No new feature column is needed for hole bookkeeping. The source identity
+continues to live in the existing `source_shapes_index_feature_name` column,
+and the hole geometry lives in the Shapely geometry itself.
+
+The important limitation is that this is only deterministic for paths that
+match the documented encoding. If a user edits repeated vertices so the ring
+separators are no longer parseable, the save path should raise a clear error.
+It should not try to infer holes from arbitrary self-touching polygon paths.
+
 ## Implementation Slices
 
 The slices are intentionally ordered so the first implementation does not
@@ -239,6 +298,46 @@ Decoder notes:
   sequence into an invalid ring layout, report a save error rather than trying
   to guess.
 
+Decoder algorithm for adapter-encoded paths:
+
+1. Coerce `vertices` to a finite `(n, 2)` array.
+2. Convert from napari `(y, x)` to Shapely `(x, y)`.
+3. Let `anchor = coordinates_xy[0]`.
+4. Find the first later occurrence of `anchor`; this closes the exterior ring.
+5. Use coordinates from the start through that occurrence as `shell`.
+6. If there are no coordinates after the shell, return `Polygon(shell)`.
+7. Otherwise, parse the remaining coordinates as zero or more hole chunks.
+   Each hole chunk starts immediately after a shell-anchor separator and ends
+   immediately before the next shell-anchor separator.
+8. For each chunk, require a closed ring with at least four coordinates. The
+   chunk itself should close on its own first coordinate.
+9. Do not treat consecutive duplicate vertices as the hole marker. The hole
+   marker is structural: a closed hole ring followed by the repeated shell
+   anchor.
+10. Require the path to end on the shell anchor. If a later shell-anchor
+   separator is missing, fail.
+11. Validate direct-hole topology:
+    - every hole is contained by the shell
+    - no hole contains another hole
+    - holes do not overlap each other
+12. Construct `Polygon(shell, holes=holes)` and validate the resulting Shapely
+    geometry.
+
+Simple user-drawn polygons may not have adapter-style hole separators. If no
+valid shell-anchor separator pattern is present, the converter can keep the
+existing simple path behavior and call `Polygon(coordinates_xy)` for that row.
+Once an adapter-style separator is detected, the row must fully satisfy the
+hole-path grammar above or fail clearly.
+
+Strict failure policy:
+
+- If repeated vertices or ring separators no longer match the documented
+  encoding, the decoder must fail with a clear user-facing save error.
+- The decoder must not infer hole boundaries from arbitrary self-touching
+  paths, bridge edges, or vertex repetition patterns.
+- Failed decoding must leave both `layer.features` and the SpatialData object
+  unchanged.
+
 Tests to add:
 
 - converting a simple polygon is unchanged
@@ -247,6 +346,8 @@ Tests to add:
 - create-new save can write a polygon with an interior ring
 - edit-existing save can round-trip an unchanged polygon with an interior ring
 - a hole-inside-hole / island-in-hole path is rejected as unsupported
+- an ambiguous edited separator path fails clearly rather than guessing a hole
+  layout
 - invalid encoded paths fail without mutating `layer.features` or `sdata`
 
 Slice 1 acceptance criteria:
