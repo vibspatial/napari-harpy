@@ -213,9 +213,11 @@ The repeated shell start is the separator that lets napari render the polygon
 with holes. Slice 1 should make the reverse operation explicit and shared:
 
 ```python
-shell, holes = decode_napari_polygon_path(vertices)
-geometry = Polygon(shell, holes=holes)
+geometry = napari_path_to_polygon(vertices)
 ```
+
+The helper constructs `Polygon(shell, holes=holes)` internally after validating
+the decoded rings.
 
 No new feature column is needed for hole bookkeeping. The source identity
 continues to live in the existing `source_shapes_index_feature_name` column,
@@ -285,7 +287,7 @@ Suggested work:
    `src/napari_harpy/core/shapes_geometry.py`.
 2. Move or mirror the existing adapter encoder into that helper so loading and
    saving share one documented napari path contract.
-3. Implement `decode_napari_polygon_path(vertices) -> Polygon`, or a similarly
+3. Implement `napari_path_to_polygon(vertices) -> Polygon`, or a similarly
    named helper, that:
    - accepts a napari `(y, x)` vertex array
    - returns a Shapely `Polygon`

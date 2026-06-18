@@ -13,7 +13,6 @@ from shapely import make_valid
 from shapely.errors import GEOSException
 from shapely.geometry import GeometryCollection, MultiPolygon, Point, Polygon
 from shapely.geometry.base import BaseGeometry
-from shapely.geometry.polygon import orient
 from spatialdata import transform as transform_spatial_element
 from spatialdata.models import get_axes_names
 from spatialdata.transformations import get_transformation
@@ -23,6 +22,7 @@ from napari_harpy.core._color_source import (
     ShapeColumnColorSourceSpec,
     TableColorSourceSpec,
 )
+from napari_harpy.core.shapes_geometry import polygon_to_napari_path
 from napari_harpy.viewer.image_styling import DEFAULT_OVERLAY_COLORS, ImageDisplayMode, ImageLoadResult
 from napari_harpy.viewer.labels_styling import (
     LabelsLoadResult,
@@ -2252,17 +2252,7 @@ def _polygon_to_napari_path(polygon: Polygon) -> np.ndarray:
     The repeated exterior anchor creates bridge edges that napari's
     triangulation removes because they are traversed twice.
     """
-    oriented = orient(polygon, sign=1.0)
-    path = [_xy_coordinate(coord) for coord in oriented.exterior.coords]
-    anchor = path[0]
-    for interior in oriented.interiors:
-        path.extend(_xy_coordinate(coord) for coord in interior.coords)
-        path.append(anchor)
-    return np.asarray([(y, x) for x, y in path], dtype=float)
-
-
-def _xy_coordinate(coordinate: Sequence[float]) -> tuple[float, float]:
-    return float(coordinate[0]), float(coordinate[1])
+    return polygon_to_napari_path(polygon)
 
 
 def _build_labels_layer(
