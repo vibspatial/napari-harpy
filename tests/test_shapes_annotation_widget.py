@@ -126,7 +126,7 @@ def _add_polygon(layer: Shapes, offset: float = 0.0) -> None:
     )
 
 
-def _native_polygon_layer(name: str) -> Shapes:
+def _native_polygon_layer(name: str, *, affine: np.ndarray | None = None) -> Shapes:
     return Shapes(
         [
             np.asarray(
@@ -140,6 +140,7 @@ def _native_polygon_layer(name: str) -> Shapes:
             )
         ],
         shape_type="polygon",
+        affine=affine,
         name=name,
     )
 
@@ -1015,7 +1016,12 @@ def test_shapes_annotation_widget_adopts_native_empty_shapes_layer(
     app_state.set_sdata(sdata_blobs)
     widget = ShapesAnnotation(viewer)
     qtbot.addWidget(widget)
-    native_layer = Shapes([], shape_type="polygon", name="native_shapes")
+    native_layer = Shapes(
+        [],
+        shape_type="polygon",
+        name="native_shapes",
+        affine=np.asarray([[1.0, 0.0, 5.0], [0.0, 1.0, 7.0], [0.0, 0.0, 1.0]]),
+    )
 
     viewer.add_layer(native_layer)
 
@@ -1034,6 +1040,7 @@ def test_shapes_annotation_widget_adopts_native_empty_shapes_layer(
     assert widget.shapes_combo.currentText() == "Create shapes..."
     assert widget.name_edit.text() == "native_shapes"
     assert native_layer.name == "native_shapes"
+    np.testing.assert_allclose(native_layer.affine.affine_matrix, np.eye(3))
     assert native_layer.current_edge_width == 1
     np.testing.assert_allclose(to_rgba(native_layer.current_edge_color), to_rgba("#00FFFF"))
     np.testing.assert_allclose(to_rgba(native_layer.current_face_color), to_rgba("#00000000"))
@@ -1071,6 +1078,71 @@ def test_shapes_annotation_widget_saves_adopted_native_nonempty_shapes_layer(
     assert widget._annotation_session.shapes_name == "native_import"
     assert widget.shapes_combo.currentText() == "native_import"
     assert widget.name_edit.text() == ""
+
+
+def test_shapes_annotation_widget_saves_reloads_adopted_translated_native_shapes_layer(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+    native_layer = _native_polygon_layer(
+        "native_translated",
+        affine=np.asarray([[1.0, 0.0, 5.0], [0.0, 1.0, 7.0], [0.0, 0.0, 1.0]]),
+    )
+    expected_layer_vertices = np.asarray(
+        [
+            [5.0, 7.0],
+            [5.0, 9.0],
+            [7.0, 9.0],
+            [7.0, 7.0],
+        ]
+    )
+    expected_geometry_coords = np.asarray(
+        [
+            [7.0, 5.0],
+            [9.0, 5.0],
+            [9.0, 7.0],
+            [7.0, 7.0],
+            [7.0, 5.0],
+        ]
+    )
+    # Reloading goes through the saved Shapely polygon exterior, which is a
+    # closed ring and therefore repeats the first vertex at the end.
+    expected_reloaded_vertices = np.asarray(
+        [
+            [5.0, 7.0],
+            [5.0, 9.0],
+            [7.0, 9.0],
+            [7.0, 7.0],
+            [5.0, 7.0],
+        ]
+    )
+
+    viewer.add_layer(native_layer)
+
+    qtbot.waitUntil(lambda: widget._annotation_layer is native_layer)
+    np.testing.assert_allclose(native_layer.affine.affine_matrix, np.eye(3))
+    np.testing.assert_allclose(native_layer.data[0], expected_layer_vertices)
+
+    widget.save_shapes_button.click()
+
+    assert "native_translated" in sdata_blobs.shapes
+    np.testing.assert_allclose(
+        np.asarray(sdata_blobs.shapes["native_translated"].geometry.iloc[0].exterior.coords),
+        expected_geometry_coords,
+    )
+
+    viewer.layers.remove(native_layer)
+
+    reloaded = widget.app_state.viewer_adapter.ensure_shapes_loaded(sdata_blobs, "native_translated", "global").layer
+
+    assert isinstance(reloaded, Shapes)
+    assert reloaded is not native_layer
+    np.testing.assert_allclose(reloaded.data[0], expected_reloaded_vertices)
 
 
 def test_shapes_annotation_widget_native_name_falls_back_and_suffixes_collision(
