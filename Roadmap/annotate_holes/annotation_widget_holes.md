@@ -182,9 +182,10 @@ The intended Slice 1 lifecycle is:
 4. `layer.features.iloc[row]` keeps row metadata, especially the source
    GeoDataFrame index, but does not store hole boundaries.
 5. On save, `napari_shapes_layer_to_geodataframe(...)` decodes
-   `layer.data[row]` back into `shell` and `holes`.
-6. The saved GeoDataFrame receives `Polygon(shell, holes=holes)` as the row
-   geometry.
+   `layer.data[row]` through `napari_path_to_polygon(...)`.
+6. The helper validates the path, constructs `Polygon(shell, holes=holes)`
+   internally, and the saved GeoDataFrame receives that Shapely `Polygon` as the
+   row geometry.
 7. `hp.sh.add_shapes(...)` writes that GeoDataFrame back into the SpatialData
    object.
 
@@ -341,6 +342,21 @@ def _polygon_shape_to_polygon(vertices: object, *, row_index: int) -> Polygon:
 The exact type annotation can follow the surrounding converter code, but the
 important behavior is that `_polygon_shape_to_polygon(...)` becomes a thin
 row-aware wrapper around `napari_path_to_polygon(...)`.
+
+Layering contract:
+
+- `src/napari_harpy/core/shapes_geometry.py` owns pure geometry/path
+  interpretation. It knows about napari `(y, x)` path arrays and Shapely
+  `Polygon`s, but it does not know about napari `Shapes` layers, row indexes,
+  `layer.features`, SpatialData, or widgets.
+- `src/napari_harpy/core/shapes_annotation.py` owns annotation save conversion.
+  `_polygon_shape_to_polygon(...)` should keep existing row-aware error context
+  and converter structure, but should stop duplicating polygon path parsing.
+- `napari_path_to_polygon(...)` becomes the source of truth for interpreting one
+  polygon or rectangle path row as a Shapely `Polygon`.
+- `_coerce_vertices(...)` and `_make_valid_polygon(...)` in
+  `shapes_annotation.py` can remain for ellipse conversion and other local save
+  converter needs. They do not need to be removed or refactored in Slice 1B.
 
 Suggested work:
 
