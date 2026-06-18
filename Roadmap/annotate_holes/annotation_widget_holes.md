@@ -141,8 +141,9 @@ Lessons for napari-harpy:
 
 ## Recommended Geometry Contract
 
-For Slice 1, persist holes as Shapely `Polygon` objects with
-interior rings in the GeoDataFrame geometry column.
+For Slice 1 and Slice 2, persist holes as Shapely `Polygon` objects with
+interior rings in the GeoDataFrame geometry column. Do not support
+`MultiPolygon` annotation in these slices.
 
 Do not persist hole rings as separate shapes rows. Separate rows would break
 table annotation semantics and would make a hole look like a positive region to
@@ -159,6 +160,12 @@ display encoding should remain compatible with the existing adapter:
 
 This contract should live in a shared geometry helper, not only in
 `viewer/adapter.py`, so both loading and saving use the same encoding rules.
+
+`MultiPolygon` is explicitly out of scope for annotation support in Slice 1 and
+Slice 2. Existing `MultiPolygon` shapes elements should continue to be rejected
+by the annotation widget, and any operation that would produce a `MultiPolygon`
+must fail clearly rather than splitting, merging, or silently changing row
+identity.
 
 ## Hole State Through The Current Pipeline
 
@@ -260,7 +267,7 @@ Out of scope:
 
 - no new widget buttons
 - no `Subtract selected` operation
-- no `MultiPolygon` editing support
+- no `MultiPolygon` annotation or editing support
 - no nested hole support; a hole inside a hole represents island/multipolygon
   semantics and must be rejected or deferred
 - no change to linked-table behavior
@@ -343,6 +350,8 @@ Tests to add:
 - converting a simple polygon is unchanged
 - `_polygon_to_napari_path(Polygon(..., holes=[...]))` followed by the save
   converter preserves `len(geometry.interiors)`, area, bounds, and validity
+- existing `MultiPolygon` shapes elements remain rejected by the annotation
+  widget
 - create-new save can write a polygon with an interior ring
 - edit-existing save can round-trip an unchanged polygon with an interior ring
 - a hole-inside-hole / island-in-hole path is rejected as unsupported
@@ -354,6 +363,8 @@ Slice 1 acceptance criteria:
 
 - An existing SpatialData shapes row with a Shapely `Polygon` interior opens in
   the annotation widget.
+- Existing SpatialData shapes rows with Shapely `MultiPolygon` geometry remain
+  unsupported for annotation and fail clearly.
 - Saving that layer without edits preserves the number of interiors, bounds,
   area, validity, index, and non-geometry columns.
 - Simple polygon, rectangle, and ellipse save behavior remains unchanged.
@@ -403,7 +414,7 @@ Geometry operation:
 - Compute `shell.difference(unary_union(holes))`.
 - Accept the result only when it is a non-empty valid `Polygon`.
 - If the result is `MultiPolygon` or `GeometryCollection`, fail with a clear
-  message for the MVP.
+  message. Slice 2 must not create or annotate `MultiPolygon` geometries.
 - Encode the resulting polygon back to one napari polygon row using the shared
   hole-path encoder.
 - Remove the subtractor rows from `layer.data`, `layer.shape_type`, and
@@ -441,6 +452,8 @@ Tests to add:
   unique containing shell
 - operation fails without layer mutation when the boolean result is not a
   single `Polygon`
+- operation fails without layer mutation when subtraction would produce a
+  `MultiPolygon`
 - edit-existing save after subtraction preserves source metadata for the shell
   row
 
@@ -453,12 +466,14 @@ Slice 2 acceptance criteria:
 - The shell row keeps its feature values and source identity.
 - Subtractor rows are removed intentionally and linked-table warnings still
   apply when relevant.
+- Subtraction results that would be `MultiPolygon` are rejected; Slice 2 does
+  not support annotating `MultiPolygon`.
 
 ## Slice 3 - Future Extensions
 
 These are useful but should not block Slice 1 or Slice 2:
 
-- Support `MultiPolygon` edit-existing sessions. This requires revisiting the
+- Support `MultiPolygon` annotation sessions. This requires revisiting the
   one-source-row to one-rendered-row assumption in widget validation and save
   session refresh.
 - Add brush/eraser subtraction similar to QuPath's brush tool.
@@ -500,6 +515,8 @@ Slice 1:
 
 - Existing SpatialData shapes with Shapely `Polygon` interiors open in the
   annotation widget.
+- Existing SpatialData shapes with Shapely `MultiPolygon` geometry remain
+  rejected by the annotation widget.
 - Saving an unchanged polygon-with-hole preserves the hole.
 - Hole-inside-hole / island-in-hole geometry is explicitly rejected for Slice 1.
 - The shared converter can persist hole-encoded polygon rows in both
@@ -511,10 +528,11 @@ Slice 2:
 
 - A selected shell plus selected contained polygons can be converted into one
   hole-bearing annotation row from the widget.
+- Any subtraction result that would be a `MultiPolygon` is rejected.
 - The shell row keeps its source identity and feature values.
 - Invalid selections fail without mutating the layer.
 
 Slice 3:
 
-- `MultiPolygon` edit-existing behavior remains explicitly unsupported until a
-  separate roadmap item changes the row-mapping contract.
+- `MultiPolygon` annotation remains explicitly unsupported until a separate
+  roadmap item changes the row-mapping contract.
