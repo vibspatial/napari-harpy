@@ -272,19 +272,79 @@ Out of scope:
   semantics and must be rejected or deferred
 - no change to linked-table behavior
 
+Slice 1 implementation breakdown:
+
+### Slice 1A - Geometry Helper Only
+
+Goal: implement and unit-test the geometry conversion helper without changing
+the annotation widget, SpatialData writes, or save behavior yet.
+
 Suggested work:
 
-1. Move or duplicate the adapter's hole-path encoder into a shared core helper,
-   for example `core/shapes_geometry.py`.
-2. Add a decoder that converts a napari polygon vertex path back into
-   `Polygon(shell, holes=[...])`.
-3. Update `_polygon_shape_to_polygon(...)` to use the decoder:
-   - simple polygon paths with no hole separators still become simple polygons
-   - adapter-encoded hole paths become polygons with interiors
-   - malformed paths raise a clear `ValueError`
-4. Keep `MultiPolygon` edit-existing rejection unchanged for Slice 1.
-5. Keep `line` and `path` rows unsupported unless a separate design is made for
-   them.
+1. Add a small helper module, for example
+   `src/napari_harpy/core/shapes_geometry.py`.
+2. Move or mirror the existing adapter encoder into that helper so loading and
+   saving share one documented napari path contract.
+3. Implement `decode_napari_polygon_path(vertices) -> Polygon`, or a similarly
+   named helper, that:
+   - accepts a napari `(y, x)` vertex array
+   - returns a Shapely `Polygon`
+   - constructs holes explicitly with `Polygon(shell, holes=holes)`
+   - keeps simple polygons without hole separators working
+   - rejects malformed, nested-hole, overlapping-hole, and ambiguous paths
+4. Add focused unit tests for the helper only. These tests should not require a
+   napari `Shapes` layer or a SpatialData object.
+
+Slice 1A acceptance criteria:
+
+- simple polygon vertex arrays still decode to simple Shapely polygons
+- adapter-encoded polygons with one or more holes decode to Shapely polygons
+  with matching `interiors`
+- ambiguous edited separator paths fail clearly
+- hole-inside-hole / island-in-hole layouts fail clearly
+- `MultiPolygon` is not introduced or accepted by this helper
+
+### Slice 1B - Wire Helper Into `_polygon_shape_to_polygon`
+
+Goal: make the annotation save converter use the helper for polygon rows while
+keeping the surrounding save pipeline unchanged.
+
+Suggested work:
+
+1. Update `_polygon_shape_to_polygon(...)` to call the Slice 1A helper.
+2. Keep `rectangle` rows flowing through the same polygon conversion as today.
+3. Keep `ellipse`, `line`, and `path` behavior unchanged.
+4. Keep `MultiPolygon` edit-existing rejection unchanged.
+5. Preserve the current failure behavior that invalid geometry conversion does
+   not mutate `layer.features`.
+
+Slice 1B acceptance criteria:
+
+- `napari_shapes_layer_to_geodataframe(...)` converts an encoded hole path into
+  a GeoDataFrame row whose geometry is `Polygon(shell, holes=holes)`
+- simple polygon, rectangle, and ellipse conversion tests continue to pass
+- invalid or ambiguous encoded paths fail before `layer.features` is rewritten
+
+### Slice 1C - End-To-End Annotation Save Round Trip
+
+Goal: prove that existing hole-bearing SpatialData shapes can be opened in the
+annotation widget and saved back without losing hole geometry.
+
+Suggested work:
+
+1. Add create/edit tests that start from a Shapely `Polygon` with interiors.
+2. Open the existing shapes element through the annotation widget.
+3. Save without editing.
+4. Assert the saved SpatialData shapes geometry still has the expected
+   interiors, bounds, area, index, and non-geometry columns.
+5. Keep `MultiPolygon` rejection covered by the existing widget behavior.
+
+Slice 1C acceptance criteria:
+
+- an unchanged polygon-with-hole round-trips through the annotation widget save
+  path
+- saved source metadata and row identity remain stable
+- backed SpatialData save behavior is covered if practical
 
 Decoder notes:
 
