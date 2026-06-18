@@ -319,14 +319,79 @@ Slice 1A acceptance criteria:
 Goal: make the annotation save converter use the helper for polygon rows while
 keeping the surrounding save pipeline unchanged.
 
+Status: specified; not implemented.
+
+This is the first behavioral save-path change. It should preserve holes for
+encoded napari polygon rows, but it should not change the annotation widget UI,
+SpatialData write orchestration, edit-existing source validation, or
+`MultiPolygon` policy.
+
+Implementation shape:
+
+```python
+def _polygon_shape_to_polygon(vertices: object, *, row_index: int) -> Polygon:
+    try:
+        return napari_path_to_polygon(vertices)
+    except ValueError as error:
+        raise ValueError(
+            f"Shape row `{row_index}` cannot be converted to a valid polygon: {error}"
+        ) from error
+```
+
+The exact type annotation can follow the surrounding converter code, but the
+important behavior is that `_polygon_shape_to_polygon(...)` becomes a thin
+row-aware wrapper around `napari_path_to_polygon(...)`.
+
 Suggested work:
 
-1. Update `_polygon_shape_to_polygon(...)` to call the Slice 1A helper.
-2. Keep `rectangle` rows flowing through the same polygon conversion as today.
-3. Keep `ellipse`, `line`, and `path` behavior unchanged.
-4. Keep `MultiPolygon` edit-existing rejection unchanged.
-5. Preserve the current failure behavior that invalid geometry conversion does
+1. Import `napari_path_to_polygon(...)` in
+   `src/napari_harpy/core/shapes_annotation.py`.
+2. Update `_polygon_shape_to_polygon(...)` to call the helper.
+3. Wrap helper `ValueError`s with the napari shape row index while preserving
+   the detailed helper message.
+4. Keep `rectangle` rows flowing through the same polygon conversion as today.
+   Rectangles are simple napari paths and should continue to save as simple
+   Shapely polygons.
+5. Keep `ellipse`, `line`, and `path` behavior unchanged.
+6. Keep `MultiPolygon` edit-existing rejection unchanged.
+7. Preserve the current failure behavior that invalid geometry conversion does
    not mutate `layer.features`.
+
+Behavior to preserve:
+
+- simple user-drawn polygon rows save as simple `Polygon`
+- closed simple polygon rows save as simple `Polygon`
+- rectangle rows save as simple `Polygon`
+- ellipse rows still use `_ellipse_shape_to_polygon(...)`
+- line and path rows remain rejected
+- generated or preserved `layer.features` IDs are written only after all
+  geometry rows validate
+
+New behavior:
+
+- adapter-encoded hole paths save as Shapely `Polygon` with `interiors`
+- malformed hole encodings fail clearly before `layer.features` is rewritten
+- shell-touching holes fail because the helper requires holes to be fully inside
+  the shell
+- nested holes, overlapping holes, and edge-sharing holes fail
+
+Tests to add in `tests/test_shapes_annotation.py`:
+
+1. `napari_shapes_layer_to_geodataframe(...)` preserves one hole from
+   `polygon_to_napari_path(...)`.
+2. `napari_shapes_layer_to_geodataframe(...)` preserves multiple holes.
+3. Invalid or ambiguous encoded hole paths fail with row context and do not
+   mutate `layer.features`.
+4. Existing simple polygon, rectangle, ellipse, line/path rejection, and feature
+   identity tests continue to pass.
+
+Slice 1B non-goals:
+
+- no annotation widget behavior changes
+- no SpatialData round-trip test yet
+- no edit-existing widget test yet
+- no `MultiPolygon` support
+- no hole creation or subtraction UI
 
 Slice 1B acceptance criteria:
 
