@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+import numpy as np
 from napari.layers import Shapes
 from qtpy.QtCore import QSignalBlocker, Qt, QTimer
 from qtpy.QtGui import QPixmap
@@ -100,6 +101,32 @@ _ShapesAnnotationLayerOrigin = Literal[
 
 def _format_status_identifier(identifier: str) -> tuple[str, bool]:
     return format_feedback_identifier(identifier, max_length=_STATUS_IDENTIFIER_MAX_LENGTH)
+
+
+def _normalize_native_shapes_layer_transform(layer: Shapes) -> None:
+    """Bake one native napari Shapes-layer transform into its vertices.
+
+    Napari's own "new shapes" action can clone the active layer's transform
+    onto the new Shapes layer. Harpy's save path serializes polygon vertices
+    from ``layer.data`` directly, so adopted native layers must be normalized
+    to identity-like transform semantics before a save/edit session begins.
+    """
+    baked_data = [
+        # `Shapes.data_to_world(...)` is a single-position helper; use the
+        # array-capable underlying transform so one call can transform the
+        # whole `(n_vertices, ndim)` array at once.
+        np.asarray(layer._data_to_world(vertices), dtype=float)
+        for vertices in layer.data
+    ]
+
+    layer.scale = (1.0,) * layer.ndim
+    layer.translate = (0.0,) * layer.ndim
+    layer.rotate = 0.0
+    layer.shear = (0.0,) * max(layer.ndim * (layer.ndim - 1) // 2, 0)
+    layer.affine = np.eye(layer.ndim + 1, dtype=float)
+
+    if baked_data:
+        layer.data = baked_data
 
 
 @dataclass(frozen=True)
@@ -547,6 +574,7 @@ class ShapesAnnotation(QWidget):
         with QSignalBlocker(self.name_edit):
             self.name_edit.setText(shapes_name)
         layer.name = shapes_name
+        _normalize_native_shapes_layer_transform(layer)
         # Normalize native napari layers into Annotation's visual contract before
         # registering the layer and capturing the clean annotation baseline.
         self._app_state.viewer_adapter.apply_primary_shapes_layer_style(layer)
