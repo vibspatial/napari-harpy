@@ -278,6 +278,14 @@ Slice 1 implementation breakdown:
 
 ### Slice 1A - Geometry Helper Only
 
+Status: implemented.
+
+Implemented in `src/napari_harpy/core/shapes_geometry.py` with
+`polygon_to_napari_path(...)` and `napari_path_to_polygon(...)`. The viewer
+adapter now delegates its polygon path encoding to the shared helper, and
+`tests/test_shapes_geometry.py` covers the helper contract without touching the
+annotation widget, SpatialData writes, or save behavior.
+
 Goal: implement and unit-test the geometry conversion helper without changing
 the annotation widget, SpatialData writes, or save behavior yet.
 
