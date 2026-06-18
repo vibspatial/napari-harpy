@@ -202,6 +202,8 @@ Out of scope:
 - no new widget buttons
 - no `Subtract selected` operation
 - no `MultiPolygon` editing support
+- no nested hole support; a hole inside a hole represents island/multipolygon
+  semantics and must be rejected or deferred
 - no change to linked-table behavior
 
 Suggested work:
@@ -227,6 +229,11 @@ Decoder notes:
 - Later segments are interior rings.
 - Pass the parsed rings to Shapely as `Polygon(shell, holes=holes)`, not as
   `Polygon(all_coordinates)`.
+- Explicitly validate that all parsed holes are direct holes in the shell:
+  each hole must be contained by the shell, holes must not contain other holes,
+  and holes must not overlap each other. Cases that imply a hole inside a hole
+  should fail with a clear unsupported-geometry error rather than being
+  silently coerced.
 - Validate with Shapely after decoding.
 - Be conservative when parsing ambiguous paths. If a user edits the vertex
   sequence into an invalid ring layout, report a save error rather than trying
@@ -239,6 +246,7 @@ Tests to add:
   converter preserves `len(geometry.interiors)`, area, bounds, and validity
 - create-new save can write a polygon with an interior ring
 - edit-existing save can round-trip an unchanged polygon with an interior ring
+- a hole-inside-hole / island-in-hole path is rejected as unsupported
 - invalid encoded paths fail without mutating `layer.features` or `sdata`
 
 Slice 1 acceptance criteria:
@@ -248,6 +256,7 @@ Slice 1 acceptance criteria:
 - Saving that layer without edits preserves the number of interiors, bounds,
   area, validity, index, and non-geometry columns.
 - Simple polygon, rectangle, and ellipse save behavior remains unchanged.
+- Hole-inside-hole geometry is explicitly unsupported and fails clearly.
 - Malformed hole paths produce a clear save error and do not mutate
   `layer.features` or `sdata`.
 
@@ -391,6 +400,7 @@ Slice 1:
 - Existing SpatialData shapes with Shapely `Polygon` interiors open in the
   annotation widget.
 - Saving an unchanged polygon-with-hole preserves the hole.
+- Hole-inside-hole / island-in-hole geometry is explicitly rejected for Slice 1.
 - The shared converter can persist hole-encoded polygon rows in both
   create-new and edit-existing save paths, without adding UI for creating
   those holes.
