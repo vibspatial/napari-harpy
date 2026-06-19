@@ -197,6 +197,10 @@ def _polygon_hole_roundtrip_fixture() -> tuple[Polygon, Polygon]:
     assert polygon_1.is_valid
     assert polygon_2.is_valid
     assert len(polygon_1.interiors) == 1
+    # When polygon_1 is encoded for napari, the flat path is:
+    # shell[0:5] + shell[0] + hole[0:5] + hole[0] + shell[0].
+    # The exterior anchor/separator copies are shell[0]; the hole anchor
+    # copies are hole[0].
     return polygon_1, polygon_2
 
 
