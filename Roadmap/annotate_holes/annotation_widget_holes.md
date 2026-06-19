@@ -626,19 +626,50 @@ Definitions:
 
 Suggested work:
 
-1. Add widget-level or converter-level tests that load a polygon with one hole.
-2. Move one ordinary shell vertex and one ordinary hole vertex.
-3. Save through the annotation widget.
-4. Assert the saved geometry is valid, still has the expected number of
-   interiors, and reflects the edited vertex coordinates.
-5. Reload the saved shape through the viewer/annotation path and assert the
-   encoded napari row still decodes to the same Shapely polygon.
+1. Add widget-level tests that start from the same canonical synthetic fixture
+   used in Slice 1C.
+2. Open the existing SpatialData shapes element through `ShapesAnnotation`.
+3. Modify `layer.data[0]` directly to move one ordinary exterior-shell vertex
+   and one ordinary hole-ring vertex. This slice does not need to simulate
+   napari mouse dragging.
+4. Do not modify any repeated exterior anchor/separator vertex or repeated hole
+   start/end anchor.
+5. Save through the annotation widget.
+6. Assert the saved geometry is a valid single Shapely `Polygon`, still has one
+   interior ring, and reflects the expected edited coordinates.
+7. Assert the saved row index and non-geometry metadata are preserved.
+8. Reload the saved shapes element through the viewer adapter and assert the
+   reloaded encoded napari row decodes to the same saved Shapely polygon.
+
+Example one-hole path:
+
+```text
+A B C D A   E F G H E   A
+```
+
+Slice 1D may edit `B`, `C`, `D`, `F`, `G`, or `H`. It must not edit any `A`
+copy or either `E` copy. The duplicated-anchor edit case is Slice 1E.
+
+Implementation notes:
+
+- Prefer direct `layer.data[0] = edited_vertices` or the existing napari layer
+  edit API over GUI mouse-event simulation.
+- Compute the expected Shapely polygon from the edited shell/hole coordinate
+  arrays rather than asserting only that the geometry changed.
+- Reuse `napari_polygon_vertices_to_shapely_polygon(...)` for the reload check
+  so the test proves the saved geometry still returns to a valid napari
+  hole-path representation.
 
 Slice 1D acceptance criteria:
 
 - editing a non-anchor exterior vertex of a hole-bearing polygon round-trips
   through save/reload
 - editing a non-anchor interior-ring vertex round-trips through save/reload
+- saved geometry remains a valid single `Polygon` with the expected edited
+  coordinates and exactly one interior ring
+- source row identity and non-geometry metadata are preserved
+- reload through the viewer adapter produces a decodable hole path matching the
+  saved Shapely geometry
 - anchor/separator edits remain explicitly out of scope for this slice
 - malformed anchor/separator paths still fail clearly rather than being guessed
 
