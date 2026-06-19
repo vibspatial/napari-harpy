@@ -17,6 +17,7 @@ from spatialdata.transformations import (
     get_transformation_between_coordinate_systems,
 )
 
+from napari_harpy.core.shapes_geometry import napari_polygon_vertices_to_shapely_polygon
 from napari_harpy.core.spatialdata import get_coordinate_system_names_from_sdata
 from napari_harpy.core.validation import (
     normalize_spatialdata_dataframe_column_name,
@@ -260,11 +261,11 @@ def napari_shapes_layer_to_geodataframe(
         if shape_type in {"line", "path"}:
             raise ValueError("Lines and paths cannot be saved as SpatialData shapes yet.")
         if shape_type in {"polygon", "rectangle"}:
-            geometries.append(_polygon_shape_to_polygon(vertices, row_index=row_index))
+            geometries.append(_napari_polygon_vertices_to_shapely_polygon(vertices, row_index=row_index))
             continue
         if shape_type == "ellipse":
             geometries.append(
-                _ellipse_shape_to_polygon(
+                _napari_ellipse_vertices_to_shapely_polygon(
                     vertices,
                     row_index=row_index,
                     ellipse_segments=ellipse_segments,
@@ -623,14 +624,14 @@ def _next_generated_suffix(values: set[object], *, index_prefix: str) -> int:
     return max(suffixes) + 1
 
 
-def _polygon_shape_to_polygon(vertices: object, *, row_index: int) -> Polygon:
-    coordinates_yx = _coerce_vertices(vertices, row_index=row_index)
-    if len(coordinates_yx) < 3:
-        raise ValueError(f"Shape row `{row_index}` has too few vertices for a valid polygon.")
-    return _make_valid_polygon(coordinates_yx[:, [1, 0]], row_index=row_index)
+def _napari_polygon_vertices_to_shapely_polygon(vertices: object, *, row_index: int) -> Polygon:
+    try:
+        return napari_polygon_vertices_to_shapely_polygon(vertices)
+    except ValueError as error:
+        raise ValueError(f"Shape row `{row_index}` cannot be converted to a valid polygon: {error}") from error
 
 
-def _ellipse_shape_to_polygon(
+def _napari_ellipse_vertices_to_shapely_polygon(
     vertices: object,
     *,
     row_index: int,

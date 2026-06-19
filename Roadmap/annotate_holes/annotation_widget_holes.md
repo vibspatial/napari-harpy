@@ -47,7 +47,7 @@ It walks each napari row, accepts `polygon`, `rectangle`, and `ellipse`, and
 produces one Shapely `Polygon` per napari row.
 
 The current geometry choke point is
-[`_polygon_shape_to_polygon`](../../src/napari_harpy/core/shapes_annotation.py#L626-L630),
+[`_napari_polygon_vertices_to_shapely_polygon`](../../src/napari_harpy/core/shapes_annotation.py#L626-L630),
 which converts the whole vertex array into one exterior ring. Validation then
 uses
 [`_make_valid_polygon`](../../src/napari_harpy/core/shapes_annotation.py#L666-L670).
@@ -55,7 +55,7 @@ That is correct for simple polygons, but not for the hole path produced by the
 viewer adapter.
 
 Visualization is implemented in the opposite direction in
-[`_polygon_to_napari_path`](../../src/napari_harpy/viewer/adapter.py#L2247-L2261).
+[`_shapely_polygon_to_napari_polygon_vertices`](../../src/napari_harpy/viewer/adapter.py#L2247-L2261).
 The adapter orients the polygon, appends the exterior ring, then appends each
 interior ring followed by the exterior anchor. The comments there explicitly
 describe this as the napari path encoding used to preserve holes.
@@ -83,7 +83,7 @@ annotation.
 Local verification with the current environment showed the failure mode:
 
 - input: Shapely `Polygon` with one interior ring
-- display encoding: `_polygon_to_napari_path(...)`
+- display encoding: `_shapely_polygon_to_napari_polygon_vertices(...)`
 - save conversion: `napari_shapes_layer_to_geodataframe(...)`
 - result: `ValueError: Shape row 0 cannot be converted to a valid polygon.`
 
@@ -178,11 +178,11 @@ The intended Slice 1 lifecycle is:
    direct interior rings.
 2. The viewer adapter renders that source row as one napari Shapes row.
 3. The napari row keeps hole topology inside `layer.data[row]` using the
-   existing `_polygon_to_napari_path(...)` encoding.
+   existing `_shapely_polygon_to_napari_polygon_vertices(...)` encoding.
 4. `layer.features.iloc[row]` keeps row metadata, especially the source
    GeoDataFrame index, but does not store hole boundaries.
 5. On save, `napari_shapes_layer_to_geodataframe(...)` decodes
-   `layer.data[row]` through `napari_path_to_polygon(...)`.
+   `layer.data[row]` through `napari_polygon_vertices_to_shapely_polygon(...)`.
 6. The helper validates the path, constructs `Polygon(shell, holes=holes)`
    internally, and the saved GeoDataFrame receives that Shapely `Polygon` as the
    row geometry.
@@ -214,7 +214,7 @@ The repeated shell start is the separator that lets napari render the polygon
 with holes. Slice 1 should make the reverse operation explicit and shared:
 
 ```python
-geometry = napari_path_to_polygon(vertices)
+geometry = napari_polygon_vertices_to_shapely_polygon(vertices)
 ```
 
 The helper constructs `Polygon(shell, holes=holes)` internally after validating
@@ -282,7 +282,7 @@ Slice 1 implementation breakdown:
 Status: implemented.
 
 Implemented in `src/napari_harpy/core/shapes_geometry.py` with
-`polygon_to_napari_path(...)` and `napari_path_to_polygon(...)`. The viewer
+`shapely_polygon_to_napari_polygon_vertices(...)` and `napari_polygon_vertices_to_shapely_polygon(...)`. The viewer
 adapter now delegates its polygon path encoding to the shared helper, and
 `tests/test_shapes_geometry.py` covers the helper contract without touching the
 annotation widget, SpatialData writes, or save behavior.
@@ -296,7 +296,7 @@ Suggested work:
    `src/napari_harpy/core/shapes_geometry.py`.
 2. Move or mirror the existing adapter encoder into that helper so loading and
    saving share one documented napari path contract.
-3. Implement `napari_path_to_polygon(vertices) -> Polygon`, or a similarly
+3. Implement `napari_polygon_vertices_to_shapely_polygon(vertices) -> Polygon`, or a similarly
    named helper, that:
    - accepts a napari `(y, x)` vertex array
    - returns a Shapely `Polygon`
@@ -315,24 +315,29 @@ Slice 1A acceptance criteria:
 - hole-inside-hole / island-in-hole layouts fail clearly
 - `MultiPolygon` is not introduced or accepted by this helper
 
-### Slice 1B - Wire Helper Into `_polygon_shape_to_polygon`
+### Slice 1B - Wire Helper Into `_napari_polygon_vertices_to_shapely_polygon`
 
 Goal: make the annotation save converter use the helper for polygon rows while
 keeping the surrounding save pipeline unchanged.
 
-Status: specified; not implemented.
+Status: implemented.
 
 This is the first behavioral save-path change. It should preserve holes for
 encoded napari polygon rows, but it should not change the annotation widget UI,
 SpatialData write orchestration, edit-existing source validation, or
 `MultiPolygon` policy.
 
+Implemented by making `_napari_polygon_vertices_to_shapely_polygon(...)` a row-aware wrapper
+around `napari_polygon_vertices_to_shapely_polygon(...)` and adding converter-level tests in
+`tests/test_shapes_annotation.py`. Slice 1C remains responsible for proving the
+end-to-end annotation widget save round trip.
+
 Implementation shape:
 
 ```python
-def _polygon_shape_to_polygon(vertices: object, *, row_index: int) -> Polygon:
+def _napari_polygon_vertices_to_shapely_polygon(vertices: object, *, row_index: int) -> Polygon:
     try:
-        return napari_path_to_polygon(vertices)
+        return napari_polygon_vertices_to_shapely_polygon(vertices)
     except ValueError as error:
         raise ValueError(
             f"Shape row `{row_index}` cannot be converted to a valid polygon: {error}"
@@ -340,8 +345,8 @@ def _polygon_shape_to_polygon(vertices: object, *, row_index: int) -> Polygon:
 ```
 
 The exact type annotation can follow the surrounding converter code, but the
-important behavior is that `_polygon_shape_to_polygon(...)` becomes a thin
-row-aware wrapper around `napari_path_to_polygon(...)`.
+important behavior is that `_napari_polygon_vertices_to_shapely_polygon(...)` becomes a thin
+row-aware wrapper around `napari_polygon_vertices_to_shapely_polygon(...)`.
 
 Layering contract:
 
@@ -350,9 +355,9 @@ Layering contract:
   `Polygon`s, but it does not know about napari `Shapes` layers, row indexes,
   `layer.features`, SpatialData, or widgets.
 - `src/napari_harpy/core/shapes_annotation.py` owns annotation save conversion.
-  `_polygon_shape_to_polygon(...)` should keep existing row-aware error context
+  `_napari_polygon_vertices_to_shapely_polygon(...)` should keep existing row-aware error context
   and converter structure, but should stop duplicating polygon path parsing.
-- `napari_path_to_polygon(...)` becomes the source of truth for interpreting one
+- `napari_polygon_vertices_to_shapely_polygon(...)` becomes the source of truth for interpreting one
   polygon or rectangle path row as a Shapely `Polygon`.
 - `_coerce_vertices(...)` and `_make_valid_polygon(...)` in
   `shapes_annotation.py` can remain for ellipse conversion and other local save
@@ -360,9 +365,9 @@ Layering contract:
 
 Suggested work:
 
-1. Import `napari_path_to_polygon(...)` in
+1. Import `napari_polygon_vertices_to_shapely_polygon(...)` in
    `src/napari_harpy/core/shapes_annotation.py`.
-2. Update `_polygon_shape_to_polygon(...)` to call the helper.
+2. Update `_napari_polygon_vertices_to_shapely_polygon(...)` to call the helper.
 3. Wrap helper `ValueError`s with the napari shape row index while preserving
    the detailed helper message.
 4. Keep `rectangle` rows flowing through the same polygon conversion as today.
@@ -378,7 +383,7 @@ Behavior to preserve:
 - simple user-drawn polygon rows save as simple `Polygon`
 - closed simple polygon rows save as simple `Polygon`
 - rectangle rows save as simple `Polygon`
-- ellipse rows still use `_ellipse_shape_to_polygon(...)`
+- ellipse rows still use `_napari_ellipse_vertices_to_shapely_polygon(...)`
 - line and path rows remain rejected
 - generated or preserved `layer.features` IDs are written only after all
   geometry rows validate
@@ -394,7 +399,7 @@ New behavior:
 Tests to add in `tests/test_shapes_annotation.py`:
 
 1. `napari_shapes_layer_to_geodataframe(...)` preserves one hole from
-   `polygon_to_napari_path(...)`.
+   `shapely_polygon_to_napari_polygon_vertices(...)`.
 2. `napari_shapes_layer_to_geodataframe(...)` preserves multiple holes.
 3. Invalid or ambiguous encoded hole paths fail with row context and do not
    mutate `layer.features`.
@@ -499,7 +504,7 @@ Strict failure policy:
 Tests to add:
 
 - converting a simple polygon is unchanged
-- `_polygon_to_napari_path(Polygon(..., holes=[...]))` followed by the save
+- `_shapely_polygon_to_napari_polygon_vertices(Polygon(..., holes=[...]))` followed by the save
   converter preserves `len(geometry.interiors)`, area, bounds, and validity
 - existing `MultiPolygon` shapes elements remain rejected by the annotation
   widget

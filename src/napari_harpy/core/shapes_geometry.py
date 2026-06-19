@@ -9,7 +9,7 @@ from shapely.geometry import Polygon
 from shapely.geometry.polygon import orient
 
 
-def polygon_to_napari_path(polygon: Polygon) -> np.ndarray:
+def shapely_polygon_to_napari_polygon_vertices(polygon: Polygon) -> np.ndarray:
     """Encode a Shapely polygon as one napari path, preserving direct holes."""
     oriented = orient(polygon, sign=1.0)
     path = [_xy_coordinate(coord) for coord in oriented.exterior.coords]
@@ -20,7 +20,7 @@ def polygon_to_napari_path(polygon: Polygon) -> np.ndarray:
     return np.asarray([(y, x) for x, y in path], dtype=float)
 
 
-def napari_path_to_polygon(vertices: ArrayLike) -> Polygon:
+def napari_polygon_vertices_to_shapely_polygon(vertices: ArrayLike) -> Polygon:
     """Decode one napari polygon path into a Shapely polygon.
 
     The adapter encodes holes by closing the exterior ring, appending each
