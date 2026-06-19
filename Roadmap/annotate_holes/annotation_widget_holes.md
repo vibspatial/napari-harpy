@@ -24,6 +24,13 @@ Implementation slices overview:
    encoder/decoder for napari hole paths. This first slice should explicitly
    reconstruct a Shapely polygon with `Polygon(shell, holes=[...])`; it should
    not add any new hole-creation UI yet.
+   - Slice 1C proves unchanged hole-bearing annotations round-trip through the
+     widget save path.
+   - Slice 1D proves ordinary non-anchor vertices of existing holes can be
+     edited and saved.
+   - Slice 1E is a must-fix follow-up for editing anchor/separator vertices,
+     because napari's direct-edit path treats the repeated anchors as ordinary
+     duplicate vertices.
 2. Slice 2: create holes with a small QuPath-like `Subtract selected`
    operation that subtracts selected polygons from a containing polygon.
 3. Slice 3: broaden complex geometry support only after the basic
@@ -228,6 +235,58 @@ The important limitation is that this is only deterministic for paths that
 match the documented encoding. If a user edits repeated vertices so the ring
 separators are no longer parseable, the save path should raise a clear error.
 It should not try to infer holes from arbitrary self-touching polygon paths.
+
+## Napari Direct-Edit Behavior For Hole Paths
+
+Local testing with napari `0.7.0` shows that hole rendering and direct vertex
+editing use different assumptions.
+
+The render path understands napari's flat hole encoding. During triangulation,
+napari normalizes duplicate coordinates and removes edges that are visited
+twice. This is why an encoded path such as:
+
+```text
+A B C D A   E F G H E   A
+```
+
+renders as one exterior ring plus one hole. The bridge edge `A-E` is traversed
+twice and removed from the rendered outline.
+
+The direct-edit path does not preserve that topology. It exposes the raw vertex
+array as editable vertices. In the local CSV test row, napari sees:
+
+```text
+exterior anchor copies: 0, 5, 12
+hole anchor copies:     6, 11
+```
+
+Dragging an ordinary non-anchor hole vertex works because no separator
+invariant changes. The helper still decodes the row, the geometry saves, and
+the result can be reloaded.
+
+Dragging an anchor/separator vertex breaks the encoding. For example, dragging
+only vertex `11` moves the hole-closing copy but not vertex `6`, so the hole no
+longer closes on itself and the duplicated bridge edge is no longer removed.
+This produces the visible collapse/bridge lines in napari before save.
+
+The relevant napari behavior is:
+
+- rendering removes duplicate traversed edges in
+  `normalize_vertices_and_edges(...)`
+- direct-edit vertex picking uses `displayed_vertices`, which are raw vertex
+  rows
+- direct dragging only special-cases `vertices[0] == vertices[-1]` for simple
+  closed polygons; it does not know about hole anchors or exterior separators
+
+This means editable holes need two levels of support:
+
+1. non-anchor vertex edits, which already match the current encoding model
+2. anchor/separator vertex edits, which need explicit topology-preserving
+   synchronization
+
+Until the second level is implemented, anchor/separator edits should be treated
+as unsupported or repaired immediately. Save-time guessing is not sufficient
+because the user-visible napari rendering can collapse during the drag.
 
 ## Implementation Slices
 
@@ -442,6 +501,105 @@ Slice 1C acceptance criteria:
 - saved source metadata and row identity remain stable
 - backed SpatialData save behavior is covered if practical
 
+### Slice 1D - Non-Anchor Hole Vertex Edit Round Trip
+
+Goal: prove that users can edit ordinary vertices of an existing hole-bearing
+annotation and save/reload the result, as long as they do not move any repeated
+anchor/separator vertex.
+
+This slice turns the observed working behavior into a supported contract. It
+does not fix anchor editing yet.
+
+Definitions:
+
+- ordinary exterior vertex: a shell vertex that is not one of the repeated
+  exterior anchor/separator copies
+- ordinary hole vertex: an interior-ring vertex that is not the repeated hole
+  start/end anchor
+- anchor/separator vertex: any duplicated coordinate required by the napari
+  hole encoding, such as exterior anchor copies or hole start/end copies
+
+Suggested work:
+
+1. Add widget-level or converter-level tests that load a polygon with one hole.
+2. Move one ordinary shell vertex and one ordinary hole vertex.
+3. Save through the annotation widget.
+4. Assert the saved geometry is valid, still has the expected number of
+   interiors, and reflects the edited vertex coordinates.
+5. Reload the saved shape through the viewer/annotation path and assert the
+   encoded napari row still decodes to the same Shapely polygon.
+
+Slice 1D acceptance criteria:
+
+- editing a non-anchor exterior vertex of a hole-bearing polygon round-trips
+  through save/reload
+- editing a non-anchor interior-ring vertex round-trips through save/reload
+- anchor/separator edits remain explicitly out of scope for this slice
+- malformed anchor/separator paths still fail clearly rather than being guessed
+
+### Slice 1E - Anchor/Separator Vertex Editing Stability
+
+Status: must-fix follow-up before editable holes are considered complete.
+
+Goal: moving an anchor/separator vertex in napari direct-edit mode preserves the
+hole path grammar and does not create transient or persisted bridge/collapse
+artifacts.
+
+Problem statement:
+
+Napari's renderer supports hole paths by removing duplicate bridge edges, but
+napari's direct-edit interaction moves only the selected raw vertex. For an
+encoded polygon with a hole, the duplicated vertices are semantic groups. Moving
+one member of such a group must move the other required copies:
+
+- moving any exterior anchor/separator copy should update all exterior anchor
+  copies for that row
+- moving a hole start/end anchor should update both copies of that hole anchor
+- moving an ordinary non-anchor vertex should update only that vertex
+
+Candidate implementation approach:
+
+1. Add a pure helper that parses a valid encoded napari polygon row into
+   topology metadata, not only a Shapely polygon. The metadata should include
+   the index groups that must stay synchronized, for example:
+   `[[0, shell_end, final_separator], [hole_start, hole_end], ...]`.
+2. When an annotation layer is opened or adopted, attach a small edit guard for
+   polygon rows that decode as hole-bearing paths.
+3. Before a drag/edit starts, record the current synchronized index groups for
+   the affected row. This is important because after one anchor copy moves, the
+   row may no longer be parseable.
+4. During direct vertex movement, or immediately after napari edits the row,
+   detect whether the moved vertex belongs to one of those groups. If it does,
+   write the same coordinate into all indices in the group and refresh the row.
+5. Use a re-entrancy guard so the repair edit does not recursively trigger
+   itself.
+6. If the row can no longer be repaired deterministically, fail clearly and
+   leave save behavior strict.
+
+Implementation options to investigate:
+
+- Live sync: subclass or wrap the annotation `Shapes` layer mouse interaction
+  so anchor groups are synchronized during the drag. This best avoids the
+  visible collapse shown in napari.
+- Event repair: listen to `layer.events.data`, capture pre-edit topology, and
+  repair on `CHANGED`. This may preserve save correctness, but napari emits the
+  final direct-drag data event only on mouse release, so it may still show a
+  transient collapse while dragging.
+- Save-time repair only: not sufficient for this bug, because the rendering
+  has already collapsed during user interaction and the broken row may be
+  ambiguous.
+
+Slice 1E acceptance criteria:
+
+- dragging the exterior anchor of a hole-bearing polygon keeps all exterior
+  anchor/separator copies synchronized
+- dragging a hole anchor keeps the hole start/end copies synchronized
+- napari rendering does not show persistent bridge/collapse artifacts after the
+  edit
+- saving after anchor edits preserves a valid Shapely `Polygon` with interiors
+- malformed edits that cannot be synchronized fail clearly without guessing
+- ordinary non-anchor vertex editing from Slice 1D continues to work
+
 Decoder notes:
 
 - Convert napari `(y, x)` to Shapely `(x, y)`.
@@ -513,6 +671,10 @@ Tests to add:
 - a hole-inside-hole / island-in-hole path is rejected as unsupported
 - an ambiguous edited separator path fails clearly rather than guessing a hole
   layout
+- non-anchor exterior and interior-ring vertex edits round-trip through the
+  annotation widget save path
+- anchor/separator vertex edits either stay synchronized or fail before
+  corrupting the saved geometry; Slice 1E must make the synchronized path work
 - invalid encoded paths fail without mutating `layer.features` or `sdata`
 
 Slice 1 acceptance criteria:
@@ -523,6 +685,10 @@ Slice 1 acceptance criteria:
   unsupported for annotation and fail clearly.
 - Saving that layer without edits preserves the number of interiors, bounds,
   area, validity, index, and non-geometry columns.
+- Editing ordinary non-anchor shell and hole vertices preserves the hole and
+  round-trips through save/reload.
+- Editing anchor/separator vertices is handled by explicit synchronization so
+  napari does not leave a collapsed bridge-edge rendering.
 - Simple polygon, rectangle, and ellipse save behavior remains unchanged.
 - Hole-inside-hole geometry is explicitly unsupported and fails clearly.
 - Malformed hole paths produce a clear save error and do not mutate
@@ -649,18 +815,23 @@ locally, but arbitrary user edits can produce vertex paths that no longer have
 clean ring separators. The save path should be strict and give a clear error
 for ambiguous paths.
 
-The second risk is boolean output shape. A contained subtractor produces the
+The second risk is napari direct editing of duplicated anchor/separator
+vertices. Rendering can represent holes by removing duplicated bridge edges,
+but direct editing exposes and moves raw vertices. Anchor groups must be
+synchronized explicitly; otherwise the path grammar can collapse before save.
+
+The third risk is boolean output shape. A contained subtractor produces the
 desired `Polygon` with an interior ring. A subtractor crossing the exterior can
 produce a smaller polygon, a split `MultiPolygon`, or an empty result. For the
 MVP, accepting only a valid single `Polygon` keeps the existing widget model
 intact.
 
-The third risk is row identity. The implementation should preserve the shell
+The fourth risk is row identity. The implementation should preserve the shell
 row's source identity and delete temporary cutter rows. Grouping holes only at
 save time would be harder to reason about because cutter rows would still look
 like positive annotations while editing.
 
-The fourth risk is linked tables. Current annotation editing already warns that
+The fifth risk is linked tables. Current annotation editing already warns that
 linked tables are not updated when rows are added or removed. Hole subtraction
 can remove cutter rows, so the same warning should stay visible for linked
 shapes elements.
@@ -674,6 +845,10 @@ Slice 1:
 - Existing SpatialData shapes with Shapely `MultiPolygon` geometry remain
   rejected by the annotation widget.
 - Saving an unchanged polygon-with-hole preserves the hole.
+- Editing non-anchor vertices of the shell or hole preserves the hole after
+  save and reload.
+- Editing anchor/separator vertices is supported through explicit
+  synchronization, without persistent bridge/collapse artifacts.
 - Hole-inside-hole / island-in-hole geometry is explicitly rejected for Slice 1.
 - The shared converter can persist hole-encoded polygon rows in both
   create-new and edit-existing save paths, without adding UI for creating
