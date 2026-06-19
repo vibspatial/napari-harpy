@@ -269,10 +269,16 @@ Tests for this slice:
 
 ### Slice 3 - Vertex Insert Topology Update Without Napari UI
 
-Status: not implemented.
+Status: implemented.
 
 Goal: support adding ordinary vertices to hole-bearing polygon rows without
 losing the synchronized-anchor topology needed by later UI slices.
+
+Implemented in:
+
+- `insert_napari_polygon_vertex(...)`
+- insertion-index validation against real shell/hole ring ranges
+- topology index shifting followed by fresh topology decoding/validation
 
 Current napari behavior:
 

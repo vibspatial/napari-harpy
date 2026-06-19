@@ -6,6 +6,7 @@ from shapely.geometry import Polygon
 
 from napari_harpy.core.shapes_geometry import (
     NapariPolygonTopology,
+    insert_napari_polygon_vertex,
     napari_polygon_vertices_to_shapely_polygon,
     napari_polygon_vertices_to_topology,
     shapely_polygon_to_napari_polygon_vertices,
@@ -254,6 +255,173 @@ def test_sync_napari_polygon_anchor_vertex_rejects_overlapping_topology_groups()
             NapariPolygonTopology(shell_anchor_group=(0, 1), hole_anchor_groups=((1, 2),)),
             moved_vertex_index=0,
             moved_coordinate=np.asarray([1.0, 2.0]),
+        )
+
+
+def test_insert_napari_polygon_vertex_inserts_shell_vertex_and_updates_topology() -> None:
+    source = Polygon(
+        [(0, 0), (8, 0), (8, 8), (0, 8)],
+        holes=[[(2, 2), (2, 4), (4, 4), (4, 2)]],
+    )
+    vertices = shapely_polygon_to_napari_polygon_vertices(source)
+    original_vertices = vertices.copy()
+    topology = napari_polygon_vertices_to_topology(vertices)
+    insert_index = 3
+    inserted_coordinate = np.mean(vertices[[insert_index - 1, insert_index]], axis=0)
+
+    inserted_vertices, inserted_topology = insert_napari_polygon_vertex(
+        vertices,
+        topology,
+        insert_index=insert_index,
+        inserted_coordinate=inserted_coordinate,
+    )
+
+    expected_vertices = np.insert(vertices, insert_index, [inserted_coordinate], axis=0)
+    np.testing.assert_allclose(inserted_vertices, expected_vertices)
+    assert inserted_topology == NapariPolygonTopology(
+        shell_anchor_group=(0, 5, 11),
+        hole_anchor_groups=((6, 10),),
+    )
+    assert inserted_topology == napari_polygon_vertices_to_topology(inserted_vertices)
+    np.testing.assert_allclose(vertices, original_vertices)
+
+
+def test_insert_napari_polygon_vertex_inserts_hole_vertex_and_updates_topology() -> None:
+    source = Polygon(
+        [(0, 0), (8, 0), (8, 8), (0, 8)],
+        holes=[[(2, 2), (2, 4), (4, 4), (4, 2)]],
+    )
+    vertices = shapely_polygon_to_napari_polygon_vertices(source)
+    original_vertices = vertices.copy()
+    topology = napari_polygon_vertices_to_topology(vertices)
+    insert_index = 8
+    inserted_coordinate = np.mean(vertices[[insert_index - 1, insert_index]], axis=0)
+
+    inserted_vertices, inserted_topology = insert_napari_polygon_vertex(
+        vertices,
+        topology,
+        insert_index=insert_index,
+        inserted_coordinate=inserted_coordinate,
+    )
+
+    expected_vertices = np.insert(vertices, insert_index, [inserted_coordinate], axis=0)
+    np.testing.assert_allclose(inserted_vertices, expected_vertices)
+    assert inserted_topology == NapariPolygonTopology(
+        shell_anchor_group=(0, 4, 11),
+        hole_anchor_groups=((5, 10),),
+    )
+    assert inserted_topology == napari_polygon_vertices_to_topology(inserted_vertices)
+    np.testing.assert_allclose(vertices, original_vertices)
+
+
+def test_insert_napari_polygon_vertex_in_one_hole_keeps_earlier_hole_group_stable() -> None:
+    source = Polygon(
+        [(0, 0), (10, 0), (10, 10), (0, 10)],
+        holes=[
+            [(2, 2), (2, 4), (4, 4), (4, 2)],
+            [(6, 6), (6, 8), (8, 8), (8, 6)],
+        ],
+    )
+    vertices = shapely_polygon_to_napari_polygon_vertices(source)
+    topology = napari_polygon_vertices_to_topology(vertices)
+    insert_index = 13
+    inserted_coordinate = np.mean(vertices[[insert_index - 1, insert_index]], axis=0)
+
+    inserted_vertices, inserted_topology = insert_napari_polygon_vertex(
+        vertices,
+        topology,
+        insert_index=insert_index,
+        inserted_coordinate=inserted_coordinate,
+    )
+
+    assert inserted_topology == NapariPolygonTopology(
+        shell_anchor_group=(0, 4, 10, 17),
+        hole_anchor_groups=((5, 9), (11, 16)),
+    )
+    assert inserted_topology == napari_polygon_vertices_to_topology(inserted_vertices)
+
+
+@pytest.mark.parametrize("insert_index", [0, 5, 10])
+def test_insert_napari_polygon_vertex_rejects_bridge_or_separator_edges(insert_index: int) -> None:
+    source = Polygon(
+        [(0, 0), (8, 0), (8, 8), (0, 8)],
+        holes=[[(2, 2), (2, 4), (4, 4), (4, 2)]],
+    )
+    vertices = shapely_polygon_to_napari_polygon_vertices(source)
+    topology = napari_polygon_vertices_to_topology(vertices)
+
+    with pytest.raises(ValueError, match="must split a shell or hole ring edge"):
+        insert_napari_polygon_vertex(
+            vertices,
+            topology,
+            insert_index=insert_index,
+            inserted_coordinate=np.asarray([1.0, 1.0]),
+        )
+
+
+@pytest.mark.parametrize("insert_index", [-1, 11])
+def test_insert_napari_polygon_vertex_rejects_out_of_range_insert_index(insert_index: int) -> None:
+    source = Polygon(
+        [(0, 0), (8, 0), (8, 8), (0, 8)],
+        holes=[[(2, 2), (2, 4), (4, 4), (4, 2)]],
+    )
+    vertices = shapely_polygon_to_napari_polygon_vertices(source)
+    topology = napari_polygon_vertices_to_topology(vertices)
+
+    with pytest.raises(ValueError, match="outside the vertex row"):
+        insert_napari_polygon_vertex(
+            vertices,
+            topology,
+            insert_index=insert_index,
+            inserted_coordinate=np.asarray([1.0, 1.0]),
+        )
+
+
+def test_insert_napari_polygon_vertex_rejects_invalid_inserted_coordinate() -> None:
+    source = Polygon(
+        [(0, 0), (8, 0), (8, 8), (0, 8)],
+        holes=[[(2, 2), (2, 4), (4, 4), (4, 2)]],
+    )
+    vertices = shapely_polygon_to_napari_polygon_vertices(source)
+    topology = napari_polygon_vertices_to_topology(vertices)
+
+    with pytest.raises(ValueError, match="one 2D coordinate"):
+        insert_napari_polygon_vertex(
+            vertices,
+            topology,
+            insert_index=3,
+            inserted_coordinate=np.asarray([[1.0, 1.0]]),
+        )
+
+
+def test_insert_napari_polygon_vertex_rejects_simple_polygon_topology() -> None:
+    source = Polygon([(0, 0), (8, 0), (8, 8), (0, 8)])
+    vertices = shapely_polygon_to_napari_polygon_vertices(source)
+    topology = napari_polygon_vertices_to_topology(vertices)
+
+    with pytest.raises(ValueError, match="hole-bearing vertex row"):
+        insert_napari_polygon_vertex(
+            vertices,
+            topology,
+            insert_index=2,
+            inserted_coordinate=np.asarray([8.0, 4.0]),
+        )
+
+
+def test_insert_napari_polygon_vertex_rejects_ambiguous_inserted_coordinate() -> None:
+    source = Polygon(
+        [(0, 0), (8, 0), (8, 8), (0, 8)],
+        holes=[[(2, 2), (2, 4), (4, 4), (4, 2)]],
+    )
+    vertices = shapely_polygon_to_napari_polygon_vertices(source)
+    topology = napari_polygon_vertices_to_topology(vertices)
+
+    with pytest.raises(ValueError):
+        insert_napari_polygon_vertex(
+            vertices,
+            topology,
+            insert_index=3,
+            inserted_coordinate=vertices[0],
         )
 
 

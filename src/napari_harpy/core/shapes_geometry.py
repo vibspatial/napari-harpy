@@ -91,6 +91,45 @@ def sync_napari_polygon_anchor_vertex(
     return synchronized
 
 
+def insert_napari_polygon_vertex(
+    vertices: ArrayLike,
+    topology: NapariPolygonTopology,
+    insert_index: int,
+    inserted_coordinate: ArrayLike,
+) -> tuple[np.ndarray, NapariPolygonTopology]:
+    """Return vertices and topology after inserting one ordinary ring vertex."""
+    vertices = _coerce_vertices(vertices)
+    insert_index = _coerce_insert_index(insert_index, vertex_count=len(vertices))
+    inserted_coordinate = _coerce_inserted_coordinate(inserted_coordinate)
+    shell_anchor_group, hole_anchor_groups = _validated_hole_topology(topology, vertex_count=len(vertices))
+
+    shell_start, shell_end = shell_anchor_group[0], shell_anchor_group[1]
+    is_real_ring_insert_index = shell_start < insert_index <= shell_end or any(
+        hole_start < insert_index <= hole_end for hole_start, hole_end in hole_anchor_groups
+    )
+    if not is_real_ring_insert_index:
+        raise ValueError("Inserted polygon vertex must split a shell or hole ring edge.")
+
+    inserted_vertices = np.insert(vertices, insert_index, [inserted_coordinate], axis=0)
+    # Compute the topology expected after insertion by shifting every existing
+    # anchor/separator index at or after the insertion point.
+    shifted_topology = NapariPolygonTopology(
+        shell_anchor_group=tuple(
+            _shift_index_after_insert(index, insert_index=insert_index) for index in shell_anchor_group
+        ),
+        hole_anchor_groups=tuple(
+            tuple(_shift_index_after_insert(index, insert_index=insert_index) for index in group)
+            for group in hole_anchor_groups
+        ),
+    )
+    # Re-parse the updated row as a grammar check: parsed_topology is what the
+    # new vertices actually encode.
+    parsed_topology = napari_polygon_vertices_to_topology(inserted_vertices)
+    if parsed_topology != shifted_topology:
+        raise ValueError("Inserted polygon vertex produced ambiguous polygon topology.")
+    return inserted_vertices, parsed_topology
+
+
 def napari_polygon_vertices_to_shapely_polygon(vertices: ArrayLike) -> Polygon:
     """Decode one napari polygon vertex row into a Shapely polygon.
 
@@ -172,6 +211,16 @@ def _coerce_vertex_index(index: int, *, vertex_count: int) -> int:
     return vertex_index
 
 
+def _coerce_insert_index(index: int, *, vertex_count: int) -> int:
+    if isinstance(index, bool) or not isinstance(index, (int, np.integer)):
+        raise ValueError("Inserted polygon vertex index must be an integer.")
+
+    insert_index = int(index)
+    if insert_index < 0 or insert_index >= vertex_count:
+        raise ValueError("Inserted polygon vertex index is outside the vertex row.")
+    return insert_index
+
+
 def _coerce_moved_coordinate(coordinate: ArrayLike) -> np.ndarray:
     try:
         moved_coordinate = np.asarray(coordinate, dtype=float)
@@ -183,6 +232,59 @@ def _coerce_moved_coordinate(coordinate: ArrayLike) -> np.ndarray:
     if not np.isfinite(moved_coordinate).all():
         raise ValueError("Moved polygon vertex coordinate contains non-finite coordinates.")
     return moved_coordinate
+
+
+def _coerce_inserted_coordinate(coordinate: ArrayLike) -> np.ndarray:
+    try:
+        inserted_coordinate = np.asarray(coordinate, dtype=float)
+    except (TypeError, ValueError) as error:
+        raise ValueError("Inserted polygon vertex coordinate must contain numeric 2D coordinates.") from error
+
+    if inserted_coordinate.shape != (2,):
+        raise ValueError("Inserted polygon vertex coordinate must contain one 2D coordinate.")
+    if not np.isfinite(inserted_coordinate).all():
+        raise ValueError("Inserted polygon vertex coordinate contains non-finite coordinates.")
+    return inserted_coordinate
+
+
+def _validated_hole_topology(
+    topology: NapariPolygonTopology,
+    *,
+    vertex_count: int,
+) -> tuple[tuple[int, ...], tuple[tuple[int, int], ...]]:
+    if len(topology.shell_anchor_group) < 2 or not topology.hole_anchor_groups:
+        raise ValueError("Polygon topology must describe a hole-bearing vertex row.")
+
+    shell_anchor_group = _validated_anchor_group(topology.shell_anchor_group, vertex_count=vertex_count)
+    if shell_anchor_group[0] != 0:
+        raise ValueError("Polygon topology shell anchor group must start at the first vertex.")
+    if not _is_strictly_increasing(shell_anchor_group):
+        raise ValueError("Polygon topology shell anchor group indices must be strictly increasing.")
+
+    seen_indices = set(shell_anchor_group)
+    hole_anchor_groups: list[tuple[int, int]] = []
+    for group in topology.hole_anchor_groups:
+        normalized_group = _validated_anchor_group(group, vertex_count=vertex_count)
+        if len(normalized_group) != 2:
+            raise ValueError("Polygon topology hole anchor groups must contain start and end indices.")
+        if normalized_group[0] >= normalized_group[1]:
+            raise ValueError("Polygon topology hole anchor group indices must be strictly increasing.")
+        if seen_indices.intersection(normalized_group):
+            raise ValueError("Polygon topology anchor groups must not overlap.")
+        seen_indices.update(normalized_group)
+        hole_start, hole_end = normalized_group
+        hole_anchor_groups.append((hole_start, hole_end))
+    return shell_anchor_group, tuple(hole_anchor_groups)
+
+
+def _is_strictly_increasing(indices: Sequence[int]) -> bool:
+    return all(left < right for left, right in zip(indices, indices[1:], strict=False))
+
+
+def _shift_index_after_insert(index: int, *, insert_index: int) -> int:
+    if index >= insert_index:
+        return index + 1
+    return index
 
 
 def _validated_anchor_group(group: Sequence[int], *, vertex_count: int) -> tuple[int, ...]:
