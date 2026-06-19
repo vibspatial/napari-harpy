@@ -142,6 +142,206 @@ should not be used to guess the intended topology.
    synchronized deterministically, saving should fail clearly rather than
    guessing.
 
+## Implementation Slices
+
+### Slice 1 - Pure Topology Helper
+
+Status: not implemented.
+
+Goal: parse one napari polygon vertex row into topology metadata that describes
+which raw vertex indices are aliases of the same logical anchor.
+
+Suggested scope:
+
+- Add a pure helper in the geometry layer, likely next to
+  `napari_polygon_vertices_to_shapely_polygon(...)`.
+- The helper should accept finite napari vertices in `(y, x)` order.
+- It should use the same strict adapter-encoded path grammar as the existing
+  hole decoder.
+- It should return metadata, not mutate vertices and not import napari UI
+  classes.
+
+Suggested metadata:
+
+```python
+@dataclass(frozen=True)
+class NapariPolygonTopology:
+    anchor_groups: tuple[tuple[int, ...], ...]
+```
+
+The exact API can still be refined, but the required behavior is:
+
+- simple polygon without holes returns `anchor_groups=()`
+- one-hole example `A B C D A E F G H E A` returns
+  `((0, 4, 10), (5, 9))`
+- multi-hole example `A B C D A E F E A I J I A` returns
+  `((0, 4, 8, 12), (5, 7), (9, 11))`
+- malformed or ambiguous adapter-style paths raise `ValueError`
+
+Tests for this slice:
+
+- simple polygon row
+- canonical one-hole row from the existing hole round-trip fixture
+- multiple direct holes
+- missing final exterior separator
+- unclosed hole ring
+- too-short shell or hole ring
+
+### Slice 2 - Synchronization Core Without Napari UI
+
+Status: not implemented.
+
+Goal: make the anchor synchronization behavior testable without napari mouse
+events.
+
+Suggested scope:
+
+- Add a small pure or mostly-pure function that applies one moved vertex to its
+  synchronized group.
+- The function should accept the original vertices, topology metadata, the moved
+  vertex index, and the moved coordinate.
+- It should return updated vertices or an explicit no-op result for ordinary
+  non-anchor vertices.
+- It should copy data rather than mutate caller-owned arrays unexpectedly.
+
+Suggested behavior:
+
+- moving exterior index `0`, `4`, or `10` writes the moved coordinate into all
+  exterior anchor copies
+- moving hole index `5` or `9` writes the moved coordinate into both hole-anchor
+  copies
+- moving ordinary indices such as `1`, `2`, `3`, `6`, `7`, or `8` leaves all
+  other vertices untouched
+- out-of-range moved indices or inconsistent topology metadata fail clearly
+
+Tests for this slice:
+
+- exterior anchor synchronization
+- hole anchor synchronization
+- ordinary non-anchor no-op
+- multiple-hole synchronization only updates the affected hole group
+- invalid moved index raises a clear error
+
+### Slice 3 - Annotation Layer Edit Guard Lifecycle
+
+Status: not implemented.
+
+Goal: attach and detach an edit guard for the current annotation layer without
+yet depending on full drag behavior.
+
+Suggested scope:
+
+- Add a small guard object owned by `ShapesAnnotation`.
+- Attach the guard whenever an annotation layer is opened, created, or adopted.
+- Disconnect the guard when annotation state is cleared, discarded, or replaced.
+- Support both `_HarpyShapes` layers loaded from SpatialData and native
+  `napari.layers.Shapes` layers adopted by the widget.
+- Give the layer an instance-local copy of napari's `_drag_modes` mapping and
+  replace only `Mode.DIRECT` with a wrapper that initially delegates to napari's
+  normal direct-edit callback.
+- Restore the previous instance-local state on disconnect where feasible.
+
+Tests for this slice:
+
+- opening an existing annotation layer attaches the guard
+- adopting a native Shapes layer attaches the guard
+- clearing or discarding annotation state disconnects the guard
+- toggling the layer between select/direct mode uses the wrapped direct callback
+- disconnecting the guard does not leave duplicate direct callbacks behind
+
+### Slice 4 - Live Direct-Drag Anchor Synchronization
+
+Status: not implemented.
+
+Goal: make direct dragging of anchor/separator vertices stable during the drag,
+not only after release.
+
+Suggested scope:
+
+- Extend the direct-mode wrapper from Slice 3.
+- On mouse press, determine the candidate `(shape_index, vertex_index)` using
+  the same direct-edit selection context as napari.
+- Parse and cache topology groups for the affected row before any vertex is
+  moved.
+- During each mouse-move step, let napari perform its normal edit, then
+  synchronize the cached anchor group using the moved vertex's current
+  coordinate.
+- Refresh the row immediately after synchronization.
+- Use a re-entrancy guard so guard-triggered edits do not recursively trigger
+  guard logic.
+- If the moved vertex is not in an anchor group, delegate fully to napari and
+  leave Slice 1D non-anchor behavior unchanged.
+
+Important constraint:
+
+The topology must be captured before napari moves one anchor copy. Once one
+duplicate anchor moves, the row may no longer satisfy the decoder grammar, so
+parsing after the broken edit is not reliable.
+
+Tests for this slice:
+
+- simulated direct drag of an exterior anchor copy synchronizes all exterior
+  copies
+- simulated direct drag of a hole anchor copy synchronizes both hole copies
+- simulated direct drag of an ordinary hole vertex changes only that vertex
+- repeated direct-mode toggles do not break the wrapper
+- malformed rows are not guessed into a repaired topology
+
+### Slice 5 - Defensive Event-Time Repair
+
+Status: not implemented.
+
+Goal: provide a backup repair path in case an edit reaches `layer.events.data`
+without having been synchronized live.
+
+Suggested scope:
+
+- Listen to `layer.events.data` for annotation layers only.
+- Reuse cached pre-edit topology where available.
+- On `CHANGED`, if exactly one member of a known anchor group changed, propagate
+  that coordinate to the rest of the group.
+- If the change is ambiguous, do not guess. Leave the row strict so the save
+  path fails clearly.
+
+Non-goal:
+
+This slice is not the primary user-experience fix. Event-time repair happens
+after mouse release and therefore cannot by itself prevent the visual
+bridge/collapse during dragging.
+
+Tests for this slice:
+
+- one missed exterior-anchor edit is repaired after a data event
+- one missed hole-anchor edit is repaired after a data event
+- ambiguous edits are not guessed
+- save remains strict for unrecoverable malformed rows
+
+### Slice 6 - End-To-End Widget Round Trip And Interactive QA
+
+Status: not implemented.
+
+Goal: prove anchor editing works through the annotation widget, save path, and
+reload path.
+
+Suggested scope:
+
+- Reuse the canonical polygon-with-hole fixture from Slice 1C/1D.
+- Cover edit-existing SpatialData shapes loaded as `_HarpyShapes`.
+- Cover native/imported napari `Shapes` layers adopted by the widget.
+- Save after anchor edits and assert the stored geometry is a Shapely
+  `Polygon` with the expected interior ring.
+- Reload the saved shapes element and decode the napari row back to Shapely.
+- Manually verify in napari that dragging exterior and hole anchors does not
+  show the bridge/collapse artifact during the drag.
+
+Tests for this slice:
+
+- edit-existing layer: exterior anchor edit saves and reloads with holes
+- edit-existing layer: hole anchor edit saves and reloads with holes
+- native adopted layer: exterior anchor edit saves and reloads with holes
+- native adopted layer: hole anchor edit saves and reloads with holes
+- ordinary non-anchor edit regression from Slice 1D still passes
+
 ## Suggested Tests
 
 - topology-helper tests for simple polygons, one-hole polygons, multi-hole
