@@ -485,20 +485,114 @@ Slice 1B acceptance criteria:
 Goal: prove that existing hole-bearing SpatialData shapes can be opened in the
 annotation widget and saved back without losing hole geometry.
 
+Status: not implemented until widget-level hole round-trip tests exist.
+
 Suggested work:
 
-1. Add create/edit tests that start from a Shapely `Polygon` with interiors.
-2. Open the existing shapes element through the annotation widget.
+1. Add an edit-existing widget test that starts from a Shapely `Polygon` with
+   interiors in a synthetic SpatialData object.
+2. Open that existing shapes element through the annotation widget.
 3. Save without editing.
 4. Assert the saved SpatialData shapes geometry still has the expected
    interiors, bounds, area, index, and non-geometry columns.
-5. Keep `MultiPolygon` rejection covered by the existing widget behavior.
+5. Add an adopted-native-layer widget test for a napari Shapes layer that came
+   from napari's native shapes CSV path.
+6. Keep `MultiPolygon` rejection covered by the existing widget behavior.
+
+The Slice 1C tests should cover two end-to-end routes:
+
+1. Existing SpatialData route:
+   - Build a small in-memory `SpatialData` object containing only one shapes
+     element.
+   - The shapes element should contain one `Polygon(shell, holes=[...])` row
+     plus at least one ordinary simple polygon row.
+   - Open that shapes element through `ShapesAnnotation`.
+   - Save without editing.
+   - Assert the hole geometry and row metadata are preserved.
+2. Native napari load/adoption route:
+   - Use `napari_builtins.io.napari_write_shapes(...)` to write a temporary
+     CSV with one encoded polygon-with-hole and one simple polygon.
+   - Read it back with napari's built-in shapes CSV reader, mirroring a user
+     loading the file through the napari UI.
+   - Construct a native napari `Shapes` layer from the loaded layer data and add
+     it to the viewer.
+   - Let the annotation widget adopt that native layer.
+   - Save it into SpatialData.
+   - Assert the saved SpatialData shape has one interior ring for the first row
+     and a simple polygon for the second row.
+
+Use a synthetic version of the manually tested geometry, not the external
+Xenium test data path. The test should keep the same non-axis-aligned shape
+layout because it is realistic and catches coordinate-order mistakes, but it
+should avoid depending on
+`/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium_3_6_26.zarr`.
+
+Use the following example as the canonical Slice 1C geometry fixture, including
+for tests that start from Shapely polygons with interiors. The fixture is
+defined in napari `(y, x)` order first because it mirrors the manually tested
+CSV/native-layer workflow, then tests should convert it to Shapely `(x, y)` as
+needed.
+
+```python
+center_y = 1000.0
+center_x = 2000.0
+
+polygon_1_shell_yx = np.array(
+    [
+        [center_y - 350, center_x - 280],
+        [center_y - 420, center_x + 120],
+        [center_y - 120, center_x + 320],
+        [center_y + 180, center_x + 140],
+        [center_y + 120, center_x - 240],
+    ],
+    dtype=float,
+)
+
+polygon_1_hole_yx = np.array(
+    [
+        [center_y - 150, center_x - 40],
+        [center_y - 170, center_x + 70],
+        [center_y - 80, center_x + 130],
+        [center_y - 10, center_x + 40],
+        [center_y - 50, center_x - 70],
+    ],
+    dtype=float,
+)
+
+polygon_2_yx = np.array(
+    [
+        [center_y + 260, center_x - 40],
+        [center_y + 180, center_x + 260],
+        [center_y + 420, center_x + 340],
+        [center_y + 520, center_x + 40],
+        [center_y + 360, center_x - 180],
+    ],
+    dtype=float,
+)
+```
+
+For SpatialData assertions, convert these from napari `(y, x)` to Shapely
+`(x, y)` and construct:
+
+```python
+polygon_1 = Polygon(shell_xy, holes=[hole_xy])
+polygon_2 = Polygon(polygon_2_xy)
+```
+
+The edit-existing SpatialData widget test should start from those Shapely
+objects directly. The native napari adoption test should start from the same
+fixture geometry but encode `polygon_1` into napari's flat polygon-with-hole
+vertex path before writing the temporary CSV.
 
 Slice 1C acceptance criteria:
 
 - an unchanged polygon-with-hole round-trips through the annotation widget save
   path
+- a native napari Shapes layer loaded from a napari shapes CSV with an encoded
+  hole can be adopted by the annotation widget and saved into SpatialData
 - saved source metadata and row identity remain stable
+- the tests use synthetic in-memory or temporary-file data, not external local
+  datasets
 - backed SpatialData save behavior is covered if practical
 
 ### Slice 1D - Non-Anchor Hole Vertex Edit Round Trip
