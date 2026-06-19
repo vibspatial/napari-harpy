@@ -770,45 +770,80 @@ This is the core Slice 1E contract: napari may report that one raw vertex moved,
 but napari-harpy must treat some raw vertices as aliases of the same logical
 topology vertex and keep those aliases identical.
 
-Candidate implementation approach:
+Current napari edit-path finding:
 
-1. Add a pure helper that parses a valid encoded napari polygon row into
-   topology metadata, not only a Shapely polygon. The metadata should include
+In the local napari `0.7.0` environment, direct vertex editing uses
+`layer._drag_modes[Mode.DIRECT]`, which points to napari's `select(...)` mouse
+drag callback. During mouse movement, that callback repeatedly calls
+`_move_active_element_under_cursor(...)`. That function only synchronizes the
+first and last vertex of a simple closed polygon. It does not know that
+hole-encoded paths contain more duplicated anchor/separator vertices.
+
+Napari emits the public `layer.events.data(..., action=CHANGED, ...)` event only
+after the drag has finished. Therefore an event-only repair can protect save
+correctness after mouse release, but it is too late to prevent the visible
+bridge/collapse artifact during dragging. Save-time repair is even later and
+should not be used to guess the intended topology.
+
+Chosen implementation approach:
+
+1. Add a pure topology helper that parses a valid encoded napari polygon row
+   into metadata, not only into a Shapely polygon. The metadata should include
    the index groups that must stay synchronized, for example:
    `[[0, shell_end, final_separator], [hole_start, hole_end], ...]`.
-2. When an annotation layer is opened or adopted, attach a small edit guard for
-   polygon rows that decode as hole-bearing paths.
-3. Before a drag/edit starts, record the current synchronized index groups for
+   Simple polygons should produce no synchronization groups. Malformed or
+   ambiguous hole paths should fail clearly, using the same strict grammar as
+   `napari_polygon_vertices_to_shapely_polygon(...)`.
+2. Add a small annotation-layer edit guard. The guard should be attached by
+   `ShapesAnnotation` whenever an annotation layer is opened, created, or
+   adopted, and disconnected when annotation state is cleared. This matters
+   because existing SpatialData shapes load as `_HarpyShapes`, while
+   native/imported napari layers adopted by the widget remain plain
+   `napari.layers.Shapes`.
+3. Use live direct-mode synchronization as the primary fix. The guard should
+   give the layer an instance-local copy of napari's `_drag_modes` mapping and
+   replace only `Mode.DIRECT` with a wrapper around napari's normal direct-edit
+   callback. This avoids global monkeypatching and works for both `_HarpyShapes`
+   and native `Shapes` layers.
+4. Before a direct drag starts, record the current synchronized index groups for
    the affected row. This is important because after one anchor copy moves, the
    row may no longer be parseable.
-4. During direct vertex movement, or immediately after napari edits the row,
-   detect whether the moved vertex belongs to one of those groups. If it does,
-   write the same coordinate into all indices in the group and refresh the row.
-5. Use a re-entrancy guard so the repair edit does not recursively trigger
-   itself.
-6. If the row can no longer be repaired deterministically, fail clearly and
-   leave save behavior strict.
+5. During the direct-drag loop, detect whether the moved raw vertex belongs to
+   one of the recorded groups. If it does, write the moved coordinate into all
+   indices in that group and refresh the row immediately:
 
-Implementation options to investigate:
+   - moving exterior index `0`, `4`, or `10` updates all exterior anchor copies
+   - moving hole index `5` or `9` updates both hole-anchor copies
+   - moving ordinary vertices such as `1`, `2`, `3`, `6`, `7`, or `8` leaves all
+     other vertices unchanged
 
-- Live sync: subclass or wrap the annotation `Shapes` layer mouse interaction
-  so anchor groups are synchronized during the drag. This best avoids the
-  visible collapse shown in napari.
-- Event repair: listen to `layer.events.data`, capture pre-edit topology, and
-  repair on `CHANGED`. This may preserve save correctness, but napari emits the
-  final direct-drag data event only on mouse release, so it may still show a
-  transient collapse while dragging.
-- Save-time repair only: not sufficient for this bug, because the rendering
-  has already collapsed during user interaction and the broken row may be
-  ambiguous.
+6. Use a re-entrancy guard so the synchronization edit does not recursively
+   trigger itself.
+7. Keep event-time repair only as a defensive fallback if the live wrapper
+   misses an edit. Keep the save path strict: if a row is ambiguous or cannot be
+   synchronized deterministically, saving should fail clearly rather than
+   guessing.
+
+Suggested tests:
+
+- topology-helper tests for simple polygons, one-hole polygons, multi-hole
+  polygons, and malformed ambiguous paths
+- guard-level tests that simulate moving one exterior anchor copy and assert
+  all exterior anchor/separator copies are synchronized
+- guard-level tests that simulate moving one hole-anchor copy and assert both
+  hole-anchor copies are synchronized
+- widget round-trip tests showing that anchor edits save and reload as a valid
+  Shapely `Polygon` with interiors
+- coverage for both edit-existing `_HarpyShapes` layers and adopted native
+  napari `Shapes` layers
 
 Slice 1E acceptance criteria:
 
 - dragging the exterior anchor of a hole-bearing polygon keeps all exterior
   anchor/separator copies synchronized
 - dragging a hole anchor keeps the hole start/end copies synchronized
-- napari rendering does not show persistent bridge/collapse artifacts after the
-  edit
+- napari rendering does not show bridge/collapse artifacts during or after the
+  direct edit
 - saving after anchor edits preserves a valid Shapely `Polygon` with interiors
 - malformed edits that cannot be synchronized fail clearly without guessing
 - ordinary non-anchor vertex editing from Slice 1D continues to work
