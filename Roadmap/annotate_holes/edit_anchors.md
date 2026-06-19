@@ -166,16 +166,28 @@ Suggested metadata:
 ```python
 @dataclass(frozen=True)
 class NapariPolygonTopology:
-    anchor_groups: tuple[tuple[int, ...], ...]
+    shell_anchor_group: tuple[int, ...]
+    hole_anchor_groups: tuple[tuple[int, ...], ...]
+
+    @property
+    def synchronized_anchor_groups(self) -> tuple[tuple[int, ...], ...]:
+        if not self.shell_anchor_group:
+            return self.hole_anchor_groups
+        return (self.shell_anchor_group, *self.hole_anchor_groups)
 ```
 
 The exact API can still be refined, but the required behavior is:
 
-- simple polygon without holes returns `anchor_groups=()`
+- simple polygon without holes returns `shell_anchor_group=()` and
+  `hole_anchor_groups=()`
 - one-hole example `A B C D A E F G H E A` returns
-  `((0, 4, 10), (5, 9))`
+  `shell_anchor_group=(0, 4, 10)` and `hole_anchor_groups=((5, 9),)`
 - multi-hole example `A B C D A E F E A I J I A` returns
-  `((0, 4, 8, 12), (5, 7), (9, 11))`
+  `shell_anchor_group=(0, 4, 8, 12)` and
+  `hole_anchor_groups=((5, 7), (9, 11))`
+- `synchronized_anchor_groups` returns the shell group followed by each hole
+  group, so synchronization code can iterate over all alias groups without
+  losing the shell-versus-hole distinction in the stored metadata
 - malformed or ambiguous adapter-style paths raise `ValueError`
 
 Tests for this slice:
