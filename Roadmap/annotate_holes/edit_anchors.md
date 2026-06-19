@@ -215,12 +215,32 @@ events.
 
 Suggested scope:
 
-- Add a small pure or mostly-pure function that applies one moved vertex to its
-  synchronized group.
-- The function should accept the original vertices, topology metadata, the moved
-  vertex index, and the moved coordinate.
-- It should return updated vertices or an explicit no-op result for ordinary
-  non-anchor vertices.
+- Add a small pure function that applies one moved vertex to its synchronized
+  group.
+- The function should work on raw napari vertices in `(y, x)` order, not on the
+  private `_ParsedNapariPolygonVertices` shell/hole bundle. The private parsed
+  object stores Shapely-oriented rings and can go stale after an edit; the sync
+  core needs to update the actual napari row that will be written back to
+  `layer.data[row]`.
+- Proposed API:
+
+  ```python
+  def sync_napari_polygon_anchor_vertex(
+      vertices: ArrayLike,
+      topology: NapariPolygonTopology,
+      moved_vertex_index: int,
+      moved_coordinate: ArrayLike,
+  ) -> np.ndarray:
+      ...
+  ```
+
+- `vertices` is the full napari polygon vertex row in `(y, x)` order.
+- `topology` comes from `napari_polygon_vertices_to_topology(...)` and should be
+  captured before one anchor copy is moved.
+- `moved_vertex_index` is the raw vertex index napari moved.
+- `moved_coordinate` is the moved coordinate in napari `(y, x)` order.
+- The function should return updated vertices. For ordinary non-anchor vertices,
+  returning a copy equal to the input is acceptable.
 - It should copy data rather than mutate caller-owned arrays unexpectedly.
 
 Suggested behavior:
