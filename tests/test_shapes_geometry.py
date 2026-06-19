@@ -5,7 +5,9 @@ import pytest
 from shapely.geometry import Polygon
 
 from napari_harpy.core.shapes_geometry import (
+    NapariPolygonTopology,
     napari_polygon_vertices_to_shapely_polygon,
+    napari_polygon_vertices_to_topology,
     shapely_polygon_to_napari_polygon_vertices,
 )
 
@@ -33,6 +35,64 @@ def test_napari_polygon_vertices_to_shapely_polygon_accepts_closed_simple_polygo
 
     assert polygon.equals(source)
     assert len(polygon.interiors) == 0
+
+
+def test_napari_polygon_vertices_to_topology_returns_no_groups_for_simple_polygon() -> None:
+    vertices_yx = np.asarray(
+        [
+            [1.0, 2.0],
+            [1.0, 5.0],
+            [4.0, 5.0],
+            [4.0, 2.0],
+        ]
+    )
+
+    topology = napari_polygon_vertices_to_topology(vertices_yx)
+
+    assert topology == NapariPolygonTopology(shell_anchor_group=(), hole_anchor_groups=())
+    assert topology.synchronized_anchor_groups == ()
+
+
+def test_napari_polygon_vertices_to_topology_returns_no_groups_for_closed_simple_polygon() -> None:
+    source = Polygon([(0, 0), (4, 0), (4, 4), (0, 4)])
+
+    topology = napari_polygon_vertices_to_topology(shapely_polygon_to_napari_polygon_vertices(source))
+
+    assert topology == NapariPolygonTopology(shell_anchor_group=(), hole_anchor_groups=())
+    assert topology.synchronized_anchor_groups == ()
+
+
+def test_napari_polygon_vertices_to_topology_distinguishes_shell_and_one_hole_anchors() -> None:
+    source = Polygon(
+        [(0, 0), (8, 0), (8, 8), (0, 8)],
+        holes=[[(2, 2), (2, 4), (4, 4), (4, 2)]],
+    )
+
+    topology = napari_polygon_vertices_to_topology(shapely_polygon_to_napari_polygon_vertices(source))
+
+    assert topology == NapariPolygonTopology(
+        shell_anchor_group=(0, 4, 10),
+        hole_anchor_groups=((5, 9),),
+    )
+    assert topology.synchronized_anchor_groups == ((0, 4, 10), (5, 9))
+
+
+def test_napari_polygon_vertices_to_topology_distinguishes_multiple_hole_anchors() -> None:
+    source = Polygon(
+        [(0, 0), (10, 0), (10, 10), (0, 10)],
+        holes=[
+            [(2, 2), (2, 4), (4, 4), (4, 2)],
+            [(6, 6), (6, 8), (8, 8), (8, 6)],
+        ],
+    )
+
+    topology = napari_polygon_vertices_to_topology(shapely_polygon_to_napari_polygon_vertices(source))
+
+    assert topology == NapariPolygonTopology(
+        shell_anchor_group=(0, 4, 10, 16),
+        hole_anchor_groups=((5, 9), (11, 15)),
+    )
+    assert topology.synchronized_anchor_groups == ((0, 4, 10, 16), (5, 9), (11, 15))
 
 
 def test_napari_polygon_vertices_to_shapely_polygon_preserves_one_hole() -> None:
@@ -77,6 +137,17 @@ def test_napari_polygon_vertices_to_shapely_polygon_rejects_missing_hole_separat
         napari_polygon_vertices_to_shapely_polygon(path)
 
 
+def test_napari_polygon_vertices_to_topology_rejects_missing_hole_separator() -> None:
+    source = Polygon(
+        [(0, 0), (8, 0), (8, 8), (0, 8)],
+        holes=[[(2, 2), (2, 4), (4, 4), (4, 2)]],
+    )
+    path = shapely_polygon_to_napari_polygon_vertices(source)[:-1]
+
+    with pytest.raises(ValueError, match="path with holes must end on the exterior anchor"):
+        napari_polygon_vertices_to_topology(path)
+
+
 def test_napari_polygon_vertices_to_shapely_polygon_rejects_open_hole_ring() -> None:
     path_yx = np.asarray(
         [
@@ -95,6 +166,60 @@ def test_napari_polygon_vertices_to_shapely_polygon_rejects_open_hole_ring() -> 
 
     with pytest.raises(ValueError, match="each hole ring must be closed"):
         napari_polygon_vertices_to_shapely_polygon(path_yx)
+
+
+def test_napari_polygon_vertices_to_topology_rejects_open_hole_ring() -> None:
+    path_yx = np.asarray(
+        [
+            [0.0, 0.0],
+            [0.0, 8.0],
+            [8.0, 8.0],
+            [8.0, 0.0],
+            [0.0, 0.0],
+            [2.0, 2.0],
+            [2.0, 4.0],
+            [4.0, 4.0],
+            [4.0, 2.0],
+            [0.0, 0.0],
+        ]
+    )
+
+    with pytest.raises(ValueError, match="each hole ring must be closed"):
+        napari_polygon_vertices_to_topology(path_yx)
+
+
+def test_napari_polygon_vertices_to_topology_rejects_too_short_hole_ring() -> None:
+    path_yx = np.asarray(
+        [
+            [0.0, 0.0],
+            [0.0, 8.0],
+            [8.0, 8.0],
+            [8.0, 0.0],
+            [0.0, 0.0],
+            [2.0, 2.0],
+            [2.0, 2.0],
+            [0.0, 0.0],
+        ]
+    )
+
+    with pytest.raises(ValueError, match="each hole ring must contain at least four coordinates"):
+        napari_polygon_vertices_to_topology(path_yx)
+
+
+def test_napari_polygon_vertices_to_topology_rejects_too_short_shell_ring() -> None:
+    path_yx = np.asarray(
+        [
+            [0.0, 0.0],
+            [1.0, 1.0],
+            [0.0, 0.0],
+            [0.5, 0.5],
+            [0.5, 0.5],
+            [0.0, 0.0],
+        ]
+    )
+
+    with pytest.raises(ValueError, match="exterior ring must contain at least four coordinates"):
+        napari_polygon_vertices_to_topology(path_yx)
 
 
 def test_napari_polygon_vertices_to_shapely_polygon_rejects_nested_holes() -> None:

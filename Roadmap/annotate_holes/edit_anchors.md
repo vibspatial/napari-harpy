@@ -146,10 +146,17 @@ should not be used to guess the intended topology.
 
 ### Slice 1 - Pure Topology Helper
 
-Status: not implemented.
+Status: implemented.
 
 Goal: parse one napari polygon vertex row into topology metadata that describes
 which raw vertex indices are aliases of the same logical anchor.
+
+Implemented in:
+
+- `NapariPolygonTopology`
+- `napari_polygon_vertices_to_topology(...)`
+- shared private parser used by both `napari_polygon_vertices_to_topology(...)`
+  and `napari_polygon_vertices_to_shapely_polygon(...)`
 
 Suggested scope:
 
@@ -176,7 +183,7 @@ class NapariPolygonTopology:
         return (self.shell_anchor_group, *self.hole_anchor_groups)
 ```
 
-The exact API can still be refined, but the required behavior is:
+Implemented behavior:
 
 - simple polygon without holes returns `shell_anchor_group=()` and
   `hole_anchor_groups=()`

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -9,24 +10,59 @@ from shapely.geometry import Polygon
 from shapely.geometry.polygon import orient
 
 
+@dataclass(frozen=True)
+class NapariPolygonTopology:
+    shell_anchor_group: tuple[int, ...]
+    hole_anchor_groups: tuple[tuple[int, ...], ...]
+
+    @property
+    def synchronized_anchor_groups(self) -> tuple[tuple[int, ...], ...]:
+        if not self.shell_anchor_group:
+            return self.hole_anchor_groups
+        return (self.shell_anchor_group, *self.hole_anchor_groups)
+
+
+@dataclass(frozen=True)
+class _ParsedNapariPolygonVertices:
+    shell: np.ndarray
+    holes: tuple[np.ndarray, ...]
+    topology: NapariPolygonTopology
+
+
 def shapely_polygon_to_napari_polygon_vertices(polygon: Polygon) -> np.ndarray:
-    """Encode a Shapely polygon as one napari path, preserving direct holes."""
+    """Encode a Shapely polygon as one napari polygon vertex row."""
     oriented = orient(polygon, sign=1.0)
-    path = [_xy_coordinate(coord) for coord in oriented.exterior.coords]
-    anchor = path[0]
+    coordinates_xy = [_xy_coordinate(coord) for coord in oriented.exterior.coords]
+    anchor = coordinates_xy[0]
     for interior in oriented.interiors:
-        path.extend(_xy_coordinate(coord) for coord in interior.coords)
-        path.append(anchor)
-    return np.asarray([(y, x) for x, y in path], dtype=float)
+        coordinates_xy.extend(_xy_coordinate(coord) for coord in interior.coords)
+        coordinates_xy.append(anchor)
+    return np.asarray([(y, x) for x, y in coordinates_xy], dtype=float)
+
+
+def napari_polygon_vertices_to_topology(vertices: ArrayLike) -> NapariPolygonTopology:
+    """Return synchronized anchor groups for one napari polygon vertex row."""
+    parsed = _parse_napari_polygon_vertices(vertices)
+    if parsed.holes:
+        _make_valid_polygon_with_holes(parsed.shell, list(parsed.holes))
+    return parsed.topology
 
 
 def napari_polygon_vertices_to_shapely_polygon(vertices: ArrayLike) -> Polygon:
-    """Decode one napari polygon path into a Shapely polygon.
+    """Decode one napari polygon vertex row into a Shapely polygon.
 
     The adapter encodes holes by closing the exterior ring, appending each
     closed interior ring, and repeating the exterior anchor after every hole.
-    Paths without that separator pattern are interpreted as simple polygons.
+    Vertex rows without that separator pattern are interpreted as simple
+    polygons.
     """
+    parsed = _parse_napari_polygon_vertices(vertices)
+    if not parsed.holes:
+        return _make_valid_polygon(parsed.shell)
+    return _make_valid_polygon_with_holes(parsed.shell, list(parsed.holes))
+
+
+def _parse_napari_polygon_vertices(vertices: ArrayLike) -> _ParsedNapariPolygonVertices:
     coordinates_yx = _coerce_vertices(vertices)
     if len(coordinates_yx) < 3:
         raise ValueError("Polygon path has too few vertices for a valid polygon.")
@@ -34,13 +70,14 @@ def napari_polygon_vertices_to_shapely_polygon(vertices: ArrayLike) -> Polygon:
     coordinates_xy = coordinates_yx[:, [1, 0]]
     anchor = coordinates_xy[0]
     anchor_indices = _matching_coordinate_indices(coordinates_xy, anchor, start=1)
+    simple_topology = NapariPolygonTopology(shell_anchor_group=(), hole_anchor_groups=())
     if not anchor_indices:
-        return _make_valid_polygon(coordinates_xy)
+        return _ParsedNapariPolygonVertices(shell=coordinates_xy, holes=(), topology=simple_topology)
 
     shell_end = anchor_indices[0]
     shell = coordinates_xy[: shell_end + 1]
     if shell_end == len(coordinates_xy) - 1:
-        return _make_valid_polygon(shell)
+        return _ParsedNapariPolygonVertices(shell=shell, holes=(), topology=simple_topology)
 
     if shell_end < 3:
         raise ValueError("Malformed polygon hole encoding: exterior ring must contain at least four coordinates.")
@@ -48,17 +85,23 @@ def napari_polygon_vertices_to_shapely_polygon(vertices: ArrayLike) -> Polygon:
         raise ValueError("Malformed polygon hole encoding: path with holes must end on the exterior anchor.")
 
     holes: list[np.ndarray] = []
+    hole_anchor_groups: list[tuple[int, ...]] = []
     chunk_start = shell_end + 1
     for separator_index in anchor_indices[1:]:
         hole = coordinates_xy[chunk_start:separator_index]
         _validate_hole_ring(hole)
         holes.append(hole)
+        hole_anchor_groups.append((chunk_start, separator_index - 1))
         chunk_start = separator_index + 1
 
     if chunk_start != len(coordinates_xy):
         raise ValueError("Malformed polygon hole encoding: missing exterior-anchor separator after a hole ring.")
 
-    return _make_valid_polygon_with_holes(shell, holes)
+    topology = NapariPolygonTopology(
+        shell_anchor_group=(0, *anchor_indices),
+        hole_anchor_groups=tuple(hole_anchor_groups),
+    )
+    return _ParsedNapariPolygonVertices(shell=shell, holes=tuple(holes), topology=topology)
 
 
 def _coerce_vertices(vertices: ArrayLike) -> np.ndarray:

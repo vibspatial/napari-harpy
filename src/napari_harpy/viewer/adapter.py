@@ -2245,11 +2245,11 @@ def _is_renderable_polygon(polygon: Polygon) -> bool:
 
 
 def _shapely_polygon_to_napari_polygon_vertices(polygon: Polygon) -> np.ndarray:
-    """Encode a Shapely polygon as one napari path, preserving holes.
+    """Encode a Shapely polygon as one napari polygon vertex row.
 
     Napari can render polygon holes when the interior rings are embedded in the
-    same vertex path as the exterior ring and wind in the opposite direction.
-    The repeated exterior anchor creates bridge edges that napari's
+    same vertex row as the exterior ring and wind in the opposite direction. The
+    repeated exterior anchor creates bridge edges that napari's
     triangulation removes because they are traversed twice.
     """
     return shapely_polygon_to_napari_polygon_vertices(polygon)
