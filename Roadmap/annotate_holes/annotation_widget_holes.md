@@ -557,6 +557,73 @@ one member of such a group must move the other required copies:
 - moving a hole start/end anchor should update both copies of that hole anchor
 - moving an ordinary non-anchor vertex should update only that vertex
 
+Concrete one-hole example:
+
+```text
+index:  0 1 2 3 4   5 6 7 8 9   10
+value:  A B C D A   E F G H E   A
+```
+
+This flat napari row represents:
+
+- `A B C D A`: the closed exterior shell
+- `E F G H E`: the closed hole ring
+- final `A`: the exterior-anchor separator after the hole
+
+The semantic synchronization groups are:
+
+```text
+exterior anchor group: [0, 4, 10]
+hole anchor group:     [5, 9]
+ordinary vertices:     [1], [2], [3], [6], [7], [8]
+```
+
+If the user drags exterior-anchor index `0`, the broken napari behavior is:
+
+```text
+A' B C D A   E F G H E   A
+```
+
+The required repaired state is:
+
+```text
+A' B C D A'   E F G H E   A'
+```
+
+If the user drags hole-anchor index `5`, the broken napari behavior is:
+
+```text
+A B C D A   E' F G H E   A
+```
+
+The required repaired state is:
+
+```text
+A B C D A   E' F G H E'   A
+```
+
+If the user drags ordinary hole vertex `G` at index `7`, no synchronization is
+needed:
+
+```text
+A B C D A   E F G' H E   A
+```
+
+For multiple holes, the same rule applies independently to each anchor group:
+
+```text
+index:  0 1 2 3 4   5 6 7   8   9 10 11   12
+value:  A B C D A   E F E   A   I J  I    A
+
+exterior anchor group: [0, 4, 8, 12]
+first hole group:      [5, 7]
+second hole group:     [9, 11]
+```
+
+This is the core Slice 1E contract: napari may report that one raw vertex moved,
+but napari-harpy must treat some raw vertices as aliases of the same logical
+topology vertex and keep those aliases identical.
+
 Candidate implementation approach:
 
 1. Add a pure helper that parses a valid encoded napari polygon row into
