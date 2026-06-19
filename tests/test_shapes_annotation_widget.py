@@ -21,7 +21,10 @@ import napari_harpy._app_state as app_state_module
 import napari_harpy.widgets.shapes_annotation.widget as shapes_annotation_widget_module
 from napari_harpy._app_state import ShapesElementWrittenEvent, get_or_create_app_state
 from napari_harpy.core.shapes_annotation import AnnotateShapesElementResult
-from napari_harpy.core.shapes_geometry import shapely_polygon_to_napari_polygon_vertices
+from napari_harpy.core.shapes_geometry import (
+    napari_polygon_vertices_to_shapely_polygon,
+    shapely_polygon_to_napari_polygon_vertices,
+)
 from napari_harpy.viewer.adapter import ShapesLayerBinding
 from napari_harpy.viewer.shapes_styling import (
     _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR,
@@ -953,6 +956,54 @@ def test_shapes_annotation_widget_edit_existing_preserves_polygon_holes_on_save(
     assert widget._annotation_session.source_geodataframe is not None
     assert widget._annotation_session.source_geodataframe.index.equals(saved.index)
     assert "Shapes Saved" in _status_text(widget)
+
+
+def test_shapes_annotation_widget_edit_existing_preserves_non_anchor_hole_vertex_edits(qtbot) -> None:
+    shapes_name = "hole_regions"
+    original_polygon_1, polygon_2 = _polygon_hole_roundtrip_fixture()
+    sdata = _make_polygon_hole_roundtrip_sdata(shapes_name=shapes_name)
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, shapes_name))
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+
+    edited_vertices = np.asarray(layer.data[0], dtype=float).copy()
+    np.testing.assert_allclose(edited_vertices[[0, 5, 12]], edited_vertices[[0, 0, 0]])
+    np.testing.assert_allclose(edited_vertices[[6, 11]], edited_vertices[[6, 6]])
+    edited_vertices[2] += np.asarray([35.0, -45.0])
+    edited_vertices[8] += np.asarray([-25.0, 30.0])
+    layer.data = [edited_vertices, np.asarray(layer.data[1], dtype=float)]
+    expected_polygon_1 = Polygon(
+        _yx_to_xy(edited_vertices[:6]),
+        holes=[_yx_to_xy(edited_vertices[6:12])],
+    )
+    assert expected_polygon_1.is_valid
+    assert not expected_polygon_1.equals(original_polygon_1)
+
+    widget.save_shapes_button.click()
+
+    saved = sdata.shapes[shapes_name]
+    assert saved.index.name == "region_id"
+    assert saved.index.tolist() == ["hole_row", "simple_row"]
+    assert saved["label"].tolist() == ["polygon_with_hole", "simple_polygon"]
+    np.testing.assert_allclose(saved["score"].to_numpy(), np.asarray([1.25, 2.5]))
+    _assert_polygon_hole_geometries_preserved(saved, expected_polygon_1, polygon_2)
+
+    reloaded_viewer = DummyViewer()
+    reloaded_layer = get_or_create_app_state(reloaded_viewer).viewer_adapter.ensure_shapes_loaded(
+        sdata,
+        shapes_name,
+        "global",
+    ).layer
+    reloaded_polygon_1 = napari_polygon_vertices_to_shapely_polygon(reloaded_layer.data[0])
+
+    assert reloaded_polygon_1.equals(saved.geometry.iloc[0])
+    assert len(reloaded_polygon_1.interiors) == 1
 
 
 def test_shapes_annotation_widget_table_linked_edit_warns_without_mutating_table(

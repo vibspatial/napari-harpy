@@ -608,6 +608,16 @@ Slice 1C acceptance criteria:
 
 ### Slice 1D - Non-Anchor Hole Vertex Edit Round Trip
 
+Status: implemented.
+
+Implemented with
+`test_shapes_annotation_widget_edit_existing_preserves_non_anchor_hole_vertex_edits`
+in `tests/test_shapes_annotation_widget.py`. The test reuses the canonical
+synthetic polygon-with-hole fixture, edits one non-anchor exterior vertex and
+one non-anchor hole vertex in `layer.data[0]`, saves through the annotation
+widget, and reloads the saved shapes element through the viewer adapter to
+verify the encoded napari row still decodes to the saved Shapely polygon.
+
 Goal: prove that users can edit ordinary vertices of an existing hole-bearing
 annotation and save/reload the result, as long as they do not move any repeated
 anchor/separator vertex.
