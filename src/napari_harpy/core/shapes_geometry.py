@@ -48,6 +48,49 @@ def napari_polygon_vertices_to_topology(vertices: ArrayLike) -> NapariPolygonTop
     return parsed.topology
 
 
+def sync_napari_polygon_anchor_vertex(
+    vertices: ArrayLike,
+    topology: NapariPolygonTopology,
+    moved_vertex_index: int,
+    moved_coordinate: ArrayLike,
+) -> np.ndarray:
+    """Return vertices with the moved anchor copied to its synchronized group.
+
+    ``NapariPolygonTopology`` stores raw indices into the napari vertex row.
+    For a one-hole row encoded as ``A B C D A E F G H E A``, the synchronized
+    groups are ``(0, 4, 10)`` for the exterior anchor copies and ``(5, 9)`` for
+    the hole-anchor copies.
+
+    If napari moves one member of such a group, this helper writes the moved
+    coordinate to every index in that group. Moving exterior index ``4`` to
+    ``A'`` therefore turns ``A B C D A' E F G H E A`` into
+    ``A' B C D A' E F G H E A'``. Moving an ordinary non-anchor vertex, such as
+    ``G`` at index ``7``, returns an unchanged copy.
+
+    Topology groups are validated before synchronization so a vertex index
+    cannot belong to multiple groups or point outside the vertex row.
+    """
+    vertices = _coerce_vertices(vertices)
+    moved_vertex_index = _coerce_vertex_index(moved_vertex_index, vertex_count=len(vertices))
+    moved_coordinate = _coerce_moved_coordinate(moved_coordinate)
+
+    matched_group: tuple[int, ...] | None = None
+    seen_indices: set[int] = set()
+    for group in topology.synchronized_anchor_groups:
+        normalized_group = _validated_anchor_group(group, vertex_count=len(vertices))
+        overlap = seen_indices.intersection(normalized_group)
+        if overlap:
+            raise ValueError("Polygon topology anchor groups must not overlap.")
+        seen_indices.update(normalized_group)
+        if moved_vertex_index in normalized_group:
+            matched_group = normalized_group
+
+    synchronized = vertices.copy()
+    if matched_group is not None:
+        synchronized[list(matched_group)] = moved_coordinate
+    return synchronized
+
+
 def napari_polygon_vertices_to_shapely_polygon(vertices: ArrayLike) -> Polygon:
     """Decode one napari polygon vertex row into a Shapely polygon.
 
@@ -117,6 +160,44 @@ def _coerce_vertices(vertices: ArrayLike) -> np.ndarray:
     if not np.isfinite(coordinates).all():
         raise ValueError("Polygon path contains non-finite coordinates.")
     return coordinates
+
+
+def _coerce_vertex_index(index: int, *, vertex_count: int) -> int:
+    if isinstance(index, bool) or not isinstance(index, (int, np.integer)):
+        raise ValueError("Moved polygon vertex index must be an integer.")
+
+    vertex_index = int(index)
+    if vertex_index < 0 or vertex_index >= vertex_count:
+        raise ValueError("Moved polygon vertex index is outside the vertex row.")
+    return vertex_index
+
+
+def _coerce_moved_coordinate(coordinate: ArrayLike) -> np.ndarray:
+    try:
+        moved_coordinate = np.asarray(coordinate, dtype=float)
+    except (TypeError, ValueError) as error:
+        raise ValueError("Moved polygon vertex coordinate must contain numeric 2D coordinates.") from error
+
+    if moved_coordinate.shape != (2,):
+        raise ValueError("Moved polygon vertex coordinate must contain one 2D coordinate.")
+    if not np.isfinite(moved_coordinate).all():
+        raise ValueError("Moved polygon vertex coordinate contains non-finite coordinates.")
+    return moved_coordinate
+
+
+def _validated_anchor_group(group: Sequence[int], *, vertex_count: int) -> tuple[int, ...]:
+    if not group:
+        raise ValueError("Polygon topology anchor groups must not be empty.")
+
+    normalized_group: list[int] = []
+    for index in group:
+        if isinstance(index, bool) or not isinstance(index, (int, np.integer)):
+            raise ValueError("Polygon topology anchor group indices must be integers.")
+        vertex_index = int(index)
+        if vertex_index < 0 or vertex_index >= vertex_count:
+            raise ValueError("Polygon topology anchor group references a vertex outside the row.")
+        normalized_group.append(vertex_index)
+    return tuple(normalized_group)
 
 
 def _matching_coordinate_indices(coordinates: np.ndarray, target: np.ndarray, *, start: int) -> list[int]:

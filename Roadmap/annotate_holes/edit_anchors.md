@@ -208,10 +208,16 @@ Tests for this slice:
 
 ### Slice 2 - Synchronization Core Without Napari UI
 
-Status: not implemented.
+Status: implemented.
 
 Goal: make the anchor synchronization behavior testable without napari mouse
 events.
+
+Implemented in:
+
+- `sync_napari_polygon_anchor_vertex(...)`
+- validation for moved vertex index, moved coordinate, topology group bounds,
+  and overlapping topology groups
 
 Suggested scope:
 
@@ -261,7 +267,258 @@ Tests for this slice:
 - multiple-hole synchronization only updates the affected hole group
 - invalid moved index raises a clear error
 
-### Slice 3 - Annotation Layer Edit Guard Lifecycle
+### Slice 3 - Vertex Insert Topology Update Without Napari UI
+
+Status: not implemented.
+
+Goal: support adding ordinary vertices to hole-bearing polygon rows without
+losing the synchronized-anchor topology needed by later UI slices.
+
+Current napari behavior:
+
+Napari's `VERTEX_INSERT` mode inserts one raw vertex into the selected polygon
+row with `np.insert(vertices, ind, [coordinates], axis=0)`. It reports the
+inserted raw index through `layer.events.data(..., vertex_indices=((ind,),))`.
+Because `NapariPolygonTopology` stores raw vertex indices, every topology index
+at or after the insertion point must shift by one.
+
+Suggested scope:
+
+- Add a pure helper for structural insertion, likely in the same geometry
+  module as the move-sync helper.
+- The helper should work on raw napari vertices in `(y, x)` order and return
+  both the updated vertex row and the updated topology.
+- The helper should insert an ordinary non-anchor vertex; inserted vertices
+  should not become members of `shell_anchor_group` or `hole_anchor_groups`.
+- The helper should update topology indices by shifting all anchor indices at
+  or after the insertion index by `+1`.
+- The helper should validate that insertion happened on a real shell or hole
+  ring edge, not on an artificial bridge/separator edge.
+- After insertion, the updated row should still decode through
+  `napari_polygon_vertices_to_topology(...)`; if the inserted coordinate makes
+  the encoding ambiguous, fail clearly.
+- The helper should not import napari UI classes.
+
+Possible API:
+
+```python
+def insert_napari_polygon_vertex(
+    vertices: ArrayLike,
+    topology: NapariPolygonTopology,
+    insert_index: int,
+    inserted_coordinate: ArrayLike,
+) -> tuple[np.ndarray, NapariPolygonTopology]:
+    ...
+```
+
+Allowed insertions:
+
+- inserting into an ordinary shell edge
+- inserting into an ordinary hole-ring edge
+- inserting before a ring's closing anchor copy, because that still adds an
+  ordinary vertex to the ring before it closes
+
+Rejected insertions:
+
+- inserting before the shell-start anchor at index `0`
+- inserting between the shell-closing anchor and the first hole anchor
+- inserting between a hole-closing anchor and the following exterior separator
+- inserting between an exterior separator and the next hole anchor
+- inserting on the final exterior-separator-to-shell-start closure edge
+- inserting a coordinate that makes the row no longer satisfy the strict
+  adapter-encoded grammar
+
+Insertion-edge validation:
+
+Napari reports the raw `insert_index`; the inserted vertex is placed before
+that index. For a closed polygon row, this means the edge being split is usually
+`(insert_index - 1, insert_index)`, with `insert_index == 0` representing the
+closing edge from the last raw vertex back to the first.
+
+Use topology to derive the real ring index ranges:
+
+- shell ring: from `shell_anchor_group[0]` through `shell_anchor_group[1]`
+- each hole ring: from each `(hole_start, hole_end)` pair in
+  `hole_anchor_groups`
+
+An insertion is allowed only when it splits a real ring edge:
+
+```python
+shell_start < insert_index <= shell_end
+or any(hole_start < insert_index <= hole_end for hole_start, hole_end in hole_anchor_groups)
+```
+
+This permits inserting before a ring's closing anchor copy because that splits
+the final real edge of that ring. It rejects the artificial bridge/separator
+edges between the shell and holes, between holes and exterior separators, and
+between the final exterior separator and the shell start.
+
+One-hole example:
+
+```text
+index:  0 1 2 3 4   5 6 7 8 9   10
+value:  A B C D A   E F G H E   A
+
+shell anchor group: (0, 4, 10)
+hole anchor group:  (5, 9)
+```
+
+Allowed insert indices:
+
+```text
+1, 2, 3, 4   shell ring edges
+6, 7, 8, 9   hole ring edges
+```
+
+Rejected insert indices:
+
+```text
+0    final exterior separator -> shell start
+5    shell closing anchor -> hole start
+10   hole closing anchor -> exterior separator
+11   out of range
+```
+
+If a vertex `X` is inserted into the shell before index `3`, the updated row is:
+
+```text
+index:  0 1 2 3 4 5   6 7 8 9 10   11
+value:  A B C X D A   E F G H E    A
+
+shell anchor group: (0, 5, 11)
+hole anchor group:  (6, 10)
+```
+
+If a vertex `Y` is inserted into the hole before index `8`, the updated row is:
+
+```text
+index:  0 1 2 3 4   5 6 7 8 9 10   11
+value:  A B C D A   E F G Y H E    A
+
+shell anchor group: (0, 4, 11)
+hole anchor group:  (5, 10)
+```
+
+Tests for this slice:
+
+- inserting an ordinary shell vertex updates all later shell/hole anchor indices
+- inserting an ordinary hole vertex updates that hole's closing anchor and all
+  later separators
+- insertion in one hole does not change earlier hole groups except for global
+  index shifting where appropriate
+- bridge/separator-edge insertions are rejected
+- inserted coordinates that make the row ambiguous are rejected
+- returned vertices and topology decode successfully through the existing
+  topology helper
+
+### Slice 4 - Vertex Delete Topology Update Without Napari UI
+
+Status: not implemented.
+
+Goal: support deleting vertices from hole-bearing polygon rows while preserving
+or deliberately rebuilding valid hole topology.
+
+Current napari behavior:
+
+Napari's `VERTEX_REMOVE` mode removes exactly one raw vertex from the selected
+polygon row with `np.delete(vertices, vertex_under_cursor, axis=0)`. It reports
+the clicked raw index through `layer.events.data(..., vertex_indices=((index,),))`.
+Deleting ordinary vertices can be handled by shifting topology indices, but
+deleting anchor/separator vertices is harder because those raw vertices are
+structural aliases required by the encoding grammar.
+
+Suggested scope:
+
+- Add a pure helper for structural deletion, likely in the geometry module.
+- The helper should work on raw napari vertices in `(y, x)` order and return
+  both the updated vertex row and updated topology.
+- The helper should first support ordinary non-anchor vertex deletion for shell
+  and hole rings.
+- The helper should explicitly handle, or explicitly reject with a clear error,
+  deletion of shell anchors, hole anchors, and exterior separators. This must
+  not be left to save-time failure.
+- The helper should validate that each affected ring still has enough
+  coordinates to form a valid Shapely ring after deletion.
+- The helper should not import napari UI classes.
+
+Possible API:
+
+```python
+def delete_napari_polygon_vertex(
+    vertices: ArrayLike,
+    topology: NapariPolygonTopology,
+    deleted_vertex_index: int,
+) -> tuple[np.ndarray, NapariPolygonTopology]:
+    ...
+```
+
+Ordinary vertex deletion:
+
+- deleting an ordinary shell vertex removes only that raw vertex
+- deleting an ordinary hole vertex removes only that raw vertex
+- all topology indices after the deleted index shift by `-1`
+- deletion is rejected if the affected shell or hole ring would become too
+  short
+- the updated row must still decode through `napari_polygon_vertices_to_topology(...)`
+
+Anchor/separator deletion:
+
+Deleting anchor/separator vertices should be treated as deleting one logical
+ring vertex, not as deleting only one raw duplicate copy. Otherwise the encoding
+collapses immediately.
+
+The likely robust implementation is to rebuild the encoded row from rings:
+
+- if deleting a shell anchor copy, remove the logical shell anchor vertex from
+  the shell ring, choose a replacement shell anchor from the remaining shell
+  ring, and rewrite every exterior anchor/separator copy to that replacement
+- if deleting a hole anchor copy, remove the logical hole anchor vertex from
+  that hole ring, choose a replacement hole anchor from the remaining hole ring,
+  and rewrite both hole-anchor copies to that replacement
+- if deleting a non-start exterior separator copy, treat it as deleting the
+  logical shell anchor, not as deleting only that separator copy
+- reject if the affected ring would become invalid or too short
+- after rebuilding, validate by decoding to a Shapely `Polygon` with interiors
+  and deriving a fresh `NapariPolygonTopology`
+
+One-hole examples:
+
+```text
+index:  0 1 2 3 4   5 6 7 8 9   10
+value:  A B C D A   E F G H E   A
+```
+
+Deleting ordinary shell vertex `C` at index `2` can be handled by removal and
+index shifting:
+
+```text
+value:  A B D A   E F G H E   A
+shell anchor group: (0, 3, 9)
+hole anchor group:  (4, 8)
+```
+
+Deleting hole anchor `E` at index `5` should not produce
+`A B C D A F G H E A`. Instead, it should rebuild the hole with a new anchor,
+for example:
+
+```text
+value:  A B C D A   F G H F   A
+```
+
+Tests for this slice:
+
+- deleting an ordinary shell vertex updates topology and preserves holes
+- deleting an ordinary hole vertex updates topology and preserves holes
+- deleting an ordinary vertex is rejected when it would make a ring too short
+- deleting a shell anchor or exterior separator either rebuilds a valid encoded
+  row with a replacement shell anchor or raises a clear unsupported-operation
+  error
+- deleting a hole anchor either rebuilds a valid encoded row with a replacement
+  hole anchor or raises a clear unsupported-operation error
+- unrecoverable ambiguous deletion never reaches the save path as a guessed
+  geometry
+
+### Slice 5 - Annotation Layer Edit Guard Lifecycle
 
 Status: not implemented.
 
@@ -288,7 +545,7 @@ Tests for this slice:
 - toggling the layer between select/direct mode uses the wrapped direct callback
 - disconnecting the guard does not leave duplicate direct callbacks behind
 
-### Slice 4 - Live Direct-Drag Anchor Synchronization
+### Slice 6 - Live Direct-Drag Anchor Synchronization
 
 Status: not implemented.
 
@@ -297,7 +554,7 @@ not only after release.
 
 Suggested scope:
 
-- Extend the direct-mode wrapper from Slice 3.
+- Extend the direct-mode wrapper from Slice 5.
 - On mouse press, determine the candidate `(shape_index, vertex_index)` using
   the same direct-edit selection context as napari.
 - Parse and cache topology groups for the affected row before any vertex is
@@ -326,7 +583,7 @@ Tests for this slice:
 - repeated direct-mode toggles do not break the wrapper
 - malformed rows are not guessed into a repaired topology
 
-### Slice 5 - Defensive Event-Time Repair
+### Slice 7 - Defensive Event-Time Repair
 
 Status: not implemented.
 
@@ -355,7 +612,7 @@ Tests for this slice:
 - ambiguous edits are not guessed
 - save remains strict for unrecoverable malformed rows
 
-### Slice 6 - End-To-End Widget Round Trip And Interactive QA
+### Slice 8 - End-To-End Widget Round Trip And Interactive QA
 
 Status: not implemented.
 

@@ -9,6 +9,7 @@ from napari_harpy.core.shapes_geometry import (
     napari_polygon_vertices_to_shapely_polygon,
     napari_polygon_vertices_to_topology,
     shapely_polygon_to_napari_polygon_vertices,
+    sync_napari_polygon_anchor_vertex,
 )
 
 
@@ -93,6 +94,167 @@ def test_napari_polygon_vertices_to_topology_distinguishes_multiple_hole_anchors
         hole_anchor_groups=((5, 9), (11, 15)),
     )
     assert topology.synchronized_anchor_groups == ((0, 4, 10, 16), (5, 9), (11, 15))
+
+
+def test_sync_napari_polygon_anchor_vertex_synchronizes_exterior_anchor_group() -> None:
+    source = Polygon(
+        [(0, 0), (8, 0), (8, 8), (0, 8)],
+        holes=[[(2, 2), (2, 4), (4, 4), (4, 2)]],
+    )
+    vertices = shapely_polygon_to_napari_polygon_vertices(source)
+    original_vertices = vertices.copy()
+    topology = napari_polygon_vertices_to_topology(vertices)
+    moved_coordinate = np.asarray([25.0, -10.0])
+
+    synchronized = sync_napari_polygon_anchor_vertex(
+        vertices,
+        topology,
+        moved_vertex_index=4,
+        moved_coordinate=moved_coordinate,
+    )
+
+    np.testing.assert_allclose(synchronized[[0, 4, 10]], np.asarray([moved_coordinate] * 3))
+    np.testing.assert_allclose(synchronized[[1, 2, 3, 5, 6, 7, 8, 9]], original_vertices[[1, 2, 3, 5, 6, 7, 8, 9]])
+    np.testing.assert_allclose(vertices, original_vertices)
+    assert synchronized is not vertices
+
+
+def test_sync_napari_polygon_anchor_vertex_synchronizes_hole_anchor_group() -> None:
+    source = Polygon(
+        [(0, 0), (8, 0), (8, 8), (0, 8)],
+        holes=[[(2, 2), (2, 4), (4, 4), (4, 2)]],
+    )
+    vertices = shapely_polygon_to_napari_polygon_vertices(source)
+    original_vertices = vertices.copy()
+    topology = napari_polygon_vertices_to_topology(vertices)
+    moved_coordinate = np.asarray([12.0, 7.5])
+
+    synchronized = sync_napari_polygon_anchor_vertex(
+        vertices,
+        topology,
+        moved_vertex_index=9,
+        moved_coordinate=moved_coordinate,
+    )
+
+    np.testing.assert_allclose(synchronized[[5, 9]], np.asarray([moved_coordinate] * 2))
+    np.testing.assert_allclose(synchronized[[0, 1, 2, 3, 4, 6, 7, 8, 10]], original_vertices[[0, 1, 2, 3, 4, 6, 7, 8, 10]])
+    np.testing.assert_allclose(vertices, original_vertices)
+
+
+def test_sync_napari_polygon_anchor_vertex_leaves_non_anchor_vertices_unchanged() -> None:
+    source = Polygon(
+        [(0, 0), (8, 0), (8, 8), (0, 8)],
+        holes=[[(2, 2), (2, 4), (4, 4), (4, 2)]],
+    )
+    vertices = shapely_polygon_to_napari_polygon_vertices(source)
+    topology = napari_polygon_vertices_to_topology(vertices)
+
+    synchronized = sync_napari_polygon_anchor_vertex(
+        vertices,
+        topology,
+        moved_vertex_index=7,
+        moved_coordinate=np.asarray([50.0, 50.0]),
+    )
+
+    np.testing.assert_allclose(synchronized, vertices)
+    assert synchronized is not vertices
+
+
+def test_sync_napari_polygon_anchor_vertex_synchronizes_only_affected_hole_group() -> None:
+    source = Polygon(
+        [(0, 0), (10, 0), (10, 10), (0, 10)],
+        holes=[
+            [(2, 2), (2, 4), (4, 4), (4, 2)],
+            [(6, 6), (6, 8), (8, 8), (8, 6)],
+        ],
+    )
+    vertices = shapely_polygon_to_napari_polygon_vertices(source)
+    original_vertices = vertices.copy()
+    topology = napari_polygon_vertices_to_topology(vertices)
+    moved_coordinate = np.asarray([-3.0, 14.0])
+
+    synchronized = sync_napari_polygon_anchor_vertex(
+        vertices,
+        topology,
+        moved_vertex_index=11,
+        moved_coordinate=moved_coordinate,
+    )
+
+    np.testing.assert_allclose(synchronized[[11, 15]], np.asarray([moved_coordinate] * 2))
+    np.testing.assert_allclose(synchronized[[0, 4, 10, 16]], original_vertices[[0, 4, 10, 16]])
+    np.testing.assert_allclose(synchronized[[5, 9]], original_vertices[[5, 9]])
+
+
+@pytest.mark.parametrize("moved_vertex_index", [-1, 11])
+def test_sync_napari_polygon_anchor_vertex_rejects_out_of_range_moved_index(moved_vertex_index: int) -> None:
+    source = Polygon(
+        [(0, 0), (8, 0), (8, 8), (0, 8)],
+        holes=[[(2, 2), (2, 4), (4, 4), (4, 2)]],
+    )
+    vertices = shapely_polygon_to_napari_polygon_vertices(source)
+    topology = napari_polygon_vertices_to_topology(vertices)
+
+    with pytest.raises(ValueError, match="outside the vertex row"):
+        sync_napari_polygon_anchor_vertex(
+            vertices,
+            topology,
+            moved_vertex_index=moved_vertex_index,
+            moved_coordinate=np.asarray([1.0, 2.0]),
+        )
+
+
+def test_sync_napari_polygon_anchor_vertex_rejects_invalid_moved_coordinate() -> None:
+    vertices = np.asarray(
+        [
+            [0.0, 0.0],
+            [0.0, 1.0],
+            [1.0, 1.0],
+        ]
+    )
+
+    with pytest.raises(ValueError, match="one 2D coordinate"):
+        sync_napari_polygon_anchor_vertex(
+            vertices,
+            NapariPolygonTopology(shell_anchor_group=(), hole_anchor_groups=()),
+            moved_vertex_index=0,
+            moved_coordinate=np.asarray([[1.0, 2.0]]),
+        )
+
+
+def test_sync_napari_polygon_anchor_vertex_rejects_topology_outside_vertex_row() -> None:
+    vertices = np.asarray(
+        [
+            [0.0, 0.0],
+            [0.0, 1.0],
+            [1.0, 1.0],
+        ]
+    )
+
+    with pytest.raises(ValueError, match="outside the row"):
+        sync_napari_polygon_anchor_vertex(
+            vertices,
+            NapariPolygonTopology(shell_anchor_group=(0, 3), hole_anchor_groups=()),
+            moved_vertex_index=0,
+            moved_coordinate=np.asarray([1.0, 2.0]),
+        )
+
+
+def test_sync_napari_polygon_anchor_vertex_rejects_overlapping_topology_groups() -> None:
+    vertices = np.asarray(
+        [
+            [0.0, 0.0],
+            [0.0, 1.0],
+            [1.0, 1.0],
+        ]
+    )
+
+    with pytest.raises(ValueError, match="must not overlap"):
+        sync_napari_polygon_anchor_vertex(
+            vertices,
+            NapariPolygonTopology(shell_anchor_group=(0, 1), hole_anchor_groups=((1, 2),)),
+            moved_vertex_index=0,
+            moved_coordinate=np.asarray([1.0, 2.0]),
+        )
 
 
 def test_napari_polygon_vertices_to_shapely_polygon_preserves_one_hole() -> None:
