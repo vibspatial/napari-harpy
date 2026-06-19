@@ -485,7 +485,18 @@ Slice 1B acceptance criteria:
 Goal: prove that existing hole-bearing SpatialData shapes can be opened in the
 annotation widget and saved back without losing hole geometry.
 
-Status: not implemented until widget-level hole round-trip tests exist.
+Status: implemented.
+
+Implemented with widget-level tests in `tests/test_shapes_annotation_widget.py`:
+
+- `test_shapes_annotation_widget_edit_existing_preserves_polygon_holes_on_save`
+  covers the existing SpatialData route using the canonical synthetic Shapely
+  `Polygon(shell, holes=[...])` fixture.
+- `test_shapes_annotation_widget_saves_native_csv_layer_with_polygon_hole`
+  covers the native napari CSV/adoption route by writing the same fixture with
+  `napari_write_shapes(...)`, reading it back through napari's built-in CSV
+  reader, adopting the resulting `Shapes` layer, and saving it into
+  SpatialData.
 
 Suggested work:
 

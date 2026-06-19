@@ -5,18 +5,23 @@ from html import unescape
 from types import SimpleNamespace
 
 import anndata as ad
+import geopandas as gpd
 import numpy as np
 import pandas as pd
 from matplotlib.colors import to_rgba
 from napari.layers import Shapes
+from napari_builtins.io import csv_to_layer_data, napari_write_shapes
 from qtpy.QtWidgets import QComboBox, QLabel
+from shapely.geometry import Polygon
 from spatialdata import SpatialData, read_zarr
-from spatialdata.models import TableModel
+from spatialdata.models import ShapesModel, TableModel
+from spatialdata.transformations import Identity
 
 import napari_harpy._app_state as app_state_module
 import napari_harpy.widgets.shapes_annotation.widget as shapes_annotation_widget_module
 from napari_harpy._app_state import ShapesElementWrittenEvent, get_or_create_app_state
 from napari_harpy.core.shapes_annotation import AnnotateShapesElementResult
+from napari_harpy.core.shapes_geometry import shapely_polygon_to_napari_polygon_vertices
 from napari_harpy.viewer.adapter import ShapesLayerBinding
 from napari_harpy.viewer.shapes_styling import (
     _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR,
@@ -143,6 +148,79 @@ def _native_polygon_layer(name: str, *, affine: np.ndarray | None = None) -> Sha
         affine=affine,
         name=name,
     )
+
+
+def _yx_to_xy(coordinates_yx: np.ndarray) -> list[tuple[float, float]]:
+    return [(float(x), float(y)) for y, x in np.asarray(coordinates_yx, dtype=float)]
+
+
+def _polygon_hole_roundtrip_fixture() -> tuple[Polygon, Polygon]:
+    center_y = 1000.0
+    center_x = 2000.0
+
+    polygon_1_shell_yx = np.array(
+        [
+            [center_y - 350, center_x - 280],
+            [center_y - 420, center_x + 120],
+            [center_y - 120, center_x + 320],
+            [center_y + 180, center_x + 140],
+            [center_y + 120, center_x - 240],
+        ],
+        dtype=float,
+    )
+    polygon_1_hole_yx = np.array(
+        [
+            [center_y - 150, center_x - 40],
+            [center_y - 170, center_x + 70],
+            [center_y - 80, center_x + 130],
+            [center_y - 10, center_x + 40],
+            [center_y - 50, center_x - 70],
+        ],
+        dtype=float,
+    )
+    polygon_2_yx = np.array(
+        [
+            [center_y + 260, center_x - 40],
+            [center_y + 180, center_x + 260],
+            [center_y + 420, center_x + 340],
+            [center_y + 520, center_x + 40],
+            [center_y + 360, center_x - 180],
+        ],
+        dtype=float,
+    )
+
+    polygon_1 = Polygon(
+        _yx_to_xy(polygon_1_shell_yx),
+        holes=[_yx_to_xy(polygon_1_hole_yx)],
+    )
+    polygon_2 = Polygon(_yx_to_xy(polygon_2_yx))
+    assert polygon_1.is_valid
+    assert polygon_2.is_valid
+    assert len(polygon_1.interiors) == 1
+    return polygon_1, polygon_2
+
+
+def _make_polygon_hole_roundtrip_sdata(*, shapes_name: str = "hole_regions") -> SpatialData:
+    polygon_1, polygon_2 = _polygon_hole_roundtrip_fixture()
+    geodataframe = gpd.GeoDataFrame(
+        {"label": ["polygon_with_hole", "simple_polygon"], "score": [1.25, 2.5]},
+        geometry=[polygon_1, polygon_2],
+        index=pd.Index(["hole_row", "simple_row"], name="region_id"),
+    )
+    shapes = ShapesModel.parse(geodataframe, transformations={"global": Identity()})
+    return SpatialData(shapes={shapes_name: shapes})
+
+
+def _assert_polygon_hole_geometries_preserved(saved: gpd.GeoDataFrame, polygon_1: Polygon, polygon_2: Polygon) -> None:
+    saved_polygon_1 = saved.geometry.iloc[0]
+    saved_polygon_2 = saved.geometry.iloc[1]
+
+    assert saved_polygon_1.equals(polygon_1)
+    assert len(saved_polygon_1.interiors) == 1
+    assert saved_polygon_1.area == polygon_1.area
+    assert saved_polygon_1.bounds == polygon_1.bounds
+    assert saved_polygon_2.equals(polygon_2)
+    assert len(saved_polygon_2.interiors) == 0
 
 
 def _add_dummy_table_annotating_shapes(sdata: SpatialData, *, shapes_name: str, table_name: str) -> ad.AnnData:
@@ -843,6 +921,36 @@ def test_shapes_annotation_widget_edit_existing_save_updates_shapes_element_and_
     assert "Shapes Saved" in _status_text(widget)
 
 
+def test_shapes_annotation_widget_edit_existing_preserves_polygon_holes_on_save(qtbot) -> None:
+    shapes_name = "hole_regions"
+    polygon_1, polygon_2 = _polygon_hole_roundtrip_fixture()
+    sdata = _make_polygon_hole_roundtrip_sdata(shapes_name=shapes_name)
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, shapes_name))
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    assert widget.save_shapes_button.isEnabled() is True
+
+    widget.save_shapes_button.click()
+
+    saved = sdata.shapes[shapes_name]
+    assert saved.index.name == "region_id"
+    assert saved.index.tolist() == ["hole_row", "simple_row"]
+    assert saved["label"].tolist() == ["polygon_with_hole", "simple_polygon"]
+    np.testing.assert_allclose(saved["score"].to_numpy(), np.asarray([1.25, 2.5]))
+    _assert_polygon_hole_geometries_preserved(saved, polygon_1, polygon_2)
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.source_geodataframe is not saved
+    assert widget._annotation_session.source_geodataframe is not None
+    assert widget._annotation_session.source_geodataframe.index.equals(saved.index)
+    assert "Shapes Saved" in _status_text(widget)
+
+
 def test_shapes_annotation_widget_table_linked_edit_warns_without_mutating_table(
     qtbot,
     sdata_blobs: SpatialData,
@@ -1078,6 +1186,49 @@ def test_shapes_annotation_widget_saves_adopted_native_nonempty_shapes_layer(
     assert widget._annotation_session.shapes_name == "native_import"
     assert widget.shapes_combo.currentText() == "native_import"
     assert widget.name_edit.text() == ""
+
+
+def test_shapes_annotation_widget_saves_native_csv_layer_with_polygon_hole(
+    qtbot,
+    tmp_path,
+) -> None:
+    """Save a napari-native CSV Shapes import with a hole through the widget."""
+    polygon_1, polygon_2 = _polygon_hole_roundtrip_fixture()
+    sdata = _make_polygon_hole_roundtrip_sdata(shapes_name="reference_regions")
+    output_path = tmp_path / "native_hole_import.csv"
+    napari_write_shapes(
+        str(output_path),
+        [
+            shapely_polygon_to_napari_polygon_vertices(polygon_1),
+            shapely_polygon_to_napari_polygon_vertices(polygon_2),
+        ],
+        {"shape_type": ["polygon", "polygon"]},
+    )
+    loaded = csv_to_layer_data(str(output_path), require_type="shapes")
+    assert loaded is not None
+    data, meta, _layer_type = loaded
+    native_layer = Shapes(data, **meta, name="native_hole_import")
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    viewer.add_layer(native_layer)
+    qtbot.waitUntil(lambda: widget._annotation_layer is native_layer)
+    widget.save_shapes_button.click()
+
+    assert "native_hole_import" in sdata.shapes
+    saved = sdata.shapes["native_hole_import"]
+    assert saved.index.name == "instance_id"
+    assert saved.index.tolist() == ["__annotation_0", "__annotation_1"]
+    assert native_layer.features["instance_id"].tolist() == ["__annotation_0", "__annotation_1"]
+    _assert_polygon_hole_geometries_preserved(saved, polygon_1, polygon_2)
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.mode == "edit_existing"
+    assert widget._annotation_session.shapes_name == "native_hole_import"
+    assert widget.shapes_combo.currentText() == "native_hole_import"
+    assert "Shapes Saved" in _status_text(widget)
 
 
 def test_shapes_annotation_widget_saves_reloads_adopted_translated_native_shapes_layer(
