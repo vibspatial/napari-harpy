@@ -417,12 +417,12 @@ Tests for this slice:
 - returned vertices and topology decode successfully through the existing
   topology helper
 
-### Slice 4 - Vertex Delete Topology Update Without Napari UI
+### Slice 4A - Ordinary Non-Anchor Vertex Delete Topology Update Without Napari UI
 
 Status: not implemented.
 
-Goal: support deleting vertices from hole-bearing polygon rows while preserving
-or deliberately rebuilding valid hole topology.
+Goal: support deleting ordinary, non-anchor vertices from hole-bearing polygon
+rows while preserving the encoded hole topology.
 
 Current napari behavior:
 
@@ -435,14 +435,13 @@ structural aliases required by the encoding grammar.
 
 Suggested scope:
 
-- Add a pure helper for structural deletion, likely in the geometry module.
+- Add a pure helper for ordinary vertex deletion, likely in the geometry module.
 - The helper should work on raw napari vertices in `(y, x)` order and return
   both the updated vertex row and updated topology.
-- The helper should first support ordinary non-anchor vertex deletion for shell
+- The helper should support deleting ordinary non-anchor vertices from shell
   and hole rings.
-- The helper should explicitly handle, or explicitly reject with a clear error,
-  deletion of shell anchors, hole anchors, and exterior separators. This must
-  not be left to save-time failure.
+- The helper should reject deletion of shell anchors, hole anchors, and exterior
+  separators with a clear error. Those structural deletions belong to Slice 4B.
 - The helper should validate that each affected ring still has enough
   coordinates to form a valid Shapely ring after deletion.
 - The helper should not import napari UI classes.
@@ -466,28 +465,10 @@ Ordinary vertex deletion:
 - deletion is rejected if the affected shell or hole ring would become too
   short
 - the updated row must still decode through `napari_polygon_vertices_to_topology(...)`
+- deleting a shell anchor, hole anchor, or exterior separator is rejected with a
+  clear error
 
-Anchor/separator deletion:
-
-Deleting anchor/separator vertices should be treated as deleting one logical
-ring vertex, not as deleting only one raw duplicate copy. Otherwise the encoding
-collapses immediately.
-
-The likely robust implementation is to rebuild the encoded row from rings:
-
-- if deleting a shell anchor copy, remove the logical shell anchor vertex from
-  the shell ring, choose a replacement shell anchor from the remaining shell
-  ring, and rewrite every exterior anchor/separator copy to that replacement
-- if deleting a hole anchor copy, remove the logical hole anchor vertex from
-  that hole ring, choose a replacement hole anchor from the remaining hole ring,
-  and rewrite both hole-anchor copies to that replacement
-- if deleting a non-start exterior separator copy, treat it as deleting the
-  logical shell anchor, not as deleting only that separator copy
-- reject if the affected ring would become invalid or too short
-- after rebuilding, validate by decoding to a Shapely `Polygon` with interiors
-  and deriving a fresh `NapariPolygonTopology`
-
-One-hole examples:
+One-hole example:
 
 ```text
 index:  0 1 2 3 4   5 6 7 8 9   10
@@ -503,6 +484,76 @@ shell anchor group: (0, 3, 9)
 hole anchor group:  (4, 8)
 ```
 
+Deleting ordinary hole vertex `G` at index `7` can also be handled by removal
+and index shifting:
+
+```text
+value:  A B C D A   E F H E   A
+shell anchor group: (0, 4, 9)
+hole anchor group:  (5, 8)
+```
+
+Tests for this slice:
+
+- deleting an ordinary shell vertex updates topology and preserves holes
+- deleting an ordinary hole vertex updates topology and preserves holes
+- deleting an ordinary vertex is rejected when it would make a ring too short
+- deleting a shell anchor, hole anchor, or exterior separator raises a clear
+  unsupported-structural-deletion error
+- the returned vertices and topology decode successfully through the existing
+  topology helper
+
+### Slice 4B - Anchor/Separator Vertex Delete Rebuild Without Napari UI
+
+Status: not implemented.
+
+Goal: support, or deliberately reject, deletion of anchor/separator vertices
+without allowing the encoded hole topology to collapse into an ambiguous row.
+
+Why this is separate from Slice 4A:
+
+Anchor/separator vertices are structural aliases in the napari vertex row.
+Deleting only one raw copy leaves the other copies behind and changes the row
+grammar. Therefore this is not just index shifting; it requires either rebuilding
+the encoded row from logical rings or failing before the save path.
+
+Suggested scope:
+
+- Add support to the deletion helper from Slice 4A, or add a dedicated helper
+  that handles structural deletion and is called by the Slice 4A helper.
+- Treat deletion of anchor/separator vertices as deletion of one logical ring
+  vertex, not as deletion of only one raw duplicate copy.
+- Rebuild the encoded row from rings after choosing replacement shell or hole
+  anchors.
+- Reject the operation clearly if the affected shell or hole ring would become
+  invalid or too short.
+- After rebuilding, validate by decoding to a Shapely `Polygon` with interiors
+  and deriving a fresh `NapariPolygonTopology`.
+- Do not import napari UI classes.
+
+Anchor/separator deletion policy:
+
+The likely robust implementation is to rebuild the encoded row from rings:
+
+- if deleting a shell anchor copy, remove the logical shell anchor vertex from
+  the shell ring, choose a replacement shell anchor from the remaining shell
+  ring, and rewrite every exterior anchor/separator copy to that replacement
+- if deleting a hole anchor copy, remove the logical hole anchor vertex from
+  that hole ring, choose a replacement hole anchor from the remaining hole ring,
+  and rewrite both hole-anchor copies to that replacement
+- if deleting a non-start exterior separator copy, treat it as deleting the
+  logical shell anchor, not as deleting only that separator copy
+- reject if the affected ring would become invalid or too short
+- after rebuilding, validate by decoding to a Shapely `Polygon` with interiors
+  and deriving a fresh `NapariPolygonTopology`
+
+One-hole example:
+
+```text
+index:  0 1 2 3 4   5 6 7 8 9   10
+value:  A B C D A   E F G H E   A
+```
+
 Deleting hole anchor `E` at index `5` should not produce
 `A B C D A F G H E A`. Instead, it should rebuild the hole with a new anchor,
 for example:
@@ -513,14 +564,14 @@ value:  A B C D A   F G H F   A
 
 Tests for this slice:
 
-- deleting an ordinary shell vertex updates topology and preserves holes
-- deleting an ordinary hole vertex updates topology and preserves holes
-- deleting an ordinary vertex is rejected when it would make a ring too short
-- deleting a shell anchor or exterior separator either rebuilds a valid encoded
-  row with a replacement shell anchor or raises a clear unsupported-operation
-  error
-- deleting a hole anchor either rebuilds a valid encoded row with a replacement
-  hole anchor or raises a clear unsupported-operation error
+- deleting a shell anchor or exterior separator rebuilds a valid encoded row
+  with a replacement shell anchor, or raises a clear unsupported-operation error
+- deleting a hole anchor rebuilds a valid encoded row with a replacement hole
+  anchor, or raises a clear unsupported-operation error
+- deleting any structural alias removes the logical vertex from the affected
+  ring, not only the clicked raw duplicate
+- deleting a structural alias is rejected when the affected ring would become
+  too short or invalid
 - unrecoverable ambiguous deletion never reaches the save path as a guessed
   geometry
 
