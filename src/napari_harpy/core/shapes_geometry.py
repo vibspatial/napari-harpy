@@ -83,6 +83,7 @@ def napari_polygon_vertices_to_topology(vertices: ArrayLike) -> NapariPolygonTop
     return parsed.topology
 
 
+# Topology-preserving edit helpers for one napari polygon vertex row.
 def sync_napari_polygon_anchor_vertex(
     vertices: ArrayLike,
     topology: NapariPolygonTopology,
