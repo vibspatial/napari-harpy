@@ -12,6 +12,18 @@ from shapely.geometry.polygon import orient
 
 @dataclass(frozen=True)
 class NapariPolygonTopology:
+    """Raw vertex-index topology for one napari polygon row.
+
+    The napari row stores polygon holes by repeating anchor coordinates inside a
+    single vertex array. For ``A B C D A E F G H E A``, the exterior anchor
+    copies are indices ``(0, 4, 10)`` and the hole-anchor copies are
+    ``((5, 9),)``. These synchronized groups identify which raw vertex indices
+    must move together when napari edits one anchor copy.
+
+    The topology stores indices only, not coordinates. Simple polygons without
+    encoded holes use empty shell and hole groups.
+    """
+
     shell_anchor_group: tuple[int, ...]
     hole_anchor_groups: tuple[tuple[int, ...], ...]
 
@@ -102,6 +114,10 @@ def sync_napari_polygon_anchor_vertex(
     ``A'`` therefore turns ``A B C D A' E F G H E A`` into
     ``A' B C D A' E F G H E A'``. Moving an ordinary non-anchor vertex, such as
     ``G`` at index ``7``, returns an unchanged copy.
+
+    The topology is not returned because it stores indices, not coordinates.
+    Synchronizing a moved coordinate does not insert or remove vertices, so the
+    anchor-group indices remain unchanged.
 
     Topology groups are validated before synchronization so a vertex index
     cannot belong to multiple groups or point outside the vertex row.
