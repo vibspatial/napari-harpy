@@ -516,24 +516,25 @@ Tests for this slice:
 
 Status: not implemented.
 
-Goal: support, or deliberately reject, deletion of anchor/separator vertices
-without allowing the encoded hole topology to collapse into an ambiguous row.
+Goal: support deletion of anchor/separator vertices by rebuilding the encoded
+row from logical rings, without allowing the hole topology to collapse into an
+ambiguous row.
 
 Why this is separate from Slice 4A:
 
 Anchor/separator vertices are structural aliases in the napari vertex row.
 Deleting only one raw copy leaves the other copies behind and changes the row
-grammar. Therefore this is not just index shifting; it requires either rebuilding
-the encoded row from logical rings or failing before the save path.
+grammar. Therefore this is not just index shifting; it requires rebuilding the
+encoded row from logical rings and deriving fresh topology.
 
 Suggested scope:
 
-- Add support to the deletion helper from Slice 4A, or add a dedicated helper
-  that handles structural deletion and is called by the Slice 4A helper.
+- Extend the deletion helper from Slice 4A, or add a dedicated rebuild helper
+  that is called by the Slice 4A helper when the deleted index is structural.
 - Treat deletion of anchor/separator vertices as deletion of one logical ring
   vertex, not as deletion of only one raw duplicate copy.
-- Rebuild the encoded row from rings after choosing replacement shell or hole
-  anchors.
+- Rebuild the encoded row from logical rings after choosing replacement shell
+  or hole anchors deterministically.
 - Reject the operation clearly if the affected shell or hole ring would become
   invalid or too short.
 - After rebuilding, validate by decoding to a Shapely `Polygon` with interiors
@@ -542,16 +543,17 @@ Suggested scope:
 
 Anchor/separator deletion policy:
 
-The likely robust implementation is to rebuild the encoded row from rings:
+The implementation should rebuild the encoded row from rings:
 
-- if deleting a shell anchor copy, remove the logical shell anchor vertex from
-  the shell ring, choose a replacement shell anchor from the remaining shell
-  ring, and rewrite every exterior anchor/separator copy to that replacement
-- if deleting a hole anchor copy, remove the logical hole anchor vertex from
-  that hole ring, choose a replacement hole anchor from the remaining hole ring,
-  and rewrite both hole-anchor copies to that replacement
-- if deleting a non-start exterior separator copy, treat it as deleting the
-  logical shell anchor, not as deleting only that separator copy
+- if deleting any shell anchor/separator copy, remove the logical shell anchor
+  vertex from the shell ring
+- if deleting any hole anchor copy, remove the logical hole anchor vertex from
+  that hole ring
+- choose the replacement anchor deterministically as the next remaining vertex
+  in the affected ring; if the deleted vertex was the last logical vertex before
+  closure, wrap to the first remaining vertex
+- rewrite every exterior anchor/separator copy to the replacement shell anchor
+- rewrite both hole-anchor copies to the replacement hole anchor
 - reject if the affected ring would become invalid or too short
 - after rebuilding, validate by decoding to a Shapely `Polygon` with interiors
   and deriving a fresh `NapariPolygonTopology`
@@ -563,9 +565,18 @@ index:  0 1 2 3 4   5 6 7 8 9   10
 value:  A B C D A   E F G H E   A
 ```
 
-Deleting hole anchor `E` at index `5` should not produce
+Deleting any shell anchor/separator copy, indices `0`, `4`, or `10`, should
+delete logical shell vertex `A` and rebuild with the next shell vertex as the
+replacement anchor:
+
+```text
+value:  B C D B   E F G H E   B
+```
+
+Deleting either hole anchor copy, indices `5` or `9`, should delete logical
+hole vertex `E`. It must not produce
 `A B C D A F G H E A`. Instead, it should rebuild the hole with a new anchor,
-for example:
+using the next hole vertex as the replacement anchor:
 
 ```text
 value:  A B C D A   F G H F   A
@@ -573,14 +584,16 @@ value:  A B C D A   F G H F   A
 
 Tests for this slice:
 
-- deleting a shell anchor or exterior separator rebuilds a valid encoded row
-  with a replacement shell anchor, or raises a clear unsupported-operation error
-- deleting a hole anchor rebuilds a valid encoded row with a replacement hole
-  anchor, or raises a clear unsupported-operation error
+- deleting each shell anchor/separator copy rebuilds the same valid encoded row
+  with the next remaining shell vertex as replacement anchor
+- deleting either copy of a hole anchor rebuilds the same valid encoded row with
+  the next remaining hole vertex as replacement anchor
 - deleting any structural alias removes the logical vertex from the affected
   ring, not only the clicked raw duplicate
 - deleting a structural alias is rejected when the affected ring would become
   too short or invalid
+- deleting a structural alias in a multi-hole row preserves unaffected holes and
+  derives fresh topology for all anchor groups
 - unrecoverable ambiguous deletion never reaches the save path as a guessed
   geometry
 
