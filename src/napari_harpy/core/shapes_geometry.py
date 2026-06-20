@@ -182,6 +182,10 @@ def delete_napari_polygon_vertex(
     if deleted_vertex_index in structural_indices:
         raise ValueError("Cannot delete polygon anchor/separator vertices with ordinary vertex deletion.")
 
+    for hole_start, hole_end in hole_anchor_groups:
+        if hole_start < deleted_vertex_index < hole_end and hole_end - hole_start + 1 == 4:
+            return _delete_napari_polygon_hole(vertices, hole_start=hole_start, hole_end=hole_end)
+
     deleted_vertices = np.delete(vertices, deleted_vertex_index, axis=0)
     # Compute the topology expected after deletion by shifting every existing
     # anchor/separator index after the deleted vertex one slot to the left.
@@ -360,6 +364,21 @@ def _shift_index_after_delete(index: int, *, deleted_vertex_index: int) -> int:
     if index > deleted_vertex_index:
         return index - 1
     return index
+
+
+def _delete_napari_polygon_hole(
+    vertices: np.ndarray,
+    *,
+    hole_start: int,
+    hole_end: int,
+) -> tuple[np.ndarray, NapariPolygonTopology]:
+    separator_index = hole_end + 1
+    if separator_index >= len(vertices):
+        raise ValueError("Polygon hole ring must be followed by an exterior separator.")
+
+    deleted_vertices = np.delete(vertices, np.arange(hole_start, separator_index + 1), axis=0)
+    parsed_topology = napari_polygon_vertices_to_topology(deleted_vertices)
+    return deleted_vertices, parsed_topology
 
 
 def _normalized_anchor_group(group: Sequence[int], *, allow_empty: bool) -> tuple[int, ...]:

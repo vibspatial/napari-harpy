@@ -419,28 +419,27 @@ Tests for this slice:
 
 ### Slice 4A - Ordinary Non-Anchor Vertex Delete Topology Update Without Napari UI
 
-Status: reopened.
+Status: implemented.
 
 Goal: support deleting ordinary, non-anchor vertices from hole-bearing polygon
 rows while preserving the encoded hole topology.
 
-Implemented so far:
+Implemented in:
 
 - `delete_napari_polygon_vertex(...)`
 - rejection of shell anchors, hole anchors, and exterior separators
 - topology index shifting followed by fresh topology decoding/validation
 - tests for ordinary shell deletion, ordinary hole deletion, multi-hole index
   shifting, invalid indices, structural-index rejection, simple polygon
-  rejection, and too-short ring rejection
-
-Follow-up decision:
+  rejection, shell-too-short rejection, and minimal-hole removal
 
 If ordinary deletion from a minimal triangular hole would make that hole too
-short, remove the entire hole ring instead of rejecting. This gives users a
-natural way to delete a hole, since holes are not separate napari shape rows.
-If ordinary deletion from the shell would make the shell too short, continue to
-reject clearly; deleting the shell means deleting the entire annotation row and
-belongs to a later layer-row deletion workflow, not this vertex-row helper.
+short, the helper removes the entire hole ring instead of rejecting. This gives
+users a natural way to delete a hole, since holes are not separate napari shape
+rows. If ordinary deletion from the shell would make the shell too short, the
+helper continues to reject clearly; deleting the shell means deleting the entire
+annotation row and belongs to a later layer-row deletion workflow, not this
+vertex-row helper.
 
 Current napari behavior:
 
@@ -521,7 +520,7 @@ index:  0 1 2 3 4   5 6 7 8   9
 value:  A B C D A   E F G E   A
 
 after deleting F:
-value:  A B C D
+value:  A B C D A
 topology: no synchronized anchor groups
 ```
 
