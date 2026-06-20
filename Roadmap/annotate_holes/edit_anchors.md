@@ -419,10 +419,19 @@ Tests for this slice:
 
 ### Slice 4A - Ordinary Non-Anchor Vertex Delete Topology Update Without Napari UI
 
-Status: not implemented.
+Status: implemented.
 
 Goal: support deleting ordinary, non-anchor vertices from hole-bearing polygon
 rows while preserving the encoded hole topology.
+
+Implemented in:
+
+- `delete_napari_polygon_vertex(...)`
+- rejection of shell anchors, hole anchors, and exterior separators
+- topology index shifting followed by fresh topology decoding/validation
+- tests for ordinary shell deletion, ordinary hole deletion, multi-hole index
+  shifting, invalid indices, structural-index rejection, simple polygon
+  rejection, and too-short ring rejection
 
 Current napari behavior:
 

@@ -6,6 +6,7 @@ from shapely.geometry import Polygon
 
 from napari_harpy.core.shapes_geometry import (
     NapariPolygonTopology,
+    delete_napari_polygon_vertex,
     insert_napari_polygon_vertex,
     napari_polygon_vertices_to_shapely_polygon,
     napari_polygon_vertices_to_topology,
@@ -95,6 +96,43 @@ def test_napari_polygon_vertices_to_topology_distinguishes_multiple_hole_anchors
         hole_anchor_groups=((5, 9), (11, 15)),
     )
     assert topology.synchronized_anchor_groups == ((0, 4, 10, 16), (5, 9), (11, 15))
+
+
+def test_napari_polygon_topology_normalizes_anchor_groups() -> None:
+    topology = NapariPolygonTopology(
+        shell_anchor_group=[0, np.int64(4), 10],
+        hole_anchor_groups=[[5, 9]],
+    )
+
+    assert topology.shell_anchor_group == (0, 4, 10)
+    assert topology.hole_anchor_groups == ((5, 9),)
+    assert topology.synchronized_anchor_groups == ((0, 4, 10), (5, 9))
+
+
+@pytest.mark.parametrize(
+    ("shell_anchor_group", "hole_anchor_groups", "match"),
+    [
+        ((0,), (), "at least two"),
+        ((1, 4), (), "first vertex"),
+        ((0, 4, 4), (), "strictly increasing"),
+        ((), ((5, 9),), "without shell anchors"),
+        ((0, 4), ((5,),), "start and end"),
+        ((0, 4), ((9, 5),), "strictly increasing"),
+        ((0, 4), ((4, 5),), "must not overlap"),
+        ((0, -4), (), "non-negative"),
+        ((0, True), (), "must be integers"),
+    ],
+)
+def test_napari_polygon_topology_rejects_structurally_invalid_groups(
+    shell_anchor_group: tuple[object, ...],
+    hole_anchor_groups: tuple[tuple[object, ...], ...],
+    match: str,
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        NapariPolygonTopology(
+            shell_anchor_group=shell_anchor_group,
+            hole_anchor_groups=hole_anchor_groups,
+        )
 
 
 def test_sync_napari_polygon_anchor_vertex_synchronizes_exterior_anchor_group() -> None:
@@ -422,6 +460,161 @@ def test_insert_napari_polygon_vertex_rejects_ambiguous_inserted_coordinate() ->
             topology,
             insert_index=3,
             inserted_coordinate=vertices[0],
+        )
+
+
+def test_delete_napari_polygon_vertex_deletes_shell_vertex_and_updates_topology() -> None:
+    source = Polygon(
+        [(0, 0), (8, 0), (8, 8), (4, 8), (0, 8)],
+        holes=[[(2, 2), (2, 4), (4, 4), (4, 2)]],
+    )
+    vertices = shapely_polygon_to_napari_polygon_vertices(source)
+    original_vertices = vertices.copy()
+    topology = napari_polygon_vertices_to_topology(vertices)
+
+    deleted_vertices, deleted_topology = delete_napari_polygon_vertex(
+        vertices,
+        topology,
+        deleted_vertex_index=3,
+    )
+
+    expected_vertices = np.delete(vertices, 3, axis=0)
+    np.testing.assert_allclose(deleted_vertices, expected_vertices)
+    assert deleted_topology == NapariPolygonTopology(
+        shell_anchor_group=(0, 4, 10),
+        hole_anchor_groups=((5, 9),),
+    )
+    assert deleted_topology == napari_polygon_vertices_to_topology(deleted_vertices)
+    assert len(napari_polygon_vertices_to_shapely_polygon(deleted_vertices).interiors) == 1
+    np.testing.assert_allclose(vertices, original_vertices)
+
+
+def test_delete_napari_polygon_vertex_deletes_hole_vertex_and_updates_topology() -> None:
+    source = Polygon(
+        [(0, 0), (8, 0), (8, 8), (0, 8)],
+        holes=[[(2, 2), (2, 4), (4, 4), (4, 2)]],
+    )
+    vertices = shapely_polygon_to_napari_polygon_vertices(source)
+    original_vertices = vertices.copy()
+    topology = napari_polygon_vertices_to_topology(vertices)
+
+    deleted_vertices, deleted_topology = delete_napari_polygon_vertex(
+        vertices,
+        topology,
+        deleted_vertex_index=7,
+    )
+
+    expected_vertices = np.delete(vertices, 7, axis=0)
+    np.testing.assert_allclose(deleted_vertices, expected_vertices)
+    assert deleted_topology == NapariPolygonTopology(
+        shell_anchor_group=(0, 4, 9),
+        hole_anchor_groups=((5, 8),),
+    )
+    assert deleted_topology == napari_polygon_vertices_to_topology(deleted_vertices)
+    assert len(napari_polygon_vertices_to_shapely_polygon(deleted_vertices).interiors) == 1
+    np.testing.assert_allclose(vertices, original_vertices)
+
+
+def test_delete_napari_polygon_vertex_in_one_hole_updates_later_topology_groups() -> None:
+    source = Polygon(
+        [(0, 0), (10, 0), (10, 10), (0, 10)],
+        holes=[
+            [(2, 2), (2, 4), (4, 4), (4, 2)],
+            [(6, 6), (6, 8), (8, 8), (8, 6)],
+        ],
+    )
+    vertices = shapely_polygon_to_napari_polygon_vertices(source)
+    topology = napari_polygon_vertices_to_topology(vertices)
+
+    deleted_vertices, deleted_topology = delete_napari_polygon_vertex(
+        vertices,
+        topology,
+        deleted_vertex_index=7,
+    )
+
+    assert deleted_topology == NapariPolygonTopology(
+        shell_anchor_group=(0, 4, 9, 15),
+        hole_anchor_groups=((5, 8), (10, 14)),
+    )
+    assert deleted_topology == napari_polygon_vertices_to_topology(deleted_vertices)
+
+
+@pytest.mark.parametrize("deleted_vertex_index", [0, 4, 5, 9, 10])
+def test_delete_napari_polygon_vertex_rejects_anchor_or_separator_deletion(deleted_vertex_index: int) -> None:
+    source = Polygon(
+        [(0, 0), (8, 0), (8, 8), (0, 8)],
+        holes=[[(2, 2), (2, 4), (4, 4), (4, 2)]],
+    )
+    vertices = shapely_polygon_to_napari_polygon_vertices(source)
+    topology = napari_polygon_vertices_to_topology(vertices)
+
+    with pytest.raises(ValueError, match="anchor/separator"):
+        delete_napari_polygon_vertex(
+            vertices,
+            topology,
+            deleted_vertex_index=deleted_vertex_index,
+        )
+
+
+@pytest.mark.parametrize("deleted_vertex_index", [-1, 11])
+def test_delete_napari_polygon_vertex_rejects_out_of_range_deleted_index(deleted_vertex_index: int) -> None:
+    source = Polygon(
+        [(0, 0), (8, 0), (8, 8), (0, 8)],
+        holes=[[(2, 2), (2, 4), (4, 4), (4, 2)]],
+    )
+    vertices = shapely_polygon_to_napari_polygon_vertices(source)
+    topology = napari_polygon_vertices_to_topology(vertices)
+
+    with pytest.raises(ValueError, match="outside the vertex row"):
+        delete_napari_polygon_vertex(
+            vertices,
+            topology,
+            deleted_vertex_index=deleted_vertex_index,
+        )
+
+
+def test_delete_napari_polygon_vertex_rejects_simple_polygon_topology() -> None:
+    source = Polygon([(0, 0), (8, 0), (8, 8), (0, 8)])
+    vertices = shapely_polygon_to_napari_polygon_vertices(source)
+    topology = napari_polygon_vertices_to_topology(vertices)
+
+    with pytest.raises(ValueError, match="hole-bearing vertex row"):
+        delete_napari_polygon_vertex(
+            vertices,
+            topology,
+            deleted_vertex_index=2,
+        )
+
+
+def test_delete_napari_polygon_vertex_rejects_too_short_shell_ring() -> None:
+    source = Polygon(
+        [(0, 0), (10, 0), (0, 10)],
+        holes=[[(1, 1), (2, 1), (1, 2)]],
+    )
+    vertices = shapely_polygon_to_napari_polygon_vertices(source)
+    topology = napari_polygon_vertices_to_topology(vertices)
+
+    with pytest.raises(ValueError, match="at least four coordinates"):
+        delete_napari_polygon_vertex(
+            vertices,
+            topology,
+            deleted_vertex_index=1,
+        )
+
+
+def test_delete_napari_polygon_vertex_rejects_too_short_hole_ring() -> None:
+    source = Polygon(
+        [(0, 0), (8, 0), (8, 8), (0, 8)],
+        holes=[[(2, 2), (4, 2), (2, 4)]],
+    )
+    vertices = shapely_polygon_to_napari_polygon_vertices(source)
+    topology = napari_polygon_vertices_to_topology(vertices)
+
+    with pytest.raises(ValueError, match="at least four coordinates"):
+        delete_napari_polygon_vertex(
+            vertices,
+            topology,
+            deleted_vertex_index=6,
         )
 
 
