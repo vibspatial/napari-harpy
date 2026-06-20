@@ -419,12 +419,12 @@ Tests for this slice:
 
 ### Slice 4A - Ordinary Non-Anchor Vertex Delete Topology Update Without Napari UI
 
-Status: implemented.
+Status: reopened.
 
 Goal: support deleting ordinary, non-anchor vertices from hole-bearing polygon
 rows while preserving the encoded hole topology.
 
-Implemented in:
+Implemented so far:
 
 - `delete_napari_polygon_vertex(...)`
 - rejection of shell anchors, hole anchors, and exterior separators
@@ -432,6 +432,15 @@ Implemented in:
 - tests for ordinary shell deletion, ordinary hole deletion, multi-hole index
   shifting, invalid indices, structural-index rejection, simple polygon
   rejection, and too-short ring rejection
+
+Follow-up decision:
+
+If ordinary deletion from a minimal triangular hole would make that hole too
+short, remove the entire hole ring instead of rejecting. This gives users a
+natural way to delete a hole, since holes are not separate napari shape rows.
+If ordinary deletion from the shell would make the shell too short, continue to
+reject clearly; deleting the shell means deleting the entire annotation row and
+belongs to a later layer-row deletion workflow, not this vertex-row helper.
 
 Current napari behavior:
 
@@ -451,8 +460,10 @@ Suggested scope:
   and hole rings.
 - The helper should reject deletion of shell anchors, hole anchors, and exterior
   separators with a clear error. Those structural deletions belong to Slice 4B.
-- The helper should validate that each affected ring still has enough
+- The helper should validate that affected shell rings still have enough
   coordinates to form a valid Shapely ring after deletion.
+- If an affected hole ring would become too short, the helper should remove
+  that entire hole ring instead of returning an invalid polygon.
 - The helper should not import napari UI classes.
 
 Possible API:
@@ -471,8 +482,8 @@ Ordinary vertex deletion:
 - deleting an ordinary shell vertex removes only that raw vertex
 - deleting an ordinary hole vertex removes only that raw vertex
 - all topology indices after the deleted index shift by `-1`
-- deletion is rejected if the affected shell or hole ring would become too
-  short
+- deletion is rejected if the affected shell ring would become too short
+- deletion from a minimal triangular hole removes the entire hole ring
 - the updated row must still decode through `napari_polygon_vertices_to_topology(...)`
 - deleting a shell anchor, hole anchor, or exterior separator is rejected with a
   clear error
@@ -502,11 +513,31 @@ shell anchor group: (0, 4, 9)
 hole anchor group:  (5, 8)
 ```
 
+Deleting ordinary vertex `F` from a minimal triangular hole should remove the
+entire hole:
+
+```text
+index:  0 1 2 3 4   5 6 7 8   9
+value:  A B C D A   E F G E   A
+
+after deleting F:
+value:  A B C D
+topology: no synchronized anchor groups
+```
+
+If other holes exist, only the affected minimal hole is removed; the remaining
+holes are re-encoded and fresh topology is derived.
+
 Tests for this slice:
 
 - deleting an ordinary shell vertex updates topology and preserves holes
 - deleting an ordinary hole vertex updates topology and preserves holes
-- deleting an ordinary vertex is rejected when it would make a ring too short
+- deleting an ordinary hole vertex from a minimal triangular hole removes that
+  hole
+- deleting an ordinary hole vertex from one minimal hole in a multi-hole row
+  preserves unaffected holes
+- deleting an ordinary shell vertex is rejected when it would make the shell
+  too short
 - deleting a shell anchor, hole anchor, or exterior separator raises a clear
   unsupported-structural-deletion error
 - the returned vertices and topology decode successfully through the existing
@@ -535,8 +566,10 @@ Suggested scope:
   vertex, not as deletion of only one raw duplicate copy.
 - Rebuild the encoded row from logical rings after choosing replacement shell
   or hole anchors deterministically.
-- Reject the operation clearly if the affected shell or hole ring would become
+- Reject the operation clearly if shell-anchor deletion would make the shell
   invalid or too short.
+- If hole-anchor deletion would make that hole too short, remove the entire
+  hole ring, matching the Slice 4A ordinary-hole deletion policy.
 - After rebuilding, validate by decoding to a Shapely `Polygon` with interiors
   and deriving a fresh `NapariPolygonTopology`.
 - Do not import napari UI classes.
@@ -554,7 +587,9 @@ The implementation should rebuild the encoded row from rings:
   closure, wrap to the first remaining vertex
 - rewrite every exterior anchor/separator copy to the replacement shell anchor
 - rewrite both hole-anchor copies to the replacement hole anchor
-- reject if the affected ring would become invalid or too short
+- reject if shell-anchor deletion would make the shell invalid or too short
+- remove the affected hole if hole-anchor deletion would make that hole too
+  short
 - after rebuilding, validate by decoding to a Shapely `Polygon` with interiors
   and deriving a fresh `NapariPolygonTopology`
 
@@ -590,8 +625,10 @@ Tests for this slice:
   the next remaining hole vertex as replacement anchor
 - deleting any structural alias removes the logical vertex from the affected
   ring, not only the clicked raw duplicate
-- deleting a structural alias is rejected when the affected ring would become
-  too short or invalid
+- deleting a shell structural alias is rejected when the shell would become too
+  short or invalid
+- deleting a hole structural alias from a minimal triangular hole removes that
+  hole
 - deleting a structural alias in a multi-hole row preserves unaffected holes and
   derives fresh topology for all anchor groups
 - unrecoverable ambiguous deletion never reaches the save path as a guessed
