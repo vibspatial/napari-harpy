@@ -573,6 +573,40 @@ Suggested scope:
   and deriving a fresh `NapariPolygonTopology`.
 - Do not import napari UI classes.
 
+Chosen policy:
+
+- Shell structural deletion rebuilds the polygon when the shell remains valid.
+- Shell structural deletion is rejected when the shell would become too short
+  or invalid. Deleting the whole annotation row is a layer-row operation and is
+  not handled by this vertex-row helper.
+- Hole structural deletion rebuilds the polygon when the hole remains valid.
+- Hole structural deletion removes the entire hole when the hole would become
+  too short, matching Slice 4A ordinary-hole deletion.
+- Removing the last hole returns a simple closed polygon row with empty
+  `NapariPolygonTopology` groups.
+
+Implementation shape:
+
+Keep the public API as:
+
+```python
+def delete_napari_polygon_vertex(
+    vertices: ArrayLike,
+    topology: NapariPolygonTopology,
+    deleted_vertex_index: int,
+) -> tuple[np.ndarray, NapariPolygonTopology]:
+    ...
+```
+
+Instead of rejecting structural indices immediately, route them:
+
+```python
+if deleted_vertex_index in shell_anchor_group:
+    return _delete_napari_polygon_shell_anchor(...)
+if deleted_vertex_index in a hole_anchor_group:
+    return _delete_napari_polygon_hole_anchor(...)
+```
+
 Anchor/separator deletion policy:
 
 The implementation should rebuild the encoded row from rings:
@@ -591,6 +625,32 @@ The implementation should rebuild the encoded row from rings:
   short
 - after rebuilding, validate by decoding to a Shapely `Polygon` with interiors
   and deriving a fresh `NapariPolygonTopology`
+
+Rebuild details:
+
+- Work from logical unclosed rings in napari `(y, x)` coordinates.
+- Do not rely only on `shapely_polygon_to_napari_polygon_vertices(...)` for this
+  rebuild, because Slice 4B needs deterministic replacement-anchor selection.
+- Add a small private encoder from logical napari rings, for example:
+
+```python
+def _encode_napari_polygon_vertices_from_rings(
+    shell_yx: np.ndarray,
+    holes_yx: tuple[np.ndarray, ...],
+) -> np.ndarray:
+    ...
+```
+
+The encoder should produce:
+
+```text
+shell + shell[0]
+hole + hole[0]
+shell[0]
+...
+```
+
+Then validate the rebuilt row through the existing decode/topology helpers.
 
 One-hole example:
 
@@ -616,20 +676,38 @@ using the next hole vertex as the replacement anchor:
 value:  A B C D A   F G H F   A
 ```
 
+For a minimal triangular hole:
+
+```text
+index:  0 1 2 3 4   5 6 7 8   9
+value:  A B C D A   E F G E   A
+```
+
+Deleting either hole anchor copy, indices `5` or `8`, should remove the entire
+hole:
+
+```text
+value:  A B C D A
+topology: no synchronized anchor groups
+```
+
 Tests for this slice:
 
 - deleting each shell anchor/separator copy rebuilds the same valid encoded row
   with the next remaining shell vertex as replacement anchor
 - deleting either copy of a hole anchor rebuilds the same valid encoded row with
   the next remaining hole vertex as replacement anchor
+- deleting either copy of a minimal triangular hole anchor removes that hole
+- deleting a minimal triangular hole anchor in a multi-hole row preserves
+  unaffected holes
 - deleting any structural alias removes the logical vertex from the affected
   ring, not only the clicked raw duplicate
 - deleting a shell structural alias is rejected when the shell would become too
   short or invalid
-- deleting a hole structural alias from a minimal triangular hole removes that
-  hole
 - deleting a structural alias in a multi-hole row preserves unaffected holes and
   derives fresh topology for all anchor groups
+- deleting a shell anchor is rejected if the rebuilt shell no longer contains
+  remaining holes
 - unrecoverable ambiguous deletion never reaches the save path as a guessed
   geometry
 
