@@ -427,11 +427,11 @@ rows while preserving the encoded hole topology.
 Implemented in:
 
 - `delete_napari_polygon_vertex(...)`
-- rejection of shell anchors, hole anchors, and exterior separators
+- ordinary non-anchor deletion for shell and hole rings
 - topology index shifting followed by fresh topology decoding/validation
 - tests for ordinary shell deletion, ordinary hole deletion, multi-hole index
-  shifting, invalid indices, structural-index rejection, simple polygon
-  rejection, shell-too-short rejection, and minimal-hole removal
+  shifting, invalid indices, simple polygon rejection, shell-too-short
+  rejection, and minimal-hole removal
 
 If ordinary deletion from a minimal triangular hole would make that hole too
 short, the helper removes the entire hole ring instead of rejecting. This gives
@@ -457,8 +457,8 @@ Suggested scope:
   both the updated vertex row and updated topology.
 - The helper should support deleting ordinary non-anchor vertices from shell
   and hole rings.
-- The helper should reject deletion of shell anchors, hole anchors, and exterior
-  separators with a clear error. Those structural deletions belong to Slice 4B.
+- Structural shell anchors, hole anchors, and exterior separators are outside
+  the ordinary-deletion path and are handled by Slice 4B.
 - The helper should validate that affected shell rings still have enough
   coordinates to form a valid Shapely ring after deletion.
 - If an affected hole ring would become too short, the helper should remove
@@ -484,8 +484,8 @@ Ordinary vertex deletion:
 - deletion is rejected if the affected shell ring would become too short
 - deletion from a minimal triangular hole removes the entire hole ring
 - the updated row must still decode through `napari_polygon_vertices_to_topology(...)`
-- deleting a shell anchor, hole anchor, or exterior separator is rejected with a
-  clear error
+- structural shell anchors, hole anchors, and exterior separators follow the
+  Slice 4B rebuild path
 
 One-hole example:
 
@@ -537,18 +537,27 @@ Tests for this slice:
   preserves unaffected holes
 - deleting an ordinary shell vertex is rejected when it would make the shell
   too short
-- deleting a shell anchor, hole anchor, or exterior separator raises a clear
-  unsupported-structural-deletion error
 - the returned vertices and topology decode successfully through the existing
   topology helper
 
 ### Slice 4B - Anchor/Separator Vertex Delete Rebuild Without Napari UI
 
-Status: not implemented.
+Status: implemented.
 
 Goal: support deletion of anchor/separator vertices by rebuilding the encoded
 row from logical rings, without allowing the hole topology to collapse into an
 ambiguous row.
+
+Implemented in:
+
+- structural index routing inside `delete_napari_polygon_vertex(...)`
+- `_delete_napari_polygon_shell_anchor(...)`
+- `_delete_napari_polygon_hole_anchor(...)`
+- `_encode_napari_polygon_vertices_from_rings(...)`
+- rebuilt-row validation through existing Shapely/topology helpers
+- tests for shell alias deletion, hole alias deletion, minimal-hole removal,
+  multi-hole preservation, shell-too-short rejection, and shell-rebuild
+  rejection when remaining holes no longer fit
 
 Why this is separate from Slice 4A:
 

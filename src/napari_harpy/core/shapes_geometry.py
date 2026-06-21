@@ -192,11 +192,21 @@ def delete_napari_polygon_vertex(
     deleted_vertex_index = _coerce_deleted_vertex_index(deleted_vertex_index, vertex_count=len(vertices))
     shell_anchor_group, hole_anchor_groups = _validated_hole_topology(topology, vertex_count=len(vertices))
 
-    structural_indices = set(shell_anchor_group)
-    for group in hole_anchor_groups:
-        structural_indices.update(group)
-    if deleted_vertex_index in structural_indices:
-        raise ValueError("Cannot delete polygon anchor/separator vertices with ordinary vertex deletion.")
+    if deleted_vertex_index in shell_anchor_group:
+        return _delete_napari_polygon_shell_anchor(
+            vertices,
+            shell_anchor_group=shell_anchor_group,
+            hole_anchor_groups=hole_anchor_groups,
+        )
+
+    for hole_index, (hole_start, hole_end) in enumerate(hole_anchor_groups):
+        if deleted_vertex_index in (hole_start, hole_end):
+            return _delete_napari_polygon_hole_anchor(
+                vertices,
+                shell_anchor_group=shell_anchor_group,
+                hole_anchor_groups=hole_anchor_groups,
+                hole_index=hole_index,
+            )
 
     for hole_start, hole_end in hole_anchor_groups:
         if hole_start < deleted_vertex_index < hole_end and hole_end - hole_start + 1 == 4:
@@ -393,8 +403,101 @@ def _delete_napari_polygon_hole(
         raise ValueError("Polygon hole ring must be followed by an exterior separator.")
 
     deleted_vertices = np.delete(vertices, np.arange(hole_start, separator_index + 1), axis=0)
-    parsed_topology = napari_polygon_vertices_to_topology(deleted_vertices)
-    return deleted_vertices, parsed_topology
+    # Deliberately call the Shapely decoder as a geometry gate. We discard the
+    # polygon because the caller needs napari vertices plus freshly parsed
+    # topology, but invalid rebuilt rows must fail here before topology is used.
+    _ = napari_polygon_vertices_to_shapely_polygon(deleted_vertices)
+    return deleted_vertices, napari_polygon_vertices_to_topology(deleted_vertices)
+
+
+def _delete_napari_polygon_shell_anchor(
+    vertices: np.ndarray,
+    *,
+    shell_anchor_group: tuple[int, ...],
+    hole_anchor_groups: tuple[tuple[int, int], ...],
+) -> tuple[np.ndarray, NapariPolygonTopology]:
+    """Delete the logical shell anchor and rebuild with the next shell vertex.
+
+    For ``A B C D A E F G H E A``, deleting any exterior anchor/separator copy
+    means deleting logical shell vertex ``A``. The rebuilt row uses ``B`` as
+    the replacement shell anchor:
+
+    ``A B C D A E F G H E A`` -> ``B C D B E F G H E B``.
+    """
+    shell_end = shell_anchor_group[1]
+    shell_yx = vertices[:shell_end]
+    shell_yx = shell_yx[1:]
+    holes_yx = tuple(vertices[hole_start:hole_end] for hole_start, hole_end in hole_anchor_groups)
+    rebuilt_vertices = _encode_napari_polygon_vertices_from_rings(shell_yx, holes_yx)
+    # Deliberately call the Shapely decoder as a geometry gate. We discard the
+    # polygon because the caller needs napari vertices plus freshly parsed
+    # topology, but invalid rebuilt rows must fail here before topology is used.
+    _ = napari_polygon_vertices_to_shapely_polygon(rebuilt_vertices)
+    return rebuilt_vertices, napari_polygon_vertices_to_topology(rebuilt_vertices)
+
+
+def _delete_napari_polygon_hole_anchor(
+    vertices: np.ndarray,
+    *,
+    shell_anchor_group: tuple[int, ...],
+    hole_anchor_groups: tuple[tuple[int, int], ...],
+    hole_index: int,
+) -> tuple[np.ndarray, NapariPolygonTopology]:
+    """Delete the logical hole anchor and rebuild that hole.
+
+    For ``A B C D A E F G H E A``, deleting either hole-anchor copy means
+    deleting logical hole vertex ``E``. The rebuilt row uses ``F`` as the
+    replacement hole anchor:
+
+    ``A B C D A E F G H E A`` -> ``A B C D A F G H F A``.
+
+    For a minimal hole ``E F G E``, deleting ``E`` removes the entire hole
+    instead of returning an invalid two-vertex ring.
+    """
+    hole_start, hole_end = hole_anchor_groups[hole_index]
+    if hole_end - hole_start + 1 == 4:
+        return _delete_napari_polygon_hole(vertices, hole_start=hole_start, hole_end=hole_end)
+
+    shell_end = shell_anchor_group[1]
+    shell_yx = vertices[:shell_end]
+    holes_yx = [vertices[start:end] for start, end in hole_anchor_groups]
+    holes_yx[hole_index] = holes_yx[hole_index][1:]
+    rebuilt_vertices = _encode_napari_polygon_vertices_from_rings(shell_yx, tuple(holes_yx))
+    # Deliberately call the Shapely decoder as a geometry gate. We discard the
+    # polygon because the caller needs napari vertices plus freshly parsed
+    # topology, but invalid rebuilt rows must fail here before topology is used.
+    _ = napari_polygon_vertices_to_shapely_polygon(rebuilt_vertices)
+    return rebuilt_vertices, napari_polygon_vertices_to_topology(rebuilt_vertices)
+
+
+def _encode_napari_polygon_vertices_from_rings(
+    shell_yx: ArrayLike,
+    holes_yx: tuple[ArrayLike, ...],
+) -> np.ndarray:
+    """Encode unclosed napari rings as one polygon vertex row.
+
+    Inputs are unclosed logical rings in napari ``(y, x)`` order. The shell
+    input is ``A B C D``, not the already-closed ring ``A B C D A``. The holes
+    input contains rings such as ``E F G H``, not already-closed rings such as
+    ``E F G H E``. For shell ``A B C D`` and hole ``E F G H``, this helper returns
+    ``A B C D A E F G H E A``: close the shell, close each hole, and append the
+    shell anchor after each hole as the exterior separator.
+
+    With multiple holes, each hole is appended the same way. Shell ``A B C D``
+    with holes ``E F G H`` and ``I J K L`` becomes
+    ``A B C D A E F G H E A I J K L I A``.
+    """
+    shell_yx = _coerce_vertices(shell_yx)
+    if len(shell_yx) < 3:
+        raise ValueError("Polygon shell must contain at least three vertices.")
+
+    encoded_parts = [shell_yx, shell_yx[:1]]
+    for hole_yx in holes_yx:
+        hole_yx = _coerce_vertices(hole_yx)
+        if len(hole_yx) < 3:
+            raise ValueError("Polygon holes must contain at least three vertices.")
+        encoded_parts.extend([hole_yx, hole_yx[:1], shell_yx[:1]])
+    return np.concatenate(encoded_parts, axis=0)
 
 
 def _normalized_anchor_group(group: Sequence[int], *, allow_empty: bool) -> tuple[int, ...]:
