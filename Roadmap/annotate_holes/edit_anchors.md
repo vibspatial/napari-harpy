@@ -736,6 +736,12 @@ Suggested scope:
 
 - Add a small private guard object owned by `ShapesAnnotation`, likely stored as
   `self._annotation_edit_guard`.
+  The guard should own the low-level napari patch/restore details: the guarded
+  layer reference, the original direct-mode callback, the previous drag-mode
+  mapping state, and later any re-entrancy or pre-drag topology cache. This
+  keeps `ShapesAnnotation` responsible for deciding when an annotation session
+  starts or ends, while the guard is responsible for how direct-edit
+  interception is installed and removed.
 - Attach the guard immediately after `self._annotation_layer` is assigned for
   every annotation entry path:
   - create-new layer assignment in `_open_create_new_annotation_layer(...)`
