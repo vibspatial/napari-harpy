@@ -793,24 +793,61 @@ not only after release.
 Suggested scope:
 
 - Extend the direct-mode wrapper from Slice 5.
-- On mouse press, determine the candidate `(shape_index, vertex_index)` using
-  the same direct-edit selection context as napari.
-- Parse and cache topology groups for the affected row before any vertex is
-  moved.
-- During each mouse-move step, let napari perform its normal edit, then
-  synchronize the cached anchor group using the moved vertex's current
-  coordinate.
-- Refresh the row immediately after synchronization.
+- Napari's direct-edit callback is a generator. The Slice 6 wrapper should
+  preserve that generator contract rather than replacing napari's interaction
+  model.
+- On mouse press, create the original napari direct-mode generator and advance
+  it through its first `yield`. This lets napari run its normal press handling,
+  including setting `layer._moving_value = (shape_index, vertex_index)`.
+- After that first `yield`, read `layer._moving_value` to determine the
+  candidate row and raw vertex index that napari is about to move.
+- This post-press/pre-move point is the safe cache window: napari has already
+  identified the shape and vertex under the cursor, but no vertex coordinate
+  has moved yet, so the row should still satisfy the hole-encoding grammar.
+- If the candidate is a polygon row with adapter-encoded holes, parse and cache
+  the pre-edit topology before any move occurs:
+  - the shape row index
+  - the moved raw vertex index
+  - the pre-edit `NapariPolygonTopology`
+  - the synchronized anchor group containing that vertex, if any
+- If topology parsing fails on mouse press, do not guess. Delegate to napari's
+  original direct-edit generator unchanged for the rest of the drag.
+- During each mouse-move iteration, advance napari's original generator once
+  first so napari performs its normal direct edit.
+- After napari's edit, if the moved vertex belongs to a cached anchor group,
+  read the moved coordinate from `layer.data[shape_index][vertex_index]`, call
+  `sync_napari_polygon_anchor_vertex(...)`, write the synchronized row back to
+  the layer, and refresh the layer.
+- If the moved vertex is ordinary/non-anchor, do nothing after napari's edit and
+  leave Slice 1D non-anchor behavior unchanged.
 - Use a re-entrancy guard so guard-triggered edits do not recursively trigger
   guard logic.
-- If the moved vertex is not in an anchor group, delegate fully to napari and
-  leave Slice 1D non-anchor behavior unchanged.
+- Preserve napari's mouse-release behavior, including its existing
+  `layer.events.data(...)` emission.
 
 Important constraint:
 
-The topology must be captured before napari moves one anchor copy. Once one
-duplicate anchor moves, the row may no longer satisfy the decoder grammar, so
-parsing after the broken edit is not reliable.
+The topology must be captured immediately after napari's press handling and
+before the first move. Once napari moves one duplicate anchor copy, the row may
+no longer satisfy the decoder grammar, so parsing after the broken edit is not
+reliable.
+
+Concrete example:
+
+```text
+before move:  A  B C D A   E F G H E   A
+napari move:  A' B C D A   E F G H E   A
+```
+
+In the second row, napari has moved only raw vertex `0`. The three exterior
+anchor copies are no longer equal, so a parser starting from the first
+coordinate `A'` cannot rediscover that indices `0`, `4`, and `10` are the same
+logical shell anchor. The wrapper must therefore reuse the cached pre-move
+topology and synchronize the row to:
+
+```text
+repaired:     A' B C D A'  E F G H E   A'
+```
 
 Tests for this slice:
 
