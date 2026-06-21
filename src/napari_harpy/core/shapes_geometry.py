@@ -403,9 +403,10 @@ def _delete_napari_polygon_hole(
         raise ValueError("Polygon hole ring must be followed by an exterior separator.")
 
     deleted_vertices = np.delete(vertices, np.arange(hole_start, separator_index + 1), axis=0)
-    # Deliberately call the Shapely decoder as a geometry gate. We discard the
-    # polygon because the caller needs napari vertices plus freshly parsed
-    # topology, but invalid rebuilt rows must fail here before topology is used.
+    # Deliberately call the Shapely decoder as an early-failure geometry gate.
+    # We discard the polygon because the caller needs napari vertices plus
+    # freshly parsed topology, but invalid rebuilt rows should fail at the edit
+    # operation instead of being accepted until save time.
     _ = napari_polygon_vertices_to_shapely_polygon(deleted_vertices)
     return deleted_vertices, napari_polygon_vertices_to_topology(deleted_vertices)
 
@@ -429,9 +430,10 @@ def _delete_napari_polygon_shell_anchor(
     shell_yx = shell_yx[1:]
     holes_yx = tuple(vertices[hole_start:hole_end] for hole_start, hole_end in hole_anchor_groups)
     rebuilt_vertices = _encode_napari_polygon_vertices_from_rings(shell_yx, holes_yx)
-    # Deliberately call the Shapely decoder as a geometry gate. We discard the
-    # polygon because the caller needs napari vertices plus freshly parsed
-    # topology, but invalid rebuilt rows must fail here before topology is used.
+    # Deliberately call the Shapely decoder as an early-failure geometry gate.
+    # We discard the polygon because the caller needs napari vertices plus
+    # freshly parsed topology, but invalid rebuilt rows should fail at the edit
+    # operation instead of being accepted until save time.
     _ = napari_polygon_vertices_to_shapely_polygon(rebuilt_vertices)
     return rebuilt_vertices, napari_polygon_vertices_to_topology(rebuilt_vertices)
 
@@ -463,9 +465,10 @@ def _delete_napari_polygon_hole_anchor(
     holes_yx = [vertices[start:end] for start, end in hole_anchor_groups]
     holes_yx[hole_index] = holes_yx[hole_index][1:]
     rebuilt_vertices = _encode_napari_polygon_vertices_from_rings(shell_yx, tuple(holes_yx))
-    # Deliberately call the Shapely decoder as a geometry gate. We discard the
-    # polygon because the caller needs napari vertices plus freshly parsed
-    # topology, but invalid rebuilt rows must fail here before topology is used.
+    # Deliberately call the Shapely decoder as an early-failure geometry gate.
+    # We discard the polygon because the caller needs napari vertices plus
+    # freshly parsed topology, but invalid rebuilt rows should fail at the edit
+    # operation instead of being accepted until save time.
     _ = napari_polygon_vertices_to_shapely_polygon(rebuilt_vertices)
     return rebuilt_vertices, napari_polygon_vertices_to_topology(rebuilt_vertices)
 
