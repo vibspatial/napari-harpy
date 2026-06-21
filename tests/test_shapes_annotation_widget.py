@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.colors import to_rgba
 from napari.layers import Shapes
+from napari.layers.shapes._shapes_constants import Mode
 from napari_builtins.io import csv_to_layer_data, napari_write_shapes
 from qtpy.QtWidgets import QComboBox, QLabel
 from shapely.geometry import Polygon
@@ -281,6 +282,73 @@ def test_shapes_annotation_widget_lazy_export() -> None:
     assert LazyShapesAnnotation is ShapesAnnotation
 
 
+def test_annotation_layer_edit_guard_delegates_direct_mode_and_restores_instance_mapping() -> None:
+    layer = Shapes([], ndim=2)
+    layer._drag_modes = dict(layer._drag_modes)
+    original_drag_modes = layer._drag_modes
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def original_direct_callback(*args: object, **kwargs: object) -> str:
+        calls.append((args, kwargs))
+        return "delegated"
+
+    original_drag_modes[Mode.DIRECT] = original_direct_callback
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+
+    guard.attach(layer)
+    wrapped_direct_callback = layer._drag_modes[Mode.DIRECT]
+
+    assert guard.layer is layer
+    assert layer._drag_modes is not original_drag_modes
+    assert wrapped_direct_callback is not original_direct_callback
+    assert wrapped_direct_callback("event", value=3) == "delegated"
+    assert calls == [(("event",), {"value": 3})]
+
+    guard.disconnect()
+
+    assert guard.layer is None
+    assert layer._drag_modes is original_drag_modes
+    assert layer._drag_modes[Mode.DIRECT] is original_direct_callback
+
+
+def test_annotation_layer_edit_guard_attach_is_idempotent_and_restores_class_mapping() -> None:
+    layer = Shapes([], ndim=2)
+    original_direct_callback = layer._drag_modes[Mode.DIRECT]
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+
+    guard.attach(layer)
+    first_wrapped_direct_callback = layer._drag_modes[Mode.DIRECT]
+    guard.attach(layer)
+
+    assert layer._drag_modes[Mode.DIRECT] is first_wrapped_direct_callback
+    assert "_drag_modes" in vars(layer)
+
+    guard.disconnect()
+
+    assert guard.layer is None
+    assert "_drag_modes" not in vars(layer)
+    assert layer._drag_modes[Mode.DIRECT] is original_direct_callback
+
+
+def test_annotation_layer_edit_guard_replacing_layer_disconnects_previous_layer() -> None:
+    first_layer = Shapes([], ndim=2)
+    second_layer = Shapes([], ndim=2)
+    first_direct_callback = first_layer._drag_modes[Mode.DIRECT]
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+
+    guard.attach(first_layer)
+    first_wrapped_direct_callback = first_layer._drag_modes[Mode.DIRECT]
+    # `attach(...)` first calls `disconnect(...)`, so moving the guard to a new
+    # layer must restore the previous layer before patching the new one.
+    guard.attach(second_layer)
+
+    assert guard.layer is second_layer
+    assert first_layer._drag_modes[Mode.DIRECT] is first_direct_callback
+    assert "_drag_modes" not in vars(first_layer)
+    assert "_drag_modes" in vars(second_layer)
+    assert second_layer._drag_modes[Mode.DIRECT] is not first_wrapped_direct_callback
+
+
 def test_shapes_annotation_widget_shares_app_state(qtbot) -> None:
     viewer = DummyViewer()
 
@@ -530,6 +598,9 @@ def test_shapes_annotation_widget_create_layer_adds_registered_active_empty_shap
 
     assert widget.selected_shapes_name == "new_regions"
     assert widget._annotation_layer is layer
+    assert widget._annotation_edit_guard.layer is layer
+    assert "_drag_modes" in vars(layer)
+    assert layer._drag_modes[Mode.DIRECT] is widget._annotation_edit_guard._wrapped_direct_callback
     assert widget._annotation_shapes_name == "new_regions"
     assert widget._annotation_coordinate_system == "global"
     assert widget._annotation_has_been_saved is False
@@ -598,6 +669,8 @@ def test_shapes_annotation_widget_clean_coordinate_change_closes_empty_create_la
     assert list(viewer.layers) == []
     assert widget.app_state.viewer_adapter.layer_bindings.get_binding(layer) is None
     assert widget._annotation_layer is None
+    assert widget._annotation_edit_guard.layer is None
+    assert "_drag_modes" not in vars(layer)
     assert widget._annotation_shapes_name is None
     assert widget._annotation_coordinate_system is None
     assert widget._annotation_has_been_saved is False
@@ -724,17 +797,25 @@ def test_shapes_annotation_widget_clean_existing_target_switch_preserves_layer_o
     widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, "blobs_polygons"))
     blobs_layer = widget._annotation_layer
     assert blobs_layer is not None
+    assert widget._annotation_edit_guard.layer is blobs_layer
+    assert "_drag_modes" in vars(blobs_layer)
 
     widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, "other_polygons"))
     other_layer = widget._annotation_layer
     assert other_layer is not None
     assert other_layer is not blobs_layer
     assert list(viewer.layers) == [blobs_layer, other_layer]
+    assert widget._annotation_edit_guard.layer is other_layer
+    assert "_drag_modes" not in vars(blobs_layer)
+    assert "_drag_modes" in vars(other_layer)
 
     widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, "blobs_polygons"))
 
     assert widget._annotation_layer is blobs_layer
     assert list(viewer.layers) == [blobs_layer, other_layer]
+    assert widget._annotation_edit_guard.layer is blobs_layer
+    assert "_drag_modes" in vars(blobs_layer)
+    assert "_drag_modes" not in vars(other_layer)
 
 
 def test_shapes_annotation_widget_open_existing_target_loads_edit_session_layer(
@@ -752,6 +833,9 @@ def test_shapes_annotation_widget_open_existing_target_loads_edit_session_layer(
     layer = viewer.layers[0]
     assert isinstance(layer, Shapes)
     assert widget._annotation_layer is layer
+    assert widget._annotation_edit_guard.layer is layer
+    assert "_drag_modes" in vars(layer)
+    assert layer._drag_modes[Mode.DIRECT] is widget._annotation_edit_guard._wrapped_direct_callback
     assert widget._annotation_shapes_name == "blobs_polygons"
     assert widget._annotation_coordinate_system == "global"
     assert widget._annotation_session is not None
@@ -1199,6 +1283,9 @@ def test_shapes_annotation_widget_adopts_native_empty_shapes_layer(
     assert widget._annotation_session is not None
     assert widget._annotation_session.mode == "create_new"
     assert widget._annotation_session.shapes_name == "native_shapes"
+    assert widget._annotation_edit_guard.layer is native_layer
+    assert "_drag_modes" in vars(native_layer)
+    assert native_layer._drag_modes[Mode.DIRECT] is widget._annotation_edit_guard._wrapped_direct_callback
     assert widget._selected_shapes_target == shapes_annotation_widget_module._ShapesAnnotationTarget.create_new()
     assert widget.shapes_combo.currentText() == "Create shapes..."
     assert widget.name_edit.text() == "native_shapes"

@@ -10,11 +10,13 @@ save target.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 from napari.layers import Shapes
+from napari.layers.shapes._shapes_constants import Mode
 from qtpy.QtCore import QSignalBlocker, Qt, QTimer
 from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import (
@@ -214,6 +216,70 @@ class _ShapesAnnotationSession:
         return self.source_geodataframe.index.name
 
 
+class _AnnotationLayerEditGuard:
+    """Install and restore annotation-specific Shapes direct-edit hooks."""
+
+    def __init__(self) -> None:
+        self._layer: Shapes | None = None
+        self._original_drag_modes: dict[object, Callable[..., Any]] | None = None
+        self._had_instance_drag_modes = False
+        self._wrapped_direct_callback: Callable[..., Any] | None = None
+
+    @property
+    def layer(self) -> Shapes | None:
+        return self._layer
+
+    def attach(self, layer: Shapes) -> None:
+        if self._layer is layer:
+            return
+
+        self.disconnect()
+        drag_modes = getattr(layer, "_drag_modes", None)
+        if not isinstance(drag_modes, dict) or Mode.DIRECT not in drag_modes:
+            raise ValueError("Shapes layer does not expose napari direct-edit mode hooks.")
+
+        original_direct_callback = drag_modes[Mode.DIRECT]
+
+        def wrapped_direct_callback(*args: Any, **kwargs: Any) -> Any:
+            return original_direct_callback(*args, **kwargs)
+
+        patched_drag_modes = dict(drag_modes)
+        patched_drag_modes[Mode.DIRECT] = wrapped_direct_callback
+
+        self._layer = layer
+        self._original_drag_modes = drag_modes
+        # `layer._drag_modes` may be inherited from napari rather than stored
+        # on this layer instance. Remember that distinction so disconnect can
+        # either restore the original instance mapping or delete our temporary
+        # instance override and fall back to napari's default mapping.
+        self._had_instance_drag_modes = "_drag_modes" in vars(layer)
+        self._wrapped_direct_callback = wrapped_direct_callback
+        layer._drag_modes = patched_drag_modes
+
+    def disconnect(self) -> None:
+        layer = self._layer
+        original_drag_modes = self._original_drag_modes
+        had_instance_drag_modes = self._had_instance_drag_modes
+
+        self._layer = None
+        self._original_drag_modes = None
+        self._had_instance_drag_modes = False
+        self._wrapped_direct_callback = None
+
+        if layer is None:
+            return
+        if had_instance_drag_modes:
+            if original_drag_modes is None:
+                return
+            layer._drag_modes = original_drag_modes
+            return
+        # Case where the layer did not originally own `_drag_modes`: attach
+        # created an instance override only for this guard. Remove it so napari
+        # resolves the normal inherited/default mapping again.
+        if "_drag_modes" in vars(layer):
+            delattr(layer, "_drag_modes")
+
+
 class ShapesAnnotation(QWidget):
     """Widget shell for annotating SpatialData shapes elements."""
 
@@ -232,6 +298,7 @@ class ShapesAnnotation(QWidget):
         self._validated_shapes_name: str | None = None
         self._annotation_session: _ShapesAnnotationSession | None = None
         self._annotation_layer: Shapes | None = None
+        self._annotation_edit_guard = _AnnotationLayerEditGuard()
         self._annotation_has_been_saved = False
         self._annotation_clean_snapshot: _ShapesAnnotationLayerSnapshot | None = None
         # Suppress `_on_viewer_layer_removed(...)` while this widget removes
@@ -593,6 +660,7 @@ class ShapesAnnotation(QWidget):
             self._is_opening_annotation_layer = False
 
         self._annotation_layer = layer
+        self._annotation_edit_guard.attach(layer)
         self._annotation_session = _ShapesAnnotationSession(
             mode="create_new",
             layer_origin="created_by_annotation",
@@ -647,6 +715,7 @@ class ShapesAnnotation(QWidget):
             return
 
         self._annotation_layer = layer
+        self._annotation_edit_guard.attach(layer)
         self._annotation_session = _ShapesAnnotationSession(
             mode="create_new",
             layer_origin="created_by_annotation",
@@ -708,6 +777,7 @@ class ShapesAnnotation(QWidget):
 
         table_linked = bool(get_annotating_table_names(sdata, shapes_name))
         self._annotation_layer = layer
+        self._annotation_edit_guard.attach(layer)
         self._annotation_session = _ShapesAnnotationSession(
             mode="edit_existing",
             layer_origin="loaded_by_annotation" if load_result.created else "adopted_primary",
@@ -1354,6 +1424,7 @@ class ShapesAnnotation(QWidget):
         return not _annotation_layer_snapshots_equal(current_snapshot, clean_snapshot)
 
     def _clear_annotation_state(self) -> None:
+        self._annotation_edit_guard.disconnect()
         self._annotation_session = None
         self._annotation_layer = None
         self._annotation_has_been_saved = False

@@ -722,7 +722,7 @@ Tests for this slice:
 
 ### Slice 5 - Annotation Layer Edit Guard Lifecycle
 
-Status: not implemented.
+Status: implemented.
 
 Goal: establish the widget-owned guard lifecycle and direct-mode interception
 plumbing without changing annotation edit behavior yet.
