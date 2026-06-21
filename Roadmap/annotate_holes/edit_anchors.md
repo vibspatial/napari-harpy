@@ -858,6 +858,75 @@ Tests for this slice:
 - repeated direct-mode toggles do not break the wrapper
 - malformed rows are not guessed into a repaired topology
 
+### Slice 6B - Direct-Mode Vertex Deletion UI Integration
+
+Status: not implemented.
+
+Goal: wire napari direct-mode vertex deletion for hole-bearing annotation rows
+into the existing pure deletion helper without broadening Slice 6's drag-only
+scope.
+
+This slice is separate from Slice 6 because deletion is a structural edit: it
+changes the length of `layer.data[row]` and may require rebuilding the encoded
+napari row. Mouse dragging only changes coordinates.
+
+Suggested scope:
+
+- Investigate the napari direct-mode deletion path for `Shapes` layers in the
+  current supported napari version:
+  - which keybinding/action deletes a selected vertex
+  - whether the action exposes the affected `(shape_index, vertex_index)` before
+    deletion
+  - whether deletion emits only `layer.events.data(...)` after the row has
+    already changed
+- Use cached pre-delete topology where possible. As with Slice 6 drag handling,
+  post-edit parsing can be unreliable once an anchor/separator vertex has been
+  removed.
+- Identify the deleted raw vertex index deterministically. If the UI/event path
+  does not expose a unique deleted vertex, do not guess.
+- Call the existing pure helper:
+
+  ```python
+  updated_vertices, updated_topology = delete_napari_polygon_vertex(
+      old_vertices,
+      cached_topology,
+      deleted_vertex_index,
+  )
+  ```
+
+- Write `updated_vertices` back to `layer.data[shape_index]` and refresh the
+  layer.
+- Support the helper behavior already implemented in Slices 4A/4B:
+  - ordinary shell or hole vertex deletion
+  - shell anchor/separator deletion by rebuilding the shell with a replacement
+    anchor
+  - hole anchor/separator deletion by rebuilding that hole with a replacement
+    anchor
+  - deletion from a minimal triangular hole removes the whole hole
+  - ambiguous or invalid rebuilt geometry fails clearly
+- Keep this slice scoped to annotation layers guarded by `ShapesAnnotation`.
+  Do not change global napari Shapes deletion behavior.
+
+Open implementation question:
+
+- If napari's public deletion event happens only after the vertex has already
+  been removed and does not identify the deleted raw index, we may need to wrap
+  or intercept the relevant napari action/keybinding earlier than
+  `layer.events.data(...)`.
+
+Tests for this slice:
+
+- deleting an ordinary non-anchor shell vertex through the UI integration
+  updates the row and topology
+- deleting an ordinary non-anchor hole vertex through the UI integration
+  updates the row and topology
+- deleting an exterior anchor/separator through the UI integration rebuilds the
+  shell and keeps holes valid
+- deleting a hole anchor/separator through the UI integration rebuilds the hole
+  or removes a minimal triangular hole
+- ambiguous deletion events are not guessed
+- save remains strict for unrecoverable malformed rows
+
 ### Slice 7 - Defensive Event-Time Repair
 
 Status: not implemented.
