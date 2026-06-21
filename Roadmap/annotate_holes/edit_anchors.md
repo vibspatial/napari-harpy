@@ -724,28 +724,58 @@ Tests for this slice:
 
 Status: not implemented.
 
-Goal: attach and detach an edit guard for the current annotation layer without
-yet depending on full drag behavior.
+Goal: establish the widget-owned guard lifecycle and direct-mode interception
+plumbing without changing annotation edit behavior yet.
+
+This slice is intentionally only infrastructure. It should prove that
+`ShapesAnnotation` can attach a guard to the active annotation layer, wrap
+napari direct-edit mode for that layer instance, and detach cleanly. Anchor
+synchronization itself belongs to Slice 6.
 
 Suggested scope:
 
-- Add a small guard object owned by `ShapesAnnotation`.
-- Attach the guard whenever an annotation layer is opened, created, or adopted.
-- Disconnect the guard when annotation state is cleared, discarded, or replaced.
+- Add a small private guard object owned by `ShapesAnnotation`, likely stored as
+  `self._annotation_edit_guard`.
+- Attach the guard immediately after `self._annotation_layer` is assigned for
+  every annotation entry path:
+  - create-new layer assignment in `_open_create_new_annotation_layer(...)`
+  - edit-existing layer assignment in `_open_existing_annotation_layer(...)`
+  - native/imported layer adoption in `_adopt_native_shapes_layer(...)`
+- Disconnect the guard in `_clear_annotation_state(...)` before dropping the
+  widget's reference to `self._annotation_layer`. This covers discard, clean
+  close, layer replacement, manual layer removal, and stale-state cleanup paths
+  because they already route through centralized annotation-state cleanup.
 - Support both `_HarpyShapes` layers loaded from SpatialData and native
   `napari.layers.Shapes` layers adopted by the widget.
-- Give the layer an instance-local copy of napari's `_drag_modes` mapping and
-  replace only `Mode.DIRECT` with a wrapper that initially delegates to napari's
-  normal direct-edit callback.
-- Restore the previous instance-local state on disconnect where feasible.
+- Give the guarded layer an instance-local copy of napari's `_drag_modes`
+  mapping. Do not mutate napari's class-level/default drag-mode mapping.
+- Replace only `Mode.DIRECT` with a wrapper that, in this slice, simply delegates
+  to napari's original direct-edit callback.
+- Preserve the original direct callback and enough previous layer state to
+  restore it on disconnect where feasible.
+- Make attach/disconnect idempotent:
+  - attaching twice to the same layer should not stack wrappers
+  - attaching to a new layer should disconnect the old layer first
+  - disconnecting when no guard is attached should be harmless
+- Do not parse hole topology or call the Slice 1-4 geometry edit helpers yet.
+  Slice 5 should be behavior-preserving.
 
 Tests for this slice:
 
+- creating a new annotation layer attaches the guard
 - opening an existing annotation layer attaches the guard
-- adopting a native Shapes layer attaches the guard
-- clearing or discarding annotation state disconnects the guard
-- toggling the layer between select/direct mode uses the wrapped direct callback
-- disconnecting the guard does not leave duplicate direct callbacks behind
+- adopting a native `Shapes` layer attaches the guard
+- clearing annotation state disconnects the guard before the annotation layer
+  reference is dropped
+- discarding or closing an annotation session disconnects the guard through
+  `_clear_annotation_state(...)`
+- toggling the layer into direct mode uses the wrapped direct callback, and the
+  wrapper delegates to napari's original callback unchanged
+- attaching twice to the same layer does not stack duplicate wrappers
+- replacing the annotation layer disconnects the old guard before attaching the
+  new one
+- disconnecting the guard restores the previous direct callback / drag-mode
+  state where feasible
 
 ### Slice 6 - Live Direct-Drag Anchor Synchronization
 
