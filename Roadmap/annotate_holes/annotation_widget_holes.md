@@ -64,7 +64,7 @@ viewer adapter.
 Visualization is implemented in the opposite direction in
 [`_shapely_polygon_to_napari_polygon_vertices`](../../src/napari_harpy/viewer/adapter.py#L2247-L2261).
 The adapter orients the polygon, appends the exterior ring, then appends each
-interior ring followed by the exterior anchor. The comments there explicitly
+interior ring followed by the shell anchor. The comments there explicitly
 describe this as the napari path encoding used to preserve holes.
 
 The edit-existing validator currently accepts only Shapely `Polygon` rows:
@@ -163,7 +163,7 @@ display encoding should remain compatible with the existing adapter:
 - `layer.data[row]` is a 2D `(n_vertices, 2)` array in napari `(y, x)` order
 - the first ring is the exterior
 - each interior ring follows the exterior
-- the exterior anchor separates rings
+- the shell anchor separates rings
 
 This contract should live in a shared geometry helper, not only in
 `viewer/adapter.py`, so both loading and saving use the same encoding rules.
@@ -256,7 +256,7 @@ The direct-edit path does not preserve that topology. It exposes the raw vertex
 array as editable vertices. In the local CSV test row, napari sees:
 
 ```text
-exterior anchor copies: 0, 5, 12
+shell anchor copies: 0, 5, 12
 hole anchor copies:     6, 11
 ```
 
@@ -276,7 +276,7 @@ The relevant napari behavior is:
 - direct-edit vertex picking uses `displayed_vertices`, which are raw vertex
   rows
 - direct dragging only special-cases `vertices[0] == vertices[-1]` for simple
-  closed polygons; it does not know about hole anchors or exterior separators
+  closed polygons; it does not know about hole anchors or shell separators
 
 This means editable holes need two levels of support:
 
@@ -627,12 +627,12 @@ does not fix anchor editing yet.
 
 Definitions:
 
-- ordinary exterior vertex: a shell vertex that is not one of the repeated
-  exterior anchor/separator copies
+- ordinary shell vertex: a shell vertex that is not one of the repeated shell
+  anchor/separator copies
 - ordinary hole vertex: an interior-ring vertex that is not the repeated hole
   start/end anchor
 - anchor/separator vertex: any duplicated coordinate required by the napari
-  hole encoding, such as exterior anchor copies or hole start/end copies
+  hole encoding, such as shell anchor copies or hole start/end copies
 
 Suggested work:
 
@@ -642,7 +642,7 @@ Suggested work:
 3. Modify `layer.data[0]` directly to move one ordinary exterior-shell vertex
    and one ordinary hole-ring vertex. This slice does not need to simulate
    napari mouse dragging.
-4. Do not modify any repeated exterior anchor/separator vertex or repeated hole
+4. Do not modify any repeated shell anchor/separator vertex or repeated hole
    start/end anchor.
 5. Save through the annotation widget.
 6. Assert the saved geometry is a valid single Shapely `Polygon`, still has one
@@ -698,7 +698,7 @@ napari's direct-edit interaction moves only the selected raw vertex. For an
 encoded polygon with a hole, the duplicated vertices are semantic groups. Moving
 one member of such a group must move the other required copies:
 
-- moving any exterior anchor/separator copy should update all exterior anchor
+- moving any shell anchor/separator copy should update all shell anchor
   copies for that row
 - moving a hole start/end anchor should update both copies of that hole anchor
 - moving an ordinary non-anchor vertex should update only that vertex
@@ -714,17 +714,17 @@ This flat napari row represents:
 
 - `A B C D A`: the closed exterior shell
 - `E F G H E`: the closed hole ring
-- final `A`: the exterior-anchor separator after the hole
+- final `A`: the shell-anchor separator after the hole
 
 The semantic synchronization groups are:
 
 ```text
-exterior anchor group: [0, 4, 10]
+shell anchor group:    [0, 4, 10]
 hole anchor group:     [5, 9]
 ordinary vertices:     [1], [2], [3], [6], [7], [8]
 ```
 
-If the user drags exterior-anchor index `0`, the broken napari behavior is:
+If the user drags shell-anchor index `0`, the broken napari behavior is:
 
 ```text
 A' B C D A   E F G H E   A
@@ -761,7 +761,7 @@ For multiple holes, the same rule applies independently to each anchor group:
 index:  0 1 2 3 4   5 6 7   8   9 10 11   12
 value:  A B C D A   E F E   A   I J  I    A
 
-exterior anchor group: [0, 4, 8, 12]
+shell anchor group:    [0, 4, 8, 12]
 first hole group:      [5, 7]
 second hole group:     [9, 11]
 ```
@@ -812,7 +812,7 @@ Chosen implementation approach:
    one of the recorded groups. If it does, write the moved coordinate into all
    indices in that group and refresh the row immediately:
 
-   - moving exterior index `0`, `4`, or `10` updates all exterior anchor copies
+   - moving shell-anchor index `0`, `4`, or `10` updates all shell anchor copies
    - moving hole index `5` or `9` updates both hole-anchor copies
    - moving ordinary vertices such as `1`, `2`, `3`, `6`, `7`, or `8` leaves all
      other vertices unchanged
@@ -828,8 +828,8 @@ Suggested tests:
 
 - topology-helper tests for simple polygons, one-hole polygons, multi-hole
   polygons, and malformed ambiguous paths
-- guard-level tests that simulate moving one exterior anchor copy and assert
-  all exterior anchor/separator copies are synchronized
+- guard-level tests that simulate moving one shell anchor copy and assert
+  all shell anchor/separator copies are synchronized
 - guard-level tests that simulate moving one hole-anchor copy and assert both
   hole-anchor copies are synchronized
 - widget round-trip tests showing that anchor edits save and reload as a valid
@@ -839,7 +839,7 @@ Suggested tests:
 
 Slice 1E acceptance criteria:
 
-- dragging the exterior anchor of a hole-bearing polygon keeps all exterior
+- dragging the shell anchor of a hole-bearing polygon keeps all shell
   anchor/separator copies synchronized
 - dragging a hole anchor keeps the hole start/end copies synchronized
 - napari rendering does not show bridge/collapse artifacts during or after the
@@ -851,8 +851,8 @@ Slice 1E acceptance criteria:
 Decoder notes:
 
 - Convert napari `(y, x)` to Shapely `(x, y)`.
-- The adapter encoding repeats the exterior anchor after the exterior and after
-  every hole.
+- The adapter encoding repeats the shell anchor after the shell and after every
+  hole.
 - The first segment is the exterior ring.
 - Later segments are interior rings.
 - Pass the parsed rings to Shapely as `Polygon(shell, holes=holes)`, not as

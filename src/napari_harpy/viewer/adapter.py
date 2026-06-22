@@ -2249,7 +2249,7 @@ def _shapely_polygon_to_napari_polygon_vertices(polygon: Polygon) -> np.ndarray:
 
     Napari can render polygon holes when the interior rings are embedded in the
     same vertex row as the exterior ring and wind in the opposite direction. The
-    repeated exterior anchor creates bridge edges that napari's
+    repeated shell anchor creates bridge edges that napari's
     triangulation removes because they are traversed twice.
     """
     return shapely_polygon_to_napari_polygon_vertices(polygon)

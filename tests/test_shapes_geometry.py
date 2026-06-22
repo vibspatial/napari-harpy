@@ -135,7 +135,7 @@ def test_napari_polygon_topology_rejects_structurally_invalid_groups(
         )
 
 
-def test_sync_napari_polygon_anchor_vertex_synchronizes_exterior_anchor_group() -> None:
+def test_sync_napari_polygon_anchor_vertex_synchronizes_shell_anchor_group() -> None:
     source = Polygon(
         [(0, 0), (8, 0), (8, 8), (0, 8)],
         holes=[[(2, 2), (2, 4), (4, 4), (4, 2)]],
@@ -873,7 +873,7 @@ def test_napari_polygon_vertices_to_shapely_polygon_rejects_missing_hole_separat
     )
     path = shapely_polygon_to_napari_polygon_vertices(source)[:-1]
 
-    with pytest.raises(ValueError, match="path with holes must end on the exterior anchor"):
+    with pytest.raises(ValueError, match="path with holes must end on the shell anchor"):
         napari_polygon_vertices_to_shapely_polygon(path)
 
 
@@ -884,7 +884,7 @@ def test_napari_polygon_vertices_to_topology_rejects_missing_hole_separator() ->
     )
     path = shapely_polygon_to_napari_polygon_vertices(source)[:-1]
 
-    with pytest.raises(ValueError, match="path with holes must end on the exterior anchor"):
+    with pytest.raises(ValueError, match="path with holes must end on the shell anchor"):
         napari_polygon_vertices_to_topology(path)
 
 

@@ -206,7 +206,7 @@ def _polygon_hole_roundtrip_fixture() -> tuple[Polygon, Polygon]:
     assert len(polygon_1.interiors) == 1
     # When polygon_1 is encoded for napari, the flat path is:
     # shell[0:5] + shell[0] + hole[0:5] + hole[0] + shell[0].
-    # The exterior anchor/separator copies are shell[0]; the hole anchor
+    # The shell anchor/separator copies are shell[0]; the hole anchor
     # copies are hole[0].
     return polygon_1, polygon_2
 
@@ -228,6 +228,44 @@ def _direct_drag_callback_moving_vertex(
             yield "move"
 
     return direct_drag_callback
+
+
+def _install_direct_drag_callback_for_annotation_guard(
+    widget: ShapesAnnotation,
+    layer: Shapes,
+    *,
+    moved_vertex_index: int,
+    moved_coordinate: np.ndarray,
+) -> None:
+    widget._annotation_edit_guard.disconnect()
+    layer._drag_modes = dict(layer._drag_modes)
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex(
+        moved_vertex_index=moved_vertex_index,
+        moved_coordinate=moved_coordinate,
+    )
+    widget._annotation_edit_guard.attach(layer)
+    assert layer._drag_modes[Mode.DIRECT] is widget._annotation_edit_guard._wrapped_direct_callback
+
+
+def _drag_annotation_vertex(
+    layer: Shapes,
+    *,
+    vertex_index: int,
+    moved_coordinate: np.ndarray,
+) -> np.ndarray:
+    event = SimpleNamespace(type="mouse_press")
+    drag = layer._drag_modes[Mode.DIRECT](layer, event)
+    assert next(drag) == "press"
+    event.type = "mouse_move"
+    assert next(drag) == "move"
+    event.type = "mouse_release"
+    try:
+        next(drag)
+    except StopIteration:
+        pass
+    edited_vertices = np.asarray(layer.data[0], dtype=float)
+    np.testing.assert_allclose(edited_vertices[vertex_index], moved_coordinate)
+    return edited_vertices
 
 
 def _make_polygon_hole_roundtrip_sdata(*, shapes_name: str = "hole_regions") -> SpatialData:
@@ -383,7 +421,7 @@ def test_annotation_layer_edit_guard_replacing_layer_disconnects_previous_layer(
     assert second_layer._drag_modes[Mode.VERTEX_REMOVE] is not first_wrapped_vertex_remove_callback
 
 
-def test_annotation_layer_edit_guard_direct_drag_syncs_exterior_anchor_group() -> None:
+def test_annotation_layer_edit_guard_direct_drag_syncs_shell_anchor_group() -> None:
     polygon, _ = _polygon_hole_roundtrip_fixture()
     moved_coordinate = np.asarray([1234.0, 2345.0])
     layer = Shapes([shapely_polygon_to_napari_polygon_vertices(polygon)], shape_type="polygon")
@@ -405,7 +443,7 @@ def test_annotation_layer_edit_guard_direct_drag_syncs_exterior_anchor_group() -
     np.testing.assert_allclose(edited_vertices[[0, 5, 12]], np.repeat(moved_coordinate[None, :], 3, axis=0))
 
 
-def test_annotation_layer_edit_guard_direct_drag_syncs_exterior_separator_group() -> None:
+def test_annotation_layer_edit_guard_direct_drag_syncs_shell_separator_group() -> None:
     polygon, _ = _polygon_hole_roundtrip_fixture()
     moved_coordinate = np.asarray([1234.0, 2345.0])
     layer = Shapes([shapely_polygon_to_napari_polygon_vertices(polygon)], shape_type="polygon")
@@ -1459,6 +1497,125 @@ def test_shapes_annotation_widget_edit_existing_preserves_non_anchor_hole_vertex
 
     assert reloaded_polygon_1.equals(saved.geometry.iloc[0])
     assert len(reloaded_polygon_1.interiors) == 1
+
+
+# Keep end-to-end anchor-edit coverage focused: one shell-anchor edit on an
+# edit-existing layer and one hole-anchor edit on an adopted native layer.
+def test_shapes_annotation_widget_edit_existing_shell_anchor_edit_saves_and_reloads_with_hole(qtbot) -> None:
+    """Exercise guarded shell-anchor drag through edit-existing save and reload."""
+    shapes_name = "hole_regions"
+    original_polygon_1, polygon_2 = _polygon_hole_roundtrip_fixture()
+    sdata = _make_polygon_hole_roundtrip_sdata(shapes_name=shapes_name)
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, shapes_name))
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    original_vertices = np.asarray(layer.data[0], dtype=float)
+    moved_coordinate = original_vertices[0] + np.asarray([-25.0, 35.0])
+    _install_direct_drag_callback_for_annotation_guard(
+        widget,
+        layer,
+        moved_vertex_index=0,
+        moved_coordinate=moved_coordinate,
+    )
+
+    edited_vertices = _drag_annotation_vertex(layer, vertex_index=0, moved_coordinate=moved_coordinate)
+
+    np.testing.assert_allclose(edited_vertices[[0, 5, 12]], np.repeat(moved_coordinate[None, :], 3, axis=0))
+    expected_polygon_1 = napari_polygon_vertices_to_shapely_polygon(edited_vertices)
+    assert expected_polygon_1.is_valid
+    assert len(expected_polygon_1.interiors) == 1
+    assert not expected_polygon_1.equals(original_polygon_1)
+
+    widget.save_shapes_button.click()
+
+    saved = sdata.shapes[shapes_name]
+    assert saved.index.name == "region_id"
+    assert saved.index.tolist() == ["hole_row", "simple_row"]
+    assert saved["label"].tolist() == ["polygon_with_hole", "simple_polygon"]
+    np.testing.assert_allclose(saved["score"].to_numpy(), np.asarray([1.25, 2.5]))
+    _assert_polygon_hole_geometries_preserved(saved, expected_polygon_1, polygon_2)
+
+    reloaded_viewer = DummyViewer()
+    reloaded_layer = get_or_create_app_state(reloaded_viewer).viewer_adapter.ensure_shapes_loaded(
+        sdata,
+        shapes_name,
+        "global",
+    ).layer
+    reloaded_polygon_1 = napari_polygon_vertices_to_shapely_polygon(reloaded_layer.data[0])
+
+    assert reloaded_polygon_1.equals(saved.geometry.iloc[0])
+    assert len(reloaded_polygon_1.interiors) == 1
+    assert "Shapes Saved" in _status_text(widget)
+
+
+def test_shapes_annotation_widget_adopted_native_hole_anchor_edit_saves_and_reloads_with_hole(qtbot) -> None:
+    """Exercise guarded hole-anchor drag through native adoption, save, and reload."""
+    shapes_name = "native_hole_anchor_roundtrip"
+    original_polygon_1, polygon_2 = _polygon_hole_roundtrip_fixture()
+    sdata = _make_polygon_hole_roundtrip_sdata(shapes_name="reference_regions")
+    native_layer = Shapes(
+        [
+            shapely_polygon_to_napari_polygon_vertices(original_polygon_1),
+            shapely_polygon_to_napari_polygon_vertices(polygon_2),
+        ],
+        shape_type=["polygon", "polygon"],
+        name=shapes_name,
+    )
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    viewer.add_layer(native_layer)
+    qtbot.waitUntil(lambda: widget._annotation_layer is native_layer)
+    original_vertices = np.asarray(native_layer.data[0], dtype=float)
+    moved_coordinate = original_vertices[6] + np.asarray([15.0, -20.0])
+    _install_direct_drag_callback_for_annotation_guard(
+        widget,
+        native_layer,
+        moved_vertex_index=6,
+        moved_coordinate=moved_coordinate,
+    )
+
+    edited_vertices = _drag_annotation_vertex(native_layer, vertex_index=6, moved_coordinate=moved_coordinate)
+
+    np.testing.assert_allclose(edited_vertices[[6, 11]], np.repeat(moved_coordinate[None, :], 2, axis=0))
+    expected_polygon_1 = napari_polygon_vertices_to_shapely_polygon(edited_vertices)
+    assert expected_polygon_1.is_valid
+    assert len(expected_polygon_1.interiors) == 1
+    assert not expected_polygon_1.equals(original_polygon_1)
+
+    widget.save_shapes_button.click()
+
+    assert shapes_name in sdata.shapes
+    saved = sdata.shapes[shapes_name]
+    assert saved.index.name == "instance_id"
+    assert saved.index.tolist() == ["__annotation_0", "__annotation_1"]
+    assert native_layer.features["instance_id"].tolist() == ["__annotation_0", "__annotation_1"]
+    _assert_polygon_hole_geometries_preserved(saved, expected_polygon_1, polygon_2)
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.mode == "edit_existing"
+    assert widget._annotation_session.shapes_name == shapes_name
+    assert widget.shapes_combo.currentText() == shapes_name
+
+    reloaded_viewer = DummyViewer()
+    reloaded_layer = get_or_create_app_state(reloaded_viewer).viewer_adapter.ensure_shapes_loaded(
+        sdata,
+        shapes_name,
+        "global",
+    ).layer
+    reloaded_polygon_1 = napari_polygon_vertices_to_shapely_polygon(reloaded_layer.data[0])
+
+    assert reloaded_polygon_1.equals(saved.geometry.iloc[0])
+    assert len(reloaded_polygon_1.interiors) == 1
+    assert "Shapes Saved" in _status_text(widget)
 
 
 def test_shapes_annotation_widget_table_linked_edit_warns_without_mutating_table(

@@ -15,7 +15,7 @@ class NapariPolygonTopology:
     """Raw vertex-index topology for one napari polygon row.
 
     The napari row stores polygon holes by repeating anchor coordinates inside a
-    single vertex array. For ``A B C D A E F G H E A``, the exterior anchor
+    single vertex array. For ``A B C D A E F G H E A``, the shell anchor
     copies are indices ``(0, 4, 10)`` and the hole-anchor copies are
     ``((5, 9),)``. These synchronized groups identify which raw vertex indices
     must move together when napari edits one anchor copy.
@@ -106,11 +106,11 @@ def sync_napari_polygon_anchor_vertex(
 
     ``NapariPolygonTopology`` stores raw indices into the napari vertex row.
     For a one-hole row encoded as ``A B C D A E F G H E A``, the synchronized
-    groups are ``(0, 4, 10)`` for the exterior anchor copies and ``(5, 9)`` for
+    groups are ``(0, 4, 10)`` for the shell anchor copies and ``(5, 9)`` for
     the hole-anchor copies.
 
     If napari moves one member of such a group, this helper writes the moved
-    coordinate to every index in that group. Moving exterior index ``4`` to
+    coordinate to every index in that group. Moving shell-anchor index ``4`` to
     ``A'`` therefore turns ``A B C D A' E F G H E A`` into
     ``A' B C D A' E F G H E A'``. Moving an ordinary non-anchor vertex, such as
     ``G`` at index ``7``, returns an unchanged copy.
@@ -236,7 +236,7 @@ def napari_polygon_vertices_to_shapely_polygon(vertices: ArrayLike) -> Polygon:
     """Decode one napari polygon vertex row into a Shapely polygon.
 
     The adapter encodes holes by closing the exterior ring, appending each
-    closed interior ring, and repeating the exterior anchor after every hole.
+    closed interior ring, and repeating the shell anchor after every hole.
     Vertex rows without that separator pattern are interpreted as simple
     polygons.
     """
@@ -266,7 +266,7 @@ def _parse_napari_polygon_vertices(vertices: ArrayLike) -> _ParsedNapariPolygonV
     if shell_end < 3:
         raise ValueError("Malformed polygon hole encoding: exterior ring must contain at least four coordinates.")
     if not _same_coordinate(coordinates_xy[-1], anchor):
-        raise ValueError("Malformed polygon hole encoding: path with holes must end on the exterior anchor.")
+        raise ValueError("Malformed polygon hole encoding: path with holes must end on the shell anchor.")
 
     holes: list[np.ndarray] = []
     hole_anchor_groups: list[tuple[int, ...]] = []
@@ -279,7 +279,7 @@ def _parse_napari_polygon_vertices(vertices: ArrayLike) -> _ParsedNapariPolygonV
         chunk_start = separator_index + 1
 
     if chunk_start != len(coordinates_xy):
-        raise ValueError("Malformed polygon hole encoding: missing exterior-anchor separator after a hole ring.")
+        raise ValueError("Malformed polygon hole encoding: missing shell-anchor separator after a hole ring.")
 
     topology = NapariPolygonTopology(
         shell_anchor_group=(0, *anchor_indices),
@@ -400,7 +400,7 @@ def _delete_napari_polygon_hole(
 ) -> tuple[np.ndarray, NapariPolygonTopology]:
     separator_index = hole_end + 1
     if separator_index >= len(vertices):
-        raise ValueError("Polygon hole ring must be followed by an exterior separator.")
+        raise ValueError("Polygon hole ring must be followed by a shell separator.")
 
     deleted_vertices = np.delete(vertices, np.arange(hole_start, separator_index + 1), axis=0)
     # Deliberately call the Shapely decoder as an early-failure geometry gate.
@@ -419,7 +419,7 @@ def _delete_napari_polygon_shell_anchor(
 ) -> tuple[np.ndarray, NapariPolygonTopology]:
     """Delete the logical shell anchor and rebuild with the next shell vertex.
 
-    For ``A B C D A E F G H E A``, deleting any exterior anchor/separator copy
+    For ``A B C D A E F G H E A``, deleting any shell anchor/separator copy
     means deleting logical shell vertex ``A``. The rebuilt row uses ``B`` as
     the replacement shell anchor:
 
@@ -484,7 +484,7 @@ def _encode_napari_polygon_vertices_from_rings(
     input contains rings such as ``E F G H``, not already-closed rings such as
     ``E F G H E``. For shell ``A B C D`` and hole ``E F G H``, this helper returns
     ``A B C D A E F G H E A``: close the shell, close each hole, and append the
-    shell anchor after each hole as the exterior separator.
+    shell anchor after each hole as the shell separator.
 
     With multiple holes, each hole is appended the same way. Shell ``A B C D``
     with holes ``E F G H`` and ``I J K L`` becomes
@@ -650,7 +650,7 @@ def _validate_direct_holes(shell: Polygon, holes: list[Polygon]) -> None:
     for hole in holes:
         if not shell.contains(hole):
             raise ValueError("Polygon holes must be contained by the exterior ring.")
-        # The napari path encoding reserves the exterior anchor as a ring separator.
+        # The napari path encoding reserves the shell anchor as a ring separator.
         # Shell-touching holes can put hole vertices on the exterior boundary; if that
         # point is the anchor, the path grammar becomes ambiguous. Keep the contract
         # stricter by requiring holes to be fully inside the shell.

@@ -16,7 +16,7 @@ napari's direct-edit interaction moves only the selected raw vertex. For an
 encoded polygon with a hole, the duplicated vertices are semantic groups. Moving
 one member of such a group must move the other required copies:
 
-- moving any exterior anchor/separator copy should update all exterior anchor
+- moving any shell anchor/separator copy should update all shell anchor
   copies for that row
 - moving a hole start/end anchor should update both copies of that hole anchor
 - moving an ordinary non-anchor vertex should update only that vertex
@@ -32,17 +32,17 @@ This flat napari row represents:
 
 - `A B C D A`: the closed exterior shell
 - `E F G H E`: the closed hole ring
-- final `A`: the exterior-anchor separator after the hole
+- final `A`: the shell-anchor separator after the hole
 
 The semantic synchronization groups are:
 
 ```text
-exterior anchor group: [0, 4, 10]
+shell anchor group:    [0, 4, 10]
 hole anchor group:     [5, 9]
 ordinary vertices:     [1], [2], [3], [6], [7], [8]
 ```
 
-If the user drags exterior-anchor index `0`, the broken napari behavior is:
+If the user drags shell-anchor index `0`, the broken napari behavior is:
 
 ```text
 A' B C D A   E F G H E   A
@@ -79,7 +79,7 @@ For multiple holes, the same rule applies independently to each anchor group:
 index:  0 1 2 3 4   5 6 7   8   9 10 11   12
 value:  A B C D A   E F E   A   I J  I    A
 
-exterior anchor group: [0, 4, 8, 12]
+shell anchor group:    [0, 4, 8, 12]
 first hole group:      [5, 7]
 second hole group:     [9, 11]
 ```
@@ -130,7 +130,7 @@ should not be used to guess the intended topology.
    one of the recorded groups. If it does, write the moved coordinate into all
    indices in that group and refresh the row immediately:
 
-   - moving exterior index `0`, `4`, or `10` updates all exterior anchor copies
+   - moving shell-anchor index `0`, `4`, or `10` updates all shell anchor copies
    - moving hole index `5` or `9` updates both hole-anchor copies
    - moving ordinary vertices such as `1`, `2`, `3`, `6`, `7`, or `8` leaves all
      other vertices unchanged
@@ -202,7 +202,7 @@ Tests for this slice:
 - simple polygon row
 - canonical one-hole row from the existing hole round-trip fixture
 - multiple direct holes
-- missing final exterior separator
+- missing final shell separator
 - unclosed hole ring
 - too-short shell or hole ring
 
@@ -251,8 +251,8 @@ Suggested scope:
 
 Suggested behavior:
 
-- moving exterior index `0`, `4`, or `10` writes the moved coordinate into all
-  exterior anchor copies
+- moving shell-anchor index `0`, `4`, or `10` writes the moved coordinate into
+  all shell anchor copies
 - moving hole index `5` or `9` writes the moved coordinate into both hole-anchor
   copies
 - moving ordinary indices such as `1`, `2`, `3`, `6`, `7`, or `8` leaves all
@@ -261,7 +261,7 @@ Suggested behavior:
 
 Tests for this slice:
 
-- exterior anchor synchronization
+- shell anchor synchronization
 - hole anchor synchronization
 - ordinary non-anchor no-op
 - multiple-hole synchronization only updates the affected hole group
@@ -328,8 +328,8 @@ Rejected insertions:
 
 - inserting before the shell-start anchor at index `0`
 - inserting between the shell-closing anchor and the first hole anchor
-- inserting between a hole-closing anchor and the following exterior separator
-- inserting between an exterior separator and the next hole anchor
+- inserting between a hole-closing anchor and the following shell separator
+- inserting between a shell separator and the next hole anchor
 - inserting on the final exterior-separator-to-shell-start closure edge
 - inserting a coordinate that makes the row no longer satisfy the strict
   adapter-encoded grammar
@@ -356,8 +356,8 @@ or any(hole_start < insert_index <= hole_end for hole_start, hole_end in hole_an
 
 This permits inserting before a ring's closing anchor copy because that splits
 the final real edge of that ring. It rejects the artificial bridge/separator
-edges between the shell and holes, between holes and exterior separators, and
-between the final exterior separator and the shell start.
+edges between the shell and holes, between holes and shell separators, and
+between the final shell separator and the shell start.
 
 One-hole example:
 
@@ -379,9 +379,9 @@ Allowed insert indices:
 Rejected insert indices:
 
 ```text
-0    final exterior separator -> shell start
+0    final shell separator -> shell start
 5    shell closing anchor -> hole start
-10   hole closing anchor -> exterior separator
+10   hole closing anchor -> shell separator
 11   out of range
 ```
 
@@ -457,7 +457,7 @@ Suggested scope:
   both the updated vertex row and updated topology.
 - The helper should support deleting ordinary non-anchor vertices from shell
   and hole rings.
-- Structural shell anchors, hole anchors, and exterior separators are outside
+- Structural shell anchors, hole anchors, and shell separators are outside
   the ordinary-deletion path and are handled by Slice 4B.
 - The helper should validate that affected shell rings still have enough
   coordinates to form a valid Shapely ring after deletion.
@@ -484,7 +484,7 @@ Ordinary vertex deletion:
 - deletion is rejected if the affected shell ring would become too short
 - deletion from a minimal triangular hole removes the entire hole ring
 - the updated row must still decode through `napari_polygon_vertices_to_topology(...)`
-- structural shell anchors, hole anchors, and exterior separators follow the
+- structural shell anchors, hole anchors, and shell separators follow the
   Slice 4B rebuild path
 
 One-hole example:
@@ -627,7 +627,7 @@ The implementation should rebuild the encoded row from rings:
 - choose the replacement anchor deterministically as the next remaining vertex
   in the affected ring; if the deleted vertex was the last logical vertex before
   closure, wrap to the first remaining vertex
-- rewrite every exterior anchor/separator copy to the replacement shell anchor
+- rewrite every shell anchor/separator copy to the replacement shell anchor
 - rewrite both hole-anchor copies to the replacement hole anchor
 - reject if shell-anchor deletion would make the shell invalid or too short
 - remove the affected hole if hole-anchor deletion would make that hole too
@@ -861,9 +861,8 @@ repaired:     A' B C D A'  E F G H E   A'
 
 Tests for this slice:
 
-- simulated direct drag of an exterior anchor copy synchronizes all exterior
-  copies
-- simulated direct drag of an exterior separator copy synchronizes all exterior
+- simulated direct drag of a shell anchor copy synchronizes all shell copies
+- simulated direct drag of a shell separator copy synchronizes all shell
   anchor/separator copies
 - simulated direct drag of a hole anchor copy synchronizes both hole copies
 - simulated direct drag of an ordinary hole vertex changes only that vertex
@@ -974,7 +973,7 @@ Tests for this slice:
   writes the updated row
 - hole-bearing polygon ordinary hole vertex deletion calls the helper and writes
   the updated row
-- exterior anchor/separator deletion rebuilds the shell and keeps holes valid
+- shell anchor/separator deletion rebuilds the shell and keeps holes valid
 - hole anchor/separator deletion rebuilds the hole or removes a minimal
   triangular hole
 - malformed topology is not guessed
@@ -1271,8 +1270,8 @@ the guard remains scoped to annotation-owned sessions.
 
 Tests for this slice:
 
-- one missed exterior-anchor edit is repaired after a data event
-- one missed exterior separator edit is repaired after a data event
+- one missed shell-anchor edit is repaired after a data event
+- one missed shell separator edit is repaired after a data event
 - one missed hole-anchor edit is repaired after a data event
 - ordinary non-anchor vertex edits are not changed by the repair listener
 - same-length ambiguous edits are not guessed
@@ -1284,7 +1283,12 @@ Tests for this slice:
 
 ### Slice 8 - End-To-End Widget Round Trip And Interactive QA
 
-Status: not implemented.
+Status: implemented.
+
+Implemented with two focused integration tests:
+
+- edit-existing layer: shell anchor edit saves and reloads with holes
+- native adopted layer: hole anchor edit saves and reloads with holes
 
 Goal: prove anchor editing works through the annotation widget, save path, and
 reload path.
@@ -1341,20 +1345,20 @@ Test fixture:
 Anchor edit scenarios:
 
 - Covered by new integration tests:
-  - edit-existing layer: move an exterior anchor copy, for example vertex `0`
+  - edit-existing layer: move a shell anchor copy, for example vertex `0`
   - native/adopted layer: move one hole-anchor copy, for example vertex `6`
 - Already covered by existing guard-level tests and therefore not repeated as
   separate end-to-end tests:
-  - exterior separator alias, for example vertex `12`
+  - shell separator alias, for example vertex `12`
   - every combination of anchor type and layer origin
   - ordinary non-anchor edits from Slice 1D
-- Manual QA should still include exterior separator dragging because visual
+- Manual QA should still include shell separator dragging because visual
   behavior matters there.
 
 Edit-existing integration scenario:
 
-- move an exterior anchor copy, for example vertex `0`
-- assert all exterior anchor/separator copies are synchronized in the layer
+- move a shell anchor copy, for example vertex `0`
+- assert all shell anchor/separator copies are synchronized in the layer
 - save and assert the stored polygon shell changed as expected
 - assert the hole is still present and valid
 
@@ -1370,7 +1374,7 @@ Edit-existing widget tests:
 - Build a minimal `SpatialData` object with `_make_polygon_hole_roundtrip_sdata`.
 - Open the shapes element by selecting it in `widget.shapes_combo`.
 - Assert `_annotation_layer` is a `Shapes` layer and the edit guard is attached.
-- Simulate the representative exterior-anchor direct drag via the guarded layer
+- Simulate the representative shell-anchor direct drag via the guarded layer
   callback.
 - Click `widget.save_shapes_button`.
 - Assert:
@@ -1424,11 +1428,11 @@ Manual QA:
 
 - Use the real napari UI with the canonical one-hole polygon.
 - Open the shapes element through the Shapes Annotation widget.
-- Drag an exterior anchor and confirm:
+- Drag a shell anchor and confirm:
   - no bridge/collapse artifact appears during the drag
-  - all exterior anchor/separator copies move together
+  - all shell anchor/separator copies move together
   - save/reload preserves one hole
-- Drag the final exterior separator copy and confirm the same behavior.
+- Drag the final shell separator copy and confirm the same behavior.
 - Drag a hole anchor and confirm:
   - the hole ring stays visually closed
   - both hole-anchor copies move together
@@ -1450,10 +1454,10 @@ Non-goals:
 
 Tests for this slice:
 
-- edit-existing layer: exterior anchor edit saves and reloads with holes
+- edit-existing layer: shell anchor edit saves and reloads with holes
 - native adopted layer: hole anchor edit saves and reloads with holes
 
-Do not add separate automated Slice 8 tests for exterior separators, every
+Do not add separate automated Slice 8 tests for shell separators, every
 anchor alias, or ordinary non-anchor edits. Those are already covered by
 lower-level guard/helper tests and the Slice 1D regression.
 
@@ -1472,8 +1476,8 @@ Acceptance criteria for this slice:
 
 - topology-helper tests for simple polygons, one-hole polygons, multi-hole
   polygons, and malformed ambiguous paths
-- guard-level tests that simulate moving one exterior anchor copy and assert
-  all exterior anchor/separator copies are synchronized
+- guard-level tests that simulate moving one shell anchor copy and assert
+  all shell anchor/separator copies are synchronized
 - guard-level tests that simulate moving one hole-anchor copy and assert both
   hole-anchor copies are synchronized
 - widget round-trip tests showing that anchor edits save and reload as a valid
@@ -1483,7 +1487,7 @@ Acceptance criteria for this slice:
 
 ## Acceptance Criteria
 
-- dragging the exterior anchor of a hole-bearing polygon keeps all exterior
+- dragging the shell anchor of a hole-bearing polygon keeps all shell
   anchor/separator copies synchronized
 - dragging a hole anchor keeps the hole start/end copies synchronized
 - napari rendering does not show bridge/collapse artifacts during or after the
@@ -1495,8 +1499,8 @@ Acceptance criteria for this slice:
 ## Decoder Notes
 
 - Convert napari `(y, x)` to Shapely `(x, y)`.
-- The adapter encoding repeats the exterior anchor after the exterior and after
-  every hole.
+- The adapter encoding repeats the shell anchor after the shell and after every
+  hole.
 - The first segment is the exterior ring.
 - Later segments are interior rings.
 - Pass the parsed rings to Shapely as `Polygon(shell, holes=holes)`, not as
