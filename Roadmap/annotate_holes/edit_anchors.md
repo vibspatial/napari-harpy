@@ -872,7 +872,7 @@ Tests for this slice:
 
 ### Slice 6B - Vertex-Remove Mode Deletion UI Integration
 
-Status: not implemented.
+Status: implemented.
 
 Goal: wire napari `Mode.VERTEX_REMOVE` clicks for hole-bearing annotation rows
 into the existing pure deletion helper without broadening Slice 6's drag-only
@@ -983,6 +983,183 @@ Tests for this slice:
 - the wrapper emits or preserves napari-style `CHANGING`/`CHANGED` data events
   for successful helper deletion
 - disconnecting the guard restores the original `Mode.VERTEX_REMOVE` callback
+
+### Slice 6C - Vertex-Remove Cache Rebuild After Shortening Rows
+
+Status: not implemented.
+
+Goal: keep napari vertex hit-testing consistent after hole-aware deletion
+shortens a polygon row, so later shell-anchor deletion still reaches the
+hole-aware helper.
+
+Reproduced issue:
+
+- Data source:
+
+  ```python
+  sdata_path = "/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium_3_6_26.zarr"
+  shapes_name = "clahe_native_annotation_global_4"
+  ```
+
+- The shapes element contains two polygon rows.
+- Rendered row `0` is a `Polygon` with one hole.
+- Rendered row `1` is a simple `Polygon`.
+- Initially, row `0` encodes as:
+
+  ```text
+  shell_anchor_group = (0, 5, 12)
+  hole_anchor_groups = ((6, 11),)
+  ```
+
+- If the user first deletes the shell anchor, napari hit-testing returns a valid
+  shell-anchor alias such as `(row_index=0, vertex_index=12)`, so Slice 6B
+  reaches `delete_napari_polygon_vertex(...)` and the shell-anchor deletion
+  works.
+- If the user first deletes a hole vertex, row `0` shortens from 13 vertices to
+  12 vertices and the current topology becomes:
+
+  ```text
+  shell_anchor_group = (0, 5, 11)
+  hole_anchor_groups = ((6, 10),)
+  ```
+
+- After that edit, clicking the shell anchor can still make napari report the
+  old padded vertex index:
+
+  ```python
+  layer.get_value(shell_anchor_position, world=True)
+  # returns (0, 12)
+  ```
+
+- Index `12` is now outside the actual row, whose valid indices are `0..11`.
+  The current guard therefore treats the click as unsupported and delegates to
+  napari's original `vertex_remove(...)`. In practice this means the shell
+  anchor is not removed; in a direct script reproduction, napari's original
+  callback attempts to delete index `12` from a 12-vertex row.
+
+Root cause:
+
+Napari's `ShapeList.edit(...)` can keep padded displayed vertices when a
+non-final shape row becomes shorter. This avoids relocating later rows in the
+internal vertex buffer, but it means `layer._data_view.displayed_vertices` and
+`layer._data_view.displayed_vertices_to_shape_num` may still expose a stale
+padding vertex for hit-testing.
+
+In the reproduced two-row layer:
+
+```text
+before hole deletion:
+  layer.data lengths              = [13, 6]
+  layer._data_view._vertices_index = [0, 13, 19]
+
+after low-level _data_view.edit:
+  layer.data lengths              = [12, 6]
+  layer._data_view._vertices_index = [0, 13, 19]
+```
+
+The actual geometry is correct, but the displayed vertex cache still has 13
+slots for row `0`, so clicking the shell anchor can resolve to stale vertex
+index `12`.
+
+Chosen fix:
+
+Use a cache-rebuilding write path after successful hole-aware vertex deletion
+when the row length changes. Instead of only doing:
+
+```python
+layer._data_view.edit(row_index, updated_vertices)
+```
+
+rebuild the Shapes layer's data cache with the updated row, conceptually:
+
+```python
+new_data = list(layer.data)
+new_data[row_index] = updated_vertices
+layer.data = new_data
+```
+
+A direct reproduction showed that this rebuild updates napari's internal vertex
+index cache correctly:
+
+```text
+after public data rebuild:
+  layer.data lengths              = [12, 6]
+  layer._data_view._vertices_index = [0, 12, 18]
+  layer.get_value(shell_anchor_position, world=True) -> (0, 11)
+```
+
+Implementation considerations:
+
+- Keep the Slice 6B event contract. The wrapper should still emit the
+  napari-style `ActionType.CHANGING` and `ActionType.CHANGED` events for the
+  clicked row and vertex.
+- Avoid leaking the broad events emitted by the public `layer.data` setter if
+  possible. Use event blockers around the cache rebuild so listeners do not see
+  both the broad full-layer reset and the intended vertex-remove event.
+- Preserve interaction state that the public data setter resets:
+  - restore `layer.selected_data`, at least keeping the edited row selected
+    when it still exists
+  - keep the current edit mode, especially `Mode.VERTEX_REMOVE`
+  - keep the annotation layer active in the viewer
+- Preserve row-level metadata:
+  - `layer.features` must remain aligned with the same rendered rows
+  - shape types must stay unchanged for unaffected rows
+  - source GeoDataFrame index features must not be regenerated or dropped
+- Continue using the low-level `_data_view.edit(...)` path for coordinate-only
+  anchor synchronization in `Mode.DIRECT`, because that path does not shorten
+  rows and is not the source of this stale hit-test cache.
+- For deletion operations that do not change row length, the low-level edit path
+  may remain sufficient. For simplicity and consistency, the Slice 6C helper
+  can rebuild after every successful vertex-remove helper call, or only when
+  `len(updated_vertices) != len(old_vertices)`. The critical case is row
+  shortening.
+- Do not solve this by merely clamping stale out-of-range hit-test indices.
+  Clamping could make this one click work, but it leaves napari's displayed
+  vertex cache stale for later interactions. The cache rebuild fixes the
+  underlying hit-testing state.
+
+Suggested implementation shape:
+
+- Add a small private helper in the annotation widget module, owned by
+  `_AnnotationLayerEditGuard`, for example:
+
+  ```python
+  def _replace_shape_row_rebuilding_vertex_cache(
+      layer: Shapes,
+      row_index: int,
+      updated_vertices: np.ndarray,
+  ) -> None:
+      ...
+  ```
+
+- The helper should:
+  - capture current mode and selected rows
+  - build a new `layer.data` list with only `row_index` replaced
+  - assign through `layer.data` under suitable event blockers
+  - restore mode and selection
+  - refresh the layer
+- `_route_vertex_remove(...)` should call this helper instead of
+  directly calling `_data_view.edit(...)` for successful hole-aware deletion
+  when the vertex count changes.
+
+Tests for this slice:
+
+- Regression using a two-row layer where row `0` is the canonical
+  polygon-with-hole and row `1` is a simple polygon.
+- Delete an ordinary hole vertex from row `0`; assert:
+  - row `0` shortens
+  - `layer._data_view._vertices_index` updates to the new row boundary
+  - `layer.get_value(shell_anchor_position, world=True)` returns the current
+    shell-anchor alias, not the old stale index
+- After the hole-vertex deletion, click the shell anchor through the wrapped
+  `Mode.VERTEX_REMOVE` callback; assert shell-anchor deletion succeeds.
+- Assert `layer.features` still has the same row count and the same source
+  index values.
+- Assert shape types for all rows are preserved.
+- Assert the edited row remains selected and the layer remains in
+  `Mode.VERTEX_REMOVE`.
+- Assert the wrapper still emits exactly the intended napari-style
+  `CHANGING`/`CHANGED` events for the helper-owned delete path.
 
 ### Slice 7 - Defensive Event-Time Repair
 

@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.colors import to_rgba
 from napari.layers import Shapes
+from napari.layers.base._base_constants import ActionType
 from napari.layers.shapes._shapes_constants import Mode
 from napari_builtins.io import csv_to_layer_data, napari_write_shapes
 from qtpy.QtWidgets import QComboBox, QLabel
@@ -23,7 +24,9 @@ import napari_harpy.widgets.shapes_annotation.widget as shapes_annotation_widget
 from napari_harpy._app_state import ShapesElementWrittenEvent, get_or_create_app_state
 from napari_harpy.core.shapes_annotation import AnnotateShapesElementResult
 from napari_harpy.core.shapes_geometry import (
+    delete_napari_polygon_vertex,
     napari_polygon_vertices_to_shapely_polygon,
+    napari_polygon_vertices_to_topology,
     shapely_polygon_to_napari_polygon_vertices,
 )
 from napari_harpy.viewer.adapter import ShapesLayerBinding
@@ -312,14 +315,17 @@ def test_annotation_layer_edit_guard_delegates_direct_mode_and_restores_instance
         return "delegated"
 
     original_drag_modes[Mode.DIRECT] = original_direct_callback
+    original_vertex_remove_callback = original_drag_modes[Mode.VERTEX_REMOVE]
     guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
 
     guard.attach(layer)
     wrapped_direct_callback = layer._drag_modes[Mode.DIRECT]
+    wrapped_vertex_remove_callback = layer._drag_modes[Mode.VERTEX_REMOVE]
 
     assert guard.layer is layer
     assert layer._drag_modes is not original_drag_modes
     assert wrapped_direct_callback is not original_direct_callback
+    assert wrapped_vertex_remove_callback is not original_vertex_remove_callback
     assert wrapped_direct_callback("event", value=3) == "delegated"
     assert calls == [(("event",), {"value": 3})]
 
@@ -328,18 +334,22 @@ def test_annotation_layer_edit_guard_delegates_direct_mode_and_restores_instance
     assert guard.layer is None
     assert layer._drag_modes is original_drag_modes
     assert layer._drag_modes[Mode.DIRECT] is original_direct_callback
+    assert layer._drag_modes[Mode.VERTEX_REMOVE] is original_vertex_remove_callback
 
 
 def test_annotation_layer_edit_guard_attach_is_idempotent_and_restores_class_mapping() -> None:
     layer = Shapes([], ndim=2)
     original_direct_callback = layer._drag_modes[Mode.DIRECT]
+    original_vertex_remove_callback = layer._drag_modes[Mode.VERTEX_REMOVE]
     guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
 
     guard.attach(layer)
     first_wrapped_direct_callback = layer._drag_modes[Mode.DIRECT]
+    first_wrapped_vertex_remove_callback = layer._drag_modes[Mode.VERTEX_REMOVE]
     guard.attach(layer)
 
     assert layer._drag_modes[Mode.DIRECT] is first_wrapped_direct_callback
+    assert layer._drag_modes[Mode.VERTEX_REMOVE] is first_wrapped_vertex_remove_callback
     assert "_drag_modes" in vars(layer)
 
     guard.disconnect()
@@ -347,25 +357,30 @@ def test_annotation_layer_edit_guard_attach_is_idempotent_and_restores_class_map
     assert guard.layer is None
     assert "_drag_modes" not in vars(layer)
     assert layer._drag_modes[Mode.DIRECT] is original_direct_callback
+    assert layer._drag_modes[Mode.VERTEX_REMOVE] is original_vertex_remove_callback
 
 
 def test_annotation_layer_edit_guard_replacing_layer_disconnects_previous_layer() -> None:
     first_layer = Shapes([], ndim=2)
     second_layer = Shapes([], ndim=2)
     first_direct_callback = first_layer._drag_modes[Mode.DIRECT]
+    first_vertex_remove_callback = first_layer._drag_modes[Mode.VERTEX_REMOVE]
     guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
 
     guard.attach(first_layer)
     first_wrapped_direct_callback = first_layer._drag_modes[Mode.DIRECT]
+    first_wrapped_vertex_remove_callback = first_layer._drag_modes[Mode.VERTEX_REMOVE]
     # `attach(...)` first calls `disconnect(...)`, so moving the guard to a new
     # layer must restore the previous layer before patching the new one.
     guard.attach(second_layer)
 
     assert guard.layer is second_layer
     assert first_layer._drag_modes[Mode.DIRECT] is first_direct_callback
+    assert first_layer._drag_modes[Mode.VERTEX_REMOVE] is first_vertex_remove_callback
     assert "_drag_modes" not in vars(first_layer)
     assert "_drag_modes" in vars(second_layer)
     assert second_layer._drag_modes[Mode.DIRECT] is not first_wrapped_direct_callback
+    assert second_layer._drag_modes[Mode.VERTEX_REMOVE] is not first_wrapped_vertex_remove_callback
 
 
 def test_annotation_layer_edit_guard_direct_drag_syncs_exterior_anchor_group() -> None:
@@ -481,6 +496,166 @@ def test_annotation_layer_edit_guard_direct_drag_does_not_guess_malformed_topolo
     edited_vertices = np.asarray(layer.data[0], dtype=float)
     np.testing.assert_allclose(edited_vertices[0], moved_coordinate)
     np.testing.assert_allclose(edited_vertices[5], original_vertices[5])
+
+
+def test_annotation_layer_edit_guard_vertex_remove_delegates_when_no_vertex(monkeypatch) -> None:
+    polygon, _ = _polygon_hole_roundtrip_fixture()
+    layer = Shapes([shapely_polygon_to_napari_polygon_vertices(polygon)], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def original_vertex_remove_callback(*args: object, **kwargs: object) -> str:
+        calls.append((args, kwargs))
+        return "delegated"
+
+    monkeypatch.setattr(layer, "get_value", lambda position, world=True: (0, None))
+    layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+    event = SimpleNamespace(position=(0.0, 0.0))
+
+    result = layer._drag_modes[Mode.VERTEX_REMOVE](layer, event)
+
+    assert result == "delegated"
+    assert calls == [((layer, event), {})]
+
+
+def test_annotation_layer_edit_guard_vertex_remove_delegates_simple_polygon(monkeypatch) -> None:
+    _, polygon = _polygon_hole_roundtrip_fixture()
+    layer = Shapes([shapely_polygon_to_napari_polygon_vertices(polygon)], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def original_vertex_remove_callback(*args: object, **kwargs: object) -> str:
+        calls.append((args, kwargs))
+        return "delegated"
+
+    monkeypatch.setattr(layer, "get_value", lambda position, world=True: (0, 1))
+    layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+    event = SimpleNamespace(position=(0.0, 0.0))
+
+    result = layer._drag_modes[Mode.VERTEX_REMOVE](layer, event)
+
+    assert result == "delegated"
+    assert calls == [((layer, event), {})]
+
+
+def test_annotation_layer_edit_guard_vertex_remove_uses_helper_for_hole_bearing_polygon(monkeypatch) -> None:
+    polygon, _ = _polygon_hole_roundtrip_fixture()
+    deleted_vertex_indices = [2, 8, 0, 12, 6]
+
+    for deleted_vertex_index in deleted_vertex_indices:
+        original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
+        topology = napari_polygon_vertices_to_topology(original_vertices)
+        expected_vertices, _ = delete_napari_polygon_vertex(original_vertices, topology, deleted_vertex_index)
+        layer = Shapes([original_vertices], shape_type="polygon")
+        layer._drag_modes = dict(layer._drag_modes)
+        event = SimpleNamespace(position=(0.0, 0.0))
+        events: list[tuple[ActionType, tuple[int, ...], tuple[tuple[int, ...], ...]]] = []
+
+        def original_vertex_remove_callback(*args: object, **kwargs: object) -> None:
+            raise AssertionError("hole-bearing polygon deletion should use the topology helper")
+
+        def record_data_event(
+            event: object,
+            event_log: list[tuple[ActionType, tuple[int, ...], tuple[tuple[int, ...], ...]]] = events,
+        ) -> None:
+            event_log.append((event.action, event.data_indices, event.vertex_indices))
+
+        monkeypatch.setattr(
+            layer,
+            "get_value",
+            lambda position, world=True, index=deleted_vertex_index: (0, index),
+        )
+        layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
+        layer.events.data.connect(record_data_event)
+        guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+        guard.attach(layer)
+
+        layer._drag_modes[Mode.VERTEX_REMOVE](layer, event)
+
+        np.testing.assert_allclose(np.asarray(layer.data[0], dtype=float), expected_vertices)
+        assert events == [
+            (ActionType.CHANGING, (0,), ((deleted_vertex_index,),)),
+            (ActionType.CHANGED, (0,), ((deleted_vertex_index,),)),
+        ]
+
+
+def test_annotation_layer_edit_guard_vertex_remove_removes_minimal_hole(monkeypatch) -> None:
+    shell_yx = np.asarray([[0.0, 0.0], [0.0, 10.0], [10.0, 10.0], [10.0, 0.0]], dtype=float)
+    hole_yx = np.asarray([[3.0, 3.0], [3.0, 5.0], [5.0, 4.0]], dtype=float)
+    polygon = Polygon(_yx_to_xy(shell_yx), holes=[_yx_to_xy(hole_yx)])
+    original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
+    topology = napari_polygon_vertices_to_topology(original_vertices)
+    expected_vertices, expected_topology = delete_napari_polygon_vertex(original_vertices, topology, 5)
+    layer = Shapes([original_vertices], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+
+    def original_vertex_remove_callback(*args: object, **kwargs: object) -> None:
+        raise AssertionError("minimal-hole deletion should use the topology helper")
+
+    monkeypatch.setattr(layer, "get_value", lambda position, world=True: (0, 5))
+    layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+
+    layer._drag_modes[Mode.VERTEX_REMOVE](layer, SimpleNamespace(position=(0.0, 0.0)))
+
+    np.testing.assert_allclose(np.asarray(layer.data[0], dtype=float), expected_vertices)
+    assert not expected_topology.synchronized_anchor_groups
+
+
+def test_annotation_layer_edit_guard_vertex_remove_delegates_malformed_topology(monkeypatch) -> None:
+    polygon, _ = _polygon_hole_roundtrip_fixture()
+    malformed_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)[:-1]
+    layer = Shapes([malformed_vertices], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def original_vertex_remove_callback(*args: object, **kwargs: object) -> str:
+        calls.append((args, kwargs))
+        return "delegated"
+
+    monkeypatch.setattr(layer, "get_value", lambda position, world=True: (0, 0))
+    layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+    event = SimpleNamespace(position=(0.0, 0.0))
+
+    result = layer._drag_modes[Mode.VERTEX_REMOVE](layer, event)
+
+    assert result == "delegated"
+    assert calls == [((layer, event), {})]
+
+
+def test_annotation_layer_edit_guard_vertex_remove_helper_error_warns_without_mutating_layer(monkeypatch) -> None:
+    polygon, _ = _polygon_hole_roundtrip_fixture()
+    original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
+    layer = Shapes([original_vertices], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    warnings: list[str] = []
+    events: list[object] = []
+
+    def original_vertex_remove_callback(*args: object, **kwargs: object) -> None:
+        raise AssertionError("rejected hole deletion should not fall back to napari deletion")
+
+    def reject_delete(*args: object, **kwargs: object) -> tuple[np.ndarray, object]:
+        raise ValueError("Deletion would make the polygon invalid.")
+
+    monkeypatch.setattr(layer, "get_value", lambda position, world=True: (0, 0))
+    monkeypatch.setattr(shapes_annotation_widget_module, "delete_napari_polygon_vertex", reject_delete)
+    layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
+    layer.events.data.connect(events.append)
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard(warning_callback=warnings.append)
+    guard.attach(layer)
+
+    layer._drag_modes[Mode.VERTEX_REMOVE](layer, SimpleNamespace(position=(0.0, 0.0)))
+
+    np.testing.assert_allclose(np.asarray(layer.data[0], dtype=float), original_vertices)
+    assert warnings == ["Deletion would make the polygon invalid."]
+    assert events == []
 
 
 def test_shapes_annotation_widget_shares_app_state(qtbot) -> None:
