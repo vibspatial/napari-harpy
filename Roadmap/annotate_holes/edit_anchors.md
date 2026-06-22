@@ -870,33 +870,52 @@ Tests for this slice:
 - repeated direct-mode toggles do not break the wrapper
 - malformed rows are not guessed into a repaired topology
 
-### Slice 6B - Direct-Mode Vertex Deletion UI Integration
+### Slice 6B - Vertex-Remove Mode Deletion UI Integration
 
 Status: not implemented.
 
-Goal: wire napari direct-mode vertex deletion for hole-bearing annotation rows
+Goal: wire napari `Mode.VERTEX_REMOVE` clicks for hole-bearing annotation rows
 into the existing pure deletion helper without broadening Slice 6's drag-only
 scope.
 
-This slice is separate from Slice 6 because deletion is a structural edit: it
-changes the length of `layer.data[row]` and may require rebuilding the encoded
-napari row. Mouse dragging only changes coordinates.
+This slice is separate from Slice 6 because deletion is a structural edit and
+uses a different napari interaction path. Mouse dragging in `Mode.DIRECT` is a
+generator that changes coordinates. Vertex deletion uses `Mode.VERTEX_REMOVE`
+and napari's `vertex_remove(layer, event)` callback, which is a click handler
+that changes the length of `layer.data[row]` and may remove or rebuild a shape
+row.
 
 Suggested scope:
 
-- Investigate the napari direct-mode deletion path for `Shapes` layers in the
-  current supported napari version:
-  - which keybinding/action deletes a selected vertex
-  - whether the action exposes the affected `(row_index, vertex_index)` before
-    deletion
-  - whether deletion emits only `layer.events.data(...)` after the row has
-    already changed
-- Use cached pre-delete topology where possible. As with Slice 6 drag handling,
-  post-edit parsing can be unreliable once an anchor/separator vertex has been
-  removed.
-- Identify the deleted raw vertex index deterministically. If the UI/event path
-  does not expose a unique deleted vertex, do not guess.
-- Call the existing pure helper:
+- Extend `_AnnotationLayerEditGuard.attach(...)` to wrap `Mode.VERTEX_REMOVE` in
+  addition to `Mode.DIRECT`, while still patching only the guarded annotation
+  layer instance.
+- Preserve the original `Mode.VERTEX_REMOVE` callback and restore it on guard
+  disconnect, using the same instance-local `_drag_modes` restoration contract
+  as Slice 5/6.
+- In the vertex-remove wrapper, determine the clicked vertex before any
+  deletion by calling the same napari lookup used by the original callback:
+
+  ```python
+  row_index, deleted_vertex_index = layer.get_value(event.position, world=True)
+  ```
+
+- Treat `row_index` as the rendered napari `layer.data` row index, not a source
+  GeoDataFrame index.
+- If `deleted_vertex_index is None`, delegate to napari's original
+  `Mode.VERTEX_REMOVE` callback unchanged.
+- If the clicked row is not a polygon row, delegate unchanged. This keeps
+  rectangles, ellipses, and unsupported/ordinary napari behavior outside the
+  hole-specific scope.
+- Parse the pre-delete row with `napari_polygon_vertices_to_topology(...)`.
+  This must happen before any vertex is removed because anchor/separator
+  deletion can make post-delete topology ambiguous or impossible to infer.
+- If the pre-delete row has no encoded holes, delegate unchanged to napari's
+  original callback. The pure helper currently requires hole-bearing topology,
+  and simple polygon deletion should remain napari-owned for this slice.
+- If topology parsing fails, do not guess. Let the original callback handle the
+  click unchanged; the save path remains strict for malformed rows.
+- For a valid hole-bearing polygon row, call the existing pure helper:
 
   ```python
   updated_vertices, updated_topology = delete_napari_polygon_vertex(
@@ -906,8 +925,27 @@ Suggested scope:
   )
   ```
 
-- Write `updated_vertices` back to `layer.data[row_index]` and refresh the
-  layer.
+- `updated_topology` does not need to be stored by the UI guard; it is returned
+  by the helper as a validation result and future-proofing for callers that need
+  the new topology.
+- If `delete_napari_polygon_vertex(...)` raises `ValueError`, do not silently
+  fall back to napari's default deletion, because that can create an ambiguous
+  hole row. Instead, fail clearly for the click, ideally by leaving
+  `layer.data[row_index]` unchanged and routing a warning through
+  `ShapesAnnotation` status UI.
+- Give `_AnnotationLayerEditGuard` a small warning callback hook owned by
+  `ShapesAnnotation`. The guard should call that hook with the helper error
+  message when hole-aware deletion is rejected, while the widget decides how to
+  present the message in its status card.
+- For successful helper deletion, write `updated_vertices` back to
+  `layer.data[row_index]` using the same low-level edit path as Slice 6
+  (`layer._data_view.edit(row_index, updated_vertices)`) and refresh the layer.
+- Preserve napari-style data notifications around the edit. The original
+  callback emits `ActionType.CHANGING` before deletion and `ActionType.CHANGED`
+  after deletion with `data_indices=(row_index,)` and
+  `vertex_indices=((deleted_vertex_index,),)`. The wrapper should either reuse
+  the original event contract or deliberately emit equivalent events for the
+  custom helper path.
 - Support the helper behavior already implemented in Slices 4A/4B:
   - ordinary shell or hole vertex deletion
   - shell anchor/separator deletion by rebuilding the shell with a replacement
@@ -919,25 +957,32 @@ Suggested scope:
 - Keep this slice scoped to annotation layers guarded by `ShapesAnnotation`.
   Do not change global napari Shapes deletion behavior.
 
-Open implementation question:
+Chosen error-reporting policy:
 
-- If napari's public deletion event happens only after the vertex has already
-  been removed and does not identify the deleted raw index, we may need to wrap
-  or intercept the relevant napari action/keybinding earlier than
-  `layer.events.data(...)`.
+- Route `delete_napari_polygon_vertex(...)` errors through the
+  `ShapesAnnotation` status UI via the guard callback hook.
+- Leave the row unchanged when deletion is rejected.
+- Do not raise from the mouse callback for expected geometry/topology rejection,
+  because that would make normal interactive editing brittle.
 
 Tests for this slice:
 
-- deleting an ordinary non-anchor shell vertex through the UI integration
-  updates the row and topology
-- deleting an ordinary non-anchor hole vertex through the UI integration
-  updates the row and topology
-- deleting an exterior anchor/separator through the UI integration rebuilds the
-  shell and keeps holes valid
-- deleting a hole anchor/separator through the UI integration rebuilds the hole
-  or removes a minimal triangular hole
-- ambiguous deletion events are not guessed
-- save remains strict for unrecoverable malformed rows
+- vertex-remove click with no vertex under the cursor delegates unchanged
+- simple polygon row delegates unchanged to napari's original
+  `Mode.VERTEX_REMOVE` callback
+- hole-bearing polygon ordinary shell vertex deletion calls the helper and
+  writes the updated row
+- hole-bearing polygon ordinary hole vertex deletion calls the helper and writes
+  the updated row
+- exterior anchor/separator deletion rebuilds the shell and keeps holes valid
+- hole anchor/separator deletion rebuilds the hole or removes a minimal
+  triangular hole
+- malformed topology is not guessed
+- helper `ValueError` leaves the layer unchanged and shows a warning through
+  `ShapesAnnotation` status UI
+- the wrapper emits or preserves napari-style `CHANGING`/`CHANGED` data events
+  for successful helper deletion
+- disconnecting the guard restores the original `Mode.VERTEX_REMOVE` callback
 
 ### Slice 7 - Defensive Event-Time Repair
 
