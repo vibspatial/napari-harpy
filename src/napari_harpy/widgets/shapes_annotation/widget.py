@@ -10,7 +10,7 @@ save target.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -48,6 +48,11 @@ from napari_harpy.core.shapes_annotation import (
     create_shapes_element_from_napari_shapes_layer,
     edit_shapes_element_from_napari_shapes_layer,
     validate_existing_shapes_source_geodataframe,
+)
+from napari_harpy.core.shapes_geometry import (
+    NapariPolygonTopology,
+    napari_polygon_vertices_to_topology,
+    sync_napari_polygon_anchor_vertex,
 )
 from napari_harpy.core.spatialdata import (
     get_annotating_table_names,
@@ -216,6 +221,13 @@ class _ShapesAnnotationSession:
         return self.source_geodataframe.index.name
 
 
+@dataclass(frozen=True)
+class _AnchorDragState:
+    row_index: int
+    moved_vertex_index: int
+    topology: NapariPolygonTopology
+
+
 class _AnnotationLayerEditGuard:
     """Install and restore annotation-specific Shapes direct-edit hooks."""
 
@@ -224,6 +236,7 @@ class _AnnotationLayerEditGuard:
         self._original_drag_modes: dict[object, Callable[..., Any]] | None = None
         self._had_instance_drag_modes = False
         self._wrapped_direct_callback: Callable[..., Any] | None = None
+        self._is_syncing_anchor_drag = False
 
     @property
     def layer(self) -> Shapes | None:
@@ -241,7 +254,11 @@ class _AnnotationLayerEditGuard:
         original_direct_callback = drag_modes[Mode.DIRECT]
 
         def wrapped_direct_callback(*args: Any, **kwargs: Any) -> Any:
-            return original_direct_callback(*args, **kwargs)
+            direct_drag = original_direct_callback(*args, **kwargs)
+            if not hasattr(direct_drag, "__next__"):
+                return direct_drag
+            event = args[1] if len(args) > 1 else kwargs.get("event")
+            return self._iter_direct_drag_with_anchor_sync(layer, direct_drag, event)
 
         patched_drag_modes = dict(drag_modes)
         patched_drag_modes[Mode.DIRECT] = wrapped_direct_callback
@@ -265,6 +282,7 @@ class _AnnotationLayerEditGuard:
         self._original_drag_modes = None
         self._had_instance_drag_modes = False
         self._wrapped_direct_callback = None
+        self._is_syncing_anchor_drag = False
 
         if layer is None:
             return
@@ -278,6 +296,119 @@ class _AnnotationLayerEditGuard:
         # resolves the normal inherited/default mapping again.
         if "_drag_modes" in vars(layer):
             delattr(layer, "_drag_modes")
+
+    def _iter_direct_drag_with_anchor_sync(
+        self,
+        layer: Shapes,
+        direct_drag: Iterator[Any],
+        event: object,
+    ) -> Iterator[Any]:
+        """Mirror napari's direct-drag generator while repairing anchor copies.
+
+        The first ``next(direct_drag)`` runs napari's mouse-press setup and
+        pauses at its first ``yield``. At that point napari has populated
+        ``layer._moving_value`` but has not moved any vertex yet, so after a
+        mouse-press step we can safely cache the pre-move hole topology. Later
+        ``next(...)`` calls let napari process mouse moves first; after each
+        mouse move we synchronize any duplicated anchor/separator vertices from
+        the cached topology.
+        """
+        active_drag: _AnchorDragState | None = None
+        try:
+            try:
+                yielded = next(direct_drag)
+            except StopIteration:
+                return
+
+            # Defensive guard: the normal napari path reaches this point from
+            # mouse press, but unexpected event phases should fall back to
+            # napari's original behavior instead of caching topology.
+            if getattr(event, "type", None) == "mouse_press":
+                active_drag = self._capture_anchor_drag_state(layer)
+            yield yielded
+
+            while True:
+                try:
+                    yielded = next(direct_drag)
+                except StopIteration:
+                    return
+
+                if getattr(event, "type", None) == "mouse_move":
+                    self._sync_anchor_drag(layer, active_drag)
+                yield yielded
+        finally:
+            close = getattr(direct_drag, "close", None)
+            if callable(close):
+                close()
+
+    def _capture_anchor_drag_state(self, layer: Shapes) -> _AnchorDragState | None:
+        moving_value = getattr(layer, "_moving_value", None)
+        if not isinstance(moving_value, tuple) or len(moving_value) != 2:
+            return None
+
+        # `moving_value` is `(row_index, vertex_index)`: the rendered napari row
+        # and moving vertex indices.
+        row_index, moved_vertex_index = moving_value
+        if not isinstance(row_index, (int, np.integer)) or not isinstance(moved_vertex_index, (int, np.integer)):
+            return None
+
+        row_index = int(row_index)
+        moved_vertex_index = int(moved_vertex_index)
+        if row_index < 0 or moved_vertex_index < 0 or row_index >= len(layer.data):
+            return None
+        if self._shape_type_at(layer, row_index) != "polygon":
+            return None
+
+        try:
+            topology = napari_polygon_vertices_to_topology(layer.data[row_index])
+        except ValueError:
+            return None
+
+        for group in topology.synchronized_anchor_groups:
+            if moved_vertex_index in group:
+                return _AnchorDragState(
+                    row_index=row_index,
+                    moved_vertex_index=moved_vertex_index,
+                    topology=topology,
+                )
+        return None
+
+    def _sync_anchor_drag(self, layer: Shapes, active_drag: _AnchorDragState | None) -> None:
+        if active_drag is None or self._is_syncing_anchor_drag:
+            return
+        if active_drag.row_index >= len(layer.data):
+            return
+
+        vertices = np.asarray(layer.data[active_drag.row_index], dtype=float)
+        if active_drag.moved_vertex_index >= len(vertices):
+            return
+
+        moved_coordinate = vertices[active_drag.moved_vertex_index]
+        try:
+            synchronized_vertices = sync_napari_polygon_anchor_vertex(
+                vertices,
+                active_drag.topology,
+                active_drag.moved_vertex_index,
+                moved_coordinate,
+            )
+        except ValueError:
+            return
+
+        if np.array_equal(vertices, synchronized_vertices):
+            return
+
+        self._is_syncing_anchor_drag = True
+        try:
+            layer._data_view.edit(active_drag.row_index, synchronized_vertices)
+            layer.refresh()
+        finally:
+            self._is_syncing_anchor_drag = False
+
+    def _shape_type_at(self, layer: Shapes, row_index: int) -> object:
+        try:
+            return layer.shape_type[row_index]
+        except (IndexError, TypeError):
+            return None
 
 
 class ShapesAnnotation(QWidget):

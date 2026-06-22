@@ -208,6 +208,25 @@ def _polygon_hole_roundtrip_fixture() -> tuple[Polygon, Polygon]:
     return polygon_1, polygon_2
 
 
+def _direct_drag_callback_moving_vertex(
+    *,
+    moved_vertex_index: int,
+    moved_coordinate: np.ndarray,
+) -> Callable[[Shapes, object], object]:
+    def direct_drag_callback(layer: Shapes, event: object) -> object:
+        layer._moving_value = (0, moved_vertex_index)
+        yield "press"
+
+        while getattr(event, "type", None) == "mouse_move":
+            vertices = np.asarray(layer.data[0], dtype=float).copy()
+            vertices[moved_vertex_index] = moved_coordinate
+            layer._data_view.edit(0, vertices)
+            layer.refresh()
+            yield "move"
+
+    return direct_drag_callback
+
+
 def _make_polygon_hole_roundtrip_sdata(*, shapes_name: str = "hole_regions") -> SpatialData:
     polygon_1, polygon_2 = _polygon_hole_roundtrip_fixture()
     geodataframe = gpd.GeoDataFrame(
@@ -347,6 +366,121 @@ def test_annotation_layer_edit_guard_replacing_layer_disconnects_previous_layer(
     assert "_drag_modes" not in vars(first_layer)
     assert "_drag_modes" in vars(second_layer)
     assert second_layer._drag_modes[Mode.DIRECT] is not first_wrapped_direct_callback
+
+
+def test_annotation_layer_edit_guard_direct_drag_syncs_exterior_anchor_group() -> None:
+    polygon, _ = _polygon_hole_roundtrip_fixture()
+    moved_coordinate = np.asarray([1234.0, 2345.0])
+    layer = Shapes([shapely_polygon_to_napari_polygon_vertices(polygon)], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex(
+        moved_vertex_index=0,
+        moved_coordinate=moved_coordinate,
+    )
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+    event = SimpleNamespace(type="mouse_press")
+
+    drag = layer._drag_modes[Mode.DIRECT](layer, event)
+    assert next(drag) == "press"
+    event.type = "mouse_move"
+    assert next(drag) == "move"
+
+    edited_vertices = np.asarray(layer.data[0], dtype=float)
+    np.testing.assert_allclose(edited_vertices[[0, 5, 12]], np.repeat(moved_coordinate[None, :], 3, axis=0))
+
+
+def test_annotation_layer_edit_guard_direct_drag_syncs_exterior_separator_group() -> None:
+    polygon, _ = _polygon_hole_roundtrip_fixture()
+    moved_coordinate = np.asarray([1234.0, 2345.0])
+    layer = Shapes([shapely_polygon_to_napari_polygon_vertices(polygon)], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex(
+        moved_vertex_index=12,
+        moved_coordinate=moved_coordinate,
+    )
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+    event = SimpleNamespace(type="mouse_press")
+
+    drag = layer._drag_modes[Mode.DIRECT](layer, event)
+    assert next(drag) == "press"
+    event.type = "mouse_move"
+    assert next(drag) == "move"
+
+    edited_vertices = np.asarray(layer.data[0], dtype=float)
+    np.testing.assert_allclose(edited_vertices[[0, 5, 12]], np.repeat(moved_coordinate[None, :], 3, axis=0))
+
+
+def test_annotation_layer_edit_guard_direct_drag_syncs_hole_anchor_group() -> None:
+    polygon, _ = _polygon_hole_roundtrip_fixture()
+    moved_coordinate = np.asarray([1234.0, 2345.0])
+    layer = Shapes([shapely_polygon_to_napari_polygon_vertices(polygon)], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex(
+        moved_vertex_index=6,
+        moved_coordinate=moved_coordinate,
+    )
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+    event = SimpleNamespace(type="mouse_press")
+
+    drag = layer._drag_modes[Mode.DIRECT](layer, event)
+    assert next(drag) == "press"
+    event.type = "mouse_move"
+    assert next(drag) == "move"
+
+    edited_vertices = np.asarray(layer.data[0], dtype=float)
+    np.testing.assert_allclose(edited_vertices[[6, 11]], np.repeat(moved_coordinate[None, :], 2, axis=0))
+
+
+def test_annotation_layer_edit_guard_direct_drag_leaves_non_anchor_vertex_local() -> None:
+    polygon, _ = _polygon_hole_roundtrip_fixture()
+    original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
+    moved_coordinate = np.asarray([1234.0, 2345.0])
+    layer = Shapes([original_vertices], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex(
+        moved_vertex_index=8,
+        moved_coordinate=moved_coordinate,
+    )
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+    event = SimpleNamespace(type="mouse_press")
+
+    drag = layer._drag_modes[Mode.DIRECT](layer, event)
+    assert next(drag) == "press"
+    event.type = "mouse_move"
+    assert next(drag) == "move"
+
+    edited_vertices = np.asarray(layer.data[0], dtype=float)
+    np.testing.assert_allclose(edited_vertices[8], moved_coordinate)
+    np.testing.assert_allclose(edited_vertices[[0, 5, 12]], original_vertices[[0, 5, 12]])
+    np.testing.assert_allclose(edited_vertices[[6, 11]], original_vertices[[6, 11]])
+
+
+def test_annotation_layer_edit_guard_direct_drag_does_not_guess_malformed_topology() -> None:
+    polygon, _ = _polygon_hole_roundtrip_fixture()
+    original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)[:-1]
+    moved_coordinate = np.asarray([1234.0, 2345.0])
+    layer = Shapes([original_vertices], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex(
+        moved_vertex_index=0,
+        moved_coordinate=moved_coordinate,
+    )
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+    event = SimpleNamespace(type="mouse_press")
+
+    drag = layer._drag_modes[Mode.DIRECT](layer, event)
+    assert next(drag) == "press"
+    event.type = "mouse_move"
+    assert next(drag) == "move"
+
+    edited_vertices = np.asarray(layer.data[0], dtype=float)
+    np.testing.assert_allclose(edited_vertices[0], moved_coordinate)
+    np.testing.assert_allclose(edited_vertices[5], original_vertices[5])
 
 
 def test_shapes_annotation_widget_shares_app_state(qtbot) -> None:

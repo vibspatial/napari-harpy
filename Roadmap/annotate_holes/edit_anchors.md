@@ -785,7 +785,7 @@ Tests for this slice:
 
 ### Slice 6 - Live Direct-Drag Anchor Synchronization
 
-Status: not implemented.
+Status: implemented.
 
 Goal: make direct dragging of anchor/separator vertices stable during the drag,
 not only after release.
@@ -798,15 +798,16 @@ Suggested scope:
   model.
 - On mouse press, create the original napari direct-mode generator and advance
   it through its first `yield`. This lets napari run its normal press handling,
-  including setting `layer._moving_value = (shape_index, vertex_index)`.
+  including setting `layer._moving_value = (row_index, vertex_index)`.
 - After that first `yield`, read `layer._moving_value` to determine the
-  candidate row and raw vertex index that napari is about to move.
+  candidate napari `layer.data` row and raw vertex index that napari is about
+  to move.
 - This post-press/pre-move point is the safe cache window: napari has already
   identified the shape and vertex under the cursor, but no vertex coordinate
   has moved yet, so the row should still satisfy the hole-encoding grammar.
 - If the candidate is a polygon row with adapter-encoded holes, parse and cache
   the pre-edit topology before any move occurs:
-  - the shape row index
+  - the napari `layer.data` row index
   - the moved raw vertex index
   - the pre-edit `NapariPolygonTopology`
   - the synchronized anchor group containing that vertex, if any
@@ -824,7 +825,7 @@ Suggested scope:
 - During each mouse-move iteration, advance napari's original generator once
   first so napari performs its normal direct edit.
 - After napari's edit, if the moved vertex belongs to a cached anchor group,
-  read the moved coordinate from `layer.data[shape_index][vertex_index]`, call
+  read the moved coordinate from `layer.data[row_index][vertex_index]`, call
   `sync_napari_polygon_anchor_vertex(...)`, write the synchronized row back to
   the layer, and refresh the layer.
 - If the moved vertex is ordinary/non-anchor, do nothing after napari's edit and
@@ -886,7 +887,7 @@ Suggested scope:
 - Investigate the napari direct-mode deletion path for `Shapes` layers in the
   current supported napari version:
   - which keybinding/action deletes a selected vertex
-  - whether the action exposes the affected `(shape_index, vertex_index)` before
+  - whether the action exposes the affected `(row_index, vertex_index)` before
     deletion
   - whether deletion emits only `layer.events.data(...)` after the row has
     already changed
@@ -905,7 +906,7 @@ Suggested scope:
   )
   ```
 
-- Write `updated_vertices` back to `layer.data[shape_index]` and refresh the
+- Write `updated_vertices` back to `layer.data[row_index]` and refresh the
   layer.
 - Support the helper behavior already implemented in Slices 4A/4B:
   - ordinary shell or hole vertex deletion
