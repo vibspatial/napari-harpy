@@ -1176,26 +1176,105 @@ Status: not implemented.
 Goal: provide a backup repair path in case an edit reaches `layer.events.data`
 without having been synchronized live.
 
+This slice is deliberately defensive. Slice 6 remains the primary
+user-experience fix because it synchronizes anchor/separator copies during
+direct drag. Slice 7 only repairs a missed same-length coordinate edit after a
+data event has already happened.
+
 Suggested scope:
 
-- Listen to `layer.events.data` for annotation layers only.
-- Reuse cached pre-edit topology where available.
-- On `CHANGED`, if exactly one member of a known anchor group changed, propagate
-  that coordinate to the rest of the group.
-- If the change is ambiguous, do not guess. Leave the row strict so the save
-  path fails clearly.
+- Listen to `layer.events.data` from `_AnnotationLayerEditGuard`, and only
+  while the guard is attached to an annotation-owned layer.
+- Maintain a small pre-edit cache for valid hole-bearing polygon rows:
+  - row index
+  - pre-edit vertices
+  - pre-edit `NapariPolygonTopology`
+- Populate that cache before the row becomes ambiguous. The important case is
+  before napari mutates one anchor/separator copy, not after the first broken
+  `CHANGED` event.
+- Reuse the topology captured by the live direct-drag path where possible. If a
+  future event path has no cache, do not try to parse a row that may already be
+  malformed.
+- On `ActionType.CHANGED`, inspect only the affected row indices from the
+  event. Ignore unrelated rows.
+- Only repair same-length coordinate edits:
+  - insertions and deletions are handled by the topology insert/delete helpers
+  - row-length changes should not enter this event-time repair path
+- Compare cached vertices with the current row.
+- If exactly one synchronized anchor group has changed, and exactly one
+  coordinate value from that group appears to be the moved value, copy that
+  coordinate to the rest of the group with
+  `sync_napari_polygon_anchor_vertex(...)`.
+- Use `_data_view.edit(...)` for the repair because this is coordinate-only:
+  the row length and napari vertex cache stay stable.
+- Add a reentrancy guard so the repair write does not recursively trigger
+  another repair pass.
+- Clear the cached row state after the event is handled, or when the guard is
+  disconnected or attached to a different layer.
+- If the edit is ambiguous, do not guess. Leave the row unchanged and let the
+  strict save path fail clearly.
+
+Ambiguous / unsupported cases:
+
+- no pre-edit cache exists for the row
+- the cached row and current row have different lengths
+- the current row is no longer a polygon row
+- multiple synchronized anchor groups changed
+- multiple members of one anchor group changed to different coordinates
+- both anchor/separator vertices and ordinary ring vertices changed in a way
+  that makes the moved anchor coordinate unclear
+- the repair would fail Shapely/topology validation
+
+Suggested implementation shape:
+
+- Extend `_AnnotationLayerEditGuard` with an event-time repair cache, for
+  example:
+
+  ```python
+  @dataclass(frozen=True)
+  class _AnchorRepairState:
+      row_index: int
+      vertices: np.ndarray
+      topology: NapariPolygonTopology
+  ```
+
+- Add private guard methods such as:
+
+  ```python
+  def _cache_anchor_repair_state(...)
+  def _repair_anchor_edit_from_data_event(...)
+  def _clear_anchor_repair_state(...)
+  ```
+
+- Connect/disconnect the `layer.events.data` listener in
+  `_AnnotationLayerEditGuard.attach(...)` / `disconnect(...)`.
+- Keep the repair scoped to hole-bearing polygon rows, matching the rest of the
+  guard behavior.
+- Prefer warning/status output only for truly unexpected internal errors.
+  Expected ambiguous edits should normally be ignored so the save path remains
+  the single strict validation point.
 
 Non-goal:
 
 This slice is not the primary user-experience fix. Event-time repair happens
-after mouse release and therefore cannot by itself prevent the visual
-bridge/collapse during dragging.
+after napari has already emitted a data event and therefore cannot by itself
+prevent the visual bridge/collapse during dragging.
+
+This slice should not handle vertex deletion. Deletion is owned by Slice 6B/6C.
+It should also not attempt to globally repair arbitrary napari `Shapes` layers;
+the guard remains scoped to annotation-owned sessions.
 
 Tests for this slice:
 
 - one missed exterior-anchor edit is repaired after a data event
+- one missed exterior separator edit is repaired after a data event
 - one missed hole-anchor edit is repaired after a data event
-- ambiguous edits are not guessed
+- ordinary non-anchor vertex edits are not changed by the repair listener
+- same-length ambiguous edits are not guessed
+- row-length changes are ignored by this repair listener
+- missing pre-edit cache means no repair is attempted
+- the reentrancy guard prevents recursive repair loops
+- disconnecting the guard removes the event listener and clears cached state
 - save remains strict for unrecoverable malformed rows
 
 ### Slice 8 - End-To-End Widget Round Trip And Interactive QA
