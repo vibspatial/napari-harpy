@@ -810,6 +810,15 @@ Suggested scope:
   - the moved raw vertex index
   - the pre-edit `NapariPolygonTopology`
   - the synchronized anchor group containing that vertex, if any
+- Separators are handled through the same cached topology. In
+  `A B C D A E F G H E A`, `shell_anchor_group=(0, 4, 10)` includes the
+  exterior start vertex, the exterior closure vertex, and the exterior
+  separator after the hole. If napari moves separator index `10`, the wrapper
+  should treat it exactly like moving shell-anchor index `0` or `4`: copy the
+  moved coordinate to every index in the shell group.
+- Hole-anchor groups work the same way for the duplicated hole start/end
+  coordinate. In `A B C D A E F G H E A`, `hole_anchor_groups=((5, 9),)` means
+  moving either `5` or `9` copies the moved coordinate to both indices.
 - If topology parsing fails on mouse press, do not guess. Delegate to napari's
   original direct-edit generator unchanged for the rest of the drag.
 - During each mouse-move iteration, advance napari's original generator once
@@ -853,6 +862,8 @@ Tests for this slice:
 
 - simulated direct drag of an exterior anchor copy synchronizes all exterior
   copies
+- simulated direct drag of an exterior separator copy synchronizes all exterior
+  anchor/separator copies
 - simulated direct drag of a hole anchor copy synchronizes both hole copies
 - simulated direct drag of an ordinary hole vertex changes only that vertex
 - repeated direct-mode toggles do not break the wrapper
