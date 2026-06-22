@@ -3,7 +3,7 @@
 Source: detailed roadmap for Slice 1E from
 [`annotation_widget_holes.md`](./annotation_widget_holes.md).
 
-Status: specification in progress.
+Status: implemented for annotation-owned layers.
 
 Goal: moving an anchor/separator vertex in napari direct-edit mode preserves the
 hole path grammar and does not create transient or persisted bridge/collapse
