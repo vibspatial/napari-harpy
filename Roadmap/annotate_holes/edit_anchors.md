@@ -1171,7 +1171,7 @@ Tests for this slice:
 
 ### Slice 7 - Defensive Event-Time Repair
 
-Status: not implemented.
+Status: deferred.
 
 Goal: provide a backup repair path in case an edit reaches `layer.events.data`
 without having been synchronized live.
@@ -1180,6 +1180,11 @@ This slice is deliberately defensive. Slice 6 remains the primary
 user-experience fix because it synchronizes anchor/separator copies during
 direct drag. Slice 7 only repairs a missed same-length coordinate edit after a
 data event has already happened.
+
+Current recommendation: do not implement this unless we reproduce a missed
+anchor/separator synchronization bug while `_AnnotationLayerEditGuard` is
+attached. The known remaining gap is active-layer adoption from the napari UI,
+which is tracked separately in `Roadmap/annotation_fixes/listen_to_active_layer_change.md`.
 
 Suggested scope:
 
@@ -1284,24 +1289,184 @@ Status: not implemented.
 Goal: prove anchor editing works through the annotation widget, save path, and
 reload path.
 
+This slice should prove the complete annotation-owned workflow, not just the
+geometry helpers or edit guard in isolation:
+
+```text
+SpatialData / native Shapes layer
+  -> Shapes Annotation widget opens or adopts the layer
+  -> user edits an anchor/separator vertex
+  -> widget saves into the SpatialData shapes element
+  -> viewer reloads the saved element
+  -> decoded geometry is still a valid Polygon with the expected hole
+```
+
+Scope boundary:
+
+- This slice covers layers that are already owned/adopted by the Shapes
+  Annotation widget.
+- It does not solve the case where a compatible layer is selected only through
+  the napari layer list while the widget has not opened/adopted it. That is
+  tracked separately in
+  `Roadmap/annotation_fixes/listen_to_active_layer_change.md`.
+
 Suggested scope:
 
 - Reuse the canonical polygon-with-hole fixture from Slice 1C/1D.
 - Cover edit-existing SpatialData shapes loaded as `_HarpyShapes`.
 - Cover native/imported napari `Shapes` layers adopted by the widget.
-- Save after anchor edits and assert the stored geometry is a Shapely
-  `Polygon` with the expected interior ring.
-- Reload the saved shapes element and decode the napari row back to Shapely.
-- Manually verify in napari that dragging exterior and hole anchors does not
-  show the bridge/collapse artifact during the drag.
+- Keep the automated coverage intentionally small: add two focused integration
+  tests, not a full matrix of every anchor alias and layer type.
+- Simulate realistic direct-drag edits through the guarded `Mode.DIRECT`
+  callback, not by assigning `layer.data` directly.
+- Save after anchor/separator edits through `widget.save_shapes_button.click()`.
+- Assert the stored geometry is a Shapely `Polygon` with the expected interior
+  ring.
+- Reload the saved shapes element through `ViewerAdapter.ensure_shapes_loaded`.
+- Decode the reloaded napari row with
+  `napari_polygon_vertices_to_shapely_polygon(...)`.
+- Assert saved and reloaded geometries agree.
+
+Test fixture:
+
+- Use `_polygon_hole_roundtrip_fixture()`:
+  - row `0`: polygon with one hole
+  - row `1`: simple polygon
+- Keep row `1` unchanged as a sentinel proving unaffected rows, metadata, and
+  row order are preserved.
+- Reuse the existing helper assertions where possible:
+  - `_assert_polygon_hole_geometries_preserved(...)`
+  - `napari_polygon_vertices_to_shapely_polygon(...)`
+
+Anchor edit scenarios:
+
+- Covered by new integration tests:
+  - edit-existing layer: move an exterior anchor copy, for example vertex `0`
+  - native/adopted layer: move one hole-anchor copy, for example vertex `6`
+- Already covered by existing guard-level tests and therefore not repeated as
+  separate end-to-end tests:
+  - exterior separator alias, for example vertex `12`
+  - every combination of anchor type and layer origin
+  - ordinary non-anchor edits from Slice 1D
+- Manual QA should still include exterior separator dragging because visual
+  behavior matters there.
+
+Edit-existing integration scenario:
+
+- move an exterior anchor copy, for example vertex `0`
+- assert all exterior anchor/separator copies are synchronized in the layer
+- save and assert the stored polygon shell changed as expected
+- assert the hole is still present and valid
+
+Native/adopted integration scenario:
+
+- move one hole-anchor copy, for example vertex `6`
+- assert both hole-anchor copies are synchronized in the layer
+- save and assert the stored interior ring changed as expected
+- assert the shell remains valid
+
+Edit-existing widget tests:
+
+- Build a minimal `SpatialData` object with `_make_polygon_hole_roundtrip_sdata`.
+- Open the shapes element by selecting it in `widget.shapes_combo`.
+- Assert `_annotation_layer` is a `Shapes` layer and the edit guard is attached.
+- Simulate the representative exterior-anchor direct drag via the guarded layer
+  callback.
+- Click `widget.save_shapes_button`.
+- Assert:
+  - `sdata.shapes[shapes_name]` contains two rows
+  - index name and index values are preserved
+  - non-geometry columns such as `label` and `score` are preserved
+  - row `0` is a valid Shapely `Polygon`
+  - row `0` has exactly one interior ring
+  - row `1` still equals the original simple polygon
+  - widget status reports a successful save
+- Reload with a fresh `DummyViewer` and
+  `viewer_adapter.ensure_shapes_loaded(sdata, shapes_name, "global")`.
+- Decode row `0` from the reloaded napari layer and assert it equals the saved
+  geometry.
+
+Native/adopted widget tests:
+
+- Create a napari-native `Shapes` layer from the same canonical fixture:
+  - row `0`: `shapely_polygon_to_napari_polygon_vertices(polygon_with_hole)`
+  - row `1`: `shapely_polygon_to_napari_polygon_vertices(simple_polygon)`
+- Add it to the viewer so `_maybe_adopt_native_shapes_layer(...)` adopts it.
+- Wait until `widget._annotation_layer is native_layer`.
+- Simulate the representative hole-anchor direct-drag scenario through the
+  guarded callback.
+- Save through the widget.
+- Assert:
+  - a new shapes element is present in `sdata.shapes`
+  - generated annotation indices are stable and written back into
+    `native_layer.features["instance_id"]`
+  - saved geometry preserves the edited shell/hole topology
+  - widget session is rebuilt as `mode == "edit_existing"`
+  - `widget.shapes_combo.currentText()` points at the saved native layer name
+- Reload the saved element and decode the napari row back to Shapely.
+
+Suggested helper shape for tests:
+
+- Add a local test helper that performs one guarded direct drag and returns the
+  edited layer vertices, for example:
+
+  ```python
+  def _drag_annotation_vertex(layer: Shapes, *, vertex_index: int, moved_coordinate: np.ndarray) -> np.ndarray:
+      ...
+  ```
+
+- The helper should exercise `layer._drag_modes[Mode.DIRECT]` after the guard is
+  attached, matching the existing guard-level tests.
+- Avoid direct `layer.data = ...` assignment for Slice 8 anchor cases, because
+  the point is to test the widget-owned interactive path.
+
+Manual QA:
+
+- Use the real napari UI with the canonical one-hole polygon.
+- Open the shapes element through the Shapes Annotation widget.
+- Drag an exterior anchor and confirm:
+  - no bridge/collapse artifact appears during the drag
+  - all exterior anchor/separator copies move together
+  - save/reload preserves one hole
+- Drag the final exterior separator copy and confirm the same behavior.
+- Drag a hole anchor and confirm:
+  - the hole ring stays visually closed
+  - both hole-anchor copies move together
+  - save/reload preserves one hole
+- Repeat the same checks for a native/imported napari `Shapes` layer adopted by
+  the widget.
+- Confirm that ordinary non-anchor vertex editing from Slice 1D still behaves
+  normally.
+
+Non-goals:
+
+- Do not add new geometry encoding logic in this slice.
+- Do not test active-layer-only napari UI selection here; that belongs to the
+  active-layer adoption roadmap.
+- Do not cover vertex deletion here; deletion is covered by Slice 6B/6C.
+- Do not require a real on-disk SpatialData zarr store. Unit/integration tests
+  should use the in-memory fixture unless a separate manual QA note needs a
+  real dataset.
 
 Tests for this slice:
 
 - edit-existing layer: exterior anchor edit saves and reloads with holes
-- edit-existing layer: hole anchor edit saves and reloads with holes
-- native adopted layer: exterior anchor edit saves and reloads with holes
 - native adopted layer: hole anchor edit saves and reloads with holes
-- ordinary non-anchor edit regression from Slice 1D still passes
+
+Do not add separate automated Slice 8 tests for exterior separators, every
+anchor alias, or ordinary non-anchor edits. Those are already covered by
+lower-level guard/helper tests and the Slice 1D regression.
+
+Acceptance criteria for this slice:
+
+- Anchor/separator edits performed through the annotation widget save as valid
+  Shapely `Polygon` geometries with interiors.
+- Reloading the saved shapes element into napari preserves the same geometry.
+- Metadata, row order, source index, and non-edited rows are preserved.
+- Both edit-existing `_HarpyShapes` layers and adopted native napari `Shapes`
+  layers are covered.
+- Manual QA confirms no bridge/collapse artifact during exterior and hole-anchor
+  direct drag in annotation-owned sessions.
 
 ## Suggested Tests
 
