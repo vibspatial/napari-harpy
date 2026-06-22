@@ -425,6 +425,9 @@ class _AnnotationLayerEditGuard:
 
         self._is_syncing_anchor_drag = True
         try:
+            # Mirror napari's direct-drag write path. Anchor synchronization
+            # only changes coordinates, so the row length and vertex cache stay
+            # stable.
             layer._data_view.edit(active_drag.row_index, synchronized_vertices)
             layer.refresh()
         finally:
@@ -460,8 +463,14 @@ class _AnnotationLayerEditGuard:
             data_indices=(delete_state.row_index,),
             vertex_indices=((delete_state.deleted_vertex_index,),),
         )
-        with layer.events.set_data.blocker():
-            layer._data_view.edit(delete_state.row_index, updated_vertices)
+        # Successful vertex deletion currently shortens the row, which needs a
+        # cache rebuild. The `else` branch is kept only for a future helper
+        # path that might rewrite vertices without changing row length.
+        if len(updated_vertices) != len(delete_state.vertices):
+            self._replace_shape_row_rebuilding_vertex_cache(layer, delete_state.row_index, updated_vertices)
+        else:
+            with layer.events.set_data.blocker():
+                layer._data_view.edit(delete_state.row_index, updated_vertices)
         layer.events.data(
             value=layer.data,
             action=ActionType.CHANGED,
@@ -470,6 +479,33 @@ class _AnnotationLayerEditGuard:
         )
         layer.refresh()
         return None
+
+    def _replace_shape_row_rebuilding_vertex_cache(
+        self,
+        layer: Shapes,
+        row_index: int,
+        updated_vertices: np.ndarray,
+    ) -> None:
+        current_mode = layer.mode
+        selected_data = set(layer.selected_data)
+        rebuilt_data = list(layer.data)
+        rebuilt_data[row_index] = updated_vertices
+
+        # Work around napari's ShapeList cache after row-shortening edits:
+        # low-level `_data_view.edit(...)` updates the shape data but can leave
+        # the internal displayed-vertices hit-test cache padded with old vertex
+        # indices, so a later hit-test may report an index that no longer
+        # exists in `layer.data[row_index]`.
+        with layer.events.data.blocker(), layer.events.features.blocker():
+            layer.data = rebuilt_data
+
+        layer.mode = current_mode
+        # Defensive guard: this helper only replaces a row today, but avoid
+        # restoring impossible selections if a future caller removes rows.
+        selected_data = {index for index in selected_data if index < len(layer.data)}
+        if row_index < len(layer.data):
+            selected_data.add(row_index)
+        layer.selected_data = selected_data
 
     def _capture_vertex_delete_state(self, layer: Shapes, event: object) -> _VertexDeleteState | None:
         """Return delete state only for hole-bearing polygon rows we own.

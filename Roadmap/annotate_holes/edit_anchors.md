@@ -986,7 +986,7 @@ Tests for this slice:
 
 ### Slice 6C - Vertex-Remove Cache Rebuild After Shortening Rows
 
-Status: not implemented.
+Status: implemented.
 
 Goal: keep napari vertex hit-testing consistent after hole-aware deletion
 shortens a polygon row, so later shell-anchor deletion still reaches the
@@ -1138,9 +1138,17 @@ Suggested implementation shape:
   - assign through `layer.data` under suitable event blockers
   - restore mode and selection
   - refresh the layer
-- `_route_vertex_remove(...)` should call this helper instead of
-  directly calling `_data_view.edit(...)` for successful hole-aware deletion
-  when the vertex count changes.
+- `_route_vertex_remove(...)` should make the writeback decision explicit:
+
+  ```python
+  if len(updated_vertices) != len(delete_state.vertices):
+      _replace_shape_row_rebuilding_vertex_cache(...)
+  else:
+      layer._data_view.edit(...)
+  ```
+
+  The cache rebuild is required only when the helper changes the row length.
+  The low-level edit path remains appropriate for same-length updates.
 
 Tests for this slice:
 

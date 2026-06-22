@@ -607,6 +607,68 @@ def test_annotation_layer_edit_guard_vertex_remove_removes_minimal_hole(monkeypa
     assert not expected_topology.synchronized_anchor_groups
 
 
+def test_annotation_layer_edit_guard_vertex_remove_rebuilds_cache_after_shortening_hole_row() -> None:
+    polygon, simple_polygon = _polygon_hole_roundtrip_fixture()
+    original_hole_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
+    original_simple_vertices = shapely_polygon_to_napari_polygon_vertices(simple_polygon)
+    layer = Shapes(
+        [original_hole_vertices, original_simple_vertices],
+        shape_type=["polygon", "polygon"],
+        features=pd.DataFrame({"instance_id": ["hole_row", "simple_row"]}),
+    )
+    layer.mode = Mode.VERTEX_REMOVE
+    layer.selected_data = {0}
+    layer._drag_modes = dict(layer._drag_modes)
+
+    def original_vertex_remove_callback(*args: object, **kwargs: object) -> None:
+        raise AssertionError("hole-bearing polygon deletion should use the topology helper")
+
+    layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
+    original_features = layer.features.copy()
+    original_shape_types = list(layer.shape_type)
+    events: list[tuple[ActionType, tuple[int, ...], tuple[tuple[int, ...], ...]]] = []
+
+    def record_data_event(event: object) -> None:
+        events.append((event.action, event.data_indices, event.vertex_indices))
+
+    layer.events.data.connect(record_data_event)
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+
+    layer._drag_modes[Mode.VERTEX_REMOVE](layer, SimpleNamespace(position=original_hole_vertices[7]))
+
+    shortened_vertices = np.asarray(layer.data[0], dtype=float)
+    assert len(shortened_vertices) == len(original_hole_vertices) - 1
+    assert layer._data_view._vertices_index.tolist() == [
+        0,
+        len(shortened_vertices),
+        len(shortened_vertices) + len(original_simple_vertices),
+    ]
+    shell_hit = layer.get_value(shortened_vertices[0], world=True)
+    assert shell_hit is not None
+    assert tuple(int(index) for index in shell_hit) == (0, len(shortened_vertices) - 1)
+    pd.testing.assert_frame_equal(layer.features, original_features)
+    assert list(layer.shape_type) == original_shape_types
+    assert layer.mode == Mode.VERTEX_REMOVE
+    assert set(layer.selected_data) == {0}
+
+    layer._drag_modes[Mode.VERTEX_REMOVE](layer, SimpleNamespace(position=shortened_vertices[0]))
+
+    shell_deleted_vertices = np.asarray(layer.data[0], dtype=float)
+    assert len(shell_deleted_vertices) == len(shortened_vertices) - 1
+    assert len(napari_polygon_vertices_to_shapely_polygon(shell_deleted_vertices).interiors) == 1
+    pd.testing.assert_frame_equal(layer.features, original_features)
+    assert list(layer.shape_type) == original_shape_types
+    assert layer.mode == Mode.VERTEX_REMOVE
+    assert set(layer.selected_data) == {0}
+    assert events == [
+        (ActionType.CHANGING, (0,), ((7,),)),
+        (ActionType.CHANGED, (0,), ((7,),)),
+        (ActionType.CHANGING, (0,), ((len(shortened_vertices) - 1,),)),
+        (ActionType.CHANGED, (0,), ((len(shortened_vertices) - 1,),)),
+    ]
+
+
 def test_annotation_layer_edit_guard_vertex_remove_delegates_malformed_topology(monkeypatch) -> None:
     polygon, _ = _polygon_hole_roundtrip_fixture()
     malformed_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)[:-1]
