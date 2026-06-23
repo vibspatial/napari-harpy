@@ -134,7 +134,8 @@ Supported input:
 
 - selected shape rows must have `shape_type == "polygon"`
 - at least two shape rows must be selected
-- exactly one selected polygon row must be the valid shell candidate
+- exactly one selected polygon row must have the largest Shapely area; this
+  unique largest-area row is the shell candidate
 - every other selected polygon row must be usable as a direct hole
 - shell rows may already contain holes; preserve those existing holes and
   append the new direct holes only if the combined topology remains valid
@@ -144,7 +145,9 @@ Supported input:
 
 Rejected input:
 
-- no unique containing shell
+- no unique largest-area selected polygon row
+- unique largest-area selected polygon row cannot contain every other selected
+  row as a direct hole
 - selected line/path/rectangle/ellipse rows
 - candidate holes outside the shell
 - candidate holes crossing or touching the shell boundary
@@ -262,9 +265,10 @@ Responsibilities:
 - Require every selected shape row to be a polygon row.
 - Decode every selected row with
   `napari_polygon_vertices_to_shapely_polygon(...)`.
-- Find all selected rows that can validly act as shell for the remaining
-  selected rows.
-- Require exactly one valid shell candidate.
+- Identify the unique largest-area selected polygon row using Shapely
+  `polygon.area`; this row is the shell candidate.
+- Fail clearly if the largest area is tied.
+- Treat every other selected polygon row as a proposed new hole.
 - Build the output polygon with `create_polygon_with_direct_holes(...)`.
 - Encode the output polygon with
   `shapely_polygon_to_napari_polygon_vertices(...)`.
@@ -273,12 +277,16 @@ Responsibilities:
 
 Shell inference rule:
 
-- A row is a shell candidate only if all other selected rows can become direct
-  holes of that row under the strict helper from Slice 2A.
-- If zero candidates exist, show a clear warning such as "Select one shell
-  polygon and one or more polygons fully inside it."
-- If multiple candidates exist, show a clear ambiguity warning rather than
-  choosing by row order or area.
+- The shell candidate is the unique selected row whose decoded Shapely polygon
+  has the largest area.
+- Selection order is not semantic input. Do not use "first selected", "last
+  selected", napari `Selection.active`, or private current-selection state.
+- If the largest area is tied, fail without mutation and show a clear ambiguity
+  warning.
+- If the unique largest-area row cannot contain every other selected row as a
+  direct hole under the strict helper from Slice 2A, fail without mutation and
+  show a clear warning such as "Select one shell polygon and one or more
+  polygons fully inside it."
 
 Implementation notes:
 
@@ -299,11 +307,13 @@ Unit tests:
 - selected shell that already has holes produces a plan that preserves existing
   holes and appends new direct holes when the combined topology is valid
 - selection order does not matter
+- unique largest-area selected row is used as the shell candidate
+- tied largest-area selected rows fail without mutation
 - no selected rows fails without mutation
 - one selected row fails without mutation
 - non-polygon selected row fails without mutation
-- no containing shell fails without mutation
-- multiple possible shells fail without mutation
+- unique largest-area row that cannot contain the other selected rows fails
+  without mutation
 - selected child with existing holes fails without mutation
 
 Acceptance criteria:
@@ -548,9 +558,6 @@ convert rectangle/ellipse cutters into polygons if that becomes important.
 
 ## Open Questions
 
-- Should multiple candidate shells ever be resolved by largest area?
-  Recommended answer: no for the first implementation. Ambiguity should fail
-  clearly rather than relying on implicit selection order or area heuristics.
 - Should the operation be disabled until at least two rows are selected?
   Recommended answer: not required for the first implementation. Validate on
   click and keep the enabled-state logic simple.
