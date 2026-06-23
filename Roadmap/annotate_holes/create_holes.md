@@ -9,6 +9,14 @@ Goal: let users create polygon holes from ordinary napari polygon rows without
 introducing a complex boolean-geometry UI. The first implementation should be a
 strict "Create holes" action, not a general-purpose subtraction tool.
 
+The action is driven by napari's persistent selected shape rows
+(`layer.selected_data`). It is not driven by selected vertices.
+
+Users may prefer napari's `Select vertices` / direct mode because selected
+polygon rows show their vertices there, making the intended shell and hole
+polygons easier to inspect. That is only a visual/interaction affordance. The
+button still reads selected polygon rows from `layer.selected_data`.
+
 ## Decision
 
 Do not implement full `master_polygon.difference(union(children))` for the
@@ -17,7 +25,7 @@ first hole-creation slice.
 Instead, implement a constrained operation:
 
 1. The user selects one shell polygon row and one or more polygon rows fully
-   inside it.
+   inside it, using napari's native shape-row selection.
 2. The widget infers the unique selected shell: the selected polygon that can
    validly contain all other selected polygons as direct holes.
 3. The child polygons are converted into interior rings of the shell polygon.
@@ -32,6 +40,11 @@ hole-inside-hole topology.
 The widget action can still be QuPath-inspired, but the user-facing label should
 be clearer than full boolean subtraction. Prefer `Create holes` or
 `Create holes from selected` over `Subtract selected`.
+
+Do not support a stateful "click a shell vertex, click hole vertices, then
+create holes" workflow in this slice. In napari Shapes, vertex hits in direct
+mode are transient edit targets, while `layer.selected_data` is the stable
+selection state we can read from the widget.
 
 ## Current-Code Constraints
 
@@ -57,23 +70,67 @@ internal shape/vertex caches consistent.
 1. Open or create an annotation layer through the Shapes Annotation widget.
 2. Draw one intended shell polygon.
 3. Draw one or more intended hole polygons fully inside the shell polygon.
-4. Select the shell polygon and all intended hole polygons in napari.
+4. Select the shell polygon row and all intended hole polygon rows in napari.
+   Users may use napari's shape selection affordances, such as shift-clicking
+   rows/shapes. Direct/vertex mode may make vertices more visible, but the
+   operation still consumes selected polygon rows, not selected vertices.
 5. Click `Create holes`.
 6. The widget replaces the selected rows with one hole-bearing polygon row.
 7. The shell row remains selected.
 8. Saving persists one Shapely `Polygon` with interior rings.
 
-No extra modal dialog, "set shell" state, feature-column editing, or custom
-drawing mode is needed for the first implementation.
+No extra modal dialog, "set shell" state, feature-column editing, custom drawing
+mode, or vertex-picking state machine is needed for the first implementation.
+
+## Selection UX Contract
+
+`Create holes` is a one-off action:
+
+1. The user prepares a napari Shapes selection.
+2. The user clicks `Create holes`.
+3. napari-harpy validates the current selection.
+4. If the selection describes exactly one shell row and one or more valid hole
+   rows, napari-harpy mutates the layer.
+5. Otherwise, napari-harpy leaves the layer unchanged and reports the problem
+   through the status card.
+
+The action should not start, continue, or finish a custom stateful selection
+workflow. In particular, do not implement:
+
+- click a shell vertex, then click hole vertices, then create holes
+- click a shell row, then click hole rows while the widget records state
+- a separate "set shell" interaction
+- a custom vertex-picking mode
+
+The only UI state consumed by the button is the current selected shape-row set:
+
+```python
+selected_rows = set(layer.selected_data)
+```
+
+Napari direct mode can still be useful. In direct mode, selected shape rows show
+their raw vertices, so users can visually verify that the shell and candidate
+holes are the intended rows. But napari does not expose a durable "selected
+vertices" collection for Shapes. Vertex hits in direct mode are transient edit
+targets such as `layer._moving_value = (row_index, vertex_index)`, and should
+not be used by `Create holes`.
+
+Practical implication:
+
+- use napari's native row/shape selection affordances to select the shell row
+  and hole rows
+- direct/vertex mode is allowed as visual feedback if it helps users see which
+  rows are selected
+- `Create holes` infers shell and holes from selected rows only
 
 ## Geometry Contract
 
 Supported input:
 
-- selected rows must have `shape_type == "polygon"`
-- at least two rows must be selected
-- exactly one selected polygon must be the valid shell candidate
-- every other selected polygon must be usable as a direct hole
+- selected shape rows must have `shape_type == "polygon"`
+- at least two shape rows must be selected
+- exactly one selected polygon row must be the valid shell candidate
+- every other selected polygon row must be usable as a direct hole
 - shell rows may already contain holes; existing holes should be preserved
 - child polygons with existing holes are rejected for the first implementation
 
@@ -88,6 +145,8 @@ Rejected input:
 - overlapping holes
 - edge-sharing holes
 - child polygons that already have interiors
+- attempts to drive the operation from clicked/selected vertices rather than
+  selected shape rows
 - any operation that would require `MultiPolygon` annotation support
 
 Important nuance: the operation should not call Shapely `difference(...)` as
@@ -163,6 +222,10 @@ Status: proposed.
 Add a UI-independent helper that inspects a napari Shapes layer selection and
 produces a create-holes plan without mutating the layer.
 
+Selection here means napari shape-row selection, i.e. `layer.selected_data`.
+The helper should not inspect transient vertex-edit state such as
+`layer._moving_value`.
+
 Suggested internal API:
 
 ```python
@@ -181,8 +244,9 @@ def _create_holes_plan_from_selection(layer: Shapes) -> _CreateHolesPlan:
 Responsibilities:
 
 - Read `layer.selected_data`.
-- Require at least two selected rows.
-- Require every selected row to be a polygon row.
+- Treat `layer.selected_data` as the only semantic input from the napari UI.
+- Require at least two selected shape rows.
+- Require every selected shape row to be a polygon row.
 - Decode every selected row with
   `napari_polygon_vertices_to_shapely_polygon(...)`.
 - Find all selected rows that can validly act as shell for the remaining
@@ -212,6 +276,8 @@ Implementation notes:
   `widgets/shapes_annotation/_create_holes.py`.
 - Do not use selected-row ordering as semantic input; napari selection ordering
   should not be treated as a stable public contract.
+- Do not support "first clicked shell vertex" or "clicked hole vertices" as an
+  input mechanism. That would require a separate custom interaction mode.
 
 Unit tests:
 
@@ -317,8 +383,9 @@ Responsibilities:
 - Connect the button to a new click handler.
 - Run the selection planning helper.
 - Apply the plan if planning succeeds.
-- Report warnings through the existing status card.
-- Report success through the existing status card.
+- Report invalid selection or geometry failures through the existing status
+  card, without mutating the layer.
+- Report success through the existing status card after the layer mutation.
 - Refresh save readiness without overwriting the success status.
 
 Suggested handler flow:
@@ -346,7 +413,10 @@ Button enabled state:
   pass.
 - Do not rely on live selection-change events for the first implementation.
   napari's `selected_data` is enough to validate on click.
-- If selection is invalid, keep the layer unchanged and show a warning.
+- If the selected shape rows are invalid for creating holes, keep the layer
+  unchanged and show a warning.
+- Do not try to infer intent from the last clicked vertex or active vertex-edit
+  target.
 
 Success message:
 
@@ -451,6 +521,8 @@ The following should not block the first implementation:
 - `MultiPolygon` annotation sessions
 - converting boolean results into multiple annotation rows
 - selecting an explicit master polygon through a separate UI state
+- selecting a shell through a clicked shell vertex
+- selecting holes through clicked hole vertices
 - brush/eraser-style hole creation
 - fill-hole or remove-hole operations
 - rectangle or ellipse rows as hole cutters
@@ -473,6 +545,11 @@ convert rectangle/ellipse cutters into polygons if that becomes important.
 - Should the operation be disabled until at least two rows are selected?
   Recommended answer: not required for the first implementation. Validate on
   click and keep the enabled-state logic simple.
+- Should direct/vertex mode selection be treated differently from shape-select
+  mode selection?
+  Recommended answer: no. Users may use whichever napari mode gives useful
+  visual feedback, but the operation consumes the selected shape rows in
+  `layer.selected_data`.
 
 ## Definition Of Done
 
