@@ -136,8 +136,11 @@ Supported input:
 - at least two shape rows must be selected
 - exactly one selected polygon row must be the valid shell candidate
 - every other selected polygon row must be usable as a direct hole
-- shell rows may already contain holes; existing holes should be preserved
-- child polygons with existing holes are rejected for the first implementation
+- shell rows may already contain holes; preserve those existing holes and
+  append the new direct holes only if the combined topology remains valid
+- selected child rows with existing holes are rejected; using a
+  polygon-with-hole as a hole cutter would imply an island-in-hole result,
+  which is outside the current topology contract
 
 Rejected input:
 
@@ -162,6 +165,8 @@ Polygon(shell.exterior.coords, holes=[existing_holes, child_exteriors, ...])
 ```
 
 and then run the same direct-hole validation rules used by the save decoder.
+Existing holes on the selected shell are therefore first-class geometry that
+survives the operation; selected child rows only add more direct holes.
 
 ## Slice 2A - Pure Geometry Helper
 
@@ -183,8 +188,9 @@ def create_polygon_with_direct_holes(
 Responsibilities:
 
 - Validate that `shell` is a non-empty valid Shapely `Polygon`.
-- Preserve any existing `shell.interiors`.
-- Reject child polygons that already have interiors.
+- Preserve any existing `shell.interiors` as existing holes.
+- Reject child polygons that already have interiors; selected children must be
+  simple polygons that can become direct holes.
 - Use each child polygon's exterior ring as one new hole.
 - Validate the combined existing and new holes with the same strict topology
   rules used by `napari_polygon_vertices_to_shapely_polygon(...)`.
@@ -205,7 +211,7 @@ Unit tests:
 
 - simple shell plus one child returns a polygon with one interior
 - simple shell plus two children returns a polygon with two interiors
-- shell with an existing hole preserves that hole and adds a new one
+- shell with an existing hole preserves that hole and appends a new direct hole
 - child polygon with an interior is rejected
 - child outside the shell is rejected
 - child crossing or touching the shell is rejected
@@ -290,6 +296,8 @@ Unit tests:
 
 - selected shell plus one child produces a plan
 - selected shell plus two children produces a plan
+- selected shell that already has holes produces a plan that preserves existing
+  holes and appends new direct holes when the combined topology is valid
 - selection order does not matter
 - no selected rows fails without mutation
 - one selected row fails without mutation
@@ -540,12 +548,6 @@ convert rectangle/ellipse cutters into polygons if that becomes important.
 
 ## Open Questions
 
-- Should a shell row with existing holes be allowed as the selected shell?
-  Recommended answer: yes, preserve existing holes and append new direct holes
-  as long as the combined topology is valid.
-- Should a selected child row with existing holes be allowed?
-  Recommended answer: no. A polygon-with-hole used as a hole cutter implies an
-  island-in-hole result, which is outside the current topology contract.
 - Should multiple candidate shells ever be resolved by largest area?
   Recommended answer: no for the first implementation. Ambiguity should fail
   clearly rather than relying on implicit selection order or area heuristics.
