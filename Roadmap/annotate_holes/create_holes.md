@@ -436,8 +436,9 @@ Button enabled state:
 
 - Enable only when an annotation layer is open and save binding/session checks
   pass.
-- Do not rely on live selection-change events for the first implementation.
-  napari's `selected_data` is enough to validate on click.
+- Do not rely on live selection-change events for the first implementation, and
+  do not disable the button based on the current row-selection count.
+  napari's `selected_data` is validated when the user clicks `Create holes`.
 - If the selected shape rows are invalid for creating holes, keep the layer
   unchanged and show a warning.
 - Do not try to infer intent from the last clicked vertex or active vertex-edit
@@ -558,9 +559,6 @@ convert rectangle/ellipse cutters into polygons if that becomes important.
 
 ## Open Questions
 
-- Should the operation be disabled until at least two rows are selected?
-  Recommended answer: not required for the first implementation. Validate on
-  click and keep the enabled-state logic simple.
 - Should direct/vertex mode selection be treated differently from shape-select
   mode selection?
   Recommended answer: no. Users may use whichever napari mode gives useful
