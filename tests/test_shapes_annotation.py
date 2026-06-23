@@ -20,6 +20,7 @@ from napari_harpy.core.shapes_annotation import (
     edit_shapes_element_from_napari_shapes_layer,
     napari_shapes_layer_to_geodataframe,
 )
+from napari_harpy.core.shapes_geometry import shapely_polygon_to_napari_polygon_vertices
 
 
 def _polygon_data(offset: float = 0.0) -> np.ndarray:
@@ -84,6 +85,41 @@ def test_napari_shapes_layer_to_geodataframe_converts_rectangles() -> None:
     assert geodataframe.geometry.iloc[0].equals(Polygon([(1, 0), (1, 3), (5, 3), (5, 0)]))
 
 
+def test_napari_shapes_layer_to_geodataframe_preserves_polygon_hole() -> None:
+    source = Polygon(
+        [(0, 0), (8, 0), (8, 8), (0, 8)],
+        holes=[[(2, 2), (2, 4), (4, 4), (4, 2)]],
+    )
+    layer = Shapes([shapely_polygon_to_napari_polygon_vertices(source)], shape_type="polygon")
+
+    geodataframe = napari_shapes_layer_to_geodataframe(layer)
+    geometry = geodataframe.geometry.iloc[0]
+
+    assert geometry.equals(source)
+    assert len(geometry.interiors) == 1
+    assert geometry.area == source.area
+    assert geometry.bounds == source.bounds
+
+
+def test_napari_shapes_layer_to_geodataframe_preserves_multiple_polygon_holes() -> None:
+    source = Polygon(
+        [(0, 0), (10, 0), (10, 10), (0, 10)],
+        holes=[
+            [(2, 2), (2, 4), (4, 4), (4, 2)],
+            [(6, 6), (6, 8), (8, 8), (8, 6)],
+        ],
+    )
+    layer = Shapes([shapely_polygon_to_napari_polygon_vertices(source)], shape_type="polygon")
+
+    geodataframe = napari_shapes_layer_to_geodataframe(layer)
+    geometry = geodataframe.geometry.iloc[0]
+
+    assert geometry.equals(source)
+    assert len(geometry.interiors) == 2
+    assert geometry.area == source.area
+    assert geometry.bounds == source.bounds
+
+
 def test_napari_shapes_layer_to_geodataframe_polygonizes_ellipses() -> None:
     layer = Shapes(ndim=2)
     layer.add_ellipses(np.asarray([[10.0, 20.0], [5.0, 8.0]]))
@@ -125,6 +161,23 @@ def test_napari_shapes_layer_to_geodataframe_rejects_too_few_polygon_vertices() 
 
     with pytest.raises(ValueError, match="too few vertices"):
         napari_shapes_layer_to_geodataframe(layer)
+
+
+def test_napari_shapes_layer_to_geodataframe_rejects_invalid_hole_path_without_mutating_features() -> None:
+    source = Polygon(
+        [(0, 0), (8, 0), (8, 8), (0, 8)],
+        holes=[[(2, 2), (2, 4), (4, 4), (4, 2)]],
+    )
+    layer = Shapes([shapely_polygon_to_napari_polygon_vertices(source)[:-1]], shape_type="polygon")
+    layer.features["instance_id"] = ["existing"]
+
+    with pytest.raises(
+        ValueError,
+        match=r"Shape row `0` cannot be converted to a valid polygon: .*path with holes must end",
+    ):
+        napari_shapes_layer_to_geodataframe(layer)
+
+    assert layer.features["instance_id"].tolist() == ["existing"]
 
 
 def test_napari_shapes_layer_to_geodataframe_preserves_existing_instance_ids_and_assigns_next_id() -> None:

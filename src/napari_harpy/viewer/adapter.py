@@ -13,7 +13,6 @@ from shapely import make_valid
 from shapely.errors import GEOSException
 from shapely.geometry import GeometryCollection, MultiPolygon, Point, Polygon
 from shapely.geometry.base import BaseGeometry
-from shapely.geometry.polygon import orient
 from spatialdata import transform as transform_spatial_element
 from spatialdata.models import get_axes_names
 from spatialdata.transformations import get_transformation
@@ -23,6 +22,7 @@ from napari_harpy.core._color_source import (
     ShapeColumnColorSourceSpec,
     TableColorSourceSpec,
 )
+from napari_harpy.core.shapes_geometry import shapely_polygon_to_napari_polygon_vertices
 from napari_harpy.viewer.image_styling import DEFAULT_OVERLAY_COLORS, ImageDisplayMode, ImageLoadResult
 from napari_harpy.viewer.labels_styling import (
     LabelsLoadResult,
@@ -2097,7 +2097,7 @@ def _prepare_napari_shapes_layer_inputs(shapes_element: Any) -> _NapariShapesLay
             continue
 
         for polygon in _iter_renderable_polygons(geometry):
-            data.append(_polygon_to_napari_path(polygon))
+            data.append(_shapely_polygon_to_napari_polygon_vertices(polygon))
             shape_types.append("polygon")
             feature_rows.append(feature_row)
             source_row_id_by_rendered_row.append(source_row_id)
@@ -2244,25 +2244,15 @@ def _is_renderable_polygon(polygon: Polygon) -> bool:
     return not polygon.is_empty and polygon.is_valid and len(polygon.exterior.coords) >= 4
 
 
-def _polygon_to_napari_path(polygon: Polygon) -> np.ndarray:
-    """Encode a Shapely polygon as one napari path, preserving holes.
+def _shapely_polygon_to_napari_polygon_vertices(polygon: Polygon) -> np.ndarray:
+    """Encode a Shapely polygon as one napari polygon vertex row.
 
     Napari can render polygon holes when the interior rings are embedded in the
-    same vertex path as the exterior ring and wind in the opposite direction.
-    The repeated exterior anchor creates bridge edges that napari's
+    same vertex row as the exterior ring and wind in the opposite direction. The
+    repeated shell anchor creates bridge edges that napari's
     triangulation removes because they are traversed twice.
     """
-    oriented = orient(polygon, sign=1.0)
-    path = [_xy_coordinate(coord) for coord in oriented.exterior.coords]
-    anchor = path[0]
-    for interior in oriented.interiors:
-        path.extend(_xy_coordinate(coord) for coord in interior.coords)
-        path.append(anchor)
-    return np.asarray([(y, x) for x, y in path], dtype=float)
-
-
-def _xy_coordinate(coordinate: Sequence[float]) -> tuple[float, float]:
-    return float(coordinate[0]), float(coordinate[1])
+    return shapely_polygon_to_napari_polygon_vertices(polygon)
 
 
 def _build_labels_layer(

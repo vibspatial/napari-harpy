@@ -10,11 +10,14 @@ save target.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 from napari.layers import Shapes
+from napari.layers.base._base_constants import ActionType
+from napari.layers.shapes._shapes_constants import Mode
 from qtpy.QtCore import QSignalBlocker, Qt, QTimer
 from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import (
@@ -46,6 +49,12 @@ from napari_harpy.core.shapes_annotation import (
     create_shapes_element_from_napari_shapes_layer,
     edit_shapes_element_from_napari_shapes_layer,
     validate_existing_shapes_source_geodataframe,
+)
+from napari_harpy.core.shapes_geometry import (
+    NapariPolygonTopology,
+    delete_napari_polygon_vertex,
+    napari_polygon_vertices_to_topology,
+    sync_napari_polygon_anchor_vertex,
 )
 from napari_harpy.core.spatialdata import (
     get_annotating_table_names,
@@ -214,6 +223,356 @@ class _ShapesAnnotationSession:
         return self.source_geodataframe.index.name
 
 
+@dataclass(frozen=True)
+class _AnchorDragState:
+    row_index: int
+    moved_vertex_index: int
+    topology: NapariPolygonTopology
+
+
+@dataclass(frozen=True)
+class _VertexDeleteState:
+    row_index: int
+    deleted_vertex_index: int
+    vertices: np.ndarray
+    topology: NapariPolygonTopology
+
+
+class _AnnotationLayerEditGuard:
+    """Install and restore annotation-specific Shapes direct-edit hooks."""
+
+    def __init__(self, *, warning_callback: Callable[[str], None] | None = None) -> None:
+        self._layer: Shapes | None = None
+        self._original_drag_modes: dict[object, Callable[..., Any]] | None = None
+        self._had_instance_drag_modes = False
+        self._wrapped_direct_callback: Callable[..., Any] | None = None
+        self._wrapped_vertex_remove_callback: Callable[..., Any] | None = None
+        self._is_syncing_anchor_drag = False
+        self._warning_callback = warning_callback
+
+    @property
+    def layer(self) -> Shapes | None:
+        return self._layer
+
+    def attach(self, layer: Shapes) -> None:
+        if self._layer is layer:
+            return
+
+        self.disconnect()
+        drag_modes = getattr(layer, "_drag_modes", None)
+        if not isinstance(drag_modes, dict) or Mode.DIRECT not in drag_modes or Mode.VERTEX_REMOVE not in drag_modes:
+            raise ValueError("Shapes layer does not expose napari annotation edit mode hooks.")
+
+        original_direct_callback = drag_modes[Mode.DIRECT]
+        original_vertex_remove_callback = drag_modes[Mode.VERTEX_REMOVE]
+
+        def wrapped_direct_callback(*args: Any, **kwargs: Any) -> Any:
+            direct_drag = original_direct_callback(*args, **kwargs)
+            if not hasattr(direct_drag, "__next__"):
+                return direct_drag
+            event = args[1] if len(args) > 1 else kwargs.get("event")
+            return self._iter_direct_drag_with_anchor_sync(layer, direct_drag, event)
+
+        def wrapped_vertex_remove_callback(*args: Any, **kwargs: Any) -> Any:
+            event = args[1] if len(args) > 1 else kwargs.get("event")
+            return self._route_vertex_remove(
+                layer,
+                original_vertex_remove_callback,
+                args,
+                kwargs,
+                event,
+            )
+
+        patched_drag_modes = dict(drag_modes)
+        patched_drag_modes[Mode.DIRECT] = wrapped_direct_callback
+        patched_drag_modes[Mode.VERTEX_REMOVE] = wrapped_vertex_remove_callback
+
+        self._layer = layer
+        self._original_drag_modes = drag_modes
+        # `layer._drag_modes` may be inherited from napari rather than stored
+        # on this layer instance. Remember that distinction so disconnect can
+        # either restore the original instance mapping or delete our temporary
+        # instance override and fall back to napari's default mapping.
+        self._had_instance_drag_modes = "_drag_modes" in vars(layer)
+        self._wrapped_direct_callback = wrapped_direct_callback
+        self._wrapped_vertex_remove_callback = wrapped_vertex_remove_callback
+        layer._drag_modes = patched_drag_modes
+
+    def disconnect(self) -> None:
+        layer = self._layer
+        original_drag_modes = self._original_drag_modes
+        had_instance_drag_modes = self._had_instance_drag_modes
+
+        self._layer = None
+        self._original_drag_modes = None
+        self._had_instance_drag_modes = False
+        self._wrapped_direct_callback = None
+        self._wrapped_vertex_remove_callback = None
+        self._is_syncing_anchor_drag = False
+
+        if layer is None:
+            return
+        if had_instance_drag_modes:
+            if original_drag_modes is None:
+                return
+            layer._drag_modes = original_drag_modes
+            return
+        # Case where the layer did not originally own `_drag_modes`: attach
+        # created an instance override only for this guard. Remove it so napari
+        # resolves the normal inherited/default mapping again.
+        if "_drag_modes" in vars(layer):
+            delattr(layer, "_drag_modes")
+
+    def _iter_direct_drag_with_anchor_sync(
+        self,
+        layer: Shapes,
+        direct_drag: Iterator[Any],
+        event: object,
+    ) -> Iterator[Any]:
+        """Mirror napari's direct-drag generator while repairing anchor copies.
+
+        The first ``next(direct_drag)`` runs napari's mouse-press setup and
+        pauses at its first ``yield``. At that point napari has populated
+        ``layer._moving_value`` but has not moved any vertex yet, so after a
+        mouse-press step we can safely cache the pre-move hole topology. Later
+        ``next(...)`` calls let napari process mouse moves first; after each
+        mouse move we synchronize any duplicated anchor/separator vertices from
+        the cached topology.
+        """
+        active_drag: _AnchorDragState | None = None
+        try:
+            try:
+                yielded = next(direct_drag)
+            except StopIteration:
+                return
+
+            # Defensive guard: the normal napari path reaches this point from
+            # mouse press, but unexpected event phases should fall back to
+            # napari's original behavior instead of caching topology.
+            if getattr(event, "type", None) == "mouse_press":
+                active_drag = self._capture_anchor_drag_state(layer)
+            yield yielded
+
+            while True:
+                try:
+                    yielded = next(direct_drag)
+                except StopIteration:
+                    return
+
+                if getattr(event, "type", None) == "mouse_move":
+                    self._sync_anchor_drag(layer, active_drag)
+                yield yielded
+        finally:
+            close = getattr(direct_drag, "close", None)
+            if callable(close):
+                close()
+
+    def _capture_anchor_drag_state(self, layer: Shapes) -> _AnchorDragState | None:
+        moving_value = getattr(layer, "_moving_value", None)
+        if not isinstance(moving_value, tuple) or len(moving_value) != 2:
+            return None
+
+        # `moving_value` is `(row_index, vertex_index)`: the rendered napari row
+        # and moving vertex indices.
+        row_index, moved_vertex_index = moving_value
+        if not isinstance(row_index, (int, np.integer)) or not isinstance(moved_vertex_index, (int, np.integer)):
+            return None
+
+        row_index = int(row_index)
+        moved_vertex_index = int(moved_vertex_index)
+        if row_index < 0 or moved_vertex_index < 0 or row_index >= len(layer.data):
+            return None
+        if self._shape_type_at(layer, row_index) != "polygon":
+            return None
+
+        try:
+            topology = napari_polygon_vertices_to_topology(layer.data[row_index])
+        except ValueError:
+            return None
+
+        for group in topology.synchronized_anchor_groups:
+            if moved_vertex_index in group:
+                return _AnchorDragState(
+                    row_index=row_index,
+                    moved_vertex_index=moved_vertex_index,
+                    topology=topology,
+                )
+        return None
+
+    def _sync_anchor_drag(self, layer: Shapes, active_drag: _AnchorDragState | None) -> None:
+        if active_drag is None or self._is_syncing_anchor_drag:
+            return
+        if active_drag.row_index >= len(layer.data):
+            return
+
+        vertices = np.asarray(layer.data[active_drag.row_index], dtype=float)
+        if active_drag.moved_vertex_index >= len(vertices):
+            return
+
+        moved_coordinate = vertices[active_drag.moved_vertex_index]
+        try:
+            synchronized_vertices = sync_napari_polygon_anchor_vertex(
+                vertices,
+                active_drag.topology,
+                active_drag.moved_vertex_index,
+                moved_coordinate,
+            )
+        except ValueError:
+            return
+
+        if np.array_equal(vertices, synchronized_vertices):
+            return
+
+        self._is_syncing_anchor_drag = True
+        try:
+            # Mirror napari's direct-drag write path. Anchor synchronization
+            # only changes coordinates, so the row length and vertex cache stay
+            # stable.
+            layer._data_view.edit(active_drag.row_index, synchronized_vertices)
+            layer.refresh()
+        finally:
+            self._is_syncing_anchor_drag = False
+
+    def _route_vertex_remove(
+        self,
+        layer: Shapes,
+        original_vertex_remove_callback: Callable[..., Any],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        event: object,
+    ) -> Any:
+        delete_state = self._capture_vertex_delete_state(layer, event)
+        if delete_state is None:
+            return original_vertex_remove_callback(*args, **kwargs)
+
+        try:
+            updated_vertices, _updated_topology = delete_napari_polygon_vertex(
+                delete_state.vertices,
+                delete_state.topology,
+                delete_state.deleted_vertex_index,
+            )
+        except ValueError as error:
+            self._warn(str(error))
+            return None
+
+        # Mirror napari's native `vertex_remove(...)` event contract around
+        # our topology-preserving edit path.
+        layer.events.data(
+            value=layer.data,
+            action=ActionType.CHANGING,
+            data_indices=(delete_state.row_index,),
+            vertex_indices=((delete_state.deleted_vertex_index,),),
+        )
+        # Successful vertex deletion currently shortens the row, which needs a
+        # cache rebuild. The `else` branch is kept only for a future helper
+        # path that might rewrite vertices without changing row length.
+        if len(updated_vertices) != len(delete_state.vertices):
+            self._replace_shape_row_rebuilding_vertex_cache(layer, delete_state.row_index, updated_vertices)
+        else:
+            with layer.events.set_data.blocker():
+                layer._data_view.edit(delete_state.row_index, updated_vertices)
+        layer.events.data(
+            value=layer.data,
+            action=ActionType.CHANGED,
+            data_indices=(delete_state.row_index,),
+            vertex_indices=((delete_state.deleted_vertex_index,),),
+        )
+        layer.refresh()
+        return None
+
+    def _replace_shape_row_rebuilding_vertex_cache(
+        self,
+        layer: Shapes,
+        row_index: int,
+        updated_vertices: np.ndarray,
+    ) -> None:
+        current_mode = layer.mode
+        selected_data = set(layer.selected_data)
+        rebuilt_data = list(layer.data)
+        rebuilt_data[row_index] = updated_vertices
+
+        # Work around napari's ShapeList cache after row-shortening edits:
+        # low-level `_data_view.edit(...)` updates the shape data but can leave
+        # the internal displayed-vertices hit-test cache padded with old vertex
+        # indices, so a later hit-test may report an index that no longer
+        # exists in `layer.data[row_index]`.
+        with layer.events.data.blocker(), layer.events.features.blocker():
+            layer.data = rebuilt_data
+
+        layer.mode = current_mode
+        # Defensive guard: this helper only replaces a row today, but avoid
+        # restoring impossible selections if a future caller removes rows.
+        selected_data = {index for index in selected_data if index < len(layer.data)}
+        if row_index < len(layer.data):
+            selected_data.add(row_index)
+        layer.selected_data = selected_data
+
+    def _capture_vertex_delete_state(self, layer: Shapes, event: object) -> _VertexDeleteState | None:
+        """Return delete state only for hole-bearing polygon rows we own.
+
+        Every ``Mode.VERTEX_REMOVE`` click enters the edit guard, but most
+        clicks should still use napari's original deletion behavior. This method
+        is the routing gate: it returns ``None`` for no-vertex clicks,
+        non-polygon rows, malformed rows, simple polygons without encoded holes,
+        and out-of-range hit-test results. For valid polygon rows with encoded
+        holes, we intentionally return a state object so deletion is delegated
+        to Harpy's topology-preserving path instead of napari's raw vertex
+        deletion.
+        """
+        try:
+            value = layer.get_value(getattr(event, "position", None), world=True)
+        except (AttributeError, TypeError, ValueError, IndexError):
+            return None
+        if not isinstance(value, tuple) or len(value) != 2:
+            return None
+
+        row_index, deleted_vertex_index = value
+        if deleted_vertex_index is None:
+            return None
+        if not isinstance(row_index, (int, np.integer)) or not isinstance(deleted_vertex_index, (int, np.integer)):
+            return None
+
+        row_index = int(row_index)
+        deleted_vertex_index = int(deleted_vertex_index)
+        if row_index < 0 or deleted_vertex_index < 0 or row_index >= len(layer.data):
+            return None
+        if self._shape_type_at(layer, row_index) != "polygon":
+            return None
+
+        try:
+            vertices = np.asarray(layer.data[row_index], dtype=float).copy()
+        except (TypeError, ValueError):
+            return None
+        if deleted_vertex_index >= len(vertices):
+            return None
+
+        try:
+            topology = napari_polygon_vertices_to_topology(vertices)
+        except ValueError:
+            return None
+        # Important routing guard: only hole-bearing polygon rows use Harpy's
+        # custom deletion path. Simple polygons and other shapes stay napari-owned.
+        if not topology.hole_anchor_groups:
+            return None
+
+        return _VertexDeleteState(
+            row_index=row_index,
+            deleted_vertex_index=deleted_vertex_index,
+            vertices=vertices,
+            topology=topology,
+        )
+
+    def _warn(self, message: str) -> None:
+        if self._warning_callback is not None:
+            self._warning_callback(message)
+
+    def _shape_type_at(self, layer: Shapes, row_index: int) -> object:
+        try:
+            return layer.shape_type[row_index]
+        except (IndexError, TypeError):
+            return None
+
+
 class ShapesAnnotation(QWidget):
     """Widget shell for annotating SpatialData shapes elements."""
 
@@ -232,6 +591,7 @@ class ShapesAnnotation(QWidget):
         self._validated_shapes_name: str | None = None
         self._annotation_session: _ShapesAnnotationSession | None = None
         self._annotation_layer: Shapes | None = None
+        self._annotation_edit_guard = _AnnotationLayerEditGuard(warning_callback=self._set_annotation_edit_warning)
         self._annotation_has_been_saved = False
         self._annotation_clean_snapshot: _ShapesAnnotationLayerSnapshot | None = None
         # Suppress `_on_viewer_layer_removed(...)` while this widget removes
@@ -593,6 +953,7 @@ class ShapesAnnotation(QWidget):
             self._is_opening_annotation_layer = False
 
         self._annotation_layer = layer
+        self._annotation_edit_guard.attach(layer)
         self._annotation_session = _ShapesAnnotationSession(
             mode="create_new",
             layer_origin="created_by_annotation",
@@ -647,6 +1008,7 @@ class ShapesAnnotation(QWidget):
             return
 
         self._annotation_layer = layer
+        self._annotation_edit_guard.attach(layer)
         self._annotation_session = _ShapesAnnotationSession(
             mode="create_new",
             layer_origin="created_by_annotation",
@@ -708,6 +1070,7 @@ class ShapesAnnotation(QWidget):
 
         table_linked = bool(get_annotating_table_names(sdata, shapes_name))
         self._annotation_layer = layer
+        self._annotation_edit_guard.attach(layer)
         self._annotation_session = _ShapesAnnotationSession(
             mode="edit_existing",
             layer_origin="loaded_by_annotation" if load_result.created else "adopted_primary",
@@ -839,7 +1202,9 @@ class ShapesAnnotation(QWidget):
             f'in coordinate system "{visible_coordinate_system}".'
         ]
         if self._annotation_session is not None and self._annotation_session.table_linked:
-            lines.append("Linked tables are not updated by Annotation and may go out of sync if rows are added or removed.")
+            lines.append(
+                "Linked tables are not updated by Annotation and may go out of sync if rows are added or removed."
+            )
         self._set_status(
             title="Shapes Saved",
             lines=lines,
@@ -1199,7 +1564,9 @@ class ShapesAnnotation(QWidget):
                     f'Edit shapes layer "{visible_shapes_name}" in coordinate system "{visible_coordinate_system}".'
                 ]
                 if session.table_linked:
-                    lines.append("Linked tables are not updated by Annotation and may go out of sync if rows are added or removed.")
+                    lines.append(
+                        "Linked tables are not updated by Annotation and may go out of sync if rows are added or removed."
+                    )
                 self._set_status(
                     title="Existing Shapes Opened",
                     lines=lines,
@@ -1250,6 +1617,9 @@ class ShapesAnnotation(QWidget):
     ) -> None:
         tooltip_message = "\n".join(tooltip_lines) if tooltip_lines else None
         set_status_card(self.status_label, title=title, lines=lines, kind=kind, tooltip_message=tooltip_message)
+
+    def _set_annotation_edit_warning(self, message: str) -> None:
+        self._set_status(title="Could Not Delete Vertex", lines=[message], kind="warning")
 
     def _confirm_discard_annotation_layer(self, *, context: Literal["coordinate_system", "target"]) -> bool:
         if context == "coordinate_system":
@@ -1354,6 +1724,7 @@ class ShapesAnnotation(QWidget):
         return not _annotation_layer_snapshots_equal(current_snapshot, clean_snapshot)
 
     def _clear_annotation_state(self) -> None:
+        self._annotation_edit_guard.disconnect()
         self._annotation_session = None
         self._annotation_layer = None
         self._annotation_has_been_saved = False

@@ -5,18 +5,30 @@ from html import unescape
 from types import SimpleNamespace
 
 import anndata as ad
+import geopandas as gpd
 import numpy as np
 import pandas as pd
 from matplotlib.colors import to_rgba
 from napari.layers import Shapes
+from napari.layers.base._base_constants import ActionType
+from napari.layers.shapes._shapes_constants import Mode
+from napari_builtins.io import csv_to_layer_data, napari_write_shapes
 from qtpy.QtWidgets import QComboBox, QLabel
+from shapely.geometry import Polygon
 from spatialdata import SpatialData, read_zarr
-from spatialdata.models import TableModel
+from spatialdata.models import ShapesModel, TableModel
+from spatialdata.transformations import Identity
 
 import napari_harpy._app_state as app_state_module
 import napari_harpy.widgets.shapes_annotation.widget as shapes_annotation_widget_module
 from napari_harpy._app_state import ShapesElementWrittenEvent, get_or_create_app_state
 from napari_harpy.core.shapes_annotation import AnnotateShapesElementResult
+from napari_harpy.core.shapes_geometry import (
+    delete_napari_polygon_vertex,
+    napari_polygon_vertices_to_shapely_polygon,
+    napari_polygon_vertices_to_topology,
+    shapely_polygon_to_napari_polygon_vertices,
+)
 from napari_harpy.viewer.adapter import ShapesLayerBinding
 from napari_harpy.viewer.shapes_styling import (
     _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR,
@@ -145,6 +157,140 @@ def _native_polygon_layer(name: str, *, affine: np.ndarray | None = None) -> Sha
     )
 
 
+def _yx_to_xy(coordinates_yx: np.ndarray) -> list[tuple[float, float]]:
+    return [(float(x), float(y)) for y, x in np.asarray(coordinates_yx, dtype=float)]
+
+
+def _polygon_hole_roundtrip_fixture() -> tuple[Polygon, Polygon]:
+    center_y = 1000.0
+    center_x = 2000.0
+
+    polygon_1_shell_yx = np.array(
+        [
+            [center_y - 350, center_x - 280],
+            [center_y - 420, center_x + 120],
+            [center_y - 120, center_x + 320],
+            [center_y + 180, center_x + 140],
+            [center_y + 120, center_x - 240],
+        ],
+        dtype=float,
+    )
+    polygon_1_hole_yx = np.array(
+        [
+            [center_y - 150, center_x - 40],
+            [center_y - 170, center_x + 70],
+            [center_y - 80, center_x + 130],
+            [center_y - 10, center_x + 40],
+            [center_y - 50, center_x - 70],
+        ],
+        dtype=float,
+    )
+    polygon_2_yx = np.array(
+        [
+            [center_y + 260, center_x - 40],
+            [center_y + 180, center_x + 260],
+            [center_y + 420, center_x + 340],
+            [center_y + 520, center_x + 40],
+            [center_y + 360, center_x - 180],
+        ],
+        dtype=float,
+    )
+
+    polygon_1 = Polygon(
+        _yx_to_xy(polygon_1_shell_yx),
+        holes=[_yx_to_xy(polygon_1_hole_yx)],
+    )
+    polygon_2 = Polygon(_yx_to_xy(polygon_2_yx))
+    assert polygon_1.is_valid
+    assert polygon_2.is_valid
+    assert len(polygon_1.interiors) == 1
+    # When polygon_1 is encoded for napari, the flat path is:
+    # shell[0:5] + shell[0] + hole[0:5] + hole[0] + shell[0].
+    # The shell anchor/separator copies are shell[0]; the hole anchor
+    # copies are hole[0].
+    return polygon_1, polygon_2
+
+
+def _direct_drag_callback_moving_vertex(
+    *,
+    moved_vertex_index: int,
+    moved_coordinate: np.ndarray,
+) -> Callable[[Shapes, object], object]:
+    def direct_drag_callback(layer: Shapes, event: object) -> object:
+        layer._moving_value = (0, moved_vertex_index)
+        yield "press"
+
+        while getattr(event, "type", None) == "mouse_move":
+            vertices = np.asarray(layer.data[0], dtype=float).copy()
+            vertices[moved_vertex_index] = moved_coordinate
+            layer._data_view.edit(0, vertices)
+            layer.refresh()
+            yield "move"
+
+    return direct_drag_callback
+
+
+def _install_direct_drag_callback_for_annotation_guard(
+    widget: ShapesAnnotation,
+    layer: Shapes,
+    *,
+    moved_vertex_index: int,
+    moved_coordinate: np.ndarray,
+) -> None:
+    widget._annotation_edit_guard.disconnect()
+    layer._drag_modes = dict(layer._drag_modes)
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex(
+        moved_vertex_index=moved_vertex_index,
+        moved_coordinate=moved_coordinate,
+    )
+    widget._annotation_edit_guard.attach(layer)
+    assert layer._drag_modes[Mode.DIRECT] is widget._annotation_edit_guard._wrapped_direct_callback
+
+
+def _drag_annotation_vertex(
+    layer: Shapes,
+    *,
+    vertex_index: int,
+    moved_coordinate: np.ndarray,
+) -> np.ndarray:
+    event = SimpleNamespace(type="mouse_press")
+    drag = layer._drag_modes[Mode.DIRECT](layer, event)
+    assert next(drag) == "press"
+    event.type = "mouse_move"
+    assert next(drag) == "move"
+    event.type = "mouse_release"
+    try:
+        next(drag)
+    except StopIteration:
+        pass
+    edited_vertices = np.asarray(layer.data[0], dtype=float)
+    np.testing.assert_allclose(edited_vertices[vertex_index], moved_coordinate)
+    return edited_vertices
+
+
+def _make_polygon_hole_roundtrip_sdata(*, shapes_name: str = "hole_regions") -> SpatialData:
+    polygon_1, polygon_2 = _polygon_hole_roundtrip_fixture()
+    geodataframe = gpd.GeoDataFrame(
+        {"label": ["polygon_with_hole", "simple_polygon"], "score": [1.25, 2.5]},
+        geometry=[polygon_1, polygon_2],
+        index=pd.Index(["hole_row", "simple_row"], name="region_id"),
+    )
+    shapes = ShapesModel.parse(geodataframe, transformations={"global": Identity()})
+    return SpatialData(shapes={shapes_name: shapes})
+
+
+def _assert_polygon_hole_geometries_preserved(saved: gpd.GeoDataFrame, polygon_1: Polygon, polygon_2: Polygon) -> None:
+    saved_polygon_1 = saved.geometry.iloc[0]
+    saved_polygon_2 = saved.geometry.iloc[1]
+
+    assert saved_polygon_1.equals(polygon_1)
+    assert len(saved_polygon_1.interiors) == 1
+    assert saved_polygon_1.area == polygon_1.area
+    assert saved_polygon_1.bounds == polygon_1.bounds
+    assert saved_polygon_2.equals(polygon_2)
+    assert len(saved_polygon_2.interiors) == 0
+
+
 def _add_dummy_table_annotating_shapes(sdata: SpatialData, *, shapes_name: str, table_name: str) -> ad.AnnData:
     shapes = sdata.shapes[shapes_name]
     index_values = shapes.index.to_list()
@@ -194,6 +340,422 @@ def test_shapes_annotation_widget_can_be_instantiated(qtbot) -> None:
 
 def test_shapes_annotation_widget_lazy_export() -> None:
     assert LazyShapesAnnotation is ShapesAnnotation
+
+
+def test_annotation_layer_edit_guard_delegates_direct_mode_and_restores_instance_mapping() -> None:
+    layer = Shapes([], ndim=2)
+    layer._drag_modes = dict(layer._drag_modes)
+    original_drag_modes = layer._drag_modes
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def original_direct_callback(*args: object, **kwargs: object) -> str:
+        calls.append((args, kwargs))
+        return "delegated"
+
+    original_drag_modes[Mode.DIRECT] = original_direct_callback
+    original_vertex_remove_callback = original_drag_modes[Mode.VERTEX_REMOVE]
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+
+    guard.attach(layer)
+    wrapped_direct_callback = layer._drag_modes[Mode.DIRECT]
+    wrapped_vertex_remove_callback = layer._drag_modes[Mode.VERTEX_REMOVE]
+
+    assert guard.layer is layer
+    assert layer._drag_modes is not original_drag_modes
+    assert wrapped_direct_callback is not original_direct_callback
+    assert wrapped_vertex_remove_callback is not original_vertex_remove_callback
+    assert wrapped_direct_callback("event", value=3) == "delegated"
+    assert calls == [(("event",), {"value": 3})]
+
+    guard.disconnect()
+
+    assert guard.layer is None
+    assert layer._drag_modes is original_drag_modes
+    assert layer._drag_modes[Mode.DIRECT] is original_direct_callback
+    assert layer._drag_modes[Mode.VERTEX_REMOVE] is original_vertex_remove_callback
+
+
+def test_annotation_layer_edit_guard_attach_is_idempotent_and_restores_class_mapping() -> None:
+    layer = Shapes([], ndim=2)
+    original_direct_callback = layer._drag_modes[Mode.DIRECT]
+    original_vertex_remove_callback = layer._drag_modes[Mode.VERTEX_REMOVE]
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+
+    guard.attach(layer)
+    first_wrapped_direct_callback = layer._drag_modes[Mode.DIRECT]
+    first_wrapped_vertex_remove_callback = layer._drag_modes[Mode.VERTEX_REMOVE]
+    guard.attach(layer)
+
+    assert layer._drag_modes[Mode.DIRECT] is first_wrapped_direct_callback
+    assert layer._drag_modes[Mode.VERTEX_REMOVE] is first_wrapped_vertex_remove_callback
+    assert "_drag_modes" in vars(layer)
+
+    guard.disconnect()
+
+    assert guard.layer is None
+    assert "_drag_modes" not in vars(layer)
+    assert layer._drag_modes[Mode.DIRECT] is original_direct_callback
+    assert layer._drag_modes[Mode.VERTEX_REMOVE] is original_vertex_remove_callback
+
+
+def test_annotation_layer_edit_guard_replacing_layer_disconnects_previous_layer() -> None:
+    first_layer = Shapes([], ndim=2)
+    second_layer = Shapes([], ndim=2)
+    first_direct_callback = first_layer._drag_modes[Mode.DIRECT]
+    first_vertex_remove_callback = first_layer._drag_modes[Mode.VERTEX_REMOVE]
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+
+    guard.attach(first_layer)
+    first_wrapped_direct_callback = first_layer._drag_modes[Mode.DIRECT]
+    first_wrapped_vertex_remove_callback = first_layer._drag_modes[Mode.VERTEX_REMOVE]
+    # `attach(...)` first calls `disconnect(...)`, so moving the guard to a new
+    # layer must restore the previous layer before patching the new one.
+    guard.attach(second_layer)
+
+    assert guard.layer is second_layer
+    assert first_layer._drag_modes[Mode.DIRECT] is first_direct_callback
+    assert first_layer._drag_modes[Mode.VERTEX_REMOVE] is first_vertex_remove_callback
+    assert "_drag_modes" not in vars(first_layer)
+    assert "_drag_modes" in vars(second_layer)
+    assert second_layer._drag_modes[Mode.DIRECT] is not first_wrapped_direct_callback
+    assert second_layer._drag_modes[Mode.VERTEX_REMOVE] is not first_wrapped_vertex_remove_callback
+
+
+def test_annotation_layer_edit_guard_direct_drag_syncs_shell_anchor_group() -> None:
+    polygon, _ = _polygon_hole_roundtrip_fixture()
+    moved_coordinate = np.asarray([1234.0, 2345.0])
+    layer = Shapes([shapely_polygon_to_napari_polygon_vertices(polygon)], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex(
+        moved_vertex_index=0,
+        moved_coordinate=moved_coordinate,
+    )
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+    event = SimpleNamespace(type="mouse_press")
+
+    drag = layer._drag_modes[Mode.DIRECT](layer, event)
+    assert next(drag) == "press"
+    event.type = "mouse_move"
+    assert next(drag) == "move"
+
+    edited_vertices = np.asarray(layer.data[0], dtype=float)
+    np.testing.assert_allclose(edited_vertices[[0, 5, 12]], np.repeat(moved_coordinate[None, :], 3, axis=0))
+
+
+def test_annotation_layer_edit_guard_direct_drag_syncs_shell_separator_group() -> None:
+    polygon, _ = _polygon_hole_roundtrip_fixture()
+    moved_coordinate = np.asarray([1234.0, 2345.0])
+    layer = Shapes([shapely_polygon_to_napari_polygon_vertices(polygon)], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex(
+        moved_vertex_index=12,
+        moved_coordinate=moved_coordinate,
+    )
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+    event = SimpleNamespace(type="mouse_press")
+
+    drag = layer._drag_modes[Mode.DIRECT](layer, event)
+    assert next(drag) == "press"
+    event.type = "mouse_move"
+    assert next(drag) == "move"
+
+    edited_vertices = np.asarray(layer.data[0], dtype=float)
+    np.testing.assert_allclose(edited_vertices[[0, 5, 12]], np.repeat(moved_coordinate[None, :], 3, axis=0))
+
+
+def test_annotation_layer_edit_guard_direct_drag_syncs_hole_anchor_group() -> None:
+    polygon, _ = _polygon_hole_roundtrip_fixture()
+    moved_coordinate = np.asarray([1234.0, 2345.0])
+    layer = Shapes([shapely_polygon_to_napari_polygon_vertices(polygon)], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex(
+        moved_vertex_index=6,
+        moved_coordinate=moved_coordinate,
+    )
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+    event = SimpleNamespace(type="mouse_press")
+
+    drag = layer._drag_modes[Mode.DIRECT](layer, event)
+    assert next(drag) == "press"
+    event.type = "mouse_move"
+    assert next(drag) == "move"
+
+    edited_vertices = np.asarray(layer.data[0], dtype=float)
+    np.testing.assert_allclose(edited_vertices[[6, 11]], np.repeat(moved_coordinate[None, :], 2, axis=0))
+
+
+def test_annotation_layer_edit_guard_direct_drag_leaves_non_anchor_vertex_local() -> None:
+    polygon, _ = _polygon_hole_roundtrip_fixture()
+    original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
+    moved_coordinate = np.asarray([1234.0, 2345.0])
+    layer = Shapes([original_vertices], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex(
+        moved_vertex_index=8,
+        moved_coordinate=moved_coordinate,
+    )
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+    event = SimpleNamespace(type="mouse_press")
+
+    drag = layer._drag_modes[Mode.DIRECT](layer, event)
+    assert next(drag) == "press"
+    event.type = "mouse_move"
+    assert next(drag) == "move"
+
+    edited_vertices = np.asarray(layer.data[0], dtype=float)
+    np.testing.assert_allclose(edited_vertices[8], moved_coordinate)
+    np.testing.assert_allclose(edited_vertices[[0, 5, 12]], original_vertices[[0, 5, 12]])
+    np.testing.assert_allclose(edited_vertices[[6, 11]], original_vertices[[6, 11]])
+
+
+def test_annotation_layer_edit_guard_direct_drag_does_not_guess_malformed_topology() -> None:
+    polygon, _ = _polygon_hole_roundtrip_fixture()
+    original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)[:-1]
+    moved_coordinate = np.asarray([1234.0, 2345.0])
+    layer = Shapes([original_vertices], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex(
+        moved_vertex_index=0,
+        moved_coordinate=moved_coordinate,
+    )
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+    event = SimpleNamespace(type="mouse_press")
+
+    drag = layer._drag_modes[Mode.DIRECT](layer, event)
+    assert next(drag) == "press"
+    event.type = "mouse_move"
+    assert next(drag) == "move"
+
+    edited_vertices = np.asarray(layer.data[0], dtype=float)
+    np.testing.assert_allclose(edited_vertices[0], moved_coordinate)
+    np.testing.assert_allclose(edited_vertices[5], original_vertices[5])
+
+
+def test_annotation_layer_edit_guard_vertex_remove_delegates_when_no_vertex(monkeypatch) -> None:
+    polygon, _ = _polygon_hole_roundtrip_fixture()
+    layer = Shapes([shapely_polygon_to_napari_polygon_vertices(polygon)], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def original_vertex_remove_callback(*args: object, **kwargs: object) -> str:
+        calls.append((args, kwargs))
+        return "delegated"
+
+    monkeypatch.setattr(layer, "get_value", lambda position, world=True: (0, None))
+    layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+    event = SimpleNamespace(position=(0.0, 0.0))
+
+    result = layer._drag_modes[Mode.VERTEX_REMOVE](layer, event)
+
+    assert result == "delegated"
+    assert calls == [((layer, event), {})]
+
+
+def test_annotation_layer_edit_guard_vertex_remove_delegates_simple_polygon(monkeypatch) -> None:
+    _, polygon = _polygon_hole_roundtrip_fixture()
+    layer = Shapes([shapely_polygon_to_napari_polygon_vertices(polygon)], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def original_vertex_remove_callback(*args: object, **kwargs: object) -> str:
+        calls.append((args, kwargs))
+        return "delegated"
+
+    monkeypatch.setattr(layer, "get_value", lambda position, world=True: (0, 1))
+    layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+    event = SimpleNamespace(position=(0.0, 0.0))
+
+    result = layer._drag_modes[Mode.VERTEX_REMOVE](layer, event)
+
+    assert result == "delegated"
+    assert calls == [((layer, event), {})]
+
+
+def test_annotation_layer_edit_guard_vertex_remove_uses_helper_for_hole_bearing_polygon(monkeypatch) -> None:
+    polygon, _ = _polygon_hole_roundtrip_fixture()
+    deleted_vertex_indices = [2, 8, 0, 12, 6]
+
+    for deleted_vertex_index in deleted_vertex_indices:
+        original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
+        topology = napari_polygon_vertices_to_topology(original_vertices)
+        expected_vertices, _ = delete_napari_polygon_vertex(original_vertices, topology, deleted_vertex_index)
+        layer = Shapes([original_vertices], shape_type="polygon")
+        layer._drag_modes = dict(layer._drag_modes)
+        event = SimpleNamespace(position=(0.0, 0.0))
+        events: list[tuple[ActionType, tuple[int, ...], tuple[tuple[int, ...], ...]]] = []
+
+        def original_vertex_remove_callback(*args: object, **kwargs: object) -> None:
+            raise AssertionError("hole-bearing polygon deletion should use the topology helper")
+
+        def record_data_event(
+            event: object,
+            event_log: list[tuple[ActionType, tuple[int, ...], tuple[tuple[int, ...], ...]]] = events,
+        ) -> None:
+            event_log.append((event.action, event.data_indices, event.vertex_indices))
+
+        monkeypatch.setattr(
+            layer,
+            "get_value",
+            lambda position, world=True, index=deleted_vertex_index: (0, index),
+        )
+        layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
+        layer.events.data.connect(record_data_event)
+        guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+        guard.attach(layer)
+
+        layer._drag_modes[Mode.VERTEX_REMOVE](layer, event)
+
+        np.testing.assert_allclose(np.asarray(layer.data[0], dtype=float), expected_vertices)
+        assert events == [
+            (ActionType.CHANGING, (0,), ((deleted_vertex_index,),)),
+            (ActionType.CHANGED, (0,), ((deleted_vertex_index,),)),
+        ]
+
+
+def test_annotation_layer_edit_guard_vertex_remove_removes_minimal_hole(monkeypatch) -> None:
+    shell_yx = np.asarray([[0.0, 0.0], [0.0, 10.0], [10.0, 10.0], [10.0, 0.0]], dtype=float)
+    hole_yx = np.asarray([[3.0, 3.0], [3.0, 5.0], [5.0, 4.0]], dtype=float)
+    polygon = Polygon(_yx_to_xy(shell_yx), holes=[_yx_to_xy(hole_yx)])
+    original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
+    topology = napari_polygon_vertices_to_topology(original_vertices)
+    expected_vertices, expected_topology = delete_napari_polygon_vertex(original_vertices, topology, 5)
+    layer = Shapes([original_vertices], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+
+    def original_vertex_remove_callback(*args: object, **kwargs: object) -> None:
+        raise AssertionError("minimal-hole deletion should use the topology helper")
+
+    monkeypatch.setattr(layer, "get_value", lambda position, world=True: (0, 5))
+    layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+
+    layer._drag_modes[Mode.VERTEX_REMOVE](layer, SimpleNamespace(position=(0.0, 0.0)))
+
+    np.testing.assert_allclose(np.asarray(layer.data[0], dtype=float), expected_vertices)
+    assert not expected_topology.synchronized_anchor_groups
+
+
+def test_annotation_layer_edit_guard_vertex_remove_rebuilds_cache_after_shortening_hole_row() -> None:
+    polygon, simple_polygon = _polygon_hole_roundtrip_fixture()
+    original_hole_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
+    original_simple_vertices = shapely_polygon_to_napari_polygon_vertices(simple_polygon)
+    layer = Shapes(
+        [original_hole_vertices, original_simple_vertices],
+        shape_type=["polygon", "polygon"],
+        features=pd.DataFrame({"instance_id": ["hole_row", "simple_row"]}),
+    )
+    layer.mode = Mode.VERTEX_REMOVE
+    layer.selected_data = {0}
+    layer._drag_modes = dict(layer._drag_modes)
+
+    def original_vertex_remove_callback(*args: object, **kwargs: object) -> None:
+        raise AssertionError("hole-bearing polygon deletion should use the topology helper")
+
+    layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
+    original_features = layer.features.copy()
+    original_shape_types = list(layer.shape_type)
+    events: list[tuple[ActionType, tuple[int, ...], tuple[tuple[int, ...], ...]]] = []
+
+    def record_data_event(event: object) -> None:
+        events.append((event.action, event.data_indices, event.vertex_indices))
+
+    layer.events.data.connect(record_data_event)
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+
+    layer._drag_modes[Mode.VERTEX_REMOVE](layer, SimpleNamespace(position=original_hole_vertices[7]))
+
+    shortened_vertices = np.asarray(layer.data[0], dtype=float)
+    assert len(shortened_vertices) == len(original_hole_vertices) - 1
+    assert layer._data_view._vertices_index.tolist() == [
+        0,
+        len(shortened_vertices),
+        len(shortened_vertices) + len(original_simple_vertices),
+    ]
+    shell_hit = layer.get_value(shortened_vertices[0], world=True)
+    assert shell_hit is not None
+    assert tuple(int(index) for index in shell_hit) == (0, len(shortened_vertices) - 1)
+    pd.testing.assert_frame_equal(layer.features, original_features)
+    assert list(layer.shape_type) == original_shape_types
+    assert layer.mode == Mode.VERTEX_REMOVE
+    assert set(layer.selected_data) == {0}
+
+    layer._drag_modes[Mode.VERTEX_REMOVE](layer, SimpleNamespace(position=shortened_vertices[0]))
+
+    shell_deleted_vertices = np.asarray(layer.data[0], dtype=float)
+    assert len(shell_deleted_vertices) == len(shortened_vertices) - 1
+    assert len(napari_polygon_vertices_to_shapely_polygon(shell_deleted_vertices).interiors) == 1
+    pd.testing.assert_frame_equal(layer.features, original_features)
+    assert list(layer.shape_type) == original_shape_types
+    assert layer.mode == Mode.VERTEX_REMOVE
+    assert set(layer.selected_data) == {0}
+    assert events == [
+        (ActionType.CHANGING, (0,), ((7,),)),
+        (ActionType.CHANGED, (0,), ((7,),)),
+        (ActionType.CHANGING, (0,), ((len(shortened_vertices) - 1,),)),
+        (ActionType.CHANGED, (0,), ((len(shortened_vertices) - 1,),)),
+    ]
+
+
+def test_annotation_layer_edit_guard_vertex_remove_delegates_malformed_topology(monkeypatch) -> None:
+    polygon, _ = _polygon_hole_roundtrip_fixture()
+    malformed_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)[:-1]
+    layer = Shapes([malformed_vertices], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def original_vertex_remove_callback(*args: object, **kwargs: object) -> str:
+        calls.append((args, kwargs))
+        return "delegated"
+
+    monkeypatch.setattr(layer, "get_value", lambda position, world=True: (0, 0))
+    layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+    event = SimpleNamespace(position=(0.0, 0.0))
+
+    result = layer._drag_modes[Mode.VERTEX_REMOVE](layer, event)
+
+    assert result == "delegated"
+    assert calls == [((layer, event), {})]
+
+
+def test_annotation_layer_edit_guard_vertex_remove_helper_error_warns_without_mutating_layer(monkeypatch) -> None:
+    polygon, _ = _polygon_hole_roundtrip_fixture()
+    original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
+    layer = Shapes([original_vertices], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    warnings: list[str] = []
+    events: list[object] = []
+
+    def original_vertex_remove_callback(*args: object, **kwargs: object) -> None:
+        raise AssertionError("rejected hole deletion should not fall back to napari deletion")
+
+    def reject_delete(*args: object, **kwargs: object) -> tuple[np.ndarray, object]:
+        raise ValueError("Deletion would make the polygon invalid.")
+
+    monkeypatch.setattr(layer, "get_value", lambda position, world=True: (0, 0))
+    monkeypatch.setattr(shapes_annotation_widget_module, "delete_napari_polygon_vertex", reject_delete)
+    layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
+    layer.events.data.connect(events.append)
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard(warning_callback=warnings.append)
+    guard.attach(layer)
+
+    layer._drag_modes[Mode.VERTEX_REMOVE](layer, SimpleNamespace(position=(0.0, 0.0)))
+
+    np.testing.assert_allclose(np.asarray(layer.data[0], dtype=float), original_vertices)
+    assert warnings == ["Deletion would make the polygon invalid."]
+    assert events == []
 
 
 def test_shapes_annotation_widget_shares_app_state(qtbot) -> None:
@@ -445,6 +1007,9 @@ def test_shapes_annotation_widget_create_layer_adds_registered_active_empty_shap
 
     assert widget.selected_shapes_name == "new_regions"
     assert widget._annotation_layer is layer
+    assert widget._annotation_edit_guard.layer is layer
+    assert "_drag_modes" in vars(layer)
+    assert layer._drag_modes[Mode.DIRECT] is widget._annotation_edit_guard._wrapped_direct_callback
     assert widget._annotation_shapes_name == "new_regions"
     assert widget._annotation_coordinate_system == "global"
     assert widget._annotation_has_been_saved is False
@@ -513,6 +1078,8 @@ def test_shapes_annotation_widget_clean_coordinate_change_closes_empty_create_la
     assert list(viewer.layers) == []
     assert widget.app_state.viewer_adapter.layer_bindings.get_binding(layer) is None
     assert widget._annotation_layer is None
+    assert widget._annotation_edit_guard.layer is None
+    assert "_drag_modes" not in vars(layer)
     assert widget._annotation_shapes_name is None
     assert widget._annotation_coordinate_system is None
     assert widget._annotation_has_been_saved is False
@@ -639,17 +1206,25 @@ def test_shapes_annotation_widget_clean_existing_target_switch_preserves_layer_o
     widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, "blobs_polygons"))
     blobs_layer = widget._annotation_layer
     assert blobs_layer is not None
+    assert widget._annotation_edit_guard.layer is blobs_layer
+    assert "_drag_modes" in vars(blobs_layer)
 
     widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, "other_polygons"))
     other_layer = widget._annotation_layer
     assert other_layer is not None
     assert other_layer is not blobs_layer
     assert list(viewer.layers) == [blobs_layer, other_layer]
+    assert widget._annotation_edit_guard.layer is other_layer
+    assert "_drag_modes" not in vars(blobs_layer)
+    assert "_drag_modes" in vars(other_layer)
 
     widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, "blobs_polygons"))
 
     assert widget._annotation_layer is blobs_layer
     assert list(viewer.layers) == [blobs_layer, other_layer]
+    assert widget._annotation_edit_guard.layer is blobs_layer
+    assert "_drag_modes" in vars(blobs_layer)
+    assert "_drag_modes" not in vars(other_layer)
 
 
 def test_shapes_annotation_widget_open_existing_target_loads_edit_session_layer(
@@ -667,6 +1242,9 @@ def test_shapes_annotation_widget_open_existing_target_loads_edit_session_layer(
     layer = viewer.layers[0]
     assert isinstance(layer, Shapes)
     assert widget._annotation_layer is layer
+    assert widget._annotation_edit_guard.layer is layer
+    assert "_drag_modes" in vars(layer)
+    assert layer._drag_modes[Mode.DIRECT] is widget._annotation_edit_guard._wrapped_direct_callback
     assert widget._annotation_shapes_name == "blobs_polygons"
     assert widget._annotation_coordinate_system == "global"
     assert widget._annotation_session is not None
@@ -840,6 +1418,203 @@ def test_shapes_annotation_widget_edit_existing_save_updates_shapes_element_and_
             source="shapes_annotation_widget",
         )
     ]
+    assert "Shapes Saved" in _status_text(widget)
+
+
+def test_shapes_annotation_widget_edit_existing_preserves_polygon_holes_on_save(qtbot) -> None:
+    shapes_name = "hole_regions"
+    polygon_1, polygon_2 = _polygon_hole_roundtrip_fixture()
+    sdata = _make_polygon_hole_roundtrip_sdata(shapes_name=shapes_name)
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, shapes_name))
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    assert widget.save_shapes_button.isEnabled() is True
+
+    widget.save_shapes_button.click()
+
+    saved = sdata.shapes[shapes_name]
+    assert saved.index.name == "region_id"
+    assert saved.index.tolist() == ["hole_row", "simple_row"]
+    assert saved["label"].tolist() == ["polygon_with_hole", "simple_polygon"]
+    np.testing.assert_allclose(saved["score"].to_numpy(), np.asarray([1.25, 2.5]))
+    _assert_polygon_hole_geometries_preserved(saved, polygon_1, polygon_2)
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.source_geodataframe is not saved
+    assert widget._annotation_session.source_geodataframe is not None
+    assert widget._annotation_session.source_geodataframe.index.equals(saved.index)
+    assert "Shapes Saved" in _status_text(widget)
+
+
+def test_shapes_annotation_widget_edit_existing_preserves_non_anchor_hole_vertex_edits(qtbot) -> None:
+    shapes_name = "hole_regions"
+    original_polygon_1, polygon_2 = _polygon_hole_roundtrip_fixture()
+    sdata = _make_polygon_hole_roundtrip_sdata(shapes_name=shapes_name)
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, shapes_name))
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+
+    edited_vertices = np.asarray(layer.data[0], dtype=float).copy()
+    np.testing.assert_allclose(edited_vertices[[0, 5, 12]], edited_vertices[[0, 0, 0]])
+    np.testing.assert_allclose(edited_vertices[[6, 11]], edited_vertices[[6, 6]])
+    edited_vertices[2] += np.asarray([35.0, -45.0])
+    edited_vertices[8] += np.asarray([-25.0, 30.0])
+    layer.data = [edited_vertices, np.asarray(layer.data[1], dtype=float)]
+    expected_polygon_1 = Polygon(
+        _yx_to_xy(edited_vertices[:6]),
+        holes=[_yx_to_xy(edited_vertices[6:12])],
+    )
+    assert expected_polygon_1.is_valid
+    assert not expected_polygon_1.equals(original_polygon_1)
+
+    widget.save_shapes_button.click()
+
+    saved = sdata.shapes[shapes_name]
+    assert saved.index.name == "region_id"
+    assert saved.index.tolist() == ["hole_row", "simple_row"]
+    assert saved["label"].tolist() == ["polygon_with_hole", "simple_polygon"]
+    np.testing.assert_allclose(saved["score"].to_numpy(), np.asarray([1.25, 2.5]))
+    _assert_polygon_hole_geometries_preserved(saved, expected_polygon_1, polygon_2)
+
+    reloaded_viewer = DummyViewer()
+    reloaded_layer = get_or_create_app_state(reloaded_viewer).viewer_adapter.ensure_shapes_loaded(
+        sdata,
+        shapes_name,
+        "global",
+    ).layer
+    reloaded_polygon_1 = napari_polygon_vertices_to_shapely_polygon(reloaded_layer.data[0])
+
+    assert reloaded_polygon_1.equals(saved.geometry.iloc[0])
+    assert len(reloaded_polygon_1.interiors) == 1
+
+
+# Keep end-to-end anchor-edit coverage focused: one shell-anchor edit on an
+# edit-existing layer and one hole-anchor edit on an adopted native layer.
+def test_shapes_annotation_widget_edit_existing_shell_anchor_edit_saves_and_reloads_with_hole(qtbot) -> None:
+    """Exercise guarded shell-anchor drag through edit-existing save and reload."""
+    shapes_name = "hole_regions"
+    original_polygon_1, polygon_2 = _polygon_hole_roundtrip_fixture()
+    sdata = _make_polygon_hole_roundtrip_sdata(shapes_name=shapes_name)
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, shapes_name))
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    original_vertices = np.asarray(layer.data[0], dtype=float)
+    moved_coordinate = original_vertices[0] + np.asarray([-25.0, 35.0])
+    _install_direct_drag_callback_for_annotation_guard(
+        widget,
+        layer,
+        moved_vertex_index=0,
+        moved_coordinate=moved_coordinate,
+    )
+
+    edited_vertices = _drag_annotation_vertex(layer, vertex_index=0, moved_coordinate=moved_coordinate)
+
+    np.testing.assert_allclose(edited_vertices[[0, 5, 12]], np.repeat(moved_coordinate[None, :], 3, axis=0))
+    expected_polygon_1 = napari_polygon_vertices_to_shapely_polygon(edited_vertices)
+    assert expected_polygon_1.is_valid
+    assert len(expected_polygon_1.interiors) == 1
+    assert not expected_polygon_1.equals(original_polygon_1)
+
+    widget.save_shapes_button.click()
+
+    saved = sdata.shapes[shapes_name]
+    assert saved.index.name == "region_id"
+    assert saved.index.tolist() == ["hole_row", "simple_row"]
+    assert saved["label"].tolist() == ["polygon_with_hole", "simple_polygon"]
+    np.testing.assert_allclose(saved["score"].to_numpy(), np.asarray([1.25, 2.5]))
+    _assert_polygon_hole_geometries_preserved(saved, expected_polygon_1, polygon_2)
+
+    reloaded_viewer = DummyViewer()
+    reloaded_layer = get_or_create_app_state(reloaded_viewer).viewer_adapter.ensure_shapes_loaded(
+        sdata,
+        shapes_name,
+        "global",
+    ).layer
+    reloaded_polygon_1 = napari_polygon_vertices_to_shapely_polygon(reloaded_layer.data[0])
+
+    assert reloaded_polygon_1.equals(saved.geometry.iloc[0])
+    assert len(reloaded_polygon_1.interiors) == 1
+    assert "Shapes Saved" in _status_text(widget)
+
+
+def test_shapes_annotation_widget_adopted_native_hole_anchor_edit_saves_and_reloads_with_hole(qtbot) -> None:
+    """Exercise guarded hole-anchor drag through native adoption, save, and reload."""
+    shapes_name = "native_hole_anchor_roundtrip"
+    original_polygon_1, polygon_2 = _polygon_hole_roundtrip_fixture()
+    sdata = _make_polygon_hole_roundtrip_sdata(shapes_name="reference_regions")
+    native_layer = Shapes(
+        [
+            shapely_polygon_to_napari_polygon_vertices(original_polygon_1),
+            shapely_polygon_to_napari_polygon_vertices(polygon_2),
+        ],
+        shape_type=["polygon", "polygon"],
+        name=shapes_name,
+    )
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    viewer.add_layer(native_layer)
+    qtbot.waitUntil(lambda: widget._annotation_layer is native_layer)
+    original_vertices = np.asarray(native_layer.data[0], dtype=float)
+    moved_coordinate = original_vertices[6] + np.asarray([15.0, -20.0])
+    _install_direct_drag_callback_for_annotation_guard(
+        widget,
+        native_layer,
+        moved_vertex_index=6,
+        moved_coordinate=moved_coordinate,
+    )
+
+    edited_vertices = _drag_annotation_vertex(native_layer, vertex_index=6, moved_coordinate=moved_coordinate)
+
+    np.testing.assert_allclose(edited_vertices[[6, 11]], np.repeat(moved_coordinate[None, :], 2, axis=0))
+    expected_polygon_1 = napari_polygon_vertices_to_shapely_polygon(edited_vertices)
+    assert expected_polygon_1.is_valid
+    assert len(expected_polygon_1.interiors) == 1
+    assert not expected_polygon_1.equals(original_polygon_1)
+
+    widget.save_shapes_button.click()
+
+    assert shapes_name in sdata.shapes
+    saved = sdata.shapes[shapes_name]
+    assert saved.index.name == "instance_id"
+    assert saved.index.tolist() == ["__annotation_0", "__annotation_1"]
+    assert native_layer.features["instance_id"].tolist() == ["__annotation_0", "__annotation_1"]
+    _assert_polygon_hole_geometries_preserved(saved, expected_polygon_1, polygon_2)
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.mode == "edit_existing"
+    assert widget._annotation_session.shapes_name == shapes_name
+    assert widget.shapes_combo.currentText() == shapes_name
+
+    reloaded_viewer = DummyViewer()
+    reloaded_layer = get_or_create_app_state(reloaded_viewer).viewer_adapter.ensure_shapes_loaded(
+        sdata,
+        shapes_name,
+        "global",
+    ).layer
+    reloaded_polygon_1 = napari_polygon_vertices_to_shapely_polygon(reloaded_layer.data[0])
+
+    assert reloaded_polygon_1.equals(saved.geometry.iloc[0])
+    assert len(reloaded_polygon_1.interiors) == 1
     assert "Shapes Saved" in _status_text(widget)
 
 
@@ -1036,6 +1811,9 @@ def test_shapes_annotation_widget_adopts_native_empty_shapes_layer(
     assert widget._annotation_session is not None
     assert widget._annotation_session.mode == "create_new"
     assert widget._annotation_session.shapes_name == "native_shapes"
+    assert widget._annotation_edit_guard.layer is native_layer
+    assert "_drag_modes" in vars(native_layer)
+    assert native_layer._drag_modes[Mode.DIRECT] is widget._annotation_edit_guard._wrapped_direct_callback
     assert widget._selected_shapes_target == shapes_annotation_widget_module._ShapesAnnotationTarget.create_new()
     assert widget.shapes_combo.currentText() == "Create shapes..."
     assert widget.name_edit.text() == "native_shapes"
@@ -1078,6 +1856,49 @@ def test_shapes_annotation_widget_saves_adopted_native_nonempty_shapes_layer(
     assert widget._annotation_session.shapes_name == "native_import"
     assert widget.shapes_combo.currentText() == "native_import"
     assert widget.name_edit.text() == ""
+
+
+def test_shapes_annotation_widget_saves_native_csv_layer_with_polygon_hole(
+    qtbot,
+    tmp_path,
+) -> None:
+    """Save a napari-native CSV Shapes import with a hole through the widget."""
+    polygon_1, polygon_2 = _polygon_hole_roundtrip_fixture()
+    sdata = _make_polygon_hole_roundtrip_sdata(shapes_name="reference_regions")
+    output_path = tmp_path / "native_hole_import.csv"
+    napari_write_shapes(
+        str(output_path),
+        [
+            shapely_polygon_to_napari_polygon_vertices(polygon_1),
+            shapely_polygon_to_napari_polygon_vertices(polygon_2),
+        ],
+        {"shape_type": ["polygon", "polygon"]},
+    )
+    loaded = csv_to_layer_data(str(output_path), require_type="shapes")
+    assert loaded is not None
+    data, meta, _layer_type = loaded
+    native_layer = Shapes(data, **meta, name="native_hole_import")
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    viewer.add_layer(native_layer)
+    qtbot.waitUntil(lambda: widget._annotation_layer is native_layer)
+    widget.save_shapes_button.click()
+
+    assert "native_hole_import" in sdata.shapes
+    saved = sdata.shapes["native_hole_import"]
+    assert saved.index.name == "instance_id"
+    assert saved.index.tolist() == ["__annotation_0", "__annotation_1"]
+    assert native_layer.features["instance_id"].tolist() == ["__annotation_0", "__annotation_1"]
+    _assert_polygon_hole_geometries_preserved(saved, polygon_1, polygon_2)
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.mode == "edit_existing"
+    assert widget._annotation_session.shapes_name == "native_hole_import"
+    assert widget.shapes_combo.currentText() == "native_hole_import"
+    assert "Shapes Saved" in _status_text(widget)
 
 
 def test_shapes_annotation_widget_saves_reloads_adopted_translated_native_shapes_layer(
