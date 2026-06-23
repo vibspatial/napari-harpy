@@ -108,6 +108,11 @@ The only UI state consumed by the button is the current selected shape-row set:
 selected_rows = set(layer.selected_data)
 ```
 
+Those values are current napari row indices into `layer.data`,
+`layer.shape_type`, and row-aligned `layer.features`. They are not vertex
+indices, and they are not the source GeoDataFrame index values stored in
+annotation metadata.
+
 Napari direct mode can still be useful. In direct mode, selected shape rows show
 their raw vertices, so users can visually verify that the shell and candidate
 holes are the intended rows. But napari does not expose a durable "selected
@@ -245,6 +250,8 @@ Responsibilities:
 
 - Read `layer.selected_data`.
 - Treat `layer.selected_data` as the only semantic input from the napari UI.
+- Interpret selected values as current napari row indices into `layer.data`,
+  not as source GeoDataFrame indices.
 - Require at least two selected shape rows.
 - Require every selected shape row to be a polygon row.
 - Decode every selected row with
