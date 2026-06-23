@@ -124,8 +124,8 @@ Practical implication:
 
 - use napari's native row/shape selection affordances to select the shell row
   and hole rows
-- direct/vertex mode is allowed as visual feedback if it helps users see which
-  rows are selected
+- users may use whichever napari mode gives useful visual feedback, including
+  direct/vertex mode if it helps them see which rows are selected
 - `Create holes` infers shell and holes from selected rows only
 
 ## Geometry Contract
@@ -556,14 +556,6 @@ The following should not block the first implementation:
 Rectangle and ellipse rows can remain save-supported annotations, but the
 first `Create holes` action should require polygon rows. A later slice can
 convert rectangle/ellipse cutters into polygons if that becomes important.
-
-## Open Questions
-
-- Should direct/vertex mode selection be treated differently from shape-select
-  mode selection?
-  Recommended answer: no. Users may use whichever napari mode gives useful
-  visual feedback, but the operation consumes the selected shape rows in
-  `layer.selected_data`.
 
 ## Definition Of Done
 
