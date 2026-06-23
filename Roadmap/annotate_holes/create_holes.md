@@ -185,6 +185,17 @@ def create_polygon_with_direct_holes(
     shell: Polygon,
     holes: Sequence[Polygon],
 ) -> Polygon:
+    """Return ``shell`` with the child polygons added as direct holes.
+
+    ``shell`` is the Shapely polygon that survives the operation. If it already
+    has holes, those existing interiors are read from ``shell.interiors`` and
+    preserved.
+
+    ``holes`` contains only the new child polygons selected to become
+    additional holes. The child polygons must be simple polygons without their
+    own interiors; each child exterior ring is appended after any existing
+    ``shell.interiors``.
+    """
     ...
 ```
 
