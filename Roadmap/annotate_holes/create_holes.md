@@ -197,6 +197,10 @@ Responsibilities:
 - Use each child polygon's exterior ring as one new hole.
 - Validate the combined existing and new holes with the same strict topology
   rules used by `napari_polygon_vertices_to_shapely_polygon(...)`.
+- When the shell already has interiors, validate the combined holes against an
+  exterior-only shell polygon, not against the original hole-bearing shell.
+  Shapely treats existing holes as non-contained empty regions, so containment
+  checks against the original shell would incorrectly reject preserved holes.
 - Construct and return one Shapely `Polygon`.
 - Return a polygon that can be encoded by
   `shapely_polygon_to_napari_polygon_vertices(...)`.
@@ -207,6 +211,25 @@ Implementation notes:
   the existing encoder/decoder.
 - The current `_validate_direct_holes(...)` is private, but the new helper can
   reuse it internally.
+- The validation shell should be:
+
+  ```python
+  exterior_shell = Polygon(shell.exterior.coords)
+  ```
+
+  Then validate:
+
+  ```python
+  all_holes = existing_shell_holes + new_child_holes
+  _validate_direct_holes(exterior_shell, all_holes)
+  ```
+
+  Finally construct the output as:
+
+  ```python
+  Polygon(shell.exterior.coords, holes=all_hole_rings)
+  ```
+
 - The helper should not know anything about napari layers, features, selected
   rows, or widget state.
 
@@ -215,6 +238,9 @@ Unit tests:
 - simple shell plus one child returns a polygon with one interior
 - simple shell plus two children returns a polygon with two interiors
 - shell with an existing hole preserves that hole and appends a new direct hole
+- shell with an existing hole does not fail containment validation merely
+  because the existing hole is not positive area inside the original
+  hole-bearing shell
 - child polygon with an interior is rejected
 - child outside the shell is rejected
 - child crossing or touching the shell is rejected
