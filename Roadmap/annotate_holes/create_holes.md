@@ -173,7 +173,7 @@ survives the operation; selected child rows only add more direct holes.
 
 ## Slice 2A - Pure Geometry Helper
 
-Status: proposed.
+Status: implemented.
 
 Add a public core helper that constructs a hole-bearing Shapely polygon from a
 shell polygon and direct child-hole polygons.

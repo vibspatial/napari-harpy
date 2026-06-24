@@ -6,6 +6,7 @@ from shapely.geometry import Polygon
 
 from napari_harpy.core.shapes_geometry import (
     NapariPolygonTopology,
+    create_polygon_with_direct_holes,
     delete_napari_polygon_vertex,
     insert_napari_polygon_vertex,
     napari_polygon_vertices_to_shapely_polygon,
@@ -38,6 +39,94 @@ def test_napari_polygon_vertices_to_shapely_polygon_accepts_closed_simple_polygo
 
     assert polygon.equals(source)
     assert len(polygon.interiors) == 0
+
+
+def test_create_polygon_with_direct_holes_adds_one_child_hole() -> None:
+    shell = Polygon([(0, 0), (8, 0), (8, 8), (0, 8)])
+    child = Polygon([(2, 2), (2, 4), (4, 4), (4, 2)])
+
+    polygon = create_polygon_with_direct_holes(shell, [child])
+    decoded = napari_polygon_vertices_to_shapely_polygon(shapely_polygon_to_napari_polygon_vertices(polygon))
+
+    assert polygon.equals(Polygon(shell.exterior.coords, holes=[child.exterior.coords]))
+    assert len(polygon.interiors) == 1
+    assert decoded.equals(polygon)
+
+
+def test_create_polygon_with_direct_holes_adds_multiple_child_holes() -> None:
+    shell = Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])
+    child_1 = Polygon([(2, 2), (2, 4), (4, 4), (4, 2)])
+    child_2 = Polygon([(6, 6), (6, 8), (8, 8), (8, 6)])
+
+    polygon = create_polygon_with_direct_holes(shell, [child_1, child_2])
+
+    assert polygon.equals(Polygon(shell.exterior.coords, holes=[child_1.exterior.coords, child_2.exterior.coords]))
+    assert len(polygon.interiors) == 2
+
+
+def test_create_polygon_with_direct_holes_preserves_existing_shell_holes() -> None:
+    existing_hole = [(2, 2), (2, 4), (4, 4), (4, 2)]
+    shell = Polygon([(0, 0), (10, 0), (10, 10), (0, 10)], holes=[existing_hole])
+    child = Polygon([(6, 6), (6, 8), (8, 8), (8, 6)])
+
+    polygon = create_polygon_with_direct_holes(shell, [child])
+
+    assert polygon.equals(Polygon(shell.exterior.coords, holes=[existing_hole, child.exterior.coords]))
+    assert len(polygon.interiors) == 2
+
+
+def test_create_polygon_with_direct_holes_rejects_child_with_interior() -> None:
+    shell = Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])
+    child = Polygon(
+        [(2, 2), (2, 8), (8, 8), (8, 2)],
+        holes=[[(4, 4), (4, 5), (5, 5), (5, 4)]],
+    )
+
+    with pytest.raises(ValueError, match="simple polygons without interiors"):
+        create_polygon_with_direct_holes(shell, [child])
+
+
+def test_create_polygon_with_direct_holes_rejects_child_outside_shell() -> None:
+    shell = Polygon([(0, 0), (4, 0), (4, 4), (0, 4)])
+    child = Polygon([(6, 6), (6, 8), (8, 8), (8, 6)])
+
+    with pytest.raises(ValueError, match="contained by the exterior ring"):
+        create_polygon_with_direct_holes(shell, [child])
+
+
+def test_create_polygon_with_direct_holes_rejects_child_touching_shell() -> None:
+    shell = Polygon([(0, 0), (8, 0), (8, 8), (0, 8)])
+    child = Polygon([(0, 2), (0, 4), (2, 4), (2, 2)])
+
+    with pytest.raises(ValueError, match="must not touch the exterior ring"):
+        create_polygon_with_direct_holes(shell, [child])
+
+
+def test_create_polygon_with_direct_holes_rejects_nested_child_holes() -> None:
+    shell = Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])
+    child_1 = Polygon([(2, 2), (2, 8), (8, 8), (8, 2)])
+    child_2 = Polygon([(4, 4), (4, 5), (5, 5), (5, 4)])
+
+    with pytest.raises(ValueError, match="Nested polygon holes are not supported"):
+        create_polygon_with_direct_holes(shell, [child_1, child_2])
+
+
+def test_create_polygon_with_direct_holes_rejects_overlapping_child_holes() -> None:
+    shell = Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])
+    child_1 = Polygon([(2, 2), (2, 6), (6, 6), (6, 2)])
+    child_2 = Polygon([(4, 4), (4, 8), (8, 8), (8, 4)])
+
+    with pytest.raises(ValueError, match="must not overlap or share edges"):
+        create_polygon_with_direct_holes(shell, [child_1, child_2])
+
+
+def test_create_polygon_with_direct_holes_rejects_edge_sharing_child_holes() -> None:
+    shell = Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])
+    child_1 = Polygon([(2, 2), (2, 4), (4, 4), (4, 2)])
+    child_2 = Polygon([(4, 2), (4, 4), (6, 4), (6, 2)])
+
+    with pytest.raises(ValueError, match="must not overlap or share edges"):
+        create_polygon_with_direct_holes(shell, [child_1, child_2])
 
 
 def test_napari_polygon_vertices_to_topology_returns_no_groups_for_simple_polygon() -> None:
