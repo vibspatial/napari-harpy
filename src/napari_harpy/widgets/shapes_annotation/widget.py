@@ -238,6 +238,13 @@ class _VertexDeleteState:
     topology: NapariPolygonTopology
 
 
+def _shape_type_at(layer: Shapes, row_index: int) -> object:
+    try:
+        return layer.shape_type[row_index]
+    except (IndexError, TypeError):
+        return None
+
+
 class _AnnotationLayerEditGuard:
     """Install and restore annotation-specific Shapes direct-edit hooks."""
 
@@ -382,7 +389,7 @@ class _AnnotationLayerEditGuard:
         moved_vertex_index = int(moved_vertex_index)
         if row_index < 0 or moved_vertex_index < 0 or row_index >= len(layer.data):
             return None
-        if self._shape_type_at(layer, row_index) != "polygon":
+        if _shape_type_at(layer, row_index) != "polygon":
             return None
 
         try:
@@ -536,7 +543,7 @@ class _AnnotationLayerEditGuard:
         deleted_vertex_index = int(deleted_vertex_index)
         if row_index < 0 or deleted_vertex_index < 0 or row_index >= len(layer.data):
             return None
-        if self._shape_type_at(layer, row_index) != "polygon":
+        if _shape_type_at(layer, row_index) != "polygon":
             return None
 
         try:
@@ -565,13 +572,6 @@ class _AnnotationLayerEditGuard:
     def _warn(self, message: str) -> None:
         if self._warning_callback is not None:
             self._warning_callback(message)
-
-    def _shape_type_at(self, layer: Shapes, row_index: int) -> object:
-        try:
-            return layer.shape_type[row_index]
-        except (IndexError, TypeError):
-            return None
-
 
 class ShapesAnnotation(QWidget):
     """Widget shell for annotating SpatialData shapes elements."""

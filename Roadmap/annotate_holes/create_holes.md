@@ -268,7 +268,7 @@ Acceptance criteria:
 
 ## Slice 2B - Selection Planning Helper
 
-Status: proposed.
+Status: implemented.
 
 Add a UI-independent helper that inspects a napari Shapes layer selection and
 produces a create-holes plan without mutating the layer.
@@ -281,7 +281,7 @@ Suggested internal API:
 
 ```python
 @dataclass(frozen=True)
-class _CreateHolesPlan:
+class _CreateHolesShapesLayerPlan:
     """Planned create-holes mutation for one selected napari Shapes layer.
 
     Attributes
@@ -305,7 +305,7 @@ class _CreateHolesPlan:
     vertices: np.ndarray
 
 
-def _create_holes_plan_from_selection(layer: Shapes) -> _CreateHolesPlan:
+def _create_holes_plan_from_selection(layer: Shapes) -> _CreateHolesShapesLayerPlan:
     ...
 ```
 
@@ -360,11 +360,10 @@ Shell inference rule:
 
 Implementation notes:
 
-- This helper likely belongs in
-  `src/napari_harpy/widgets/shapes_annotation/widget.py` at first, because it
-  depends on napari `Shapes` layer shape types and selection state.
-- If it grows, move it into a small private module such as
-  `widgets/shapes_annotation/_create_holes.py`.
+- This helper lives in
+  `src/napari_harpy/widgets/shapes_annotation/_create_holes.py`, keeping the
+  planning logic close to the annotation widget while avoiding more bulk in
+  `widget.py`.
 - Do not use selected-row ordering as semantic input; napari selection ordering
   should not be treated as a stable public contract.
 - Do not support "first clicked shell vertex" or "clicked hole vertices" as an
@@ -404,7 +403,7 @@ Add a layer mutation helper that applies a successful create-holes plan.
 Suggested internal API:
 
 ```python
-def _apply_create_holes_plan(layer: Shapes, plan: _CreateHolesPlan) -> None:
+def _apply_create_holes_plan(layer: Shapes, plan: _CreateHolesShapesLayerPlan) -> None:
     ...
 ```
 
