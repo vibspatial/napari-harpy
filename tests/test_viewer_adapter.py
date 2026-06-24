@@ -14,6 +14,7 @@ from napari.utils.colormaps import CyclicLabelColormap, DirectLabelColormap
 from shapely.geometry import LineString, Point, Polygon
 from spatialdata.models import PointsModel, ShapesModel, TableModel
 from spatialdata.transformations import Affine, Identity
+from xarray import DataArray
 
 import napari_harpy.viewer._styling as styling_module
 from napari_harpy._app_state import get_or_create_app_state
@@ -3077,6 +3078,7 @@ def test_viewer_adapter_ensure_image_loaded_supports_multiscale_images(sdata_blo
 
     assert layer.multiscale is True
     assert len(layer.data) == 3
+    assert all(not isinstance(scale_data, DataArray) for scale_data in layer.data)
     assert layer in viewer.layers
     binding = adapter.layer_bindings.get_binding(layer)
     assert binding is not None
@@ -3297,6 +3299,7 @@ def test_viewer_adapter_ensure_image_loaded_overlay_supports_multiscale_images(s
     assert len(layers) == 2
     assert all(layer.multiscale is True for layer in layers)
     assert all(len(layer.data) == 3 for layer in layers)
+    assert all(not isinstance(scale_data, DataArray) for layer in layers for scale_data in layer.data)
 
 
 def test_viewer_adapter_ensure_image_loaded_overlay_requires_selected_channels(sdata_blobs) -> None:

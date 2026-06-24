@@ -455,6 +455,23 @@ def test_interactive_headless_sets_sdata_without_running_event_loop(monkeypatch,
     ]
 
 
+def test_interactive_sets_async_slicing_when_requested(monkeypatch, sdata_blobs) -> None:
+    viewer = DummyViewer()
+    async_slicing_calls: list[bool] = []
+
+    monkeypatch.setattr(interactive_module.napari, "run", lambda: None)
+    monkeypatch.setattr(
+        interactive_module,
+        "_set_napari_async_slicing",
+        lambda enabled: async_slicing_calls.append(enabled),
+    )
+
+    interactive_module.Interactive(sdata_blobs, viewer=viewer, headless=True, widgets=(), async_slicing=True)
+    interactive_module.Interactive(sdata_blobs, viewer=viewer, headless=True, widgets=(), async_slicing=False)
+
+    assert async_slicing_calls == [True, False]
+
+
 def test_interactive_can_dock_a_single_widget(monkeypatch, sdata_blobs) -> None:
     viewer = DummyViewer()
     run_calls: list[str] = []
