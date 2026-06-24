@@ -298,14 +298,28 @@ Responsibilities:
 - Treat `layer.selected_data` as the only semantic input from the napari UI.
 - Interpret selected values as current napari row indices into `layer.data`,
   not as source GeoDataFrame indices.
+- Normalize selected rows deterministically, for example:
+
+  ```python
+  selected_rows = tuple(sorted(int(index) for index in layer.selected_data))
+  ```
+
+  Sorting is only for deterministic planning and tests; it must not give
+  selection order any semantic meaning.
+- Validate that every selected row index is an integer index currently present
+  in `layer.data`.
 - Require at least two selected shape rows.
 - Require every selected shape row to be a polygon row.
 - Decode every selected row with
   `napari_polygon_vertices_to_shapely_polygon(...)`.
 - Identify the unique largest-area selected polygon row using Shapely
   `polygon.area`; this row is the shell candidate.
-- Fail clearly if the largest area is tied.
-- Treat every other selected polygon row as a proposed new hole.
+- Fail clearly if the largest area is tied. Use exact area equality for the
+  first implementation; if two selected rows share the maximum area, the shell
+  is ambiguous.
+- Treat every other selected polygon row as a proposed new hole. Return
+  `hole_row_indices` sorted by current napari row index so later mutation is
+  predictable.
 - Build the output polygon with `create_polygon_with_direct_holes(...)`.
 - Encode the output polygon with
   `shapely_polygon_to_napari_polygon_vertices(...)`.
@@ -318,8 +332,8 @@ Shell inference rule:
   has the largest area.
 - Selection order is not semantic input. Do not use "first selected", "last
   selected", napari `Selection.active`, or private current-selection state.
-- If the largest area is tied, fail without mutation and show a clear ambiguity
-  warning.
+- If the largest area is exactly tied, fail without mutation and show a clear
+  ambiguity warning.
 - If the unique largest-area row cannot contain every other selected row as a
   direct hole under the strict helper from Slice 2A, fail without mutation and
   show a clear warning such as "Select one shell polygon and one or more
@@ -336,6 +350,8 @@ Implementation notes:
   should not be treated as a stable public contract.
 - Do not support "first clicked shell vertex" or "clicked hole vertices" as an
   input mechanism. That would require a separate custom interaction mode.
+- Planning failures should raise `ValueError` with user-facing messages. Slice
+  2D should catch those errors and route them into the existing status card.
 
 Unit tests:
 
@@ -348,6 +364,7 @@ Unit tests:
 - tied largest-area selected rows fail without mutation
 - no selected rows fails without mutation
 - one selected row fails without mutation
+- selected row index outside `layer.data` fails without mutation
 - non-polygon selected row fails without mutation
 - unique largest-area row that cannot contain the other selected rows fails
   without mutation
