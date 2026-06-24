@@ -523,36 +523,49 @@ Responsibilities:
 - Add a compact `Create holes` button near the existing `Create layer` and
   `Save shapes` controls.
 - Connect the button to a new click handler.
-- Run the selection planning helper.
-- Apply the plan if planning succeeds.
+- Run `_create_holes_plan_from_selection(self._annotation_layer)`.
+- Apply the plan with `_apply_create_holes_plan(...)` if planning succeeds.
 - Report invalid selection or geometry failures through the existing status
   card, without mutating the layer.
 - Report success through the existing status card after the layer mutation.
 - Refresh save readiness without overwriting the success status.
+- Do not update `_annotation_clean_snapshot`; creating holes is an unsaved
+  annotation edit until the user clicks `Save shapes`.
+  Updating the clean snapshot here would incorrectly suppress discard warnings
+  even though the changed layer has not yet been written back to `SpatialData`.
 
 Suggested handler flow:
 
 ```python
 def _on_create_holes_clicked(self) -> None:
     layer = self._annotation_layer
-    if layer is None:
+    session = self._annotation_session
+    if layer is None or session is None:
         return
 
     try:
         plan = _create_holes_plan_from_selection(layer)
+        hole_count = len(plan.hole_row_indices)
         _apply_create_holes_plan(layer, plan)
     except ValueError as error:
         self._set_status(title="Could Not Create Holes", lines=[str(error)], kind="warning")
         return
 
     self._refresh_save_shapes_state(update_status=False)
-    self._set_status(...)
+    lines = [f"Converted {hole_count} selected polygon(s) into hole(s)."]
+    if session.table_linked:
+        lines.append(
+            "Linked tables are not updated by Annotation and may go out of sync if rows are added or removed."
+        )
+    self._set_status(title="Created Holes", lines=lines, kind="success")
 ```
 
 Button enabled state:
 
-- Enable only when an annotation layer is open and save binding/session checks
-  pass.
+- Enable only when an annotation layer is open and the same save
+  binding/session checks used by `Save shapes` pass.
+- Prefer a small shared readiness helper over inferring readiness from the
+  visual enabled state of `save_shapes_button`.
 - Do not rely on live selection-change events for the first implementation, and
   do not disable the button based on the current row-selection count.
   napari's `selected_data` is validated when the user clicks `Create holes`.
@@ -571,12 +584,16 @@ Scope:
 
 - The button acts on `self._annotation_layer`, not whichever layer is active in
   napari, until the active-layer synchronization roadmap is implemented.
+- The operation consumes selected napari shape rows from
+  `self._annotation_layer.selected_data`; selected vertices are ignored.
 - Native layers adopted by the widget should work because they become the
   annotation layer and already use the same save path.
+- No custom modal, custom drawing mode, or stateful "choose shell, then choose
+  holes" workflow is introduced.
 
 Widget tests:
 
-- button does nothing when no annotation layer is open
+- button is disabled when no annotation layer is open
 - invalid selection shows `Could Not Create Holes`
 - valid selection mutates the layer and shows success
 - table-linked session includes the linked-table warning
