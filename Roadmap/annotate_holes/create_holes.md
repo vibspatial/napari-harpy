@@ -552,10 +552,12 @@ def _on_create_holes_clicked(self) -> None:
         return
 
     self._refresh_save_shapes_state(update_status=False)
-    lines = [f"Converted {hole_count} selected polygon(s) into hole(s)."]
+    lines = [
+        f"Converted {hole_count} selected polygon(s) into hole(s) and removed their shape row(s)."
+    ]
     if session.table_linked:
         lines.append(
-            "Linked tables are not updated by Annotation and may go out of sync if rows are added or removed."
+            "Linked tables are not updated automatically; after saving, table annotations may no longer match the shapes rows."
         )
     self._set_status(title="Created Holes", lines=lines, kind="success")
 ```
@@ -576,9 +578,11 @@ Button enabled state:
 
 Success message:
 
-- Include how many child polygons were converted into holes.
-- If the session is table-linked, keep or repeat the existing warning that
-  linked tables are not updated when rows are added or removed.
+- Include how many child polygons were converted into holes, and state that
+  those child shape rows were removed from the annotation layer.
+- If the session is table-linked, warn explicitly that this row-removing
+  operation is not propagated to linked tables, so table annotations may no
+  longer match the shapes rows after save.
 
 Scope:
 
