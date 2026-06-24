@@ -435,10 +435,17 @@ Recommended mutation strategy:
    ```python
    rebuilt_data = list(layer.data)
    rebuilt_data[plan.shell_row_index] = plan.vertices
+   # Assign through `layer.data`, not `_data_view.edit(...)`: create-holes can
+   # change the shell row's vertex count, and the public setter rebuilds
+   # napari's `ShapeList` bookkeeping used for rendering and hit-testing.
    layer.data = rebuilt_data
    ```
 
-   This rebuilds napari's `ShapeList` after the shell row changes length.
+   This rebuilds napari's `ShapeList` after the shell row changes length. In
+   earlier anchor-deletion work, low-level `_data_view.edit(...)` could update
+   row data while leaving old clickable vertex indices in napari's internal
+   hit-test cache after a row shortened. Create-holes is also a topology
+   change, so it should use the same public-setter cache rebuild strategy.
 4. Remove child rows with napari's public `layer.remove(...)`, sorted by row
    index:
 
