@@ -514,7 +514,7 @@ Acceptance criteria:
 
 ## Slice 2D - Widget Button And Status Integration
 
-Status: proposed.
+Status: implemented.
 
 Add the user-facing widget action.
 
