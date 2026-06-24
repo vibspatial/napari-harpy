@@ -396,7 +396,7 @@ Acceptance criteria:
 
 ## Slice 2C - Layer Row Replacement And Child Removal
 
-Status: proposed.
+Status: implemented.
 
 Add a layer mutation helper that applies a successful create-holes plan.
 

@@ -36,6 +36,27 @@ class _CreateHolesShapesLayerPlan:
     hole_row_indices: tuple[int, ...]
     vertices: np.ndarray
 
+    def __post_init__(self) -> None:
+        shell_row_index = _coerce_plan_row_index(self.shell_row_index, row_kind="shell")
+        hole_row_indices = tuple(_coerce_plan_row_index(index, row_kind="hole") for index in self.hole_row_indices)
+        if not hole_row_indices:
+            raise ValueError("Create-holes plan must include at least one hole row.")
+        if len(set(hole_row_indices)) != len(hole_row_indices):
+            raise ValueError("Create-holes plan hole rows must be unique.")
+        if shell_row_index in hole_row_indices:
+            raise ValueError("Create-holes plan cannot remove the shell row.")
+
+        try:
+            vertices = np.asarray(self.vertices, dtype=float)
+        except (TypeError, ValueError) as error:
+            raise ValueError("Create-holes plan vertices must be a numeric napari vertex array.") from error
+        if vertices.ndim != 2 or vertices.shape[0] < 3 or vertices.shape[1] < 2:
+            raise ValueError("Create-holes plan vertices must be a two-dimensional napari vertex array.")
+
+        object.__setattr__(self, "shell_row_index", shell_row_index)
+        object.__setattr__(self, "hole_row_indices", hole_row_indices)
+        object.__setattr__(self, "vertices", vertices.copy())
+
 
 def _create_holes_plan_from_selection(layer: Shapes) -> _CreateHolesShapesLayerPlan:
     """Build a mutation-ready plan from selected napari shape rows.
@@ -75,6 +96,42 @@ def _create_holes_plan_from_selection(layer: Shapes) -> _CreateHolesShapesLayerP
         hole_row_indices=hole_row_indices,
         vertices=shapely_polygon_to_napari_polygon_vertices(polygon),
     )
+
+
+def _apply_create_holes_plan(layer: Shapes, plan: _CreateHolesShapesLayerPlan) -> None:
+    row_count = len(layer.data)
+    shell_row_index = plan.shell_row_index
+    hole_row_indices = tuple(sorted(plan.hole_row_indices))
+    if shell_row_index >= row_count:
+        raise ValueError("Create-holes plan shell row is no longer present in the layer.")
+    if any(row_index >= row_count for row_index in hole_row_indices):
+        raise ValueError("Create-holes plan hole row is no longer present in the layer.")
+
+    current_mode = layer.mode
+
+    rebuilt_data = list(layer.data)
+    rebuilt_data[shell_row_index] = np.asarray(plan.vertices, dtype=float).copy()
+
+    # Assign through `layer.data`, not `_data_view.edit(...)`: create-holes can
+    # change the shell row's vertex count, and the public setter rebuilds
+    # napari's `ShapeList` bookkeeping used for rendering and hit-testing.
+    layer.data = rebuilt_data
+    layer.remove(list(hole_row_indices))
+
+    new_shell_row_index = shell_row_index - sum(row_index < shell_row_index for row_index in hole_row_indices)
+    layer.mode = current_mode
+    layer.selected_data = {new_shell_row_index}
+    # Public napari layer APIs above emit the data/selection events that drive
+    # viewer refresh; keep explicit refreshes for low-level edit paths.
+
+
+def _coerce_plan_row_index(index: object, *, row_kind: str) -> int:
+    if not isinstance(index, (int, np.integer)) or isinstance(index, bool):
+        raise ValueError(f"Create-holes plan {row_kind} row must be a napari row index.")
+    row_index = int(index)
+    if row_index < 0:
+        raise ValueError(f"Create-holes plan {row_kind} row must be a napari row index.")
+    return row_index
 
 
 def _selected_shape_rows(layer: Shapes) -> tuple[int, ...]:

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 import pytest
 from napari.layers import Shapes
+from napari.layers.shapes._shapes_constants import Mode
 from shapely.geometry import Polygon
 
 import napari_harpy.widgets.shapes_annotation._create_holes as create_holes_module
@@ -114,4 +116,85 @@ def test_create_holes_plan_from_selection_rejects_non_polygon_selected_row_witho
         create_holes_module._create_holes_plan_from_selection(layer)
 
     _assert_layer_data_unchanged(layer, original_data)
+    assert set(layer.selected_data) == {0, 1}
+
+
+def test_apply_create_holes_plan_replaces_shell_removes_children_and_preserves_layer_state() -> None:
+    child_before = Polygon([(2, 2), (2, 4), (4, 4), (4, 2)])
+    shell = Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])
+    child_after = Polygon([(6, 6), (6, 8), (8, 8), (8, 6)])
+    unselected = Polygon([(20, 20), (20, 22), (22, 22), (22, 20)])
+    layer = Shapes(
+        [
+            shapely_polygon_to_napari_polygon_vertices(child_before),
+            shapely_polygon_to_napari_polygon_vertices(shell),
+            shapely_polygon_to_napari_polygon_vertices(child_after),
+            shapely_polygon_to_napari_polygon_vertices(unselected),
+        ],
+        shape_type=["polygon", "polygon", "polygon", "polygon"],
+        features=pd.DataFrame(
+            {
+                "label": ["child_before", "shell", "child_after", "unselected"],
+                "source_id": ["row-0", "row-1", "row-2", "row-3"],
+            }
+        ),
+    )
+    layer.mode = Mode.DIRECT
+    layer.selected_data = {0, 1, 2}
+    plan = create_holes_module._create_holes_plan_from_selection(layer)
+
+    create_holes_module._apply_create_holes_plan(layer, plan)
+
+    assert len(layer.data) == 2
+    assert list(layer.shape_type) == ["polygon", "polygon"]
+    assert layer.features["label"].tolist() == ["shell", "unselected"]
+    assert layer.features["source_id"].tolist() == ["row-1", "row-3"]
+    assert layer.mode == Mode.DIRECT
+    assert set(layer.selected_data) == {0}
+
+    expected_shell = Polygon(
+        shell.exterior.coords,
+        holes=[child_before.exterior.coords, child_after.exterior.coords],
+    )
+    planned_shell = napari_polygon_vertices_to_shapely_polygon(layer.data[0])
+    assert planned_shell.equals(expected_shell)
+    assert napari_polygon_vertices_to_shapely_polygon(layer.data[1]).equals(unselected)
+
+
+def test_create_holes_plan_rejects_self_inconsistent_indices() -> None:
+    shell = Polygon([(0, 0), (8, 0), (8, 8), (0, 8)])
+
+    with pytest.raises(ValueError, match="cannot remove the shell row"):
+        create_holes_module._CreateHolesShapesLayerPlan(
+            shell_row_index=0,
+            hole_row_indices=(0,),
+            vertices=shapely_polygon_to_napari_polygon_vertices(shell),
+        )
+
+
+def test_apply_create_holes_plan_rejects_invalid_plan_before_mutation() -> None:
+    shell = Polygon([(0, 0), (8, 0), (8, 8), (0, 8)])
+    child = Polygon([(2, 2), (2, 4), (4, 4), (4, 2)])
+    layer = Shapes(
+        [
+            shapely_polygon_to_napari_polygon_vertices(shell),
+            shapely_polygon_to_napari_polygon_vertices(child),
+        ],
+        shape_type=["polygon", "polygon"],
+        features=pd.DataFrame({"label": ["shell", "child"]}),
+    )
+    layer.selected_data = {0, 1}
+    original_data = _copy_layer_data(layer)
+    original_features = layer.features.copy()
+    invalid_plan = create_holes_module._CreateHolesShapesLayerPlan(
+        shell_row_index=0,
+        hole_row_indices=(2,),
+        vertices=shapely_polygon_to_napari_polygon_vertices(shell),
+    )
+
+    with pytest.raises(ValueError, match="hole row is no longer present"):
+        create_holes_module._apply_create_holes_plan(layer, invalid_plan)
+
+    _assert_layer_data_unchanged(layer, original_data)
+    pd.testing.assert_frame_equal(layer.features, original_features)
     assert set(layer.selected_data) == {0, 1}
