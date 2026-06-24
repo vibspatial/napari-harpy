@@ -409,6 +409,14 @@ def _apply_create_holes_plan(layer: Shapes, plan: _CreateHolesShapesLayerPlan) -
 
 Responsibilities:
 
+- Validate that the plan still refers to the current napari layer state before
+  mutating:
+
+  - `plan.shell_row_index` is present in `layer.data`
+  - `plan.hole_row_indices` are unique
+  - no hole row equals `plan.shell_row_index`
+  - every hole row is present in `layer.data`
+
 - Replace the shell row's vertices with the encoded hole-bearing vertices.
 - Remove the consumed child rows.
 - Preserve the shell row's feature values and source identity.
@@ -420,15 +428,37 @@ Responsibilities:
 
 Recommended mutation strategy:
 
-1. Store current mode and selected rows.
-2. Replace the shell row by assigning a same-length rebuilt `layer.data` list.
+1. Validate plan indices against the current `layer.data` length.
+2. Store current mode.
+3. Replace the shell row by assigning a same-length rebuilt `layer.data` list:
+
+   ```python
+   rebuilt_data = list(layer.data)
+   rebuilt_data[plan.shell_row_index] = plan.vertices
+   layer.data = rebuilt_data
+   ```
+
    This rebuilds napari's `ShapeList` after the shell row changes length.
-3. Remove child rows with napari's public `layer.remove(...)`, sorted by row
-   index.
-4. Compute the shell row's new index after removing child rows that were before
-   it.
-5. Restore `layer.mode`.
-6. Set `layer.selected_data = {new_shell_row_index}`.
+4. Remove child rows with napari's public `layer.remove(...)`, sorted by row
+   index:
+
+   ```python
+   layer.remove(sorted(plan.hole_row_indices))
+   ```
+
+5. Compute the shell row's new index after removing child rows that were before
+   it:
+
+   ```python
+   new_shell_row_index = plan.shell_row_index - sum(
+       row_index < plan.shell_row_index
+       for row_index in plan.hole_row_indices
+   )
+   ```
+
+6. Restore `layer.mode`.
+7. Set `layer.selected_data = {new_shell_row_index}`.
+8. Refresh the layer.
 
 Rationale:
 
@@ -443,9 +473,16 @@ Rationale:
 
 Implementation notes:
 
+- This helper should live in
+  `src/napari_harpy/widgets/shapes_annotation/_create_holes.py` next to the
+  planning helper.
 - Do not manually edit `layer.features` unless the public napari row-removal
   path proves insufficient.
+- Do not use `_data_view.edit(...)` for shell replacement; the replacement row
+  may have a different number of vertices.
 - Do not call the save converter from this helper.
+- Do not show status cards or touch `SpatialData`; the widget click handler
+  will handle user feedback in a later step.
 - The helper should be small enough that widget click handling remains easy to
   read.
 
@@ -458,6 +495,7 @@ Unit tests:
 - shell row remains selected after child rows after it are removed
 - layer shape types remain aligned with `layer.data`
 - arbitrary row order is handled correctly
+- invalid plan indices fail before mutation
 
 Acceptance criteria:
 
