@@ -566,8 +566,19 @@ Button enabled state:
 
 - Enable only when an annotation layer is open and the same save
   binding/session checks used by `Save shapes` pass.
-- Prefer a small shared readiness helper over inferring readiness from the
-  visual enabled state of `save_shapes_button`.
+- Factor those shared checks into a small private helper, for example:
+
+  ```python
+  def _annotation_layer_is_actionable(self, *, update_status: bool = True) -> bool:
+      ...
+  ```
+
+  `_refresh_save_shapes_state(...)` can use this helper to enable
+  `save_shapes_button`, and the create-holes state refresh can use the same
+  helper with `update_status=False`.
+- Do not infer create-holes readiness from
+  `self.save_shapes_button.isEnabled()`. The save button's visual enabled state
+  should not become hidden business logic for a different action.
 - Do not rely on live selection-change events for the first implementation, and
   do not disable the button based on the current row-selection count.
   napari's `selected_data` is validated when the user clicks `Create holes`.
