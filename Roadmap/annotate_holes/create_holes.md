@@ -282,9 +282,26 @@ Suggested internal API:
 ```python
 @dataclass(frozen=True)
 class _CreateHolesPlan:
+    """Planned create-holes mutation for one selected napari Shapes layer.
+
+    Attributes
+    ----------
+    shell_row_index
+        Current napari row in ``layer.data`` that survives the operation and
+        receives the new hole-bearing vertices. This is a napari layer row
+        index, not a source GeoDataFrame index value.
+    hole_row_indices
+        Current napari rows selected as child polygons. Their exterior rings
+        become new holes, and the rows are removed after the shell row is
+        replaced.
+    vertices
+        Napari ``(y, x)`` vertex row encoding of the new hole-bearing shell
+        polygon. This array is the replacement data for
+        ``layer.data[shell_row_index]``.
+    """
+
     shell_row_index: int
     hole_row_indices: tuple[int, ...]
-    polygon: Polygon
     vertices: np.ndarray
 
 
@@ -323,6 +340,8 @@ Responsibilities:
 - Build the output polygon with `create_polygon_with_direct_holes(...)`.
 - Encode the output polygon with
   `shapely_polygon_to_napari_polygon_vertices(...)`.
+- Keep the Shapely output polygon as a local planning intermediate; do not
+  store it on the plan after it has been encoded.
 - Return a plan containing row indices and replacement vertices.
 - Do not mutate the layer if planning fails.
 
