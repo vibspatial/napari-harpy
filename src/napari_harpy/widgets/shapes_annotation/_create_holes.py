@@ -130,7 +130,7 @@ def _apply_create_holes_plan(layer: Shapes, plan: _CreateHolesShapesLayerPlan) -
 
     # Assign through `layer.data`, not `_data_view.edit(...)`: create-holes can
     # change the shell row's vertex count, and the public setter rebuilds
-    # napari's `ShapeList` bookkeeping used for rendering and hit-testing.
+    # napari's private rendering and hit-testing cache.
     layer.data = rebuilt_data
     layer.remove(list(hole_row_indices))
     layer.opacity = style_snapshot.opacity
@@ -222,15 +222,17 @@ def _row_aligned_sequence(values: object, *, row_count: int, name: str) -> tuple
 
 def _trim_stale_private_color_rows_before_rebuild(layer: Shapes, snapshot: _ShapesLayerStyleSnapshot) -> None:
     # Trim stale private napari color rows before the data setter rebuilds the
-    # ShapeList. The current `layer.data` row count must match the private color
-    # row count, otherwise napari falls back to default filled polygon colors.
+    # private shape-data cache. The current `layer.data` row count must match
+    # the private color row count, otherwise napari falls back to default filled
+    # polygon colors.
     # Example stale state: `len(layer.data) == 4`, while
     # `layer._data_view._edge_color.shape == (5, 4)` and
     # `layer._data_view._face_color.shape == (5, 4)`.
     #
-    # Napari's public color setter updates existing ShapeList rows but does not
-    # shrink stale private color arrays. Trim those arrays directly before
-    # `layer.data = ...`; the ShapeList is rebuilt immediately afterwards.
+    # Napari's public color setter updates existing private shape rows but does
+    # not shrink stale private color arrays. Trim those arrays directly
+    # immediately before `layer.data = ...`; napari's data setter reads them,
+    # then replaces the private shape-data cache during rebuild.
     layer._data_view._edge_color = snapshot.edge_color.copy()
     layer._data_view._face_color = snapshot.face_color.copy()
     layer.edge_width = list(snapshot.edge_width)
