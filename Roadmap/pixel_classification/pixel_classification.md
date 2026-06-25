@@ -100,6 +100,71 @@ The reducer is part of the feature schema. A classifier trained on this cache is
 same source image, selected channels, normalization, feature extractor, model weights, layer/scaling
 settings, and reducer parameters.
 
+**Cache Location**
+Store extracted pixel features in an explicit Harpy sidecar cache store, not as a hidden `.cache/...`
+group inside the SpatialData zarr store and not by default as a normal `sdata.images[...]` element.
+
+Default layout for a local backed SpatialData store:
+
+```text
+sample.zarr
+sample.harpy-cache.zarr
+```
+
+Proposed sidecar structure:
+
+```text
+sample.harpy-cache.zarr/
+  pixel_classification/
+    feature_caches/
+      <cache_id>/
+        features              # zarr array, shape (C + F_reduced, y, x)
+        reducer/
+          components
+          mean
+        manifest              # attrs / json metadata
+```
+
+Rationale: SpatialData elements are user-facing scientific data: images, labels, points, shapes, and
+tables. A ConvNeXt pixel-feature cache is derived, large, disposable, and implementation-specific. If
+we store it as a normal image element, it will pollute image selectors and make the SpatialData object
+look heavier than the user data really is. If we store it in an unknown hidden group inside the
+SpatialData zarr store, we bypass the SpatialData data model and make discovery, cleanup, and
+portability awkward.
+
+The sidecar cache should still be linked robustly to SpatialData. Resolve source element paths through
+SpatialData metadata, for example with `sdata.locate_element(...)`, rather than assuming an on-disk
+layout such as `images/<image_name>`. The manifest should record:
+
+- source SpatialData path / URI
+- source image element name
+- source image element zarr path resolved from SpatialData
+- coordinate system
+- selected channels and channel names
+- source shape and dtype
+- normalization settings
+- model name, weights, and relevant package versions
+- feature layers / scales
+- reducer settings
+- output shape, axes, dtype, and cache schema version
+
+The cache id should be a hash of the canonical feature manifest, excluding runtime-only fields such as
+creation time or last-used time.
+
+MVP behavior:
+
+- if `sdata.is_backed()` and `sdata.path` is a writable local path, default to a sibling sidecar named
+  like `<source>.harpy-cache.zarr`;
+- if the SpatialData object is in-memory, remote, or read-only, require an explicit user-selected cache
+  location;
+- expose cache discovery, reuse, and deletion in the pixel-classification UI so the sidecar is visible
+  and manageable.
+
+Only user-facing prediction results should be written back into SpatialData by default, and only on
+explicit save. For example, save predicted class maps as `sdata.labels[...]` and optionally save
+probability maps as `sdata.images[...]`. Exporting the feature cache itself as a SpatialData image
+element can be a future explicit export action, but should not be the default cache path.
+
 **Back-of-the-envelope Cache Scaling**
 Pixel classification will usually run on a curated channel subset, not necessarily all multiplex
 channels. For MACSima / PhenoCycler-style workflows, a typical first target is probably `1..5`
@@ -157,9 +222,12 @@ Better:
 
 - cache tile-wise normalized marker intensities plus reduced deep features, e.g. `float16`, shape
   `(C + F_reduced, y, x)`
+- write the feature stack to an explicit Harpy sidecar zarr cache
 - preserve the selected marker-intensity planes separately from the deep feature reducer
 - use a manifest keyed by:
+  - source SpatialData path / URI
   - source image element
+  - source image element zarr path resolved via SpatialData
   - coordinate system
   - selected channels
   - model name/version/weights
