@@ -84,12 +84,24 @@ from napari_harpy.widgets.shapes_annotation._snapshot import (
 )
 from napari_harpy.widgets.shapes_annotation.status_card import (
     _ShapesAnnotationStatusCardSpec,
+    build_annotation_coordinate_system_missing_card_spec,
+    build_annotation_create_layer_error_card_spec,
+    build_annotation_create_target_ready_card_spec,
     build_annotation_edit_warning_card_spec,
     build_annotation_existing_shapes_opened_card_spec,
+    build_annotation_existing_target_ready_card_spec,
+    build_annotation_invalid_shapes_name_card_spec,
     build_annotation_layer_ready_card_spec,
+    build_annotation_no_coordinate_systems_card_spec,
+    build_annotation_no_spatialdata_card_spec,
+    build_annotation_open_shapes_error_card_spec,
+    build_annotation_reload_shapes_error_card_spec,
     build_annotation_save_error_card_spec,
     build_annotation_save_success_card_spec,
     build_annotation_save_unavailable_card_spec,
+    build_annotation_shapes_name_exists_card_spec,
+    build_annotation_shapes_unavailable_card_spec,
+    build_annotation_target_missing_card_spec,
     build_create_holes_error_card_spec,
     build_create_holes_success_card_spec,
 )
@@ -1057,7 +1069,7 @@ class ShapesAnnotation(QWidget):
                 source_shapes_index_feature_name=DEFAULT_SHAPES_INDEX_NAME,
             )
         except ValueError as error:
-            self._set_status(title="Could Not Create Layer", lines=[str(error)], kind="warning")
+            self._apply_status_card_spec(build_annotation_create_layer_error_card_spec(str(error)))
             self.create_layer_button.setEnabled(False)
             self._refresh_save_shapes_state()
             return
@@ -1118,7 +1130,7 @@ class ShapesAnnotation(QWidget):
         except ValueError as error:
             if load_result is not None and load_result.created:
                 self._app_state.viewer_adapter.remove_shapes_layer(sdata, shapes_name, coordinate_system)
-            self._set_status(title="Could Not Open Shapes", lines=[str(error)], kind="warning")
+            self._apply_status_card_spec(build_annotation_open_shapes_error_card_spec(str(error)))
             self.create_layer_button.setEnabled(False)
             self._refresh_save_shapes_state()
             return
@@ -1463,41 +1475,25 @@ class ShapesAnnotation(QWidget):
             return
 
         if sdata is None:
-            self._set_status(
-                title="No SpatialData Loaded",
-                lines=["Load a SpatialData object before creating shapes."],
-                kind="warning",
-            )
+            self._apply_status_card_spec(build_annotation_no_spatialdata_card_spec())
             self.create_layer_button.setEnabled(False)
             self._refresh_save_shapes_state()
             return
 
         if not self._coordinate_systems:
-            self._set_status(
-                title="No Coordinate Systems",
-                lines=["The loaded SpatialData object does not expose any coordinate systems."],
-                kind="warning",
-            )
+            self._apply_status_card_spec(build_annotation_no_coordinate_systems_card_spec())
             self.create_layer_button.setEnabled(False)
             self._refresh_save_shapes_state()
             return
 
         if coordinate_system is None:
-            self._set_status(
-                title="Choose Coordinate System",
-                lines=["Select a coordinate system before creating shapes."],
-                kind="warning",
-            )
+            self._apply_status_card_spec(build_annotation_coordinate_system_missing_card_spec())
             self.create_layer_button.setEnabled(False)
             self._refresh_save_shapes_state()
             return
 
         if target is None:
-            self._set_status(
-                title="Choose Shapes Target",
-                lines=["Select whether to create a new shapes element or edit an existing one."],
-                kind="warning",
-            )
+            self._apply_status_card_spec(build_annotation_target_missing_card_spec())
             self.create_layer_button.setEnabled(False)
             self._refresh_save_shapes_state()
             return
@@ -1509,32 +1505,17 @@ class ShapesAnnotation(QWidget):
                 or shapes_name not in sdata.shapes
                 or shapes_name not in self._eligible_existing_shapes_names
             ):
-                self._set_status(
-                    title="Shapes Unavailable",
-                    lines=["The selected shapes element is no longer available in this coordinate system."],
-                    kind="warning",
-                )
+                self._apply_status_card_spec(build_annotation_shapes_unavailable_card_spec())
                 self.create_layer_button.setEnabled(False)
                 self._refresh_save_shapes_state()
                 return
 
             self._validated_shapes_name = shapes_name
-            visible_shapes_name, shapes_name_shortened = format_feedback_identifier(
-                shapes_name,
-                max_length=_STATUS_IDENTIFIER_MAX_LENGTH,
-            )
-            visible_coordinate_system, coordinate_system_shortened = format_feedback_identifier(
-                coordinate_system,
-                max_length=_STATUS_IDENTIFIER_MAX_LENGTH,
-            )
-            full_line = f'Shapes element "{shapes_name}" is available in coordinate system "{coordinate_system}".'
-            self._set_status(
-                title="Ready",
-                lines=[
-                    f'Selected shapes layer "{visible_shapes_name}" in coordinate system "{visible_coordinate_system}".'
-                ],
-                kind="info",
-                tooltip_lines=[full_line] if shapes_name_shortened or coordinate_system_shortened else None,
+            self._apply_status_card_spec(
+                build_annotation_existing_target_ready_card_spec(
+                    shapes_name=shapes_name,
+                    coordinate_system=coordinate_system,
+                )
             )
             self.create_layer_button.setEnabled(False)
             self._refresh_save_shapes_state()
@@ -1543,46 +1524,23 @@ class ShapesAnnotation(QWidget):
         try:
             shapes_name = normalize_spatialdata_name(self.name_edit.text(), "Shapes element name")
         except ValueError as error:
-            self._set_status(
-                title="Invalid Shapes Name",
-                lines=[str(error)],
-                kind="warning",
-            )
+            self._apply_status_card_spec(build_annotation_invalid_shapes_name_card_spec(str(error)))
             self.create_layer_button.setEnabled(False)
             self._refresh_save_shapes_state()
             return
 
         if spatialdata_element_name_exists(sdata, shapes_name):
-            visible_shapes_name, shapes_name_shortened = format_feedback_identifier(
-                shapes_name,
-                max_length=_STATUS_IDENTIFIER_MAX_LENGTH,
-            )
-            full_line = f'Shapes element "{shapes_name}" already exists. Choose a different name.'
-            self._set_status(
-                title="Name Already Exists",
-                lines=[f'Shapes element "{visible_shapes_name}" already exists. Choose a different name.'],
-                kind="warning",
-                tooltip_lines=[full_line] if shapes_name_shortened else None,
-            )
+            self._apply_status_card_spec(build_annotation_shapes_name_exists_card_spec(shapes_name))
             self.create_layer_button.setEnabled(False)
             self._refresh_save_shapes_state()
             return
 
         self._validated_shapes_name = shapes_name
-        visible_shapes_name, shapes_name_shortened = format_feedback_identifier(
-            shapes_name,
-            max_length=_STATUS_IDENTIFIER_MAX_LENGTH,
-        )
-        visible_coordinate_system, coordinate_system_shortened = format_feedback_identifier(
-            coordinate_system,
-            max_length=_STATUS_IDENTIFIER_MAX_LENGTH,
-        )
-        full_line = f'Create shapes layer "{shapes_name}" in coordinate system "{coordinate_system}".'
-        self._set_status(
-            title="Ready",
-            lines=[f'Create shapes layer "{visible_shapes_name}" in coordinate system "{visible_coordinate_system}".'],
-            kind="info",
-            tooltip_lines=[full_line] if shapes_name_shortened or coordinate_system_shortened else None,
+        self._apply_status_card_spec(
+            build_annotation_create_target_ready_card_spec(
+                shapes_name=shapes_name,
+                coordinate_system=coordinate_system,
+            )
         )
         self.create_layer_button.setEnabled(True)
         self._refresh_save_shapes_state()
@@ -1675,17 +1633,6 @@ class ShapesAnnotation(QWidget):
             and getattr(binding, "source_shapes_index_feature_name", None) == source_shapes_index_feature_name
         )
 
-    def _set_status(
-        self,
-        *,
-        title: str,
-        lines: list[str],
-        kind: str,
-        tooltip_lines: list[str] | None = None,
-    ) -> None:
-        tooltip_message = "\n".join(tooltip_lines) if tooltip_lines else None
-        set_status_card(self.status_label, title=title, lines=lines, kind=kind, tooltip_message=tooltip_message)
-
     def _apply_status_card_spec(self, spec: _ShapesAnnotationStatusCardSpec | None) -> None:
         if spec is None:
             self.status_label.clear()
@@ -1777,7 +1724,7 @@ class ShapesAnnotation(QWidget):
                 try:
                     self._app_state.viewer_adapter.ensure_shapes_loaded(sdata, shapes_name, coordinate_system)
                 except ValueError as error:
-                    self._set_status(title="Could Not Reload Shapes", lines=[str(error)], kind="warning")
+                    self._apply_status_card_spec(build_annotation_reload_shapes_error_card_spec(str(error)))
             self._clear_annotation_state()
         finally:
             self._is_handling_annotation_layer_removal = False

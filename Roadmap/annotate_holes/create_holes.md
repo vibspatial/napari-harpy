@@ -1061,7 +1061,7 @@ Acceptance criteria:
 
 ## Slice 2H - Shapes Annotation Status Card Helper
 
-Status: proposed.
+Status: implemented.
 
 Introduce a dedicated `widgets/shapes_annotation/status_card.py` helper module
 so annotation status-card text follows the same structure as the viewer, object
