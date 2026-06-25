@@ -156,7 +156,7 @@ Tests:
 
 ### Slice 1B - Compatible Primary Shapes Candidate
 
-Status: proposed.
+Status: implemented.
 
 Add a small private helper that decides whether an active layer can be adopted
 as an edit-existing annotation session.

@@ -195,6 +195,15 @@ class _ShapesAnnotationTarget:
 
 
 @dataclass(frozen=True)
+class _ActivePrimaryShapesCandidate:
+    """Compatible primary Shapes layer selected through napari's active layer."""
+
+    layer: Shapes
+    shapes_name: str
+    coordinate_system: str
+
+
+@dataclass(frozen=True)
 class _ShapesAnnotationSession:
     """Locked save target and source metadata for one annotation session.
 
@@ -633,6 +642,7 @@ class _AnnotationLayerEditGuard:
         if self._warning_callback is not None:
             self._warning_callback(message)
 
+
 class ShapesAnnotation(QWidget):
     """Widget shell for annotating SpatialData shapes elements."""
 
@@ -908,8 +918,41 @@ class ShapesAnnotation(QWidget):
             self._is_handling_active_layer_change = False
 
     def _maybe_adopt_active_shapes_layer(self, layer: object) -> None:
-        # Candidate validation and adoption are implemented in follow-up slices.
-        del layer
+        candidate = self._active_primary_shapes_candidate(layer)
+        if candidate is None:
+            return
+        # Opening/adoption behavior is implemented in follow-up slices.
+        del candidate
+
+    def _active_primary_shapes_candidate(self, layer: object) -> _ActivePrimaryShapesCandidate | None:
+        if not isinstance(layer, Shapes):
+            return None
+
+        sdata = self._app_state.sdata
+        coordinate_system = self._selected_coordinate_system
+        if sdata is None or coordinate_system is None:
+            return None
+
+        binding = self._app_state.viewer_adapter.layer_bindings.get_binding(layer)
+        if not isinstance(binding, ShapesLayerBinding):
+            return None
+
+        if (
+            binding.element_type != "shapes"
+            or binding.sdata_id != id(sdata)
+            or binding.coordinate_system != coordinate_system
+            or binding.shapes_role != "primary"
+            or binding.shapes_rendering_mode != "shapes"
+            or binding.style_spec is not None
+            or binding.element_name not in self._eligible_existing_shapes_names
+        ):
+            return None
+
+        return _ActivePrimaryShapesCandidate(
+            layer=layer,
+            shapes_name=binding.element_name,
+            coordinate_system=coordinate_system,
+        )
 
     def _on_primary_shapes_layer_registered(self, binding: object) -> None:
         if (

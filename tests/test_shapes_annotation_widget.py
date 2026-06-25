@@ -10,7 +10,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 from matplotlib.colors import to_rgba
-from napari.layers import Shapes
+from napari.layers import Image, Points, Shapes
 from napari.layers.base._base_constants import ActionType
 from napari.layers.shapes._shapes_constants import Mode
 from napari_builtins.io import csv_to_layer_data, napari_write_shapes
@@ -23,6 +23,7 @@ from spatialdata.transformations import Identity
 import napari_harpy._app_state as app_state_module
 import napari_harpy.widgets.shapes_annotation.widget as shapes_annotation_widget_module
 from napari_harpy._app_state import ShapesElementWrittenEvent, get_or_create_app_state
+from napari_harpy.core._color_source import ShapeColumnColorSourceSpec
 from napari_harpy.core.shapes_annotation import AnnotateShapesElementResult
 from napari_harpy.core.shapes_geometry import (
     delete_napari_polygon_vertex,
@@ -182,6 +183,30 @@ def _native_polygon_layer(name: str, *, affine: np.ndarray | None = None) -> Sha
         affine=affine,
         name=name,
     )
+
+
+def _register_shapes_candidate_layer(
+    widget: ShapesAnnotation,
+    sdata: SpatialData,
+    *,
+    shapes_name: str = "blobs_polygons",
+    coordinate_system: str | None = "global",
+    layer: Shapes | Points | None = None,
+    shapes_role: str = "primary",
+    shapes_rendering_mode: str = "shapes",
+    style_spec: object | None = None,
+) -> Shapes | Points:
+    layer = Shapes([], ndim=2, name=shapes_name) if layer is None else layer
+    widget.app_state.viewer_adapter.register_shapes_layer(
+        layer,
+        sdata=sdata,
+        shapes_name=shapes_name,
+        coordinate_system=coordinate_system,
+        shapes_role=shapes_role,
+        shapes_rendering_mode=shapes_rendering_mode,
+        style_spec=style_spec,
+    )
+    return layer
 
 
 def _yx_to_xy(coordinates_yx: np.ndarray) -> list[tuple[float, float]]:
@@ -429,6 +454,75 @@ def test_shapes_annotation_widget_active_layer_event_ignores_current_layer_and_r
     widget._on_active_layer_changed(SimpleNamespace(value=layer))
 
     assert routed_layers == []
+
+
+def test_shapes_annotation_widget_active_primary_shapes_candidate_accepts_compatible_layer(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
+    layer = _register_shapes_candidate_layer(widget, sdata_blobs)
+
+    candidate = widget._active_primary_shapes_candidate(layer)
+
+    assert candidate is not None
+    assert candidate.layer is layer
+    assert candidate.shapes_name == "blobs_polygons"
+    assert candidate.coordinate_system == "global"
+
+
+def test_shapes_annotation_widget_active_primary_shapes_candidate_rejects_incompatible_layers(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
+    style_spec = ShapeColumnColorSourceSpec(
+        source_kind="shape_column",
+        value_key="label",
+        value_kind="categorical",
+    )
+
+    assert widget._active_primary_shapes_candidate(Image(np.zeros((2, 2)))) is None
+    assert widget._active_primary_shapes_candidate(Shapes([], ndim=2)) is None
+
+    styled_layer = _register_shapes_candidate_layer(
+        widget,
+        sdata_blobs,
+        layer=Shapes([], ndim=2),
+        shapes_role="styled",
+        style_spec=style_spec,
+    )
+    points_layer = _register_shapes_candidate_layer(
+        widget,
+        sdata_blobs,
+        layer=Points(np.empty((0, 2))),
+        shapes_rendering_mode="points",
+    )
+    other_coordinate_layer = _register_shapes_candidate_layer(
+        widget,
+        sdata_blobs,
+        layer=Shapes([], ndim=2),
+        coordinate_system="other",
+    )
+    other_sdata_layer = _register_shapes_candidate_layer(
+        widget,
+        _make_polygon_hole_roundtrip_sdata(shapes_name="blobs_polygons"),
+        layer=Shapes([], ndim=2),
+    )
+    ineligible_name_layer = _register_shapes_candidate_layer(
+        widget,
+        sdata_blobs,
+        shapes_name="not_eligible",
+        layer=Shapes([], ndim=2),
+    )
+
+    assert widget._active_primary_shapes_candidate(styled_layer) is None
+    assert widget._active_primary_shapes_candidate(points_layer) is None
+    assert widget._active_primary_shapes_candidate(other_coordinate_layer) is None
+    assert widget._active_primary_shapes_candidate(other_sdata_layer) is None
+    assert widget._active_primary_shapes_candidate(ineligible_name_layer) is None
 
 
 def test_annotation_layer_edit_guard_delegates_direct_mode_and_restores_instance_mapping() -> None:
