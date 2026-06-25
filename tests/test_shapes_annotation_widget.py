@@ -57,18 +57,33 @@ class DummyEventEmitter:
             callback(event)
 
 
+class DummySelection:
+    def __init__(self) -> None:
+        self.events = SimpleNamespace(active=DummyEventEmitter())
+        self._active: object | None = None
+
+    @property
+    def active(self) -> object | None:
+        return self._active
+
+    @active.setter
+    def active(self, layer: object | None) -> None:
+        self._active = layer
+        self.events.active.emit(layer)
+
+    def select_only(self, layer: object) -> None:
+        self.active = layer
+
+
 class DummyLayers(list):
     def __init__(self) -> None:
         super().__init__()
-        self.selection = SimpleNamespace(active=None, select_only=self._select_only)
+        self.selection = DummySelection()
         self.events = SimpleNamespace(
             inserted=DummyEventEmitter(),
             removed=DummyEventEmitter(),
             reordered=DummyEventEmitter(),
         )
-
-    def _select_only(self, layer: object) -> None:
-        self.selection.active = layer
 
     def remove(self, layer: object) -> None:
         super().remove(layer)
@@ -369,6 +384,51 @@ def test_shapes_annotation_widget_can_be_instantiated(qtbot) -> None:
 
 def test_shapes_annotation_widget_lazy_export() -> None:
     assert LazyShapesAnnotation is ShapesAnnotation
+
+
+def test_shapes_annotation_widget_connects_to_napari_active_layer_event(qtbot) -> None:
+    viewer = DummyViewer()
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    callbacks = viewer.layers.selection.events.active._callbacks
+
+    assert any(
+        getattr(callback, "__self__", None) is widget and getattr(callback, "__name__", "") == "_on_active_layer_changed"
+        for callback in callbacks
+    )
+
+
+def test_shapes_annotation_widget_active_layer_event_routes_to_placeholder(qtbot, monkeypatch) -> None:
+    viewer = DummyViewer()
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+    layer = Shapes([], ndim=2)
+    routed_layers: list[object] = []
+    monkeypatch.setattr(widget, "_maybe_adopt_active_shapes_layer", routed_layers.append)
+
+    viewer.layers.selection.active = layer
+
+    assert routed_layers == [layer]
+
+
+def test_shapes_annotation_widget_active_layer_event_ignores_current_layer_and_reentrant_calls(
+    qtbot, monkeypatch
+) -> None:
+    viewer = DummyViewer()
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+    layer = Shapes([], ndim=2)
+    routed_layers: list[object] = []
+    monkeypatch.setattr(widget, "_maybe_adopt_active_shapes_layer", routed_layers.append)
+
+    widget._annotation_layer = layer
+    widget._on_active_layer_changed(SimpleNamespace(value=layer))
+    widget._annotation_layer = None
+    widget._is_handling_active_layer_change = True
+    widget._on_active_layer_changed(SimpleNamespace(value=layer))
+
+    assert routed_layers == []
 
 
 def test_annotation_layer_edit_guard_delegates_direct_mode_and_restores_instance_mapping() -> None:

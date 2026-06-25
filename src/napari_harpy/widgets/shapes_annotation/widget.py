@@ -660,6 +660,9 @@ class ShapesAnnotation(QWidget):
         # Ignore primary-shapes registration events emitted by open operations
         # that this widget started itself.
         self._is_opening_annotation_layer = False
+        # Active-layer adoption can activate layers again, so keep this handler
+        # single-entry before follow-up slices add real adoption behavior.
+        self._is_handling_active_layer_change = False
         self._logo_path = get_logo_path()
 
         root_layout = QVBoxLayout(self)
@@ -757,7 +760,8 @@ class ShapesAnnotation(QWidget):
         self.create_layer_button.clicked.connect(self._on_create_layer_clicked)
         self.create_holes_button.clicked.connect(self._on_create_holes_clicked)
         self.save_shapes_button.clicked.connect(self._on_save_shapes_clicked)
-        layer_events = getattr(getattr(napari_viewer, "layers", None), "events", None)
+        viewer_layers = getattr(napari_viewer, "layers", None)
+        layer_events = getattr(viewer_layers, "events", None)
         layer_inserted_event = getattr(layer_events, "inserted", None)
         layer_inserted_connect = getattr(layer_inserted_event, "connect", None)
         if callable(layer_inserted_connect):
@@ -766,6 +770,11 @@ class ShapesAnnotation(QWidget):
         layer_removed_connect = getattr(layer_removed_event, "connect", None)
         if callable(layer_removed_connect):
             layer_removed_connect(self._on_viewer_layer_removed)
+        selection = getattr(viewer_layers, "selection", None)
+        active_layer_event = getattr(getattr(selection, "events", None), "active", None)
+        active_layer_connect = getattr(active_layer_event, "connect", None)
+        if callable(active_layer_connect):
+            active_layer_connect(self._on_active_layer_changed)
         self.refresh_from_sdata(self._app_state.sdata)
 
     @property
@@ -882,6 +891,25 @@ class ShapesAnnotation(QWidget):
 
     def _on_shapes_name_changed(self, _text: str) -> None:
         self._refresh_create_layer_state()
+
+    def _on_active_layer_changed(self, event: object) -> None:
+        """Observe every active-layer change; later adoption only cares about compatible Shapes layers."""
+        if self._is_handling_active_layer_change:
+            return
+
+        layer = getattr(event, "value", None)
+        if layer is None or layer is self._annotation_layer:
+            return
+
+        self._is_handling_active_layer_change = True
+        try:
+            self._maybe_adopt_active_shapes_layer(layer)
+        finally:
+            self._is_handling_active_layer_change = False
+
+    def _maybe_adopt_active_shapes_layer(self, layer: object) -> None:
+        # Candidate validation and adoption are implemented in follow-up slices.
+        del layer
 
     def _on_primary_shapes_layer_registered(self, binding: object) -> None:
         if (

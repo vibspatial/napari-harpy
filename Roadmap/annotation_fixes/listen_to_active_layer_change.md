@@ -67,14 +67,14 @@ viewer.layers.selection.events.active
 ```
 
 In the current napari version this event exists and emits the active layer as
-`event.value`. The handler should still fall back to
-`viewer.layers.selection.active` if `event.value` is missing.
+`event.value`. The handler may read it defensively with
+`getattr(event, "value", None)`, treating a missing value as no active layer.
 
 Do not rely on `ViewerAdapter.active_layer_changed` as the primary event
 source. That signal is emitted by `ViewerAdapter.activate_layer(...)`, so it
 covers Harpy-driven activation but not necessarily a user clicking a layer in
-napari's layer list. It may be used only as a fallback if the napari selection
-event is unavailable.
+napari's layer list. Do not connect to it for this feature; the widget should
+listen only to napari's active-layer selection event.
 
 ## Important Design Boundary
 
@@ -115,7 +115,7 @@ That existing path already handles:
 
 ### Slice 1A - Active Layer Event Listener
 
-Status: proposed.
+Status: implemented.
 
 Add a small listener for napari active-layer changes. This slice is plumbing
 only: it should observe active-layer changes and route them to a placeholder
@@ -125,18 +125,13 @@ guard, show status messages, or change dirty-session behavior yet.
 Implementation notes:
 
 - Connect to `viewer.layers.selection.events.active` when available.
-- If the napari selection event is unavailable, optionally fall back to
-  `viewer_adapter.active_layer_changed`.
 - Keep the event connection logic in a small private helper so `__init__` does
   not grow more event-connection boilerplate.
-- Keep the napari selection event as the preferred source. The adapter signal
-  is only a fallback connection for environments that do not expose napari's
-  selection event.
 - The shared handler should resolve the active layer from the payload shape it
   receives:
-  - for napari selection events, read `event.value`
-  - for the adapter fallback signal, the argument itself may be the layer
-  - if neither form yields a layer, read `viewer.layers.selection.active`
+  - for napari selection events, read `event.value`, using
+    `getattr(event, "value", None)` if we want the handler to ignore malformed
+    events gracefully
 - Ignore `None`.
 - Ignore if the active layer is already `self._annotation_layer`.
 - Add a private reentrancy guard. Later slices may adopt/open layers, and those
@@ -155,13 +150,9 @@ Tests:
   `layers.selection.events.active`.
 - Emitting/changing the active layer calls the placeholder adoption hook with
   the resolved active layer.
-- If the event payload has no `.value`, the handler falls back to
-  `viewer.layers.selection.active`.
 - If the active layer is already `self._annotation_layer`, the placeholder hook
   is not called.
 - If the reentrancy guard is active, the placeholder hook is not called.
-- Optional: if no napari selection event exists, the widget connects to
-  `viewer_adapter.active_layer_changed`.
 
 ### Slice 1B - Compatible Primary Shapes Candidate
 
