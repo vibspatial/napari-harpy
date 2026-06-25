@@ -841,10 +841,11 @@ Relevant current code path:
   rows. Even if model-level style arrays often remain correct, the operation
   should explicitly preserve/re-emit style state so the vispy layer cannot fall
   back to default filled-polygon rendering.
-- Napari's `layer.data` setter reads existing `edge_color` and `face_color`
-  arrays before rebuilding its `ShapeList`. If those arrays have a length that
-  does not match `len(layer.data)`, napari warns and normalizes colors to its
-  default fallback. This matches warnings such as:
+- Napari's `layer.data` setter reads existing `edge_width`, `edge_color`,
+  `face_color`, and `z_index` state before rebuilding its `ShapeList`. If the
+  color arrays have a length that does not match the number of logical shape
+  rows, napari warns and normalizes colors to its default fallback. This matches
+  warnings such as:
 
   ```text
   The provided edge_color parameter has 5 entries, while the data contains 4 entries.
@@ -868,6 +869,7 @@ Recommended fix:
   - `edge_color`
   - `face_color`
   - `edge_width`
+  - `z_index`
   - `opacity`
   - `current_edge_color`
   - `current_face_color`
@@ -876,15 +878,19 @@ Recommended fix:
   - the shell row survives and keeps the shell row's original style
   - selected child rows become holes and their style entries are removed
   - unselected rows survive and keep their original styles
+  - final row order follows napari's remove semantics, so each final style row
+    should be built from the corresponding surviving pre-mutation row index
 - Before assigning `layer.data = rebuilt_data`, normalize the current layer's
-  row style arrays to the current logical row count. This prevents napari's
-  `layer.data` setter from seeing stale extra style rows and falling back to
-  defaults during the rebuild.
+  row style arrays to the current logical row count using the sliced snapshot.
+  This prevents napari's `layer.data` setter from seeing stale extra style rows
+  and falling back to defaults during the rebuild.
 - Apply the create-holes geometry mutation.
 - Restore surviving row styles through public napari setters after child rows
   have been removed, so napari emits the relevant color/width events.
-- Restore current annotation colors/width and edge width without letting current
-  color callbacks overwrite the final row-aligned styles.
+- Restore layer-level/current annotation colors, width, opacity, and row
+  `z_index` while preserving user customization. Then apply final row-aligned
+  `edge_color`, `face_color`, and `edge_width` last, so Harpy's current-color
+  synchronization callbacks cannot overwrite the final row styles.
 - Keep the resulting shell row selected after style restoration.
 
 Design notes:
@@ -903,6 +909,10 @@ Design notes:
   setting `current_edge_color` can update all row edge colors. The implementation
   should restore current colors/width and row colors in an order that leaves the
   final row-aligned arrays exactly as captured for the surviving rows.
+- `current_edge_width` has the same callback pattern through napari's
+  `edge_width` event, so edge-width restoration needs the same ordering care.
+- Do not solve this by blindly calling `apply_primary_shapes_layer_style(...)`
+  after create-holes; that would erase user-customized annotation styling.
 
 Regression tests:
 
@@ -910,10 +920,11 @@ Regression tests:
   - transparent face color for the resulting shell row
   - annotation edge color for the resulting shell row
   - edge width
+  - z index
   - opacity
 - A layer with user-customized annotation edge color/width keeps those custom
   values after create-holes.
-- Unselected surviving rows keep their row styles.
+- Unselected surviving rows keep their row styles and z index.
 - A regression test should deliberately simulate stale napari internal style
   arrays before create-holes by appending an extra row to
   `layer._data_view._edge_color` and `layer._data_view._face_color`. The
