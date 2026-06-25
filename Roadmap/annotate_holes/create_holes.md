@@ -623,7 +623,7 @@ Acceptance criteria:
 
 ## Slice 2D - refactor
 
-Status: proposed.
+Status: implemented.
 
 Make the widget button/readiness/status code easier to read before adding more
 create-holes behavior.
