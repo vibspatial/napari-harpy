@@ -1,9 +1,9 @@
-Investigated, no code changed.
+Roadmap note for pixel classification.
 
 **Short Answer**
 I would implement pixel classification as a new, separate pipeline beside the existing object-classification pipeline.
 
-For the first feature extractor, I would choose a **small convolutional feature extractor**, not DINO first. My pick would be:
+For the first feature extractor, use one **small convolutional feature extractor**, not DINO first. The MVP choice is:
 
 **ConvNeXt-Tiny early-layer features**, with raw normalized channel intensities appended, and with optional PCA/random-projection compression before caching.
 
@@ -171,13 +171,49 @@ Better:
 Convpaint’s memory mode is useful inspiration for avoiding repeated annotation-feature extraction, but napari-harpy should use a persistent feature-image cache because whole-image prediction and re-use across sessions matter here.
 
 **Model Choice**
-My first choice: **ConvNeXt-Tiny early convolutional layers**, tile-friendly, modern, finite receptive field, and faster than transformer/foundation options.
+MVP choice: **ConvNeXt-Tiny early convolutional layers**, tile-friendly, modern, finite receptive field, and faster than transformer/foundation options.
 
-Fallback conservative baseline: **VGG16 first layer + scales `[1, 2, 4]`**, because Convpaint’s docs explicitly recommend early VGG layers for local texture/color/edge tasks and its source already validates that design.
+Fallback/reference baseline: **VGG16 first layer + scales `[1, 2, 4]`**, because Convpaint’s docs explicitly recommend early VGG layers for local texture/color/edge tasks and its source already validates that design. This should be documented as a comparison point, not as the first implementation target.
 
 I would not start with DINOv2/JAFAR for multiplex. Convpaint documents DINOv2/JAFAR as strong for semantic/contextual tasks and high spatial resolution, but DINO-style RGB patch features are costly and awkward for many-channel fluorescence. Good future optional backend, not MVP.
+
+**Model Download and Loading**
+Use TorchVision pretrained weights. TorchVision downloads the weight file automatically on the first call
+and then reuses the local PyTorch cache on later runs. For napari-harpy this should probably live behind
+an optional dependency group, because `torch` / `torchvision` are large dependencies.
+
+MVP backend:
+
+```python
+from torchvision.models import ConvNeXt_Tiny_Weights, convnext_tiny
+
+weights = ConvNeXt_Tiny_Weights.DEFAULT
+model = convnext_tiny(weights=weights)
+model.eval()
+```
+
+`ConvNeXt_Tiny_Weights.DEFAULT` currently maps to the ImageNet-1K pretrained weights. The full model is
+about `109 MB` according to the TorchVision docs. In the pixel-classification pipeline we would not use
+the classifier head; we would wrap early `model.features` stages as a dense feature extractor.
+
+Reference Convpaint-like baseline:
+
+```python
+from torchvision.models import VGG16_Weights, vgg16
+
+weights = VGG16_Weights.DEFAULT
+model = vgg16(weights=weights)
+model.eval()
+```
+
+For VGG-only feature extraction, TorchVision also exposes `VGG16_Weights.IMAGENET1K_FEATURES`, which
+contains valid weights for the `features` module without usable classifier weights. This is useful to
+document because Convpaint's default VGG-style extraction is feature-oriented, but it is not the MVP
+backend if we choose ConvNeXt-Tiny first.
 
 Sources:
 - Convpaint feature extractor guidance: https://guiwitz.github.io/napari-convpaint/book/FE_descriptions.html
 - Convpaint parameters/cache settings: https://guiwitz.github.io/napari-convpaint/book/Params_settings.html
 - DINOv2 official repo/model notes: https://github.com/facebookresearch/dinov2
+- TorchVision ConvNeXt-Tiny weights/API: https://docs.pytorch.org/vision/stable/models/generated/torchvision.models.convnext_tiny.html
+- TorchVision VGG16 weights/API: https://docs.pytorch.org/vision/stable/models/generated/torchvision.models.vgg16.html

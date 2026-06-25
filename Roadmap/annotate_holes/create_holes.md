@@ -803,7 +803,7 @@ Acceptance criteria:
 
 ## Slice 2F - Preserve Annotation Styling After Create Holes
 
-Status: proposed; next priority.
+Status: implemented.
 
 Fix the visual styling regression observed after using the `Create holes`
 button: the resulting hole-bearing polygon can render like a default filled

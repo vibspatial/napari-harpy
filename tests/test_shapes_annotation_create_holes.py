@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pandas as pd
 import pytest
+from matplotlib.colors import to_rgba
 from napari.layers import Shapes
 from napari.layers.shapes._shapes_constants import Mode
 from shapely.geometry import Polygon
@@ -12,6 +15,7 @@ from napari_harpy.core.shapes_geometry import (
     napari_polygon_vertices_to_shapely_polygon,
     shapely_polygon_to_napari_polygon_vertices,
 )
+from napari_harpy.viewer.shapes_styling import apply_primary_shapes_layer_style
 
 
 def _copy_layer_data(layer: object) -> list[np.ndarray]:
@@ -22,6 +26,10 @@ def _assert_layer_data_unchanged(layer: object, expected_data: list[np.ndarray])
     assert len(layer.data) == len(expected_data)
     for actual_vertices, expected_vertices in zip(layer.data, expected_data, strict=True):
         np.testing.assert_allclose(np.asarray(actual_vertices, dtype=float), expected_vertices)
+
+
+def _rgba(color: str) -> np.ndarray:
+    return np.asarray(to_rgba(color), dtype=float)
 
 
 def test_create_holes_plan_from_selection_selects_largest_shell_and_encodes_child_holes() -> None:
@@ -158,6 +166,93 @@ def test_apply_create_holes_plan_replaces_shell_removes_children_and_preserves_l
     )
     planned_shell = napari_polygon_vertices_to_shapely_polygon(layer.data[0])
     assert planned_shell.equals(expected_shell)
+    assert napari_polygon_vertices_to_shapely_polygon(layer.data[1]).equals(unselected)
+
+
+def test_apply_create_holes_plan_preserves_styles_with_stale_napari_color_arrays() -> None:
+    child_before = Polygon([(2, 2), (2, 4), (4, 4), (4, 2)])
+    shell = Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])
+    child_after = Polygon([(6, 6), (6, 8), (8, 8), (8, 6)])
+    unselected = Polygon([(20, 20), (20, 22), (22, 22), (22, 20)])
+    layer = Shapes(
+        [
+            shapely_polygon_to_napari_polygon_vertices(child_before),
+            shapely_polygon_to_napari_polygon_vertices(shell),
+            shapely_polygon_to_napari_polygon_vertices(child_after),
+            shapely_polygon_to_napari_polygon_vertices(unselected),
+        ],
+        shape_type=["polygon", "polygon", "polygon", "polygon"],
+    )
+    apply_primary_shapes_layer_style(layer)
+
+    current_edge_color = "#aa00aa"
+    current_face_color = "#bbccdd44"
+    current_edge_width = 9
+    layer.current_edge_color = current_edge_color
+    layer.current_face_color = current_face_color
+    layer.current_edge_width = current_edge_width
+
+    edge_color = np.asarray(
+        [
+            _rgba("#ff0000"),
+            _rgba("#00ffff"),
+            _rgba("#00ff00"),
+            _rgba("#123456"),
+        ],
+        dtype=float,
+    )
+    face_color = np.asarray(
+        [
+            _rgba("#111111ff"),
+            _rgba("#00000000"),
+            _rgba("#222222ff"),
+            _rgba("#65432188"),
+        ],
+        dtype=float,
+    )
+    edge_width = [2, 3, 4, 5]
+    z_index = [10, 11, 12, 13]
+    layer.edge_color = edge_color
+    layer.face_color = face_color
+    layer.edge_width = edge_width
+    layer.z_index = z_index
+    layer.opacity = 0.37
+
+    # Simulate the intermittent napari state behind the UI bug: the logical
+    # data rows are correct, but ShapeList carries stale extra color rows.
+    layer._data_view._edge_color = np.vstack([layer._data_view._edge_color, _rgba("#ffff00")])
+    layer._data_view._face_color = np.vstack([layer._data_view._face_color, _rgba("#ffff00")])
+
+    layer.mode = Mode.DIRECT
+    layer.selected_data = {0, 1, 2}
+    plan = create_holes_module._create_holes_plan_from_selection(layer)
+
+    with warnings.catch_warnings(record=True) as caught_warnings:
+        warnings.simplefilter("always")
+        create_holes_module._apply_create_holes_plan(layer, plan)
+
+    style_warnings = [
+        str(warning.message)
+        for warning in caught_warnings
+        if "edge_color" in str(warning.message) or "face_color" in str(warning.message)
+    ]
+    assert style_warnings == []
+    assert set(layer.selected_data) == {0}
+    assert layer.mode == Mode.DIRECT
+    assert layer.opacity == 0.37
+    assert layer.edge_width == [3, 5]
+    assert layer.z_index == [11, 13]
+    np.testing.assert_allclose(layer.edge_color, edge_color[[1, 3]])
+    np.testing.assert_allclose(layer.face_color, face_color[[1, 3]])
+    np.testing.assert_allclose(to_rgba(layer.current_edge_color), to_rgba(current_edge_color))
+    np.testing.assert_allclose(to_rgba(layer.current_face_color), to_rgba(current_face_color))
+    assert layer.current_edge_width == current_edge_width
+
+    expected_shell = Polygon(
+        shell.exterior.coords,
+        holes=[child_before.exterior.coords, child_after.exterior.coords],
+    )
+    assert napari_polygon_vertices_to_shapely_polygon(layer.data[0]).equals(expected_shell)
     assert napari_polygon_vertices_to_shapely_polygon(layer.data[1]).equals(unselected)
 
 
