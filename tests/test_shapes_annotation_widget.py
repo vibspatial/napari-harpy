@@ -1660,6 +1660,48 @@ def test_shapes_annotation_widget_create_holes_mutates_layer_and_marks_dirty(qtb
     assert "Converted 1 selected polygon(s) into hole(s) and removed their shape row(s)." in status
 
 
+def test_shapes_annotation_widget_create_holes_saves_and_reloads(qtbot) -> None:
+    """Integration test for the create-holes, save, and reload path."""
+    shapes_name = "create_holes_regions"
+    sdata, shell, child, unselected = _make_create_holes_sdata(shapes_name=shapes_name)
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, shapes_name))
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    layer.selected_data = {0, 1}
+
+    widget.create_holes_button.click()
+    widget.save_shapes_button.click()
+
+    saved = sdata.shapes[shapes_name]
+    assert saved.index.name == "region_id"
+    assert saved.index.tolist() == ["shell_row", "unselected_row"]
+    assert saved["label"].tolist() == ["shell", "unselected"]
+    np.testing.assert_allclose(saved["score"].to_numpy(), np.asarray([1.0, 3.0]))
+    expected_polygon = Polygon(shell.exterior.coords, holes=[child.exterior.coords])
+    assert saved.geometry.iloc[0].equals(expected_polygon)
+    assert len(saved.geometry.iloc[0].interiors) == 1
+    assert saved.geometry.iloc[1].equals(unselected)
+    assert "Shapes Saved" in _status_text(widget)
+
+    reloaded_viewer = DummyViewer()
+    reloaded_layer = get_or_create_app_state(reloaded_viewer).viewer_adapter.ensure_shapes_loaded(
+        sdata,
+        shapes_name,
+        "global",
+    ).layer
+    reloaded_polygon = napari_polygon_vertices_to_shapely_polygon(reloaded_layer.data[0])
+
+    assert reloaded_polygon.equals(saved.geometry.iloc[0])
+    assert len(reloaded_polygon.interiors) == 1
+    assert len(reloaded_layer.data) == 2
+
+
 def test_shapes_annotation_widget_create_holes_table_linked_warning_is_explicit(qtbot) -> None:
     shapes_name = "create_holes_regions"
     table_name = "create_holes_table"
