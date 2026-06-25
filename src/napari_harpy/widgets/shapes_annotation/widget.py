@@ -70,6 +70,12 @@ from napari_harpy.widgets.shapes_annotation._create_holes import (
     _apply_create_holes_plan,
     _create_holes_plan_from_selection,
 )
+from napari_harpy.widgets.shapes_annotation._layer_style import (
+    _capture_shapes_layer_style,
+    _restore_shapes_layer_current_style,
+    _restore_shapes_layer_row_styles,
+    _trim_stale_private_color_rows_before_rebuild,
+)
 from napari_harpy.widgets.shapes_annotation._snapshot import (
     _annotation_layer_snapshots_equal,
     _capture_annotation_layer_snapshot,
@@ -521,10 +527,14 @@ class _AnnotationLayerEditGuard:
         row_index: int,
         updated_vertices: np.ndarray,
     ) -> None:
+        row_count = len(layer.data)
         current_mode = layer.mode
         selected_data = set(layer.selected_data)
+        style_snapshot = _capture_shapes_layer_style(layer, row_count=row_count)
         rebuilt_data = list(layer.data)
         rebuilt_data[row_index] = updated_vertices
+
+        _trim_stale_private_color_rows_before_rebuild(layer, style_snapshot)
 
         # The caller emits the napari-style CHANGING/CHANGED data events for
         # this vertex deletion, so block intermediate events triggered by
@@ -537,6 +547,7 @@ class _AnnotationLayerEditGuard:
             # `layer.data[row_index]`.
             layer.data = rebuilt_data
 
+        layer.opacity = style_snapshot.opacity
         layer.mode = current_mode
         # Defensive guard: this helper only replaces a row today, but avoid
         # restoring impossible selections if a future caller removes rows.
@@ -544,6 +555,12 @@ class _AnnotationLayerEditGuard:
         if row_index < len(layer.data):
             selected_data.add(row_index)
         layer.selected_data = selected_data
+
+        # Restore current draw defaults without emitting Harpy's style sync
+        # callbacks, then reapply row styles last so callback side effects
+        # cannot overwrite the final styling.
+        _restore_shapes_layer_current_style(layer, style_snapshot)
+        _restore_shapes_layer_row_styles(layer, style_snapshot, row_indices=range(len(layer.data)))
 
     def _capture_vertex_delete_state(self, layer: Shapes, event: object) -> _VertexDeleteState | None:
         """Return delete state only for hole-bearing polygon rows we own.

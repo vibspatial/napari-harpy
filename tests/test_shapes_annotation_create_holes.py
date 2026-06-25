@@ -219,7 +219,7 @@ def test_apply_create_holes_plan_preserves_styles_with_stale_napari_color_arrays
     layer.opacity = 0.37
 
     # Simulate the intermittent napari state behind the UI bug: the logical
-    # data rows are correct, but ShapeList carries stale extra color rows.
+    # data rows are correct, but private color arrays have stale extra rows.
     layer._data_view._edge_color = np.vstack([layer._data_view._edge_color, _rgba("#ffff00")])
     layer._data_view._face_color = np.vstack([layer._data_view._face_color, _rgba("#ffff00")])
 

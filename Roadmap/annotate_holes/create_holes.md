@@ -947,7 +947,7 @@ Acceptance criteria:
 
 ## Slice 2F Follow-Up - Preserve Styling During Vertex-Delete Cache Rebuild
 
-Status: proposed.
+Status: implemented.
 
 Apply the same stale-style-array hardening to the annotation guard's
 vertex-delete cache rebuild path.

@@ -10,6 +10,12 @@ from napari_harpy.core.shapes_geometry import (
     napari_polygon_vertices_to_shapely_polygon,
     shapely_polygon_to_napari_polygon_vertices,
 )
+from napari_harpy.widgets.shapes_annotation._layer_style import (
+    _capture_shapes_layer_style,
+    _restore_shapes_layer_current_style,
+    _restore_shapes_layer_row_styles,
+    _trim_stale_private_color_rows_before_rebuild,
+)
 
 
 @dataclass(frozen=True)
@@ -56,18 +62,6 @@ class _CreateHolesShapesLayerPlan:
         object.__setattr__(self, "shell_row_index", shell_row_index)
         object.__setattr__(self, "hole_row_indices", hole_row_indices)
         object.__setattr__(self, "vertices", vertices.copy())
-
-
-@dataclass(frozen=True)
-class _ShapesLayerStyleSnapshot:
-    edge_color: np.ndarray
-    face_color: np.ndarray
-    edge_width: tuple[object, ...]
-    z_index: tuple[object, ...]
-    opacity: float
-    current_edge_color: object
-    current_face_color: object
-    current_edge_width: object
 
 
 def _create_holes_plan_from_selection(layer: Shapes) -> _CreateHolesShapesLayerPlan:
@@ -142,22 +136,12 @@ def _apply_create_holes_plan(layer: Shapes, plan: _CreateHolesShapesLayerPlan) -
     # The annotation layer connects current edge color/width changes back to all
     # row styles. Restore draw defaults without emitting those sync callbacks,
     # after selecting the final shell row and before reapplying final row styles.
-    with layer.block_update_properties():
-        with layer.events.current_edge_color.blocker():
-            layer.current_edge_color = style_snapshot.current_edge_color
-        with layer.events.current_face_color.blocker():
-            layer.current_face_color = style_snapshot.current_face_color
-        with layer.events.edge_width.blocker():
-            layer.current_edge_width = style_snapshot.current_edge_width
+    _restore_shapes_layer_current_style(layer, style_snapshot)
 
     # Reapply surviving row styles last. Selecting the final shell row and
     # restoring current draw defaults can touch selected row styling through
     # napari/Harpy callbacks; the final row-aligned styles should win.
-    surviving_row_indices_list = list(surviving_row_indices)
-    layer.z_index = [style_snapshot.z_index[index] for index in surviving_row_indices_list]
-    layer.edge_color = style_snapshot.edge_color[surviving_row_indices_list]
-    layer.face_color = style_snapshot.face_color[surviving_row_indices_list]
-    layer.edge_width = [style_snapshot.edge_width[index] for index in surviving_row_indices_list]
+    _restore_shapes_layer_row_styles(layer, style_snapshot, row_indices=surviving_row_indices)
     # Public napari layer APIs above emit the data/selection events that drive
     # viewer refresh; keep explicit refreshes for low-level edit paths.
 
@@ -189,51 +173,3 @@ def _shape_type_at(layer: Shapes, row_index: int) -> object:
     except (IndexError, TypeError):
         return None
 
-
-def _capture_shapes_layer_style(layer: Shapes, *, row_count: int) -> _ShapesLayerStyleSnapshot:
-    return _ShapesLayerStyleSnapshot(
-        edge_color=_row_aligned_color_array(layer.edge_color, row_count=row_count, name="edge_color"),
-        face_color=_row_aligned_color_array(layer.face_color, row_count=row_count, name="face_color"),
-        edge_width=_row_aligned_sequence(layer.edge_width, row_count=row_count, name="edge_width"),
-        z_index=_row_aligned_sequence(layer.z_index, row_count=row_count, name="z_index"),
-        opacity=layer.opacity,
-        current_edge_color=layer.current_edge_color,
-        current_face_color=layer.current_face_color,
-        current_edge_width=layer.current_edge_width,
-    )
-
-
-def _row_aligned_color_array(colors: object, *, row_count: int, name: str) -> np.ndarray:
-    color_array = np.asarray(colors, dtype=float)
-    if color_array.ndim != 2 or color_array.shape[1] != 4 or len(color_array) < row_count:
-        raise ValueError(f"Shapes layer {name} must contain one RGBA row for each shape row.")
-    return color_array[:row_count].copy()
-
-
-def _row_aligned_sequence(values: object, *, row_count: int, name: str) -> tuple[object, ...]:
-    try:
-        sequence = tuple(values)
-    except TypeError as error:
-        raise ValueError(f"Shapes layer {name} must contain one value for each shape row.") from error
-    if len(sequence) < row_count:
-        raise ValueError(f"Shapes layer {name} must contain one value for each shape row.")
-    return sequence[:row_count]
-
-
-def _trim_stale_private_color_rows_before_rebuild(layer: Shapes, snapshot: _ShapesLayerStyleSnapshot) -> None:
-    # Trim stale private napari color rows before the data setter rebuilds the
-    # private shape-data cache. The current `layer.data` row count must match
-    # the private color row count, otherwise napari falls back to default filled
-    # polygon colors.
-    # Example stale state: `len(layer.data) == 4`, while
-    # `layer._data_view._edge_color.shape == (5, 4)` and
-    # `layer._data_view._face_color.shape == (5, 4)`.
-    #
-    # Napari's public color setter updates existing private shape rows but does
-    # not shrink stale private color arrays. Trim those arrays directly
-    # immediately before `layer.data = ...`; napari's data setter reads them,
-    # then replaces the private shape-data cache during rebuild.
-    layer._data_view._edge_color = snapshot.edge_color.copy()
-    layer._data_view._face_color = snapshot.face_color.copy()
-    layer.edge_width = list(snapshot.edge_width)
-    layer.z_index = list(snapshot.z_index)

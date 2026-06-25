@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
 from html import unescape
 from types import SimpleNamespace
@@ -33,9 +34,14 @@ from napari_harpy.viewer.adapter import ShapesLayerBinding
 from napari_harpy.viewer.shapes_styling import (
     _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR,
     _SHAPES_EDGE_WIDTH_SYNC_CALLBACK_ATTR,
+    apply_primary_shapes_layer_style,
 )
 from napari_harpy.widgets import ShapesAnnotation as LazyShapesAnnotation
 from napari_harpy.widgets.shapes_annotation.widget import ShapesAnnotation
+
+
+def _rgba(color: str) -> np.ndarray:
+    return np.asarray(to_rgba(color), dtype=float)
 
 
 class DummyEventEmitter:
@@ -728,6 +734,79 @@ def test_annotation_layer_edit_guard_vertex_remove_rebuilds_cache_after_shorteni
         (ActionType.CHANGING, (0,), ((len(shortened_vertices) - 1,),)),
         (ActionType.CHANGED, (0,), ((len(shortened_vertices) - 1,),)),
     ]
+
+
+def test_annotation_layer_edit_guard_vertex_remove_preserves_styles_with_stale_napari_color_arrays(monkeypatch) -> None:
+    polygon, simple_polygon = _polygon_hole_roundtrip_fixture()
+    original_hole_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
+    original_simple_vertices = shapely_polygon_to_napari_polygon_vertices(simple_polygon)
+    deleted_vertex_index = 7
+    topology = napari_polygon_vertices_to_topology(original_hole_vertices)
+    expected_vertices, _ = delete_napari_polygon_vertex(
+        original_hole_vertices,
+        topology,
+        deleted_vertex_index,
+    )
+    layer = Shapes(
+        [original_hole_vertices, original_simple_vertices],
+        shape_type=["polygon", "polygon"],
+    )
+    apply_primary_shapes_layer_style(layer)
+    layer.mode = Mode.VERTEX_REMOVE
+    layer.selected_data = {0}
+    layer._drag_modes = dict(layer._drag_modes)
+
+    current_edge_color = "#aa00aa"
+    current_face_color = "#bbccdd44"
+    current_edge_width = 9
+    layer.current_edge_color = current_edge_color
+    layer.current_face_color = current_face_color
+    layer.current_edge_width = current_edge_width
+
+    edge_color = np.asarray([_rgba("#00ffff"), _rgba("#123456")], dtype=float)
+    face_color = np.asarray([_rgba("#00000000"), _rgba("#65432188")], dtype=float)
+    edge_width = [3, 5]
+    z_index = [11, 13]
+    layer.edge_color = edge_color
+    layer.face_color = face_color
+    layer.edge_width = edge_width
+    layer.z_index = z_index
+    layer.opacity = 0.37
+
+    # Simulate the intermittent napari state behind the UI bug: the logical
+    # data rows are correct, but the private color arrays have stale extra rows.
+    layer._data_view._edge_color = np.vstack([layer._data_view._edge_color, _rgba("#ffff00")])
+    layer._data_view._face_color = np.vstack([layer._data_view._face_color, _rgba("#ffff00")])
+
+    def original_vertex_remove_callback(*args: object, **kwargs: object) -> None:
+        raise AssertionError("hole-bearing polygon deletion should use the topology helper")
+
+    monkeypatch.setattr(layer, "get_value", lambda position, world=True: (0, deleted_vertex_index))
+    layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+
+    with warnings.catch_warnings(record=True) as caught_warnings:
+        warnings.simplefilter("always")
+        layer._drag_modes[Mode.VERTEX_REMOVE](layer, SimpleNamespace(position=(0.0, 0.0)))
+
+    style_warnings = [
+        str(warning.message)
+        for warning in caught_warnings
+        if "edge_color" in str(warning.message) or "face_color" in str(warning.message)
+    ]
+    assert style_warnings == []
+    np.testing.assert_allclose(np.asarray(layer.data[0], dtype=float), expected_vertices)
+    assert set(layer.selected_data) == {0}
+    assert layer.mode == Mode.VERTEX_REMOVE
+    assert layer.opacity == 0.37
+    assert layer.edge_width == edge_width
+    assert layer.z_index == z_index
+    np.testing.assert_allclose(layer.edge_color, edge_color)
+    np.testing.assert_allclose(layer.face_color, face_color)
+    np.testing.assert_allclose(to_rgba(layer.current_edge_color), to_rgba(current_edge_color))
+    np.testing.assert_allclose(to_rgba(layer.current_face_color), to_rgba(current_face_color))
+    assert layer.current_edge_width == current_edge_width
 
 
 def test_annotation_layer_edit_guard_vertex_remove_delegates_malformed_topology(monkeypatch) -> None:
