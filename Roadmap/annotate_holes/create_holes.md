@@ -621,7 +621,320 @@ Acceptance criteria:
 - Invalid selections fail clearly and do not mutate the layer.
 - The operation is treated like any other unsaved annotation edit.
 
-## Slice 2E - End-To-End Save And Reload
+## Slice 2D - refactor
+
+Status: proposed.
+
+Make the widget button/readiness/status code easier to read before adding more
+create-holes behavior.
+
+Why this deserves a follow-up:
+
+- The current code uses `_refresh_save_shapes_state(update_status=False)` to
+  mean "update the Save shapes and Create holes button enabled state, but do
+  not overwrite the operation-specific status card."
+- That is hard to reason about because `_refresh_save_shapes_state(...)` calls
+  `_annotation_layer_is_actionable(...)`, and `_annotation_layer_is_actionable`
+  sounds like a pure boolean predicate but can also write status-card messages.
+- Callers therefore need to understand hidden side effects and pass
+  `update_status=False` at the right moments to avoid clobbering messages such
+  as `Created Holes` or `Could Not Create Holes`.
+- `_on_save_shapes_clicked(...)` also checks
+  `self.save_shapes_button.isEnabled()` after refreshing readiness. That makes
+  a UI property act as hidden business logic.
+
+Recommended direction:
+
+- Introduce a small private readiness object, for example:
+
+  ```python
+  @dataclass(frozen=True)
+  class _AnnotationLayerReadiness:
+      actionable: bool
+      status: _ShapesAnnotationStatusCardSpec | None = None
+  ```
+
+  The `status` is a readiness status-card spec, not an operation-result status.
+  It should come from the proposed `widgets/shapes_annotation/status_card.py`
+  builders.
+
+- Replace `_annotation_layer_is_actionable(update_status=...)` with a pure
+  evaluator, for example:
+
+  ```python
+  def _evaluate_annotation_layer_readiness(self) -> _AnnotationLayerReadiness:
+      ...
+  ```
+
+  This method should inspect the current annotation layer, app state, binding,
+  and session, but should not mutate the UI.
+
+- Add explicit UI application helpers:
+
+  ```python
+  def _apply_annotation_action_buttons(self, readiness: _AnnotationLayerReadiness) -> None:
+      self.save_shapes_button.setEnabled(readiness.actionable)
+      self.create_holes_button.setEnabled(readiness.actionable)
+
+  def _apply_status_card_spec(self, spec: _ShapesAnnotationStatusCardSpec | None) -> None:
+      ...
+  ```
+
+- Keep operation-specific handlers explicit. For example, `Create holes` should:
+  - evaluate readiness
+  - apply button state
+  - show `readiness.status` only if not actionable
+  - otherwise run create-holes
+  - after success, evaluate readiness again and apply button state without
+    showing the readiness status
+  - build an operation-result status with a status-card helper, for example:
+
+    ```python
+    created_holes_status = build_create_holes_success_card_spec(
+        hole_count=hole_count,
+        table_linked=session.table_linked,
+    )
+    self._apply_status_card_spec(created_holes_status)
+    ```
+
+  This keeps the click handler focused on workflow while
+  `status_card.py` owns wording such as `Created Holes`.
+
+- `Save shapes` should similarly use the readiness result directly instead of
+  checking `self.save_shapes_button.isEnabled()` as the source of truth.
+
+Design notes:
+
+- This refactor should not change user-visible behavior.
+- It should remove or greatly reduce the need for `update_status=False`.
+- It should make the distinction between "readiness status" and
+  "operation-result status" explicit.
+- Keep this scoped to the annotation widget readiness/action buttons. Do not
+  fold in style preservation or active-layer synchronization.
+
+Acceptance criteria:
+
+- Readiness evaluation is side-effect free.
+- Button state updates are handled by an explicit helper.
+- Status-card writes happen only where the caller intentionally requests them.
+- `Create holes` and `Save shapes` no longer infer business readiness from a
+  button's enabled state.
+- Existing widget tests continue to pass with no behavior changes.
+
+## Slice 2E - Reject Create Holes During Napari Draw/Edit Transient State
+
+Status: deferred.
+
+Prevent create-holes from mutating a Shapes layer while napari is still inside
+an in-progress draw/add interaction.
+
+Deferred rationale:
+
+- A reported traceback showed napari failing inside
+  `add_path_polygon_lasso(...)` on mouse release because
+  `layer._moving_value[0]` was already `None`.
+- Napari uses `_moving_value`, `_is_creating`, and the current add/draw mode to
+  finish shape creation. Mutating `layer.data` during that transient state can
+  call `_finish_drawing()`, reset `_moving_value`, and leave napari's mouse
+  callback with stale state.
+- However, blocking create-holes, coordinate-system changes, or annotation-target
+  changes based on napari draw/add modes gives a poor user experience: users can
+  end up blocked without a clear place to click or action to take.
+- The recurring style symptom is better explained by row/style array mismatch
+  during the create-holes mutation itself. If napari's internal style arrays
+  contain stale extra rows, `layer.data = rebuilt_data` can trigger napari's
+  color fallback path and reset edge/face colors to defaults.
+- Defer this guard unless we later isolate a separate, reproducible mouse-draw
+  crash that cannot be solved by explicit style preservation and layer mutation
+  hygiene.
+
+Previously considered guard:
+
+- Before planning or applying create-holes, reject clearly if the annotation
+  layer is in an in-progress creation state:
+
+  ```python
+  if getattr(layer, "_is_creating", False):
+      raise ValueError("Finish the current shape drawing before creating holes.")
+  ```
+
+- Also reject when the layer mode is one of napari's draw/add modes, because
+  those modes indicate the user is preparing or completing shape creation:
+  - `Mode.ADD_PATH`
+  - `Mode.ADD_POLYGON`
+  - `Mode.ADD_POLYGON_LASSO`
+  - `Mode.ADD_RECTANGLE`
+  - `Mode.ADD_ELLIPSE`
+  - `Mode.ADD_LINE`
+  - `Mode.ADD_POLYLINE`
+- Keep `Mode.SELECT`, `Mode.DIRECT`, `Mode.VERTEX_INSERT`, and
+  `Mode.VERTEX_REMOVE` eligible. The operation still validates selected shape
+  rows on click.
+- Surface the rejection through the existing `Could Not Create Holes` status
+  card and leave the layer unchanged.
+
+Implementation notes:
+
+- Prefer a small helper close to the widget click handler or create-holes
+  helper, for example `_validate_create_holes_layer_is_stable(layer)`.
+- This helper should run before `_create_holes_plan_from_selection(...)`, so no
+  geometry parsing or row mutation happens while napari is in a transient draw
+  state.
+- The guard is separate from active-layer synchronization. It prevents an
+  unsafe operation on the widget-owned annotation layer, but it does not yet
+  solve napari/widget active-layer divergence.
+
+Regression tests:
+
+- `Create holes` with `layer._is_creating = True` shows a warning and does not
+  mutate rows/features.
+- `Create holes` in each add/draw mode shows a warning and does not mutate
+  rows/features.
+- `Create holes` still works in an eligible mode such as `Mode.SELECT` or
+  `Mode.DIRECT`.
+
+Acceptance criteria:
+
+- Create-holes cannot run while napari is midway through drawing/adding a
+  shape.
+- The reported `add_path_polygon_lasso(...)` `_moving_value[0] is None` failure
+  is not reachable from the create-holes button path.
+- Geometry/topology behavior from Slice 2D remains unchanged in stable modes.
+
+## Slice 2F - Preserve Annotation Styling After Create Holes
+
+Status: proposed; next priority.
+
+Fix the visual styling regression observed after using the `Create holes`
+button: the resulting hole-bearing polygon can render like a default filled
+napari polygon instead of keeping Harpy's annotation style.
+
+Observed behavior:
+
+- The create-holes operation succeeds geometrically.
+- The resulting row contains the expected hole topology.
+- The rendered polygon can lose the expected annotation appearance, showing a
+  filled gray/white face instead of Harpy's transparent-face, cyan-edge style.
+- The issue is intermittent because it depends on napari's current internal
+  row/style state. In a clean layer, create-holes can preserve styling; if
+  napari's style arrays contain stale extra rows, napari can fall back to
+  default colors.
+
+Relevant current code path:
+
+- Harpy's primary annotation style is defined in
+  `src/napari_harpy/viewer/shapes_styling.py`:
+
+  ```python
+  PRIMARY_SHAPES_EDGE_COLOR = "#00FFFF"
+  PRIMARY_SHAPES_FACE_COLOR = "#00000000"
+  PRIMARY_SHAPES_EDGE_WIDTH = 1
+  PRIMARY_SHAPES_OPACITY = 0.8
+  ```
+
+- `apply_primary_shapes_layer_style(...)` applies those defaults when an
+  annotation layer is created, loaded, or adopted.
+- `_apply_create_holes_plan(...)` then mutates the layer by assigning
+  `layer.data = rebuilt_data`, removing child rows with `layer.remove(...)`,
+  and selecting the resulting shell row.
+- That geometry mutation rebuilds napari's internal `ShapeList` and removes
+  rows. Even if model-level style arrays often remain correct, the operation
+  should explicitly preserve/re-emit style state so the vispy layer cannot fall
+  back to default filled-polygon rendering.
+- Napari's `layer.data` setter reads existing `edge_color` and `face_color`
+  arrays before rebuilding its `ShapeList`. If those arrays have a length that
+  does not match `len(layer.data)`, napari warns and normalizes colors to its
+  default fallback. This matches warnings such as:
+
+  ```text
+  The provided edge_color parameter has 5 entries, while the data contains 4 entries.
+  Setting edge_color to white.
+  ```
+
+Root-cause hypothesis:
+
+- `Create holes` should not rely on napari's implicit style carry-over through
+  `layer.data = rebuilt_data`.
+- Before replacing/removing rows, Harpy should snapshot the style state that
+  belongs to the current logical layer rows and ignore any stale extra style
+  entries.
+- After the geometry mutation, Harpy should explicitly restore the style state
+  for the surviving rows.
+
+Recommended fix:
+
+- Capture row-aligned style state before mutation, sliced to the current
+  logical row count `len(layer.data)`:
+  - `edge_color`
+  - `face_color`
+  - `edge_width`
+  - `opacity`
+  - `current_edge_color`
+  - `current_face_color`
+  - `current_edge_width`
+- Compute the pre-mutation row indices that survive:
+  - the shell row survives and keeps the shell row's original style
+  - selected child rows become holes and their style entries are removed
+  - unselected rows survive and keep their original styles
+- Before assigning `layer.data = rebuilt_data`, normalize the current layer's
+  row style arrays to the current logical row count. This prevents napari's
+  `layer.data` setter from seeing stale extra style rows and falling back to
+  defaults during the rebuild.
+- Apply the create-holes geometry mutation.
+- Restore surviving row styles through public napari setters after child rows
+  have been removed, so napari emits the relevant color/width events.
+- Restore current annotation colors/width and edge width without letting current
+  color callbacks overwrite the final row-aligned styles.
+- Keep the resulting shell row selected after style restoration.
+
+Design notes:
+
+- Prefer preserving the existing layer style over blindly calling
+  `apply_primary_shapes_layer_style(...)`. Users may have changed the
+  annotation edge color or edge width in napari; create-holes should not reset
+  those choices to cyan/width 1 unless the layer was already using them.
+- The helper should preserve styles for all surviving rows, not just the shell
+  row.
+- The consumed child rows' style entries should disappear along with the rows.
+- If direct style restoration through public setters proves to change selected
+  rows unintentionally, temporarily clear or block selection while restoring
+  style, then restore `selected_data = {new_shell_row_index}`.
+- Be careful with Harpy's existing current-edge-color synchronization callback:
+  setting `current_edge_color` can update all row edge colors. The implementation
+  should restore current colors/width and row colors in an order that leaves the
+  final row-aligned arrays exactly as captured for the surviving rows.
+
+Regression tests:
+
+- A create-holes operation on a Harpy-styled annotation layer preserves:
+  - transparent face color for the resulting shell row
+  - annotation edge color for the resulting shell row
+  - edge width
+  - opacity
+- A layer with user-customized annotation edge color/width keeps those custom
+  values after create-holes.
+- Unselected surviving rows keep their row styles.
+- A regression test should deliberately simulate stale napari internal style
+  arrays before create-holes by appending an extra row to
+  `layer._data_view._edge_color` and `layer._data_view._face_color`. The
+  operation should:
+  - not emit napari's color fallback warning
+  - preserve cyan/transparent Harpy styling for the surviving shell row
+  - preserve custom styles for unselected surviving rows
+  - remove the consumed child rows' style entries
+- The geometry assertions from Slice 2D should remain in place: the shell row
+  contains the new holes and child rows no longer exist as positive polygons.
+
+Acceptance criteria:
+
+- After clicking `Create holes`, the result renders with the same annotation
+  styling as before the operation.
+- Napari color fallback warnings caused by stale row/style array lengths are not
+  emitted by the create-holes path.
+- Geometry/topology behavior from Slice 2D remains unchanged.
+- Style preservation is covered by focused tests.
+
+## Slice 2G - End-To-End Save And Reload
 
 Status: proposed.
 
@@ -665,7 +978,105 @@ Acceptance criteria:
 - Shell metadata survives.
 - Consumed child rows do not survive as positive annotation rows.
 
-## Slice 2F - Documentation And Main Roadmap Alignment
+## Slice 2H - Shapes Annotation Status Card Helper
+
+Status: proposed.
+
+Introduce a dedicated `widgets/shapes_annotation/status_card.py` helper module
+so annotation status-card text follows the same structure as the viewer, object
+classification, and feature extraction widgets.
+
+Why this helps:
+
+- The annotation widget currently builds many status cards inline in
+  `widget.py`: readiness messages, save success/failure, create-holes
+  success/failure, target validation, and edit-guard warnings.
+- Other widgets already centralize this pattern in a local `status_card.py`
+  module with a small status spec dataclass and builder functions.
+- Moving annotation status-card construction into a helper makes the proposed
+  Slice 2D refactor cleaner: readiness evaluation can return a status-card spec
+  without directly mutating the widget UI.
+- It also keeps future create-holes status messages, such as style-preservation
+  warnings or linked-table warnings, out of the button-handler control flow.
+
+Recommended API shape:
+
+```python
+@dataclass(frozen=True)
+class _ShapesAnnotationStatusCardSpec:
+    title: str
+    lines: tuple[str, ...]
+    kind: StatusCardKind
+    tooltip_message: str | None = None
+
+    def __post_init__(self) -> None:
+        validate_status_card_kind(self.kind)
+```
+
+Suggested builder functions:
+
+- `build_annotation_no_spatialdata_card_spec(...)`
+- `build_annotation_coordinate_system_missing_card_spec(...)`
+- `build_annotation_target_missing_card_spec(...)`
+- `build_annotation_target_ready_card_spec(...)`
+- `build_annotation_existing_shapes_opened_card_spec(...)`
+- `build_annotation_layer_ready_card_spec(...)`
+- `build_annotation_save_success_card_spec(...)`
+- `build_annotation_error_card_spec(...)`
+- `build_create_holes_success_card_spec(...)`
+- `build_create_holes_error_card_spec(...)`
+- `build_annotation_edit_warning_card_spec(...)`
+
+Integration with Slice 2D refactor:
+
+- `_AnnotationLayerReadiness` can carry a
+  `_ShapesAnnotationStatusCardSpec | None` instead of raw `title`, `lines`, and
+  `kind` fields:
+
+  ```python
+  @dataclass(frozen=True)
+  class _AnnotationLayerReadiness:
+      actionable: bool
+      status: _ShapesAnnotationStatusCardSpec | None = None
+  ```
+
+- The readiness evaluator stays pure: it returns readiness and a status spec,
+  but does not call `_set_status(...)`.
+- The widget gets one apply helper, matching existing project patterns:
+
+  ```python
+  def _apply_status_card_spec(self, spec: _ShapesAnnotationStatusCardSpec | None) -> None:
+      ...
+  ```
+
+- Operation handlers choose explicitly whether to show a readiness status or an
+  operation-result status. This should remove the confusing
+  `_refresh_save_shapes_state(update_status=False)` pattern over time.
+
+Design notes:
+
+- Keep the status helper focused on message construction only. It should not
+  inspect live napari layers or mutate widgets.
+- Use `format_feedback_identifier(...)` in the helper for shortened
+  shapes-name and coordinate-system display text, matching the current widget
+  behavior.
+- Keep table-linked warnings explicit in the create-holes and save status
+  builders.
+- Prefer one generic error builder only when the title/wording is truly shared;
+  otherwise keep small named builders so call sites remain readable.
+
+Acceptance criteria:
+
+- Annotation status-card text construction lives in
+  `widgets/shapes_annotation/status_card.py`.
+- `widget.py` applies status-card specs rather than constructing every status
+  inline.
+- Existing user-visible status wording is preserved unless intentionally
+  changed in the spec.
+- The helper supports the Slice 2D readiness refactor without introducing UI
+  side effects into readiness evaluation.
+
+## Slice 2I - Documentation And Main Roadmap Alignment
 
 Status: proposed.
 

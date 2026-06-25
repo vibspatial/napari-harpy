@@ -102,6 +102,12 @@ def _tooltip_text(widget: ShapesAnnotation) -> str:
     return unescape(widget.status_label.toolTip()).replace("&#8203;", "").replace("\u200b", "")
 
 
+def _assert_layer_data_unchanged(layer: Shapes, expected_data: list[np.ndarray]) -> None:
+    assert len(layer.data) == len(expected_data)
+    for actual_vertices, expected_vertices in zip(layer.data, expected_data, strict=True):
+        np.testing.assert_allclose(np.asarray(actual_vertices, dtype=float), expected_vertices)
+
+
 def _patch_coordinate_system_names(monkeypatch, coordinate_systems: list[str]) -> None:
     monkeypatch.setattr(
         shapes_annotation_widget_module,
@@ -279,6 +285,22 @@ def _make_polygon_hole_roundtrip_sdata(*, shapes_name: str = "hole_regions") -> 
     return SpatialData(shapes={shapes_name: shapes})
 
 
+def _make_create_holes_sdata(
+    *,
+    shapes_name: str = "create_holes_regions",
+) -> tuple[SpatialData, Polygon, Polygon, Polygon]:
+    shell = Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])
+    child = Polygon([(2, 2), (2, 4), (4, 4), (4, 2)])
+    unselected = Polygon([(20, 20), (20, 24), (24, 24), (24, 20)])
+    geodataframe = gpd.GeoDataFrame(
+        {"label": ["shell", "child", "unselected"], "score": [1.0, 2.0, 3.0]},
+        geometry=[shell, child, unselected],
+        index=pd.Index(["shell_row", "child_row", "unselected_row"], name="region_id"),
+    )
+    shapes = ShapesModel.parse(geodataframe, transformations={"global": Identity()})
+    return SpatialData(shapes={shapes_name: shapes}), shell, child, unselected
+
+
 def _assert_polygon_hole_geometries_preserved(saved: gpd.GeoDataFrame, polygon_1: Polygon, polygon_2: Polygon) -> None:
     saved_polygon_1 = saved.geometry.iloc[0]
     saved_polygon_2 = saved.geometry.iloc[1]
@@ -334,6 +356,7 @@ def test_shapes_annotation_widget_can_be_instantiated(qtbot) -> None:
     assert widget.shapes_combo.count() == 0
     assert widget.shapes_combo.isEnabled() is False
     assert widget.create_layer_button.isEnabled() is False
+    assert widget.create_holes_button.isEnabled() is False
     assert widget.save_shapes_button.isEnabled() is False
     assert "No SpatialData Loaded" in _status_text(widget)
 
@@ -1497,6 +1520,94 @@ def test_shapes_annotation_widget_edit_existing_preserves_non_anchor_hole_vertex
 
     assert reloaded_polygon_1.equals(saved.geometry.iloc[0])
     assert len(reloaded_polygon_1.interiors) == 1
+
+
+def test_shapes_annotation_widget_create_holes_invalid_selection_warns_without_mutation(qtbot) -> None:
+    shapes_name = "create_holes_regions"
+    sdata, _shell, _child, _unselected = _make_create_holes_sdata(shapes_name=shapes_name)
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, shapes_name))
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    assert widget.create_holes_button.isEnabled() is True
+    original_data = [np.asarray(vertices, dtype=float).copy() for vertices in layer.data]
+    original_features = layer.features.copy()
+    layer.selected_data = {0}
+
+    widget.create_holes_button.click()
+
+    assert "Could Not Create Holes" in _status_text(widget)
+    assert "Select one shell polygon" in _status_text(widget)
+    _assert_layer_data_unchanged(layer, original_data)
+    pd.testing.assert_frame_equal(layer.features, original_features)
+    assert widget.save_shapes_button.isEnabled() is True
+    assert widget.create_holes_button.isEnabled() is True
+
+
+def test_shapes_annotation_widget_create_holes_mutates_layer_and_marks_dirty(qtbot) -> None:
+    shapes_name = "create_holes_regions"
+    sdata, shell, child, unselected = _make_create_holes_sdata(shapes_name=shapes_name)
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, shapes_name))
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    assert widget._annotation_layer_has_unsaved_changes() is False
+    layer.selected_data = {0, 1}
+
+    widget.create_holes_button.click()
+
+    assert len(layer.data) == 2
+    assert list(layer.shape_type) == ["polygon", "polygon"]
+    assert layer.features["region_id"].tolist() == ["shell_row", "unselected_row"]
+    assert set(layer.selected_data) == {0}
+    expected_shell = Polygon(shell.exterior.coords, holes=[child.exterior.coords])
+    assert napari_polygon_vertices_to_shapely_polygon(layer.data[0]).equals(expected_shell)
+    assert napari_polygon_vertices_to_shapely_polygon(layer.data[1]).equals(unselected)
+    assert widget._annotation_layer_has_unsaved_changes() is True
+    assert widget.save_shapes_button.isEnabled() is True
+    assert widget.create_holes_button.isEnabled() is True
+    status = _status_text(widget)
+    assert "Created Holes" in status
+    assert "Converted 1 selected polygon(s) into hole(s) and removed their shape row(s)." in status
+
+
+def test_shapes_annotation_widget_create_holes_table_linked_warning_is_explicit(qtbot) -> None:
+    shapes_name = "create_holes_regions"
+    table_name = "create_holes_table"
+    sdata, _shell, _child, _unselected = _make_create_holes_sdata(shapes_name=shapes_name)
+    table = _add_dummy_table_annotating_shapes(sdata, shapes_name=shapes_name, table_name=table_name)
+    original_obs = table.obs.copy(deep=True)
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, shapes_name))
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.table_linked is True
+    layer.selected_data = {0, 1}
+
+    widget.create_holes_button.click()
+
+    assert sdata.tables[table_name] is table
+    pd.testing.assert_frame_equal(sdata.tables[table_name].obs, original_obs)
+    status = _status_text(widget)
+    assert "Created Holes" in status
+    assert "Linked tables are not updated automatically" in status
+    assert "table annotations may no longer match the shapes rows" in status
 
 
 # Keep end-to-end anchor-edit coverage focused: one shell-anchor edit on an
