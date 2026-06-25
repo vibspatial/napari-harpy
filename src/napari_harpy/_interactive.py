@@ -60,7 +60,7 @@ class Interactive:
         viewer: napari.Viewer | None = None,
         headless: bool = False,
         widgets: HarpyWidgetSelection = "all",
-        async_slicing: bool | None = None,
+        async_slicing: bool | None = False,
     ) -> None:
         widget_ids = self._normalize_widget_selection(widgets)
         if async_slicing is not None:
@@ -108,9 +108,7 @@ class Interactive:
             return (widgets,)
 
         if not isinstance(widgets, Sequence):
-            raise ValueError(
-                "`widgets` must be 'all', one Harpy widget id, or a sequence of Harpy widget ids."
-            )
+            raise ValueError("`widgets` must be 'all', one Harpy widget id, or a sequence of Harpy widget ids.")
 
         widget_ids: list[HarpyWidgetId] = []
         seen_widget_ids: set[HarpyWidgetId] = set()
