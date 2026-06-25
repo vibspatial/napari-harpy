@@ -54,10 +54,13 @@ dependencies = [
 
 # TODO: change to dependency-groups once pip has support https://github.com/pypa/pip/issues/12963
 [project.optional-dependencies]
+torch = [
+    "torchvision",
+]
 test = [
     "pytest",
     "pytest-cov",
-    "pytest-qt", # only necessary for unit testing deprecated plugin
+    "pytest-qt",
     "tox",
 ]
 docs = [
@@ -74,7 +77,7 @@ dev = [
     "pre-commit",
     "ruff",
     "twine>=4.0.2",
-    "napari-harpy[test,docs]",
+    "napari-harpy[test,docs,torch]",
 ]
 
 [project.entry-points."napari.manifest"]

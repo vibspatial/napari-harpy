@@ -1,9 +1,9 @@
-Investigated, no code changed.
+Roadmap note for pixel classification.
 
 **Short Answer**
 I would implement pixel classification as a new, separate pipeline beside the existing object-classification pipeline.
 
-For the first feature extractor, I would choose a **small convolutional feature extractor**, not DINO first. My pick would be:
+For the first feature extractor, use one **small convolutional feature extractor**, not DINO first. The MVP choice is:
 
 **ConvNeXt-Tiny early-layer features**, with raw normalized channel intensities appended, and with optional PCA/random-projection compression before caching.
 
@@ -100,6 +100,71 @@ The reducer is part of the feature schema. A classifier trained on this cache is
 same source image, selected channels, normalization, feature extractor, model weights, layer/scaling
 settings, and reducer parameters.
 
+**Cache Location**
+Store extracted pixel features in an explicit Harpy sidecar cache store, not as a hidden `.cache/...`
+group inside the SpatialData zarr store and not by default as a normal `sdata.images[...]` element.
+
+Default layout for a local backed SpatialData store:
+
+```text
+sample.zarr
+sample.harpy-cache.zarr
+```
+
+Proposed sidecar structure:
+
+```text
+sample.harpy-cache.zarr/
+  pixel_classification/
+    feature_caches/
+      <cache_id>/
+        features              # zarr array, shape (C + F_reduced, y, x)
+        reducer/
+          components
+          mean
+        manifest              # attrs / json metadata
+```
+
+Rationale: SpatialData elements are user-facing scientific data: images, labels, points, shapes, and
+tables. A ConvNeXt pixel-feature cache is derived, large, disposable, and implementation-specific. If
+we store it as a normal image element, it will pollute image selectors and make the SpatialData object
+look heavier than the user data really is. If we store it in an unknown hidden group inside the
+SpatialData zarr store, we bypass the SpatialData data model and make discovery, cleanup, and
+portability awkward.
+
+The sidecar cache should still be linked robustly to SpatialData. Resolve source element paths through
+SpatialData metadata, for example with `sdata.locate_element(...)`, rather than assuming an on-disk
+layout such as `images/<image_name>`. The manifest should record:
+
+- source SpatialData path / URI
+- source image element name
+- source image element zarr path resolved from SpatialData
+- coordinate system
+- selected channels and channel names
+- source shape and dtype
+- normalization settings
+- model name, weights, and relevant package versions
+- feature layers / scales
+- reducer settings
+- output shape, axes, dtype, and cache schema version
+
+The cache id should be a hash of the canonical feature manifest, excluding runtime-only fields such as
+creation time or last-used time.
+
+MVP behavior:
+
+- if `sdata.is_backed()` and `sdata.path` is a writable local path, default to a sibling sidecar named
+  like `<source>.harpy-cache.zarr`;
+- if the SpatialData object is in-memory, remote, or read-only, require an explicit user-selected cache
+  location;
+- expose cache discovery, reuse, and deletion in the pixel-classification UI so the sidecar is visible
+  and manageable.
+
+Only user-facing prediction results should be written back into SpatialData by default, and only on
+explicit save. For example, save predicted class maps as `sdata.labels[...]` and optionally save
+probability maps as `sdata.images[...]`. Exporting the feature cache itself as a SpatialData image
+element can be a future explicit export action, but should not be the default cache path.
+
 **Back-of-the-envelope Cache Scaling**
 Pixel classification will usually run on a curated channel subset, not necessarily all multiplex
 channels. For MACSima / PhenoCycler-style workflows, a typical first target is probably `1..5`
@@ -157,9 +222,12 @@ Better:
 
 - cache tile-wise normalized marker intensities plus reduced deep features, e.g. `float16`, shape
   `(C + F_reduced, y, x)`
+- write the feature stack to an explicit Harpy sidecar zarr cache
 - preserve the selected marker-intensity planes separately from the deep feature reducer
 - use a manifest keyed by:
+  - source SpatialData path / URI
   - source image element
+  - source image element zarr path resolved via SpatialData
   - coordinate system
   - selected channels
   - model name/version/weights
@@ -171,13 +239,49 @@ Better:
 Convpaint’s memory mode is useful inspiration for avoiding repeated annotation-feature extraction, but napari-harpy should use a persistent feature-image cache because whole-image prediction and re-use across sessions matter here.
 
 **Model Choice**
-My first choice: **ConvNeXt-Tiny early convolutional layers**, tile-friendly, modern, finite receptive field, and faster than transformer/foundation options.
+MVP choice: **ConvNeXt-Tiny early convolutional layers**, tile-friendly, modern, finite receptive field, and faster than transformer/foundation options.
 
-Fallback conservative baseline: **VGG16 first layer + scales `[1, 2, 4]`**, because Convpaint’s docs explicitly recommend early VGG layers for local texture/color/edge tasks and its source already validates that design.
+Fallback/reference baseline: **VGG16 first layer + scales `[1, 2, 4]`**, because Convpaint’s docs explicitly recommend early VGG layers for local texture/color/edge tasks and its source already validates that design. This should be documented as a comparison point, not as the first implementation target.
 
 I would not start with DINOv2/JAFAR for multiplex. Convpaint documents DINOv2/JAFAR as strong for semantic/contextual tasks and high spatial resolution, but DINO-style RGB patch features are costly and awkward for many-channel fluorescence. Good future optional backend, not MVP.
+
+**Model Download and Loading**
+Use TorchVision pretrained weights. TorchVision downloads the weight file automatically on the first call
+and then reuses the local PyTorch cache on later runs. For napari-harpy this should probably live behind
+an optional dependency group, because `torch` / `torchvision` are large dependencies.
+
+MVP backend:
+
+```python
+from torchvision.models import ConvNeXt_Tiny_Weights, convnext_tiny
+
+weights = ConvNeXt_Tiny_Weights.DEFAULT
+model = convnext_tiny(weights=weights)
+model.eval()
+```
+
+`ConvNeXt_Tiny_Weights.DEFAULT` currently maps to the ImageNet-1K pretrained weights. The full model is
+about `109 MB` according to the TorchVision docs. In the pixel-classification pipeline we would not use
+the classifier head; we would wrap early `model.features` stages as a dense feature extractor.
+
+Reference Convpaint-like baseline:
+
+```python
+from torchvision.models import VGG16_Weights, vgg16
+
+weights = VGG16_Weights.DEFAULT
+model = vgg16(weights=weights)
+model.eval()
+```
+
+For VGG-only feature extraction, TorchVision also exposes `VGG16_Weights.IMAGENET1K_FEATURES`, which
+contains valid weights for the `features` module without usable classifier weights. This is useful to
+document because Convpaint's default VGG-style extraction is feature-oriented, but it is not the MVP
+backend if we choose ConvNeXt-Tiny first.
 
 Sources:
 - Convpaint feature extractor guidance: https://guiwitz.github.io/napari-convpaint/book/FE_descriptions.html
 - Convpaint parameters/cache settings: https://guiwitz.github.io/napari-convpaint/book/Params_settings.html
 - DINOv2 official repo/model notes: https://github.com/facebookresearch/dinov2
+- TorchVision ConvNeXt-Tiny weights/API: https://docs.pytorch.org/vision/stable/models/generated/torchvision.models.convnext_tiny.html
+- TorchVision VGG16 weights/API: https://docs.pytorch.org/vision/stable/models/generated/torchvision.models.vgg16.html

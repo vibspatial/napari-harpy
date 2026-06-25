@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
 from html import unescape
 from types import SimpleNamespace
@@ -33,9 +34,14 @@ from napari_harpy.viewer.adapter import ShapesLayerBinding
 from napari_harpy.viewer.shapes_styling import (
     _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR,
     _SHAPES_EDGE_WIDTH_SYNC_CALLBACK_ATTR,
+    apply_primary_shapes_layer_style,
 )
 from napari_harpy.widgets import ShapesAnnotation as LazyShapesAnnotation
 from napari_harpy.widgets.shapes_annotation.widget import ShapesAnnotation
+
+
+def _rgba(color: str) -> np.ndarray:
+    return np.asarray(to_rgba(color), dtype=float)
 
 
 class DummyEventEmitter:
@@ -728,6 +734,79 @@ def test_annotation_layer_edit_guard_vertex_remove_rebuilds_cache_after_shorteni
         (ActionType.CHANGING, (0,), ((len(shortened_vertices) - 1,),)),
         (ActionType.CHANGED, (0,), ((len(shortened_vertices) - 1,),)),
     ]
+
+
+def test_annotation_layer_edit_guard_vertex_remove_preserves_styles_with_stale_napari_color_arrays(monkeypatch) -> None:
+    polygon, simple_polygon = _polygon_hole_roundtrip_fixture()
+    original_hole_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
+    original_simple_vertices = shapely_polygon_to_napari_polygon_vertices(simple_polygon)
+    deleted_vertex_index = 7
+    topology = napari_polygon_vertices_to_topology(original_hole_vertices)
+    expected_vertices, _ = delete_napari_polygon_vertex(
+        original_hole_vertices,
+        topology,
+        deleted_vertex_index,
+    )
+    layer = Shapes(
+        [original_hole_vertices, original_simple_vertices],
+        shape_type=["polygon", "polygon"],
+    )
+    apply_primary_shapes_layer_style(layer)
+    layer.mode = Mode.VERTEX_REMOVE
+    layer.selected_data = {0}
+    layer._drag_modes = dict(layer._drag_modes)
+
+    current_edge_color = "#aa00aa"
+    current_face_color = "#bbccdd44"
+    current_edge_width = 9
+    layer.current_edge_color = current_edge_color
+    layer.current_face_color = current_face_color
+    layer.current_edge_width = current_edge_width
+
+    edge_color = np.asarray([_rgba("#00ffff"), _rgba("#123456")], dtype=float)
+    face_color = np.asarray([_rgba("#00000000"), _rgba("#65432188")], dtype=float)
+    edge_width = [3, 5]
+    z_index = [11, 13]
+    layer.edge_color = edge_color
+    layer.face_color = face_color
+    layer.edge_width = edge_width
+    layer.z_index = z_index
+    layer.opacity = 0.37
+
+    # Simulate the intermittent napari state behind the UI bug: the logical
+    # data rows are correct, but the private color arrays have stale extra rows.
+    layer._data_view._edge_color = np.vstack([layer._data_view._edge_color, _rgba("#ffff00")])
+    layer._data_view._face_color = np.vstack([layer._data_view._face_color, _rgba("#ffff00")])
+
+    def original_vertex_remove_callback(*args: object, **kwargs: object) -> None:
+        raise AssertionError("hole-bearing polygon deletion should use the topology helper")
+
+    monkeypatch.setattr(layer, "get_value", lambda position, world=True: (0, deleted_vertex_index))
+    layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+
+    with warnings.catch_warnings(record=True) as caught_warnings:
+        warnings.simplefilter("always")
+        layer._drag_modes[Mode.VERTEX_REMOVE](layer, SimpleNamespace(position=(0.0, 0.0)))
+
+    style_warnings = [
+        str(warning.message)
+        for warning in caught_warnings
+        if "edge_color" in str(warning.message) or "face_color" in str(warning.message)
+    ]
+    assert style_warnings == []
+    np.testing.assert_allclose(np.asarray(layer.data[0], dtype=float), expected_vertices)
+    assert set(layer.selected_data) == {0}
+    assert layer.mode == Mode.VERTEX_REMOVE
+    assert layer.opacity == 0.37
+    assert layer.edge_width == edge_width
+    assert layer.z_index == z_index
+    np.testing.assert_allclose(layer.edge_color, edge_color)
+    np.testing.assert_allclose(layer.face_color, face_color)
+    np.testing.assert_allclose(to_rgba(layer.current_edge_color), to_rgba(current_edge_color))
+    np.testing.assert_allclose(to_rgba(layer.current_face_color), to_rgba(current_face_color))
+    assert layer.current_edge_width == current_edge_width
 
 
 def test_annotation_layer_edit_guard_vertex_remove_delegates_malformed_topology(monkeypatch) -> None:
@@ -1579,6 +1658,48 @@ def test_shapes_annotation_widget_create_holes_mutates_layer_and_marks_dirty(qtb
     status = _status_text(widget)
     assert "Created Holes" in status
     assert "Converted 1 selected polygon(s) into hole(s) and removed their shape row(s)." in status
+
+
+def test_shapes_annotation_widget_create_holes_saves_and_reloads(qtbot) -> None:
+    """Integration test for the create-holes, save, and reload path."""
+    shapes_name = "create_holes_regions"
+    sdata, shell, child, unselected = _make_create_holes_sdata(shapes_name=shapes_name)
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, shapes_name))
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    layer.selected_data = {0, 1}
+
+    widget.create_holes_button.click()
+    widget.save_shapes_button.click()
+
+    saved = sdata.shapes[shapes_name]
+    assert saved.index.name == "region_id"
+    assert saved.index.tolist() == ["shell_row", "unselected_row"]
+    assert saved["label"].tolist() == ["shell", "unselected"]
+    np.testing.assert_allclose(saved["score"].to_numpy(), np.asarray([1.0, 3.0]))
+    expected_polygon = Polygon(shell.exterior.coords, holes=[child.exterior.coords])
+    assert saved.geometry.iloc[0].equals(expected_polygon)
+    assert len(saved.geometry.iloc[0].interiors) == 1
+    assert saved.geometry.iloc[1].equals(unselected)
+    assert "Shapes Saved" in _status_text(widget)
+
+    reloaded_viewer = DummyViewer()
+    reloaded_layer = get_or_create_app_state(reloaded_viewer).viewer_adapter.ensure_shapes_loaded(
+        sdata,
+        shapes_name,
+        "global",
+    ).layer
+    reloaded_polygon = napari_polygon_vertices_to_shapely_polygon(reloaded_layer.data[0])
+
+    assert reloaded_polygon.equals(saved.geometry.iloc[0])
+    assert len(reloaded_polygon.interiors) == 1
+    assert len(reloaded_layer.data) == 2
 
 
 def test_shapes_annotation_widget_create_holes_table_linked_warning_is_explicit(qtbot) -> None:

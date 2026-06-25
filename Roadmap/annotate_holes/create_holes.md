@@ -803,7 +803,7 @@ Acceptance criteria:
 
 ## Slice 2F - Preserve Annotation Styling After Create Holes
 
-Status: proposed; next priority.
+Status: implemented.
 
 Fix the visual styling regression observed after using the `Create holes`
 button: the resulting hole-bearing polygon can render like a default filled
@@ -841,10 +841,11 @@ Relevant current code path:
   rows. Even if model-level style arrays often remain correct, the operation
   should explicitly preserve/re-emit style state so the vispy layer cannot fall
   back to default filled-polygon rendering.
-- Napari's `layer.data` setter reads existing `edge_color` and `face_color`
-  arrays before rebuilding its `ShapeList`. If those arrays have a length that
-  does not match `len(layer.data)`, napari warns and normalizes colors to its
-  default fallback. This matches warnings such as:
+- Napari's `layer.data` setter reads existing `edge_width`, `edge_color`,
+  `face_color`, and `z_index` state before rebuilding its `ShapeList`. If the
+  color arrays have a length that does not match the number of logical shape
+  rows, napari warns and normalizes colors to its default fallback. This matches
+  warnings such as:
 
   ```text
   The provided edge_color parameter has 5 entries, while the data contains 4 entries.
@@ -868,6 +869,7 @@ Recommended fix:
   - `edge_color`
   - `face_color`
   - `edge_width`
+  - `z_index`
   - `opacity`
   - `current_edge_color`
   - `current_face_color`
@@ -876,15 +878,19 @@ Recommended fix:
   - the shell row survives and keeps the shell row's original style
   - selected child rows become holes and their style entries are removed
   - unselected rows survive and keep their original styles
+  - final row order follows napari's remove semantics, so each final style row
+    should be built from the corresponding surviving pre-mutation row index
 - Before assigning `layer.data = rebuilt_data`, normalize the current layer's
-  row style arrays to the current logical row count. This prevents napari's
-  `layer.data` setter from seeing stale extra style rows and falling back to
-  defaults during the rebuild.
+  row style arrays to the current logical row count using the sliced snapshot.
+  This prevents napari's `layer.data` setter from seeing stale extra style rows
+  and falling back to defaults during the rebuild.
 - Apply the create-holes geometry mutation.
 - Restore surviving row styles through public napari setters after child rows
   have been removed, so napari emits the relevant color/width events.
-- Restore current annotation colors/width and edge width without letting current
-  color callbacks overwrite the final row-aligned styles.
+- Restore layer-level/current annotation colors, width, opacity, and row
+  `z_index` while preserving user customization. Then apply final row-aligned
+  `edge_color`, `face_color`, and `edge_width` last, so Harpy's current-color
+  synchronization callbacks cannot overwrite the final row styles.
 - Keep the resulting shell row selected after style restoration.
 
 Design notes:
@@ -903,6 +909,10 @@ Design notes:
   setting `current_edge_color` can update all row edge colors. The implementation
   should restore current colors/width and row colors in an order that leaves the
   final row-aligned arrays exactly as captured for the surviving rows.
+- `current_edge_width` has the same callback pattern through napari's
+  `edge_width` event, so edge-width restoration needs the same ordering care.
+- Do not solve this by blindly calling `apply_primary_shapes_layer_style(...)`
+  after create-holes; that would erase user-customized annotation styling.
 
 Regression tests:
 
@@ -910,10 +920,11 @@ Regression tests:
   - transparent face color for the resulting shell row
   - annotation edge color for the resulting shell row
   - edge width
+  - z index
   - opacity
 - A layer with user-customized annotation edge color/width keeps those custom
   values after create-holes.
-- Unselected surviving rows keep their row styles.
+- Unselected surviving rows keep their row styles and z index.
 - A regression test should deliberately simulate stale napari internal style
   arrays before create-holes by appending an extra row to
   `layer._data_view._edge_color` and `layer._data_view._face_color`. The
@@ -934,9 +945,79 @@ Acceptance criteria:
 - Geometry/topology behavior from Slice 2D remains unchanged.
 - Style preservation is covered by focused tests.
 
+## Slice 2F Follow-Up - Preserve Styling During Vertex-Delete Cache Rebuild
+
+Status: implemented.
+
+Apply the same stale-style-array hardening to the annotation guard's
+vertex-delete cache rebuild path.
+
+Why this follow-up exists:
+
+- `Create holes` is not the only annotation path that assigns through
+  `layer.data = ...`.
+- Hole-aware vertex deletion uses
+  `_replace_shape_row_rebuilding_vertex_cache(...)` in
+  `widgets/shapes_annotation/widget.py` after a deletion shortens one polygon
+  row.
+- That helper builds `rebuilt_data = list(layer.data)`, replaces one row, and
+  assigns `layer.data = rebuilt_data` so napari rebuilds its private rendering
+  and hit-testing cache.
+- This has the same stale-private-color-row risk as `Create holes`: if
+  `len(layer.data) == 4` while `layer._data_view._edge_color.shape == (5, 4)`
+  and `layer._data_view._face_color.shape == (5, 4)`, napari's data setter can
+  fall back to default filled polygon colors during the rebuild.
+- Ordinary anchor dragging does not need this treatment because it writes
+  coordinates through `_data_view.edit(...)` and keeps the row length stable.
+
+Recommended fix:
+
+- Before `_replace_shape_row_rebuilding_vertex_cache(...)` assigns
+  `layer.data = rebuilt_data`, snapshot the current row-aligned style state
+  using the same conceptual fields as Slice 2F:
+  - `edge_color`
+  - `face_color`
+  - `edge_width`
+  - `z_index`
+  - `opacity`
+  - current edge/face colors and current edge width
+- Trim stale private color rows so the private color row count matches
+  `len(layer.data)` before the napari data setter reads those arrays.
+- Perform the existing row replacement through `layer.data = rebuilt_data`.
+- Restore mode, selection, opacity, current draw defaults, and final
+  row-aligned styles so the deleted row keeps its original styling and
+  unrelated rows keep their styling.
+- Treat current draw defaults as evented napari state. Restoring
+  `current_edge_color`, `current_face_color`, or `current_edge_width` can run
+  napari/Harpy callbacks that rewrite row styles, so restore those properties
+  with the relevant event blockers.
+- Reapply final row-aligned `edge_color`, `face_color`, `edge_width`, and
+  `z_index` after mode/selection/current-style restoration. If any callback
+  touches styling during the rebuild, the explicit final row styles should win.
+- Keep this focused on the `layer.data = ...` vertex-delete rebuild path. Do not
+  change direct-drag anchor synchronization, which does not use the data setter.
+
+Regression tests:
+
+- Simulate stale private napari color arrays before deleting a vertex from a
+  hole-bearing polygon row.
+- Trigger the annotation guard's vertex-remove path.
+- Assert no napari edge/face color fallback warning is emitted.
+- Assert row-aligned edge color, face color, edge width, z index, opacity, and
+  current draw defaults are preserved.
+- Keep existing topology assertions: the vertex deletion still updates/removes
+  anchors/holes as specified by the edit-anchors roadmap.
+
+Acceptance criteria:
+
+- Vertex deletion on hole-bearing annotation rows does not lose styling when
+  stale private napari color rows are present.
+- The existing vertex-delete cache-rebuild behavior remains intact.
+- Direct-drag vertex movement remains unchanged.
+
 ## Slice 2G - End-To-End Save And Reload
 
-Status: proposed.
+Status: implemented.
 
 Add focused integration coverage that proves the created holes persist through
 the existing annotation save path.
@@ -980,7 +1061,7 @@ Acceptance criteria:
 
 ## Slice 2H - Shapes Annotation Status Card Helper
 
-Status: proposed.
+Status: implemented.
 
 Introduce a dedicated `widgets/shapes_annotation/status_card.py` helper module
 so annotation status-card text follows the same structure as the viewer, object
