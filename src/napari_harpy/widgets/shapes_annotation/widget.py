@@ -66,11 +66,26 @@ from napari_harpy.core.validation import (
     spatialdata_element_name_exists,
 )
 from napari_harpy.viewer.adapter import ShapesLayerBinding
+from napari_harpy.widgets.shapes_annotation._create_holes import (
+    _apply_create_holes_plan,
+    _create_holes_plan_from_selection,
+)
 from napari_harpy.widgets.shapes_annotation._snapshot import (
     _annotation_layer_snapshots_equal,
     _capture_annotation_layer_snapshot,
     _empty_annotation_layer_snapshot,
     _ShapesAnnotationLayerSnapshot,
+)
+from napari_harpy.widgets.shapes_annotation.status_card import (
+    _ShapesAnnotationStatusCardSpec,
+    build_annotation_edit_warning_card_spec,
+    build_annotation_existing_shapes_opened_card_spec,
+    build_annotation_layer_ready_card_spec,
+    build_annotation_save_error_card_spec,
+    build_annotation_save_success_card_spec,
+    build_annotation_save_unavailable_card_spec,
+    build_create_holes_error_card_spec,
+    build_create_holes_success_card_spec,
 )
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
@@ -106,10 +121,6 @@ _ShapesAnnotationLayerOrigin = Literal[
     "loaded_by_annotation",
     "adopted_primary",
 ]
-
-
-def _format_status_identifier(identifier: str) -> tuple[str, bool]:
-    return format_feedback_identifier(identifier, max_length=_STATUS_IDENTIFIER_MAX_LENGTH)
 
 
 def _normalize_native_shapes_layer_transform(layer: Shapes) -> None:
@@ -224,6 +235,23 @@ class _ShapesAnnotationSession:
 
 
 @dataclass(frozen=True)
+class _AnnotationLayerReadiness:
+    """Readiness of the widget-owned annotation layer for annotation actions.
+
+    Attributes
+    ----------
+    actionable
+        Whether the current widget-owned layer has enough locked session state
+        to run actions such as Save shapes and Create holes.
+    status
+        Optional status-card message that explains the current readiness.
+    """
+
+    actionable: bool
+    status: _ShapesAnnotationStatusCardSpec | None = None
+
+
+@dataclass(frozen=True)
 class _AnchorDragState:
     row_index: int
     moved_vertex_index: int
@@ -236,6 +264,13 @@ class _VertexDeleteState:
     deleted_vertex_index: int
     vertices: np.ndarray
     topology: NapariPolygonTopology
+
+
+def _shape_type_at(layer: Shapes, row_index: int) -> object:
+    try:
+        return layer.shape_type[row_index]
+    except (IndexError, TypeError):
+        return None
 
 
 class _AnnotationLayerEditGuard:
@@ -382,7 +417,7 @@ class _AnnotationLayerEditGuard:
         moved_vertex_index = int(moved_vertex_index)
         if row_index < 0 or moved_vertex_index < 0 or row_index >= len(layer.data):
             return None
-        if self._shape_type_at(layer, row_index) != "polygon":
+        if _shape_type_at(layer, row_index) != "polygon":
             return None
 
         try:
@@ -536,7 +571,7 @@ class _AnnotationLayerEditGuard:
         deleted_vertex_index = int(deleted_vertex_index)
         if row_index < 0 or deleted_vertex_index < 0 or row_index >= len(layer.data):
             return None
-        if self._shape_type_at(layer, row_index) != "polygon":
+        if _shape_type_at(layer, row_index) != "polygon":
             return None
 
         try:
@@ -565,13 +600,6 @@ class _AnnotationLayerEditGuard:
     def _warn(self, message: str) -> None:
         if self._warning_callback is not None:
             self._warning_callback(message)
-
-    def _shape_type_at(self, layer: Shapes, row_index: int) -> object:
-        try:
-            return layer.shape_type[row_index]
-        except (IndexError, TypeError):
-            return None
-
 
 class ShapesAnnotation(QWidget):
     """Widget shell for annotating SpatialData shapes elements."""
@@ -665,12 +693,18 @@ class ShapesAnnotation(QWidget):
         self.create_layer_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.create_layer_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
 
+        self.create_holes_button = QPushButton("Create holes")
+        self.create_holes_button.setObjectName("shapes_annotation_create_holes_button")
+        self.create_holes_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.create_holes_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
+
         self.save_shapes_button = QPushButton("Save shapes")
         self.save_shapes_button.setObjectName("shapes_annotation_save_shapes_button")
         self.save_shapes_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.save_shapes_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
 
         button_row.addWidget(self.create_layer_button)
+        button_row.addWidget(self.create_holes_button)
         button_row.addWidget(self.save_shapes_button)
 
         self.content_layout.addWidget(header_logo)
@@ -689,6 +723,7 @@ class ShapesAnnotation(QWidget):
         self.shapes_combo.currentIndexChanged.connect(self._on_shapes_target_changed)
         self.name_edit.textChanged.connect(self._on_shapes_name_changed)
         self.create_layer_button.clicked.connect(self._on_create_layer_clicked)
+        self.create_holes_button.clicked.connect(self._on_create_holes_clicked)
         self.save_shapes_button.clicked.connect(self._on_save_shapes_clicked)
         layer_events = getattr(getattr(napari_viewer, "layers", None), "events", None)
         layer_inserted_event = getattr(layer_events, "inserted", None)
@@ -1133,8 +1168,10 @@ class ShapesAnnotation(QWidget):
         return binding
 
     def _on_save_shapes_clicked(self) -> None:
-        self._refresh_save_shapes_state()
-        if not self.save_shapes_button.isEnabled():
+        readiness = self._refresh_save_shapes_state()
+        if not readiness.actionable:
+            if readiness.status is not None:
+                self._apply_status_card_spec(readiness.status)
             return
 
         sdata = self._app_state.sdata
@@ -1177,12 +1214,12 @@ class ShapesAnnotation(QWidget):
                 previous_session=session,
             )
         except ValueError as error:
-            self._refresh_save_shapes_state(update_status=False)
-            self._set_status(title="Could Not Save Shapes", lines=[str(error)], kind="warning")
+            self._refresh_save_shapes_state()
+            self._apply_status_card_spec(build_annotation_save_error_card_spec(str(error)))
             return
 
         self._refresh_shapes_targets(preferred_target=_ShapesAnnotationTarget.edit_existing(result.shapes_name))
-        self._refresh_save_shapes_state(update_status=False)
+        self._refresh_save_shapes_state()
         self._app_state.emit_shapes_element_written(
             ShapesElementWrittenEvent(
                 sdata=sdata,
@@ -1191,25 +1228,39 @@ class ShapesAnnotation(QWidget):
                 source=_SOURCE,
             )
         )
-        visible_shapes_name, shapes_name_shortened = _format_status_identifier(result.shapes_name)
-        visible_coordinate_system, coordinate_system_shortened = _format_status_identifier(result.coordinate_system)
-        full_line = (
-            f'Saved "{result.shapes_name}" with {result.row_count} shape(s) '
-            f'in coordinate system "{result.coordinate_system}".'
-        )
-        lines = [
-            f'Saved "{visible_shapes_name}" with {result.row_count} shape(s) '
-            f'in coordinate system "{visible_coordinate_system}".'
-        ]
-        if self._annotation_session is not None and self._annotation_session.table_linked:
-            lines.append(
-                "Linked tables are not updated by Annotation and may go out of sync if rows are added or removed."
+        self._apply_status_card_spec(
+            build_annotation_save_success_card_spec(
+                result=result,
+                table_linked=self._annotation_session.table_linked if self._annotation_session is not None else False,
             )
-        self._set_status(
-            title="Shapes Saved",
-            lines=lines,
-            kind="success",
-            tooltip_lines=[full_line] if shapes_name_shortened or coordinate_system_shortened else None,
+        )
+
+    def _on_create_holes_clicked(self) -> None:
+        readiness = self._refresh_save_shapes_state()
+        if not readiness.actionable:
+            if readiness.status is not None:
+                self._apply_status_card_spec(readiness.status)
+            return
+
+        layer = self._annotation_layer
+        session = self._annotation_session
+        if layer is None or session is None:
+            return
+
+        try:
+            plan = _create_holes_plan_from_selection(layer)
+            hole_count = len(plan.hole_row_indices)
+            _apply_create_holes_plan(layer, plan)
+        except ValueError as error:
+            self._apply_status_card_spec(build_create_holes_error_card_spec(str(error)))
+            return
+
+        self._refresh_save_shapes_state()
+        self._apply_status_card_spec(
+            build_create_holes_success_card_spec(
+                hole_count=hole_count,
+                table_linked=session.table_linked,
+            )
         )
 
     def _update_annotation_session_after_successful_save(
@@ -1311,7 +1362,10 @@ class ShapesAnnotation(QWidget):
         with QSignalBlocker(self.shapes_combo):
             self.shapes_combo.clear()
             for shapes_name in self._eligible_existing_shapes_names:
-                visible_shapes_name, shortened = _format_status_identifier(shapes_name)
+                visible_shapes_name, shortened = format_feedback_identifier(
+                    shapes_name,
+                    max_length=_STATUS_IDENTIFIER_MAX_LENGTH,
+                )
                 target = _ShapesAnnotationTarget.edit_existing(shapes_name)
                 self.shapes_combo.addItem(visible_shapes_name, target)
                 if shortened:
@@ -1384,7 +1438,8 @@ class ShapesAnnotation(QWidget):
         if self._annotation_layer is not None:
             self._validated_shapes_name = self._annotation_shapes_name
             self.create_layer_button.setEnabled(False)
-            self._refresh_save_shapes_state()
+            readiness = self._refresh_save_shapes_state()
+            self._apply_status_card_spec(readiness.status)
             return
 
         if sdata is None:
@@ -1444,8 +1499,14 @@ class ShapesAnnotation(QWidget):
                 return
 
             self._validated_shapes_name = shapes_name
-            visible_shapes_name, shapes_name_shortened = _format_status_identifier(shapes_name)
-            visible_coordinate_system, coordinate_system_shortened = _format_status_identifier(coordinate_system)
+            visible_shapes_name, shapes_name_shortened = format_feedback_identifier(
+                shapes_name,
+                max_length=_STATUS_IDENTIFIER_MAX_LENGTH,
+            )
+            visible_coordinate_system, coordinate_system_shortened = format_feedback_identifier(
+                coordinate_system,
+                max_length=_STATUS_IDENTIFIER_MAX_LENGTH,
+            )
             full_line = f'Shapes element "{shapes_name}" is available in coordinate system "{coordinate_system}".'
             self._set_status(
                 title="Ready",
@@ -1472,7 +1533,10 @@ class ShapesAnnotation(QWidget):
             return
 
         if spatialdata_element_name_exists(sdata, shapes_name):
-            visible_shapes_name, shapes_name_shortened = _format_status_identifier(shapes_name)
+            visible_shapes_name, shapes_name_shortened = format_feedback_identifier(
+                shapes_name,
+                max_length=_STATUS_IDENTIFIER_MAX_LENGTH,
+            )
             full_line = f'Shapes element "{shapes_name}" already exists. Choose a different name.'
             self._set_status(
                 title="Name Already Exists",
@@ -1485,8 +1549,14 @@ class ShapesAnnotation(QWidget):
             return
 
         self._validated_shapes_name = shapes_name
-        visible_shapes_name, shapes_name_shortened = _format_status_identifier(shapes_name)
-        visible_coordinate_system, coordinate_system_shortened = _format_status_identifier(coordinate_system)
+        visible_shapes_name, shapes_name_shortened = format_feedback_identifier(
+            shapes_name,
+            max_length=_STATUS_IDENTIFIER_MAX_LENGTH,
+        )
+        visible_coordinate_system, coordinate_system_shortened = format_feedback_identifier(
+            coordinate_system,
+            max_length=_STATUS_IDENTIFIER_MAX_LENGTH,
+        )
         full_line = f'Create shapes layer "{shapes_name}" in coordinate system "{coordinate_system}".'
         self._set_status(
             title="Ready",
@@ -1497,91 +1567,69 @@ class ShapesAnnotation(QWidget):
         self.create_layer_button.setEnabled(True)
         self._refresh_save_shapes_state()
 
-    def _refresh_save_shapes_state(self, *, update_status: bool = True) -> None:
-        """Update save readiness for the widget-owned annotation layer."""
-        self.save_shapes_button.setEnabled(False)
+    def _refresh_save_shapes_state(self) -> _AnnotationLayerReadiness:
+        """Update action button readiness for the widget-owned annotation layer."""
+        readiness = self._evaluate_annotation_layer_readiness()
+        self.save_shapes_button.setEnabled(readiness.actionable)
+        self.create_holes_button.setEnabled(readiness.actionable)
+        return readiness
+
+    def _evaluate_annotation_layer_readiness(self) -> _AnnotationLayerReadiness:
+        """Return whether the widget-owned annotation layer can be edited and saved."""
         layer = self._annotation_layer
         if layer is None:
-            return
+            return _AnnotationLayerReadiness(actionable=False)
 
         if self._app_state.sdata is None:
-            if update_status:
-                self._set_status(
-                    title="Cannot Save Shapes",
-                    lines=["Load a SpatialData object before saving shapes."],
-                    kind="warning",
-                )
-            return
+            return _AnnotationLayerReadiness(
+                actionable=False,
+                status=build_annotation_save_unavailable_card_spec("Load a SpatialData object before saving shapes."),
+            )
 
         if self._annotation_shapes_name is None or self._annotation_coordinate_system is None:
-            if update_status:
-                self._set_status(
-                    title="Cannot Save Shapes",
-                    lines=["The annotation layer is missing its locked save target."],
-                    kind="warning",
-                )
-            return
+            return _AnnotationLayerReadiness(
+                actionable=False,
+                status=build_annotation_save_unavailable_card_spec(
+                    "The annotation layer is missing its locked save target."
+                ),
+            )
 
         if not self._annotation_layer_binding_matches():
-            if update_status:
-                self._set_status(
-                    title="Cannot Save Shapes",
-                    lines=["The annotation layer is no longer registered as the widget-owned primary shapes layer."],
-                    kind="warning",
-                )
-            return
+            return _AnnotationLayerReadiness(
+                actionable=False,
+                status=build_annotation_save_unavailable_card_spec(
+                    "The annotation layer is no longer registered as the widget-owned primary shapes layer."
+                ),
+            )
 
         session = self._annotation_session
         if session is None:
-            if update_status:
-                self._set_status(
-                    title="Cannot Save Shapes",
-                    lines=["The annotation layer is missing its locked save session."],
-                    kind="warning",
-                )
-            return
+            return _AnnotationLayerReadiness(
+                actionable=False,
+                status=build_annotation_save_unavailable_card_spec(
+                    "The annotation layer is missing its locked save session."
+                ),
+            )
 
         if session.mode == "edit_existing":
             if session.source_geodataframe is None:
-                if update_status:
-                    self._set_status(
-                        title="Cannot Save Shapes",
-                        lines=["The edit session is missing its source shapes metadata."],
-                        kind="warning",
-                    )
-                return
+                return _AnnotationLayerReadiness(
+                    actionable=False,
+                    status=build_annotation_save_unavailable_card_spec(
+                        "The edit session is missing its source shapes metadata."
+                    ),
+                )
 
-            self.save_shapes_button.setEnabled(True)
-            if update_status:
-                visible_shapes_name, shapes_name_shortened = _format_status_identifier(session.shapes_name)
-                visible_coordinate_system, coordinate_system_shortened = _format_status_identifier(
-                    session.coordinate_system
-                )
-                full_line = (
-                    f'Edit shapes layer "{session.shapes_name}" in coordinate system "{session.coordinate_system}".'
-                )
-                lines = [
-                    f'Edit shapes layer "{visible_shapes_name}" in coordinate system "{visible_coordinate_system}".'
-                ]
-                if session.table_linked:
-                    lines.append(
-                        "Linked tables are not updated by Annotation and may go out of sync if rows are added or removed."
-                    )
-                self._set_status(
-                    title="Existing Shapes Opened",
-                    lines=lines,
-                    kind="info",
-                    tooltip_lines=[full_line] if shapes_name_shortened or coordinate_system_shortened else None,
-                )
-            return
-
-        self.save_shapes_button.setEnabled(True)
-        if update_status:
-            self._set_status(
-                title="Annotation Layer Ready",
-                lines=["Draw shapes in the viewer, then click Save shapes."],
-                kind="info",
+            return _AnnotationLayerReadiness(
+                actionable=True,
+                status=build_annotation_existing_shapes_opened_card_spec(
+                    shapes_name=session.shapes_name,
+                    coordinate_system=session.coordinate_system,
+                    table_linked=session.table_linked,
+                ),
             )
+
+        return _AnnotationLayerReadiness(actionable=True, status=build_annotation_layer_ready_card_spec())
 
     def _annotation_layer_binding_matches(self) -> bool:
         layer = self._annotation_layer
@@ -1618,8 +1666,23 @@ class ShapesAnnotation(QWidget):
         tooltip_message = "\n".join(tooltip_lines) if tooltip_lines else None
         set_status_card(self.status_label, title=title, lines=lines, kind=kind, tooltip_message=tooltip_message)
 
+    def _apply_status_card_spec(self, spec: _ShapesAnnotationStatusCardSpec | None) -> None:
+        if spec is None:
+            self.status_label.clear()
+            self.status_label.setToolTip("")
+            self.status_label.setStyleSheet("")
+            return
+
+        set_status_card(
+            self.status_label,
+            title=spec.title,
+            lines=list(spec.lines),
+            kind=spec.kind,
+            tooltip_message=spec.tooltip_message,
+        )
+
     def _set_annotation_edit_warning(self, message: str) -> None:
-        self._set_status(title="Could Not Delete Vertex", lines=[message], kind="warning")
+        self._apply_status_card_spec(build_annotation_edit_warning_card_spec(message))
 
     def _confirm_discard_annotation_layer(self, *, context: Literal["coordinate_system", "target"]) -> bool:
         if context == "coordinate_system":

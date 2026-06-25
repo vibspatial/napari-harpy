@@ -4,6 +4,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, TypeGuard
 
+import dask.array as da
 import numpy as np
 import pandas as pd
 from loguru import logger
@@ -1279,7 +1280,7 @@ class ViewerAdapter(QObject):
 
             image_data, rgb = _get_stack_image_layer_data(image_element)
             layer = Image(
-                image_data,
+                _unwrap_xarray_data_for_napari(image_data),
                 name=image_name,
                 affine=_get_affine_transform(image_element, coordinate_system),
                 rgb=rgb,
@@ -1343,8 +1344,9 @@ class ViewerAdapter(QObject):
             existing_layer = layers[0] if layers else None
             if existing_layer is None:
                 created = True
+                channel_data = _get_overlay_channel_layer_data(image_element, channel_index)
                 layer = Image(
-                    _get_overlay_channel_layer_data(image_element, channel_index),
+                    _unwrap_xarray_data_for_napari(channel_data),
                     name=f"{image_name}[{channel_name}]",
                     affine=affine,
                     blending="additive",
@@ -1893,6 +1895,15 @@ def _get_overlay_channel_layer_data(element: DataArray | DataTree, channel_index
         return channel_arrays
 
     return element.isel(c=channel_index)
+
+
+def _unwrap_xarray_data_for_napari(
+    data: DataArray | list[DataArray],
+) -> da.Array | np.ndarray | list[da.Array] | list[np.ndarray]:
+    if isinstance(data, DataArray):
+        return data.data
+
+    return [scale.data for scale in data]
 
 
 def _resolve_overlay_channels(

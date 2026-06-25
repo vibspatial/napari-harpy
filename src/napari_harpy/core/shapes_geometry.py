@@ -87,6 +87,38 @@ def shapely_polygon_to_napari_polygon_vertices(polygon: Polygon) -> np.ndarray:
     return np.asarray([(y, x) for x, y in coordinates_xy], dtype=float)
 
 
+def create_polygon_with_direct_holes(shell: Polygon, holes: Sequence[Polygon]) -> Polygon:
+    """Return ``shell`` with the child polygons added as direct holes.
+
+    ``shell`` is the Shapely polygon that survives the operation. If it already
+    has holes, those existing interiors are read from ``shell.interiors`` and
+    preserved.
+
+    ``holes`` contains only the new child polygons selected to become
+    additional holes. The child polygons must be simple polygons without their
+    own interiors; each child exterior ring is appended after any existing
+    ``shell.interiors``.
+    """
+    if not isinstance(shell, Polygon) or shell.is_empty or not shell.is_valid or shell.area <= 0:
+        raise ValueError("Shell polygon must be a non-empty valid polygon.")
+
+    try:
+        child_holes = tuple(holes)
+    except TypeError as error:
+        raise ValueError("Polygon holes must be a sequence of polygons.") from error
+
+    hole_rings = [np.asarray(interior.coords, dtype=float) for interior in shell.interiors]
+    for hole in child_holes:
+        if not isinstance(hole, Polygon) or hole.is_empty or not hole.is_valid or hole.area <= 0:
+            raise ValueError("Polygon holes must be non-empty valid polygons.")
+        if len(hole.interiors):
+            raise ValueError("Polygon holes must be simple polygons without interiors.")
+        hole_rings.append(np.asarray(hole.exterior.coords, dtype=float))
+
+    exterior_shell = np.asarray(shell.exterior.coords, dtype=float)
+    return _make_valid_polygon_with_holes(exterior_shell, hole_rings)
+
+
 def napari_polygon_vertices_to_topology(vertices: ArrayLike) -> NapariPolygonTopology:
     """Return synchronized anchor groups for one napari polygon vertex row."""
     parsed = _parse_napari_polygon_vertices(vertices)

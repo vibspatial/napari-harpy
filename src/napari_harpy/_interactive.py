@@ -34,6 +34,10 @@ class Interactive:
         values are ``"all"``, ``"viewer"``, ``"feature_extraction"``,
         ``"object_classification"``, and ``"shapes_annotation"``. Pass a tuple
         of widget ids to open a subset. ``"all"`` opens every Harpy widget.
+    async_slicing
+        If ``True`` or ``False``, explicitly enable or disable napari's
+        experimental async slicing for this session. If ``None``, leave napari's
+        current setting unchanged.
     """
 
     _PLUGIN_NAME = "napari-harpy"
@@ -56,8 +60,11 @@ class Interactive:
         viewer: napari.Viewer | None = None,
         headless: bool = False,
         widgets: HarpyWidgetSelection = "all",
+        async_slicing: bool | None = False,
     ) -> None:
         widget_ids = self._normalize_widget_selection(widgets)
+        if async_slicing is not None:
+            _set_napari_async_slicing(async_slicing)
         self._viewer = viewer or napari.current_viewer() or napari.Viewer()
         self._app_state = get_or_create_app_state(self._viewer)
         self._dock_widgets: dict[str, tuple[Any, Any]] = {}
@@ -101,9 +108,7 @@ class Interactive:
             return (widgets,)
 
         if not isinstance(widgets, Sequence):
-            raise ValueError(
-                "`widgets` must be 'all', one Harpy widget id, or a sequence of Harpy widget ids."
-            )
+            raise ValueError("`widgets` must be 'all', one Harpy widget id, or a sequence of Harpy widget ids.")
 
         widget_ids: list[HarpyWidgetId] = []
         seen_widget_ids: set[HarpyWidgetId] = set()
@@ -120,3 +125,9 @@ class Interactive:
         if widget_id not in cls._WIDGET_NAMES:
             valid_widget_ids = ", ".join(("all", *cls._WIDGET_NAMES))
             raise ValueError(f"Unknown Harpy widget selection {widget_id!r}. Valid options are: {valid_widget_ids}.")
+
+
+def _set_napari_async_slicing(enabled: bool) -> None:
+    from napari.settings import get_settings
+
+    get_settings().experimental.async_ = enabled
