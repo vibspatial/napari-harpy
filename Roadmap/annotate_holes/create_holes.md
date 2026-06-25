@@ -1017,7 +1017,7 @@ Acceptance criteria:
 
 ## Slice 2G - End-To-End Save And Reload
 
-Status: proposed.
+Status: implemented.
 
 Add focused integration coverage that proves the created holes persist through
 the existing annotation save path.
