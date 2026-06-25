@@ -526,12 +526,15 @@ class _AnnotationLayerEditGuard:
         rebuilt_data = list(layer.data)
         rebuilt_data[row_index] = updated_vertices
 
-        # Work around napari's ShapeList cache after row-shortening edits:
-        # low-level `_data_view.edit(...)` updates the shape data but can leave
-        # the internal displayed-vertices hit-test cache padded with old vertex
-        # indices, so a later hit-test may report an index that no longer
-        # exists in `layer.data[row_index]`.
+        # The caller emits the napari-style CHANGING/CHANGED data events for
+        # this vertex deletion, so block intermediate events triggered by
+        # `layer.data = rebuilt_data`.
         with layer.events.data.blocker(), layer.events.features.blocker():
+            # Work around napari's private vertex cache after row-shortening
+            # edits: low-level `_data_view.edit(...)` updates the shape data
+            # but can leave old clickable vertex indices behind, so a later
+            # hit-test may report an index that no longer exists in
+            # `layer.data[row_index]`.
             layer.data = rebuilt_data
 
         layer.mode = current_mode

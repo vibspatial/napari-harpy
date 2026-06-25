@@ -945,6 +945,76 @@ Acceptance criteria:
 - Geometry/topology behavior from Slice 2D remains unchanged.
 - Style preservation is covered by focused tests.
 
+## Slice 2F Follow-Up - Preserve Styling During Vertex-Delete Cache Rebuild
+
+Status: proposed.
+
+Apply the same stale-style-array hardening to the annotation guard's
+vertex-delete cache rebuild path.
+
+Why this follow-up exists:
+
+- `Create holes` is not the only annotation path that assigns through
+  `layer.data = ...`.
+- Hole-aware vertex deletion uses
+  `_replace_shape_row_rebuilding_vertex_cache(...)` in
+  `widgets/shapes_annotation/widget.py` after a deletion shortens one polygon
+  row.
+- That helper builds `rebuilt_data = list(layer.data)`, replaces one row, and
+  assigns `layer.data = rebuilt_data` so napari rebuilds its private rendering
+  and hit-testing cache.
+- This has the same stale-private-color-row risk as `Create holes`: if
+  `len(layer.data) == 4` while `layer._data_view._edge_color.shape == (5, 4)`
+  and `layer._data_view._face_color.shape == (5, 4)`, napari's data setter can
+  fall back to default filled polygon colors during the rebuild.
+- Ordinary anchor dragging does not need this treatment because it writes
+  coordinates through `_data_view.edit(...)` and keeps the row length stable.
+
+Recommended fix:
+
+- Before `_replace_shape_row_rebuilding_vertex_cache(...)` assigns
+  `layer.data = rebuilt_data`, snapshot the current row-aligned style state
+  using the same conceptual fields as Slice 2F:
+  - `edge_color`
+  - `face_color`
+  - `edge_width`
+  - `z_index`
+  - `opacity`
+  - current edge/face colors and current edge width
+- Trim stale private color rows so the private color row count matches
+  `len(layer.data)` before the napari data setter reads those arrays.
+- Perform the existing row replacement through `layer.data = rebuilt_data`.
+- Restore mode, selection, opacity, current draw defaults, and final
+  row-aligned styles so the deleted row keeps its original styling and
+  unrelated rows keep their styling.
+- Treat current draw defaults as evented napari state. Restoring
+  `current_edge_color`, `current_face_color`, or `current_edge_width` can run
+  napari/Harpy callbacks that rewrite row styles, so restore those properties
+  with the relevant event blockers.
+- Reapply final row-aligned `edge_color`, `face_color`, `edge_width`, and
+  `z_index` after mode/selection/current-style restoration. If any callback
+  touches styling during the rebuild, the explicit final row styles should win.
+- Keep this focused on the `layer.data = ...` vertex-delete rebuild path. Do not
+  change direct-drag anchor synchronization, which does not use the data setter.
+
+Regression tests:
+
+- Simulate stale private napari color arrays before deleting a vertex from a
+  hole-bearing polygon row.
+- Trigger the annotation guard's vertex-remove path.
+- Assert no napari edge/face color fallback warning is emitted.
+- Assert row-aligned edge color, face color, edge width, z index, opacity, and
+  current draw defaults are preserved.
+- Keep existing topology assertions: the vertex deletion still updates/removes
+  anchors/holes as specified by the edit-anchors roadmap.
+
+Acceptance criteria:
+
+- Vertex deletion on hole-bearing annotation rows does not lose styling when
+  stale private napari color rows are present.
+- The existing vertex-delete cache-rebuild behavior remains intact.
+- Direct-drag vertex movement remains unchanged.
+
 ## Slice 2G - End-To-End Save And Reload
 
 Status: proposed.
