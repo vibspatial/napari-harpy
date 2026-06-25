@@ -1,10 +1,10 @@
 # Listen To Active Layer Change
 
-Status: investigation.
+Status: specification.
 
 Goal: make annotation-layer edit behavior consistent when a user selects a
-compatible shapes layer directly in the napari layer list, not only through the
-Shapes Annotation widget.
+compatible Harpy primary shapes layer directly in the napari layer list, not
+only through the Shapes Annotation widget.
 
 ## Observed Behavior
 
@@ -58,22 +58,23 @@ Therefore, a Harpy-managed shapes layer that is merely active in the napari UI
 does not automatically receive the annotation edit guard. It keeps napari's
 original `Mode.DIRECT` and `Mode.VERTEX_REMOVE` callbacks.
 
-## Why This Happens
+## Event Source
 
-The Shapes Annotation widget currently treats its own annotation session as the
-source of truth. This is intentional for saving: an annotation session locks the
-target shapes name, coordinate system, source GeoDataFrame metadata, table-link
-warning state, and clean snapshot.
+The implementation should listen to napari's real active-layer selection event:
 
-The widget does not currently subscribe to raw napari active-layer selection
-changes. Selecting a layer in the napari layer list does not by itself call
-`_open_existing_annotation_layer(...)`, `_adopt_native_shapes_layer(...)`, or
-`_annotation_edit_guard.attach(...)`.
+```python
+viewer.layers.selection.events.active
+```
 
-The viewer adapter has an `active_layer_changed` signal, but it is emitted by
-`ViewerAdapter.activate_layer(...)`. It is not currently used by the Shapes
-Annotation widget as a general bridge from napari UI layer selection into an
-annotation session.
+In the current napari version this event exists and emits the active layer as
+`event.value`. The handler should still fall back to
+`viewer.layers.selection.active` if `event.value` is missing.
+
+Do not rely on `ViewerAdapter.active_layer_changed` as the primary event
+source. That signal is emitted by `ViewerAdapter.activate_layer(...)`, so it
+covers Harpy-driven activation but not necessarily a user clicking a layer in
+napari's layer list. It may be used only as a fallback if the napari selection
+event is unavailable.
 
 ## Important Design Boundary
 
@@ -88,71 +89,164 @@ The missing behavior is not "always guard all shapes layers"; it is:
 > annotation widget should safely adopt/open that layer as the active annotation
 > session, then attach the guard.
 
-## Suggested Follow-Up Slice
+Unbound native Shapes layers are still handled by the existing inserted-layer
+adoption flow. Active-layer changes should not newly adopt arbitrary unbound
+native layers.
 
-### Slice 1 - Adopt Compatible Active Shapes Layer
+## Reuse Existing Session Setup
 
-Status: not implemented.
+Do not create a second edit-session setup path.
 
-Goal: when the napari active layer changes to a compatible primary shapes layer,
-open/adopt it as the Shapes Annotation widget's active edit session when it is
-safe to do so.
+When a compatible active layer is selected, update the widget target to the
+binding's shapes element and reuse `_open_existing_annotation_layer(...)`.
 
-Suggested scope:
+That existing path already handles:
 
-- Listen to active layer changes from the napari viewer.
-- Prefer napari's real selection event if available, likely
-  `viewer.layers.selection.events.active`.
-- If using `ViewerAdapter.active_layer_changed`, make sure it covers user-driven
-  napari UI selection, not only programmatic `ViewerAdapter.activate_layer(...)`.
-- On active-layer change, inspect the active layer:
-  - it must be a `napari.layers.Shapes` layer
-  - it must have a `ShapesLayerBinding`
-  - binding must belong to the current `SpatialData`
-  - binding must be `element_type == "shapes"`
-  - binding must be `shapes_role == "primary"`
-  - binding must be `shapes_rendering_mode == "shapes"`
-  - binding must match the currently selected coordinate system
-  - binding must have no incompatible style spec
-- If the active layer is already `self._annotation_layer`, do nothing.
-- If there is no current annotation session, adopt/open the active layer as an
-  edit-existing session:
-  - update the Shapes widget combo to the bound shapes element
-  - validate the source GeoDataFrame
-  - create `_ShapesAnnotationSession`
-  - attach `_AnnotationLayerEditGuard`
-  - capture the clean snapshot
-  - refresh save/create state
-- If a clean annotation session is active for a different layer, close it and
-  adopt the new active layer.
-- If a dirty annotation session is active for a different layer, do not switch
-  silently:
-  - prompt the user with the existing discard confirmation flow, or
-  - leave the current session active and show a warning/status message
+- validating the source GeoDataFrame
+- validating the compatible primary shapes binding
+- rejecting points-rendered shapes, skipped rows, and non-one-row source
+  mappings
+- creating `_ShapesAnnotationSession`
+- attaching `_AnnotationLayerEditGuard`
+- capturing the clean snapshot
+- refreshing save/create state
 
-Non-goals:
+## Implementation Slices
+
+### Slice 1A - Active Layer Event Listener
+
+Status: proposed.
+
+Add a small listener for napari active-layer changes.
+
+Implementation notes:
+
+- Connect to `viewer.layers.selection.events.active` when available.
+- If the napari selection event is unavailable, optionally fall back to
+  `viewer_adapter.active_layer_changed`.
+- Handler reads the active layer from `event.value`; if missing, read
+  `viewer.layers.selection.active`.
+- Ignore `None`.
+- Ignore if the active layer is already `self._annotation_layer`.
+- Add a private reentrancy guard, because adopting/opening a layer calls
+  `viewer_adapter.activate_layer(...)`, which can itself update active layer
+  state.
+- Disconnecting is not currently needed because the widget has the same
+  lifetime as the viewer-side dock widget, matching the existing layer
+  inserted/removed event connections.
+
+Tests:
+
+- Active-layer selection events are connected when the viewer exposes
+  `layers.selection.events.active`.
+- Programmatic activation from the widget does not recurse into a second
+  adoption attempt.
+
+### Slice 1B - Compatible Primary Shapes Candidate
+
+Status: proposed.
+
+Add a small private helper that decides whether an active layer can be adopted
+as an edit-existing annotation session.
+
+Candidate requirements:
+
+- active layer is a `napari.layers.Shapes`
+- active layer has a `ShapesLayerBinding`
+- binding belongs to the current `SpatialData` object
+- `binding.element_type == "shapes"`
+- `binding.shapes_role == "primary"`
+- `binding.shapes_rendering_mode == "shapes"`
+- `binding.style_spec is None`
+- binding coordinate system matches the widget/app active coordinate system
+- bound shapes name is currently eligible for that coordinate system
+
+Do not perform full source-GeoDataFrame or row-mapping validation in this helper.
+Those checks should remain in `_open_existing_annotation_layer(...)` and
+`_validate_opened_existing_shapes_layer(...)`.
+
+Tests:
+
+- compatible primary shapes layer returns a candidate with shapes name and
+  coordinate system
+- unbound native layer is rejected
+- non-shapes layer is rejected
+- styled shapes layer is rejected
+- points-rendered shapes layer is rejected
+- different coordinate system is rejected
+- different SpatialData object is rejected
+
+### Slice 1C - Adopt Clean Active Layer
+
+Status: proposed.
+
+When a compatible active layer is selected and adoption is safe, open it as the
+active edit-existing annotation session.
+
+Behavior:
+
+- If there is no annotation session, adopt/open the active layer.
+- If a clean annotation session exists for a different layer, close the clean
+  session and adopt/open the active layer.
+- Update the Shapes combo to
+  `_ShapesAnnotationTarget.edit_existing(binding.element_name)`.
+- Reuse `_open_existing_annotation_layer(...)`.
+- After adoption, the annotation layer, session, edit guard, status card, Save
+  button, and Create holes button should reflect the active layer.
+
+Important nuance:
+
+- `_open_existing_annotation_layer(...)` may call
+  `viewer_adapter.ensure_shapes_loaded(...)`, but because the selected active
+  layer already has the matching binding, the adapter should return that layer
+  with `created=False`.
+
+Tests:
+
+- selecting a compatible loaded primary shapes layer in napari opens/adopts it
+  in the Shapes Annotation widget
+- `_AnnotationLayerEditGuard` is attached to the active layer
+- widget combo selection matches the active layer's bound shapes element
+- Save/Create holes buttons are enabled
+- selecting a compatible layer while a clean different annotation session is
+  active closes the old clean session and adopts the selected layer
+
+### Slice 1D - Dirty Session Protection
+
+Status: proposed.
+
+Do not silently switch annotation sessions when the current session has unsaved
+changes.
+
+Behavior:
+
+- If a dirty annotation session exists for a different layer, show the existing
+  discard confirmation dialog.
+- If the user confirms, discard the dirty session and adopt/open the active
+  compatible layer.
+- If the user cancels, keep the current annotation session.
+- After cancel, re-activate the current annotation layer so the napari active
+  layer and annotation widget state are brought back into sync.
+- Show the existing annotation status for the kept session; do not change the
+  save target.
+
+Tests:
+
+- dirty current session plus active compatible layer asks for discard
+  confirmation
+- cancel keeps the old annotation session and edit guard
+- cancel reselects/reactivates the old annotation layer
+- confirm discards the dirty session and adopts the selected compatible layer
+
+## Non-Goals
 
 - Do not attach `_AnnotationLayerEditGuard` to arbitrary unbound native Shapes
   layers just because they are active.
 - Do not make napari's layer selection silently change the save target when the
   current annotation layer has unsaved changes.
 - Do not change global napari Shapes behavior outside annotation-owned sessions.
-
-Tests for this slice:
-
-- Selecting a compatible loaded primary shapes layer in napari opens/adopts it
-  in the Shapes Annotation widget and attaches `_AnnotationLayerEditGuard`.
-- After napari-driven adoption, anchor drag synchronization works on the active
-  layer.
-- After napari-driven adoption, hole-aware vertex deletion and the Slice 6C
-  cache rebuild work on the active layer.
-- Selecting an incompatible layer does not attach the guard.
-- Selecting a layer for a different coordinate system does not attach the guard.
-- Selecting a compatible layer while a clean different annotation session is
-  active closes the clean session and adopts the selected layer.
-- Selecting a compatible layer while a dirty different annotation session is
-  active does not silently switch without confirmation.
-- The Shapes widget combo and save button reflect the adopted active layer.
+- Do not duplicate the anchor-drag or vertex-delete behavior tests here. Once
+  the edit guard is attached, those paths are covered by the edit-anchor tests.
 
 ## Acceptance Criteria
 
