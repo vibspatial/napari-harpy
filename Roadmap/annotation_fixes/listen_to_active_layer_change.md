@@ -117,20 +117,34 @@ That existing path already handles:
 
 Status: proposed.
 
-Add a small listener for napari active-layer changes.
+Add a small listener for napari active-layer changes. This slice is plumbing
+only: it should observe active-layer changes and route them to a placeholder
+hook, but it should not inspect bindings, open/adopt layers, attach the edit
+guard, show status messages, or change dirty-session behavior yet.
 
 Implementation notes:
 
 - Connect to `viewer.layers.selection.events.active` when available.
 - If the napari selection event is unavailable, optionally fall back to
   `viewer_adapter.active_layer_changed`.
-- Handler reads the active layer from `event.value`; if missing, read
-  `viewer.layers.selection.active`.
+- Keep the event connection logic in a small private helper so `__init__` does
+  not grow more event-connection boilerplate.
+- Keep the napari selection event as the preferred source. The adapter signal
+  is only a fallback connection for environments that do not expose napari's
+  selection event.
+- The shared handler should resolve the active layer from the payload shape it
+  receives:
+  - for napari selection events, read `event.value`
+  - for the adapter fallback signal, the argument itself may be the layer
+  - if neither form yields a layer, read `viewer.layers.selection.active`
 - Ignore `None`.
 - Ignore if the active layer is already `self._annotation_layer`.
-- Add a private reentrancy guard, because adopting/opening a layer calls
-  `viewer_adapter.activate_layer(...)`, which can itself update active layer
-  state.
+- Add a private reentrancy guard. Later slices may adopt/open layers, and those
+  paths call `viewer_adapter.activate_layer(...)`, which can itself update
+  active-layer state.
+- Route valid active-layer changes to a placeholder private method, for example
+  `_maybe_adopt_active_shapes_layer(layer)`. In this slice that method should be
+  a no-op; Slice 1B and Slice 1C will add candidate/adoption behavior.
 - Disconnecting is not currently needed because the widget has the same
   lifetime as the viewer-side dock widget, matching the existing layer
   inserted/removed event connections.
@@ -139,8 +153,15 @@ Tests:
 
 - Active-layer selection events are connected when the viewer exposes
   `layers.selection.events.active`.
-- Programmatic activation from the widget does not recurse into a second
-  adoption attempt.
+- Emitting/changing the active layer calls the placeholder adoption hook with
+  the resolved active layer.
+- If the event payload has no `.value`, the handler falls back to
+  `viewer.layers.selection.active`.
+- If the active layer is already `self._annotation_layer`, the placeholder hook
+  is not called.
+- If the reentrancy guard is active, the placeholder hook is not called.
+- Optional: if no napari selection event exists, the widget connects to
+  `viewer_adapter.active_layer_changed`.
 
 ### Slice 1B - Compatible Primary Shapes Candidate
 
