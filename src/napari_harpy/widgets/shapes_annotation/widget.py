@@ -921,8 +921,19 @@ class ShapesAnnotation(QWidget):
         candidate = self._active_primary_shapes_candidate(layer)
         if candidate is None:
             return
-        # Opening/adoption behavior is implemented in follow-up slices.
-        del candidate
+        if self._annotation_layer is not None:
+            if self._annotation_layer_has_unsaved_changes():
+                return
+            self._close_clean_annotation_session()
+
+        target = _ShapesAnnotationTarget.edit_existing(candidate.shapes_name)
+        self._sync_shapes_target_combo_selection(target)
+        self._refresh_create_layer_state()
+        # In the happy path this is still `None`: we either had no session or
+        # just closed a clean one. Keep the guard so a future target-refresh
+        # side effect cannot open the same layer twice.
+        if self._annotation_layer is None:
+            self._open_existing_annotation_layer()
 
     def _active_primary_shapes_candidate(self, layer: object) -> _ActivePrimaryShapesCandidate | None:
         if not isinstance(layer, Shapes):

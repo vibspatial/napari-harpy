@@ -525,6 +525,86 @@ def test_shapes_annotation_widget_active_primary_shapes_candidate_rejects_incomp
     assert widget._active_primary_shapes_candidate(ineligible_name_layer) is None
 
 
+def test_shapes_annotation_widget_active_primary_shapes_layer_selection_opens_annotation_session(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+    load_result = app_state.viewer_adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
+    layer = load_result.layer
+
+    assert widget._annotation_layer is None
+
+    # Simulate the user selecting this layer in napari's layer list.
+    app_state.viewer_adapter.activate_layer(layer)
+
+    assert widget._annotation_layer is layer
+    assert widget._annotation_edit_guard.layer is layer
+    assert "_drag_modes" in vars(layer)
+    assert layer._drag_modes[Mode.DIRECT] is widget._annotation_edit_guard._wrapped_direct_callback
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.mode == "edit_existing"
+    assert widget._annotation_session.layer_origin == "adopted_primary"
+    assert widget._annotation_session.shapes_name == "blobs_polygons"
+    assert widget._annotation_session.coordinate_system == "global"
+    assert widget._selected_shapes_target == shapes_annotation_widget_module._ShapesAnnotationTarget.edit_existing(
+        "blobs_polygons"
+    )
+    assert widget.shapes_combo.currentText() == "blobs_polygons"
+    assert widget.save_shapes_button.isEnabled() is True
+    assert widget.create_holes_button.isEnabled() is True
+    assert "Existing Shapes Opened" in _status_text(widget)
+
+
+def test_shapes_annotation_widget_active_primary_shapes_layer_selection_switches_clean_session(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    sdata_blobs.shapes["other_polygons"] = sdata_blobs.shapes["blobs_polygons"].copy()
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, "blobs_polygons"))
+    first_layer = widget._annotation_layer
+    assert isinstance(first_layer, Shapes)
+    assert widget._annotation_edit_guard.layer is first_layer
+    assert "_drag_modes" in vars(first_layer)
+
+    # Clean session switches should close without asking for dirty-session
+    # discard confirmation.
+    def fail_if_confirmed(*, context: str) -> bool:
+        raise AssertionError(f"Clean active-layer switch should not warn: {context}")
+
+    monkeypatch.setattr(widget, "_confirm_discard_annotation_layer", fail_if_confirmed)
+    other_result = app_state.viewer_adapter.ensure_shapes_loaded(sdata_blobs, "other_polygons", "global")
+    other_layer = other_result.layer
+
+    app_state.viewer_adapter.activate_layer(other_layer)
+
+    assert widget._annotation_layer is other_layer
+    assert widget._annotation_edit_guard.layer is other_layer
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.shapes_name == "other_polygons"
+    assert widget._annotation_session.layer_origin == "adopted_primary"
+    assert widget._selected_shapes_target == shapes_annotation_widget_module._ShapesAnnotationTarget.edit_existing(
+        "other_polygons"
+    )
+    assert widget.shapes_combo.currentText() == "other_polygons"
+    assert list(viewer.layers) == [first_layer, other_layer]
+    assert "_drag_modes" not in vars(first_layer)
+    assert "_drag_modes" in vars(other_layer)
+    assert widget.save_shapes_button.isEnabled() is True
+    assert widget.create_holes_button.isEnabled() is True
+
+
 def test_annotation_layer_edit_guard_delegates_direct_mode_and_restores_instance_mapping() -> None:
     layer = Shapes([], ndim=2)
     layer._drag_modes = dict(layer._drag_modes)

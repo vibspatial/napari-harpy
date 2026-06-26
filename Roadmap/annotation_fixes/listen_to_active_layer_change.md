@@ -190,7 +190,7 @@ Tests:
 
 ### Slice 1C - Adopt Clean Active Layer
 
-Status: proposed.
+Status: implemented.
 
 When a compatible active layer is selected and adoption is safe, open it as the
 active edit-existing annotation session.
