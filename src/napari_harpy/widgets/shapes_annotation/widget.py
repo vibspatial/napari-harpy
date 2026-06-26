@@ -195,6 +195,15 @@ class _ShapesAnnotationTarget:
 
 
 @dataclass(frozen=True)
+class _ActivePrimaryShapesCandidate:
+    """Compatible primary Shapes layer selected through napari's active layer."""
+
+    layer: Shapes
+    shapes_name: str
+    coordinate_system: str
+
+
+@dataclass(frozen=True)
 class _ShapesAnnotationSession:
     """Locked save target and source metadata for one annotation session.
 
@@ -633,6 +642,7 @@ class _AnnotationLayerEditGuard:
         if self._warning_callback is not None:
             self._warning_callback(message)
 
+
 class ShapesAnnotation(QWidget):
     """Widget shell for annotating SpatialData shapes elements."""
 
@@ -660,6 +670,9 @@ class ShapesAnnotation(QWidget):
         # Ignore primary-shapes registration events emitted by open operations
         # that this widget started itself.
         self._is_opening_annotation_layer = False
+        # Active-layer adoption can activate layers again, so keep this handler
+        # single-entry before follow-up slices add real adoption behavior.
+        self._is_handling_active_layer_change = False
         self._logo_path = get_logo_path()
 
         root_layout = QVBoxLayout(self)
@@ -757,7 +770,8 @@ class ShapesAnnotation(QWidget):
         self.create_layer_button.clicked.connect(self._on_create_layer_clicked)
         self.create_holes_button.clicked.connect(self._on_create_holes_clicked)
         self.save_shapes_button.clicked.connect(self._on_save_shapes_clicked)
-        layer_events = getattr(getattr(napari_viewer, "layers", None), "events", None)
+        viewer_layers = getattr(napari_viewer, "layers", None)
+        layer_events = getattr(viewer_layers, "events", None)
         layer_inserted_event = getattr(layer_events, "inserted", None)
         layer_inserted_connect = getattr(layer_inserted_event, "connect", None)
         if callable(layer_inserted_connect):
@@ -766,6 +780,11 @@ class ShapesAnnotation(QWidget):
         layer_removed_connect = getattr(layer_removed_event, "connect", None)
         if callable(layer_removed_connect):
             layer_removed_connect(self._on_viewer_layer_removed)
+        selection = getattr(viewer_layers, "selection", None)
+        active_layer_event = getattr(getattr(selection, "events", None), "active", None)
+        active_layer_connect = getattr(active_layer_event, "connect", None)
+        if callable(active_layer_connect):
+            active_layer_connect(self._on_active_layer_changed)
         self.refresh_from_sdata(self._app_state.sdata)
 
     @property
@@ -883,14 +902,124 @@ class ShapesAnnotation(QWidget):
     def _on_shapes_name_changed(self, _text: str) -> None:
         self._refresh_create_layer_state()
 
-    def _on_primary_shapes_layer_registered(self, binding: object) -> None:
+    def _on_active_layer_changed(self, event: object) -> None:
+        """Observe every active-layer change; later adoption only cares about compatible Shapes layers."""
+        if self._is_handling_active_layer_change:
+            return
+        if self._is_handling_annotation_layer_removal:
+            # `_discard_annotation_layer(...)` may call
+            # `ensure_shapes_loaded(...)` to reload a clean copy of the old
+            # saved layer before `_clear_annotation_state()` runs. That reload
+            # can transiently activate the old layer; do not treat it as a
+            # user-driven active-layer switch.
+            return
+
+        layer = getattr(event, "value", None)
+        if layer is None or layer is self._annotation_layer:
+            return
+
+        self._is_handling_active_layer_change = True
+        try:
+            self._maybe_adopt_active_shapes_layer(layer)
+        finally:
+            self._is_handling_active_layer_change = False
+
+    def _maybe_adopt_active_shapes_layer(self, layer: object) -> None:
+        candidate = self._active_primary_shapes_candidate(layer)
+        if candidate is None:
+            return
+        if self._annotation_layer is not None:
+            current_layer = self._annotation_layer
+            if self._annotation_layer_has_unsaved_changes():
+                if not self._confirm_discard_annotation_layer(context="target"):
+                    # The user cancelled the dirty-session switch while we are
+                    # inside napari's active-layer-change handling for the
+                    # layer the user just clicked. If we reactivate the old
+                    # annotation layer immediately, Qt may still finish the
+                    # original click afterward and leave the new layer selected
+                    # visually. Defer reactivation of the old layer to the
+                    # next event-loop turn so cancel keeps napari and the
+                    # widget on the old layer.
+                    QTimer.singleShot(0, lambda: self._app_state.viewer_adapter.activate_layer(current_layer))
+                    self._refresh_create_layer_state()
+                    return
+                self._discard_annotation_layer()
+            else:
+                self._close_clean_annotation_session()
+
+        target = _ShapesAnnotationTarget.edit_existing(candidate.shapes_name)
+        self._sync_shapes_target_combo_selection(target)
+        self._refresh_create_layer_state()
+        # In the happy path this is still `None`: we either had no session or
+        # just closed a clean one. Keep the guard so a future target-refresh
+        # side effect cannot open the same layer twice.
+        if self._annotation_layer is None:
+            self._open_existing_annotation_layer()
+
+    def _active_primary_shapes_candidate(self, layer: object) -> _ActivePrimaryShapesCandidate | None:
+        if not isinstance(layer, Shapes):
+            return None
+
+        sdata = self._app_state.sdata
+        coordinate_system = self._selected_coordinate_system
+        if sdata is None or coordinate_system is None:
+            return None
+
+        binding = self._app_state.viewer_adapter.layer_bindings.get_binding(layer)
+        if not isinstance(binding, ShapesLayerBinding):
+            return None
+
         if (
-            self._is_opening_annotation_layer
-            or self._annotation_layer is not None
-            or self._annotation_session is not None
+            binding.element_type != "shapes"
+            or binding.sdata_id != id(sdata)
+            or binding.coordinate_system != coordinate_system
+            or binding.shapes_role != "primary"
+            or binding.shapes_rendering_mode != "shapes"
+            or binding.style_spec is not None
+            or binding.element_name not in self._eligible_existing_shapes_names
         ):
+            return None
+
+        return _ActivePrimaryShapesCandidate(
+            layer=layer,
+            shapes_name=binding.element_name,
+            coordinate_system=coordinate_system,
+        )
+
+    def _on_primary_shapes_layer_registered(self, binding: object) -> None:
+        if self._is_opening_annotation_layer:
+            return
+        if self._is_handling_annotation_layer_removal:
+            # `_discard_annotation_layer(...)` may call
+            # `ensure_shapes_loaded(...)` to reload a clean copy of the old
+            # saved layer. That internal reload registers the layer before the
+            # dirty session has been cleared, so the registration repair must
+            # not adopt it.
             return
         if not isinstance(binding, ShapesLayerBinding):
+            return
+
+        active_layer = getattr(getattr(getattr(self._viewer, "layers", None), "selection", None), "active", None)
+        # napari may expose the active layer through a PublicOnlyProxy in
+        # plugin widgets; Harpy bindings keep the real layer object.
+        active_layer = getattr(active_layer, "__wrapped__", active_layer)
+        if binding.layer is active_layer:
+            # Catch primary shapes loaded through the Viewer widget Add/Update
+            # flow. `ensure_shapes_loaded(...)` calls
+            # `_add_layer_to_viewer(...)` before `register_shapes_layer(...)`.
+            # Napari can make that inserted layer active immediately, so
+            # `_on_active_layer_changed` sees it before the binding exists and
+            # rejects it as unbound. Once this registration signal fires, the
+            # binding exists. Repair adoption here because the Viewer widget's
+            # later
+            # `activate_layer(...)` call may set `selection.active` to the
+            # already-active layer. Napari returns early in that case, so it
+            # may not emit a second active event for `_on_active_layer_changed`;
+            # catch that missed active-layer adoption here.
+            self._maybe_adopt_active_shapes_layer(binding.layer)
+            return
+
+        if self._annotation_layer is not None or self._annotation_session is not None:
             return
 
         sdata = self._app_state.sdata
@@ -951,8 +1080,18 @@ class ShapesAnnotation(QWidget):
             return
 
         if self._annotation_layer is not None:
+            current_layer = self._annotation_layer
             if self._annotation_layer_has_unsaved_changes():
                 if not self._confirm_discard_annotation_layer(context="target"):
+                    self._remove_pending_native_shapes_layer(layer)
+                    if self._viewer_contains_layer(current_layer):
+                        # Native file imports are inserted before Annotation can
+                        # ask whether to discard. If the user cancels, remove
+                        # that pending import and defer reactivation of the
+                        # kept dirty annotation layer until napari finishes the
+                        # insertion/removal event handling.
+                        QTimer.singleShot(0, lambda: self._app_state.viewer_adapter.activate_layer(current_layer))
+                    self._refresh_create_layer_state()
                     return
                 self._discard_annotation_layer()
             else:
@@ -965,6 +1104,27 @@ class ShapesAnnotation(QWidget):
 
         shapes_name = self._unique_new_shapes_name_for_native_layer(layer)
         self._adopt_native_shapes_layer(layer, shapes_name=shapes_name, coordinate_system=coordinate_system)
+
+    def _remove_pending_native_shapes_layer(self, layer: Shapes) -> None:
+        if not self._viewer_contains_layer(layer):
+            return
+        if self._app_state.viewer_adapter.layer_bindings.get_binding(layer) is not None:
+            return
+
+        layers = getattr(self._viewer, "layers", None)
+        remove_layer = getattr(layers, "remove", None)
+        if not callable(remove_layer):
+            return
+
+        previous_removal_guard = self._is_handling_annotation_layer_removal
+        # Removing the pending import is widget-owned cleanup after the user
+        # cancels adoption, so suppress layer-removal/active-layer callbacks
+        # that should not reset or switch the still-dirty annotation session.
+        self._is_handling_annotation_layer_removal = True
+        try:
+            remove_layer(layer)
+        finally:
+            self._is_handling_annotation_layer_removal = previous_removal_guard
 
     def _viewer_contains_layer(self, layer: object) -> bool:
         layers = getattr(self._viewer, "layers", None)
