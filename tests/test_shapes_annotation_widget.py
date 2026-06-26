@@ -2741,17 +2741,17 @@ def test_shapes_annotation_widget_deferred_native_adoption_ignores_harpy_loaded_
     assert widget._selected_shapes_target == shapes_annotation_widget_module._ShapesAnnotationTarget.create_new()
 
 
-def test_shapes_annotation_widget_native_adoption_cancel_keeps_dirty_session_unbound(
+def test_shapes_annotation_widget_native_adoption_cancel_removes_pending_import_and_keeps_dirty_session(
     qtbot,
     monkeypatch,
     sdata_blobs: SpatialData,
 ) -> None:
-    viewer = DummyViewer()
+    viewer = AutoActivatingDummyViewer()
     widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
     widget.create_layer_button.click()
     annotation_layer = viewer.layers[0]
     _add_polygon(annotation_layer)
-    native_layer = Shapes([], shape_type="polygon", name="native_shapes")
+    native_layer = _native_polygon_layer("native_shapes")
     confirm_calls: list[str] = []
 
     def cancel_discard(*, context: str) -> bool:
@@ -2762,13 +2762,12 @@ def test_shapes_annotation_widget_native_adoption_cancel_keeps_dirty_session_unb
 
     viewer.add_layer(native_layer)
 
-    qtbot.waitUntil(lambda: bool(confirm_calls))
+    qtbot.waitUntil(lambda: native_layer not in viewer.layers and viewer.layers.selection.active is annotation_layer)
     assert confirm_calls == ["target"]
     assert widget._annotation_layer is annotation_layer
     assert widget._annotation_session is not None
     assert widget._annotation_session.shapes_name == "new_regions"
     assert widget.app_state.viewer_adapter.layer_bindings.get_binding(native_layer) is None
-    assert native_layer in viewer.layers
 
 
 def test_shapes_annotation_widget_native_adoption_confirm_discards_dirty_session(
@@ -2776,12 +2775,12 @@ def test_shapes_annotation_widget_native_adoption_confirm_discards_dirty_session
     monkeypatch,
     sdata_blobs: SpatialData,
 ) -> None:
-    viewer = DummyViewer()
+    viewer = AutoActivatingDummyViewer()
     widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
     widget.create_layer_button.click()
     annotation_layer = viewer.layers[0]
     _add_polygon(annotation_layer)
-    native_layer = Shapes([], shape_type="polygon", name="native_shapes")
+    native_layer = _native_polygon_layer("native_shapes")
     confirm_calls: list[str] = []
 
     def confirm_discard(*, context: str) -> bool:
@@ -2801,6 +2800,8 @@ def test_shapes_annotation_widget_native_adoption_confirm_discards_dirty_session
     assert widget._annotation_session.mode == "create_new"
     assert widget._annotation_session.shapes_name == "native_shapes"
     assert widget.name_edit.text() == "native_shapes"
+    np.testing.assert_allclose(native_layer.edge_color[0], to_rgba("#00FFFF"))
+    np.testing.assert_allclose(native_layer.face_color[0], to_rgba("#00000000"))
 
 
 def test_shapes_annotation_widget_coordinate_discard_guard_avoids_duplicate_cleanup(

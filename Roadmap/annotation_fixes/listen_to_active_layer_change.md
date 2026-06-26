@@ -424,6 +424,86 @@ Tests:
   not reenter the active-layer repair for the reloaded `new_shapes_1`; the
   widget should end on `new_shapes_2`.
 
+### Slice 1F - Pending Native Import While Dirty
+
+Status: implemented.
+
+Problem:
+
+- Native napari file imports, such as loading a shapes CSV through napari's
+  own file-open UI, insert a plain `napari.layers.Shapes` layer before the
+  Shapes Annotation widget can decide whether to adopt it.
+- The widget only observes that layer after insertion via the viewer layer-list
+  `inserted` event and then runs the deferred native adoption path.
+- If the current annotation session is dirty, `_maybe_adopt_native_shapes_layer(...)`
+  asks whether to discard the existing unsaved annotations. During that dialog,
+  the newly imported native layer is already visible in napari.
+- Because Harpy styling is applied only after successful adoption, the pending
+  native layer appears with napari's default Shapes styling while the discard
+  dialog is open.
+- This is confusing because the UI visually looks as if the target has already
+  changed before the user has answered the discard prompt.
+
+Observed flow:
+
+```text
+User edits new_shapes_1
+User opens a shapes CSV through napari's file-open UI
+napari reads the CSV
+napari inserts a native Shapes layer immediately
+Annotation receives the layer-list inserted event
+Annotation defers native adoption to the next Qt event-loop turn
+_maybe_adopt_native_shapes_layer(...)
+  sees dirty new_shapes_1
+  opens the discard confirmation
+pending native Shapes layer is already visible with default napari styling
+```
+
+Chosen behavior:
+
+- Treat an unbound native Shapes layer inserted while the annotation session is
+  dirty as a pending native adoption.
+- If the user confirms discard:
+  - discard the current dirty annotation session
+  - adopt the pending native layer
+  - normalize its transform
+  - apply Harpy primary-shapes styling
+  - register it as the new annotation-owned shapes layer
+- If the user cancels:
+  - keep the current dirty annotation session active
+  - reactivate the current annotation layer
+  - remove the pending imported native layer from the viewer, because the user
+    declined switching Annotation to that import
+
+Suggested implementation:
+
+- Keep the existing deferred native-adoption mechanism in
+  `_on_viewer_layer_inserted(...)`; do not try to intercept napari's file-open
+  machinery before insertion.
+- In `_maybe_adopt_native_shapes_layer(...)`, handle the dirty-session branch
+  explicitly before adoption.
+- For the cancel path, remove only the still-unbound pending native layer that
+  triggered this adoption attempt. Do not remove Harpy-bound layers or layers
+  that are no longer present in the viewer.
+- After cancel, reactivate `self._annotation_layer` so the napari UI and the
+  Annotation widget return to the dirty session the user kept.
+- Guard against reentrant layer-removal/adoption callbacks while removing the
+  pending native layer, using the existing annotation-layer removal guards or a
+  narrowly scoped new guard if needed.
+- Do not apply Harpy styling to a pending native layer before the user confirms
+  adoption. Styling should remain a signal that Annotation owns the layer.
+
+Tests:
+
+- Dirty annotation session plus native Shapes import; user cancels discard:
+  current annotation session remains dirty and active, the native import is
+  removed, and the native layer remains unbound.
+- Dirty annotation session plus native Shapes import; user confirms discard:
+  current dirty layer is discarded, the native layer is adopted, Harpy styling
+  is applied, and the layer is registered as annotation-owned.
+- Clean annotation session plus native Shapes import keeps the existing
+  behavior: the clean session can close and the native layer is adopted.
+
 ## Non-Goals
 
 - Do not attach `_AnnotationLayerEditGuard` to arbitrary unbound native Shapes

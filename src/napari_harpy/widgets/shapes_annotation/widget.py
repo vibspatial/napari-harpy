@@ -1080,8 +1080,18 @@ class ShapesAnnotation(QWidget):
             return
 
         if self._annotation_layer is not None:
+            current_layer = self._annotation_layer
             if self._annotation_layer_has_unsaved_changes():
                 if not self._confirm_discard_annotation_layer(context="target"):
+                    self._remove_pending_native_shapes_layer(layer)
+                    if self._viewer_contains_layer(current_layer):
+                        # Native file imports are inserted before Annotation can
+                        # ask whether to discard. If the user cancels, remove
+                        # that pending import and defer reactivation of the
+                        # kept dirty annotation layer until napari finishes the
+                        # insertion/removal event handling.
+                        QTimer.singleShot(0, lambda: self._app_state.viewer_adapter.activate_layer(current_layer))
+                    self._refresh_create_layer_state()
                     return
                 self._discard_annotation_layer()
             else:
@@ -1094,6 +1104,27 @@ class ShapesAnnotation(QWidget):
 
         shapes_name = self._unique_new_shapes_name_for_native_layer(layer)
         self._adopt_native_shapes_layer(layer, shapes_name=shapes_name, coordinate_system=coordinate_system)
+
+    def _remove_pending_native_shapes_layer(self, layer: Shapes) -> None:
+        if not self._viewer_contains_layer(layer):
+            return
+        if self._app_state.viewer_adapter.layer_bindings.get_binding(layer) is not None:
+            return
+
+        layers = getattr(self._viewer, "layers", None)
+        remove_layer = getattr(layers, "remove", None)
+        if not callable(remove_layer):
+            return
+
+        previous_removal_guard = self._is_handling_annotation_layer_removal
+        # Removing the pending import is widget-owned cleanup after the user
+        # cancels adoption, so suppress layer-removal/active-layer callbacks
+        # that should not reset or switch the still-dirty annotation session.
+        self._is_handling_annotation_layer_removal = True
+        try:
+            remove_layer(layer)
+        finally:
+            self._is_handling_annotation_layer_removal = previous_removal_guard
 
     def _viewer_contains_layer(self, layer: object) -> bool:
         layers = getattr(self._viewer, "layers", None)
