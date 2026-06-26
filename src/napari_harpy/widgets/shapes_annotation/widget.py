@@ -1004,12 +1004,18 @@ class ShapesAnnotation(QWidget):
         # plugin widgets; Harpy bindings keep the real layer object.
         active_layer = getattr(active_layer, "__wrapped__", active_layer)
         if binding.layer is active_layer:
-            # Viewer Add/Update can insert a new layer before Harpy registers
-            # its binding. Napari auto-activates that inserted layer, so the
-            # active-layer listener sees it too early and rejects it as
-            # unbound. When this registration signal fires, the binding now
-            # exists, while a later activate_layer(...) call may not emit
-            # another napari active event because the layer is already active.
+            # Catch primary shapes loaded through the Viewer widget Add/Update
+            # flow. `ensure_shapes_loaded(...)` calls
+            # `_add_layer_to_viewer(...)` before `register_shapes_layer(...)`.
+            # Napari can make that inserted layer active immediately, so
+            # `_on_active_layer_changed` sees it before the binding exists and
+            # rejects it as unbound. Once this registration signal fires, the
+            # binding exists. Repair adoption here because the Viewer widget's
+            # later
+            # `activate_layer(...)` call may set `selection.active` to the
+            # already-active layer. Napari returns early in that case, so it
+            # may not emit a second active event for `_on_active_layer_changed`;
+            # catch that missed active-layer adoption here.
             self._maybe_adopt_active_shapes_layer(binding.layer)
             return
 
