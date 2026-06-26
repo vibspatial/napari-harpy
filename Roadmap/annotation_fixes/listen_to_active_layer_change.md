@@ -250,6 +250,136 @@ Tests:
 - cancel reselects/reactivates the old annotation layer
 - confirm discards the dirty session and adopts the selected compatible layer
 
+### Slice 1E - Adopt Viewer-Loaded Active Primary Shapes After Binding Registration
+
+Status: proposed.
+
+Handle the case where a primary shapes layer is loaded through the Viewer
+widget while the Shapes Annotation widget is open but still on `Create shapes`.
+
+Observed behavior:
+
+- The Viewer widget loads the primary shapes layer through
+  `viewer_adapter.ensure_shapes_loaded(...)`.
+- `ensure_shapes_loaded(...)` adds the napari layer to the viewer before it
+  registers the Harpy `ShapesLayerBinding`.
+- Napari makes newly inserted layers active immediately.
+- The Shapes Annotation active-layer listener can therefore see the layer while
+  it is still unbound and reject it in `_active_primary_shapes_candidate(...)`.
+- Harpy registers the binding afterwards and emits
+  `primary_shapes_layer_registered`.
+- `_on_primary_shapes_layer_registered(...)` currently only opens the layer if
+  the Annotation widget is already on the matching edit-existing target. If the
+  widget is still on `Create shapes`, it returns.
+- The Viewer widget later calls `viewer_adapter.activate_layer(result.layer)`,
+  but real napari may not emit another active-layer event because the newly
+  inserted layer is already active.
+
+Why this ordering happens:
+
+- Harpy must add the built layer to napari before it can treat it as a loaded
+  viewer layer. In the current adapter flow, `ensure_shapes_loaded(...)` calls
+  `_add_layer_to_viewer(...)` first and only then calls
+  `register_shapes_layer(...)`.
+- `_add_layer_to_viewer(...)` uses napari's normal `viewer.add_layer(layer)`
+  API. In napari, `add_layer(...)` appends the layer to `viewer.layers`.
+- `viewer.layers` is a selectable layer list. Its insert path has
+  `_activate_on_insert = True`, so inserting/appending a layer sets
+  `viewer.layers.selection.active` to the new layer.
+- Setting `selection.active` emits napari's active-layer event immediately,
+  before control returns to Harpy's adapter and before
+  `register_shapes_layer(...)` has installed the `ShapesLayerBinding`.
+- Therefore this is not a napari rendering/editing bug. It is a natural
+  ordering boundary between napari's layer-list selection behavior and Harpy's
+  post-insertion binding metadata.
+
+The first missed-adoption timeline is:
+
+```text
+Harpy ensure_shapes_loaded
+  build layer
+  add layer to napari
+    napari inserts layer
+    napari makes inserted layer active
+    napari emits active-layer event
+      annotation widget sees active layer
+      Harpy binding does not exist yet
+      candidate is rejected
+  return from add_layer
+  Harpy register_shapes_layer(...)
+  Harpy emits primary_shapes_layer_registered
+```
+
+The later Viewer-widget activation does not reliably repair this:
+
+```text
+ensure_shapes_loaded(...)
+  add layer to napari
+    napari auto-activates inserted layer
+    active-layer event fires before binding exists
+  register_shapes_layer(...)
+    binding now exists
+    primary_shapes_layer_registered fires
+return result
+
+Viewer widget calls activate_layer(result.layer)
+```
+
+By that final `activate_layer(...)` call, napari may already consider
+`result.layer` active. Napari's `Selection.active` setter returns early in that
+case:
+
+```python
+if value == self._active:
+    return
+```
+
+So `selection.active = layer` may not emit a second napari active-layer event
+after the Harpy binding exists. That is why the registration callback is the
+right place to repair the missed adoption: at
+`primary_shapes_layer_registered` time the binding exists, and the callback can
+check whether the just-registered layer is already napari's active layer.
+
+Expected behavior:
+
+- If a compatible primary, unstyled shapes layer is loaded through the Viewer
+  widget and is already the active napari layer once its binding is registered,
+  the Shapes Annotation widget should adopt/open it just as if the user had
+  selected that layer directly in napari after it was registered.
+
+Suggested implementation:
+
+- Extend `_on_primary_shapes_layer_registered(...)` with a second path for
+  active-layer adoption.
+- Split the current early guard. Keep `self._is_opening_annotation_layer` as an
+  immediate return, but do not return immediately just because
+  `self._annotation_layer` or `self._annotation_session` exists; the active
+  adoption path already handles no-session, clean-session, and dirty-session
+  cases.
+- Before the existing target-matching branch, check whether
+  `binding.layer is viewer.layers.selection.active`.
+- If the registered layer is currently active, call
+  `_maybe_adopt_active_shapes_layer(binding.layer)` and return.
+- Keep the existing target-specific registration behavior for the case where
+  the widget already selected a matching edit-existing target. This existing
+  branch should remain after the active-layer branch and can keep returning
+  early when an annotation session already exists.
+- Do not adopt styled shapes layers, point-rendered shapes layers, or unbound
+  native napari Shapes layers.
+- Do not reintroduce listening to `viewer_adapter.active_layer_changed`; this is
+  specifically a binding-registration race for a layer that napari already made
+  active.
+
+Tests:
+
+- Viewer-widget-style primary shapes load while Annotation is on `Create shapes`
+  is adopted after binding registration if the newly registered layer is active.
+- If the registered layer is not the active napari layer, Annotation does not
+  adopt it.
+- Styled or point-rendered shapes registrations are ignored.
+- Dirty-session cancel/confirm behavior remains the same as Slice 1D when the
+  already-active newly registered layer would switch annotation targets.
+
 ## Non-Goals
 
 - Do not attach `_AnnotationLayerEditGuard` to arbitrary unbound native Shapes
