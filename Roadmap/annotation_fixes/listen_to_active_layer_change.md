@@ -252,7 +252,7 @@ Tests:
 
 ### Slice 1E - Adopt Viewer-Loaded Active Primary Shapes After Binding Registration
 
-Status: proposed.
+Status: implemented.
 
 Handle the case where a primary shapes layer is loaded through the Viewer
 widget while the Shapes Annotation widget is open but still on `Create shapes`.
@@ -340,6 +340,42 @@ right place to repair the missed adoption: at
 `primary_shapes_layer_registered` time the binding exists, and the callback can
 check whether the just-registered layer is already napari's active layer.
 
+Implementation nuance:
+
+- In real plugin widgets, napari may expose `viewer.layers.selection.active`
+  through a `PublicOnlyProxy`. Harpy's `ShapesLayerBinding` stores the real
+  layer object, so the registration repair must unwrap proxy active layers
+  before doing the identity comparison. Otherwise the active-layer repair works
+  in plain model tests but fails in the live plugin widget context.
+- The active-layer repair must not run while the widget is already discarding
+  or closing its own annotation session. Edit-existing discard removes the dirty
+  layer and reloads the saved source layer. That reload can register and
+  auto-activate the old layer while `_discard_annotation_layer(...)` is still
+  running and the old dirty session has not yet been cleared.
+
+The dirty discard loop to avoid is:
+
+```text
+User edits new_shapes_1
+User selects new_shapes_2 in the Annotation widget
+Annotation asks whether to discard dirty new_shapes_1
+User clicks Discard annotations
+_discard_annotation_layer(...)
+  remove dirty new_shapes_1 layer
+  reload saved new_shapes_1 layer
+    napari auto-activates reloaded new_shapes_1
+    Harpy registers reloaded new_shapes_1
+    active-layer repair tries to adopt new_shapes_1
+      old dirty session is still present
+      Annotation asks whether to discard dirty new_shapes_1 again
+```
+
+This is a reentrant widget-owned discard/reload path, not a user-driven active
+layer switch. The active-layer handler and registration repair should return
+while `self._is_handling_annotation_layer_removal` is true. After discard
+finishes, the original target-change flow can continue and open the selected
+target, for example `new_shapes_2`, exactly once.
+
 Expected behavior:
 
 - If a compatible primary, unstyled shapes layer is loaded through the Viewer
@@ -360,6 +396,10 @@ Suggested implementation:
   `binding.layer is viewer.layers.selection.active`.
 - If the registered layer is currently active, call
   `_maybe_adopt_active_shapes_layer(binding.layer)` and return.
+- Do not run active-layer adoption or registration repair while
+  `self._is_handling_annotation_layer_removal` is true. That flag marks
+  widget-owned discard/close/reload operations where transient napari active
+  layers must not change the annotation target.
 - Keep the existing target-specific registration behavior for the case where
   the widget already selected a matching edit-existing target. This existing
   branch should remain after the active-layer branch and can keep returning
@@ -379,6 +419,10 @@ Tests:
 - Styled or point-rendered shapes registrations are ignored.
 - Dirty-session cancel/confirm behavior remains the same as Slice 1D when the
   already-active newly registered layer would switch annotation targets.
+- Switching from dirty `new_shapes_1` to `new_shapes_2` through the Annotation
+  widget asks for discard confirmation once. Clicking Discard annotations must
+  not reenter the active-layer repair for the reloaded `new_shapes_1`; the
+  widget should end on `new_shapes_2`.
 
 ## Non-Goals
 

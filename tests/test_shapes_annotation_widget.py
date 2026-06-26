@@ -76,10 +76,17 @@ class DummySelection:
         self.active = layer
 
 
+class ProxyActiveDummySelection(DummySelection):
+    @DummySelection.active.setter
+    def active(self, layer: object | None) -> None:
+        self._active = None if layer is None else SimpleNamespace(__wrapped__=layer)
+        self.events.active.emit(layer)
+
+
 class DummyLayers(list):
-    def __init__(self) -> None:
+    def __init__(self, *, selection: DummySelection | None = None) -> None:
         super().__init__()
-        self.selection = DummySelection()
+        self.selection = DummySelection() if selection is None else selection
         self.events = SimpleNamespace(
             inserted=DummyEventEmitter(),
             removed=DummyEventEmitter(),
@@ -99,6 +106,19 @@ class DummyViewer:
         self.layers.append(layer)
         self.layers.events.inserted.emit(layer)
         return layer
+
+
+class AutoActivatingDummyViewer(DummyViewer):
+    def add_layer(self, layer: object) -> object:
+        self.layers.append(layer)
+        self.layers.events.inserted.emit(layer)
+        self.layers.selection.active = layer
+        return layer
+
+
+class ProxyActiveAutoActivatingDummyViewer(AutoActivatingDummyViewer):
+    def __init__(self) -> None:
+        self.layers = DummyLayers(selection=ProxyActiveDummySelection())
 
 
 def _combo_texts(combo: QComboBox) -> list[str]:
@@ -558,6 +578,120 @@ def test_shapes_annotation_widget_active_primary_shapes_layer_selection_opens_an
     assert widget.save_shapes_button.isEnabled() is True
     assert widget.create_holes_button.isEnabled() is True
     assert "Existing Shapes Opened" in _status_text(widget)
+
+
+def test_shapes_annotation_widget_adopts_auto_active_primary_shapes_after_registration(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = AutoActivatingDummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    assert widget._annotation_layer is None
+    assert widget.shapes_combo.currentText() == "Create shapes..."
+
+    load_result = app_state.viewer_adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
+    layer = load_result.layer
+
+    assert load_result.created is True
+    assert viewer.layers.selection.active is layer
+    assert widget._annotation_layer is layer
+    assert widget._annotation_edit_guard.layer is layer
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.shapes_name == "blobs_polygons"
+    assert widget._annotation_session.layer_origin == "adopted_primary"
+    assert widget.shapes_combo.currentText() == "blobs_polygons"
+    assert widget.save_shapes_button.isEnabled() is True
+    assert widget.create_holes_button.isEnabled() is True
+
+
+def test_shapes_annotation_widget_adopts_proxy_active_primary_shapes_after_registration(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = ProxyActiveAutoActivatingDummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    load_result = app_state.viewer_adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
+    layer = load_result.layer
+
+    assert getattr(viewer.layers.selection.active, "__wrapped__", None) is layer
+    assert widget._annotation_layer is layer
+    assert widget._annotation_edit_guard.layer is layer
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.shapes_name == "blobs_polygons"
+    assert widget.shapes_combo.currentText() == "blobs_polygons"
+
+
+def test_shapes_annotation_widget_primary_shapes_registration_ignores_inactive_layer(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    load_result = app_state.viewer_adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
+
+    assert load_result.created is True
+    assert viewer.layers.selection.active is None
+    assert widget._annotation_layer is None
+    assert widget._annotation_session is None
+    assert widget.shapes_combo.currentText() == "Create shapes..."
+
+
+def test_shapes_annotation_widget_active_registration_ignores_incompatible_primary_shapes(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = AutoActivatingDummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+    style_spec = ShapeColumnColorSourceSpec(
+        source_kind="shape_column",
+        value_key="label",
+        value_kind="categorical",
+    )
+
+    styled_layer = Shapes([], ndim=2, name="blobs_polygons")
+    viewer.add_layer(styled_layer)
+    app_state.viewer_adapter.register_shapes_layer(
+        styled_layer,
+        sdata=sdata_blobs,
+        shapes_name="blobs_polygons",
+        coordinate_system="global",
+        shapes_role="styled",
+        style_spec=style_spec,
+    )
+
+    assert viewer.layers.selection.active is styled_layer
+    assert widget._annotation_layer is None
+    assert widget._annotation_session is None
+
+    points_layer = Points(np.empty((0, 2)), name="blobs_polygons")
+    viewer.add_layer(points_layer)
+    app_state.viewer_adapter.register_shapes_layer(
+        points_layer,
+        sdata=sdata_blobs,
+        shapes_name="blobs_polygons",
+        coordinate_system="global",
+        shapes_role="primary",
+        shapes_rendering_mode="points",
+    )
+
+    assert viewer.layers.selection.active is points_layer
+    assert widget._annotation_layer is None
+    assert widget._annotation_session is None
 
 
 def test_shapes_annotation_widget_active_primary_shapes_layer_selection_switches_clean_session(
@@ -1654,6 +1788,45 @@ def test_shapes_annotation_widget_clean_existing_target_switch_preserves_layer_o
     assert widget._annotation_edit_guard.layer is blobs_layer
     assert "_drag_modes" in vars(blobs_layer)
     assert "_drag_modes" not in vars(other_layer)
+
+
+def test_shapes_annotation_widget_dirty_existing_target_switch_ignores_reloaded_old_active_layer(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    sdata_blobs.shapes["other_polygons"] = sdata_blobs.shapes["blobs_polygons"].copy()
+    viewer = ProxyActiveAutoActivatingDummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, "blobs_polygons"))
+    dirty_layer = widget._annotation_layer
+    assert isinstance(dirty_layer, Shapes)
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.reload_on_discard is True
+    _add_polygon(dirty_layer, offset=100)
+    assert widget._annotation_layer_has_unsaved_changes() is True
+    discard_contexts: list[str] = []
+
+    def confirm_discard(*, context: str) -> bool:
+        discard_contexts.append(context)
+        return True
+
+    monkeypatch.setattr(widget, "_confirm_discard_annotation_layer", confirm_discard)
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, "other_polygons"))
+
+    assert discard_contexts == ["target"]
+    assert dirty_layer not in viewer.layers
+    assert widget._annotation_layer is not None
+    assert widget._annotation_layer is not dirty_layer
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.shapes_name == "other_polygons"
+    assert widget.shapes_combo.currentText() == "other_polygons"
+    assert getattr(viewer.layers.selection.active, "__wrapped__", viewer.layers.selection.active) is widget._annotation_layer
 
 
 def test_shapes_annotation_widget_open_existing_target_loads_edit_session_layer(

@@ -906,6 +906,13 @@ class ShapesAnnotation(QWidget):
         """Observe every active-layer change; later adoption only cares about compatible Shapes layers."""
         if self._is_handling_active_layer_change:
             return
+        if self._is_handling_annotation_layer_removal:
+            # `_discard_annotation_layer(...)` may call
+            # `ensure_shapes_loaded(...)` to reload a clean copy of the old
+            # saved layer before `_clear_annotation_state()` runs. That reload
+            # can transiently activate the old layer; do not treat it as a
+            # user-driven active-layer switch.
+            return
 
         layer = getattr(event, "value", None)
         if layer is None or layer is self._annotation_layer:
@@ -980,13 +987,33 @@ class ShapesAnnotation(QWidget):
         )
 
     def _on_primary_shapes_layer_registered(self, binding: object) -> None:
-        if (
-            self._is_opening_annotation_layer
-            or self._annotation_layer is not None
-            or self._annotation_session is not None
-        ):
+        if self._is_opening_annotation_layer:
+            return
+        if self._is_handling_annotation_layer_removal:
+            # `_discard_annotation_layer(...)` may call
+            # `ensure_shapes_loaded(...)` to reload a clean copy of the old
+            # saved layer. That internal reload registers the layer before the
+            # dirty session has been cleared, so the registration repair must
+            # not adopt it.
             return
         if not isinstance(binding, ShapesLayerBinding):
+            return
+
+        active_layer = getattr(getattr(getattr(self._viewer, "layers", None), "selection", None), "active", None)
+        # napari may expose the active layer through a PublicOnlyProxy in
+        # plugin widgets; Harpy bindings keep the real layer object.
+        active_layer = getattr(active_layer, "__wrapped__", active_layer)
+        if binding.layer is active_layer:
+            # Viewer Add/Update can insert a new layer before Harpy registers
+            # its binding. Napari auto-activates that inserted layer, so the
+            # active-layer listener sees it too early and rejects it as
+            # unbound. When this registration signal fires, the binding now
+            # exists, while a later activate_layer(...) call may not emit
+            # another napari active event because the layer is already active.
+            self._maybe_adopt_active_shapes_layer(binding.layer)
+            return
+
+        if self._annotation_layer is not None or self._annotation_session is not None:
             return
 
         sdata = self._app_state.sdata
