@@ -504,6 +504,59 @@ Tests:
 - Clean annotation session plus native Shapes import keeps the existing
   behavior: the clean session can close and the native layer is adopted.
 
+### Slice 1G - Hide Pending Native Import During Dirty Confirmation
+
+Status: deferred.
+
+Current status:
+
+- Slice 1F fixes the most problematic half-adopted state. If the user cancels
+  the dirty-session confirmation, Annotation removes the pending unbound native
+  import and reactivates the existing dirty annotation layer.
+- If the user confirms, the existing adoption path continues: the imported
+  native layer is adopted, Harpy styling is applied, and the layer becomes the
+  annotation-owned target.
+- One visual artifact remains: napari inserts the native Shapes layer before
+  Annotation can ask the dirty-session confirmation. Therefore, while the
+  confirmation dialog is open, the pending native layer can briefly be visible
+  with napari's default Shapes styling.
+
+Why this remains:
+
+- Annotation currently observes native file imports through the viewer
+  layer-list `inserted` event. By the time this event reaches the widget, napari
+  has already created and inserted the layer.
+- Harpy styling is intentionally applied only after the user confirms adoption,
+  because styling should signal that Annotation owns the layer.
+- Intercepting napari's file-open/read path before layer insertion would be a
+  broader integration change and is not needed for the current correctness fix.
+
+Possible future behavior:
+
+- Treat the inserted native layer as a hidden or temporarily removed pending
+  adoption candidate while the dirty-session confirmation is shown.
+- If the user confirms:
+  - restore or keep the pending layer
+  - adopt it
+  - apply Harpy styling
+  - register it as annotation-owned
+- If the user cancels:
+  - keep the current dirty annotation session active
+  - leave the pending import removed or hidden
+  - reactivate the current annotation layer
+
+Implementation notes:
+
+- Prefer a narrow widget-level solution over intercepting napari's reader
+  machinery.
+- If temporarily removing the pending layer, keep enough local state to restore
+  the same layer object on confirm without losing its imported data, metadata,
+  features, or transform.
+- Guard any temporary removal/restoration from layer-removal and active-layer
+  adoption callbacks so the widget does not reset the current dirty session.
+- Keep Slice 1F's cancel behavior intact: cancel must not leave an unbound
+  default-styled native import behind.
+
 ## Non-Goals
 
 - Do not attach `_AnnotationLayerEditGuard` to arbitrary unbound native Shapes
