@@ -11,6 +11,7 @@ save target.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -664,14 +665,12 @@ class ShapesAnnotation(QWidget):
         self._annotation_edit_guard = _AnnotationLayerEditGuard(warning_callback=self._set_annotation_edit_warning)
         self._annotation_has_been_saved = False
         self._annotation_clean_snapshot: _ShapesAnnotationLayerSnapshot | None = None
-        # Suppress `_on_viewer_layer_removed(...)` while this widget removes
-        # an annotation layer itself during discard or clean session teardown.
-        self._is_handling_annotation_layer_removal = False
+        # Suppress layer-removal and active-layer callbacks during layer
+        # transitions owned by this widget.
+        self._is_handling_widget_owned_layer_transition = False
         # Ignore primary-shapes registration events emitted by open operations
         # that this widget started itself.
-        self._is_opening_annotation_layer = False
-        # Active-layer adoption can activate layers again, so keep this handler
-        # single-entry before follow-up slices add real adoption behavior.
+        self._is_handling_widget_owned_registration = False
         self._is_handling_active_layer_change = False
         self._logo_path = get_logo_path()
 
@@ -906,7 +905,7 @@ class ShapesAnnotation(QWidget):
         """Observe every active-layer change; later adoption only cares about compatible Shapes layers."""
         if self._is_handling_active_layer_change:
             return
-        if self._is_handling_annotation_layer_removal:
+        if self._is_handling_widget_owned_layer_transition:
             # `_discard_annotation_layer(...)` may call
             # `ensure_shapes_loaded(...)` to reload a clean copy of the old
             # saved layer before `_clear_annotation_state()` runs. That reload
@@ -987,9 +986,9 @@ class ShapesAnnotation(QWidget):
         )
 
     def _on_primary_shapes_layer_registered(self, binding: object) -> None:
-        if self._is_opening_annotation_layer:
+        if self._is_handling_widget_owned_registration:
             return
-        if self._is_handling_annotation_layer_removal:
+        if self._is_handling_widget_owned_layer_transition:
             # `_discard_annotation_layer(...)` may call
             # `ensure_shapes_loaded(...)` to reload a clean copy of the old
             # saved layer. That internal reload registers the layer before the
@@ -1116,15 +1115,31 @@ class ShapesAnnotation(QWidget):
         if not callable(remove_layer):
             return
 
-        previous_removal_guard = self._is_handling_annotation_layer_removal
         # Removing the pending import is widget-owned cleanup after the user
         # cancels adoption, so suppress layer-removal/active-layer callbacks
         # that should not reset or switch the still-dirty annotation session.
-        self._is_handling_annotation_layer_removal = True
-        try:
+        with self._suppress_widget_owned_layer_transition_callbacks():
             remove_layer(layer)
+
+    @contextmanager
+    def _suppress_widget_owned_layer_transition_callbacks(self) -> Iterator[None]:
+        """Ignore layer callbacks caused by widget-owned layer transitions."""
+        previous_layer_transition_guard = self._is_handling_widget_owned_layer_transition
+        self._is_handling_widget_owned_layer_transition = True
+        try:
+            yield
         finally:
-            self._is_handling_annotation_layer_removal = previous_removal_guard
+            self._is_handling_widget_owned_layer_transition = previous_layer_transition_guard
+
+    @contextmanager
+    def _suppress_widget_owned_registration_callbacks(self) -> Iterator[None]:
+        """Ignore registration callbacks emitted by widget-owned operations."""
+        previous_registration_guard = self._is_handling_widget_owned_registration
+        self._is_handling_widget_owned_registration = True
+        try:
+            yield
+        finally:
+            self._is_handling_widget_owned_registration = previous_registration_guard
 
     def _viewer_contains_layer(self, layer: object) -> bool:
         layers = getattr(self._viewer, "layers", None)
@@ -1166,8 +1181,7 @@ class ShapesAnnotation(QWidget):
         # registering the layer and capturing the clean annotation baseline.
         self._app_state.viewer_adapter.apply_primary_shapes_layer_style(layer)
 
-        self._is_opening_annotation_layer = True
-        try:
+        with self._suppress_widget_owned_registration_callbacks():
             self._app_state.viewer_adapter.register_shapes_layer(
                 layer,
                 sdata=sdata,
@@ -1176,8 +1190,6 @@ class ShapesAnnotation(QWidget):
                 shapes_rendering_mode="shapes",
                 source_shapes_index_feature_name=DEFAULT_SHAPES_INDEX_NAME,
             )
-        finally:
-            self._is_opening_annotation_layer = False
 
         self._annotation_layer = layer
         self._annotation_edit_guard.attach(layer)
@@ -1271,15 +1283,12 @@ class ShapesAnnotation(QWidget):
             # signal by calling `_open_existing_annotation_layer(...)` for
             # matching selected targets, so suppress the emitted event while
             # this method is already setting up the session.
-            self._is_opening_annotation_layer = True
-            try:
+            with self._suppress_widget_owned_registration_callbacks():
                 load_result = self._app_state.viewer_adapter.ensure_shapes_loaded(
                     sdata,
                     shapes_name,
                     coordinate_system,
                 )
-            finally:
-                self._is_opening_annotation_layer = False
             layer = load_result.layer
             binding = self._validate_opened_existing_shapes_layer(
                 layer,
@@ -1507,7 +1516,7 @@ class ShapesAnnotation(QWidget):
         # layer programmatically through `_discard_annotation_layer(...)` or
         # `_close_clean_annotation_session(...)`; those paths own cleanup, so
         # ignore the layer-removal event they emit.
-        if self._is_handling_annotation_layer_removal:
+        if self._is_handling_widget_owned_layer_transition:
             return
 
         layer = getattr(event, "value", None)
@@ -1877,8 +1886,7 @@ class ShapesAnnotation(QWidget):
             self._annotation_session.reload_on_discard if self._annotation_session is not None else False
         )
 
-        self._is_handling_annotation_layer_removal = True
-        try:
+        with self._suppress_widget_owned_layer_transition_callbacks():
             self._remove_annotation_layer()
             if reload_on_discard and sdata is not None and shapes_name is not None and coordinate_system is not None:
                 try:
@@ -1886,20 +1894,15 @@ class ShapesAnnotation(QWidget):
                 except ValueError as error:
                     self._apply_status_card_spec(build_annotation_reload_shapes_error_card_spec(str(error)))
             self._clear_annotation_state()
-        finally:
-            self._is_handling_annotation_layer_removal = False
 
     def _close_clean_annotation_session(self) -> None:
         """Release a clean annotation session without dirty discard/reload work."""
         should_remove_layer = self._annotation_layer is not None and not self._annotation_has_been_saved
 
-        self._is_handling_annotation_layer_removal = True
-        try:
+        with self._suppress_widget_owned_layer_transition_callbacks():
             if should_remove_layer:
                 self._remove_annotation_layer()
             self._clear_annotation_state()
-        finally:
-            self._is_handling_annotation_layer_removal = False
 
     def _annotation_layer_has_unsaved_changes(self) -> bool:
         layer = self._annotation_layer

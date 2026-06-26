@@ -2815,13 +2815,13 @@ def test_shapes_annotation_widget_coordinate_discard_guard_avoids_duplicate_clea
     widget.create_layer_button.click()
     _add_polygon(viewer.layers[0])
     monkeypatch.setattr(widget, "_confirm_discard_annotation_layer", lambda *, context: True)
-    remove_guard_values: list[bool] = []
+    layer_transition_guard_values: list[bool] = []
     clear_call_count = 0
     original_remove_annotation_layer = widget._remove_annotation_layer
     original_clear_annotation_state = widget._clear_annotation_state
 
     def remove_annotation_layer() -> None:
-        remove_guard_values.append(widget._is_handling_annotation_layer_removal)
+        layer_transition_guard_values.append(widget._is_handling_widget_owned_layer_transition)
         original_remove_annotation_layer()
 
     def clear_annotation_state() -> None:
@@ -2834,9 +2834,9 @@ def test_shapes_annotation_widget_coordinate_discard_guard_avoids_duplicate_clea
 
     widget.coordinate_system_combo.setCurrentIndex(1)
 
-    assert remove_guard_values == [True]
+    assert layer_transition_guard_values == [True]
     assert clear_call_count == 1
-    assert widget._is_handling_annotation_layer_removal is False
+    assert widget._is_handling_widget_owned_layer_transition is False
     assert widget.app_state.coordinate_system == "local"
     assert list(viewer.layers) == []
 
