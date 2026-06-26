@@ -225,7 +225,7 @@ Tests:
 
 ### Slice 1D - Dirty Session Protection
 
-Status: proposed.
+Status: implemented.
 
 Do not silently switch annotation sessions when the current session has unsaved
 changes.

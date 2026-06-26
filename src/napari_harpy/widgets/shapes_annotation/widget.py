@@ -922,9 +922,23 @@ class ShapesAnnotation(QWidget):
         if candidate is None:
             return
         if self._annotation_layer is not None:
+            current_layer = self._annotation_layer
             if self._annotation_layer_has_unsaved_changes():
-                return
-            self._close_clean_annotation_session()
+                if not self._confirm_discard_annotation_layer(context="target"):
+                    # The user cancelled the dirty-session switch while we are
+                    # inside napari's active-layer-change handling for the
+                    # layer the user just clicked. If we reactivate the old
+                    # annotation layer immediately, Qt may still finish the
+                    # original click afterward and leave the new layer selected
+                    # visually. Defer reactivation of the old layer to the
+                    # next event-loop turn so cancel keeps napari and the
+                    # widget on the old layer.
+                    QTimer.singleShot(0, lambda: self._app_state.viewer_adapter.activate_layer(current_layer))
+                    self._refresh_create_layer_state()
+                    return
+                self._discard_annotation_layer()
+            else:
+                self._close_clean_annotation_session()
 
         target = _ShapesAnnotationTarget.edit_existing(candidate.shapes_name)
         self._sync_shapes_target_combo_selection(target)

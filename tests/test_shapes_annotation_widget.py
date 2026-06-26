@@ -605,6 +605,99 @@ def test_shapes_annotation_widget_active_primary_shapes_layer_selection_switches
     assert widget.create_holes_button.isEnabled() is True
 
 
+def test_shapes_annotation_widget_active_primary_shapes_layer_selection_dirty_cancel_keeps_session(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    sdata_blobs.shapes["other_polygons"] = sdata_blobs.shapes["blobs_polygons"].copy()
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, "blobs_polygons"))
+    first_layer = widget._annotation_layer
+    assert isinstance(first_layer, Shapes)
+    _add_polygon(first_layer, offset=100)
+    assert widget._annotation_layer_has_unsaved_changes() is True
+    other_result = app_state.viewer_adapter.ensure_shapes_loaded(sdata_blobs, "other_polygons", "global")
+    other_layer = other_result.layer
+    discard_contexts: list[str] = []
+
+    def cancel_discard(*, context: str) -> bool:
+        discard_contexts.append(context)
+        return False
+
+    monkeypatch.setattr(widget, "_confirm_discard_annotation_layer", cancel_discard)
+
+    app_state.viewer_adapter.activate_layer(other_layer)
+
+    assert discard_contexts == ["target"]
+    qtbot.waitUntil(lambda: viewer.layers.selection.active is first_layer)
+    assert viewer.layers.selection.active is first_layer
+    assert widget._annotation_layer is first_layer
+    assert widget._annotation_edit_guard.layer is first_layer
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.shapes_name == "blobs_polygons"
+    assert widget._selected_shapes_target == shapes_annotation_widget_module._ShapesAnnotationTarget.edit_existing(
+        "blobs_polygons"
+    )
+    assert widget.shapes_combo.currentText() == "blobs_polygons"
+    assert "_drag_modes" in vars(first_layer)
+    assert "_drag_modes" not in vars(other_layer)
+    assert widget.save_shapes_button.isEnabled() is True
+    assert widget.create_holes_button.isEnabled() is True
+
+
+def test_shapes_annotation_widget_active_primary_shapes_layer_selection_dirty_confirm_adopts_layer(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    sdata_blobs.shapes["other_polygons"] = sdata_blobs.shapes["blobs_polygons"].copy()
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, "blobs_polygons"))
+    first_layer = widget._annotation_layer
+    assert isinstance(first_layer, Shapes)
+    _add_polygon(first_layer, offset=100)
+    assert widget._annotation_layer_has_unsaved_changes() is True
+    other_result = app_state.viewer_adapter.ensure_shapes_loaded(sdata_blobs, "other_polygons", "global")
+    other_layer = other_result.layer
+    discard_contexts: list[str] = []
+
+    def confirm_discard(*, context: str) -> bool:
+        discard_contexts.append(context)
+        return True
+
+    monkeypatch.setattr(widget, "_confirm_discard_annotation_layer", confirm_discard)
+
+    app_state.viewer_adapter.activate_layer(other_layer)
+
+    assert discard_contexts == ["target"]
+    assert viewer.layers.selection.active is other_layer
+    assert first_layer not in viewer.layers
+    assert widget._annotation_layer is other_layer
+    assert widget._annotation_edit_guard.layer is other_layer
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.shapes_name == "other_polygons"
+    assert widget._annotation_session.layer_origin == "adopted_primary"
+    assert widget._selected_shapes_target == shapes_annotation_widget_module._ShapesAnnotationTarget.edit_existing(
+        "other_polygons"
+    )
+    assert widget.shapes_combo.currentText() == "other_polygons"
+    assert "_drag_modes" not in vars(first_layer)
+    assert "_drag_modes" in vars(other_layer)
+    assert widget.save_shapes_button.isEnabled() is True
+    assert widget.create_holes_button.isEnabled() is True
+
+
 def test_annotation_layer_edit_guard_delegates_direct_mode_and_restores_instance_mapping() -> None:
     layer = Shapes([], ndim=2)
     layer._drag_modes = dict(layer._drag_modes)
