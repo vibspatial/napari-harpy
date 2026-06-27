@@ -657,6 +657,104 @@ Tests:
 - Confirm edit guard attachment follows the replacement layer, not the original
   native layer.
 
+### Slice 1I - Clear Identity Feature Defaults For New Unsaved Rows
+
+Status: specification.
+
+Problem:
+
+- In edit-existing annotation sessions, existing rows can already have stable
+  generated IDs such as:
+
+```text
+__annotation_0
+__annotation_1
+```
+
+- When the user draws new rows before saving, napari may copy the current
+  feature/default value into the new feature rows. If the current/default
+  `instance_id` is `__annotation_1`, live hover can temporarily show:
+
+```text
+__annotation_0
+__annotation_1
+__annotation_1
+__annotation_1
+```
+
+- The save path already repairs this correctly by treating duplicated generated
+  IDs as missing and assigning fresh IDs, so after save the rows become:
+
+```text
+__annotation_0
+__annotation_1
+__annotation_2
+__annotation_3
+```
+
+- The remaining issue is the pre-save hover/status experience: unsaved new rows
+  can look as if they already have a duplicated stable ID.
+
+Desired behavior:
+
+```text
+existing rows:
+  __annotation_0
+  __annotation_1
+
+new unsaved rows before save:
+  missing / no instance_id shown on hover
+
+after save:
+  __annotation_0
+  __annotation_1
+  __annotation_2
+  __annotation_3
+```
+
+Preferred fix:
+
+- Keep save as the canonical place where generated annotation IDs are assigned.
+- Prevent napari from copying the source identity feature into newly drawn rows
+  by clearing/resetting the current/default value for the active source-index
+  feature column during annotation sessions.
+- This should apply to the active source-index feature column, not only the
+  literal `instance_id` column. Edit-existing sessions may use a fallback source
+  feature name such as `index`.
+- A one-time reset when opening the layer is likely not enough: napari can update
+  `current_properties` when the user selects existing shapes. The annotation
+  widget or edit guard should ensure the source-index feature default remains
+  missing while the session is active.
+
+Implementation notes:
+
+- Reuse the session's `source_shapes_index_feature_name` to identify the column
+  whose current/default value should be cleared.
+- Do not remove or modify existing row values in `layer.features`; only prevent
+  those values from becoming defaults for future rows.
+- Missing values are acceptable for unsaved rows because
+  `_build_features_with_source_instance_ids(...)` already fills missing values
+  with the next unused generated IDs during save.
+- The hover/status layer should naturally omit the source-index text for new
+  rows while that value is missing.
+
+Tests:
+
+- Open or create an edit-existing annotation session whose source feature column
+  contains `__annotation_0` and `__annotation_1`.
+- Simulate napari selecting an existing row or otherwise setting
+  `current_properties` to `__annotation_1`.
+- Add two new polygon rows and assert their live source-index feature values are
+  missing before save.
+- Save and assert the saved index and live `layer.features` become:
+
+```text
+__annotation_0
+__annotation_1
+__annotation_2
+__annotation_3
+```
+
 ## Non-Goals
 
 - Do not attach `_AnnotationLayerEditGuard` to arbitrary unbound native Shapes
