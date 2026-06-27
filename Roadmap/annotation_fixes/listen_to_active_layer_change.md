@@ -557,6 +557,82 @@ Implementation notes:
 - Keep Slice 1F's cancel behavior intact: cancel must not leave an unbound
   default-styled native import behind.
 
+### Slice 1H - Normalize Adopted Native Shapes To Harpy Status Layer
+
+Status: specification.
+
+Problem:
+
+- Native napari Shapes layers adopted by the Annotation widget can be saved into
+  SpatialData, and the save path writes generated row IDs such as
+  `__annotation_0` back into `layer.features["instance_id"]`.
+- However, adopted native layers remain plain `napari.layers.Shapes` objects.
+  Plain napari Shapes status text does not append Harpy feature metadata, so
+  hovering a saved adopted-native annotation can still show only napari's raw
+  row/value status, for example:
+
+```text
+Shapes_2 [315 236]: 1
+```
+
+- Harpy-loaded shapes layers are `_HarpyShapes` instances. Their
+  `get_status(...)` implementation reads `layer.features` and appends values
+  such as:
+
+```text
+instance_id: __annotation_0
+```
+
+Current behavior:
+
+- `_adopt_native_shapes_layer(...)` applies Harpy primary-shapes styling and
+  registers the native layer, but keeps the original `napari.layers.Shapes`
+  instance.
+- `create_shapes_element_from_napari_shapes_layer(...)` correctly fills
+  `layer.features["instance_id"]` on save.
+- `_update_annotation_session_after_successful_save(...)` correctly refreshes
+  the Harpy binding with `source_shapes_index_feature_name="instance_id"`.
+- The missing piece is the live layer class/status behavior: a plain native
+  layer does not use `_HarpyShapes.get_status(...)`.
+
+Preferred fix:
+
+- When Annotation adopts a native Shapes layer, normalize it into a Harpy-aware
+  `_HarpyShapes` layer instead of keeping the plain napari layer.
+- The replacement layer should preserve the native layer's annotation-relevant
+  state:
+  - `data`
+  - `shape_type`
+  - `features`
+  - `name`
+  - transform/affine state after native transform normalization
+  - row style arrays and current style values
+  - opacity, edge width, face color, edge color
+  - selection/mode where practical
+- Register and attach the edit guard to the `_HarpyShapes` replacement layer.
+- Keep Harpy styling as the visual contract for annotation-owned primary shapes.
+
+Alternative considered:
+
+- Reload the saved shapes element through `ensure_shapes_loaded(...)` after the
+  first save. This would also produce `_HarpyShapes`, but it is more disruptive
+  because it replaces the live annotation layer after save.
+- Monkey-patching `get_status(...)` onto native layers is not recommended; it is
+  brittle and less consistent than using Harpy's existing layer subclass.
+- Configuring napari `layer.text` to display `{instance_id}` would create
+  visible on-canvas labels. That is a separate feature from hover/status-bar
+  metadata and may clutter annotation workflows.
+
+Tests:
+
+- Adopt a native napari Shapes layer, save it through Annotation, and assert the
+  live annotation layer is Harpy-aware and its status text includes
+  `instance_id: __annotation_0` when hovering a saved shape.
+- Confirm existing native-adoption save tests still pass and that
+  `layer.features["instance_id"]` remains populated.
+- Confirm edit guard attachment follows the replacement layer, not the original
+  native layer.
+
 ## Non-Goals
 
 - Do not attach `_AnnotationLayerEditGuard` to arbitrary unbound native Shapes
