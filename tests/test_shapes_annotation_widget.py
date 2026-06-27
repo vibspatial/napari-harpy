@@ -144,6 +144,18 @@ def _tooltip_text(widget: ShapesAnnotation) -> str:
     return unescape(widget.status_label.toolTip()).replace("&#8203;", "").replace("\u200b", "")
 
 
+def _first_current_property_value(layer: Shapes, feature_name: str) -> object:
+    values = np.asarray(layer.current_properties[feature_name], dtype=object).ravel()
+    assert len(values) == 1
+    return values[0]
+
+
+def _assert_identity_feature_default_missing(layer: Shapes, feature_name: str) -> None:
+    assert pd.isna(_first_current_property_value(layer, feature_name))
+    assert feature_name in layer.feature_defaults.columns
+    assert pd.isna(layer.feature_defaults[feature_name].iloc[0])
+
+
 def _assert_layer_data_unchanged(layer: Shapes, expected_data: list[np.ndarray]) -> None:
     assert len(layer.data) == len(expected_data)
     for actual_vertices, expected_vertices in zip(layer.data, expected_data, strict=True):
@@ -346,6 +358,20 @@ def _make_polygon_hole_roundtrip_sdata(*, shapes_name: str = "hole_regions") -> 
         {"label": ["polygon_with_hole", "simple_polygon"], "score": [1.25, 2.5]},
         geometry=[polygon_1, polygon_2],
         index=pd.Index(["hole_row", "simple_row"], name="region_id"),
+    )
+    shapes = ShapesModel.parse(geodataframe, transformations={"global": Identity()})
+    return SpatialData(shapes={shapes_name: shapes})
+
+
+def _make_generated_annotation_ids_sdata(*, shapes_name: str = "generated_regions") -> SpatialData:
+    polygons = [
+        Polygon([(0, 0), (0, 2), (2, 2), (2, 0)]),
+        Polygon([(5, 5), (5, 7), (7, 7), (7, 5)]),
+    ]
+    geodataframe = gpd.GeoDataFrame(
+        {"label": ["existing_0", "existing_1"]},
+        geometry=polygons,
+        index=pd.Index(["__annotation_0", "__annotation_1"], name="instance_id"),
     )
     shapes = ShapesModel.parse(geodataframe, transformations={"global": Identity()})
     return SpatialData(shapes={shapes_name: shapes})
@@ -831,6 +857,38 @@ def test_shapes_annotation_widget_active_primary_shapes_layer_selection_dirty_co
     assert "_drag_modes" in vars(other_layer)
     assert widget.save_shapes_button.isEnabled() is True
     assert widget.create_holes_button.isEnabled() is True
+
+
+def test_annotation_identity_feature_default_guard_reentrant_event_is_ignored() -> None:
+    layer = Shapes(
+        [
+            np.asarray(
+                [
+                    [0.0, 0.0],
+                    [0.0, 2.0],
+                    [2.0, 2.0],
+                    [2.0, 0.0],
+                ],
+                dtype=float,
+            )
+        ],
+        shape_type="polygon",
+        features=pd.DataFrame({"instance_id": ["__annotation_0"]}),
+    )
+    guard = shapes_annotation_widget_module._AnnotationIdentityFeatureDefaultGuard()
+
+    guard.attach(layer, feature_name="instance_id")
+    _assert_identity_feature_default_missing(layer, "instance_id")
+
+    guard._is_clearing = True
+    layer.current_properties = {"instance_id": np.asarray(["__annotation_0"], dtype=object)}
+    guard._is_clearing = False
+
+    assert _first_current_property_value(layer, "instance_id") == "__annotation_0"
+
+    guard._on_identity_feature_default_changed()
+
+    _assert_identity_feature_default_missing(layer, "instance_id")
 
 
 def test_annotation_layer_edit_guard_delegates_direct_mode_and_restores_instance_mapping() -> None:
@@ -2025,6 +2083,109 @@ def test_shapes_annotation_widget_edit_existing_save_updates_shapes_element_and_
         )
     ]
     assert "Shapes Saved" in _status_text(widget)
+
+
+def test_shapes_annotation_widget_identity_default_guard_keeps_new_generated_rows_missing_until_save(
+    qtbot,
+) -> None:
+    shapes_name = "generated_regions"
+    sdata = _make_generated_annotation_ids_sdata(shapes_name=shapes_name)
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, shapes_name))
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.source_shapes_index_feature_name == "instance_id"
+    original_features = layer.features.copy(deep=True)
+    _assert_identity_feature_default_missing(layer, "instance_id")
+
+    layer.selected_data = {1}
+    layer.mode = Mode.SELECT
+    current_properties = dict(layer.current_properties)
+    current_properties["instance_id"] = np.asarray(["__annotation_1"], dtype=object)
+    layer.current_properties = current_properties
+
+    pd.testing.assert_frame_equal(layer.features, original_features)
+    _assert_identity_feature_default_missing(layer, "instance_id")
+
+    _add_polygon(layer, offset=20)
+    _add_polygon(layer, offset=30)
+
+    assert layer.features["instance_id"].iloc[:2].tolist() == ["__annotation_0", "__annotation_1"]
+    assert pd.isna(layer.features["instance_id"].iloc[2])
+    assert pd.isna(layer.features["instance_id"].iloc[3])
+
+    widget.save_shapes_button.click()
+
+    expected_index = ["__annotation_0", "__annotation_1", "__annotation_2", "__annotation_3"]
+    assert sdata.shapes[shapes_name].index.tolist() == expected_index
+    assert layer.features["instance_id"].tolist() == expected_index
+    _assert_identity_feature_default_missing(layer, "instance_id")
+
+
+def test_shapes_annotation_widget_identity_default_guard_uses_fallback_source_feature_name(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    shapes_name = "blobs_polygons"
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, shapes_name))
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.source_shapes_index_feature_name == "index"
+    original_index_values = layer.features["index"].tolist()
+    _assert_identity_feature_default_missing(layer, "index")
+
+    current_properties = dict(layer.current_properties)
+    current_properties["index"] = np.asarray([original_index_values[0]], dtype=object)
+    layer.current_properties = current_properties
+
+    assert layer.features["index"].tolist() == original_index_values
+    _assert_identity_feature_default_missing(layer, "index")
+
+    _add_polygon(layer, offset=100)
+
+    assert layer.features["index"].iloc[:-1].tolist() == original_index_values
+    assert pd.isna(layer.features["index"].iloc[-1])
+
+
+def test_shapes_annotation_widget_identity_default_guard_disconnects_from_cleared_layer(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    widget = ShapesAnnotation(viewer)
+    qtbot.addWidget(widget)
+
+    widget.shapes_combo.setCurrentIndex(_combo_index_for_text(widget.shapes_combo, "blobs_polygons"))
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    _assert_identity_feature_default_missing(layer, "index")
+
+    widget._clear_annotation_state()
+
+    assert widget._annotation_identity_feature_default_guard.layer is None
+    assert widget._annotation_identity_feature_default_guard.feature_name is None
+
+    current_properties = dict(layer.current_properties)
+    current_properties["index"] = np.asarray(["copied_after_disconnect"], dtype=object)
+    layer.current_properties = current_properties
+
+    assert _first_current_property_value(layer, "index") == "copied_after_disconnect"
+    assert layer.feature_defaults["index"].iloc[0] == "copied_after_disconnect"
 
 
 def test_shapes_annotation_widget_edit_existing_preserves_polygon_holes_on_save(qtbot) -> None:

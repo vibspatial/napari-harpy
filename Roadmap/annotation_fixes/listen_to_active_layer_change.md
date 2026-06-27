@@ -659,7 +659,7 @@ Tests:
 
 ### Slice 1I - Clear Identity Feature Defaults For New Unsaved Rows
 
-Status: specification.
+Status: implemented.
 
 Problem:
 
@@ -764,9 +764,12 @@ Implementation notes:
   `layer.block_update_properties()` so selected existing rows are not rewritten
   with missing source IDs.
 - The guard should listen for `layer.events.current_properties` and
-  `layer.events.feature_defaults` when those events are available. Either event
-  can indicate that napari has reintroduced a copied source ID as the default for
-  future rows.
+  `layer.events.feature_defaults` when those events are available. In the
+  current napari API, direct `feature_defaults` writes also emit
+  `current_properties`, but listening to both public default-related events keeps
+  the guard robust if napari decouples those APIs later. Duplicate emissions are
+  safe because the guard has a reentrancy flag and returns early when the
+  identity default is already missing.
 - Use a private reentrancy flag because clearing the default emits
   `current_properties` and/or `feature_defaults` again.
 - Do not remove or modify existing row values in `layer.features`; only prevent
