@@ -1954,7 +1954,9 @@ def test_viewer_adapter_ensure_shapes_loaded_expands_multipolygons_with_source_m
 
     expected_indices: list[object] = []
     expected_source_row_ids: list[int] = []
-    for source_row_id, (source_index, geometry) in enumerate(sdata_blobs.shapes["blobs_multipolygons"].geometry.items()):
+    for source_row_id, (source_index, geometry) in enumerate(
+        sdata_blobs.shapes["blobs_multipolygons"].geometry.items()
+    ):
         expected_indices.extend([source_index] * len(geometry.geoms))
         expected_source_row_ids.extend([source_row_id] * len(geometry.geoms))
 
@@ -2236,6 +2238,39 @@ def test_viewer_adapter_ensure_shapes_loaded_uses_named_geodataframe_index_in_fe
     assert list(layer.features.columns) == ["cell_id"]
     assert layer.features.iloc[0]["cell_id"] == "cell_1"
     assert "cell_id: cell_1" in layer.get_status(position=(1, 1))["value"]
+
+
+def test_viewer_adapter_normalizes_native_shapes_layer_to_harpy_status_layer() -> None:
+    native_layer = Shapes(
+        [
+            np.asarray(
+                [
+                    [0.0, 0.0],
+                    [0.0, 4.0],
+                    [4.0, 4.0],
+                    [4.0, 0.0],
+                ],
+                dtype=float,
+            )
+        ],
+        shape_type="polygon",
+        features=pd.DataFrame({"instance_id": ["cell_1"]}),
+        name="native_shapes",
+    )
+    viewer = DummyViewer([native_layer])
+    adapter = ViewerAdapter(viewer)
+
+    replacement = adapter.normalize_native_shapes_layer_for_annotation(
+        native_layer,
+        source_shapes_index_feature_name="instance_id",
+    )
+
+    assert replacement is not native_layer
+    assert native_layer not in viewer.layers
+    assert viewer.layers == [replacement]
+    assert list(replacement.features.columns) == ["instance_id"]
+    assert replacement.features["instance_id"].to_list() == ["cell_1"]
+    assert "instance_id: cell_1" in replacement.get_status(position=(1, 1))["value"]
 
 
 def test_viewer_adapter_ensure_shapes_loaded_uses_internal_row_ids_with_duplicate_geodataframe_index() -> None:

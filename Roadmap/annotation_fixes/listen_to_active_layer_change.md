@@ -559,7 +559,7 @@ Implementation notes:
 
 ### Slice 1H - Normalize Adopted Native Shapes To Harpy Status Layer
 
-Status: specification.
+Status: implemented.
 
 Problem:
 

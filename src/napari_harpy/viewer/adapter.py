@@ -817,6 +817,28 @@ class ViewerAdapter(QObject):
         """Apply Harpy's editable primary shapes presentation to one layer."""
         _apply_primary_shapes_layer_style(layer)
 
+    def normalize_native_shapes_layer_for_annotation(
+        self,
+        layer: Shapes,
+        *,
+        source_shapes_index_feature_name: str,
+    ) -> Shapes:
+        """Replace a native napari Shapes layer with Harpy's status-aware layer."""
+        if isinstance(layer, _HarpyShapes):
+            layer._source_shapes_index_feature_name = source_shapes_index_feature_name
+            return layer
+
+        if not self._is_layer_loaded_in_viewer(layer):
+            raise ValueError("Cannot normalize a Shapes layer that is not loaded in the viewer.")
+
+        replacement = _build_harpy_shapes_layer_from_native_layer(
+            layer,
+            source_shapes_index_feature_name=source_shapes_index_feature_name,
+        )
+        _remove_layer_from_viewer(self._viewer, layer)
+        _add_layer_to_viewer(self._viewer, replacement)
+        return replacement
+
     def sync_primary_shapes_layer_binding(
         self,
         layer: Shapes,
@@ -2062,6 +2084,40 @@ def _build_empty_primary_shapes_layer(
     )
     _apply_primary_shapes_layer_style(layer)
     return layer
+
+
+def _build_harpy_shapes_layer_from_native_layer(
+    layer: Shapes,
+    *,
+    source_shapes_index_feature_name: str,
+) -> _HarpyShapes:
+    data = [np.asarray(vertices, dtype=float).copy() for vertices in layer.data]
+    shape_type = [str(shape_type) for shape_type in layer.shape_type]
+    features = layer.features.copy(deep=True)
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    selected_data = {int(index) for index in getattr(layer, "selected_data", set()) if int(index) < len(data)}
+    mode = getattr(layer, "mode", None)
+
+    kwargs: dict[str, Any] = {
+        "name": layer.name,
+        "features": features,
+        "metadata": metadata,
+        "ndim": layer.ndim,
+        "source_shapes_index_feature_name": source_shapes_index_feature_name,
+    }
+    if data:
+        kwargs["shape_type"] = shape_type
+
+    replacement = _HarpyShapes(data, **kwargs)
+    _apply_primary_shapes_layer_style(replacement)
+    replacement.opacity = layer.opacity
+    replacement.blending = layer.blending
+    replacement.visible = layer.visible
+    replacement.affine = np.asarray(layer.affine.affine_matrix, dtype=float).copy()
+    replacement.selected_data = selected_data
+    if mode is not None:
+        replacement.mode = mode
+    return replacement
 
 
 def _prepare_napari_shapes_layer_inputs(shapes_element: Any) -> _NapariShapesLayerInputs:

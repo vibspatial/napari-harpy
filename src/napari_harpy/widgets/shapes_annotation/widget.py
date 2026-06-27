@@ -1051,8 +1051,10 @@ class ShapesAnnotation(QWidget):
             return
 
         # This hook lets Annotation react when the user creates or imports a
-        # Shapes layer through napari itself. Harpy-managed insertions are
-        # filtered out by the deferred binding check below.
+        # Shapes layer through napari itself (a native Shapes layer).
+        # Harpy-managed insertions are filtered out by the deferred
+        # `layer_bindings.get_binding(layer)` check in
+        # `_maybe_adopt_native_shapes_layer(...)`.
         # Harpy-managed shapes paths in `ViewerAdapter` call
         # `_add_layer_to_viewer(self._viewer, layer)` before
         # `self.register_shapes_layer(...)`. `_add_layer_to_viewer(...)` emits
@@ -1180,6 +1182,11 @@ class ShapesAnnotation(QWidget):
         # Normalize native napari layers into Annotation's visual contract before
         # registering the layer and capturing the clean annotation baseline.
         self._app_state.viewer_adapter.apply_primary_shapes_layer_style(layer)
+        with self._suppress_widget_owned_layer_transition_callbacks():
+            layer = self._app_state.viewer_adapter.normalize_native_shapes_layer_for_annotation(
+                layer,
+                source_shapes_index_feature_name=DEFAULT_SHAPES_INDEX_NAME,
+            )
 
         with self._suppress_widget_owned_registration_callbacks():
             self._app_state.viewer_adapter.register_shapes_layer(
