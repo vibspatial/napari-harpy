@@ -599,6 +599,10 @@ Preferred fix:
 
 - When Annotation adopts a native Shapes layer, normalize it into a Harpy-aware
   `_HarpyShapes` layer instead of keeping the plain napari layer.
+- Implement the native-to-Harpy normalization in `viewer/adapter.py`, not as
+  widget-local layer construction. `_HarpyShapes` and the viewer layer
+  insertion/removal details are adapter concerns; the widget should request the
+  normalization and continue with the returned layer.
 - The replacement layer should preserve the native layer's annotation-relevant
   state:
   - `data`
@@ -611,6 +615,26 @@ Preferred fix:
   - selection/mode where practical
 - Register and attach the edit guard to the `_HarpyShapes` replacement layer.
 - Keep Harpy styling as the visual contract for annotation-owned primary shapes.
+
+Suggested implementation flow:
+
+1. Add a private adapter helper or method, for example
+   `normalize_native_shapes_layer_for_annotation(...)`, that accepts a native
+   `Shapes` layer plus the `source_shapes_index_feature_name`.
+2. If the input layer is already `_HarpyShapes` with the requested source-index
+   feature name, return it unchanged.
+3. Otherwise, build a replacement `_HarpyShapes` layer from the native layer's
+   copied data, shape types, features, name, normalized transform, and current
+   annotation-relevant style state.
+4. Replace the native layer in the viewer under widget-owned layer-transition
+   guards so layer-removal and active-layer callbacks do not reset the pending
+   annotation session.
+5. In `_adopt_native_shapes_layer(...)`, call the adapter normalization helper
+   before `register_shapes_layer(...)`, then register and attach the edit guard
+   to the returned `_HarpyShapes` layer.
+6. After save, `_update_annotation_session_after_successful_save(...)` can keep
+   using `sync_primary_shapes_layer_binding(...)`; the live layer will already
+   have Harpy's status-bar behavior.
 
 Alternative considered:
 
