@@ -716,20 +716,59 @@ Preferred fix:
 
 - Keep save as the canonical place where generated annotation IDs are assigned.
 - Prevent napari from copying the source identity feature into newly drawn rows
-  by clearing/resetting the current/default value for the active source-index
-  feature column during annotation sessions.
+  by keeping the current/default value for the active source-index feature
+  column missing during annotation sessions.
 - This should apply to the active source-index feature column, not only the
   literal `instance_id` column. Edit-existing sessions may use a fallback source
   feature name such as `index`.
-- A one-time reset when opening the layer is likely not enough: napari can update
-  `current_properties` when the user selects existing shapes. The annotation
-  widget or edit guard should ensure the source-index feature default remains
-  missing while the session is active.
+- A one-time reset when opening the layer is not enough: napari can update
+  `current_properties` and `feature_defaults` when the user selects existing
+  shapes. The annotation widget should keep the source-index feature default
+  missing for the lifetime of the active annotation session.
+
+Suggested implementation:
+
+- Add a small private guard, for example
+  `_AnnotationIdentityFeatureDefaultGuard`.
+- Keep this guard separate from `_AnnotationLayerEditGuard`.
+  `_AnnotationLayerEditGuard` owns interactive edit-mode callback patching;
+  the identity-feature guard owns napari feature-default hygiene.
+- Give the guard a narrow lifecycle API, for example:
+
+```python
+class _AnnotationIdentityFeatureDefaultGuard:
+    def attach(self, layer: Shapes, *, feature_name: str) -> None: ...
+    def disconnect(self) -> None: ...
+```
+
+- `attach(...)` should:
+  - disconnect any previous layer
+  - remember the active layer and source-index feature name
+  - connect to napari feature-default/current-property events
+  - immediately clear the source-index feature default
+- `disconnect()` should only disconnect events and forget the layer/feature. It
+  should not restore the previous source-index default, because copied source
+  row IDs are never a valid draw default for an annotation session.
+- Attach the guard whenever an annotation session is opened/adopted/created and
+  the widget knows the session's `source_shapes_index_feature_name`.
+- Disconnect the guard from `_clear_annotation_state(...)`, alongside
+  `_annotation_edit_guard.disconnect()`.
 
 Implementation notes:
 
 - Reuse the session's `source_shapes_index_feature_name` to identify the column
   whose current/default value should be cleared.
+- Use napari's public layer properties where possible:
+  `layer.current_properties` and `layer.feature_defaults`.
+- When setting `layer.current_properties`, wrap the write in
+  `layer.block_update_properties()` so selected existing rows are not rewritten
+  with missing source IDs.
+- The guard should listen for `layer.events.current_properties` and
+  `layer.events.feature_defaults` when those events are available. Either event
+  can indicate that napari has reintroduced a copied source ID as the default for
+  future rows.
+- Use a private reentrancy flag because clearing the default emits
+  `current_properties` and/or `feature_defaults` again.
 - Do not remove or modify existing row values in `layer.features`; only prevent
   those values from becoming defaults for future rows.
 - Missing values are acceptable for unsaved rows because
@@ -737,6 +776,9 @@ Implementation notes:
   with the next unused generated IDs during save.
 - The hover/status layer should naturally omit the source-index text for new
   rows while that value is missing.
+- Keep the behavior source-feature-name agnostic. The missing default applies to
+  whatever column the binding/session uses to map napari rows back to source
+  GeoDataFrame rows, including fallback names such as `index`.
 
 Tests:
 
@@ -744,6 +786,9 @@ Tests:
   contains `__annotation_0` and `__annotation_1`.
 - Simulate napari selecting an existing row or otherwise setting
   `current_properties` to `__annotation_1`.
+- Assert the guard clears `current_properties[source_feature_name]` and
+  `feature_defaults[source_feature_name]` to a missing value without changing
+  existing `layer.features[source_feature_name]` values.
 - Add two new polygon rows and assert their live source-index feature values are
   missing before save.
 - Save and assert the saved index and live `layer.features` become:
@@ -754,6 +799,14 @@ __annotation_1
 __annotation_2
 __annotation_3
 ```
+- Repeat the row-add/default-clearing test with a fallback source feature column
+  such as `index`.
+- Clearing the default while a row is selected does not mutate that selected
+  row's existing source ID.
+- Clearing the default is reentrant-safe when napari emits
+  `current_properties`/`feature_defaults` from inside the clear operation.
+- Clearing/disconnecting annotation state disconnects the guard from the old
+  layer so later default changes on that layer do not affect the widget.
 
 ## Non-Goals
 
