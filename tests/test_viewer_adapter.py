@@ -36,6 +36,7 @@ from napari_harpy.viewer.points_styling import POINTS_SELECTION_SOLID_COLOR
 from napari_harpy.viewer.shapes_styling import (
     _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR,
     _SHAPES_EDGE_WIDTH_SYNC_CALLBACK_ATTR,
+    _SHAPES_FACE_COLOR_SYNC_CALLBACK_ATTR,
     PRIMARY_SHAPES_FACE_COLOR,
     SHAPES_FACE_ALPHA,
 )
@@ -835,6 +836,7 @@ def test_viewer_adapter_create_empty_primary_shapes_layer_registers_and_styles_l
     assert layer.opacity == 0.8
     assert hasattr(layer, _SHAPES_EDGE_WIDTH_SYNC_CALLBACK_ATTR)
     assert hasattr(layer, _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR)
+    assert hasattr(layer, _SHAPES_FACE_COLOR_SYNC_CALLBACK_ATTR)
 
     binding = adapter.layer_bindings.get_binding(layer)
     assert isinstance(binding, ShapesLayerBinding)
@@ -2349,6 +2351,17 @@ def test_viewer_adapter_primary_shapes_layer_applies_edge_color_control_to_all_s
 
     expected_color = np.asarray([to_rgba("red")] * len(result.layer.data))
     np.testing.assert_allclose(result.layer.edge_color, expected_color)
+
+
+def test_viewer_adapter_primary_shapes_layer_applies_face_color_control_to_all_shapes(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    result = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
+    result.layer.current_face_color = "#ff000080"
+
+    expected_color = np.asarray([to_rgba("#ff000080")] * len(result.layer.data))
+    np.testing.assert_allclose(result.layer.face_color, expected_color)
 
 
 def test_viewer_adapter_ensure_styled_shapes_loaded_creates_registered_variant_with_stored_palette() -> None:

@@ -105,7 +105,7 @@ color easier to notice and easier to edit from napari's color picker.
      and per-row `face_color`, including event blockers around current color
      restore, so no code change was needed.
 
-5. Add or update tests.
+5. [x] Add or update tests.
 
    - Update existing expectations from `"#00000000"` to the chosen
      `PRIMARY_SHAPES_FACE_COLOR` value in:
@@ -128,6 +128,10 @@ color easier to notice and easier to edit from napari's color picker.
      - load/apply styled shapes with `sync_edge_color=False`;
      - change `current_face_color`;
      - assert the data-driven `face_color` array is not flattened.
+   - Implemented primary default and sync assertions in
+     `tests/test_viewer_adapter.py` and primary annotation default assertions
+     in `tests/test_shapes_annotation_widget.py`; existing styled-shapes
+     regressions cover data-driven color preservation.
 
 6. Verification commands.
 
