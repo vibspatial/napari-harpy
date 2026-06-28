@@ -228,16 +228,160 @@ generator and deciding how release events should behave while paused.
 
 ### Slice 1: Guard Plumbing
 
-Extend `_AnnotationLayerEditGuard` to store and restore:
+Goal: extend `_AnnotationLayerEditGuard` so it can safely own all state that
+later Space-pan slices need, without changing lasso behavior yet.
 
-- instance `_drag_modes`;
-- instance `_move_modes`;
-- the previous instance `Space` keybinding;
-- `space_pan_active`;
-- the previous `mouse_pan` value.
+This slice should keep the current direct-edit and vertex-remove behavior
+unchanged. It is plumbing only.
 
-Add tests that attaching and disconnecting the guard restores all mappings and
-keybindings.
+#### Scope
+
+The guard should continue to be the only object that mutates annotation-layer
+instance interaction state. It should own and restore:
+
+- `_drag_modes`, as it already does today;
+- `_move_modes`, using the same instance-local override pattern as
+  `_drag_modes`;
+- reserved Space-pan state fields;
+- reserved previous Space keybinding state.
+
+This slice must not:
+
+- bind or override Space yet;
+- change `layer.mode`;
+- set `layer.mouse_pan`;
+- suppress lasso callbacks;
+- patch napari class-level mappings;
+- alter behavior for non-annotation Shapes layers.
+
+#### State To Add
+
+Add fields to `_AnnotationLayerEditGuard` for move-mode ownership:
+
+```python
+self._original_move_modes: dict[object, Callable[..., Any]] | None = None
+self._had_instance_move_modes = False
+```
+
+Add fields reserved for the Space-pan lifecycle:
+
+```python
+self._space_pan_active = False
+self._previous_mouse_pan: bool | None = None
+self._previous_space_keybinding: Callable[..., Any] | object | None = None
+self._had_instance_space_keybinding = False
+```
+
+The exact type of `_previous_space_keybinding` can follow napari's keymap value
+types. The important contract is that the guard can distinguish "there was no
+instance Space binding" from "there was an instance Space binding whose value
+was `None` or another sentinel-like value".
+
+#### Attach Contract
+
+`attach(layer)` should still be idempotent when called with the current layer.
+
+When attaching a new layer:
+
+- call `disconnect()` first, preserving the existing replacement behavior;
+- read `layer._drag_modes` and `layer._move_modes`;
+- validate both are dict-like mappings;
+- keep the existing validation that `_drag_modes` exposes `Mode.DIRECT` and
+  `Mode.VERTEX_REMOVE`;
+- additionally validate that `_move_modes` exposes `Mode.ADD_POLYGON_LASSO`;
+- copy both mappings into instance-local dictionaries;
+- keep wrapping only `Mode.DIRECT` and `Mode.VERTEX_REMOVE` in `_drag_modes`;
+- leave every `_move_modes` callback unchanged in this slice;
+- assign both copied mappings back to the layer instance;
+- capture whether each mapping was originally present in `vars(layer)`.
+
+The copied `_move_modes` mapping is intentionally behavior-neutral in this
+slice. Its purpose is to prove that the guard can own and restore the mapping
+before later slices install a lasso move wrapper.
+
+#### Disconnect Contract
+
+`disconnect()` should restore everything it owns and should remain safe to call
+multiple times.
+
+On disconnect:
+
+- clear the tracked layer reference;
+- clear original mapping references;
+- clear wrapped direct and vertex-remove callback references;
+- reset `_space_pan_active` to `False`;
+- reset `_previous_mouse_pan` to `None`;
+- reset previous Space keybinding bookkeeping;
+- restore `_drag_modes` exactly as today;
+- restore `_move_modes` with the same semantics:
+  - if `_move_modes` was originally instance-local, restore the original object;
+  - if `_move_modes` was inherited/class-level, delete the guard-created
+    instance override;
+- do not change `layer.mouse_pan` in this slice, because Slice 1 never changes
+  it.
+
+If restoring one mapping fails because the layer has already been partially
+destroyed, prefer the same defensive style as the current guard: avoid raising
+from expected cleanup paths where possible, but do not silently hide programming
+errors during normal attach validation.
+
+#### Space Keybinding Reservation
+
+Slice 1 should reserve fields for Space keybinding restoration but should not
+install the Space keybinding yet. Actual binding belongs to Slice 2.
+
+If helper methods are added in Slice 1, they should be private and inert unless
+explicitly called by future slices. For example:
+
+```python
+def _capture_space_keybinding(self, layer: Shapes) -> None: ...
+def _restore_space_keybinding(self, layer: Shapes) -> None: ...
+```
+
+These helpers may be implemented now if they simplify tests, but `attach(...)`
+should not change `layer.keymap["Space"]` yet.
+
+#### Tests
+
+Add or update tests in `tests/test_shapes_annotation_widget.py`.
+
+Required coverage:
+
+- attaching to a layer that originally inherited `_move_modes` creates an
+  instance `_move_modes` override;
+- disconnecting that layer deletes the guard-created `_move_modes` override and
+  falls back to napari's inherited mapping;
+- attaching to a layer with an existing instance `_move_modes` restores the same
+  original mapping object on disconnect;
+- existing `_drag_modes` tests still prove direct and vertex-remove wrapping and
+  restoration;
+- `attach(layer)` remains idempotent and does not create new wrapper objects on
+  the second attach;
+- attaching to a second layer restores `_drag_modes` and `_move_modes` on the
+  first layer before patching the second layer;
+- Slice 1 does not bind Space: a layer's instance keymap is unchanged after
+  attach and disconnect;
+- Slice 1 does not change `layer.mouse_pan`;
+- Slice 1 does not change `layer.mode`;
+- Slice 1 does not replace `_move_modes[Mode.ADD_POLYGON_LASSO]` yet.
+
+Suggested focused test names:
+
+```text
+test_annotation_layer_edit_guard_restores_instance_move_modes
+test_annotation_layer_edit_guard_attach_is_idempotent_for_move_modes
+test_annotation_layer_edit_guard_replacing_layer_disconnects_previous_move_modes
+test_annotation_layer_edit_guard_slice_one_does_not_bind_space_or_change_mouse_pan
+```
+
+#### Definition Of Done
+
+- `_AnnotationLayerEditGuard` owns `_drag_modes` and `_move_modes` with matching
+  attach/disconnect semantics.
+- Existing direct-edit and vertex-remove tests still pass.
+- New tests prove move-mode restoration and behavior neutrality.
+- No Space keybinding behavior is active yet.
+- No lasso behavior changes are introduced in this slice.
 
 ### Slice 2: Space Keybinding State
 

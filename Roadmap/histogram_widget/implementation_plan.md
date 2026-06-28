@@ -384,10 +384,12 @@ different from percentile guide lines.
 
 `percentile_min` and `percentile_max` are visual guide settings.
 
-When provided, compute the requested percentile values from the same filtered
-Dask array used for the histogram and draw them as labeled vertical lines. Do
-not automatically change napari contrast limits when percentile values are
-typed or recalculated.
+When provided, compute the requested percentile values after the same NaN/zero
+filtering used by the histogram. Match Harpy's semantics: percentile values are
+computed with `dask.array.percentile(..., internal_method="tdigest")` and are
+not clipped to `HistogramSettings.value_range`. Draw the resulting values as
+labeled vertical lines. Do not automatically change napari contrast limits when
+percentile values are typed or recalculated.
 
 Applying percentiles to contrast limits should be an explicit action, for
 example an "Apply percentiles" button. This avoids surprising display changes
@@ -407,19 +409,95 @@ Goal:
 Scope:
 
 - add `src/napari_harpy/core/histogram.py`;
-- resolve a `HistogramTarget` against `SpatialData`;
+- define the Slice 1 target and settings dataclasses exactly as:
+
+  ```python
+  @dataclass(frozen=True)
+  class HistogramTarget:
+      coordinate_system: str
+      image_name: str
+      channel_name: str | None
+
+
+  @dataclass(frozen=True)
+  class HistogramSettings:
+      bins: int = 256
+      value_range: tuple[float, float] | None = None
+      density: bool = False
+      exclude_nan: bool = True
+      exclude_zeros: bool = False
+      log_y: bool = False
+      scale: str | None = None
+      percentile_min: float | None = None
+      percentile_max: float | None = None
+  ```
+
+- expose a small public calculation function:
+
+  ```python
+  def calculate_histogram(
+      sdata: SpatialData,
+      target: HistogramTarget,
+      settings: HistogramSettings,
+  ) -> HistogramResult:
+      ...
+  ```
+
+- keep the module free of Qt, napari viewer, and pyqtgraph dependencies;
+- resolve `HistogramTarget` against `SpatialData`;
+- validate that the image exists in `sdata.images`;
+- validate that the requested coordinate system exists for the selected image;
+- validate that the requested channel exists for multi-channel images;
+- support scalar images without a channel axis by requiring
+  `target.channel_name is None`;
 - accept one explicit `HistogramSettings` object per calculation;
+- validate `settings.bins` as a positive integer;
+- validate `settings.value_range` as finite `(low, high)` values with
+  `low < high`;
+- validate requested percentile values as finite values in `[0, 100]`;
 - select the requested multiscale `scale`, defaulting to exact `scale0`;
-- apply the optional `value_range` as the Dask histogram `range` parameter;
+- record the resolved scale used for the result;
 - select the requested channel, or scalar image data when no channel axis is
   present;
 - flatten values;
 - apply `exclude_nan` and `exclude_zeros`;
 - call `compute_chunk_sizes()` when filtering creates unknown Dask chunks;
-- compute automatic data range when `value_range=None`;
-- compute counts, bin edges, and requested percentile values;
-- record the resolved scale used for the result;
+- compute requested percentile values after NaN/zero filtering and before
+  applying `value_range`, matching Harpy's behavior;
+- use Dask's tdigest percentile path:
+
+  ```python
+  percentile_values = dask.array.percentile(
+      filtered_values,
+      q=list(requested_percentiles),
+      internal_method="tdigest",
+  ).compute()
+  ```
+
+- compute automatic histogram range from the filtered data when
+  `value_range=None`;
+- pass explicit `value_range` through as the Dask histogram `range` parameter
+  when the user provides it;
+- compute histogram counts and bin edges with `dask.array.histogram(...)`;
 - return a structured `HistogramResult`.
+
+Calculation order:
+
+1. resolve image, scale, and channel;
+2. flatten selected values;
+3. apply NaN and zero filtering;
+4. compute requested percentiles from the filtered values;
+5. choose histogram range from either `value_range` or the filtered data;
+6. compute counts and bin edges.
+
+Non-goals:
+
+- no Qt widgets;
+- no pyqtgraph objects;
+- no napari layer lookup;
+- no contrast synchronization;
+- no ECDF or cumulative distribution calculation;
+- no histogram result caching.
 
 Tests:
 
@@ -429,7 +507,15 @@ Tests:
 - unknown chunk sizes after filtering are handled;
 - channel names and channel indices resolve consistently;
 - scalar images without a channel axis are supported;
-- invalid percentile values outside `[0, 100]` are rejected.
+- missing image, coordinate system, or channel selections raise clear
+  `ValueError` exceptions;
+- invalid `bins` values are rejected;
+- invalid percentile values outside `[0, 100]` are rejected;
+- percentile values are computed after NaN/zero filtering and are not clipped by
+  `value_range`;
+- percentile values use `internal_method="tdigest"` and are asserted with an
+  appropriate tolerance instead of exact equality where Dask's tdigest
+  approximation matters;
 - explicit `value_range` restricts histogram counts and bin edges as expected;
 - invalid `value_range` values, including `low >= high`, are rejected.
 
