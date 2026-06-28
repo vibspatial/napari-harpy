@@ -118,7 +118,7 @@ This is a strong fit for:
 
 - a two-handle range slider
 - two numeric fields
-- two vertical guide lines over the histogram
+- two movable vertical contrast-limit lines over the histogram
 - an optional "Reset from layer" or "Auto" action
 
 `superqt` is already available through napari and exposes useful controls:
@@ -292,12 +292,12 @@ The implementation should:
 
 - render histogram bars with `pyqtgraph.BarGraphItem` or an equivalent
   pyqtgraph item
-- draw lower and upper contrast-limit markers with pyqtgraph line items
+- draw lower and upper contrast-limit markers with movable pyqtgraph vertical
+  line items
 - draw optional percentile guide lines
 - use a `QLabeledDoubleRangeSlider` and numeric fields for interaction
-- update plot markers when the slider or layer changes
-- keep marker dragging possible as a natural future enhancement without
-  changing plotting backends
+- keep the plot markers, range slider, numeric fields, and napari layer
+  contrast controls synchronized in both directions
 
 ## Proposed Widget Structure
 
@@ -353,38 +353,46 @@ Core behavior:
 - allow users to add and remove histogram target cards
 - for each card, explicitly select coordinate system, image, and channel
 - compute one histogram per card through its Calculate button
-- support `bins`
-- support excluding zeros
-- support excluding NaNs
+- compute with sensible defaults as soon as the target is valid
+- expose optional per-card `Histogram settings` in a collapsed disclosure
+  section
+- support per-card `scale`, `bins`, `density`, zero/NaN filtering, log y-axis,
+  and percentile settings
 - compute range automatically from the filtered Dask array
 - draw the histogram inside the card
 - draw optional percentile guide lines when percentile settings are provided
-- show current contrast limits
-- update `layer.contrast_limits` from a two-handle slider
+- show current contrast limits as two movable vertical lines in the histogram
+- update `layer.contrast_limits` when the user moves the histogram lines, the
+  two-handle slider, or the numeric fields
 - listen to `layer.events.contrast_limits` and update the widget when napari
   changes the limits elsewhere
 - avoid blocking the UI during histogram computation
 
 Recommended defaults:
 
+- `scale = scale0` / exact full-resolution data unless the user selects a
+  lower-resolution multiscale level
 - `bins = 256`
 - `density = False`
 - `exclude_nan = True`
 - `exclude_zeros = False` by default for general image display
 - log y-axis optional, off by default
-- use current layer contrast limits as guide lines, not as the histogram range
+- use current layer contrast limits as synchronized vertical markers, not as
+  the histogram range
 - percentile guide lines are visual annotations by default; applying
   percentile values to contrast limits should be an explicit user action, not a
   side effect of typing percentile settings
+
+The `Histogram settings` section should be collapsed by default and summarize
+the active settings in its header, for example `scale0, 256 bins`. Changing one
+card's settings must not affect any other histogram card.
 
 ## Planned Follow-Up Decisions
 
 Potential follow-up decisions:
 
-- direct dragging of contrast-limit markers on the histogram
 - explicit "apply percentiles to contrast limits" action
 - optional contrast presets from percentiles
-- log-scaled y-axis
 - cumulative distribution view
 - histogram caching per image, channel, scale, and settings
 - background recomputation debounce
@@ -442,6 +450,7 @@ Core tests:
 - selecting a Harpy-managed stack layer binds the correct source
 - selecting a Harpy-managed overlay layer binds the correct channel
 - contrast slider changes assign `layer.contrast_limits`
+- dragging histogram contrast-limit lines assigns `layer.contrast_limits`
 - `layer.events.contrast_limits` updates the widget state
 - removing the selected layer clears the widget state
 - RGB layers disable contrast controls
