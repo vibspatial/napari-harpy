@@ -90,7 +90,7 @@ color easier to notice and easier to edit from napari's color picker.
        `_build_harpy_shapes_layer_from_native_layer(...)`.
    - Implemented as `PRIMARY_SHAPES_FACE_COLOR = "#00FFFF20"`.
 
-4. Preserve existing annotation edit behavior.
+4. [x] Preserve existing annotation edit behavior.
 
    - `_capture_shapes_layer_style(...)`,
      `_restore_shapes_layer_current_style(...)`, and
@@ -101,6 +101,9 @@ color easier to notice and easier to edit from napari's color picker.
      restored per-row `face_color`.
    - No structural change is expected in
      `src/napari_harpy/widgets/shapes_annotation/_layer_style.py`.
+   - Existing snapshot/restore helpers already preserve `current_face_color`
+     and per-row `face_color`, including event blockers around current color
+     restore, so no code change was needed.
 
 5. Add or update tests.
 
