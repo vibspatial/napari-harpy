@@ -88,6 +88,11 @@ Before histogramming, Harpy:
 - computes the range with `da.nanmin(...)` and `da.nanmax(...)` when no range
   is provided
 
+The widget should expose Harpy's `range=(low, high)` behavior as an optional
+per-card histogram value range. This is separate from napari contrast limits:
+the histogram range controls which values are counted into histogram bins,
+while contrast limits control how the matching napari layer is displayed.
+
 One important implementation detail: filtering with `da.compress(...)` can
 produce unknown chunk sizes. Harpy handles this by calling
 `compute_chunk_sizes()` when needed. A napari-harpy widget implementation should
@@ -116,19 +121,9 @@ napari.
 
 This is a strong fit for:
 
-- a two-handle range slider
-- two numeric fields
 - two movable vertical contrast-limit lines over the histogram
-- an optional "Reset from layer" or "Auto" action
-
-`superqt` is already available through napari and exposes useful controls:
-
-```python
-QLabeledDoubleRangeSlider
-QDoubleRangeSlider
-```
-
-Those are good candidates for the contrast-limit UI.
+- napari's native image contrast slider / contrast controls
+- an optional "Reset from layer" action
 
 ## Layer And Selection Strategy
 
@@ -200,8 +195,8 @@ as the user adds, and keeps contrast-limit synchronization unambiguous:
 - histogram calculation reads from `SpatialData`;
 - contrast-limit sync resolves the matching live napari `Image` layer through
   `ViewerAdapter.layer_bindings`;
-- if no matching live layer exists, the histogram remains valid but the
-  contrast controls are disabled with a clear status message.
+- if no matching live layer exists, the histogram remains valid but contrast
+  synchronization is disabled with a clear status message.
 
 ## Stack And Overlay Images
 
@@ -230,7 +225,7 @@ For overlay layers:
 For RGB(A) images:
 
 - napari treats contrast limits differently or ignores them
-- histogram display may still be useful, but contrast-limit controls should be
+- histogram display may still be useful, but contrast synchronization should be
   disabled or clearly marked unsupported for RGB layers
 
 ## Multiscale Images
@@ -299,9 +294,17 @@ The implementation should:
   `pyqtgraph.InfiniteLine` items if needed
 - draw optional percentile guide lines as non-movable dashed pyqtgraph line
   items
-- use a `QLabeledDoubleRangeSlider` and numeric fields for interaction
-- keep the plot markers, range slider, numeric fields, and napari layer
-  contrast controls synchronized in both directions
+- keep the plot markers and napari's native layer contrast controls
+  synchronized in both directions
+
+Implementation contract for contrast interaction:
+
+- the histogram plot wrapper owns the pyqtgraph contrast region
+- dragging the region emits a card-level contrast-change signal
+- the card handles that signal by setting `layer.contrast_limits`
+- `layer.events.contrast_limits` moves the pyqtgraph contrast region when
+  napari's native contrast controls change
+- an internal update guard prevents event feedback loops
 
 Use a restrained dark-mode plot palette derived from existing napari-harpy style
 tokens:
@@ -346,6 +349,7 @@ The controller should own:
 - current target triplets
 - current per-card channel selection
 - bins
+- optional histogram value range
 - density setting
 - exclude-zero setting
 - exclude-NaN setting
@@ -358,7 +362,7 @@ The widget should own:
 - Qt controls
 - plot canvas
 - status text
-- contrast-limit slider
+- draggable contrast-limit plot markers
 - event connections to napari layer changes
 
 ## Core Product Scope
@@ -372,14 +376,14 @@ Core behavior:
 - compute with sensible defaults as soon as the target is valid
 - expose optional per-card `Histogram settings` in a collapsed disclosure
   section
-- support per-card `scale`, `bins`, `density`, zero/NaN filtering, log y-axis,
-  and percentile settings
-- compute range automatically from the filtered Dask array
+- support per-card `scale`, `bins`, optional histogram value range, `density`,
+  zero/NaN filtering, log y-axis, and percentile settings
+- compute histogram value range automatically from the filtered Dask array when
+  no explicit range is provided
 - draw the histogram inside the card
 - draw optional percentile guide lines when percentile settings are provided
 - show current contrast limits as two movable vertical lines in the histogram
-- update `layer.contrast_limits` when the user moves the histogram lines, the
-  two-handle slider, or the numeric fields
+- update `layer.contrast_limits` when the user moves the histogram lines
 - listen to `layer.events.contrast_limits` and update the widget when napari
   changes the limits elsewhere
 - avoid blocking the UI during histogram computation
@@ -389,12 +393,12 @@ Recommended defaults:
 - `scale = scale0` / exact full-resolution data unless the user selects a
   lower-resolution multiscale level
 - `bins = 256`
+- histogram `range = None`, meaning auto-range from the filtered data
 - `density = False`
 - `exclude_nan = True`
 - `exclude_zeros = False` by default for general image display
 - log y-axis optional, off by default
-- use current layer contrast limits as synchronized vertical markers, not as
-  the histogram range
+- keep histogram value range and napari contrast limits separate
 - percentile guide lines are visual annotations by default; applying
   percentile values to contrast limits should be an explicit user action, not a
   side effect of typing percentile settings
@@ -434,7 +438,7 @@ Filtering zeros or NaNs can produce unknown Dask chunk sizes. Call
 
 RGB(A) layers may not support contrast-limit control in the same way as scalar
 image layers. The histogram widget should detect `layer.rgb` and disable or
-limit contrast controls.
+limit contrast synchronization.
 
 ### External Image Layers
 
@@ -449,9 +453,9 @@ clear the histogram, and move to an empty or disabled state.
 ### Contrast Limit Range
 
 Napari maintains `contrast_limits_range` separately from `contrast_limits`.
-The widget should use `contrast_limits_range` to configure the slider bounds,
-but it should be prepared for the range to expand when setting limits outside
-the previous range.
+The widget should use `contrast_limits_range` to configure or clamp the
+draggable histogram contrast markers when possible, but it should be prepared
+for the range to expand when setting limits outside the previous range.
 
 ## Testing Strategy
 
@@ -465,11 +469,10 @@ Core tests:
 - stale worker results are ignored
 - selecting a Harpy-managed stack layer binds the correct source
 - selecting a Harpy-managed overlay layer binds the correct channel
-- contrast slider changes assign `layer.contrast_limits`
 - dragging histogram contrast-limit lines assigns `layer.contrast_limits`
-- `layer.events.contrast_limits` updates the widget state
+- `layer.events.contrast_limits` updates the histogram contrast-limit lines
 - removing the selected layer clears the widget state
-- RGB layers disable contrast controls
+- RGB layers disable contrast synchronization
 
 Widget tests should use the existing dummy viewer patterns from:
 
@@ -484,5 +487,5 @@ The feature is technically well aligned with napari-harpy.
 The best implementation is a dedicated `Image Histogram` widget built around
 explicit `coordinate_system, image_name, channel_name` target cards. Histogram
 data should be computed from `SpatialData` with Dask in background workers, and
-contrast-limit controls should synchronize with matching Harpy-managed napari
+contrast-limit markers should synchronize with matching Harpy-managed napari
 `Image` layers through `ImageLayerBinding`.

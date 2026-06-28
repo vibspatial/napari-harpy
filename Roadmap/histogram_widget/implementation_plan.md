@@ -14,9 +14,10 @@ histogram inside the card. Contrast-limit controls synchronize with matching
 napari image layers when those layers are loaded.
 
 Every histogram card owns its own calculation settings. Values such as `scale`,
-`bins`, `density`, `exclude_nan`, `exclude_zeros`, `log_y`, `percentile_min`,
-and `percentile_max` are per-card inputs, not shared widget-level settings.
-Changing one card's settings must not affect any other card.
+`bins`, `value_range`, `density`, `exclude_nan`, `exclude_zeros`, `log_y`,
+`percentile_min`, and `percentile_max` are per-card inputs, not shared
+widget-level settings. Changing one card's settings must not affect any other
+card.
 
 The widget is a visualization and quality-control surface. It must not mutate
 the underlying `SpatialData` image data.
@@ -79,6 +80,7 @@ Call `hp.qc.image_histogram(...)`:
 - minimizes duplicated logic;
 - supports `scale`, `log_y`, `exclude_zeros`, `exclude_nan`, and
   `percentile_lines`;
+- supports `range`, which restricts the histogram value range;
 - is plot-oriented and does not return counts, bin edges, percentile values, or
   calculation metadata.
 
@@ -88,6 +90,8 @@ Implement `napari_harpy.core.histogram`:
 - keeps worker payloads immutable and stale-result checks simple;
 - allows contrast and percentile markers to be redrawn without rerunning the
   full plot function;
+- supports histogram counts only for the first implementation; ECDF/cumulative
+  distribution calculation is intentionally out of scope;
 - duplicates a small amount of Harpy QC logic, so tests should lock behavior to
   Harpy-compatible semantics.
 
@@ -131,6 +135,17 @@ The controller and calculator should never manipulate pyqtgraph objects
 directly. They pass `HistogramResult` and contrast/percentile values into this
 plot wrapper.
 
+The plot wrapper should own the draggable contrast region and expose one Qt
+signal such as:
+
+```python
+contrast_limits_dragged = Signal(float, float)
+```
+
+This signal is emitted only when the user moves the histogram contrast region.
+Programmatic updates from napari layer events should move the region without
+re-emitting `contrast_limits_dragged`.
+
 Recommended pyqtgraph items:
 
 - `pyqtgraph.PlotWidget` or `GraphicsLayoutWidget` containing one `PlotItem`;
@@ -148,6 +163,25 @@ The contrast region is preferred over two unrelated line objects because it
 keeps the lower/upper pair visually connected, makes dragging predictable, and
 helps enforce valid ordering. It must still read visually as two vertical
 contrast-limit lines.
+
+Suggested contrast-region implementation:
+
+1. Create one `pyqtgraph.LinearRegionItem` with vertical orientation and
+   `movable=True`.
+2. Style the two boundary lines with the contrast-limit line pen and the region
+   brush with a low-alpha fill.
+3. On `sigRegionChangeFinished`, read `low, high = region.getRegion()`.
+4. Normalize and validate the pair, preserving `low < high`.
+5. Emit `contrast_limits_dragged(low, high)` from `_HistogramPlotWidget`.
+6. In the card/widget layer-binding code, handle that signal by assigning
+   `layer.contrast_limits = (low, high)`.
+7. Listen to `layer.events.contrast_limits`; when napari's native contrast
+   controls change, call `_HistogramPlotWidget.set_contrast_limits(low, high)`.
+8. Use an internal update guard such as `_syncing_contrast_limits` so
+   programmatic region moves do not recursively assign `layer.contrast_limits`.
+
+This makes the pyqtgraph region and napari's native contrast controls two UI
+views over the same layer state, rather than independent state machines.
 
 Plot behavior:
 
@@ -189,7 +223,7 @@ Recommended plot styling:
 Rationale:
 
 - histogram bars should be calm and data-focused;
-- contrast-limit controls are interactive display controls, so they get the
+- contrast-limit markers are interactive display controls, so they get the
   strongest affordance;
 - percentile markers are secondary analytical guides and should be visually
   distinct from contrast controls;
@@ -215,6 +249,7 @@ class HistogramTarget:
 @dataclass(frozen=True)
 class HistogramSettings:
     bins: int = 256
+    value_range: tuple[float, float] | None = None
     density: bool = False
     exclude_nan: bool = True
     exclude_zeros: bool = False
@@ -236,8 +271,9 @@ class HistogramResult:
 ```
 
 `HistogramSettings` is stored per card and copied into each immutable
-`HistogramJob`. There should be no shared global `bins`, `scale`, filtering, or
-percentile state that implicitly changes all cards at once.
+`HistogramJob`. There should be no shared global `bins`, `scale`,
+`value_range`, filtering, or percentile state that implicitly changes all cards
+at once.
 
 For scalar images without a channel axis, keep `channel_name=None` internally
 and display a read-only scalar channel placeholder in the UI. Multi-channel
@@ -259,6 +295,7 @@ Recommended defaults:
 | --- | --- | --- |
 | `scale` | exact full-resolution data, displayed as `scale0` for multiscale images | show available scales only for multiscale images |
 | `bins` | `256` | numeric stepper/spin box |
+| `value_range` | empty/auto data range after filtering | optional histogram min/max numeric fields |
 | `density` | `False` | checkbox/toggle |
 | `exclude_nan` | `True` | checkbox/toggle |
 | `exclude_zeros` | `False` | checkbox/toggle |
@@ -282,7 +319,7 @@ example:
 
 ```text
 Histogram settings: scale0, 256 bins
-Histogram settings: scale2, 512 bins, log y, p0.1-p99.9
+Histogram settings: scale2, range 0-4095, 512 bins, log y, p0.1-p99.9
 ```
 
 This prevents hidden state from becoming surprising when users have several
@@ -316,22 +353,27 @@ For stack layers:
 For RGB(A) layers:
 
 - histogram display can remain available when a scalar source can be resolved;
-- contrast controls should be disabled because napari does not expose normal
+- contrast synchronization should be disabled because napari does not expose normal
   scalar contrast behavior for RGB layers.
 
-The histogram bin range should remain the calculated data range by default.
+The histogram value range and the napari contrast limits are separate concepts.
+`HistogramSettings.value_range` corresponds to Harpy's
+`hp.qc.image_histogram(..., range=(low, high))` parameter and controls which
+values are included in the histogram bins. When `value_range=None`, compute the
+histogram range automatically from the filtered data using the same
+NaN/zero-filtered array used for the histogram. When `value_range=(low, high)`
+is set, values outside that range are ignored by the histogram calculation.
+
 Current napari contrast limits are drawn as two movable vertical lines in the
-pyqtgraph histogram and controlled through the same state as the range slider
-and numeric fields.
+pyqtgraph histogram and synchronized with napari's native image contrast
+controls.
 
 Contrast-limit synchronization is bi-directional:
 
 - dragging either vertical histogram line updates `layer.contrast_limits`;
-- changing the range slider or numeric fields updates `layer.contrast_limits`
-  and moves the vertical lines;
-- changing napari's own layer contrast controls emits
-  `layer.events.contrast_limits`, which updates the vertical lines, range
-  slider, and numeric fields;
+- changing napari's native layer contrast controls emits
+  `layer.events.contrast_limits`, which updates the vertical lines, contrast
+  region, and any marker readout text;
 - updates must guard against feedback loops while preserving one authoritative
   contrast-limit pair.
 
@@ -368,12 +410,14 @@ Scope:
 - resolve a `HistogramTarget` against `SpatialData`;
 - accept one explicit `HistogramSettings` object per calculation;
 - select the requested multiscale `scale`, defaulting to exact `scale0`;
+- apply the optional `value_range` as the Dask histogram `range` parameter;
 - select the requested channel, or scalar image data when no channel axis is
   present;
 - flatten values;
 - apply `exclude_nan` and `exclude_zeros`;
 - call `compute_chunk_sizes()` when filtering creates unknown Dask chunks;
-- compute auto range, counts, bin edges, and requested percentile values;
+- compute automatic data range when `value_range=None`;
+- compute counts, bin edges, and requested percentile values;
 - record the resolved scale used for the result;
 - return a structured `HistogramResult`.
 
@@ -386,6 +430,8 @@ Tests:
 - channel names and channel indices resolve consistently;
 - scalar images without a channel axis are supported;
 - invalid percentile values outside `[0, 100]` are rejected.
+- explicit `value_range` restricts histogram counts and bin edges as expected;
+- invalid `value_range` values, including `low >= high`, are rejected.
 
 ### 2. Widget Shell And Target Cards
 
@@ -404,7 +450,7 @@ Scope:
 - render an add-card action and a scrollable list of histogram cards;
 - each card exposes coordinate system, image, channel, and Calculate as the
   primary card controls;
-- each card exposes `scale`, `bins`, `density`, `exclude_nan`,
+- each card exposes `scale`, `bins`, `value_range`, `density`, `exclude_nan`,
   `exclude_zeros`, `log_y`, and percentile fields inside a collapsed
   `Histogram settings` disclosure section;
 - each card owns and remembers its own `HistogramSettings` while it remains
@@ -429,8 +475,8 @@ Tests:
   default;
 - the collapsed settings header summarizes active defaults/overrides;
 - resetting settings affects only the current card;
-- `scale`, `bins`, filtering, log-axis, density, and percentile controls are
-  independent per card;
+- `scale`, `bins`, histogram value range, filtering, log-axis, density, and
+  percentile controls are independent per card;
 - stale card state is visible after settings change.
 
 ### 3. Background Controller
@@ -506,40 +552,44 @@ Status: [ ] Planned
 
 Goal:
 
-- synchronize histogram lower/upper contrast controls with matching napari
-  image layers and the movable histogram contrast region.
+- synchronize the movable histogram contrast region with matching napari image
+  layers and napari's native image contrast controls.
 
 Scope:
 
 - resolve matching `ImageLayerBinding` for each card after calculation and on
   viewer layer lifecycle changes;
-- add a `QLabeledDoubleRangeSlider` plus numeric lower/upper fields;
-- initialize controls from `layer.contrast_limits`;
+- initialize the histogram contrast region from `layer.contrast_limits`;
 - draw the contrast limits with `pyqtgraph.LinearRegionItem` by default,
   styled to read as two movable vertical contrast-limit lines with a subtle
   selected-region fill;
-- moving either boundary of the contrast region updates
+- do not add a histogram-widget contrast slider or contrast low/high numeric
+  fields; napari's native image contrast controls remain the non-plot control
+  surface;
+- `_HistogramPlotWidget` emits a card-level contrast-change signal when the
+  user finishes moving either boundary of the contrast region;
+- handling that signal updates
   `layer.contrast_limits`;
-- slider or numeric-field edits update `layer.contrast_limits` and move the
-  contrast region;
-- `layer.events.contrast_limits` updates the controls and contrast region when
-  napari's own contrast controls change;
+- `layer.events.contrast_limits` updates the histogram contrast region and any
+  marker readout text when napari's own contrast controls change;
 - prevent event feedback loops and keep lower/upper ordering valid while users
   drag markers;
-- layer removal disables contrast controls without clearing the histogram;
-- RGB(A) layers disable contrast controls with a clear status.
+- layer removal disables contrast synchronization without clearing the
+  histogram;
+- RGB(A) layers disable contrast synchronization with a clear status.
 
 Tests:
 
 - overlay channel target resolves the correct overlay layer;
 - stack target resolves the stack layer;
-- slider/numeric edits assign `layer.contrast_limits`;
 - moving the lower/upper histogram lines assigns `layer.contrast_limits`;
 - external napari contrast changes update the widget;
 - external napari contrast changes move the histogram contrast region;
+- programmatic contrast-region updates do not recursively reassign
+  `layer.contrast_limits`;
 - contrast-limit line styling remains distinct from percentile styling;
 - layer removal clears the sync binding;
-- RGB layers disable contrast controls.
+- RGB layers disable contrast synchronization.
 
 ### 6. Percentile Guide Lines
 
@@ -588,7 +638,7 @@ Tests:
 
 - button is disabled without a live layer or missing percentile values;
 - applying percentiles sets contrast limits to the computed values;
-- the normal contrast-limit event path updates the slider and plot lines.
+- the normal contrast-limit event path updates the histogram contrast region.
 
 ### 8. Product Hardening
 
@@ -619,6 +669,7 @@ Tests:
 - no automatic active-layer retargeting;
 - no automatic contrast changes from percentile fields;
 - no Matplotlib fallback for the widget;
+- no ECDF or cumulative distribution calculation;
 - no histogram result caching layer;
 - no CSV export;
 - no overlaying multiple target histograms into one shared plot.
