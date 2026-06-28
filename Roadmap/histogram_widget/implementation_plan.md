@@ -114,6 +114,92 @@ Pyqtgraph:
 Recommendation: pyqtgraph only. Do not implement a Matplotlib fallback for the
 widget.
 
+## Pyqtgraph Plot Architecture
+
+Each histogram card should own one small plot widget, for example a
+`_HistogramPlotWidget`, that wraps pyqtgraph and exposes data-oriented methods:
+
+```python
+class _HistogramPlotWidget(QWidget):
+    def set_histogram(self, result: HistogramResult) -> None: ...
+    def set_contrast_limits(self, low: float, high: float) -> None: ...
+    def set_percentile_markers(self, markers: Mapping[float, float]) -> None: ...
+    def clear_histogram(self) -> None: ...
+```
+
+The controller and calculator should never manipulate pyqtgraph objects
+directly. They pass `HistogramResult` and contrast/percentile values into this
+plot wrapper.
+
+Recommended pyqtgraph items:
+
+- `pyqtgraph.PlotWidget` or `GraphicsLayoutWidget` containing one `PlotItem`;
+- `pyqtgraph.BarGraphItem` for histogram bars, using the calculated bin edges
+  and counts/densities;
+- `pyqtgraph.LinearRegionItem` for contrast limits, configured as a vertical
+  movable region with two boundary lines and subtle fill; if the UX needs fully
+  independent line behavior, use two movable `pyqtgraph.InfiniteLine` items
+  instead;
+- non-movable dashed `pyqtgraph.InfiniteLine` items for percentile markers;
+- `pyqtgraph.TextItem` labels only for percentile markers and compact marker
+  readouts where they do not clutter the plot.
+
+The contrast region is preferred over two unrelated line objects because it
+keeps the lower/upper pair visually connected, makes dragging predictable, and
+helps enforce valid ordering. It must still read visually as two vertical
+contrast-limit lines.
+
+Plot behavior:
+
+- the x-axis is intensity and the y-axis is frequency or density;
+- plot x-range should fit the histogram bin edges by default;
+- contrast-limit changes should update marker items without replacing the bar
+  item;
+- percentile changes should update percentile marker items without replacing
+  the bar item when the histogram result is otherwise unchanged;
+- log y-axis uses pyqtgraph's y-axis log mode and should handle zero-count bins
+  without distorting the underlying histogram data;
+- the plot should show a quiet empty/stale/running state instead of a blank
+  black rectangle.
+
+## Plot Palette And Styling
+
+Use a restrained product palette derived from existing napari-harpy widget
+tokens. Do not use ad hoc random colors or a Matplotlib-style color cycle.
+
+Suggested constants should live near the histogram widget, for example in
+`src/napari_harpy/widgets/histogram/styles.py`, and should reuse shared style
+tokens from `widgets/shared_styles.py`.
+
+Recommended plot styling:
+
+| Element | Color/style |
+| --- | --- |
+| Plot background | `WIDGET_PANEL_SUBTLE_COLOR` or transparent over the card surface |
+| Axis text | `WIDGET_TEXT_MUTED_COLOR` |
+| Axis/grid lines | `WIDGET_BORDER_COLOR` with low alpha |
+| Histogram bars | stable muted data blue such as `#7EA7FF` at medium alpha |
+| Histogram bar edge | no edge, or `WIDGET_BORDER_STRONG_COLOR` at low alpha |
+| Contrast-limit lines | `WIDGET_SUCCESS_COLOR`, solid, 2 px |
+| Contrast selected region fill | `WIDGET_SUCCESS_COLOR` at very low alpha |
+| Percentile lines | `WIDGET_WARNING_TEXT_COLOR`, dashed, 1 to 1.5 px |
+| Percentile labels | `WIDGET_WARNING_TEXT_COLOR` |
+| Empty/stale text | `WIDGET_TEXT_MUTED_COLOR` |
+
+Rationale:
+
+- histogram bars should be calm and data-focused;
+- contrast-limit controls are interactive display controls, so they get the
+  strongest affordance;
+- percentile markers are secondary analytical guides and should be visually
+  distinct from contrast controls;
+- the palette should work on the existing dark widget surface and remain
+  readable in dense cards.
+
+If a matching live overlay layer has an obvious channel color, a later polish
+can show that color as a small swatch in the card header. Do not make bar colors
+depend on random per-card color cycling.
+
 ## Data Model
 
 Add focused dataclasses in `src/napari_harpy/core/histogram.py`:
@@ -385,14 +471,19 @@ Goal:
 
 Scope:
 
+- add a histogram plot wrapper such as `_HistogramPlotWidget`;
 - embed a `pyqtgraph.PlotWidget` or equivalent pyqtgraph graphics view per
   card;
 - draw bars from `HistogramResult.counts` and `bin_edges` with
   `pyqtgraph.BarGraphItem` or an equivalent pyqtgraph item;
+- add histogram plot palette/style constants derived from
+  `widgets/shared_styles.py`;
+- configure plot background, axes, grid, bar fill, contrast region, percentile
+  lines, and empty/stale text from those constants;
 - support linear and log y-axis;
 - draw a stale/empty state before calculation;
 - redraw from existing result when only non-histogram markers change;
-- expose hooks for adding/updating/removing movable contrast-limit line items
+- expose hooks for adding/updating/removing the movable contrast-limit region
   and non-movable percentile guide lines;
 - keep plot setup isolated in a small widget/helper so controller and
   calculator code never depend on pyqtgraph objects;
@@ -404,7 +495,10 @@ Tests:
 - log y-axis setting is applied;
 - stale state is shown after target/settings changes;
 - repeated calculations replace the previous plot instead of accumulating
-  duplicate plot items.
+  duplicate plot items;
+- plot colors/styles come from the histogram palette constants;
+- histogram bars, contrast controls, percentile markers, axes, and empty state
+  have distinct visual roles.
 
 ### 5. Contrast-Limit Synchronization
 
@@ -413,7 +507,7 @@ Status: [ ] Planned
 Goal:
 
 - synchronize histogram lower/upper contrast controls with matching napari
-  image layers and movable histogram lines.
+  image layers and the movable histogram contrast region.
 
 Scope:
 
@@ -421,12 +515,14 @@ Scope:
   viewer layer lifecycle changes;
 - add a `QLabeledDoubleRangeSlider` plus numeric lower/upper fields;
 - initialize controls from `layer.contrast_limits`;
-- draw two movable vertical contrast-limit lines on the histogram, for example
-  with `pyqtgraph.InfiniteLine`;
-- moving a vertical contrast-limit line updates `layer.contrast_limits`;
+- draw the contrast limits with `pyqtgraph.LinearRegionItem` by default,
+  styled to read as two movable vertical contrast-limit lines with a subtle
+  selected-region fill;
+- moving either boundary of the contrast region updates
+  `layer.contrast_limits`;
 - slider or numeric-field edits update `layer.contrast_limits` and move the
-  vertical lines;
-- `layer.events.contrast_limits` updates the controls and vertical lines when
+  contrast region;
+- `layer.events.contrast_limits` updates the controls and contrast region when
   napari's own contrast controls change;
 - prevent event feedback loops and keep lower/upper ordering valid while users
   drag markers;
@@ -440,7 +536,7 @@ Tests:
 - slider/numeric edits assign `layer.contrast_limits`;
 - moving the lower/upper histogram lines assigns `layer.contrast_limits`;
 - external napari contrast changes update the widget;
-- external napari contrast changes move the histogram lines;
+- external napari contrast changes move the histogram contrast region;
 - contrast-limit line styling remains distinct from percentile styling;
 - layer removal clears the sync binding;
 - RGB layers disable contrast controls.

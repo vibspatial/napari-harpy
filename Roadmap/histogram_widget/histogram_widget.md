@@ -292,12 +292,28 @@ The implementation should:
 
 - render histogram bars with `pyqtgraph.BarGraphItem` or an equivalent
   pyqtgraph item
-- draw lower and upper contrast-limit markers with movable pyqtgraph vertical
-  line items
-- draw optional percentile guide lines
+- use a small histogram plot wrapper owned by each card so controller and
+  calculator code remain independent from pyqtgraph objects
+- draw lower and upper contrast limits as a movable vertical contrast region,
+  preferably with `pyqtgraph.LinearRegionItem`, or as paired movable
+  `pyqtgraph.InfiniteLine` items if needed
+- draw optional percentile guide lines as non-movable dashed pyqtgraph line
+  items
 - use a `QLabeledDoubleRangeSlider` and numeric fields for interaction
 - keep the plot markers, range slider, numeric fields, and napari layer
   contrast controls synchronized in both directions
+
+Use a restrained dark-mode plot palette derived from existing napari-harpy style
+tokens:
+
+- muted blue histogram bars
+- solid green contrast-limit lines and subtle contrast-region fill
+- dashed amber percentile guide lines
+- muted axis/grid styling that matches the existing widget surface
+
+Avoid random per-card color cycling. Channel/layer colors can be shown later as
+small card-header swatches, but the core histogram plot should use a stable
+professional palette.
 
 ## Proposed Widget Structure
 
