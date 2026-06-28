@@ -36,6 +36,7 @@ from napari_harpy.viewer.points_styling import POINTS_SELECTION_SOLID_COLOR
 from napari_harpy.viewer.shapes_styling import (
     _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR,
     _SHAPES_EDGE_WIDTH_SYNC_CALLBACK_ATTR,
+    PRIMARY_SHAPES_FACE_COLOR,
     SHAPES_FACE_ALPHA,
 )
 
@@ -830,7 +831,7 @@ def test_viewer_adapter_create_empty_primary_shapes_layer_registers_and_styles_l
     assert layer.ndim == 2
     assert layer.current_edge_width == 1
     np.testing.assert_allclose(to_rgba(layer.current_edge_color), to_rgba("#00FFFF"))
-    np.testing.assert_allclose(to_rgba(layer.current_face_color), to_rgba("#00000000"))
+    np.testing.assert_allclose(to_rgba(layer.current_face_color), to_rgba(PRIMARY_SHAPES_FACE_COLOR))
     assert layer.opacity == 0.8
     assert hasattr(layer, _SHAPES_EDGE_WIDTH_SYNC_CALLBACK_ATTR)
     assert hasattr(layer, _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR)

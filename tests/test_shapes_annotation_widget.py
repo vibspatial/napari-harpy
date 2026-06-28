@@ -35,6 +35,7 @@ from napari_harpy.viewer.adapter import ShapesLayerBinding
 from napari_harpy.viewer.shapes_styling import (
     _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR,
     _SHAPES_EDGE_WIDTH_SYNC_CALLBACK_ATTR,
+    PRIMARY_SHAPES_FACE_COLOR,
     apply_primary_shapes_layer_style,
 )
 from napari_harpy.widgets import ShapesAnnotation as LazyShapesAnnotation
@@ -1612,7 +1613,7 @@ def test_shapes_annotation_widget_create_layer_adds_registered_active_empty_shap
     assert layer.ndim == 2
     assert layer.current_edge_width == 1
     np.testing.assert_allclose(to_rgba(layer.current_edge_color), to_rgba("#00FFFF"))
-    np.testing.assert_allclose(to_rgba(layer.current_face_color), to_rgba("#00000000"))
+    np.testing.assert_allclose(to_rgba(layer.current_face_color), to_rgba(PRIMARY_SHAPES_FACE_COLOR))
     assert layer.opacity == 0.8
     assert hasattr(layer, _SHAPES_EDGE_WIDTH_SYNC_CALLBACK_ATTR)
     assert hasattr(layer, _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR)
@@ -2767,7 +2768,7 @@ def test_shapes_annotation_widget_adopts_native_empty_shapes_layer(
     np.testing.assert_allclose(adopted_layer.affine.affine_matrix, np.eye(3))
     assert adopted_layer.current_edge_width == 1
     np.testing.assert_allclose(to_rgba(adopted_layer.current_edge_color), to_rgba("#00FFFF"))
-    np.testing.assert_allclose(to_rgba(adopted_layer.current_face_color), to_rgba("#00000000"))
+    np.testing.assert_allclose(to_rgba(adopted_layer.current_face_color), to_rgba(PRIMARY_SHAPES_FACE_COLOR))
     assert adopted_layer.opacity == 0.8
     assert hasattr(adopted_layer, _SHAPES_EDGE_WIDTH_SYNC_CALLBACK_ATTR)
     assert hasattr(adopted_layer, _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR)
@@ -2792,9 +2793,9 @@ def test_shapes_annotation_widget_saves_adopted_native_nonempty_shapes_layer(
     assert isinstance(adopted_layer, Shapes)
     assert native_layer not in viewer.layers
     np.testing.assert_allclose(adopted_layer.edge_color[0], to_rgba("#00FFFF"))
-    np.testing.assert_allclose(adopted_layer.face_color[0], to_rgba("#00000000"))
+    np.testing.assert_allclose(adopted_layer.face_color[0], to_rgba(PRIMARY_SHAPES_FACE_COLOR))
     np.testing.assert_allclose(to_rgba(adopted_layer.current_edge_color), to_rgba("#00FFFF"))
-    np.testing.assert_allclose(to_rgba(adopted_layer.current_face_color), to_rgba("#00000000"))
+    np.testing.assert_allclose(to_rgba(adopted_layer.current_face_color), to_rgba(PRIMARY_SHAPES_FACE_COLOR))
     widget.save_shapes_button.click()
 
     assert "native_import" in sdata_blobs.shapes
@@ -3040,7 +3041,7 @@ def test_shapes_annotation_widget_native_adoption_confirm_discards_dirty_session
     assert widget._annotation_session.shapes_name == "native_shapes"
     assert widget.name_edit.text() == "native_shapes"
     np.testing.assert_allclose(adopted_layer.edge_color[0], to_rgba("#00FFFF"))
-    np.testing.assert_allclose(adopted_layer.face_color[0], to_rgba("#00000000"))
+    np.testing.assert_allclose(adopted_layer.face_color[0], to_rgba(PRIMARY_SHAPES_FACE_COLOR))
 
 
 def test_shapes_annotation_widget_coordinate_discard_guard_avoids_duplicate_cleanup(

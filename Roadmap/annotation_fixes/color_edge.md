@@ -6,7 +6,7 @@
   `src/napari_harpy/viewer/shapes_styling.py`.
 - The current defaults are:
   - `PRIMARY_SHAPES_EDGE_COLOR = "#00FFFF"`
-  - `PRIMARY_SHAPES_FACE_COLOR = "#00000000"`
+  - `PRIMARY_SHAPES_FACE_COLOR = "#00FFFF20"`
   - `PRIMARY_SHAPES_EDGE_WIDTH = 1`
   - `PRIMARY_SHAPES_OPACITY = 0.8`
 - `apply_primary_shapes_layer_style(...)` applies both current draw defaults
@@ -33,11 +33,11 @@ Change the primary polygon face color from fully transparent black to a cyan
 with very low alpha, matching the primary edge RGB:
 
 ```python
-PRIMARY_SHAPES_FACE_COLOR = "#00FFFF14"
+PRIMARY_SHAPES_FACE_COLOR = "#00FFFF20"
 ```
 
-`#14` is about 8% alpha. If this is too visible in real image data, use
-`#00FFFF11` instead, which is about 6.7% alpha.
+`#20` is about 12.5% alpha. This keeps the fill light while making the face
+color easier to notice and easier to edit from napari's color picker.
 
 ## Implementation Plan
 
@@ -78,7 +78,7 @@ PRIMARY_SHAPES_FACE_COLOR = "#00FFFF14"
    - Implemented in `src/napari_harpy/viewer/shapes_styling.py` and
      `src/napari_harpy/viewer/adapter.py`.
 
-3. Update the default face color constant.
+3. [x] Update the default face color constant.
 
    - Change `PRIMARY_SHAPES_FACE_COLOR` to the chosen cyan-with-alpha value.
    - Because `apply_primary_shapes_layer_style(...)` is shared, this covers:
@@ -88,6 +88,7 @@ PRIMARY_SHAPES_FACE_COLOR = "#00FFFF14"
      - native napari Shapes layers adopted by the Annotation widget;
      - Harpy replacement layers created by
        `_build_harpy_shapes_layer_from_native_layer(...)`.
+   - Implemented as `PRIMARY_SHAPES_FACE_COLOR = "#00FFFF20"`.
 
 4. Preserve existing annotation edit behavior.
 
