@@ -1,5 +1,7 @@
 # Primary Shapes Face Color Sync
 
+Status: implemented.
+
 ## Current Behavior
 
 - Primary polygon `Shapes` styling is centralized in
@@ -17,20 +19,18 @@
   - `layer.face_color`
   - `layer.edge_width`
   - `layer.opacity`
-- Primary shape edge-color syncing already exists via
-  `_connect_current_edge_color_to_global_edge_color(...)`.
-  It listens to `layer.events.current_edge_color` and assigns
-  `layer.edge_color = layer.current_edge_color`, so a color change in napari's
-  Shapes UI is applied to all existing rows.
-- There is no equivalent face-color sync for `Shapes`. Changing
-  `layer.current_face_color` in napari updates the draw default for future
-  shapes, but does not repaint existing shapes unless Harpy also assigns
-  `layer.face_color`.
+- Primary shape edge-color syncing exists via
+  `_connect_current_edge_color_to_global_edge_color(...)`, and primary shape
+  face-color syncing exists via
+  `_connect_current_face_color_to_global_face_color(...)`.
+- Both callbacks listen to napari's current color events and apply the current
+  color to all existing shape rows, so color changes in napari's Shapes UI are
+  reflected in the viewer.
 
-## Proposed Default Face Color
+## Implemented Default Face Color
 
-Change the primary polygon face color from fully transparent black to a cyan
-with very low alpha, matching the primary edge RGB:
+The primary polygon face color is a cyan with low alpha, matching the primary
+edge RGB:
 
 ```python
 PRIMARY_SHAPES_FACE_COLOR = "#00FFFF20"
@@ -133,17 +133,26 @@ color easier to notice and easier to edit from napari's color picker.
      in `tests/test_shapes_annotation_widget.py`; existing styled-shapes
      regressions cover data-driven color preservation.
 
-6. Verification commands.
+6. [x] Verification commands.
 
 ```bash
 .venv/bin/pytest tests/test_shapes_styling.py tests/test_shapes_annotation_widget.py
 .venv/bin/pre-commit run ruff --all-files
 ```
 
+Implemented verification used the focused affected test and lint targets:
+
+```bash
+.venv/bin/ruff check src/napari_harpy/viewer/shapes_styling.py src/napari_harpy/viewer/adapter.py
+.venv/bin/ruff check src/napari_harpy/viewer/shapes_styling.py tests/test_viewer_adapter.py tests/test_shapes_annotation_widget.py
+.venv/bin/pytest tests/test_viewer_adapter.py tests/test_shapes_annotation_widget.py
+.venv/bin/pytest tests/test_viewer_adapter.py
+```
+
 ## Notes
 
 - Local napari behavior confirms that `Shapes.events.current_face_color`
   exists and emits when `current_face_color` changes.
-- Local napari behavior also confirms that changing `current_face_color` alone
-  does not repaint existing `face_color` rows, so Harpy needs an explicit sync
-  callback just like it already has for edge color.
+- Local napari behavior also confirmed that changing `current_face_color` alone
+  did not repaint existing `face_color` rows, so Harpy now installs an explicit
+  sync callback just like it already has for edge color.
