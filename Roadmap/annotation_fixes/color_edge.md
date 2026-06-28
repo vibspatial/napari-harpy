@@ -41,7 +41,7 @@ PRIMARY_SHAPES_FACE_COLOR = "#00FFFF14"
 
 ## Implementation Plan
 
-1. Add a shapes face-color sync callback in
+1. [x] Add a shapes face-color sync callback in
    `src/napari_harpy/viewer/shapes_styling.py`.
 
    - Add a sibling callback attribute constant, for example:
@@ -53,6 +53,9 @@ PRIMARY_SHAPES_FACE_COLOR = "#00FFFF14"
      - assign `layer.face_color = layer.current_face_color`;
      - connect to `layer.events.current_face_color`;
      - store the callback on the layer to prevent duplicate connections.
+   - Implemented in `src/napari_harpy/viewer/shapes_styling.py`; not wired
+     into primary styling yet, so user-facing behavior is unchanged until
+     slice 2.
 
 2. Wire the face-color callback into primary styling.
 
