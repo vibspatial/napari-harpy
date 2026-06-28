@@ -13,6 +13,11 @@ select the target explicitly, press Calculate for that card, and inspect the
 histogram inside the card. Contrast-limit controls synchronize with matching
 napari image layers when those layers are loaded.
 
+Every histogram card owns its own calculation settings. Values such as `scale`,
+`bins`, `density`, `exclude_nan`, `exclude_zeros`, `log_y`, `percentile_min`,
+and `percentile_max` are per-card inputs, not shared widget-level settings.
+Changing one card's settings must not affect any other card.
+
 The widget is a visualization and quality-control surface. It must not mutate
 the underlying `SpatialData` image data.
 
@@ -33,9 +38,11 @@ as a reference and already supports percentile guide lines, but it returns
 Matplotlib axes, not the structured data needed for stale-job handling,
 contrast synchronization, and tests.
 
-Use Matplotlib for plotting. It is already installed in the project
-environment, while `pyqtgraph` is not. Directly draggable histogram markers can
-be revisited later as a deliberate dependency and interaction-design decision.
+Use `pyqtgraph` for plotting. This is an explicit product dependency decision:
+the histogram widget is an interactive Qt control surface, so the plot backend
+should be optimized for responsive redraws, marker interaction, and a native
+Qt feel. Add `pyqtgraph` as a direct napari-harpy dependency and do not build a
+Matplotlib fallback path for the widget.
 
 ## Evaluated Options
 
@@ -91,18 +98,21 @@ the semantic reference.
 
 Matplotlib:
 
-- already available;
+- already available through the current environment;
 - easy to test at the data/state level;
-- enough for bars, contrast-limit lines, percentile lines, log y-axis, and
-  redraws.
+- useful as Harpy's static QC plotting reference;
+- weaker fit for an interactive Qt widget with many plots and marker updates.
 
 Pyqtgraph:
 
-- better for direct manipulation;
-- not installed in the current environment;
-- should not be added until direct marker dragging is required.
+- native Qt plotting library;
+- better fit for many lightweight histogram views;
+- better fit for responsive contrast/percentile marker updates;
+- keeps direct marker dragging possible without changing plotting backends;
+- accepted as a new direct napari-harpy dependency.
 
-Recommendation: Matplotlib.
+Recommendation: pyqtgraph only. Do not implement a Matplotlib fallback for the
+widget.
 
 ## Data Model
 
@@ -137,6 +147,10 @@ class HistogramResult:
     data_range: tuple[float, float]
     percentile_values: Mapping[float, float]
 ```
+
+`HistogramSettings` is stored per card and copied into each immutable
+`HistogramJob`. There should be no shared global `bins`, `scale`, filtering, or
+percentile state that implicitly changes all cards at once.
 
 For scalar images without a channel axis, keep `channel_name=None` internally
 and display a read-only scalar channel placeholder in the UI. Multi-channel
@@ -198,6 +212,7 @@ Scope:
 
 - add `src/napari_harpy/core/histogram.py`;
 - resolve a `HistogramTarget` against `SpatialData`;
+- accept one explicit `HistogramSettings` object per calculation;
 - select the requested multiscale `scale`, defaulting to exact `scale0`;
 - select the requested channel, or scalar image data when no channel axis is
   present;
@@ -226,12 +241,16 @@ Goal:
 
 Scope:
 
+- add `pyqtgraph` to `pyproject.toml` as a direct runtime dependency;
 - add `src/napari_harpy/widgets/histogram/`;
 - register the widget in `src/napari_harpy/napari.yaml`;
 - attach to shared `HarpyAppState` through `get_or_create_app_state(...)`;
 - render an add-card action and a scrollable list of histogram cards;
-- each card exposes coordinate system, image, channel, scale, bins, filtering
-  options, percentile fields, and Calculate;
+- each card exposes coordinate system, image, channel, `scale`, `bins`,
+  `density`, `exclude_nan`, `exclude_zeros`, `log_y`, percentile fields, and
+  Calculate;
+- each card owns and remembers its own `HistogramSettings` while it remains
+  visible;
 - coordinate systems and images come from shared `SpatialData` discovery
   helpers;
 - channel names come from `get_image_channel_names_from_sdata(...)`;
@@ -244,6 +263,8 @@ Tests:
 - widget seeds from shared `sdata`;
 - cards can be added and removed;
 - coordinate-system/image/channel selectors refresh on `sdata_changed`;
+- `scale`, `bins`, filtering, log-axis, density, and percentile controls are
+  independent per card;
 - stale card state is visible after settings change.
 
 ### 3. Background Controller
@@ -269,6 +290,7 @@ Scope:
 Tests:
 
 - Calculate starts a worker for a valid card;
+- worker jobs receive the settings from the card that launched them;
 - stale worker results are ignored;
 - worker errors surface as card errors;
 - removing a card disconnects or ignores its worker result.
@@ -279,24 +301,28 @@ Status: [ ] Planned
 
 Goal:
 
-- draw each calculated histogram inside its card.
+- draw each calculated histogram inside its card with pyqtgraph.
 
 Scope:
 
-- embed a Matplotlib canvas per card;
-- draw bars from `HistogramResult.counts` and `bin_edges`;
+- embed a `pyqtgraph.PlotWidget` or equivalent pyqtgraph graphics view per
+  card;
+- draw bars from `HistogramResult.counts` and `bin_edges` with
+  `pyqtgraph.BarGraphItem` or an equivalent pyqtgraph item;
 - support linear and log y-axis;
 - draw a stale/empty state before calculation;
 - redraw from existing result when only contrast-limit guide lines change;
+- keep plot setup isolated in a small widget/helper so controller and
+  calculator code never depend on pyqtgraph objects;
 - keep plot labels compact and card-local.
 
 Tests:
 
-- plot canvas updates when a result arrives;
+- pyqtgraph plot updates when a result arrives;
 - log y-axis setting is applied;
 - stale state is shown after target/settings changes;
 - repeated calculations replace the previous plot instead of accumulating
-  artists.
+  duplicate plot items.
 
 ### 5. Contrast-Limit Synchronization
 
@@ -398,15 +424,14 @@ Tests:
 
 - no duplicate event callbacks after recalculation or layer replacement;
 - multiscale scale selection is passed to the calculator;
-- cards remain independent when several histograms are visible;
+- per-card settings remain independent when multiple histograms are visible;
 - `napari.yaml` contribution loads the widget.
 
-## Non-Goals For The Initial Implementation
+## Out Of Scope
 
 - no automatic active-layer retargeting;
 - no automatic contrast changes from percentile fields;
-- no pyqtgraph dependency;
+- no Matplotlib fallback for the widget;
 - no histogram result caching layer;
 - no CSV export;
 - no overlaying multiple target histograms into one shared plot.
-

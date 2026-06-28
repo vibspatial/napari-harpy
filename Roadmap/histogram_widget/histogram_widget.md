@@ -273,50 +273,31 @@ The histogram widget should follow the same pattern:
 - ignore stale results when the user changes layer, channel, bins, or scale
 - keep the UI responsive while Dask computes
 
-## Plotting Options
+## Plotting Backend
 
-Two plotting backends are practical.
+Use `pyqtgraph` as the histogram widget plotting backend.
 
-### Matplotlib
+This is an explicit product dependency decision. The histogram widget is an
+interactive Qt control surface, not a static report plot, so the implementation
+should optimize for responsiveness, native Qt interaction, and long-term
+interactive controls.
 
-Pros:
+`pyqtgraph` should be added as a direct napari-harpy dependency in
+`pyproject.toml`. Do not implement a Matplotlib fallback path for the widget.
 
-- already available in the environment
-- aligns with Harpy's QC plotting code
-- easy to draw bars and vertical contrast-limit guide lines
+Matplotlib remains relevant as Harpy's QC plotting reference, but it should not
+be the widget plot surface.
 
-Cons:
+The implementation should:
 
-- less fluid for draggable interactive markers
-
-### Pyqtgraph
-
-Pros:
-
-- better suited to interactive plots and draggable markers
-- likely smoother for live contrast-limit manipulation
-
-Cons:
-
-- not installed in the current project environment
-- should be treated as an explicit dependency decision if napari-harpy wants to
-  rely on it directly
-
-### Recommended Product Choice
-
-Use Matplotlib for the histogram widget unless direct manipulation of plot
-markers becomes a hard product requirement.
-
-The recommended implementation is:
-
-- render histogram bars with Matplotlib
-- draw two vertical contrast-limit lines
+- render histogram bars with `pyqtgraph.BarGraphItem` or an equivalent
+  pyqtgraph item
+- draw lower and upper contrast-limit markers with pyqtgraph line items
 - draw optional percentile guide lines
 - use a `QLabeledDoubleRangeSlider` and numeric fields for interaction
-- redraw lines when the slider or layer changes
-
-Pyqtgraph can be revisited as a deliberate dependency if draggable plot markers
-become important.
+- update plot markers when the slider or layer changes
+- keep marker dragging possible as a natural future enhancement without
+  changing plotting backends
 
 ## Proposed Widget Structure
 
