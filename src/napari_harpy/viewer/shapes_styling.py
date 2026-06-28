@@ -39,11 +39,12 @@ SHAPES_MISSING_BASE_COLOR = "#808080"
 SHAPES_FACE_ALPHA = 0.35
 SHAPES_EDGE_ALPHA = 1.0
 PRIMARY_SHAPES_EDGE_COLOR = "#00FFFF"
-PRIMARY_SHAPES_FACE_COLOR = "#00000000"
+PRIMARY_SHAPES_FACE_COLOR = "#00FFFF20"
 PRIMARY_SHAPES_EDGE_WIDTH = 1
 PRIMARY_SHAPES_OPACITY = 0.8
 _SHAPES_EDGE_WIDTH_SYNC_CALLBACK_ATTR = "_harpy_shapes_edge_width_sync_callback"
 _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR = "_harpy_shapes_edge_color_sync_callback"
+_SHAPES_FACE_COLOR_SYNC_CALLBACK_ATTR = "_harpy_shapes_face_color_sync_callback"
 ShapesStyleValueKind = ShapeColorValueKind | Literal["instance"]
 ShapesRenderingMode = Literal["shapes", "points"]
 
@@ -108,7 +109,7 @@ class _ShapeTableRowAlignment:
     rendered_row_has_table_row: np.ndarray
 
 
-def apply_primary_shapes_layer_style(layer: Shapes, *, sync_edge_color: bool = True) -> None:
+def apply_primary_shapes_layer_style(layer: Shapes, *, sync_current_colors: bool = True) -> None:
     """Apply Harpy's primary polygon-shapes style to an existing napari layer."""
     layer.current_edge_color = PRIMARY_SHAPES_EDGE_COLOR
     layer.current_face_color = PRIMARY_SHAPES_FACE_COLOR
@@ -118,8 +119,9 @@ def apply_primary_shapes_layer_style(layer: Shapes, *, sync_edge_color: bool = T
     layer.edge_width = PRIMARY_SHAPES_EDGE_WIDTH
     layer.opacity = PRIMARY_SHAPES_OPACITY
     _connect_current_edge_width_to_global_edge_width(layer)
-    if sync_edge_color:
+    if sync_current_colors:
         _connect_current_edge_color_to_global_edge_color(layer)
+        _connect_current_face_color_to_global_face_color(layer)
 
 
 def apply_shape_column_color_source_to_shapes_layer(
@@ -602,6 +604,17 @@ def _connect_current_edge_color_to_global_edge_color(layer: Shapes) -> None:
 
     layer.events.current_edge_color.connect(_sync_current_edge_color_to_all_shapes)
     setattr(layer, _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR, _sync_current_edge_color_to_all_shapes)
+
+
+def _connect_current_face_color_to_global_face_color(layer: Shapes) -> None:
+    if getattr(layer, _SHAPES_FACE_COLOR_SYNC_CALLBACK_ATTR, None) is not None:
+        return
+
+    def _sync_current_face_color_to_all_shapes(_event: Any | None = None) -> None:
+        layer.face_color = layer.current_face_color
+
+    layer.events.current_face_color.connect(_sync_current_face_color_to_all_shapes)
+    setattr(layer, _SHAPES_FACE_COLOR_SYNC_CALLBACK_ATTR, _sync_current_face_color_to_all_shapes)
 
 
 def disambiguate_shape_style_feature_name(style_column_name: str, source_shapes_index_feature_name: str) -> str:

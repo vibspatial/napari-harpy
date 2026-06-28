@@ -557,6 +557,260 @@ Implementation notes:
 - Keep Slice 1F's cancel behavior intact: cancel must not leave an unbound
   default-styled native import behind.
 
+### Slice 1H - Normalize Adopted Native Shapes To Harpy Status Layer
+
+Status: implemented.
+
+Problem:
+
+- Native napari Shapes layers adopted by the Annotation widget can be saved into
+  SpatialData, and the save path writes generated row IDs such as
+  `__annotation_0` back into `layer.features["instance_id"]`.
+- However, adopted native layers remain plain `napari.layers.Shapes` objects.
+  Plain napari Shapes status text does not append Harpy feature metadata, so
+  hovering a saved adopted-native annotation can still show only napari's raw
+  row/value status, for example:
+
+```text
+Shapes_2 [315 236]: 1
+```
+
+- Harpy-loaded shapes layers are `_HarpyShapes` instances. Their
+  `get_status(...)` implementation reads `layer.features` and appends values
+  such as:
+
+```text
+instance_id: __annotation_0
+```
+
+Current behavior:
+
+- `_adopt_native_shapes_layer(...)` applies Harpy primary-shapes styling and
+  registers the native layer, but keeps the original `napari.layers.Shapes`
+  instance.
+- `create_shapes_element_from_napari_shapes_layer(...)` correctly fills
+  `layer.features["instance_id"]` on save.
+- `_update_annotation_session_after_successful_save(...)` correctly refreshes
+  the Harpy binding with `source_shapes_index_feature_name="instance_id"`.
+- The missing piece is the live layer class/status behavior: a plain native
+  layer does not use `_HarpyShapes.get_status(...)`.
+
+Preferred fix:
+
+- When Annotation adopts a native Shapes layer, normalize it into a Harpy-aware
+  `_HarpyShapes` layer instead of keeping the plain napari layer.
+- Implement the native-to-Harpy normalization in `viewer/adapter.py`, not as
+  widget-local layer construction. `_HarpyShapes` and the viewer layer
+  insertion/removal details are adapter concerns; the widget should request the
+  normalization and continue with the returned layer.
+- The replacement layer should preserve the native layer's annotation-relevant
+  state:
+  - `data`
+  - `shape_type`
+  - `features`
+  - `name`
+  - transform/affine state after native transform normalization
+  - row style arrays and current style values
+  - opacity, edge width, face color, edge color
+  - selection/mode where practical
+- Register and attach the edit guard to the `_HarpyShapes` replacement layer.
+- Keep Harpy styling as the visual contract for annotation-owned primary shapes.
+
+Suggested implementation flow:
+
+1. Add a private adapter helper or method, for example
+   `normalize_native_shapes_layer_for_annotation(...)`, that accepts a native
+   `Shapes` layer plus the `source_shapes_index_feature_name`.
+2. If the input layer is already `_HarpyShapes` with the requested source-index
+   feature name, return it unchanged.
+3. Otherwise, build a replacement `_HarpyShapes` layer from the native layer's
+   copied data, shape types, features, name, normalized transform, and current
+   annotation-relevant style state.
+4. Replace the native layer in the viewer under widget-owned layer-transition
+   guards so layer-removal and active-layer callbacks do not reset the pending
+   annotation session.
+5. In `_adopt_native_shapes_layer(...)`, call the adapter normalization helper
+   before `register_shapes_layer(...)`, then register and attach the edit guard
+   to the returned `_HarpyShapes` layer.
+6. After save, `_update_annotation_session_after_successful_save(...)` can keep
+   using `sync_primary_shapes_layer_binding(...)`; the live layer will already
+   have Harpy's status-bar behavior.
+
+Alternative considered:
+
+- Reload the saved shapes element through `ensure_shapes_loaded(...)` after the
+  first save. This would also produce `_HarpyShapes`, but it is more disruptive
+  because it replaces the live annotation layer after save.
+- Monkey-patching `get_status(...)` onto native layers is not recommended; it is
+  brittle and less consistent than using Harpy's existing layer subclass.
+- Configuring napari `layer.text` to display `{instance_id}` would create
+  visible on-canvas labels. That is a separate feature from hover/status-bar
+  metadata and may clutter annotation workflows.
+
+Tests:
+
+- Adopt a native napari Shapes layer, save it through Annotation, and assert the
+  live annotation layer is Harpy-aware and its status text includes
+  `instance_id: __annotation_0` when hovering a saved shape.
+- Confirm existing native-adoption save tests still pass and that
+  `layer.features["instance_id"]` remains populated.
+- Confirm edit guard attachment follows the replacement layer, not the original
+  native layer.
+
+### Slice 1I - Clear Identity Feature Defaults For New Unsaved Rows
+
+Status: implemented.
+
+Problem:
+
+- In edit-existing annotation sessions, existing rows can already have stable
+  generated IDs such as:
+
+```text
+__annotation_0
+__annotation_1
+```
+
+- When the user draws new rows before saving, napari may copy the current
+  feature/default value into the new feature rows. If the current/default
+  `instance_id` is `__annotation_1`, live hover can temporarily show:
+
+```text
+__annotation_0
+__annotation_1
+__annotation_1
+__annotation_1
+```
+
+- The save path already repairs this correctly by treating duplicated generated
+  IDs as missing and assigning fresh IDs, so after save the rows become:
+
+```text
+__annotation_0
+__annotation_1
+__annotation_2
+__annotation_3
+```
+
+- The remaining issue is the pre-save hover/status experience: unsaved new rows
+  can look as if they already have a duplicated stable ID.
+
+Desired behavior:
+
+```text
+existing rows:
+  __annotation_0
+  __annotation_1
+
+new unsaved rows before save:
+  missing / no instance_id shown on hover
+
+after save:
+  __annotation_0
+  __annotation_1
+  __annotation_2
+  __annotation_3
+```
+
+Preferred fix:
+
+- Keep save as the canonical place where generated annotation IDs are assigned.
+- Prevent napari from copying the source identity feature into newly drawn rows
+  by keeping the current/default value for the active source-index feature
+  column missing during annotation sessions.
+- This should apply to the active source-index feature column, not only the
+  literal `instance_id` column. Edit-existing sessions may use a fallback source
+  feature name such as `index`.
+- A one-time reset when opening the layer is not enough: napari can update
+  `current_properties` and `feature_defaults` when the user selects existing
+  shapes. The annotation widget should keep the source-index feature default
+  missing for the lifetime of the active annotation session.
+
+Suggested implementation:
+
+- Add a small private guard, for example
+  `_AnnotationIdentityFeatureDefaultGuard`.
+- Keep this guard separate from `_AnnotationLayerEditGuard`.
+  `_AnnotationLayerEditGuard` owns interactive edit-mode callback patching;
+  the identity-feature guard owns napari feature-default hygiene.
+- Give the guard a narrow lifecycle API, for example:
+
+```python
+class _AnnotationIdentityFeatureDefaultGuard:
+    def attach(self, layer: Shapes, *, feature_name: str) -> None: ...
+    def disconnect(self) -> None: ...
+```
+
+- `attach(...)` should:
+  - disconnect any previous layer
+  - remember the active layer and source-index feature name
+  - connect to napari feature-default/current-property events
+  - immediately clear the source-index feature default
+- `disconnect()` should only disconnect events and forget the layer/feature. It
+  should not restore the previous source-index default, because copied source
+  row IDs are never a valid draw default for an annotation session.
+- Attach the guard whenever an annotation session is opened/adopted/created and
+  the widget knows the session's `source_shapes_index_feature_name`.
+- Disconnect the guard from `_clear_annotation_state(...)`, alongside
+  `_annotation_edit_guard.disconnect()`.
+
+Implementation notes:
+
+- Reuse the session's `source_shapes_index_feature_name` to identify the column
+  whose current/default value should be cleared.
+- Use napari's public layer properties where possible:
+  `layer.current_properties` and `layer.feature_defaults`.
+- When setting `layer.current_properties`, wrap the write in
+  `layer.block_update_properties()` so selected existing rows are not rewritten
+  with missing source IDs.
+- The guard should listen for `layer.events.current_properties` and
+  `layer.events.feature_defaults` when those events are available. In the
+  current napari API, direct `feature_defaults` writes also emit
+  `current_properties`, but listening to both public default-related events keeps
+  the guard robust if napari decouples those APIs later. Duplicate emissions are
+  safe because the guard has a reentrancy flag and returns early when the
+  identity default is already missing.
+- Use a private reentrancy flag because clearing the default emits
+  `current_properties` and/or `feature_defaults` again.
+- Do not remove or modify existing row values in `layer.features`; only prevent
+  those values from becoming defaults for future rows.
+- Missing values are acceptable for unsaved rows because
+  `_build_features_with_source_instance_ids(...)` already fills missing values
+  with the next unused generated IDs during save.
+- The hover/status layer should naturally omit the source-index text for new
+  rows while that value is missing.
+- Keep the behavior source-feature-name agnostic. The missing default applies to
+  whatever column the binding/session uses to map napari rows back to source
+  GeoDataFrame rows, including fallback names such as `index`.
+
+Tests:
+
+- Open or create an edit-existing annotation session whose source feature column
+  contains `__annotation_0` and `__annotation_1`.
+- Simulate napari selecting an existing row or otherwise setting
+  `current_properties` to `__annotation_1`.
+- Assert the guard clears `current_properties[source_feature_name]` and
+  `feature_defaults[source_feature_name]` to a missing value without changing
+  existing `layer.features[source_feature_name]` values.
+- Add two new polygon rows and assert their live source-index feature values are
+  missing before save.
+- Save and assert the saved index and live `layer.features` become:
+
+```text
+__annotation_0
+__annotation_1
+__annotation_2
+__annotation_3
+```
+- Repeat the row-add/default-clearing test with a fallback source feature column
+  such as `index`.
+- Clearing the default while a row is selected does not mutate that selected
+  row's existing source ID.
+- Clearing the default is reentrant-safe when napari emits
+  `current_properties`/`feature_defaults` from inside the clear operation.
+- Clearing/disconnecting annotation state disconnects the guard from the old
+  layer so later default changes on that layer do not affect the widget.
+
 ## Non-Goals
 
 - Do not attach `_AnnotationLayerEditGuard` to arbitrary unbound native Shapes

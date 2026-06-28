@@ -11,10 +11,12 @@ save target.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
+import pandas as pd
 from napari.layers import Shapes
 from napari.layers.base._base_constants import ActionType
 from napari.layers.shapes._shapes_constants import Mode
@@ -643,6 +645,156 @@ class _AnnotationLayerEditGuard:
             self._warning_callback(message)
 
 
+class _AnnotationIdentityFeatureDefaultGuard:
+    """Keep source row identity out of napari's new-shape feature defaults.
+
+    Napari uses ``layer.current_properties`` as the one-row feature template for
+    the next drawn shape. It can seed or update that template from existing
+    feature rows, for example from the last row when a layer is initialized or
+    from a selected row during interaction. That is useful for normal columns
+    such as ``label`` or ``class``, but it is wrong for Harpy's source identity
+    column because a new unsaved row must not inherit an existing row ID.
+
+    Example before clearing::
+
+        layer.current_properties == {
+            "instance_id": np.asarray(["__annotation_1"], dtype=object),
+            "label": np.asarray(["tumor"], dtype=object),
+        }
+
+    The guard changes only the active source identity feature::
+
+        layer.current_properties == {
+            "instance_id": np.asarray([pd.NA], dtype=object),
+            "label": np.asarray(["tumor"], dtype=object),
+        }
+
+    Because ``pd.NA`` is treated as a missing feature value, Harpy's status text
+    omits the identity feature for a newly drawn unsaved row instead of showing
+    ``instance_id: <NA>``.
+
+    Existing ``layer.features`` rows are left untouched. Newly drawn rows receive
+    a missing source ID while they are unsaved, so Harpy's status text has no
+    identity feature to show for those rows. The save path later assigns fresh
+    stable IDs such as ``__annotation_2``.
+    """
+
+    def __init__(self) -> None:
+        self._layer: Shapes | None = None
+        self._feature_name: str | None = None
+        self._connected_events: list[tuple[object, Callable[..., Any]]] = []
+        self._is_clearing = False
+
+    @property
+    def layer(self) -> Shapes | None:
+        return self._layer
+
+    @property
+    def feature_name(self) -> str | None:
+        return self._feature_name
+
+    def attach(self, layer: Shapes, *, feature_name: str) -> None:
+        feature_name = str(feature_name).strip()
+        if not feature_name:
+            raise ValueError("Annotation identity feature name must be a non-empty string.")
+
+        if self._layer is not layer or self._feature_name != feature_name:
+            self.disconnect()
+            self._layer = layer
+            self._feature_name = feature_name
+            self._connect_layer_event(layer, "current_properties")
+            # Today `feature_defaults` writes also emit `current_properties`.
+            # Listen to both public default-related events anyway so this guard
+            # keeps working if napari decouples those APIs later.
+            self._connect_layer_event(layer, "feature_defaults")
+
+        self._clear_identity_feature_default()
+
+    def disconnect(self) -> None:
+        for event, callback in self._connected_events:
+            disconnect = getattr(event, "disconnect", None)
+            if not callable(disconnect):
+                continue
+            try:
+                disconnect(callback)
+            except (RuntimeError, ValueError):
+                pass
+
+        self._connected_events = []
+        self._layer = None
+        self._feature_name = None
+        self._is_clearing = False
+
+    def _connect_layer_event(self, layer: Shapes, event_name: str) -> None:
+        event = getattr(getattr(layer, "events", None), event_name, None)
+        connect = getattr(event, "connect", None)
+        if not callable(connect):
+            return
+
+        callback = self._on_identity_feature_default_changed
+        connect(callback)
+        self._connected_events.append((event, callback))
+
+    def _on_identity_feature_default_changed(self, _event: object | None = None) -> None:
+        if self._is_clearing:
+            return
+        self._clear_identity_feature_default()
+
+    def _clear_identity_feature_default(self) -> None:
+        layer = self._layer
+        feature_name = self._feature_name
+        if layer is None or feature_name is None:
+            return
+        if self._identity_feature_default_is_missing(layer, feature_name):
+            return
+
+        current_properties = dict(layer.current_properties)
+        current_properties[feature_name] = np.asarray([pd.NA], dtype=object)
+        self._is_clearing = True
+        try:
+            # Setting `current_properties` can write through to selected rows in
+            # `layer.features`; block that so only future-row defaults change.
+            with layer.block_update_properties():
+                layer.current_properties = current_properties
+        finally:
+            self._is_clearing = False
+
+    def _identity_feature_default_is_missing(self, layer: Shapes, feature_name: str) -> bool:
+        return self._current_identity_feature_default_is_missing(
+            layer,
+            feature_name,
+        ) and self._feature_defaults_identity_value_is_missing(layer, feature_name)
+
+    def _current_identity_feature_default_is_missing(self, layer: Shapes, feature_name: str) -> bool:
+        current_properties = dict(layer.current_properties)
+        if feature_name not in current_properties:
+            return feature_name not in layer.features.columns
+        return _is_missing_annotation_feature_value(current_properties[feature_name])
+
+    def _feature_defaults_identity_value_is_missing(self, layer: Shapes, feature_name: str) -> bool:
+        feature_defaults = layer.feature_defaults
+        if feature_name not in feature_defaults.columns:
+            return True
+        if feature_defaults.empty:
+            return True
+        return _is_missing_annotation_feature_value(feature_defaults[feature_name].iloc[0])
+
+
+def _is_missing_annotation_feature_value(value: object) -> bool:
+    if isinstance(value, (np.ndarray, list, tuple, pd.Series)):
+        values = np.asarray(value, dtype=object).ravel()
+        if len(values) == 0:
+            return True
+        value = values[0]
+    if value is None:
+        return True
+
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
 class ShapesAnnotation(QWidget):
     """Widget shell for annotating SpatialData shapes elements."""
 
@@ -662,16 +814,15 @@ class ShapesAnnotation(QWidget):
         self._annotation_session: _ShapesAnnotationSession | None = None
         self._annotation_layer: Shapes | None = None
         self._annotation_edit_guard = _AnnotationLayerEditGuard(warning_callback=self._set_annotation_edit_warning)
+        self._annotation_identity_feature_default_guard = _AnnotationIdentityFeatureDefaultGuard()
         self._annotation_has_been_saved = False
         self._annotation_clean_snapshot: _ShapesAnnotationLayerSnapshot | None = None
-        # Suppress `_on_viewer_layer_removed(...)` while this widget removes
-        # an annotation layer itself during discard or clean session teardown.
-        self._is_handling_annotation_layer_removal = False
+        # Suppress layer-removal and active-layer callbacks during layer
+        # transitions owned by this widget.
+        self._is_handling_widget_owned_layer_transition = False
         # Ignore primary-shapes registration events emitted by open operations
         # that this widget started itself.
-        self._is_opening_annotation_layer = False
-        # Active-layer adoption can activate layers again, so keep this handler
-        # single-entry before follow-up slices add real adoption behavior.
+        self._is_handling_widget_owned_registration = False
         self._is_handling_active_layer_change = False
         self._logo_path = get_logo_path()
 
@@ -906,7 +1057,7 @@ class ShapesAnnotation(QWidget):
         """Observe every active-layer change; later adoption only cares about compatible Shapes layers."""
         if self._is_handling_active_layer_change:
             return
-        if self._is_handling_annotation_layer_removal:
+        if self._is_handling_widget_owned_layer_transition:
             # `_discard_annotation_layer(...)` may call
             # `ensure_shapes_loaded(...)` to reload a clean copy of the old
             # saved layer before `_clear_annotation_state()` runs. That reload
@@ -987,9 +1138,9 @@ class ShapesAnnotation(QWidget):
         )
 
     def _on_primary_shapes_layer_registered(self, binding: object) -> None:
-        if self._is_opening_annotation_layer:
+        if self._is_handling_widget_owned_registration:
             return
-        if self._is_handling_annotation_layer_removal:
+        if self._is_handling_widget_owned_layer_transition:
             # `_discard_annotation_layer(...)` may call
             # `ensure_shapes_loaded(...)` to reload a clean copy of the old
             # saved layer. That internal reload registers the layer before the
@@ -1052,8 +1203,10 @@ class ShapesAnnotation(QWidget):
             return
 
         # This hook lets Annotation react when the user creates or imports a
-        # Shapes layer through napari itself. Harpy-managed insertions are
-        # filtered out by the deferred binding check below.
+        # Shapes layer through napari itself (a native Shapes layer).
+        # Harpy-managed insertions are filtered out by the deferred
+        # `layer_bindings.get_binding(layer)` check in
+        # `_maybe_adopt_native_shapes_layer(...)`.
         # Harpy-managed shapes paths in `ViewerAdapter` call
         # `_add_layer_to_viewer(self._viewer, layer)` before
         # `self.register_shapes_layer(...)`. `_add_layer_to_viewer(...)` emits
@@ -1116,15 +1269,31 @@ class ShapesAnnotation(QWidget):
         if not callable(remove_layer):
             return
 
-        previous_removal_guard = self._is_handling_annotation_layer_removal
         # Removing the pending import is widget-owned cleanup after the user
         # cancels adoption, so suppress layer-removal/active-layer callbacks
         # that should not reset or switch the still-dirty annotation session.
-        self._is_handling_annotation_layer_removal = True
-        try:
+        with self._suppress_widget_owned_layer_transition_callbacks():
             remove_layer(layer)
+
+    @contextmanager
+    def _suppress_widget_owned_layer_transition_callbacks(self) -> Iterator[None]:
+        """Ignore layer callbacks caused by widget-owned layer transitions."""
+        previous_layer_transition_guard = self._is_handling_widget_owned_layer_transition
+        self._is_handling_widget_owned_layer_transition = True
+        try:
+            yield
         finally:
-            self._is_handling_annotation_layer_removal = previous_removal_guard
+            self._is_handling_widget_owned_layer_transition = previous_layer_transition_guard
+
+    @contextmanager
+    def _suppress_widget_owned_registration_callbacks(self) -> Iterator[None]:
+        """Ignore registration callbacks emitted by widget-owned operations."""
+        previous_registration_guard = self._is_handling_widget_owned_registration
+        self._is_handling_widget_owned_registration = True
+        try:
+            yield
+        finally:
+            self._is_handling_widget_owned_registration = previous_registration_guard
 
     def _viewer_contains_layer(self, layer: object) -> bool:
         layers = getattr(self._viewer, "layers", None)
@@ -1165,9 +1334,13 @@ class ShapesAnnotation(QWidget):
         # Normalize native napari layers into Annotation's visual contract before
         # registering the layer and capturing the clean annotation baseline.
         self._app_state.viewer_adapter.apply_primary_shapes_layer_style(layer)
+        with self._suppress_widget_owned_layer_transition_callbacks():
+            layer = self._app_state.viewer_adapter.normalize_native_shapes_layer_for_annotation(
+                layer,
+                source_shapes_index_feature_name=DEFAULT_SHAPES_INDEX_NAME,
+            )
 
-        self._is_opening_annotation_layer = True
-        try:
+        with self._suppress_widget_owned_registration_callbacks():
             self._app_state.viewer_adapter.register_shapes_layer(
                 layer,
                 sdata=sdata,
@@ -1176,11 +1349,13 @@ class ShapesAnnotation(QWidget):
                 shapes_rendering_mode="shapes",
                 source_shapes_index_feature_name=DEFAULT_SHAPES_INDEX_NAME,
             )
-        finally:
-            self._is_opening_annotation_layer = False
 
         self._annotation_layer = layer
         self._annotation_edit_guard.attach(layer)
+        self._annotation_identity_feature_default_guard.attach(
+            layer,
+            feature_name=DEFAULT_SHAPES_INDEX_NAME,
+        )
         self._annotation_session = _ShapesAnnotationSession(
             mode="create_new",
             layer_origin="created_by_annotation",
@@ -1236,6 +1411,10 @@ class ShapesAnnotation(QWidget):
 
         self._annotation_layer = layer
         self._annotation_edit_guard.attach(layer)
+        self._annotation_identity_feature_default_guard.attach(
+            layer,
+            feature_name=DEFAULT_SHAPES_INDEX_NAME,
+        )
         self._annotation_session = _ShapesAnnotationSession(
             mode="create_new",
             layer_origin="created_by_annotation",
@@ -1271,15 +1450,12 @@ class ShapesAnnotation(QWidget):
             # signal by calling `_open_existing_annotation_layer(...)` for
             # matching selected targets, so suppress the emitted event while
             # this method is already setting up the session.
-            self._is_opening_annotation_layer = True
-            try:
+            with self._suppress_widget_owned_registration_callbacks():
                 load_result = self._app_state.viewer_adapter.ensure_shapes_loaded(
                     sdata,
                     shapes_name,
                     coordinate_system,
                 )
-            finally:
-                self._is_opening_annotation_layer = False
             layer = load_result.layer
             binding = self._validate_opened_existing_shapes_layer(
                 layer,
@@ -1298,6 +1474,10 @@ class ShapesAnnotation(QWidget):
         table_linked = bool(get_annotating_table_names(sdata, shapes_name))
         self._annotation_layer = layer
         self._annotation_edit_guard.attach(layer)
+        self._annotation_identity_feature_default_guard.attach(
+            layer,
+            feature_name=binding.source_shapes_index_feature_name,
+        )
         self._annotation_session = _ShapesAnnotationSession(
             mode="edit_existing",
             layer_origin="loaded_by_annotation" if load_result.created else "adopted_primary",
@@ -1495,6 +1675,10 @@ class ShapesAnnotation(QWidget):
             source_geodataframe=saved_geodataframe.copy(deep=True),
             table_linked=bool(get_annotating_table_names(sdata, result.shapes_name)),
         )
+        self._annotation_identity_feature_default_guard.attach(
+            layer,
+            feature_name=source_shapes_index_feature_name,
+        )
         self._annotation_has_been_saved = True
         self._annotation_clean_snapshot = _capture_annotation_layer_snapshot(layer)
 
@@ -1507,7 +1691,7 @@ class ShapesAnnotation(QWidget):
         # layer programmatically through `_discard_annotation_layer(...)` or
         # `_close_clean_annotation_session(...)`; those paths own cleanup, so
         # ignore the layer-removal event they emit.
-        if self._is_handling_annotation_layer_removal:
+        if self._is_handling_widget_owned_layer_transition:
             return
 
         layer = getattr(event, "value", None)
@@ -1877,8 +2061,7 @@ class ShapesAnnotation(QWidget):
             self._annotation_session.reload_on_discard if self._annotation_session is not None else False
         )
 
-        self._is_handling_annotation_layer_removal = True
-        try:
+        with self._suppress_widget_owned_layer_transition_callbacks():
             self._remove_annotation_layer()
             if reload_on_discard and sdata is not None and shapes_name is not None and coordinate_system is not None:
                 try:
@@ -1886,20 +2069,15 @@ class ShapesAnnotation(QWidget):
                 except ValueError as error:
                     self._apply_status_card_spec(build_annotation_reload_shapes_error_card_spec(str(error)))
             self._clear_annotation_state()
-        finally:
-            self._is_handling_annotation_layer_removal = False
 
     def _close_clean_annotation_session(self) -> None:
         """Release a clean annotation session without dirty discard/reload work."""
         should_remove_layer = self._annotation_layer is not None and not self._annotation_has_been_saved
 
-        self._is_handling_annotation_layer_removal = True
-        try:
+        with self._suppress_widget_owned_layer_transition_callbacks():
             if should_remove_layer:
                 self._remove_annotation_layer()
             self._clear_annotation_state()
-        finally:
-            self._is_handling_annotation_layer_removal = False
 
     def _annotation_layer_has_unsaved_changes(self) -> bool:
         layer = self._annotation_layer
@@ -1915,6 +2093,7 @@ class ShapesAnnotation(QWidget):
 
     def _clear_annotation_state(self) -> None:
         self._annotation_edit_guard.disconnect()
+        self._annotation_identity_feature_default_guard.disconnect()
         self._annotation_session = None
         self._annotation_layer = None
         self._annotation_has_been_saved = False

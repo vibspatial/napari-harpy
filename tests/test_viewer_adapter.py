@@ -36,6 +36,8 @@ from napari_harpy.viewer.points_styling import POINTS_SELECTION_SOLID_COLOR
 from napari_harpy.viewer.shapes_styling import (
     _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR,
     _SHAPES_EDGE_WIDTH_SYNC_CALLBACK_ATTR,
+    _SHAPES_FACE_COLOR_SYNC_CALLBACK_ATTR,
+    PRIMARY_SHAPES_FACE_COLOR,
     SHAPES_FACE_ALPHA,
 )
 
@@ -830,10 +832,11 @@ def test_viewer_adapter_create_empty_primary_shapes_layer_registers_and_styles_l
     assert layer.ndim == 2
     assert layer.current_edge_width == 1
     np.testing.assert_allclose(to_rgba(layer.current_edge_color), to_rgba("#00FFFF"))
-    np.testing.assert_allclose(to_rgba(layer.current_face_color), to_rgba("#00000000"))
+    np.testing.assert_allclose(to_rgba(layer.current_face_color), to_rgba(PRIMARY_SHAPES_FACE_COLOR))
     assert layer.opacity == 0.8
     assert hasattr(layer, _SHAPES_EDGE_WIDTH_SYNC_CALLBACK_ATTR)
     assert hasattr(layer, _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR)
+    assert hasattr(layer, _SHAPES_FACE_COLOR_SYNC_CALLBACK_ATTR)
 
     binding = adapter.layer_bindings.get_binding(layer)
     assert isinstance(binding, ShapesLayerBinding)
@@ -1954,7 +1957,9 @@ def test_viewer_adapter_ensure_shapes_loaded_expands_multipolygons_with_source_m
 
     expected_indices: list[object] = []
     expected_source_row_ids: list[int] = []
-    for source_row_id, (source_index, geometry) in enumerate(sdata_blobs.shapes["blobs_multipolygons"].geometry.items()):
+    for source_row_id, (source_index, geometry) in enumerate(
+        sdata_blobs.shapes["blobs_multipolygons"].geometry.items()
+    ):
         expected_indices.extend([source_index] * len(geometry.geoms))
         expected_source_row_ids.extend([source_row_id] * len(geometry.geoms))
 
@@ -2238,6 +2243,39 @@ def test_viewer_adapter_ensure_shapes_loaded_uses_named_geodataframe_index_in_fe
     assert "cell_id: cell_1" in layer.get_status(position=(1, 1))["value"]
 
 
+def test_viewer_adapter_normalizes_native_shapes_layer_to_harpy_status_layer() -> None:
+    native_layer = Shapes(
+        [
+            np.asarray(
+                [
+                    [0.0, 0.0],
+                    [0.0, 4.0],
+                    [4.0, 4.0],
+                    [4.0, 0.0],
+                ],
+                dtype=float,
+            )
+        ],
+        shape_type="polygon",
+        features=pd.DataFrame({"instance_id": ["cell_1"]}),
+        name="native_shapes",
+    )
+    viewer = DummyViewer([native_layer])
+    adapter = ViewerAdapter(viewer)
+
+    replacement = adapter.normalize_native_shapes_layer_for_annotation(
+        native_layer,
+        source_shapes_index_feature_name="instance_id",
+    )
+
+    assert replacement is not native_layer
+    assert native_layer not in viewer.layers
+    assert viewer.layers == [replacement]
+    assert list(replacement.features.columns) == ["instance_id"]
+    assert replacement.features["instance_id"].to_list() == ["cell_1"]
+    assert "instance_id: cell_1" in replacement.get_status(position=(1, 1))["value"]
+
+
 def test_viewer_adapter_ensure_shapes_loaded_uses_internal_row_ids_with_duplicate_geodataframe_index() -> None:
     polygon = Polygon([(0, 0), (4, 0), (4, 4), (0, 4), (0, 0)])
     geodataframe = gpd.GeoDataFrame(
@@ -2313,6 +2351,17 @@ def test_viewer_adapter_primary_shapes_layer_applies_edge_color_control_to_all_s
 
     expected_color = np.asarray([to_rgba("red")] * len(result.layer.data))
     np.testing.assert_allclose(result.layer.edge_color, expected_color)
+
+
+def test_viewer_adapter_primary_shapes_layer_applies_face_color_control_to_all_shapes(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    result = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
+    result.layer.current_face_color = "#ff000080"
+
+    expected_color = np.asarray([to_rgba("#ff000080")] * len(result.layer.data))
+    np.testing.assert_allclose(result.layer.face_color, expected_color)
 
 
 def test_viewer_adapter_ensure_styled_shapes_loaded_creates_registered_variant_with_stored_palette() -> None:

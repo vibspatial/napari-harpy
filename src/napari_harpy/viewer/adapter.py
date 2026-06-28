@@ -817,6 +817,28 @@ class ViewerAdapter(QObject):
         """Apply Harpy's editable primary shapes presentation to one layer."""
         _apply_primary_shapes_layer_style(layer)
 
+    def normalize_native_shapes_layer_for_annotation(
+        self,
+        layer: Shapes,
+        *,
+        source_shapes_index_feature_name: str,
+    ) -> Shapes:
+        """Replace a native napari Shapes layer with Harpy's status-aware layer."""
+        if isinstance(layer, _HarpyShapes):
+            layer._source_shapes_index_feature_name = source_shapes_index_feature_name
+            return layer
+
+        if not self._is_layer_loaded_in_viewer(layer):
+            raise ValueError("Cannot normalize a Shapes layer that is not loaded in the viewer.")
+
+        replacement = _build_harpy_shapes_layer_from_native_layer(
+            layer,
+            source_shapes_index_feature_name=source_shapes_index_feature_name,
+        )
+        _remove_layer_from_viewer(self._viewer, layer)
+        _add_layer_to_viewer(self._viewer, replacement)
+        return replacement
+
     def sync_primary_shapes_layer_binding(
         self,
         layer: Shapes,
@@ -1400,7 +1422,7 @@ class ViewerAdapter(QObject):
             shapes_name,
             coordinate_system,
             name=shapes_name,
-            sync_edge_color=True,
+            sync_current_colors=True,
         )
         layer = built_layer.layer
         _add_layer_to_viewer(self._viewer, layer)
@@ -1491,7 +1513,7 @@ class ViewerAdapter(QObject):
                 shapes_name,
                 coordinate_system,
                 name=build_styled_shapes_layer_name(shapes_name, style_spec),
-                sync_edge_color=False,
+                sync_current_colors=False,
             )
             layer = built_layer.layer
             _add_layer_to_viewer(self._viewer, layer)
@@ -1976,7 +1998,7 @@ def _build_shapes_layer(
     coordinate_system: str,
     *,
     name: str,
-    sync_edge_color: bool = True,
+    sync_current_colors: bool = True,
 ) -> _BuiltShapesLayer:
     shapes = getattr(sdata, "shapes", {})
     if shapes_name not in shapes:
@@ -2011,9 +2033,9 @@ def _build_shapes_layer(
         )
         connect_current_size_to_radius_scaled_point_size(layer, point_radius_inputs.sizes)
         connect_current_symbol_to_global_point_symbol(layer)
-        # Styled variants pass `sync_edge_color=False`; keep color callbacks
+        # Styled variants pass `sync_current_colors=False`; keep color callbacks
         # primary-only so styled palettes stay data-driven.
-        if sync_edge_color:
+        if sync_current_colors:
             connect_current_face_color_to_global_point_face_color(layer)
         return _BuiltShapesLayer(
             layer=layer,
@@ -2036,10 +2058,10 @@ def _build_shapes_layer(
         features=napari_layer_inputs.features,
         source_shapes_index_feature_name=napari_layer_inputs.source_shapes_index_feature_name,
     )
-    # Primary shapes own their edge color as presentation, while styled shapes
-    # use edge color as a data-driven palette that should not be flattened by
-    # napari's current edge-color control.
-    _apply_primary_shapes_layer_style(layer, sync_edge_color=sync_edge_color)
+    # Primary shapes own their current colors as presentation, while styled
+    # shapes use data-driven palettes that should not be flattened by napari's
+    # current color controls.
+    _apply_primary_shapes_layer_style(layer, sync_current_colors=sync_current_colors)
     return _BuiltShapesLayer(
         layer=layer,
         shapes_rendering_mode="shapes",
@@ -2062,6 +2084,40 @@ def _build_empty_primary_shapes_layer(
     )
     _apply_primary_shapes_layer_style(layer)
     return layer
+
+
+def _build_harpy_shapes_layer_from_native_layer(
+    layer: Shapes,
+    *,
+    source_shapes_index_feature_name: str,
+) -> _HarpyShapes:
+    data = [np.asarray(vertices, dtype=float).copy() for vertices in layer.data]
+    shape_type = [str(shape_type) for shape_type in layer.shape_type]
+    features = layer.features.copy(deep=True)
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    selected_data = {int(index) for index in getattr(layer, "selected_data", set()) if int(index) < len(data)}
+    mode = getattr(layer, "mode", None)
+
+    kwargs: dict[str, Any] = {
+        "name": layer.name,
+        "features": features,
+        "metadata": metadata,
+        "ndim": layer.ndim,
+        "source_shapes_index_feature_name": source_shapes_index_feature_name,
+    }
+    if data:
+        kwargs["shape_type"] = shape_type
+
+    replacement = _HarpyShapes(data, **kwargs)
+    _apply_primary_shapes_layer_style(replacement)
+    replacement.opacity = layer.opacity
+    replacement.blending = layer.blending
+    replacement.visible = layer.visible
+    replacement.affine = np.asarray(layer.affine.affine_matrix, dtype=float).copy()
+    replacement.selected_data = selected_data
+    if mode is not None:
+        replacement.mode = mode
+    return replacement
 
 
 def _prepare_napari_shapes_layer_inputs(shapes_element: Any) -> _NapariShapesLayerInputs:
