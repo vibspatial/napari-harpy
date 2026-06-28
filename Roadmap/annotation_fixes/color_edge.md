@@ -57,7 +57,7 @@ PRIMARY_SHAPES_FACE_COLOR = "#00FFFF14"
      into primary styling yet, so user-facing behavior is unchanged until
      slice 2.
 
-2. Wire the face-color callback into primary styling.
+2. [x] Wire the face-color callback into primary styling.
 
    - Update `apply_primary_shapes_layer_style(...)` so it installs the new
      face-color sync callback for primary shapes.
@@ -75,6 +75,8 @@ PRIMARY_SHAPES_FACE_COLOR = "#00FFFF14"
      - direct calls to `apply_primary_shapes_layer_style(...)` can rely on the
        default true value unless they intentionally need styled/data-driven
        behavior.
+   - Implemented in `src/napari_harpy/viewer/shapes_styling.py` and
+     `src/napari_harpy/viewer/adapter.py`.
 
 3. Update the default face color constant.
 

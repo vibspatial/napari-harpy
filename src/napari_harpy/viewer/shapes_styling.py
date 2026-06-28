@@ -109,7 +109,7 @@ class _ShapeTableRowAlignment:
     rendered_row_has_table_row: np.ndarray
 
 
-def apply_primary_shapes_layer_style(layer: Shapes, *, sync_edge_color: bool = True) -> None:
+def apply_primary_shapes_layer_style(layer: Shapes, *, sync_current_colors: bool = True) -> None:
     """Apply Harpy's primary polygon-shapes style to an existing napari layer."""
     layer.current_edge_color = PRIMARY_SHAPES_EDGE_COLOR
     layer.current_face_color = PRIMARY_SHAPES_FACE_COLOR
@@ -119,8 +119,9 @@ def apply_primary_shapes_layer_style(layer: Shapes, *, sync_edge_color: bool = T
     layer.edge_width = PRIMARY_SHAPES_EDGE_WIDTH
     layer.opacity = PRIMARY_SHAPES_OPACITY
     _connect_current_edge_width_to_global_edge_width(layer)
-    if sync_edge_color:
+    if sync_current_colors:
         _connect_current_edge_color_to_global_edge_color(layer)
+        _connect_current_face_color_to_global_face_color(layer)
 
 
 def apply_shape_column_color_source_to_shapes_layer(

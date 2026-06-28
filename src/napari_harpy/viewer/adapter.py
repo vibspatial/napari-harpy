@@ -1422,7 +1422,7 @@ class ViewerAdapter(QObject):
             shapes_name,
             coordinate_system,
             name=shapes_name,
-            sync_edge_color=True,
+            sync_current_colors=True,
         )
         layer = built_layer.layer
         _add_layer_to_viewer(self._viewer, layer)
@@ -1513,7 +1513,7 @@ class ViewerAdapter(QObject):
                 shapes_name,
                 coordinate_system,
                 name=build_styled_shapes_layer_name(shapes_name, style_spec),
-                sync_edge_color=False,
+                sync_current_colors=False,
             )
             layer = built_layer.layer
             _add_layer_to_viewer(self._viewer, layer)
@@ -1998,7 +1998,7 @@ def _build_shapes_layer(
     coordinate_system: str,
     *,
     name: str,
-    sync_edge_color: bool = True,
+    sync_current_colors: bool = True,
 ) -> _BuiltShapesLayer:
     shapes = getattr(sdata, "shapes", {})
     if shapes_name not in shapes:
@@ -2033,9 +2033,9 @@ def _build_shapes_layer(
         )
         connect_current_size_to_radius_scaled_point_size(layer, point_radius_inputs.sizes)
         connect_current_symbol_to_global_point_symbol(layer)
-        # Styled variants pass `sync_edge_color=False`; keep color callbacks
+        # Styled variants pass `sync_current_colors=False`; keep color callbacks
         # primary-only so styled palettes stay data-driven.
-        if sync_edge_color:
+        if sync_current_colors:
             connect_current_face_color_to_global_point_face_color(layer)
         return _BuiltShapesLayer(
             layer=layer,
@@ -2058,10 +2058,10 @@ def _build_shapes_layer(
         features=napari_layer_inputs.features,
         source_shapes_index_feature_name=napari_layer_inputs.source_shapes_index_feature_name,
     )
-    # Primary shapes own their edge color as presentation, while styled shapes
-    # use edge color as a data-driven palette that should not be flattened by
-    # napari's current edge-color control.
-    _apply_primary_shapes_layer_style(layer, sync_edge_color=sync_edge_color)
+    # Primary shapes own their current colors as presentation, while styled
+    # shapes use data-driven palettes that should not be flattened by napari's
+    # current color controls.
+    _apply_primary_shapes_layer_style(layer, sync_current_colors=sync_current_colors)
     return _BuiltShapesLayer(
         layer=layer,
         shapes_rendering_mode="shapes",
