@@ -2,17 +2,18 @@
 
 ## Goal
 
-Add a dedicated napari-harpy widget for quickly visualizing image intensity
-histograms and controlling the selected image layer's contrast limits from the
-same place.
+Add a dedicated napari-harpy widget for visualizing image intensity histograms
+and controlling the matching napari image layer's contrast limits from the same
+place.
 
 The intended workflow is:
 
-1. select an image layer or image element
-2. choose the channel and histogram settings
-3. compute the histogram with Dask
-4. inspect the intensity distribution
-5. update napari contrast limits directly from the histogram widget
+1. add one or more explicit histogram targets
+2. for each target choose a coordinate system, image element, and channel
+3. choose histogram settings and optional percentile guide values
+4. compute the histogram with Dask through an explicit Calculate action
+5. inspect the intensity distribution and percentile markers
+6. update matching napari contrast limits directly from the histogram widget
 
 This should be a visualization and quality-control tool. It should not mutate
 the underlying `SpatialData` image data.
@@ -131,7 +132,7 @@ Those are good candidates for the contrast-limit UI.
 
 ## Layer And Selection Strategy
 
-There are two viable selection models.
+There are three viable selection models.
 
 ### Option A: Follow The Active Image Layer
 
@@ -153,6 +154,10 @@ The widget should also listen to `ViewerAdapter.active_layer_changed`, but that
 signal only fires when Harpy activates layers through the adapter. It does not
 cover every manual layer selection by itself.
 
+Trade-off: active-layer following is convenient but too implicit for a product
+workflow that needs coordinate-system awareness, multiple simultaneous
+histograms, and repeatable target selection.
+
 ### Option B: Explicit Image And Channel Selectors
 
 The widget provides its own image and channel selectors based on the shared
@@ -163,17 +168,40 @@ contrast-limit control requires a live napari `Image` layer. If the selected
 image is not loaded, the widget can compute a histogram from `SpatialData`, but
 it cannot update a layer until one exists.
 
-### Recommended First Version
+### Option C: Explicit Histogram Target Cards
 
-Use a hybrid:
+The widget owns a list of histogram target cards. Each card represents one
+explicit target:
 
-- default to the active Harpy-managed image layer when one is selected
-- expose a compact selector listing currently loaded Harpy-managed image layers
-- show a clear disabled state when there is no compatible loaded image layer
-- optionally add SpatialData element selection later
+```text
+coordinate_system, image_name, channel_name
+```
 
-This keeps the first version focused on loaded images and makes contrast-limit
-control unambiguous.
+The target card pattern matches the batch-aware feature extraction widget, where
+the UI stages explicit triplets before calculation. It also supports multiple
+histograms naturally because each card owns one plot, one Calculate action, and
+one contrast-limit sync state.
+
+For images without a channel axis, the internal target can store
+`channel_name=None` while the UI shows a scalar-image channel placeholder.
+Multi-channel images should require an explicit channel selection.
+
+### Recommended Product Choice
+
+Use explicit histogram target cards as the source of truth.
+
+The active napari layer may be used only as a convenience for pre-filling a new
+card or focusing an existing card. It should not silently change the target of
+an existing histogram card.
+
+This makes the coordinate system explicit, supports as many plotted histograms
+as the user adds, and keeps contrast-limit synchronization unambiguous:
+
+- histogram calculation reads from `SpatialData`;
+- contrast-limit sync resolves the matching live napari `Image` layer through
+  `ViewerAdapter.layer_bindings`;
+- if no matching live layer exists, the histogram remains valid but the
+  contrast controls are disabled with a clear status message.
 
 ## Stack And Overlay Images
 
@@ -215,15 +243,16 @@ multiscale images:
 - `scale=None` computes from `scale0`
 - passing a lower-resolution scale gives a faster approximate histogram
 
-For an interactive widget, the recommended default is:
+For a product widget, the recommended behavior is:
 
-- compute a preview histogram from the coarsest or user-selected lower
-  resolution scale
-- allow full-resolution `scale0` recomputation as an explicit action
+- compute `scale0` by default so the result is exact unless the user chooses a
+  different scale
+- expose lower-resolution scales as explicit faster options for multiscale
+  images
 - show which scale was used for the current histogram
 
-This avoids surprising UI freezes on large images while preserving access to an
-accurate full-resolution histogram.
+This avoids silently presenting approximate histograms as exact results while
+still giving users a clear speed/accuracy choice for very large images.
 
 ## Async Computation
 
@@ -264,29 +293,30 @@ Cons:
 
 Pros:
 
-- available in the current environment
 - better suited to interactive plots and draggable markers
 - likely smoother for live contrast-limit manipulation
 
 Cons:
 
+- not installed in the current project environment
 - should be treated as an explicit dependency decision if napari-harpy wants to
   rely on it directly
 
-### Recommended First Version
+### Recommended Product Choice
 
-Use Matplotlib for the first version unless a highly interactive histogram is a
-hard requirement.
+Use Matplotlib for the histogram widget unless direct manipulation of plot
+markers becomes a hard product requirement.
 
-The lower-risk first implementation is:
+The recommended implementation is:
 
 - render histogram bars with Matplotlib
 - draw two vertical contrast-limit lines
-- use a `QLabeledDoubleRangeSlider` and numeric values for interaction
+- draw optional percentile guide lines
+- use a `QLabeledDoubleRangeSlider` and numeric fields for interaction
 - redraw lines when the slider or layer changes
 
-Pyqtgraph can be revisited if dragging the markers directly on the plot becomes
-important.
+Pyqtgraph can be revisited as a deliberate dependency if draggable plot markers
+become important.
 
 ## Proposed Widget Structure
 
@@ -315,13 +345,15 @@ Image Histogram
 
 The controller should own:
 
-- current selected layer identity
-- current channel selection
+- current histogram card identities
+- current target triplets
+- current per-card channel selection
 - bins
 - density setting
 - exclude-zero setting
 - exclude-NaN setting
 - selected multiscale level
+- percentile settings
 - worker lifecycle and stale-result handling
 
 The widget should own:
@@ -332,26 +364,27 @@ The widget should own:
 - contrast-limit slider
 - event connections to napari layer changes
 
-## Suggested MVP
+## Core Product Scope
 
-MVP behavior:
+Core behavior:
 
 - add a separate `Image Histogram` widget
-- list compatible loaded Harpy-managed image layers
-- optionally follow the active napari image layer
-- compute one histogram for the selected layer or channel
+- allow users to add and remove histogram target cards
+- for each card, explicitly select coordinate system, image, and channel
+- compute one histogram per card through its Calculate button
 - support `bins`
 - support excluding zeros
 - support excluding NaNs
 - compute range automatically from the filtered Dask array
-- draw the histogram
+- draw the histogram inside the card
+- draw optional percentile guide lines when percentile settings are provided
 - show current contrast limits
 - update `layer.contrast_limits` from a two-handle slider
 - listen to `layer.events.contrast_limits` and update the widget when napari
   changes the limits elsewhere
 - avoid blocking the UI during histogram computation
 
-Recommended MVP defaults:
+Recommended defaults:
 
 - `bins = 256`
 - `density = False`
@@ -359,19 +392,21 @@ Recommended MVP defaults:
 - `exclude_zeros = False` by default for general image display
 - log y-axis optional, off by default
 - use current layer contrast limits as guide lines, not as the histogram range
+- percentile guide lines are visual annotations by default; applying
+  percentile values to contrast limits should be an explicit user action, not a
+  side effect of typing percentile settings
 
-## Later Enhancements
+## Planned Follow-Up Decisions
 
-Potential follow-ups:
+Potential follow-up decisions:
 
 - direct dragging of contrast-limit markers on the histogram
-- percentile guide lines, for example p0.1 and p99.9
-- one-click contrast presets from percentiles
+- explicit "apply percentiles to contrast limits" action
+- optional contrast presets from percentiles
 - log-scaled y-axis
 - cumulative distribution view
 - histogram caching per image, channel, scale, and settings
 - background recomputation debounce
-- support for unloaded `SpatialData` image elements
 - optional full-resolution recompute for multiscale images
 - overlay multiple channels in one histogram plot
 - export histogram values as CSV
@@ -381,8 +416,9 @@ Potential follow-ups:
 ### Large Images
 
 Full-resolution histogram computation can still be expensive even with Dask.
-The widget should default to a responsive scale for multiscale data and keep
-work off the main thread.
+The widget should keep work off the main thread, expose explicit lower-resolution
+scale options for multiscale data, and show clear running/cancelled/error
+states for long calculations.
 
 ### Unknown Dask Chunk Sizes
 
@@ -397,7 +433,7 @@ limit contrast controls.
 
 ### External Image Layers
 
-The safest first version should target Harpy-managed image layers with
+The core implementation should target Harpy-managed image layers with
 `ImageLayerBinding`. External napari image layers can be considered later.
 
 ### Layer Removal
@@ -439,7 +475,8 @@ Widget tests should use the existing dummy viewer patterns from:
 
 The feature is technically well aligned with napari-harpy.
 
-The best first implementation is a dedicated `Image Histogram` widget that works
-with loaded Harpy-managed image layers, computes histogram data with Dask in a
-background worker, and controls napari `Image.contrast_limits` through a
-two-handle range slider synchronized with napari layer events.
+The best implementation is a dedicated `Image Histogram` widget built around
+explicit `coordinate_system, image_name, channel_name` target cards. Histogram
+data should be computed from `SpatialData` with Dask in background workers, and
+contrast-limit controls should synchronize with matching Harpy-managed napari
+`Image` layers through `ImageLayerBinding`.
