@@ -691,9 +691,24 @@ Goal:
 Scope:
 
 - add `widgets/histogram/controller.py`;
-- define immutable `HistogramJob` with `card_id`, `job_id`, target, settings,
-  and `sdata`;
+- define immutable `HistogramJob` exactly as:
+
+  ```python
+  @dataclass(frozen=True)
+  class HistogramJob:
+      card_id: str
+      job_id: str
+      sdata: SpatialData
+      target: HistogramTarget
+      settings: HistogramSettings
+  ```
+
 - use the same `thread_worker` resolution pattern as feature extraction;
+- introduce an explicit card request-resolution step that turns staged card UI
+  state into either `HistogramCalculationRequest` or a validation error;
+- stop building `HistogramCalculationRequest` directly inside
+  `_update_card_state(...)`; status rendering should consume resolved card
+  state instead of performing request construction itself;
 - track the latest requested job per card;
 - ignore stale results when target/settings change during calculation;
 - support one active worker per card;
@@ -703,6 +718,9 @@ Scope:
 Tests:
 
 - Calculate starts a worker for a valid card;
+- card status updates do not construct jobs and do not start workers;
+- invalid card UI resolves to a validation error that disables Calculate and
+  renders card feedback;
 - worker jobs receive the settings from the card that launched them;
 - stale worker results are ignored;
 - worker errors surface as card errors;
