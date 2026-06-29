@@ -36,7 +36,11 @@ from napari_harpy.core.spatialdata import (
 from napari_harpy.widgets.histogram.controller import HistogramController
 from napari_harpy.widgets.histogram.status_card import (
     _HistogramStatusCardSpec,
-    build_histogram_controller_status_card_spec,
+    build_histogram_calculated_card_spec,
+    build_histogram_error_card_spec,
+    build_histogram_incomplete_card_spec,
+    build_histogram_ready_card_spec,
+    build_histogram_running_card_spec,
 )
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
@@ -779,7 +783,7 @@ class HistogramWidget(QWidget):
 
     def _update_card_state(self, card_id: str) -> None:
         self._bind_card_state(card_id)
-        self._render_card_state(card_id)
+        self._update_card_status(card_id)
 
     def _bind_card_state(self, card_id: str) -> None:
         histogram_card = self._get_card(card_id)
@@ -792,25 +796,29 @@ class HistogramWidget(QWidget):
             validation_error=binding.validation_error,
         )
 
-    def _render_card_state(self, card_id: str) -> None:
+    def _update_card_status(self, card_id: str) -> None:
         try:
             histogram_card = self._get_card(card_id)
         except ValueError:
             return
 
         histogram_card.calculate_button.setEnabled(self._histogram_controller.can_calculate(card_id))
-        spec = self._controller_status_card_spec(card_id)
+        message = self._histogram_controller.status_message(card_id)
+        kind = self._histogram_controller.status_kind(card_id)
+        if self._histogram_controller.is_running(card_id):
+            spec = build_histogram_running_card_spec(message)
+        elif kind == "warning":
+            spec = build_histogram_incomplete_card_spec(message)
+        elif kind == "error":
+            spec = build_histogram_error_card_spec(message)
+        elif kind == "success":
+            spec = build_histogram_calculated_card_spec(message)
+        else:
+            spec = build_histogram_ready_card_spec(message)
         self._apply_status_card_spec(histogram_card.status_label, spec)
 
-    def _controller_status_card_spec(self, card_id: str) -> _HistogramStatusCardSpec:
-        return build_histogram_controller_status_card_spec(
-            message=self._histogram_controller.status_message(card_id),
-            kind=self._histogram_controller.status_kind(card_id),
-            is_running=self._histogram_controller.is_running(card_id),
-        )
-
     def _on_controller_state_changed(self, card_id: str) -> None:
-        self._render_card_state(card_id)
+        self._update_card_status(card_id)
 
     def _resolve_card_binding(self, histogram_card: _HistogramCard) -> _HistogramCardBindingState:
         if self.selected_spatialdata is None:
@@ -847,7 +855,7 @@ class HistogramWidget(QWidget):
     def _calculate_histogram(self, card_id: str) -> None:
         self._bind_card_state(card_id)
         self._histogram_controller.calculate(card_id)
-        self._render_card_state(card_id)
+        self._update_card_status(card_id)
 
     def _build_settings(self, histogram_card: _HistogramCard) -> HistogramSettings:
         value_range = self._parse_optional_pair(

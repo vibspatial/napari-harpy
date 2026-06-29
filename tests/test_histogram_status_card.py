@@ -5,7 +5,6 @@ import pytest
 from napari_harpy.widgets.histogram.status_card import (
     _HistogramStatusCardSpec,
     build_histogram_calculated_card_spec,
-    build_histogram_controller_status_card_spec,
     build_histogram_error_card_spec,
     build_histogram_incomplete_card_spec,
     build_histogram_ready_card_spec,
@@ -63,18 +62,6 @@ def test_build_histogram_error_card_spec() -> None:
     assert spec.title == "Histogram Error"
     assert spec.lines == ("Histogram calculation failed: boom",)
     assert spec.kind == "error"
-
-
-def test_build_histogram_controller_status_card_spec_prefers_running_state() -> None:
-    spec = build_histogram_controller_status_card_spec(
-        message="Calculating histogram.",
-        kind="success",
-        is_running=True,
-    )
-
-    assert spec.title == "Histogram Running"
-    assert spec.lines == ("Calculating histogram.",)
-    assert spec.kind == "info"
 
 
 def test_build_histogram_ready_card_spec_after_current_request_was_emitted() -> None:
