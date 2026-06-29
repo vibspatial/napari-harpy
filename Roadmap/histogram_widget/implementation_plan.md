@@ -692,10 +692,11 @@ Scope:
 
 - add `widgets/histogram/controller.py`;
 - keep the responsibility split explicit:
-  - the widget resolves staged card UI into either a valid request payload or a
-    validation error;
-  - the controller receives only valid requests and owns job creation, worker
-    lifecycle, stale-result handling, and job status;
+  - the widget resolves staged card UI into structured card state
+    (`HistogramTarget`, `HistogramSettings`) or a validation error;
+  - the controller receives structured card state, creates the final calculation
+    request, and owns job creation, worker lifecycle, stale-result handling, and
+    job status;
 - define immutable `HistogramJob` exactly as:
 
   ```python
@@ -720,15 +721,17 @@ Scope:
       result: HistogramResult
   ```
 
-- replace or extend the Slice 2 `HistogramCalculationRequest` scaffold with a
-  resolved widget-side request that includes the selected `SpatialData` object,
-  for example:
+- keep the Slice 2 `HistogramCalculationRequest` name for the validated
+  controller-side calculation payload; do not introduce a separate
+  `HistogramResolvedRequest` dataclass for this slice. This mirrors
+  `FeatureExtractionRequest`, where the controller creates the final request when
+  preparing the worker job;
+- keep `HistogramCalculationRequest` focused on card-local calculation inputs:
 
   ```python
   @dataclass(frozen=True)
-  class HistogramResolvedRequest:
+  class HistogramCalculationRequest:
       card_id: str
-      sdata: SpatialData
       target: HistogramTarget
       settings: HistogramSettings
   ```
@@ -736,26 +739,48 @@ Scope:
 - use the same `thread_worker` resolution pattern as feature extraction;
 - replace the Slice 2 widget-level `calculation_requested` scaffold with a
   controller-owned calculation path: clicking a card's Calculate button should
-  resolve the card state and call the histogram controller, rather than emitting
-  a public request signal as the long-term calculation mechanism;
-- introduce an explicit card request-resolution step, e.g.
-  `_resolve_card_request(card_id)`, that parses the current card controls and
-  returns either `HistogramResolvedRequest` or a validation error;
-- request resolution is allowed to construct `HistogramTarget` and
+  bind the resolved card state and call the histogram controller, rather than
+  emitting a public request signal as the long-term calculation mechanism;
+- introduce an explicit card state-resolution step, e.g.
+  `_resolve_card_binding(card_id)`, that parses the current card controls and
+  returns `HistogramTarget | None`, `HistogramSettings | None`, and a validation
+  error string;
+- card state resolution is allowed to construct `HistogramTarget` and
   `HistogramSettings`, because those dataclasses are the validation boundary
-  between staged UI and valid work;
-- the controller API should stay data-oriented, for example:
+  between raw Qt controls and structured domain state;
+- the selected `SpatialData` object should be passed to the controller as
+  execution context during binding, not stored in `HistogramCalculationRequest`;
+- use a bind-then-calculate controller API, matching the feature extraction
+  controller while adapting it to histogram's per-card model:
 
   ```python
-  controller.calculate(request: HistogramResolvedRequest) -> bool
+  controller.bind(
+      card_id: str,
+      sdata: SpatialData | None,
+      target: HistogramTarget | None,
+      settings: HistogramSettings | None,
+      validation_error: str | None = None,
+  ) -> bool
+  controller.calculate(card_id: str) -> bool
   controller.invalidate_card(card_id: str) -> None
   controller.remove_card(card_id: str) -> None
   ```
 
-- `controller.calculate(...)` creates a `HistogramJob`, launches a worker, and
-  calls `calculate_histogram(job.sdata, job.target, job.settings)` inside that
-  worker;
-- stop building `HistogramCalculationRequest` directly inside
+- `controller.bind(...)` stores the latest resolved `SpatialData` and
+  structured card state for that card; if `sdata`, `target`, or `settings` is
+  `None`, or if `validation_error` is set, the card is known to the controller but
+  cannot calculate;
+- `controller.bind(...)` is not responsible for reading Qt controls. It
+  synchronizes the controller with the latest structured card state and
+  invalidates stale work;
+- `controller.bind(...)` should invalidate any in-flight job for the card when
+  the bound `SpatialData` object, target, settings, or validation error changes;
+- `controller.calculate(card_id)` uses the currently bound state for that card,
+  constructs `HistogramCalculationRequest`, creates a `HistogramJob`, launches a
+  worker, and calls `calculate_histogram(job.sdata, job.target, job.settings)`
+  inside that worker;
+- stop building `HistogramCalculationRequest` directly inside the widget,
+  especially inside
   `_update_card_state(...)`; target/settings change handlers should refresh a
   resolved card state, and status rendering should consume that state instead of
   performing request construction itself;
@@ -765,8 +790,9 @@ Scope:
   feature extraction widget;
 - track the latest requested job per card;
 - when target/settings change after a card has launched a job, the widget should
-  mark that card's resolved state as changed and notify the controller through
-  `invalidate_card(card_id)` so in-flight results for the old request are ignored;
+  mark that card's resolved state as changed and call `controller.bind(...)` with
+  the latest structured card state; `invalidate_card(card_id)` remains available
+  for explicit non-binding invalidation events;
 - ignore stale results when a newer job was requested, when the card was
   invalidated, or when the card was removed;
 - support one active worker per card and do not introduce a per-card job queue in
@@ -775,23 +801,29 @@ Scope:
 - expose per-card controller status text and status kind for card-level feedback;
 - cancel or ignore jobs when a card is removed.
 
-Widget request-resolution behavior:
+Widget card-resolution behavior:
 
-- `_resolve_card_request(card_id)` should be the only place where the widget
+- `_resolve_card_binding(card_id)` should be the only place where the widget
   translates combo-box/text-field state into `HistogramTarget` and
   `HistogramSettings`;
 - missing `SpatialData`, coordinate system, image, channel, or invalid optional
   settings should return a validation error with user-facing status text;
 - `_update_card_state(...)` should not call `calculate_histogram(...)`, start a
-  worker, emit a calculation signal, or create a `HistogramJob`;
+  worker, emit a calculation signal, create `HistogramCalculationRequest`, or
+  create a `HistogramJob`;
 - the Calculate button should be enabled only when the resolved state is valid
   and the card is not already running;
-- clicking Calculate should re-read the latest resolved request for that card
-  and pass it to `controller.calculate(...)`.
+- clicking Calculate should re-read the latest resolved target/settings for that
+  card, bind the selected `SpatialData` plus that state into the controller, and
+  call `controller.calculate(card_id)`.
 
 Controller behavior:
 
 - the controller must not import Qt widgets or pyqtgraph;
+- the controller stores per-card bound state, latest requested job id, active
+  worker, status, and last successful `HistogramResult`;
+- the controller creates `HistogramCalculationRequest` only when preparing a job,
+  following the feature extraction controller's request creation pattern;
 - the worker must call the Slice 1 calculator and return `HistogramJobResult`;
 - worker errors should become card-local error status and should not crash the
   widget;
@@ -812,19 +844,22 @@ Tests:
 - Calculate starts a worker for a valid card;
 - clicking Calculate calls the histogram controller for the selected card rather
   than emitting the Slice 2 `calculation_requested` signal;
-- controller receives only resolved valid requests;
-- widget request resolution returns validation errors for incomplete or invalid
-  card UI without calling the controller;
+- widget binds the selected `SpatialData`, target, settings, and validation error
+  before calling `controller.calculate(card_id)`;
+- controller creates `HistogramCalculationRequest` while preparing a job;
+- controller `calculate(card_id)` uses the currently bound state for that card;
+- widget card resolution returns validation errors for incomplete or invalid
+  card UI without calling `controller.calculate(card_id)`;
 - card status updates do not construct jobs and do not start workers;
 - invalid card UI resolves to a validation error that disables Calculate and
   renders card feedback;
 - worker calls `calculate_histogram(...)` with the exact `sdata`, target, and
-  settings from the resolved card request;
+  settings from the selected widget state and resolved card state;
 - worker jobs receive the settings from the card that launched them;
 - stale worker results are ignored;
 - worker errors surface as card errors;
 - changing target/settings while a job is running invalidates the in-flight job
-  for that card;
+  for that card through `controller.bind(...)`;
 - removing a card disconnects or ignores its worker result;
 - different cards can calculate independently without sharing settings or job
   state.
