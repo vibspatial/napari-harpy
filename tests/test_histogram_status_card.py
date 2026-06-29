@@ -4,9 +4,13 @@ import pytest
 
 from napari_harpy.widgets.histogram.status_card import (
     _HistogramStatusCardSpec,
+    build_histogram_calculated_card_spec,
+    build_histogram_controller_status_card_spec,
+    build_histogram_error_card_spec,
     build_histogram_incomplete_card_spec,
     build_histogram_ready_card_spec,
     build_histogram_request_emitted_card_spec,
+    build_histogram_running_card_spec,
     build_histogram_stale_request_card_spec,
 )
 
@@ -34,6 +38,42 @@ def test_build_histogram_ready_card_spec_before_first_calculation() -> None:
 
     assert spec.title == "Histogram Ready"
     assert spec.lines == ("Ready to calculate.",)
+    assert spec.kind == "info"
+
+
+def test_build_histogram_running_card_spec() -> None:
+    spec = build_histogram_running_card_spec()
+
+    assert spec.title == "Histogram Running"
+    assert spec.lines == ("Calculating histogram.",)
+    assert spec.kind == "info"
+
+
+def test_build_histogram_calculated_card_spec() -> None:
+    spec = build_histogram_calculated_card_spec()
+
+    assert spec.title == "Histogram Calculated"
+    assert spec.lines == ("Histogram calculated.",)
+    assert spec.kind == "success"
+
+
+def test_build_histogram_error_card_spec() -> None:
+    spec = build_histogram_error_card_spec("Histogram calculation failed: boom")
+
+    assert spec.title == "Histogram Error"
+    assert spec.lines == ("Histogram calculation failed: boom",)
+    assert spec.kind == "error"
+
+
+def test_build_histogram_controller_status_card_spec_prefers_running_state() -> None:
+    spec = build_histogram_controller_status_card_spec(
+        message="Calculating histogram.",
+        kind="success",
+        is_running=True,
+    )
+
+    assert spec.title == "Histogram Running"
+    assert spec.lines == ("Calculating histogram.",)
     assert spec.kind == "info"
 
 

@@ -2,19 +2,44 @@ from __future__ import annotations
 
 from html import unescape
 
-from qtpy.QtCore import Qt
+import numpy as np
+from qtpy.QtCore import QObject, Qt, Signal
 from qtpy.QtWidgets import QComboBox, QLabel, QWidget
 from spatialdata import SpatialData
 
-import napari_harpy.core.histogram as histogram_core
 import napari_harpy.widgets.histogram.widget as histogram_widget_module
 from napari_harpy._app_state import get_or_create_app_state
+from napari_harpy.core.histogram import HistogramResult
 from napari_harpy.core.spatialdata import get_spatialdata_image_options_for_coordinate_system_from_sdata
-from napari_harpy.widgets.histogram.widget import HistogramCalculationRequest, HistogramWidget
+from napari_harpy.widgets.histogram.controller import HistogramJob, HistogramJobResult
+from napari_harpy.widgets.histogram.widget import HistogramWidget
 
 
 class DummyViewer:
     pass
+
+
+class _DeferredWorker(QObject):
+    returned = Signal(object)
+    errored = Signal(object)
+    finished = Signal()
+
+    def __init__(self, result: HistogramJobResult | None = None) -> None:
+        super().__init__()
+        self._result = result
+        self.started = False
+        self.quit_called = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def quit(self) -> None:
+        self.quit_called = True
+
+    def emit_returned(self) -> None:
+        assert self._result is not None
+        self.returned.emit(self._result)
+        self.finished.emit()
 
 
 def combo_texts(combo: QComboBox) -> list[str]:
@@ -47,6 +72,24 @@ def add_valid_histogram_card(widget: HistogramWidget) -> tuple[str, object]:
     set_combo_data(card.image_combo, "blobs_image")
     set_combo_data(card.channel_combo, "0")
     return card_id, card
+
+
+def make_job_result(job: HistogramJob) -> HistogramJobResult:
+    return HistogramJobResult(
+        card_id=job.card_id,
+        job_id=job.job_id,
+        target=job.target,
+        settings=job.settings,
+        result=HistogramResult(
+            target=job.target,
+            settings=job.settings,
+            counts=np.array([2, 1]),
+            bin_edges=np.array([0.0, 0.5, 1.0]),
+            data_range=(0.0, 1.0),
+            percentile_values={},
+            resolved_scale=job.settings.scale,
+        ),
+    )
 
 
 def test_histogram_widget_instantiates_without_viewer(qtbot) -> None:
@@ -95,37 +138,46 @@ def test_histogram_cards_can_be_added_and_removed_without_mutating_sdata(qtbot, 
     assert tuple(sdata_blobs.images) == image_names_before
 
 
-def test_histogram_widget_populates_target_selectors_and_emits_request(
+def test_histogram_widget_populates_target_selectors_and_starts_controller_job(
     qtbot,
-    monkeypatch,
     sdata_blobs: SpatialData,
 ) -> None:
-    def fail_calculate(*args, **kwargs):
-        raise AssertionError("Slice 2 must not call calculate_histogram(...).")
-
-    monkeypatch.setattr(histogram_core, "calculate_histogram", fail_calculate)
+    captured_jobs: list[HistogramJob] = []
+    deferred_workers: list[_DeferredWorker] = []
     widget = make_widget_with_sdata(qtbot, sdata_blobs)
 
     card_id, card = add_valid_histogram_card(widget)
+
+    def capture_worker(job: HistogramJob) -> _DeferredWorker:
+        captured_jobs.append(job)
+        worker = _DeferredWorker(make_job_result(job))
+        deferred_workers.append(worker)
+        return worker
+
+    widget._histogram_controller._create_histogram_worker = capture_worker  # type: ignore[method-assign]
 
     assert card.coordinate_system_combo.currentText() == "global"
     assert combo_texts(card.image_combo) == ["blobs_image", "blobs_multiscale_image"]
     assert combo_texts(card.channel_combo) == ["0", "1", "2"]
     assert card.calculate_button.isEnabled()
 
-    with qtbot.waitSignal(widget.calculation_requested) as blocker:
-        qtbot.mouseClick(card.calculate_button, Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(card.calculate_button, Qt.MouseButton.LeftButton)
 
-    request = blocker.args[0]
-    assert isinstance(request, HistogramCalculationRequest)
-    assert request.card_id == card_id
-    assert request.target.coordinate_system == "global"
-    assert request.target.image_name == "blobs_image"
-    assert request.target.channel_name == "0"
-    assert request.settings.bins == 256
-    assert request.settings.scale == "scale0"
-    assert request.settings.percentiles == ()
-    assert "Calculation request emitted." in card.status_label.text()
+    assert len(captured_jobs) == 1
+    assert captured_jobs[0].card_id == card_id
+    assert captured_jobs[0].sdata is sdata_blobs
+    assert captured_jobs[0].target.coordinate_system == "global"
+    assert captured_jobs[0].target.image_name == "blobs_image"
+    assert captured_jobs[0].target.channel_name == "0"
+    assert captured_jobs[0].settings.bins == 256
+    assert captured_jobs[0].settings.scale == "scale0"
+    assert captured_jobs[0].settings.percentiles == ()
+    assert deferred_workers[0].started is True
+    assert "Calculating histogram." in card.status_label.text()
+
+    deferred_workers[0].emit_returned()
+
+    assert "Histogram calculated." in card.status_label.text()
 
 
 def test_histogram_widget_refresh_preserves_valid_target_and_clears_invalid_downstream_selection(
@@ -183,8 +235,8 @@ def test_histogram_widget_settings_are_collapsed_optional_and_card_local(
     sdata_blobs: SpatialData,
 ) -> None:
     widget = make_widget_with_sdata(qtbot, sdata_blobs)
-    first_id, first_card = add_valid_histogram_card(widget)
-    second_id, second_card = add_valid_histogram_card(widget)
+    _first_id, first_card = add_valid_histogram_card(widget)
+    _second_id, second_card = add_valid_histogram_card(widget)
 
     assert first_card.settings_panel.isHidden()
     assert first_card.settings_toggle.text() == "Settings"
@@ -201,18 +253,20 @@ def test_histogram_widget_settings_are_collapsed_optional_and_card_local(
     first_card.log_y_checkbox.setChecked(True)
     second_card.bins_spin.setValue(128)
 
-    first_request = widget.build_request_for_card(first_id)
-    second_request = widget.build_request_for_card(second_id)
+    first_binding = widget._resolve_card_binding(first_card)
+    second_binding = widget._resolve_card_binding(second_card)
 
-    assert first_request.settings.bins == 512
-    assert first_request.settings.value_range == (0.1, 0.9)
-    assert first_request.settings.percentiles == (1.0, 99.0)
-    assert first_request.settings.density is True
-    assert first_request.settings.exclude_zeros is True
-    assert first_request.settings.log_y is True
-    assert second_request.settings.bins == 128
-    assert second_request.settings.value_range is None
-    assert second_request.settings.percentiles == ()
+    assert first_binding.settings is not None
+    assert second_binding.settings is not None
+    assert first_binding.settings.bins == 512
+    assert first_binding.settings.value_range == (0.1, 0.9)
+    assert first_binding.settings.percentiles == (1.0, 99.0)
+    assert first_binding.settings.density is True
+    assert first_binding.settings.exclude_zeros is True
+    assert first_binding.settings.log_y is True
+    assert second_binding.settings.bins == 128
+    assert second_binding.settings.value_range is None
+    assert second_binding.settings.percentiles == ()
     first_settings_tooltip = tooltip_text(first_card.settings_toggle)
     assert first_card.settings_toggle.text() == "Settings"
     assert "value_range: (0.1, 0.9)" in first_settings_tooltip
@@ -223,7 +277,8 @@ def test_histogram_widget_settings_are_collapsed_optional_and_card_local(
 
     first_card.reset_settings_button.click()
 
-    reset_settings = widget.build_request_for_card(first_id).settings
+    reset_settings = widget._resolve_card_binding(first_card).settings
+    assert reset_settings is not None
     assert reset_settings.bins == 256
     assert reset_settings.value_range is None
     assert reset_settings.percentiles == ()
@@ -231,7 +286,9 @@ def test_histogram_widget_settings_are_collapsed_optional_and_card_local(
     assert reset_settings.exclude_zeros is False
     assert reset_settings.log_y is False
     assert reset_settings.scale == "scale0"
-    assert widget.build_request_for_card(second_id).settings.bins == 128
+    second_settings = widget._resolve_card_binding(second_card).settings
+    assert second_settings is not None
+    assert second_settings.bins == 128
 
 
 def test_histogram_widget_settings_panel_stays_compact_at_dock_width(qtbot, sdata_blobs: SpatialData) -> None:

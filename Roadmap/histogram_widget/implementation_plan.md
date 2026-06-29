@@ -582,7 +582,8 @@ Scope:
 - expose a Qt signal such as `calculation_requested` carrying
   `HistogramCalculationRequest`;
 - clicking Calculate builds and emits `HistogramCalculationRequest` for that
-  card when the staged target and settings are valid;
+  card when the staged target and settings are valid. This is a Slice 2 scaffold
+  only; Slice 3 replaces it with a controller-owned calculation path;
 - do not call `calculate_histogram(...)` in Slice 2;
 - do not start a worker in Slice 2;
 - do not create `HistogramResult` objects in Slice 2.
@@ -614,8 +615,9 @@ Selector behavior:
   selections for that card;
 - changing coordinate system clears invalid image/channel selections;
 - changing image clears invalid channel selection;
-- changing target or settings marks that card dirty relative to the last
-  emitted request.
+- changing target or settings marks that card dirty relative to the last emitted
+  request in the Slice 2 scaffold; Slice 3 replaces this with controller binding
+  invalidation.
 
 Settings UI:
 
@@ -667,7 +669,9 @@ Tests:
 - images without channel names keep the card invalid;
 - Calculate is enabled only when the staged target and settings can build
   `HistogramTarget` and `HistogramSettings`;
-- clicking Calculate emits `HistogramCalculationRequest`;
+- clicking Calculate emits `HistogramCalculationRequest` in the Slice 2 scaffold;
+  Slice 3 replaces this with `controller.bind(...)` plus
+  `controller.calculate(card_id)`;
 - clicking Calculate does not call `calculate_histogram(...)`;
 - optional settings are hidden in a collapsed per-card settings section by
   default;
@@ -682,7 +686,7 @@ Tests:
 
 ### 3. Background Controller
 
-Status: [ ] Planned
+Status: [x] Implemented
 
 Goal:
 
@@ -721,21 +725,6 @@ Scope:
       result: HistogramResult
   ```
 
-- keep the Slice 2 `HistogramCalculationRequest` name for the validated
-  controller-side calculation payload; do not introduce a separate
-  `HistogramResolvedRequest` dataclass for this slice. This mirrors
-  `FeatureExtractionRequest`, where the controller creates the final request when
-  preparing the worker job;
-- keep `HistogramCalculationRequest` focused on card-local calculation inputs:
-
-  ```python
-  @dataclass(frozen=True)
-  class HistogramCalculationRequest:
-      card_id: str
-      target: HistogramTarget
-      settings: HistogramSettings
-  ```
-
 - use the same `thread_worker` resolution pattern as feature extraction;
 - replace the Slice 2 widget-level `calculation_requested` scaffold with a
   controller-owned calculation path: clicking a card's Calculate button should
@@ -749,7 +738,7 @@ Scope:
   `HistogramSettings`, because those dataclasses are the validation boundary
   between raw Qt controls and structured domain state;
 - the selected `SpatialData` object should be passed to the controller as
-  execution context during binding, not stored in `HistogramCalculationRequest`;
+  execution context during binding;
 - use a bind-then-calculate controller API, matching the feature extraction
   controller while adapting it to histogram's per-card model:
 
@@ -776,11 +765,10 @@ Scope:
 - `controller.bind(...)` should invalidate any in-flight job for the card when
   the bound `SpatialData` object, target, settings, or validation error changes;
 - `controller.calculate(card_id)` uses the currently bound state for that card,
-  constructs `HistogramCalculationRequest`, creates a `HistogramJob`, launches a
-  worker, and calls `calculate_histogram(job.sdata, job.target, job.settings)`
-  inside that worker;
-- stop building `HistogramCalculationRequest` directly inside the widget,
-  especially inside
+  creates a `HistogramJob`, launches a worker, and calls
+  `calculate_histogram(job.sdata, job.target, job.settings)` inside that worker;
+- do not build calculation request payloads directly inside the widget, especially
+  inside
   `_update_card_state(...)`; target/settings change handlers should refresh a
   resolved card state, and status rendering should consume that state instead of
   performing request construction itself;
@@ -809,8 +797,7 @@ Widget card-resolution behavior:
 - missing `SpatialData`, coordinate system, image, channel, or invalid optional
   settings should return a validation error with user-facing status text;
 - `_update_card_state(...)` should not call `calculate_histogram(...)`, start a
-  worker, emit a calculation signal, create `HistogramCalculationRequest`, or
-  create a `HistogramJob`;
+  worker, emit a calculation signal, or create a `HistogramJob`;
 - the Calculate button should be enabled only when the resolved state is valid
   and the card is not already running;
 - clicking Calculate should re-read the latest resolved target/settings for that
@@ -822,8 +809,6 @@ Controller behavior:
 - the controller must not import Qt widgets or pyqtgraph;
 - the controller stores per-card bound state, latest requested job id, active
   worker, status, and last successful `HistogramResult`;
-- the controller creates `HistogramCalculationRequest` only when preparing a job,
-  following the feature extraction controller's request creation pattern;
 - the worker must call the Slice 1 calculator and return `HistogramJobResult`;
 - worker errors should become card-local error status and should not crash the
   widget;
@@ -846,7 +831,7 @@ Tests:
   than emitting the Slice 2 `calculation_requested` signal;
 - widget binds the selected `SpatialData`, target, settings, and validation error
   before calling `controller.calculate(card_id)`;
-- controller creates `HistogramCalculationRequest` while preparing a job;
+- controller creates `HistogramJob` directly from the currently bound card state;
 - controller `calculate(card_id)` uses the currently bound state for that card;
 - widget card resolution returns validation errors for incomplete or invalid
   card UI without calling `controller.calculate(card_id)`;

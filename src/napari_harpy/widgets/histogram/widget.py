@@ -4,7 +4,7 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from qtpy.QtCore import QSignalBlocker, QSize, Qt, Signal
+from qtpy.QtCore import QSignalBlocker, QSize, Qt
 from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import (
     QCheckBox,
@@ -33,12 +33,10 @@ from napari_harpy.core.spatialdata import (
     get_image_channel_names_from_sdata,
     get_spatialdata_image_options_for_coordinate_system_from_sdata,
 )
+from napari_harpy.widgets.histogram.controller import HistogramController
 from napari_harpy.widgets.histogram.status_card import (
     _HistogramStatusCardSpec,
-    build_histogram_incomplete_card_spec,
-    build_histogram_ready_card_spec,
-    build_histogram_request_emitted_card_spec,
-    build_histogram_stale_request_card_spec,
+    build_histogram_controller_status_card_spec,
 )
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
@@ -117,12 +115,12 @@ _DEFAULT_SETTINGS = HistogramSettings()
 
 
 @dataclass(frozen=True)
-class HistogramCalculationRequest:
-    """Card-local request emitted when a histogram card is ready to calculate."""
+class _HistogramCardBindingState:
+    """Parsed widget card state used to bind structured inputs into the controller."""
 
-    card_id: str
-    target: HistogramTarget
-    settings: HistogramSettings
+    target: HistogramTarget | None
+    settings: HistogramSettings | None
+    validation_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -154,8 +152,6 @@ class _HistogramCard:
 class HistogramWidget(QWidget):
     """Qt shell for explicit per-card image histogram requests."""
 
-    calculation_requested = Signal(object)
-
     def __init__(self, napari_viewer: napari.Viewer | None = None) -> None:
         super().__init__()
         self.setObjectName("histogram_widget")
@@ -163,9 +159,9 @@ class HistogramWidget(QWidget):
         self.setMinimumWidth(WIDGET_MIN_WIDTH)
 
         self._app_state = get_or_create_app_state(napari_viewer)
+        self._histogram_controller = HistogramController(on_state_changed=self._on_controller_state_changed)
         self._cards: dict[str, _HistogramCard] = {}
         self._card_channel_errors: dict[str, str] = {}
-        self._last_emitted_requests: dict[str, HistogramCalculationRequest] = {}
         self._logo_path = get_logo_path()
 
         layout = QVBoxLayout(self)
@@ -265,18 +261,13 @@ class HistogramWidget(QWidget):
         """Remove a card-local histogram request UI without touching SpatialData."""
         histogram_card = self._cards.pop(card_id, None)
         self._card_channel_errors.pop(card_id, None)
-        self._last_emitted_requests.pop(card_id, None)
+        self._histogram_controller.remove_card(card_id)
         if histogram_card is None:
             return
 
         self.cards_layout.removeWidget(histogram_card.container)
         histogram_card.container.deleteLater()
         self._update_empty_state()
-
-    def build_request_for_card(self, card_id: str) -> HistogramCalculationRequest:
-        """Build a validated calculation request for tests and later controllers."""
-        histogram_card = self._get_card(card_id)
-        return self._build_request(histogram_card)
 
     def _create_header_logo(self) -> QLabel:
         logo_label = QLabel()
@@ -467,7 +458,7 @@ class HistogramWidget(QWidget):
         calculate_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
         calculate_button.setEnabled(False)
         calculate_button.clicked.connect(
-            lambda _checked=False, current_card_id=card_id: self._emit_calculation_request(current_card_id)
+            lambda _checked=False, current_card_id=card_id: self._calculate_histogram(current_card_id)
         )
         action_layout.addWidget(calculate_button, 1)
 
@@ -787,61 +778,76 @@ class HistogramWidget(QWidget):
         )
 
     def _update_card_state(self, card_id: str) -> None:
+        self._bind_card_state(card_id)
+        self._render_card_state(card_id)
+
+    def _bind_card_state(self, card_id: str) -> None:
         histogram_card = self._get_card(card_id)
-        try:
-            request = self._build_request(histogram_card)
-        except ValueError as error:
-            histogram_card.calculate_button.setEnabled(False)
-            self._apply_status_card_spec(
-                histogram_card.status_label,
-                build_histogram_incomplete_card_spec(str(error)),
-            )
-            return
-
-        histogram_card.calculate_button.setEnabled(True)
-        last_request = self._last_emitted_requests.get(card_id)
-        if last_request is None:
-            # Valid card, but this card has not emitted a calculation request yet.
-            spec = build_histogram_ready_card_spec()
-        elif last_request == request:
-            # The current UI still matches the last request emitted for this card.
-            spec = build_histogram_request_emitted_card_spec()
-        else:
-            # The user changed target/settings after the last emitted request.
-            spec = build_histogram_stale_request_card_spec()
-
-        self._apply_status_card_spec(
-            histogram_card.status_label,
-            spec,
+        binding = self._resolve_card_binding(histogram_card)
+        self._histogram_controller.bind(
+            card_id,
+            self.selected_spatialdata,
+            binding.target,
+            binding.settings,
+            validation_error=binding.validation_error,
         )
 
-    def _build_request(self, histogram_card: _HistogramCard) -> HistogramCalculationRequest:
+    def _render_card_state(self, card_id: str) -> None:
+        try:
+            histogram_card = self._get_card(card_id)
+        except ValueError:
+            return
+
+        histogram_card.calculate_button.setEnabled(self._histogram_controller.can_calculate(card_id))
+        spec = self._controller_status_card_spec(card_id)
+        self._apply_status_card_spec(histogram_card.status_label, spec)
+
+    def _controller_status_card_spec(self, card_id: str) -> _HistogramStatusCardSpec:
+        return build_histogram_controller_status_card_spec(
+            message=self._histogram_controller.status_message(card_id),
+            kind=self._histogram_controller.status_kind(card_id),
+            is_running=self._histogram_controller.is_running(card_id),
+        )
+
+    def _on_controller_state_changed(self, card_id: str) -> None:
+        self._render_card_state(card_id)
+
+    def _resolve_card_binding(self, histogram_card: _HistogramCard) -> _HistogramCardBindingState:
         if self.selected_spatialdata is None:
-            raise ValueError("No SpatialData loaded.")
+            return _HistogramCardBindingState(None, None, "No SpatialData loaded.")
 
         coordinate_system = self._current_text_data(histogram_card.coordinate_system_combo)
         if coordinate_system is None:
-            raise ValueError("Choose a coordinate system.")
+            return _HistogramCardBindingState(None, None, "Choose a coordinate system.")
 
         image_name = self._current_text_data(histogram_card.image_combo)
         if image_name is None:
-            raise ValueError("Choose an image.")
+            return _HistogramCardBindingState(None, None, "Choose an image.")
 
         channel_error = self._card_channel_errors.get(histogram_card.card_id)
         if channel_error:
-            raise ValueError(channel_error)
+            return _HistogramCardBindingState(None, None, channel_error)
 
         channel_name = self._current_text_data(histogram_card.channel_combo)
         if channel_name is None:
-            raise ValueError("Choose a channel.")
+            return _HistogramCardBindingState(None, None, "Choose a channel.")
 
         target = HistogramTarget(
             coordinate_system=coordinate_system,
             image_name=image_name,
             channel_name=channel_name,
         )
-        settings = self._build_settings(histogram_card)
-        return HistogramCalculationRequest(card_id=histogram_card.card_id, target=target, settings=settings)
+        try:
+            settings = self._build_settings(histogram_card)
+        except ValueError as error:
+            return _HistogramCardBindingState(target, None, str(error))
+
+        return _HistogramCardBindingState(target, settings)
+
+    def _calculate_histogram(self, card_id: str) -> None:
+        self._bind_card_state(card_id)
+        self._histogram_controller.calculate(card_id)
+        self._render_card_state(card_id)
 
     def _build_settings(self, histogram_card: _HistogramCard) -> HistogramSettings:
         value_range = self._parse_optional_pair(
@@ -892,13 +898,6 @@ class HistogramWidget(QWidget):
             return float(text)
         except ValueError as error:
             raise ValueError(f"Histogram {field_name} must be a number.") from error
-
-    def _emit_calculation_request(self, card_id: str) -> None:
-        histogram_card = self._get_card(card_id)
-        request = self._build_request(histogram_card)
-        self._last_emitted_requests[card_id] = request
-        self.calculation_requested.emit(request)
-        self._update_card_state(card_id)
 
     def _update_empty_state(self) -> None:
         has_cards = bool(self._cards)

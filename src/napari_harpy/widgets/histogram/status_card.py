@@ -24,12 +24,53 @@ def build_histogram_incomplete_card_spec(message: str) -> _HistogramStatusCardSp
     )
 
 
-def build_histogram_ready_card_spec() -> _HistogramStatusCardSpec:
+def build_histogram_ready_card_spec(message: str = "Ready to calculate.") -> _HistogramStatusCardSpec:
     return _HistogramStatusCardSpec(
         title="Histogram Ready",
-        lines=("Ready to calculate.",),
+        lines=(message,),
         kind="info",
     )
+
+
+def build_histogram_running_card_spec(message: str = "Calculating histogram.") -> _HistogramStatusCardSpec:
+    return _HistogramStatusCardSpec(
+        title="Histogram Running",
+        lines=(message,),
+        kind="info",
+    )
+
+
+def build_histogram_calculated_card_spec(message: str = "Histogram calculated.") -> _HistogramStatusCardSpec:
+    return _HistogramStatusCardSpec(
+        title="Histogram Calculated",
+        lines=(message,),
+        kind="success",
+    )
+
+
+def build_histogram_error_card_spec(message: str) -> _HistogramStatusCardSpec:
+    return _HistogramStatusCardSpec(
+        title="Histogram Error",
+        lines=(message,),
+        kind="error",
+    )
+
+
+def build_histogram_controller_status_card_spec(
+    *,
+    message: str,
+    kind: StatusCardKind,
+    is_running: bool = False,
+) -> _HistogramStatusCardSpec:
+    if is_running:
+        return build_histogram_running_card_spec(message)
+    if kind == "warning":
+        return build_histogram_incomplete_card_spec(message)
+    if kind == "error":
+        return build_histogram_error_card_spec(message)
+    if kind == "success":
+        return build_histogram_calculated_card_spec(message)
+    return build_histogram_ready_card_spec(message)
 
 
 def build_histogram_request_emitted_card_spec() -> _HistogramStatusCardSpec:
