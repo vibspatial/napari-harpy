@@ -177,9 +177,8 @@ the UI stages explicit triplets before calculation. It also supports multiple
 histograms naturally because each card owns one plot, one Calculate action, and
 one contrast-limit sync state.
 
-For images without a channel axis, the internal target can store
-`channel_name=None` while the UI shows a scalar-image channel placeholder.
-Multi-channel images should require an explicit channel selection.
+Histogram targets require an explicit channel name. Images without a channel
+axis are not supported by the first histogram widget implementation.
 
 ### Recommended Product Choice
 

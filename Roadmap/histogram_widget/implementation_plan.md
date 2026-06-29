@@ -243,7 +243,11 @@ Add focused dataclasses in `src/napari_harpy/core/histogram.py`:
 class HistogramTarget:
     coordinate_system: str
     image_name: str
-    channel_name: str | None
+    channel_name: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.channel_name, str) or not self.channel_name.strip():
+            raise ValueError("Histogram target requires an explicit channel name.")
 
 
 @dataclass(frozen=True)
@@ -255,8 +259,7 @@ class HistogramSettings:
     exclude_zeros: bool = False
     log_y: bool = False
     scale: str | None = None
-    percentile_min: float | None = None
-    percentile_max: float | None = None
+    percentiles: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -275,9 +278,12 @@ class HistogramResult:
 `value_range`, filtering, or percentile state that implicitly changes all cards
 at once.
 
-For scalar images without a channel axis, keep `channel_name=None` internally
-and display a read-only scalar channel placeholder in the UI. Multi-channel
-images should require an explicit channel selection.
+The UI can still expose `percentile_min` and `percentile_max` fields for the
+common lower/upper guide-line workflow, but the core calculator receives them
+as `HistogramSettings.percentiles`.
+
+Histogram targets require an explicit channel name. Images without a channel
+axis are not supported by the first histogram widget implementation.
 
 ## Defaults And Optional Settings UI
 
@@ -400,7 +406,7 @@ only one limit, or operate independently per histogram card.
 
 ### 1. Core Histogram Calculator
 
-Status: [ ] Planned
+Status: [x] Implemented
 
 Goal:
 
@@ -416,7 +422,11 @@ Scope:
   class HistogramTarget:
       coordinate_system: str
       image_name: str
-      channel_name: str | None
+      channel_name: str
+
+      def __post_init__(self) -> None:
+          if not isinstance(self.channel_name, str) or not self.channel_name.strip():
+              raise ValueError("Histogram target requires an explicit channel name.")
 
 
   @dataclass(frozen=True)
@@ -428,8 +438,27 @@ Scope:
       exclude_zeros: bool = False
       log_y: bool = False
       scale: str | None = None
-      percentile_min: float | None = None
-      percentile_max: float | None = None
+      percentiles: tuple[float, ...] = ()
+
+      def __post_init__(self) -> None:
+          if isinstance(self.bins, bool) or not isinstance(self.bins, int) or self.bins <= 0:
+              raise ValueError("Histogram settings require `bins` to be a positive integer.")
+
+          if self.value_range is not None:
+              low, high = self.value_range
+              if not np.isfinite(low) or not np.isfinite(high):
+                  raise ValueError("Histogram settings require `value_range` bounds to be finite.")
+              if low >= high:
+                  raise ValueError("Histogram settings require `value_range` to satisfy low < high.")
+
+          percentiles: list[float] = []
+          for percentile in self.percentiles:
+              percentile_value = float(percentile)
+              if not np.isfinite(percentile_value) or percentile_value < 0 or percentile_value > 100:
+                  raise ValueError("Histogram percentile values must be finite values in [0, 100].")
+              if percentile_value not in percentiles:
+                  percentiles.append(percentile_value)
+          object.__setattr__(self, "percentiles", tuple(percentiles))
   ```
 
 - expose a small public calculation function:
@@ -447,18 +476,14 @@ Scope:
 - resolve `HistogramTarget` against `SpatialData`;
 - validate that the image exists in `sdata.images`;
 - validate that the requested coordinate system exists for the selected image;
-- validate that the requested channel exists for multi-channel images;
-- support scalar images without a channel axis by requiring
-  `target.channel_name is None`;
+- validate that the selected image has a channel axis;
+- validate that the requested channel exists for the selected image;
 - accept one explicit `HistogramSettings` object per calculation;
-- validate `settings.bins` as a positive integer;
-- validate `settings.value_range` as finite `(low, high)` values with
-  `low < high`;
-- validate requested percentile values as finite values in `[0, 100]`;
+- validate `settings.bins`, `settings.value_range`, and requested percentile
+  values in `HistogramSettings.__post_init__`;
 - select the requested multiscale `scale`, defaulting to exact `scale0`;
 - record the resolved scale used for the result;
-- select the requested channel, or scalar image data when no channel axis is
-  present;
+- select the requested channel with `array.sel(c=channel_value)`;
 - flatten values;
 - apply `exclude_nan` and `exclude_zeros`;
 - call `compute_chunk_sizes()` when filtering creates unknown Dask chunks;
@@ -468,8 +493,8 @@ Scope:
 
   ```python
   percentile_values = dask.array.percentile(
-      filtered_values,
-      q=list(requested_percentiles),
+      array,
+      q=list(settings.percentiles),
       internal_method="tdigest",
   ).compute()
   ```
@@ -506,7 +531,7 @@ Tests:
 - NaN and zero filtering match the documented semantics;
 - unknown chunk sizes after filtering are handled;
 - channel names and channel indices resolve consistently;
-- scalar images without a channel axis are supported;
+- images without a channel axis are rejected;
 - missing image, coordinate system, or channel selections raise clear
   `ValueError` exceptions;
 - invalid `bins` values are rejected;
