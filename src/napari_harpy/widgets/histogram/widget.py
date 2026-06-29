@@ -743,13 +743,7 @@ class HistogramWidget(QWidget):
         return f"({low_text}, {high_text})"
 
     def _percentiles_tooltip_text(self, widgets: _HistogramCardWidgets) -> str:
-        percentiles = self._raw_percentile_texts(widgets)
-        if not percentiles:
-            return "none"
-        return ", ".join(percentiles)
-
-    def _raw_percentile_texts(self, widgets: _HistogramCardWidgets) -> tuple[str, ...]:
-        return tuple(
+        percentiles = tuple(
             text
             for text in (
                 widgets.percentile_min_edit.text().strip(),
@@ -757,6 +751,9 @@ class HistogramWidget(QWidget):
             )
             if text
         )
+        if not percentiles:
+            return "none"
+        return ", ".join(percentiles)
 
     def _update_card_state(self, card_id: str) -> None:
         widgets = self._get_card(card_id)
