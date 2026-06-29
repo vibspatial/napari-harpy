@@ -526,23 +526,12 @@ Non-goals:
 
 Tests:
 
-- default settings compute a valid histogram without requiring optional inputs;
-- counts and bin edges match expected values for small Dask-backed images;
-- NaN and zero filtering match the documented semantics;
-- unknown chunk sizes after filtering are handled;
-- channel names and channel indices resolve consistently;
-- images without a channel axis are rejected;
-- missing image, coordinate system, or channel selections raise clear
-  `ValueError` exceptions;
-- invalid `bins` values are rejected;
-- invalid percentile values outside `[0, 100]` are rejected;
-- percentile values are computed after NaN/zero filtering and are not clipped by
-  `value_range`;
-- percentile values use `internal_method="tdigest"` and are asserted with an
-  appropriate tolerance instead of exact equality where Dask's tdigest
-  approximation matters;
-- explicit `value_range` restricts histogram counts and bin edges as expected;
-- invalid `value_range` values, including `low >= high`, are rejected.
+- calculate a histogram from the existing `sdata_blobs` fixture and compare the
+  result with direct Dask histogram output;
+- verify that `value_range` restricts histogram counts/bin edges while
+  percentiles remain computed from the filtered data before range clipping;
+- verify that a requested multiscale `scale` is used and recorded;
+- keep only focused dataclass validation tests for basic invalid inputs.
 
 ### 2. Widget Shell And Target Cards
 
