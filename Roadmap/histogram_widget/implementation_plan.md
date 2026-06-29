@@ -1000,7 +1000,60 @@ Tests:
 - `core.histogram` and `widgets/histogram/controller.py` do not import
   pyqtgraph.
 
-### 6. Contrast-Limit Synchronization
+### 6. Smooth Distribution Overlay
+
+Status: [ ] Planned
+
+Goal:
+
+- draw a smooth distribution approximation over the histogram bars without
+  asking users to tune smoothing parameters.
+
+Scope:
+
+- reuse a library implementation rather than writing a custom smoothing
+  algorithm;
+- use `scipy.stats.gaussian_kde` with its automatic bandwidth selection by
+  default;
+- add `scipy` as a direct runtime dependency if it is not already direct by the
+  time this slice is implemented, because the histogram widget will import it
+  directly;
+- derive the smooth line from the already calculated histogram result, not by
+  re-reading or resampling the source image data;
+- use bin centers as the KDE sample positions and histogram counts as weights;
+- evaluate the KDE on a compact regular grid spanning the histogram bin edges;
+- scale the KDE line so it overlays the current y-axis semantics:
+  - for count histograms, scale the density by total count and bin width;
+  - for density histograms, keep the KDE in density units;
+- keep smoothing enabled by default if visual QA shows it improves readability;
+- expose only a simple card-local display toggle such as `Smooth line` if users
+  need to hide it; do not expose bandwidth, sigma, kernel, or sample-count
+  controls in the first implementation;
+- style the smooth line with a stable histogram palette constant, for example
+  `HISTOGRAM_SMOOTH_LINE_COLOR`, visually related to but distinct from the bar
+  fill color;
+- handle small, empty, flat, or otherwise invalid histogram results gracefully by
+  hiding the smooth line rather than showing an error.
+
+Non-goals:
+
+- no user-facing bandwidth or smoothing-strength setting;
+- no additional Dask computation;
+- no KDE calculation from raw image pixels;
+- no ECDF/cumulative distribution calculation.
+
+Tests:
+
+- smooth line is derived from `HistogramResult.counts` and `bin_edges`;
+- smooth line uses `scipy.stats.gaussian_kde` with weighted bin centers;
+- count-mode and density-mode overlays use the correct y-axis scaling;
+- empty, flat, or too-small histograms do not crash and hide the smooth line;
+- repeated histogram rendering replaces the previous smooth line instead of
+  accumulating duplicate plot items;
+- disabling the display toggle hides the smooth line without recalculating the
+  histogram.
+
+### 7. Contrast-Limit Synchronization
 
 Status: [ ] Planned
 
@@ -1045,7 +1098,7 @@ Tests:
 - layer removal clears the sync binding;
 - RGB layers disable contrast synchronization.
 
-### 7. Percentile Guide Lines
+### 8. Percentile Guide Lines
 
 Status: [ ] Planned
 
@@ -1070,7 +1123,7 @@ Tests:
   calculation;
 - changing percentile settings marks the card stale.
 
-### 8. Explicit Percentile-To-Contrast Action
+### 9. Explicit Percentile-To-Contrast Action
 
 Status: [ ] Planned
 
@@ -1094,7 +1147,7 @@ Tests:
 - applying percentiles sets contrast limits to the computed values;
 - the normal contrast-limit event path updates the histogram contrast region.
 
-### 9. Add Histogram From Active Image
+### 10. Add Histogram From Active Image
 
 Status: [ ] Planned
 
@@ -1146,7 +1199,7 @@ Tests:
 - repeated clicks either add separate cards intentionally or focus an existing
   equivalent card, whichever behavior is chosen for implementation.
 
-### 10. Automatic Bin Suggestion
+### 11. Automatic Bin Suggestion
 
 Status: [ ] Planned
 
@@ -1196,7 +1249,7 @@ Tests:
 - flat or nearly flat data falls back to a safe bin count with a clear status;
 - the suggestion action does not calculate or render the histogram by itself.
 
-### 11. Product Hardening
+### 12. Product Hardening
 
 Status: [ ] Planned
 
