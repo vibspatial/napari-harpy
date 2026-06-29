@@ -6,6 +6,7 @@ import lazy_loader as lazy
 
 if TYPE_CHECKING:
     from .feature_extraction.widget import FeatureExtractionWidget
+    from .histogram.widget import HistogramWidget
     from .object_classification.widget import ObjectClassificationWidget
     from .shapes_annotation.widget import ShapesAnnotation
     from .viewer.widget import ViewerWidget
@@ -14,10 +15,17 @@ __getattr__, __dir__, _ = lazy.attach(
     __name__,
     submod_attrs={
         "feature_extraction.widget": ["FeatureExtractionWidget"],
+        "histogram.widget": ["HistogramWidget"],
         "object_classification.widget": ["ObjectClassificationWidget"],
         "shapes_annotation.widget": ["ShapesAnnotation"],
         "viewer.widget": ["ViewerWidget"],
     },
 )
 
-__all__ = ["FeatureExtractionWidget", "ObjectClassificationWidget", "ShapesAnnotation", "ViewerWidget"]
+__all__ = [
+    "FeatureExtractionWidget",
+    "HistogramWidget",
+    "ObjectClassificationWidget",
+    "ShapesAnnotation",
+    "ViewerWidget",
+]
