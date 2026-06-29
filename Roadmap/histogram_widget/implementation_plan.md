@@ -895,7 +895,57 @@ Tests:
 - repeated clicks either add separate cards intentionally or focus an existing
   equivalent card, whichever behavior is chosen for implementation.
 
-### 9. Product Hardening
+### 9. Automatic Bin Suggestion
+
+Status: [ ] Planned
+
+Goal:
+
+- offer a sensible per-histogram bin-count suggestion without relying on
+  unsupported `dask.array.histogram(..., bins="auto")` behavior.
+
+Scope:
+
+- decide the exact UX before implementation, including whether the control is a
+  button, menu option, inline `Auto` action, or some other explicit per-card
+  affordance;
+- keep `HistogramSettings.bins` as an explicit positive integer passed to
+  `dask.array.histogram(...)`;
+- do not pass string estimators such as `"auto"`, `"fd"`, or `"sturges"` to
+  Dask, because Dask's histogram API supports integer bin counts or explicit
+  bin edges, not NumPy-style string bin estimators;
+- add an optional UI action such as `Suggest bins` or `Auto` beside the bins
+  spin box;
+- calculate a suggested integer bin count from the selected target and current
+  filtering/range settings;
+- make the suggestion explicit by writing the resulting integer into the card's
+  bins control, so the calculation remains reproducible and visible;
+- prefer a bounded, robust estimator suitable for large image arrays, for
+  example an approximate Freedman-Diaconis-style estimate based on Dask
+  percentiles, optionally with sampling if full percentile calculation proves
+  too expensive;
+- clamp the suggested value to a product-defined range, for example
+  `32 <= bins <= 2048`, to avoid unreadable plots and unexpectedly expensive
+  calculations;
+- treat `HistogramSettings.value_range` as the range being inspected when it is
+  provided; otherwise derive the range from the filtered data as in the core
+  calculator;
+- keep the existing default of `256` bins until the user explicitly asks for a
+  suggestion;
+- show a clear warning if a robust suggestion cannot be computed, for example
+  because the filtered data has too few finite values or near-zero spread.
+
+Tests:
+
+- default histogram cards still start with `256` bins;
+- clicking the suggestion action writes a positive integer into the bins control;
+- suggested bins are clamped to the configured min/max bounds;
+- the suggestion respects NaN/zero filtering and explicit histogram
+  `value_range`;
+- flat or nearly flat data falls back to a safe bin count with a clear status;
+- the suggestion action does not calculate or render the histogram by itself.
+
+### 10. Product Hardening
 
 Status: [ ] Planned
 
