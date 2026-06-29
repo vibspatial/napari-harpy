@@ -87,8 +87,7 @@ class HistogramController:
         self._on_state_changed = on_state_changed
 
         self._bindings: dict[str, HistogramCardBindingState] = {}
-        self._latest_requested_job_ids: dict[str, str] = {}
-        self._active_worker_job_ids: dict[str, str] = {}
+        self._active_job_ids: dict[str, str] = {}
         self._active_workers: dict[str, Any] = {}
         self._results: dict[str, HistogramResult] = {}
         self._status_messages: dict[str, str] = {}
@@ -136,7 +135,7 @@ class HistogramController:
 
         worker = self._create_histogram_worker(job)
         self._active_workers[card_id] = worker
-        self._active_worker_job_ids[card_id] = job.job_id
+        self._active_job_ids[card_id] = job.job_id
         worker.returned.connect(partial(self._on_worker_returned, card_id, job.job_id))
         worker.errored.connect(partial(self._on_worker_errored, card_id, job.job_id))
         worker.finished.connect(partial(self._on_worker_finished, card_id, job.job_id))
@@ -159,7 +158,6 @@ class HistogramController:
         """Forget a card and ignore any late worker signal for it."""
         self._cancel_active_worker(card_id)
         self._bindings.pop(card_id, None)
-        self._latest_requested_job_ids.pop(card_id, None)
         self._results.pop(card_id, None)
         self._status_messages.pop(card_id, None)
         self._status_kinds.pop(card_id, None)
@@ -204,7 +202,6 @@ class HistogramController:
             return None
 
         job_id = self._next_job_id()
-        self._latest_requested_job_ids[card_id] = job_id
         return HistogramJob(
             card_id=card_id,
             job_id=job_id,
@@ -267,28 +264,24 @@ class HistogramController:
         self._set_status(card_id, f"Histogram calculation failed: {error}", kind="error")
 
     def _on_worker_finished(self, card_id: str, job_id: str) -> None:
-        if self._active_worker_job_ids.get(card_id) != job_id:
+        if self._active_job_ids.get(card_id) != job_id:
             return
 
         self._active_workers.pop(card_id, None)
-        self._active_worker_job_ids.pop(card_id, None)
+        self._active_job_ids.pop(card_id, None)
         if self._on_state_changed is not None:
             self._on_state_changed(card_id)
 
     def _is_current_job(self, card_id: str, job_id: str) -> bool:
-        return (
-            self._latest_requested_job_ids.get(card_id) == job_id and self._active_worker_job_ids.get(card_id) == job_id
-        )
+        return self._active_job_ids.get(card_id) == job_id
 
     def _cancel_active_worker(self, card_id: str) -> None:
         worker = self._active_workers.pop(card_id, None)
-        self._active_worker_job_ids.pop(card_id, None)
+        self._active_job_ids.pop(card_id, None)
         if worker is None:
             return
 
-        quit_worker = getattr(worker, "quit", None)
-        if callable(quit_worker):
-            quit_worker()
+        worker.quit()
 
 
 def _normalize_validation_error(validation_error: str | None) -> str | None:

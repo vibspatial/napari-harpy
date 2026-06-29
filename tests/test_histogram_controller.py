@@ -140,6 +140,42 @@ def test_histogram_controller_calculate_launches_job_for_bound_card(sdata_blobs:
     assert result.settings == settings
 
 
+def test_histogram_controller_runs_jobs_independently_per_card(sdata_blobs: SpatialData) -> None:
+    captured_jobs: list[HistogramJob] = []
+    workers: list[_DeferredWorker] = []
+    controller = HistogramController()
+    target = make_target()
+
+    def capture_worker(job: HistogramJob) -> _DeferredWorker:
+        captured_jobs.append(job)
+        worker = _DeferredWorker(make_job_result(job))
+        workers.append(worker)
+        return worker
+
+    controller._create_histogram_worker = capture_worker  # type: ignore[method-assign]
+    controller.bind("card-a", sdata_blobs, target, make_settings(bins=8))
+    controller.bind("card-b", sdata_blobs, target, make_settings(bins=16))
+
+    assert controller.calculate("card-a") is True
+    assert controller.calculate("card-b") is True
+
+    assert [job.job_id for job in captured_jobs] == ["1", "2"]
+    assert controller.is_running("card-a") is True
+    assert controller.is_running("card-b") is True
+
+    workers[1].emit_returned()
+
+    assert controller.result_for_card("card-a") is None
+    assert controller.result_for_card("card-b") is not None
+    assert controller.is_running("card-a") is True
+    assert controller.is_running("card-b") is False
+
+    workers[0].emit_returned()
+
+    assert controller.result_for_card("card-a") is not None
+    assert controller.is_running("card-a") is False
+
+
 def test_histogram_controller_rebinding_card_ignores_stale_worker_result(sdata_blobs: SpatialData) -> None:
     workers: list[_DeferredWorker] = []
     controller = HistogramController()
