@@ -33,6 +33,13 @@ from napari_harpy.core.spatialdata import (
     get_image_channel_names_from_sdata,
     get_spatialdata_image_options_for_coordinate_system_from_sdata,
 )
+from napari_harpy.widgets.histogram.status_card import (
+    _HistogramStatusCardSpec,
+    build_histogram_incomplete_card_spec,
+    build_histogram_ready_card_spec,
+    build_histogram_request_emitted_card_spec,
+    build_histogram_stale_request_card_spec,
+)
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     CHECKBOX_STYLESHEET,
@@ -763,33 +770,49 @@ class HistogramWidget(QWidget):
             return "none"
         return ", ".join(percentiles)
 
+    @staticmethod
+    def _apply_status_card_spec(label: QLabel, spec: _HistogramStatusCardSpec | None) -> None:
+        if spec is None:
+            label.setText("")
+            label.setToolTip("")
+            label.setVisible(False)
+            return
+
+        set_status_card(
+            label,
+            title=spec.title,
+            lines=list(spec.lines),
+            kind=spec.kind,
+            tooltip_message=spec.tooltip_message,
+        )
+
     def _update_card_state(self, card_id: str) -> None:
         histogram_card = self._get_card(card_id)
         try:
             request = self._build_request(histogram_card)
         except ValueError as error:
             histogram_card.calculate_button.setEnabled(False)
-            set_status_card(
+            self._apply_status_card_spec(
                 histogram_card.status_label,
-                title="Histogram Incomplete",
-                lines=[str(error)],
-                kind="warning",
+                build_histogram_incomplete_card_spec(str(error)),
             )
             return
 
         histogram_card.calculate_button.setEnabled(True)
         last_request = self._last_emitted_requests.get(card_id)
         if last_request is None:
-            message = "Ready to calculate."
+            # Valid card, but this card has not emitted a calculation request yet.
+            spec = build_histogram_ready_card_spec()
         elif last_request == request:
-            message = "Calculation request emitted."
+            # The current UI still matches the last request emitted for this card.
+            spec = build_histogram_request_emitted_card_spec()
         else:
-            message = "Target or settings changed. Calculate again."
-        set_status_card(
+            # The user changed target/settings after the last emitted request.
+            spec = build_histogram_stale_request_card_spec()
+
+        self._apply_status_card_spec(
             histogram_card.status_label,
-            title="Histogram Ready",
-            lines=[message],
-            kind="success" if last_request == request else "info",
+            spec,
         )
 
     def _build_request(self, histogram_card: _HistogramCard) -> HistogramCalculationRequest:

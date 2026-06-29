@@ -704,11 +704,21 @@ Scope:
   ```
 
 - use the same `thread_worker` resolution pattern as feature extraction;
+- replace the Slice 2 widget-level `calculation_requested` scaffold with a
+  controller-owned calculation path: clicking a card's Calculate button should
+  resolve the card state and call the histogram controller, rather than emitting
+  a public request signal as the long-term calculation mechanism;
+- keep request/job identity explicit by passing the resolved card id, selected
+  `SpatialData`, `HistogramTarget`, and `HistogramSettings` into the controller;
 - introduce an explicit card request-resolution step that turns staged card UI
   state into either `HistogramCalculationRequest` or a validation error;
 - stop building `HistogramCalculationRequest` directly inside
   `_update_card_state(...)`; status rendering should consume resolved card
   state instead of performing request construction itself;
+- after the controller is introduced, widget-level notifications should be for
+  completed results/status updates only if another widget-level consumer needs
+  them; calculation launch itself should live in the controller, as in the
+  feature extraction widget;
 - track the latest requested job per card;
 - ignore stale results when target/settings change during calculation;
 - support one active worker per card;
@@ -718,6 +728,8 @@ Scope:
 Tests:
 
 - Calculate starts a worker for a valid card;
+- clicking Calculate calls the histogram controller for the selected card rather
+  than emitting the Slice 2 `calculation_requested` signal;
 - card status updates do not construct jobs and do not start workers;
 - invalid card UI resolves to a validation error that disables Calculate and
   renders card feedback;
