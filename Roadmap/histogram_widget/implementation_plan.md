@@ -539,45 +539,144 @@ Status: [ ] Planned
 
 Goal:
 
-- add the `Image Histogram` widget with explicit target-card selection.
+- add the `Image Histogram` widget shell with explicit target-card selection,
+  per-card settings, and a request boundary for later calculation slices.
 
 Scope:
 
-- add `pyqtgraph` to `pyproject.toml` as a direct runtime dependency;
 - add `src/napari_harpy/widgets/histogram/`;
+- add `src/napari_harpy/widgets/histogram/widget.py`;
+- add `src/napari_harpy/widgets/histogram/__init__.py`;
 - register the widget in `src/napari_harpy/napari.yaml`;
+- expose the widget as `Image Histogram`;
 - attach to shared `HarpyAppState` through `get_or_create_app_state(...)`;
-- render an add-card action and a scrollable list of histogram cards;
-- each card exposes coordinate system, image, channel, and Calculate as the
-  primary card controls;
+- follow the existing widget surface conventions from shared styles:
+  `apply_widget_surface(...)`, `apply_scroll_content_surface(...)`,
+  `CompactComboBox`, `create_form_label(...)`, and the shared button/input
+  styles;
+- render a scrollable widget body with a short header, an Add histogram action,
+  and an empty state when no cards exist;
+- allow users to add and remove as many target cards as they need;
+- each card header exposes a compact trash/delete icon button whose tooltip and
+  accessible name are `Remove histogram`;
+- the remove action deletes only the histogram card and card-local staged UI
+  state; it must never mutate `SpatialData` image data;
+- removing the last card restores the widget empty state;
+- each card owns an internal `card_id` that remains stable until the card is
+  removed;
+- each card stages incomplete UI state separately from core dataclasses because
+  `HistogramTarget` requires a complete `coordinate_system`, `image_name`, and
+  `channel_name`;
+- use a local widget/request value object such as:
+
+  ```python
+  @dataclass(frozen=True)
+  class HistogramCalculationRequest:
+      card_id: str
+      target: HistogramTarget
+      settings: HistogramSettings
+  ```
+
+- expose a Qt signal such as `calculation_requested` carrying
+  `HistogramCalculationRequest`;
+- clicking Calculate builds and emits `HistogramCalculationRequest` for that
+  card when the staged target and settings are valid;
+- do not call `calculate_histogram(...)` in Slice 2;
+- do not start a worker in Slice 2;
+- do not create `HistogramResult` objects in Slice 2.
+
+Target-card controls:
+
+- coordinate system selector;
+- image selector;
+- channel selector;
+- Calculate button;
+- trash/delete icon button in the card header for `Remove histogram`;
+- card-local status text for empty, incomplete, valid, and invalid states.
+
+Selector behavior:
+
+- coordinate systems come from `get_coordinate_system_names_from_sdata(...)`;
+- for a selected coordinate system, image options come from
+  `get_spatialdata_image_options_for_coordinate_system_from_sdata(...)`;
+- for a selected image, channel names come from
+  `get_image_channel_names_from_sdata(...)`;
+- images without channel names are unsupported for the first histogram widget
+  implementation and should keep the card invalid with a clear status;
+- new cards should seed the coordinate-system selector from
+  `HarpyAppState.coordinate_system` when it is available, otherwise leave the
+  target incomplete;
+- image and channel selection must remain explicit and visible;
+- on `sdata_changed`, refresh selector options, preserve existing selections
+  when they are still valid, and otherwise clear only the invalid downstream
+  selections for that card;
+- changing coordinate system clears invalid image/channel selections;
+- changing image clears invalid channel selection;
+- changing target or settings marks that card dirty relative to the last
+  emitted request.
+
+Settings UI:
+
 - each card exposes `scale`, `bins`, `value_range`, `density`, `exclude_nan`,
-  `exclude_zeros`, `log_y`, and percentile fields inside a collapsed
+  `exclude_zeros`, `log_y`, and percentile guide fields inside a collapsed
   `Histogram settings` disclosure section;
-- each card owns and remembers its own `HistogramSettings` while it remains
-  visible;
-- the settings section is collapsed by default and displays a concise summary
-  of defaults or overrides;
+- the disclosure is collapsed by default;
+- use the title `Histogram settings`, not a generic `Advanced` label;
+- the collapsed header summarizes the active settings, for example
+  `scale0, 256 bins` or `scale1, range 0-4095, 512 bins, p0.1-p99.9`;
 - the settings section exposes a per-card `Reset settings` action;
-- coordinate systems and images come from shared `SpatialData` discovery
-  helpers;
-- channel names come from `get_image_channel_names_from_sdata(...)`;
-- changing target/settings marks that card's result stale until Calculate is
-  pressed again.
+- settings are independent per card;
+- `scale` defaults to `scale0`;
+- `bins` defaults to `256`;
+- `value_range` is optional and maps to `HistogramSettings.value_range` only
+  when both low/high fields are provided;
+- percentile UI can expose `percentile_min` and `percentile_max` fields for the
+  common lower/upper workflow, but the card must translate non-empty fields to
+  `HistogramSettings.percentiles`;
+- invalid optional settings should keep Calculate disabled and show a
+  card-local warning instead of constructing invalid core dataclasses.
+
+Non-goals:
+
+- no `calculate_histogram(...)` calls;
+- no Dask computation;
+- no background worker/controller;
+- no pyqtgraph plot widget;
+- no histogram result rendering;
+- no contrast-limit synchronization;
+- no percentile-to-contrast action;
+- no automatic active-layer retargeting;
+- no confirmation dialog for removing a histogram card, because Slice 2 removal
+  is UI-local and non-destructive.
 
 Tests:
 
 - widget instantiates without a viewer;
-- widget seeds from shared `sdata`;
+- widget attaches to shared `HarpyAppState`;
+- widget shows an empty state and Add histogram action when no cards exist;
 - cards can be added and removed;
+- each card exposes a trash/delete icon button with tooltip/accessibility text
+  `Remove histogram`;
+- removing a card does not mutate the selected `SpatialData`;
+- removing the last card restores the empty state;
 - coordinate-system/image/channel selectors refresh on `sdata_changed`;
-- Calculate is available with default settings once the target is valid;
+- coordinate-system/image/channel selectors preserve valid selections across
+  refreshes and clear invalid downstream selections;
+- images without channel names keep the card invalid;
+- Calculate is enabled only when the staged target and settings can build
+  `HistogramTarget` and `HistogramSettings`;
+- clicking Calculate emits `HistogramCalculationRequest`;
+- clicking Calculate does not call `calculate_histogram(...)`;
 - optional settings are hidden in a collapsed per-card settings section by
   default;
 - the collapsed settings header summarizes active defaults/overrides;
 - resetting settings affects only the current card;
 - `scale`, `bins`, histogram value range, filtering, log-axis, density, and
   percentile controls are independent per card;
-- stale card state is visible after settings change.
+- percentile min/max UI fields are translated to
+  `HistogramSettings.percentiles`;
+- changing target/settings marks the card dirty relative to the last emitted
+  request.
 
 ### 3. Background Controller
 
@@ -617,6 +716,8 @@ Goal:
 
 Scope:
 
+- add `pyqtgraph` to `pyproject.toml` as a direct runtime dependency if it has
+  not already been added;
 - add a histogram plot wrapper such as `_HistogramPlotWidget`;
 - embed a `pyqtgraph.PlotWidget` or equivalent pyqtgraph graphics view per
   card;
