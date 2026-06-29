@@ -894,13 +894,32 @@ Scope:
 - keep all pyqtgraph imports inside the plot wrapper module; `core.histogram`,
   `widgets/histogram/controller.py`, and the Slice 1 calculator must remain free
   of pyqtgraph dependencies;
-- add histogram plot palette/style constants derived from
-  `widgets/shared_styles.py`; prefer a small histogram `styles.py` module if the
-  constants would otherwise clutter `plot_widget.py`;
+- add histogram plot palette/style constants in `widgets/histogram/styles.py`,
+  derived from `widgets/shared_styles.py`;
 - use the palette decisions from "Plot Palette And Styling"; do not introduce
   ad hoc plot colors or a Matplotlib-style color cycle;
 - configure plot background, axes, grid, bar fill, empty/running/stale text, and
   future marker styling from those constants;
+- use the following initial palette contract:
+
+  ```python
+  HISTOGRAM_PLOT_BACKGROUND_COLOR = WIDGET_PANEL_SUBTLE_COLOR
+  HISTOGRAM_AXIS_TEXT_COLOR = WIDGET_TEXT_MUTED_COLOR
+  HISTOGRAM_AXIS_GRID_COLOR = WIDGET_BORDER_COLOR
+  HISTOGRAM_BAR_FILL_COLOR = "#7EA7FF"
+  HISTOGRAM_BAR_FILL_ALPHA = 150
+  HISTOGRAM_BAR_EDGE_COLOR = None
+  HISTOGRAM_EMPTY_TEXT_COLOR = WIDGET_TEXT_MUTED_COLOR
+  HISTOGRAM_STALE_TEXT_COLOR = WIDGET_TEXT_MUTED_COLOR
+
+  # Defined now so later contrast/percentile slices do not invent new colors.
+  HISTOGRAM_CONTRAST_LINE_COLOR = WIDGET_SUCCESS_COLOR
+  HISTOGRAM_CONTRAST_REGION_ALPHA = 32
+  HISTOGRAM_PERCENTILE_LINE_COLOR = WIDGET_WARNING_TEXT_COLOR
+  ```
+
+- use the stable muted data blue for all histogram bars in the first rendering
+  implementation; do not vary bar color per card or per channel in Slice 5;
 - use `pyqtgraph.PlotWidget` with one `PlotItem` by default;
 - render histogram bars from `HistogramResult.counts` and
   `HistogramResult.bin_edges` with `pyqtgraph.BarGraphItem`;
