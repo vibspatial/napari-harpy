@@ -691,6 +691,11 @@ Goal:
 Scope:
 
 - add `widgets/histogram/controller.py`;
+- keep the responsibility split explicit:
+  - the widget resolves staged card UI into either a valid request payload or a
+    validation error;
+  - the controller receives only valid requests and owns job creation, worker
+    lifecycle, stale-result handling, and job status;
 - define immutable `HistogramJob` exactly as:
 
   ```python
@@ -703,40 +708,126 @@ Scope:
       settings: HistogramSettings
   ```
 
+- define a small immutable result envelope for worker completion, for example:
+
+  ```python
+  @dataclass(frozen=True)
+  class HistogramJobResult:
+      card_id: str
+      job_id: str
+      target: HistogramTarget
+      settings: HistogramSettings
+      result: HistogramResult
+  ```
+
+- replace or extend the Slice 2 `HistogramCalculationRequest` scaffold with a
+  resolved widget-side request that includes the selected `SpatialData` object,
+  for example:
+
+  ```python
+  @dataclass(frozen=True)
+  class HistogramResolvedRequest:
+      card_id: str
+      sdata: SpatialData
+      target: HistogramTarget
+      settings: HistogramSettings
+  ```
+
 - use the same `thread_worker` resolution pattern as feature extraction;
 - replace the Slice 2 widget-level `calculation_requested` scaffold with a
   controller-owned calculation path: clicking a card's Calculate button should
   resolve the card state and call the histogram controller, rather than emitting
   a public request signal as the long-term calculation mechanism;
-- keep request/job identity explicit by passing the resolved card id, selected
-  `SpatialData`, `HistogramTarget`, and `HistogramSettings` into the controller;
-- introduce an explicit card request-resolution step that turns staged card UI
-  state into either `HistogramCalculationRequest` or a validation error;
+- introduce an explicit card request-resolution step, e.g.
+  `_resolve_card_request(card_id)`, that parses the current card controls and
+  returns either `HistogramResolvedRequest` or a validation error;
+- request resolution is allowed to construct `HistogramTarget` and
+  `HistogramSettings`, because those dataclasses are the validation boundary
+  between staged UI and valid work;
+- the controller API should stay data-oriented, for example:
+
+  ```python
+  controller.calculate(request: HistogramResolvedRequest) -> bool
+  controller.invalidate_card(card_id: str) -> None
+  controller.remove_card(card_id: str) -> None
+  ```
+
+- `controller.calculate(...)` creates a `HistogramJob`, launches a worker, and
+  calls `calculate_histogram(job.sdata, job.target, job.settings)` inside that
+  worker;
 - stop building `HistogramCalculationRequest` directly inside
-  `_update_card_state(...)`; status rendering should consume resolved card
-  state instead of performing request construction itself;
+  `_update_card_state(...)`; target/settings change handlers should refresh a
+  resolved card state, and status rendering should consume that state instead of
+  performing request construction itself;
 - after the controller is introduced, widget-level notifications should be for
   completed results/status updates only if another widget-level consumer needs
   them; calculation launch itself should live in the controller, as in the
   feature extraction widget;
 - track the latest requested job per card;
-- ignore stale results when target/settings change during calculation;
-- support one active worker per card;
-- expose status text and status kind for card-level feedback;
+- when target/settings change after a card has launched a job, the widget should
+  mark that card's resolved state as changed and notify the controller through
+  `invalidate_card(card_id)` so in-flight results for the old request are ignored;
+- ignore stale results when a newer job was requested, when the card was
+  invalidated, or when the card was removed;
+- support one active worker per card and do not introduce a per-card job queue in
+  this slice;
+- allow different cards to calculate concurrently;
+- expose per-card controller status text and status kind for card-level feedback;
 - cancel or ignore jobs when a card is removed.
+
+Widget request-resolution behavior:
+
+- `_resolve_card_request(card_id)` should be the only place where the widget
+  translates combo-box/text-field state into `HistogramTarget` and
+  `HistogramSettings`;
+- missing `SpatialData`, coordinate system, image, channel, or invalid optional
+  settings should return a validation error with user-facing status text;
+- `_update_card_state(...)` should not call `calculate_histogram(...)`, start a
+  worker, emit a calculation signal, or create a `HistogramJob`;
+- the Calculate button should be enabled only when the resolved state is valid
+  and the card is not already running;
+- clicking Calculate should re-read the latest resolved request for that card
+  and pass it to `controller.calculate(...)`.
+
+Controller behavior:
+
+- the controller must not import Qt widgets or pyqtgraph;
+- the worker must call the Slice 1 calculator and return `HistogramJobResult`;
+- worker errors should become card-local error status and should not crash the
+  widget;
+- stale results should not update the card result state or status as completed;
+- a running card should show a running status until the current job returns,
+  errors, is invalidated, or is removed.
+
+Non-goals:
+
+- no pyqtgraph plot widget;
+- no histogram bar rendering;
+- no contrast-limit synchronization;
+- no percentile-to-contrast action;
+- no automatic active-layer calculation action.
 
 Tests:
 
 - Calculate starts a worker for a valid card;
 - clicking Calculate calls the histogram controller for the selected card rather
   than emitting the Slice 2 `calculation_requested` signal;
+- controller receives only resolved valid requests;
+- widget request resolution returns validation errors for incomplete or invalid
+  card UI without calling the controller;
 - card status updates do not construct jobs and do not start workers;
 - invalid card UI resolves to a validation error that disables Calculate and
   renders card feedback;
+- worker calls `calculate_histogram(...)` with the exact `sdata`, target, and
+  settings from the resolved card request;
 - worker jobs receive the settings from the card that launched them;
 - stale worker results are ignored;
 - worker errors surface as card errors;
-- removing a card disconnects or ignores its worker result.
+- changing target/settings while a job is running invalidates the in-flight job
+  for that card;
+- removing a card disconnects or ignores its worker result;
+- different cards can calculate independently without sharing settings or job
+  state.
 
 ### 4. Histogram Plot Rendering
 
