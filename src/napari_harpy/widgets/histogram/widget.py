@@ -119,7 +119,7 @@ class HistogramCalculationRequest:
 
 
 @dataclass(frozen=True)
-class _HistogramCardWidgets:
+class _HistogramCard:
     card_id: str
     container: QFrame
     title_label: QLabel
@@ -156,7 +156,7 @@ class HistogramWidget(QWidget):
         self.setMinimumWidth(WIDGET_MIN_WIDTH)
 
         self._app_state = get_or_create_app_state(napari_viewer)
-        self._cards: dict[str, _HistogramCardWidgets] = {}
+        self._cards: dict[str, _HistogramCard] = {}
         self._card_channel_errors: dict[str, str] = {}
         self._last_emitted_requests: dict[str, HistogramCalculationRequest] = {}
         self._logo_path = get_logo_path()
@@ -244,32 +244,32 @@ class HistogramWidget(QWidget):
     def add_histogram_card(self) -> str:
         """Add one histogram target card and return its stable card id."""
         card_id = uuid.uuid4().hex
-        widgets = self._create_card_widgets(card_id)
-        self._cards[card_id] = widgets
-        self.cards_layout.addWidget(widgets.container)
+        histogram_card = self._create_histogram_card(card_id)
+        self._cards[card_id] = histogram_card
+        self.cards_layout.addWidget(histogram_card.container)
         # Prefer the shared app-state coordinate system for new cards, while
         # still preserving explicit card selections during later refreshes.
-        self._refresh_card_selectors(widgets, preferred_coordinate_system=self._app_state.coordinate_system)
+        self._refresh_card_selectors(histogram_card, preferred_coordinate_system=self._app_state.coordinate_system)
         self._update_card_state(card_id)
         self._update_empty_state()
         return card_id
 
     def remove_histogram_card(self, card_id: str) -> None:
         """Remove a card-local histogram request UI without touching SpatialData."""
-        widgets = self._cards.pop(card_id, None)
+        histogram_card = self._cards.pop(card_id, None)
         self._card_channel_errors.pop(card_id, None)
         self._last_emitted_requests.pop(card_id, None)
-        if widgets is None:
+        if histogram_card is None:
             return
 
-        self.cards_layout.removeWidget(widgets.container)
-        widgets.container.deleteLater()
+        self.cards_layout.removeWidget(histogram_card.container)
+        histogram_card.container.deleteLater()
         self._update_empty_state()
 
     def build_request_for_card(self, card_id: str) -> HistogramCalculationRequest:
         """Build a validated calculation request for tests and later controllers."""
-        widgets = self._get_card(card_id)
-        return self._build_request(widgets)
+        histogram_card = self._get_card(card_id)
+        return self._build_request(histogram_card)
 
     def _create_header_logo(self) -> QLabel:
         logo_label = QLabel()
@@ -285,7 +285,7 @@ class HistogramWidget(QWidget):
         logo_label.setStyleSheet(f"color: {WIDGET_TEXT_COLOR}; font-size: 18px; font-weight: 600;")
         return logo_label
 
-    def _create_card_widgets(self, card_id: str) -> _HistogramCardWidgets:
+    def _create_histogram_card(self, card_id: str) -> _HistogramCard:
         container = QFrame()
         container.setObjectName(f"histogram_card_{card_id}")
         container.setProperty("histogramCard", "true")
@@ -475,7 +475,7 @@ class HistogramWidget(QWidget):
         layout.addWidget(action_row)
         layout.addWidget(status_label)
 
-        widgets = _HistogramCardWidgets(
+        histogram_card = _HistogramCard(
             card_id=card_id,
             container=container,
             title_label=title_label,
@@ -499,8 +499,8 @@ class HistogramWidget(QWidget):
             percentile_max_edit=percentile_max_edit,
             reset_settings_button=reset_settings_button,
         )
-        self._refresh_settings_summary(widgets)
-        return widgets
+        self._refresh_settings_summary(histogram_card)
+        return histogram_card
 
     def _create_combo(self, object_name: str, *, placeholder: str) -> CompactComboBox:
         combo = CompactComboBox()
@@ -528,47 +528,49 @@ class HistogramWidget(QWidget):
         checkbox.setStyleSheet(CHECKBOX_STYLESHEET)
         return checkbox
 
-    def _get_card(self, card_id: str) -> _HistogramCardWidgets:
+    def _get_card(self, card_id: str) -> _HistogramCard:
         try:
             return self._cards[card_id]
         except KeyError as error:
             raise ValueError(f"Histogram card `{card_id}` is not available.") from error
 
     def _on_sdata_changed(self, _sdata: SpatialData | None) -> None:
-        for widgets in self._cards.values():
-            self._refresh_card_selectors(widgets)
-            self._update_card_state(widgets.card_id)
+        for histogram_card in self._cards.values():
+            self._refresh_card_selectors(histogram_card)
+            self._update_card_state(histogram_card.card_id)
 
     def _on_coordinate_system_changed(self, event: CoordinateSystemChangedEvent) -> None:
         if event.sdata is not self._app_state.sdata or event.coordinate_system is None:
             return
 
-        for widgets in self._cards.values():
-            if self._current_text_data(widgets.coordinate_system_combo) is None:
-                self._refresh_card_selectors(widgets, preferred_coordinate_system=self._app_state.coordinate_system)
-                self._update_card_state(widgets.card_id)
+        for histogram_card in self._cards.values():
+            if self._current_text_data(histogram_card.coordinate_system_combo) is None:
+                self._refresh_card_selectors(
+                    histogram_card, preferred_coordinate_system=self._app_state.coordinate_system
+                )
+                self._update_card_state(histogram_card.card_id)
 
     def _on_card_coordinate_system_changed(self, card_id: str) -> None:
-        widgets = self._get_card(card_id)
-        self._refresh_card_image_options(widgets)
-        self._refresh_card_channel_options(widgets)
-        self._refresh_card_scale_options(widgets)
+        histogram_card = self._get_card(card_id)
+        self._refresh_card_image_options(histogram_card)
+        self._refresh_card_channel_options(histogram_card)
+        self._refresh_card_scale_options(histogram_card)
         self._update_card_state(card_id)
 
     def _on_card_image_changed(self, card_id: str) -> None:
-        widgets = self._get_card(card_id)
-        self._refresh_card_channel_options(widgets)
-        self._refresh_card_scale_options(widgets)
+        histogram_card = self._get_card(card_id)
+        self._refresh_card_channel_options(histogram_card)
+        self._refresh_card_scale_options(histogram_card)
         self._update_card_state(card_id)
 
     def _on_card_target_or_settings_changed(self, card_id: str) -> None:
-        widgets = self._get_card(card_id)
-        self._refresh_settings_summary(widgets)
+        histogram_card = self._get_card(card_id)
+        self._refresh_settings_summary(histogram_card)
         self._update_card_state(card_id)
 
     def _refresh_card_selectors(
         self,
-        widgets: _HistogramCardWidgets,
+        histogram_card: _HistogramCard,
         *,
         preferred_coordinate_system: str | None = None,
     ) -> None:
@@ -577,22 +579,22 @@ class HistogramWidget(QWidget):
             if self.selected_spatialdata is None
             else get_coordinate_system_names_from_sdata(self.selected_spatialdata)
         )
-        current_coordinate_system = self._current_text_data(widgets.coordinate_system_combo)
+        current_coordinate_system = self._current_text_data(histogram_card.coordinate_system_combo)
         selected_coordinate_system = None
         if preferred_coordinate_system in coordinate_systems:
             selected_coordinate_system = preferred_coordinate_system
         elif current_coordinate_system in coordinate_systems:
             selected_coordinate_system = current_coordinate_system
 
-        self._set_combo_items(widgets.coordinate_system_combo, coordinate_systems, selected_coordinate_system)
-        self._refresh_card_image_options(widgets)
-        self._refresh_card_channel_options(widgets)
-        self._refresh_card_scale_options(widgets)
+        self._set_combo_items(histogram_card.coordinate_system_combo, coordinate_systems, selected_coordinate_system)
+        self._refresh_card_image_options(histogram_card)
+        self._refresh_card_channel_options(histogram_card)
+        self._refresh_card_scale_options(histogram_card)
 
-    def _refresh_card_image_options(self, widgets: _HistogramCardWidgets) -> None:
+    def _refresh_card_image_options(self, histogram_card: _HistogramCard) -> None:
         sdata = self.selected_spatialdata
-        coordinate_system = self._current_text_data(widgets.coordinate_system_combo)
-        current_image_name = self._current_text_data(widgets.image_combo)
+        coordinate_system = self._current_text_data(histogram_card.coordinate_system_combo)
+        current_image_name = self._current_text_data(histogram_card.image_combo)
         items: list[tuple[str, str]] = []
         if sdata is not None and coordinate_system is not None:
             items = [
@@ -605,12 +607,12 @@ class HistogramWidget(QWidget):
 
         valid_image_names = {image_name for _display_name, image_name in items}
         selected_image_name = current_image_name if current_image_name in valid_image_names else None
-        self._set_combo_items(widgets.image_combo, items, selected_image_name)
+        self._set_combo_items(histogram_card.image_combo, items, selected_image_name)
 
-    def _refresh_card_channel_options(self, widgets: _HistogramCardWidgets) -> None:
+    def _refresh_card_channel_options(self, histogram_card: _HistogramCard) -> None:
         sdata = self.selected_spatialdata
-        image_name = self._current_text_data(widgets.image_combo)
-        current_channel_name = self._current_text_data(widgets.channel_combo)
+        image_name = self._current_text_data(histogram_card.image_combo)
+        current_channel_name = self._current_text_data(histogram_card.channel_combo)
         channel_names: list[str] = []
         channel_error: str | None = None
 
@@ -624,13 +626,13 @@ class HistogramWidget(QWidget):
                     channel_error = f"Image `{image_name}` does not expose channel names."
 
         selected_channel_name = current_channel_name if current_channel_name in channel_names else None
-        self._set_combo_items(widgets.channel_combo, channel_names, selected_channel_name)
-        self._card_channel_errors[widgets.card_id] = channel_error or ""
+        self._set_combo_items(histogram_card.channel_combo, channel_names, selected_channel_name)
+        self._card_channel_errors[histogram_card.card_id] = channel_error or ""
 
-    def _refresh_card_scale_options(self, widgets: _HistogramCardWidgets) -> None:
+    def _refresh_card_scale_options(self, histogram_card: _HistogramCard) -> None:
         sdata = self.selected_spatialdata
-        image_name = self._current_text_data(widgets.image_combo)
-        current_scale = self._current_text_data(widgets.scale_combo)
+        image_name = self._current_text_data(histogram_card.image_combo)
+        current_scale = self._current_text_data(histogram_card.scale_combo)
         scales = [_DEFAULT_SCALE]
 
         if sdata is not None and image_name is not None:
@@ -643,9 +645,9 @@ class HistogramWidget(QWidget):
         selected_scale = (
             current_scale if current_scale in scales else (_DEFAULT_SCALE if _DEFAULT_SCALE in scales else None)
         )
-        self._set_combo_items(widgets.scale_combo, scales, selected_scale)
-        widgets.scale_combo.setEnabled(sdata is not None and image_name is not None and bool(scales))
-        self._refresh_settings_summary(widgets)
+        self._set_combo_items(histogram_card.scale_combo, scales, selected_scale)
+        histogram_card.scale_combo.setEnabled(sdata is not None and image_name is not None and bool(scales))
+        self._refresh_settings_summary(histogram_card)
 
     def _set_combo_items(
         self,
@@ -679,32 +681,36 @@ class HistogramWidget(QWidget):
         panel.setVisible(checked)
 
     def _reset_card_settings(self, card_id: str) -> None:
-        widgets = self._get_card(card_id)
-        with QSignalBlocker(widgets.bins_spin):
-            widgets.bins_spin.setValue(_DEFAULT_SETTINGS.bins)
+        histogram_card = self._get_card(card_id)
+        with QSignalBlocker(histogram_card.bins_spin):
+            histogram_card.bins_spin.setValue(_DEFAULT_SETTINGS.bins)
         for line_edit in (
-            widgets.value_range_low_edit,
-            widgets.value_range_high_edit,
-            widgets.percentile_min_edit,
-            widgets.percentile_max_edit,
+            histogram_card.value_range_low_edit,
+            histogram_card.value_range_high_edit,
+            histogram_card.percentile_min_edit,
+            histogram_card.percentile_max_edit,
         ):
             with QSignalBlocker(line_edit):
                 line_edit.clear()
         checkbox_defaults = {
-            widgets.density_checkbox: _DEFAULT_SETTINGS.density,
-            widgets.exclude_nan_checkbox: _DEFAULT_SETTINGS.exclude_nan,
-            widgets.exclude_zeros_checkbox: _DEFAULT_SETTINGS.exclude_zeros,
-            widgets.log_y_checkbox: _DEFAULT_SETTINGS.log_y,
+            histogram_card.density_checkbox: _DEFAULT_SETTINGS.density,
+            histogram_card.exclude_nan_checkbox: _DEFAULT_SETTINGS.exclude_nan,
+            histogram_card.exclude_zeros_checkbox: _DEFAULT_SETTINGS.exclude_zeros,
+            histogram_card.log_y_checkbox: _DEFAULT_SETTINGS.log_y,
         }
         for checkbox, checked in checkbox_defaults.items():
             with QSignalBlocker(checkbox):
                 checkbox.setChecked(checked)
-        if widgets.scale_combo.count():
-            selected_scale = _DEFAULT_SCALE if self._find_combo_data(widgets.scale_combo, _DEFAULT_SCALE) >= 0 else None
-            with QSignalBlocker(widgets.scale_combo):
-                widgets.scale_combo.setCurrentIndex(self._find_combo_data(widgets.scale_combo, selected_scale))
+        if histogram_card.scale_combo.count():
+            selected_scale = (
+                _DEFAULT_SCALE if self._find_combo_data(histogram_card.scale_combo, _DEFAULT_SCALE) >= 0 else None
+            )
+            with QSignalBlocker(histogram_card.scale_combo):
+                histogram_card.scale_combo.setCurrentIndex(
+                    self._find_combo_data(histogram_card.scale_combo, selected_scale)
+                )
 
-        self._refresh_settings_summary(widgets)
+        self._refresh_settings_summary(histogram_card)
         self._update_card_state(card_id)
 
     @staticmethod
@@ -716,38 +722,40 @@ class HistogramWidget(QWidget):
                 return index
         return -1
 
-    def _refresh_settings_summary(self, widgets: _HistogramCardWidgets) -> None:
-        widgets.settings_toggle.setText("Settings")
-        widgets.settings_toggle.setToolTip(format_tooltip("\n".join(self._settings_tooltip_lines(widgets))))
-
-    def _settings_tooltip_lines(self, widgets: _HistogramCardWidgets) -> tuple[str, ...]:
-        scale = self._current_text_data(widgets.scale_combo) or _DEFAULT_SCALE
-        return (
-            f"scale: {scale}",
-            f"bins: {widgets.bins_spin.value()}",
-            f"value_range: {self._value_range_tooltip_text(widgets)}",
-            f"density: {widgets.density_checkbox.isChecked()}",
-            f"exclude_nan: {widgets.exclude_nan_checkbox.isChecked()}",
-            f"exclude_zeros: {widgets.exclude_zeros_checkbox.isChecked()}",
-            f"log_y: {widgets.log_y_checkbox.isChecked()}",
-            f"percentiles: {self._percentiles_tooltip_text(widgets)}",
+    def _refresh_settings_summary(self, histogram_card: _HistogramCard) -> None:
+        histogram_card.settings_toggle.setText("Settings")
+        histogram_card.settings_toggle.setToolTip(
+            format_tooltip("\n".join(self._settings_tooltip_lines(histogram_card)))
         )
 
-    def _value_range_tooltip_text(self, widgets: _HistogramCardWidgets) -> str:
-        low_text = widgets.value_range_low_edit.text().strip()
-        high_text = widgets.value_range_high_edit.text().strip()
+    def _settings_tooltip_lines(self, histogram_card: _HistogramCard) -> tuple[str, ...]:
+        scale = self._current_text_data(histogram_card.scale_combo) or _DEFAULT_SCALE
+        return (
+            f"scale: {scale}",
+            f"bins: {histogram_card.bins_spin.value()}",
+            f"value_range: {self._value_range_tooltip_text(histogram_card)}",
+            f"density: {histogram_card.density_checkbox.isChecked()}",
+            f"exclude_nan: {histogram_card.exclude_nan_checkbox.isChecked()}",
+            f"exclude_zeros: {histogram_card.exclude_zeros_checkbox.isChecked()}",
+            f"log_y: {histogram_card.log_y_checkbox.isChecked()}",
+            f"percentiles: {self._percentiles_tooltip_text(histogram_card)}",
+        )
+
+    def _value_range_tooltip_text(self, histogram_card: _HistogramCard) -> str:
+        low_text = histogram_card.value_range_low_edit.text().strip()
+        high_text = histogram_card.value_range_high_edit.text().strip()
         if not low_text and not high_text:
             return "auto"
         if not low_text or not high_text:
             return f"incomplete (low={low_text or 'auto'}, high={high_text or 'auto'})"
         return f"({low_text}, {high_text})"
 
-    def _percentiles_tooltip_text(self, widgets: _HistogramCardWidgets) -> str:
+    def _percentiles_tooltip_text(self, histogram_card: _HistogramCard) -> str:
         percentiles = tuple(
             text
             for text in (
-                widgets.percentile_min_edit.text().strip(),
-                widgets.percentile_max_edit.text().strip(),
+                histogram_card.percentile_min_edit.text().strip(),
+                histogram_card.percentile_max_edit.text().strip(),
             )
             if text
         )
@@ -756,20 +764,20 @@ class HistogramWidget(QWidget):
         return ", ".join(percentiles)
 
     def _update_card_state(self, card_id: str) -> None:
-        widgets = self._get_card(card_id)
+        histogram_card = self._get_card(card_id)
         try:
-            request = self._build_request(widgets)
+            request = self._build_request(histogram_card)
         except ValueError as error:
-            widgets.calculate_button.setEnabled(False)
+            histogram_card.calculate_button.setEnabled(False)
             set_status_card(
-                widgets.status_label,
+                histogram_card.status_label,
                 title="Histogram Incomplete",
                 lines=[str(error)],
                 kind="warning",
             )
             return
 
-        widgets.calculate_button.setEnabled(True)
+        histogram_card.calculate_button.setEnabled(True)
         last_request = self._last_emitted_requests.get(card_id)
         if last_request is None:
             message = "Ready to calculate."
@@ -778,29 +786,29 @@ class HistogramWidget(QWidget):
         else:
             message = "Target or settings changed. Calculate again."
         set_status_card(
-            widgets.status_label,
+            histogram_card.status_label,
             title="Histogram Ready",
             lines=[message],
             kind="success" if last_request == request else "info",
         )
 
-    def _build_request(self, widgets: _HistogramCardWidgets) -> HistogramCalculationRequest:
+    def _build_request(self, histogram_card: _HistogramCard) -> HistogramCalculationRequest:
         if self.selected_spatialdata is None:
             raise ValueError("No SpatialData loaded.")
 
-        coordinate_system = self._current_text_data(widgets.coordinate_system_combo)
+        coordinate_system = self._current_text_data(histogram_card.coordinate_system_combo)
         if coordinate_system is None:
             raise ValueError("Choose a coordinate system.")
 
-        image_name = self._current_text_data(widgets.image_combo)
+        image_name = self._current_text_data(histogram_card.image_combo)
         if image_name is None:
             raise ValueError("Choose an image.")
 
-        channel_error = self._card_channel_errors.get(widgets.card_id)
+        channel_error = self._card_channel_errors.get(histogram_card.card_id)
         if channel_error:
             raise ValueError(channel_error)
 
-        channel_name = self._current_text_data(widgets.channel_combo)
+        channel_name = self._current_text_data(histogram_card.channel_combo)
         if channel_name is None:
             raise ValueError("Choose a channel.")
 
@@ -809,31 +817,31 @@ class HistogramWidget(QWidget):
             image_name=image_name,
             channel_name=channel_name,
         )
-        settings = self._build_settings(widgets)
-        return HistogramCalculationRequest(card_id=widgets.card_id, target=target, settings=settings)
+        settings = self._build_settings(histogram_card)
+        return HistogramCalculationRequest(card_id=histogram_card.card_id, target=target, settings=settings)
 
-    def _build_settings(self, widgets: _HistogramCardWidgets) -> HistogramSettings:
+    def _build_settings(self, histogram_card: _HistogramCard) -> HistogramSettings:
         value_range = self._parse_optional_pair(
-            widgets.value_range_low_edit.text(),
-            widgets.value_range_high_edit.text(),
+            histogram_card.value_range_low_edit.text(),
+            histogram_card.value_range_high_edit.text(),
             field_name="value range",
         )
         percentiles = tuple(
             self._parse_float(text, field_name="percentile")
             for text in (
-                widgets.percentile_min_edit.text().strip(),
-                widgets.percentile_max_edit.text().strip(),
+                histogram_card.percentile_min_edit.text().strip(),
+                histogram_card.percentile_max_edit.text().strip(),
             )
             if text
         )
         return HistogramSettings(
-            bins=widgets.bins_spin.value(),
+            bins=histogram_card.bins_spin.value(),
             value_range=value_range,
-            density=widgets.density_checkbox.isChecked(),
-            exclude_nan=widgets.exclude_nan_checkbox.isChecked(),
-            exclude_zeros=widgets.exclude_zeros_checkbox.isChecked(),
-            log_y=widgets.log_y_checkbox.isChecked(),
-            scale=self._current_text_data(widgets.scale_combo) or _DEFAULT_SCALE,
+            density=histogram_card.density_checkbox.isChecked(),
+            exclude_nan=histogram_card.exclude_nan_checkbox.isChecked(),
+            exclude_zeros=histogram_card.exclude_zeros_checkbox.isChecked(),
+            log_y=histogram_card.log_y_checkbox.isChecked(),
+            scale=self._current_text_data(histogram_card.scale_combo) or _DEFAULT_SCALE,
             percentiles=percentiles,
         )
 
@@ -863,8 +871,8 @@ class HistogramWidget(QWidget):
             raise ValueError(f"Histogram {field_name} must be a number.") from error
 
     def _emit_calculation_request(self, card_id: str) -> None:
-        widgets = self._get_card(card_id)
-        request = self._build_request(widgets)
+        histogram_card = self._get_card(card_id)
+        request = self._build_request(histogram_card)
         self._last_emitted_requests[card_id] = request
         self.calculation_requested.emit(request)
         self._update_card_state(card_id)
