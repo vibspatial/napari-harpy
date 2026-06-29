@@ -247,7 +247,9 @@ class HistogramWidget(QWidget):
         widgets = self._create_card_widgets(card_id)
         self._cards[card_id] = widgets
         self.cards_layout.addWidget(widgets.container)
-        self._refresh_card_selectors(widgets, seed_coordinate_system=self._app_state.coordinate_system)
+        # Prefer the shared app-state coordinate system for new cards, while
+        # still preserving explicit card selections during later refreshes.
+        self._refresh_card_selectors(widgets, preferred_coordinate_system=self._app_state.coordinate_system)
         self._update_card_state(card_id)
         self._update_empty_state()
         return card_id
@@ -543,7 +545,7 @@ class HistogramWidget(QWidget):
 
         for widgets in self._cards.values():
             if self._current_text_data(widgets.coordinate_system_combo) is None:
-                self._refresh_card_selectors(widgets, seed_coordinate_system=event.coordinate_system)
+                self._refresh_card_selectors(widgets, preferred_coordinate_system=self._app_state.coordinate_system)
                 self._update_card_state(widgets.card_id)
 
     def _on_card_coordinate_system_changed(self, card_id: str) -> None:
@@ -568,7 +570,7 @@ class HistogramWidget(QWidget):
         self,
         widgets: _HistogramCardWidgets,
         *,
-        seed_coordinate_system: str | None = None,
+        preferred_coordinate_system: str | None = None,
     ) -> None:
         coordinate_systems = (
             []
@@ -577,8 +579,8 @@ class HistogramWidget(QWidget):
         )
         current_coordinate_system = self._current_text_data(widgets.coordinate_system_combo)
         selected_coordinate_system = None
-        if seed_coordinate_system in coordinate_systems:
-            selected_coordinate_system = seed_coordinate_system
+        if preferred_coordinate_system in coordinate_systems:
+            selected_coordinate_system = preferred_coordinate_system
         elif current_coordinate_system in coordinate_systems:
             selected_coordinate_system = current_coordinate_system
 

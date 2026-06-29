@@ -843,7 +843,59 @@ Tests:
 - applying percentiles sets contrast limits to the computed values;
 - the normal contrast-limit event path updates the histogram contrast region.
 
-### 8. Product Hardening
+### 8. Add Histogram From Active Image
+
+Status: [ ] Planned
+
+Goal:
+
+- provide a fast, explicit path from the currently selected napari image layer
+  to a histogram card without making active-layer following the canonical
+  selection model.
+
+Scope:
+
+- add a header action next to `Add histogram`, labeled `Add from active image`
+  or `Add histogram from active image`;
+- keep explicit cards as the source of truth; the active layer only pre-fills a
+  new card or focuses an equivalent existing card;
+- do not silently retarget existing histogram cards when the napari active layer
+  changes;
+- resolve the active layer through `HarpyAppState.viewer_adapter` and
+  `LayerBindingRegistry`, not through layer names or legacy metadata;
+- enable the action only when the active layer is a Harpy-managed napari
+  `Image` layer for the currently loaded `SpatialData`;
+- for overlay layers, use `ImageLayerBinding.coordinate_system`,
+  `element_name`, and `channel_name` to create a complete histogram target;
+- for stack layers, use `ImageLayerBinding.coordinate_system` and
+  `element_name`, then resolve the active channel from napari dims only if that
+  mapping is reliable; otherwise create the card with image/coordinate system
+  prefilled and require the user to choose the channel explicitly;
+- preserve the card's default histogram settings unless a later product decision
+  adds a separate "copy settings from selected card" action;
+- after creating the card, scroll/focus it and leave calculation explicit via
+  that card's `Calculate` button;
+- if no resolvable active image layer exists, keep the action disabled or show a
+  clear widget-level status such as `Select a Harpy image layer in the viewer.`;
+- after Slice 3 is implemented, consider a separate `Add and calculate from
+  active image` action only if the two-click flow proves too slow in practice.
+
+Tests:
+
+- action is disabled or reports a clear status when no viewer, no active layer,
+  or a non-image active layer is present;
+- unregistered external napari image layers are ignored;
+- active overlay image layer creates a card with coordinate system, image, and
+  channel selected from `ImageLayerBinding`;
+- active stack image layer creates a card with coordinate system and image
+  selected, and either resolves the active channel safely or leaves channel
+  selection explicit;
+- clicking the action does not call `calculate_histogram(...)`;
+- clicking the action does not mutate existing histogram cards;
+- repeated clicks either add separate cards intentionally or focus an existing
+  equivalent card, whichever behavior is chosen for implementation.
+
+### 9. Product Hardening
 
 Status: [ ] Planned
 
