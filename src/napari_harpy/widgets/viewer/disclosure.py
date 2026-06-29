@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from qtpy.QtCore import QPointF, QSignalBlocker, QSize, Qt, Signal
-from qtpy.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+from qtpy.QtCore import QSignalBlocker, QSize, Qt, Signal
 from qtpy.QtWidgets import QFrame, QLabel, QSizePolicy, QToolButton, QVBoxLayout, QWidget
 
 from napari_harpy.widgets.shared_styles import (
+    DISCLOSURE_CHEVRON_SIZE,
     WIDGET_ACCENT_BORDER_COLOR,
     WIDGET_ACCENT_SOFT_COLOR,
     WIDGET_BORDER_COLOR,
@@ -12,10 +12,10 @@ from napari_harpy.widgets.shared_styles import (
     WIDGET_PANEL_COLOR,
     WIDGET_PANEL_MUTED_COLOR,
     WIDGET_TEXT_COLOR,
+    create_disclosure_chevron_icon,
     format_tooltip,
 )
 
-_DISCLOSURE_CHEVRON_SIZE = 14
 _SECTION_GROUP_STYLESHEET = (
     "QFrame[harpyViewerDisclosureSection='true'] {"
     f"background-color: {WIDGET_PANEL_MUTED_COLOR}; "
@@ -30,17 +30,13 @@ _DISCLOSURE_BUTTON_STYLESHEET = (
     f"color: {WIDGET_TEXT_COLOR}; "
     "font-size: 13px; "
     "font-weight: 600; "
-    "padding: 4px 10px; "
-    "min-height: 30px; "
+    "padding: 3px 10px; "
+    "min-height: 26px; "
     "text-align: left;}"
     f"QToolButton:hover {{ background-color: {WIDGET_PANEL_MUTED_COLOR}; border-color: {WIDGET_BORDER_STRONG_COLOR}; }}"
     f"QToolButton:checked {{ background-color: {WIDGET_ACCENT_SOFT_COLOR}; border-color: {WIDGET_ACCENT_BORDER_COLOR}; }}"
 )
-_ELEMENT_DISCLOSURE_STYLESHEET = (
-    "QFrame[harpyViewerDisclosureRow='true'] {"
-    "background: transparent; "
-    "border: 0px;}"
-)
+_ELEMENT_DISCLOSURE_STYLESHEET = "QFrame[harpyViewerDisclosureRow='true'] {background: transparent; border: 0px;}"
 _DISCLOSURE_CONTENT_STYLESHEET = "QWidget { background: transparent; }"
 
 
@@ -71,29 +67,6 @@ class _ElidedLabel(QLabel):
         self.setToolTip(format_tooltip(self._full_text) if elided_text != self._full_text else "")
 
 
-def _create_disclosure_chevron_icon(*, expanded: bool, color: str = WIDGET_TEXT_COLOR) -> QIcon:
-    pixmap = QPixmap(_DISCLOSURE_CHEVRON_SIZE, _DISCLOSURE_CHEVRON_SIZE)
-    pixmap.fill(Qt.GlobalColor.transparent)
-
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    pen = QPen(QColor(color))
-    pen.setWidthF(2.0)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    painter.setPen(pen)
-
-    if expanded:
-        painter.drawLine(QPointF(3.5, 5.0), QPointF(7.0, 8.5))
-        painter.drawLine(QPointF(7.0, 8.5), QPointF(10.5, 5.0))
-    else:
-        painter.drawLine(QPointF(5.0, 3.5), QPointF(8.5, 7.0))
-        painter.drawLine(QPointF(8.5, 7.0), QPointF(5.0, 10.5))
-
-    painter.end()
-    return QIcon(pixmap)
-
-
 class _ElidedToolButton(QToolButton):
     """Tool button that elides visible text and only shows a tooltip when shortened."""
 
@@ -109,7 +82,7 @@ class _ElidedToolButton(QToolButton):
         self._max_size_hint_width = max_size_hint_width
         self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.setIconSize(QSize(_DISCLOSURE_CHEVRON_SIZE, _DISCLOSURE_CHEVRON_SIZE))
+        self.setIconSize(QSize(DISCLOSURE_CHEVRON_SIZE, DISCLOSURE_CHEVRON_SIZE))
         self.set_chevron_expanded(False)
         self._update_elided_text()
 
@@ -135,7 +108,7 @@ class _ElidedToolButton(QToolButton):
         self._update_elided_text()
 
     def set_chevron_expanded(self, expanded: bool) -> None:
-        self.setIcon(_create_disclosure_chevron_icon(expanded=expanded))
+        self.setIcon(create_disclosure_chevron_icon(expanded=expanded))
 
     def _capped_size(self, hint: QSize) -> QSize:
         return QSize(min(hint.width(), self._max_size_hint_width), hint.height())

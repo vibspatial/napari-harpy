@@ -4,7 +4,8 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from qtpy.QtCore import QSignalBlocker, Qt, Signal
+from qtpy.QtCore import QSignalBlocker, QSize, Qt, Signal
+from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import (
     QCheckBox,
     QFormLayout,
@@ -25,6 +26,7 @@ from qtpy.QtWidgets import (
 from xarray import DataArray, DataTree
 
 from napari_harpy._app_state import CoordinateSystemChangedEvent, HarpyAppState, get_or_create_app_state
+from napari_harpy._resources import get_logo_path
 from napari_harpy.core.histogram import HistogramSettings, HistogramTarget
 from napari_harpy.core.spatialdata import (
     get_coordinate_system_names_from_sdata,
@@ -34,7 +36,10 @@ from napari_harpy.core.spatialdata import (
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     CHECKBOX_STYLESHEET,
+    DISCLOSURE_CHEVRON_SIZE,
     SECONDARY_BUTTON_STYLESHEET,
+    WIDGET_ACCENT_BORDER_COLOR,
+    WIDGET_ACCENT_SOFT_COLOR,
     WIDGET_BORDER_COLOR,
     WIDGET_BORDER_STRONG_COLOR,
     WIDGET_MIN_WIDTH,
@@ -44,11 +49,11 @@ from napari_harpy.widgets.shared_styles import (
     WIDGET_SURFACE_COLOR,
     WIDGET_TEXT_COLOR,
     WIDGET_TEXT_MUTED_COLOR,
-    WIDGET_TEXT_SECONDARY_COLOR,
     CompactComboBox,
     apply_scroll_content_surface,
     apply_widget_surface,
     build_input_control_stylesheet,
+    create_disclosure_chevron_icon,
     create_form_label,
     format_tooltip,
     set_status_card,
@@ -73,11 +78,14 @@ _SETTINGS_TOGGLE_STYLESHEET = (
     f"background-color: {WIDGET_PANEL_SUBTLE_COLOR}; "
     f"border: 1px solid {WIDGET_BORDER_COLOR}; "
     "border-radius: 8px; "
-    f"color: {WIDGET_TEXT_SECONDARY_COLOR}; "
+    f"color: {WIDGET_TEXT_COLOR}; "
+    "font-size: 13px; "
     "font-weight: 600; "
-    "padding: 5px 8px; "
+    "padding: 3px 10px; "
+    "min-height: 26px; "
     "text-align: left;}"
     f"QToolButton:hover {{ background-color: {WIDGET_PANEL_MUTED_COLOR}; border-color: {WIDGET_BORDER_STRONG_COLOR}; }}"
+    f"QToolButton:checked {{ background-color: {WIDGET_ACCENT_SOFT_COLOR}; border-color: {WIDGET_ACCENT_BORDER_COLOR}; }}"
 )
 _ICON_BUTTON_STYLESHEET = (
     "QToolButton {"
@@ -151,6 +159,7 @@ class HistogramWidget(QWidget):
         self._cards: dict[str, _HistogramCardWidgets] = {}
         self._card_channel_errors: dict[str, str] = {}
         self._last_emitted_requests: dict[str, HistogramCalculationRequest] = {}
+        self._logo_path = get_logo_path()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -173,23 +182,20 @@ class HistogramWidget(QWidget):
         content_layout.setContentsMargins(12, 12, 12, 12)
         content_layout.setSpacing(10)
 
-        header_row = QWidget()
-        header_row.setObjectName("histogram_header_row")
-        header_layout = QHBoxLayout(header_row)
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(8)
+        header_logo = self._create_header_logo()
 
-        title = QLabel("Image Histogram")
-        title.setObjectName("histogram_title")
-        title.setStyleSheet(f"color: {WIDGET_TEXT_COLOR}; font-weight: 700; font-size: 15px; background: transparent;")
-        header_layout.addWidget(title, 1)
-
+        action_row = QWidget()
+        action_row.setObjectName("histogram_header_action_row")
+        action_layout = QHBoxLayout(action_row)
+        action_layout.setContentsMargins(0, 0, 0, 0)
+        action_layout.setSpacing(8)
         self.add_button = QPushButton("Add histogram")
         self.add_button.setObjectName("histogram_add_button")
         self.add_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.add_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
         self.add_button.clicked.connect(self.add_histogram_card)
-        header_layout.addWidget(self.add_button)
+        action_layout.addWidget(self.add_button)
+        action_layout.addStretch(1)
 
         self.empty_state_label = QLabel("No histograms")
         self.empty_state_label.setObjectName("histogram_empty_state")
@@ -205,7 +211,8 @@ class HistogramWidget(QWidget):
         self.cards_layout.setContentsMargins(0, 0, 0, 0)
         self.cards_layout.setSpacing(10)
 
-        content_layout.addWidget(header_row)
+        content_layout.addWidget(header_logo)
+        content_layout.addWidget(action_row)
         content_layout.addWidget(self.empty_state_label)
         content_layout.addWidget(self.cards_container)
         content_layout.addStretch(1)
@@ -261,6 +268,20 @@ class HistogramWidget(QWidget):
         """Build a validated calculation request for tests and later controllers."""
         widgets = self._get_card(card_id)
         return self._build_request(widgets)
+
+    def _create_header_logo(self) -> QLabel:
+        logo_label = QLabel()
+        logo_label.setObjectName("histogram_header_logo")
+        logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        logo_pixmap = QPixmap(str(self._logo_path))
+        if not logo_pixmap.isNull():
+            logo_label.setPixmap(logo_pixmap.scaledToWidth(120, Qt.TransformationMode.SmoothTransformation))
+            return logo_label
+
+        logo_label.setText("napari-harpy")
+        logo_label.setStyleSheet(f"color: {WIDGET_TEXT_COLOR}; font-size: 18px; font-weight: 600;")
+        return logo_label
 
     def _create_card_widgets(self, card_id: str) -> _HistogramCardWidgets:
         container = QFrame()
@@ -325,7 +346,9 @@ class HistogramWidget(QWidget):
         settings_toggle.setObjectName(f"histogram_settings_toggle_{card_id}")
         settings_toggle.setCheckable(True)
         settings_toggle.setChecked(False)
-        settings_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        settings_toggle.setArrowType(Qt.ArrowType.NoArrow)
+        settings_toggle.setIconSize(QSize(DISCLOSURE_CHEVRON_SIZE, DISCLOSURE_CHEVRON_SIZE))
+        settings_toggle.setIcon(create_disclosure_chevron_icon(expanded=False))
         settings_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         settings_toggle.setStyleSheet(_SETTINGS_TOGGLE_STYLESHEET)
         settings_toggle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -650,7 +673,7 @@ class HistogramWidget(QWidget):
         return data if isinstance(data, str) and data else None
 
     def _set_settings_panel_visible(self, toggle: QToolButton, panel: QWidget, checked: bool) -> None:
-        toggle.setArrowType(Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
+        toggle.setIcon(create_disclosure_chevron_icon(expanded=checked))
         panel.setVisible(checked)
 
     def _reset_card_settings(self, card_id: str) -> None:

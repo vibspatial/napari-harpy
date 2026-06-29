@@ -535,7 +535,7 @@ Tests:
 
 ### 2. Widget Shell And Target Cards
 
-Status: [ ] Planned
+Status: [x] Implemented
 
 Goal:
 
@@ -549,6 +549,8 @@ Scope:
 - add `src/napari_harpy/widgets/histogram/__init__.py`;
 - register the widget in `src/napari_harpy/napari.yaml`;
 - expose the widget as `Image Histogram`;
+- expose the widget through lazy widget exports and the programmatic
+  `Interactive(..., widgets="all")` launcher;
 - attach to shared `HarpyAppState` through `get_or_create_app_state(...)`;
 - follow the existing widget surface conventions from shared styles:
   `apply_widget_surface(...)`, `apply_scroll_content_surface(...)`,
