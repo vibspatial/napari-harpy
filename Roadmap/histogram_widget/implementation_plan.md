@@ -851,7 +851,7 @@ Tests:
 
 ### 4. Pyqtgraph Dependency
 
-Status: [ ] Planned
+Status: [x] Implemented
 
 Goal:
 
