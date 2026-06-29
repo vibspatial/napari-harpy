@@ -849,48 +849,139 @@ Tests:
 - different cards can calculate independently without sharing settings or job
   state.
 
-### 4. Histogram Plot Rendering
+### 4. Pyqtgraph Dependency
 
 Status: [ ] Planned
 
 Goal:
 
-- draw each calculated histogram inside its card with pyqtgraph.
+- add `pyqtgraph` as the single supported plotting backend dependency for the
+  histogram widget.
 
 Scope:
 
-- add `pyqtgraph` to `pyproject.toml` as a direct runtime dependency if it has
-  not already been added;
-- add a histogram plot wrapper such as `_HistogramPlotWidget`;
-- embed a `pyqtgraph.PlotWidget` or equivalent pyqtgraph graphics view per
-  card;
-- draw bars from `HistogramResult.counts` and `bin_edges` with
-  `pyqtgraph.BarGraphItem` or an equivalent pyqtgraph item;
-- add histogram plot palette/style constants derived from
-  `widgets/shared_styles.py`;
-- configure plot background, axes, grid, bar fill, contrast region, percentile
-  lines, and empty/stale text from those constants;
-- support linear and log y-axis;
-- draw a stale/empty state before calculation;
-- redraw from existing result when only non-histogram markers change;
-- expose hooks for adding/updating/removing the movable contrast-limit region
-  and non-movable percentile guide lines;
-- keep plot setup isolated in a small widget/helper so controller and
-  calculator code never depend on pyqtgraph objects;
-- keep plot labels compact and card-local.
+- add `pyqtgraph` to `pyproject.toml` as a direct runtime dependency;
+- keep this slice limited to dependency declaration and packaging metadata;
+- do not introduce a Matplotlib fallback or optional plotting backend;
+- do not add plot widget code in this slice;
+- do not change histogram widget runtime behavior in this slice.
 
 Tests:
 
-- pyqtgraph plot updates when a result arrives;
-- log y-axis setting is applied;
-- stale state is shown after target/settings changes;
-- repeated calculations replace the previous plot instead of accumulating
-  duplicate plot items;
-- plot colors/styles come from the histogram palette constants;
-- histogram bars, contrast controls, percentile markers, axes, and empty state
-  have distinct visual roles.
+- project metadata includes `pyqtgraph` as a runtime dependency;
+- the package metadata/build check still succeeds after the dependency change.
 
-### 5. Contrast-Limit Synchronization
+### 5. Histogram Plot Rendering
+
+Status: [ ] Planned
+
+Goal:
+
+- draw each calculated histogram inside its card with pyqtgraph, using a small
+  plot wrapper that keeps rendering concerns separate from the widget controller
+  and the core calculator.
+
+Scope:
+
+- use the `pyqtgraph` runtime dependency introduced in Slice 4;
+- add `widgets/histogram/plot_widget.py` containing a private
+  `_HistogramPlotWidget`;
+- embed one `_HistogramPlotWidget` per histogram card, positioned below the
+  Calculate action and above the card status feedback;
+- keep the plot area horizontally expanding and vertically stable, with a
+  compact product-appropriate height so multiple histogram cards remain
+  scannable;
+- keep all pyqtgraph imports inside the plot wrapper module; `core.histogram`,
+  `widgets/histogram/controller.py`, and the Slice 1 calculator must remain free
+  of pyqtgraph dependencies;
+- add histogram plot palette/style constants derived from
+  `widgets/shared_styles.py`; prefer a small histogram `styles.py` module if the
+  constants would otherwise clutter `plot_widget.py`;
+- use the palette decisions from "Plot Palette And Styling"; do not introduce
+  ad hoc plot colors or a Matplotlib-style color cycle;
+- configure plot background, axes, grid, bar fill, empty/running/stale text, and
+  future marker styling from those constants;
+- use `pyqtgraph.PlotWidget` with one `PlotItem` by default;
+- render histogram bars from `HistogramResult.counts` and
+  `HistogramResult.bin_edges` with `pyqtgraph.BarGraphItem`;
+- derive bar centers and widths from the bin edges:
+
+  ```python
+  centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+  widths = np.diff(bin_edges)
+  heights = counts
+  ```
+
+- keep `value_range` behavior purely data-driven in this slice: the plot renders
+  the result returned by the calculator and does not reinterpret the requested
+  range;
+- label the x-axis as intensity and the y-axis as count or density based on
+  `HistogramResult.settings.density`;
+- support `HistogramSettings.log_y` by using pyqtgraph's y-axis log mode; do not
+  mutate counts, add epsilons, or change the calculator result to make log
+  rendering work;
+- clear and replace the previous bar item when a new result is rendered, rather
+  than accumulating plot items across repeated calculations;
+- show a quiet empty state before calculation, a running state while the
+  controller reports a running card, and a stale state after target/settings
+  changes clear the previous result;
+- when the controller reports a successful result, the widget reads
+  `controller.result_for_card(card_id)` and calls the card plot widget's
+  `set_histogram(...)`;
+- when the controller reports no current result, the widget updates the plot
+  state from the controller status instead of leaving stale bars visible;
+- redraw from the current `HistogramResult` without re-running the calculator
+  when only plot-local display state changes.
+
+The plot wrapper API should stay data-oriented. A suitable first implementation
+shape is:
+
+```python
+class _HistogramPlotWidget(QWidget):
+    def set_histogram(self, result: HistogramResult) -> None: ...
+    def clear_histogram(self, message: str = "No histogram calculated.") -> None: ...
+    def show_running(self, message: str = "Calculating histogram.") -> None: ...
+    def show_stale(self, message: str = "Target or settings changed.") -> None: ...
+    def set_log_y(self, enabled: bool) -> None: ...
+    def set_contrast_limits(self, limits: tuple[float, float] | None) -> None: ...
+    def set_percentile_markers(self, markers: Mapping[float, float]) -> None: ...
+```
+
+For Slice 5, `set_contrast_limits(...)` and `set_percentile_markers(...)` may be
+implemented as no-op placeholders or simple item-management hooks if that keeps
+the plot wrapper API stable. The actual user-facing contrast synchronization and
+percentile guide-line behavior belongs to later slices.
+
+Non-goals:
+
+- no napari image-layer matching;
+- no synchronization with `layer.contrast_limits`;
+- no draggable contrast region behavior;
+- no percentile-to-contrast action;
+- no automatic active-layer histogram calculation;
+- no Matplotlib or fallback plotting backend.
+
+Tests:
+
+- `_HistogramPlotWidget.set_histogram(...)` creates histogram bars from
+  `counts` and `bin_edges`;
+- bar centers and widths are derived from the bin edges rather than assumed from
+  the number of bins alone;
+- repeated `set_histogram(...)` calls replace the previous bars instead of
+  accumulating duplicate plot items;
+- log y-axis setting is applied from `HistogramSettings.log_y`;
+- y-axis label switches between count and density;
+- empty, running, and stale plot states are visible and do not leave stale bars
+  behind;
+- widget/controller integration renders `controller.result_for_card(card_id)`
+  into the matching card when a job succeeds;
+- target/settings changes clear or stale-mark the card plot after the controller
+  invalidates the previous result;
+- plot colors/styles come from histogram palette constants;
+- `core.histogram` and `widgets/histogram/controller.py` do not import
+  pyqtgraph.
+
+### 6. Contrast-Limit Synchronization
 
 Status: [ ] Planned
 
@@ -935,7 +1026,7 @@ Tests:
 - layer removal clears the sync binding;
 - RGB layers disable contrast synchronization.
 
-### 6. Percentile Guide Lines
+### 7. Percentile Guide Lines
 
 Status: [ ] Planned
 
@@ -960,7 +1051,7 @@ Tests:
   calculation;
 - changing percentile settings marks the card stale.
 
-### 7. Explicit Percentile-To-Contrast Action
+### 8. Explicit Percentile-To-Contrast Action
 
 Status: [ ] Planned
 
@@ -984,7 +1075,7 @@ Tests:
 - applying percentiles sets contrast limits to the computed values;
 - the normal contrast-limit event path updates the histogram contrast region.
 
-### 8. Add Histogram From Active Image
+### 9. Add Histogram From Active Image
 
 Status: [ ] Planned
 
@@ -1036,7 +1127,7 @@ Tests:
 - repeated clicks either add separate cards intentionally or focus an existing
   equivalent card, whichever behavior is chosen for implementation.
 
-### 9. Automatic Bin Suggestion
+### 10. Automatic Bin Suggestion
 
 Status: [ ] Planned
 
@@ -1086,7 +1177,7 @@ Tests:
 - flat or nearly flat data falls back to a safe bin count with a clear status;
 - the suggestion action does not calculate or render the histogram by itself.
 
-### 10. Product Hardening
+### 11. Product Hardening
 
 Status: [ ] Planned
 
