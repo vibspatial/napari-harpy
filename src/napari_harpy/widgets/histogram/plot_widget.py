@@ -84,7 +84,7 @@ class _HistogramPlotWidget(QWidget):
         counts = np.asarray(result.counts, dtype=float)
         bin_edges = np.asarray(result.bin_edges, dtype=float)
         if counts.ndim != 1 or bin_edges.ndim != 1 or len(bin_edges) != len(counts) + 1:
-            self.clear_histogram("Histogram result is not plottable.")
+            self.clear_histogram()
             return
 
         self._last_result = result
@@ -111,21 +111,8 @@ class _HistogramPlotWidget(QWidget):
         self._plot_item.addItem(self._bar_item)
         self._fit_histogram_view(bin_edges, counts, log_y=result.settings.log_y)
 
-    def clear_histogram(self, message: str = "No histogram calculated.") -> None:
+    def clear_histogram(self) -> None:
         """Clear plotted histogram data; card state text lives in the status card."""
-        _ = message
-        self._last_result = None
-        self._clear_bar_item()
-        self.set_log_y(False)
-        self._plot_item.setLabel("left", "Count", color=HISTOGRAM_AXIS_TEXT_COLOR)
-
-    def show_running(self, message: str = "Calculating histogram.") -> None:
-        """Preserve any currently plotted bars while the status card reports progress."""
-        _ = message
-
-    def show_stale(self, message: str = "Target or settings changed.") -> None:
-        """Clear plotted bars after the card target or settings changed."""
-        _ = message
         self._last_result = None
         self._clear_bar_item()
         self.set_log_y(False)

@@ -183,6 +183,32 @@ def test_histogram_widget_populates_target_selectors_and_starts_controller_job(
     np.testing.assert_allclose(card.plot_widget._bar_item.opts["height"], np.array([2.0, 1.0]))
 
 
+def test_histogram_widget_preserves_existing_plot_while_recalculating(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    deferred_workers: list[_DeferredWorker] = []
+    widget = make_widget_with_sdata(qtbot, sdata_blobs)
+    card_id, card = add_valid_histogram_card(widget)
+
+    def capture_worker(job: HistogramJob) -> _DeferredWorker:
+        worker = _DeferredWorker(make_job_result(job))
+        deferred_workers.append(worker)
+        return worker
+
+    widget._histogram_controller._create_histogram_worker = capture_worker  # type: ignore[method-assign]
+
+    qtbot.mouseClick(card.calculate_button, Qt.MouseButton.LeftButton)
+    deferred_workers[0].emit_returned()
+    first_bar_item = card.plot_widget._bar_item
+    assert first_bar_item is not None
+
+    qtbot.mouseClick(card.calculate_button, Qt.MouseButton.LeftButton)
+
+    assert "Calculating histogram." in card.status_label.text()
+    assert card.plot_widget._bar_item is first_bar_item
+
+
 def test_histogram_widget_refresh_preserves_valid_target_and_clears_invalid_downstream_selection(
     qtbot,
     monkeypatch,

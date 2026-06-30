@@ -172,25 +172,19 @@ def test_histogram_plot_widget_uses_scientific_ticks_for_log_density_values(qtbo
     assert axis.tickStrings([-4, -6, -8], 1.0, 1.0) == ["1e-4", "1e-6", "1e-8"]
 
 
-def test_histogram_plot_widget_empty_running_and_stale_states_do_not_render_plot_messages(qtbot) -> None:
+def test_histogram_plot_widget_clear_does_not_render_plot_messages(qtbot) -> None:
     plot_widget = _HistogramPlotWidget()
     qtbot.addWidget(plot_widget)
-    plot_widget.set_histogram(make_result())
-
-    plot_widget.show_running("Calculating histogram.")
-
-    assert plot_widget._bar_item is not None
-    assert plot_widget.findChild(QLabel, "histogram_plot_state_label") is None
 
     plot_widget.set_histogram(make_result(settings=HistogramSettings(scale="scale0", log_y=True)))
-    plot_widget.show_stale("Target or settings changed. Calculate again.")
+    plot_widget.clear_histogram()
 
     assert plot_widget._bar_item is None
     assert not plot_widget._plot_item.ctrl.logYCheck.isChecked()
     assert plot_widget.findChild(QLabel, "histogram_plot_state_label") is None
 
     plot_widget.set_histogram(make_result(settings=HistogramSettings(scale="scale0", log_y=True)))
-    plot_widget.clear_histogram("Ready to calculate.")
+    plot_widget.clear_histogram()
 
     assert plot_widget._bar_item is None
     assert not plot_widget._plot_item.ctrl.logYCheck.isChecked()

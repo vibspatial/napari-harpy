@@ -823,15 +823,15 @@ class HistogramWidget(QWidget):
         else:
             spec = build_histogram_ready_card_spec(message)
         self._apply_status_card_spec(histogram_card.status_label, spec)
-        self._update_card_plot(histogram_card, message=message, kind=kind)
+        self._update_card_plot(histogram_card)
 
     def _on_controller_state_changed(self, card_id: str) -> None:
         self._update_card_status(card_id)
 
-    def _update_card_plot(self, histogram_card: _HistogramCard, *, message: str, kind: str) -> None:
+    def _update_card_plot(self, histogram_card: _HistogramCard) -> None:
         card_id = histogram_card.card_id
         if self._histogram_controller.is_running(card_id):
-            histogram_card.plot_widget.show_running(message)
+            # The status card reports progress; keep any existing histogram visible while recalculating.
             return
 
         result = self._histogram_controller.result_for_card(card_id)
@@ -839,11 +839,7 @@ class HistogramWidget(QWidget):
             histogram_card.plot_widget.set_histogram(result)
             return
 
-        if kind == "info" and message == "Target or settings changed. Calculate again.":
-            histogram_card.plot_widget.show_stale(message)
-            return
-
-        histogram_card.plot_widget.clear_histogram(message)
+        histogram_card.plot_widget.clear_histogram()
 
     def _resolve_card_binding(self, histogram_card: _HistogramCard) -> _HistogramCardBindingState:
         if self.selected_spatialdata is None:
