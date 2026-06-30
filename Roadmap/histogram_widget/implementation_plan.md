@@ -1240,7 +1240,10 @@ Goal:
 
 UX direction:
 
-- add an explicit per-card `Load overlay` action;
+- add an explicit per-card action with button text `Load overlay`;
+- use tooltip text such as `Load selected channel as a napari overlay layer`;
+- keep the word `overlay` because it matches the Viewer widget's existing
+  stack/overlay display-mode vocabulary;
 - do not load overlay layers automatically when the user clicks `Calculate`;
 - keep calculation and viewer-layer loading as separate actions, because
   loading an image layer mutates the napari viewer state;
