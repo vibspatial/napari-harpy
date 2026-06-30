@@ -282,11 +282,11 @@ class HistogramWidget(QWidget):
         """Remove a card-local histogram request UI without touching SpatialData."""
         histogram_card = self._cards.pop(card_id, None)
         self._card_channel_errors.pop(card_id, None)
-        self._clear_card_contrast_sync(card_id, histogram_card=histogram_card)
         self._histogram_controller.remove_card(card_id)
         if histogram_card is None:
             return
 
+        self._clear_card_contrast_sync(histogram_card)
         self.cards_layout.removeWidget(histogram_card.container)
         histogram_card.container.deleteLater()
         self._update_empty_state()
@@ -875,7 +875,7 @@ class HistogramWidget(QWidget):
             self._refresh_card_contrast_sync(histogram_card, result)
             return
 
-        self._clear_card_contrast_sync(card_id, histogram_card=histogram_card)
+        self._clear_card_contrast_sync(histogram_card)
         histogram_card.plot_widget.clear_histogram()
 
     def _on_image_overlay_layers_changed(self) -> None:
@@ -897,10 +897,9 @@ class HistogramWidget(QWidget):
         card_id = histogram_card.card_id
         binding, unavailable_message = self._resolve_contrast_sync_binding(result)
         if binding is None:
-            self._disable_card_contrast_sync(
-                card_id,
-                histogram_card=histogram_card,
-                message=unavailable_message or "Contrast sync unavailable.",
+            self._mark_card_contrast_sync_unavailable(
+                histogram_card,
+                unavailable_message or "Contrast sync unavailable.",
             )
             return
 
@@ -910,7 +909,7 @@ class HistogramWidget(QWidget):
             self._apply_layer_contrast_limits_to_plot(card_id)
             return
 
-        self._clear_card_contrast_sync(card_id, histogram_card=histogram_card)
+        self._disconnect_card_contrast_sync(histogram_card)
         callback = lambda _event, current_card_id=card_id: self._on_layer_contrast_limits_changed(current_card_id)
         binding.layer.events.contrast_limits.connect(callback)
         histogram_card.contrast_sync_state = _HistogramContrastSyncState(
@@ -948,29 +947,17 @@ class HistogramWidget(QWidget):
 
         return binding, None
 
-    def _disable_card_contrast_sync(
-        self,
-        card_id: str,
-        *,
-        histogram_card: _HistogramCard | None = None,
-        message: str,
-    ) -> None:
-        self._clear_card_contrast_sync(card_id, histogram_card=histogram_card, clear_message=False)
-        card = histogram_card or self._cards.get(card_id)
-        if card is not None:
-            card.contrast_sync_message = message
+    def _mark_card_contrast_sync_unavailable(self, histogram_card: _HistogramCard, message: str) -> None:
+        self._disconnect_card_contrast_sync(histogram_card)
+        histogram_card.contrast_sync_message = message
 
-    def _clear_card_contrast_sync(
-        self,
-        card_id: str,
-        *,
-        histogram_card: _HistogramCard | None = None,
-        clear_message: bool = True,
-    ) -> None:
-        card = histogram_card or self._cards.get(card_id)
-        state = None if card is None else card.contrast_sync_state
-        if card is not None:
-            card.contrast_sync_state = None
+    def _clear_card_contrast_sync(self, histogram_card: _HistogramCard) -> None:
+        self._disconnect_card_contrast_sync(histogram_card)
+        histogram_card.contrast_sync_message = None
+
+    def _disconnect_card_contrast_sync(self, histogram_card: _HistogramCard) -> None:
+        state = histogram_card.contrast_sync_state
+        histogram_card.contrast_sync_state = None
 
         if state is not None:
             try:
@@ -978,11 +965,7 @@ class HistogramWidget(QWidget):
             except (TypeError, RuntimeError, ValueError):
                 pass
 
-        if clear_message and card is not None:
-            card.contrast_sync_message = None
-
-        if card is not None:
-            card.plot_widget.set_contrast_limits(None)
+        histogram_card.plot_widget.set_contrast_limits(None)
 
     def _on_layer_contrast_limits_changed(self, card_id: str) -> None:
         self._apply_layer_contrast_limits_to_plot(card_id)
