@@ -1265,18 +1265,25 @@ Scope:
   object is loaded;
 - resolve the target from the card's current explicit selection, not from the
   active layer;
-- call `viewer_adapter.ensure_image_loaded(...)` with:
+- add a small `ViewerAdapter.ensure_image_overlay_channel_loaded(...)` helper
+  that loads or updates one overlay channel while preserving other overlay
+  channels for the same image/coordinate system;
+- the new adapter helper should call `ensure_image_loaded(...)` internally with
+  the union of currently loaded overlay channels and the requested histogram
+  channel, so channel-preservation logic stays in `ViewerAdapter` rather than
+  in `HistogramWidget`;
+- call `viewer_adapter.ensure_image_overlay_channel_loaded(...)` from the
+  histogram widget with:
   - current `SpatialData`;
   - selected `image_name`;
   - selected `coordinate_system`;
-  - `mode="overlay"`;
   - the selected `channel_name` or resolved channel index;
-  - `channel_colors` containing the selected swatch color;
-- rely on `ensure_image_loaded(...)` to reuse/update an already loaded matching
-  overlay layer instead of creating duplicates;
-- if other overlay channels for the same image/coordinate system are already
-  loaded, preserve them while adding/updating the selected target channel; do
-  not unexpectedly narrow the viewer to only the histogram card's channel;
+  - the selected swatch color;
+- rely on the adapter helper to reuse/update an already loaded matching overlay
+  layer instead of creating duplicates;
+- preserve any other overlay channels for the same image/coordinate system
+  while adding/updating the selected target channel; do not unexpectedly narrow
+  the viewer to only the histogram card's channel;
 - after loading/updating, activate the selected overlay layer when possible;
 - let the existing `ViewerAdapter.image_overlay_layers_changed` signal from
   Slice 6 trigger the Slice 7 contrast-sync re-resolution;
@@ -1303,8 +1310,12 @@ Tests:
 
 - the action is disabled or reports a clear status when the card target is
   incomplete;
-- clicking `Load overlay` calls `viewer_adapter.ensure_image_loaded(...)` with
-  `mode="overlay"`, the selected target, and the selected color;
+- clicking `Load overlay` calls
+  `viewer_adapter.ensure_image_overlay_channel_loaded(...)` with the selected
+  target and selected color;
+- `ensure_image_overlay_channel_loaded(...)` preserves existing overlay
+  channels by delegating to `ensure_image_loaded(...)` with the union of loaded
+  overlay channels and the requested channel;
 - clicking `Load overlay` does not call the histogram calculator and does not
   start a histogram controller job;
 - an already loaded matching overlay layer is reused/updated rather than
