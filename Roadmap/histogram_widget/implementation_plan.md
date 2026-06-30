@@ -1228,7 +1228,96 @@ Tests:
 - `widgets/histogram/controller.py` remains free of napari layer and pyqtgraph
   imports.
 
-### 8. Percentile Guide Lines
+### 8. Load Histogram Target As Overlay
+
+Status: [ ] Planned
+
+Goal:
+
+- let users open the histogram card's selected image/channel in napari overlay
+  mode directly from the histogram widget, so contrast synchronization can be
+  enabled without switching to the Viewer widget.
+
+UX direction:
+
+- add an explicit per-card `Load overlay` action;
+- do not load overlay layers automatically when the user clicks `Calculate`;
+- keep calculation and viewer-layer loading as separate actions, because
+  loading an image layer mutates the napari viewer state;
+- place the action close to the card target controls or near `Calculate`, so the
+  path from `Contrast sync unavailable: open this image in overlay mode.` to a
+  live synced overlay is obvious;
+- show a compact color selector next to the `Load overlay` action, using the
+  same visual language as the Viewer widget overlay channel color swatches;
+- use the same overlay palette as the Viewer widget
+  (`DEFAULT_OVERLAY_COLORS`) and default the swatch from the selected channel
+  index where possible;
+- prefer extracting a small shared overlay color-swatch control/helper from the
+  Viewer widget rather than duplicating private viewer-specific UI code in the
+  histogram widget;
+- the color selector controls the napari colormap used for this card's selected
+  overlay channel only.
+
+Scope:
+
+- enable `Load overlay` only when the card has a valid
+  `(coordinate_system, image_name, channel_name)` target and a `SpatialData`
+  object is loaded;
+- resolve the target from the card's current explicit selection, not from the
+  active layer;
+- call `viewer_adapter.ensure_image_loaded(...)` with:
+  - current `SpatialData`;
+  - selected `image_name`;
+  - selected `coordinate_system`;
+  - `mode="overlay"`;
+  - the selected `channel_name` or resolved channel index;
+  - `channel_colors` containing the selected swatch color;
+- rely on `ensure_image_loaded(...)` to reuse/update an already loaded matching
+  overlay layer instead of creating duplicates;
+- if other overlay channels for the same image/coordinate system are already
+  loaded, preserve them while adding/updating the selected target channel; do
+  not unexpectedly narrow the viewer to only the histogram card's channel;
+- after loading/updating, activate the selected overlay layer when possible;
+- let the existing `ViewerAdapter.image_overlay_layers_changed` signal from
+  Slice 6 trigger the Slice 7 contrast-sync re-resolution;
+- show clear status feedback through the existing card status surface, for
+  example:
+  - `Overlay loaded in viewer.`;
+  - `Overlay updated in viewer.`;
+  - `Choose an image and channel before loading an overlay.`;
+  - `Overlay could not be loaded: <reason>.`;
+- do not calculate or recalculate the histogram as part of loading the overlay.
+
+Interaction with contrast sync:
+
+- if the card already has a calculated histogram, loading/updating the overlay
+  should cause contrast synchronization to bind as soon as the viewer-adapter
+  overlay lifecycle signal is emitted;
+- if the histogram has not been calculated yet, loading the overlay should only
+  affect the viewer; contrast sync starts later after calculation;
+- if a matching overlay already exists, `Load overlay` should update/activate it
+  and should not create a second matching layer that would make Slice 7
+  synchronization ambiguous.
+
+Tests:
+
+- the action is disabled or reports a clear status when the card target is
+  incomplete;
+- clicking `Load overlay` calls `viewer_adapter.ensure_image_loaded(...)` with
+  `mode="overlay"`, the selected target, and the selected color;
+- clicking `Load overlay` does not call the histogram calculator and does not
+  start a histogram controller job;
+- an already loaded matching overlay layer is reused/updated rather than
+  duplicated;
+- existing overlay channels for the same image/coordinate system are preserved
+  when adding/updating the selected histogram channel;
+- the selected color is passed through to the resulting napari overlay layer;
+- after a successful load for a calculated card, the existing contrast-sync
+  signal path can bind the histogram contrast region to the overlay layer;
+- overlay load errors are shown in the card status surface without clearing the
+  calculated histogram result.
+
+### 9. Percentile Guide Lines
 
 Status: [ ] Planned
 
@@ -1253,7 +1342,7 @@ Tests:
   calculation;
 - changing percentile settings marks the card stale.
 
-### 9. Explicit Percentile-To-Contrast Action
+### 10. Explicit Percentile-To-Contrast Action
 
 Status: [ ] Planned
 
@@ -1277,7 +1366,7 @@ Tests:
 - applying percentiles sets contrast limits to the computed values;
 - the normal contrast-limit event path updates the histogram contrast region.
 
-### 10. Add Histogram From Active Image
+### 11. Add Histogram From Active Image
 
 Status: [ ] Planned
 
@@ -1329,7 +1418,7 @@ Tests:
 - repeated clicks either add separate cards intentionally or focus an existing
   equivalent card, whichever behavior is chosen for implementation.
 
-### 11. Automatic Bin Suggestion
+### 12. Automatic Bin Suggestion
 
 Status: [ ] Planned
 
@@ -1379,7 +1468,7 @@ Tests:
 - flat or nearly flat data falls back to a safe bin count with a clear status;
 - the suggestion action does not calculate or render the histogram by itself.
 
-### 12. Smooth Distribution Overlay
+### 13. Smooth Distribution Overlay
 
 Status: [ ] Planned
 
@@ -1432,7 +1521,7 @@ Tests:
 - disabling the display toggle hides the smooth line without recalculating the
   histogram.
 
-### 13. Product Hardening
+### 14. Product Hardening
 
 Status: [ ] Planned
 
