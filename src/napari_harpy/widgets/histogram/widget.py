@@ -36,6 +36,7 @@ from napari_harpy.core.spatialdata import (
     get_spatialdata_image_options_for_coordinate_system_from_sdata,
 )
 from napari_harpy.viewer.adapter import ImageLayerBinding
+from napari_harpy.viewer.image_styling import DEFAULT_OVERLAY_COLORS
 from napari_harpy.widgets.histogram.controller import HistogramController
 from napari_harpy.widgets.histogram.plot_widget import _HistogramPlotWidget
 from napari_harpy.widgets.histogram.status_card import (
@@ -46,6 +47,7 @@ from napari_harpy.widgets.histogram.status_card import (
     build_histogram_ready_card_spec,
     build_histogram_running_card_spec,
 )
+from napari_harpy.widgets.overlay_color_button import OverlayColorButton
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     CALCULATE_BUTTON_STYLESHEET,
@@ -124,15 +126,6 @@ _DEFAULT_SCALE = "scale0"
 _DEFAULT_SETTINGS = HistogramSettings()
 
 
-@dataclass(frozen=True)
-class _HistogramCardBindingState:
-    """Parsed widget card state used to bind structured inputs into the controller."""
-
-    target: HistogramTarget | None
-    settings: HistogramSettings | None
-    validation_error: str | None = None
-
-
 @dataclass
 class _HistogramContrastSyncState:
     layer: object
@@ -148,6 +141,8 @@ class _HistogramCard:
     coordinate_system_combo: CompactComboBox
     image_combo: CompactComboBox
     channel_combo: CompactComboBox
+    overlay_color_button: OverlayColorButton
+    load_overlay_button: QPushButton
     calculate_button: QPushButton
     remove_button: QToolButton
     plot_widget: _HistogramPlotWidget
@@ -165,6 +160,7 @@ class _HistogramCard:
     percentile_min_edit: QLineEdit
     percentile_max_edit: QLineEdit
     reset_settings_button: QPushButton
+    overlay_load_message: str | None = None
     contrast_sync_state: _HistogramContrastSyncState | None = None
     contrast_sync_message: str | None = None
 
@@ -358,7 +354,7 @@ class HistogramWidget(QWidget):
         )
         channel_combo = self._create_combo(f"histogram_channel_combo_{card_id}", placeholder="Choose channel")
         channel_combo.currentIndexChanged.connect(
-            lambda _index, current_card_id=card_id: self._on_card_target_or_settings_changed(current_card_id)
+            lambda _index, current_card_id=card_id: self._on_card_channel_changed(current_card_id)
         )
 
         form.addRow(create_form_label("Coordinate system"), coordinate_system_combo)
@@ -476,6 +472,20 @@ class HistogramWidget(QWidget):
         action_layout.setContentsMargins(0, 0, 0, 0)
         action_layout.setSpacing(8)
 
+        overlay_color_button = OverlayColorButton(DEFAULT_OVERLAY_COLORS[0])
+        overlay_color_button.setObjectName(f"histogram_overlay_color_button_{card_id}")
+        overlay_color_button.setEnabled(False)
+
+        load_overlay_button = QPushButton("Load overlay")
+        load_overlay_button.setObjectName(f"histogram_load_overlay_button_{card_id}")
+        load_overlay_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        load_overlay_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
+        load_overlay_button.setToolTip(format_tooltip("Load selected channel as a napari overlay layer"))
+        load_overlay_button.setEnabled(False)
+        load_overlay_button.clicked.connect(
+            lambda _checked=False, current_card_id=card_id: self._load_card_overlay(current_card_id)
+        )
+
         calculate_button = QPushButton("Calculate")
         calculate_button.setObjectName(f"histogram_calculate_button_{card_id}")
         calculate_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -484,6 +494,8 @@ class HistogramWidget(QWidget):
         calculate_button.clicked.connect(
             lambda _checked=False, current_card_id=card_id: self._calculate_histogram(current_card_id)
         )
+        action_layout.addWidget(overlay_color_button)
+        action_layout.addWidget(load_overlay_button)
         action_layout.addWidget(calculate_button, 1)
 
         status_label = QLabel()
@@ -511,6 +523,8 @@ class HistogramWidget(QWidget):
             coordinate_system_combo=coordinate_system_combo,
             image_combo=image_combo,
             channel_combo=channel_combo,
+            overlay_color_button=overlay_color_button,
+            load_overlay_button=load_overlay_button,
             calculate_button=calculate_button,
             remove_button=remove_button,
             plot_widget=plot_widget,
@@ -582,6 +596,7 @@ class HistogramWidget(QWidget):
 
     def _on_card_coordinate_system_changed(self, card_id: str) -> None:
         histogram_card = self._get_card(card_id)
+        histogram_card.overlay_load_message = None
         self._refresh_card_image_options(histogram_card)
         self._refresh_card_channel_options(histogram_card)
         self._refresh_card_scale_options(histogram_card)
@@ -589,9 +604,16 @@ class HistogramWidget(QWidget):
 
     def _on_card_image_changed(self, card_id: str) -> None:
         histogram_card = self._get_card(card_id)
+        histogram_card.overlay_load_message = None
         self._refresh_card_channel_options(histogram_card)
         self._refresh_card_scale_options(histogram_card)
         self._update_card_state(card_id)
+
+    def _on_card_channel_changed(self, card_id: str) -> None:
+        histogram_card = self._get_card(card_id)
+        histogram_card.overlay_load_message = None
+        self._refresh_overlay_color_default(histogram_card)
+        self._on_card_target_or_settings_changed(card_id)
 
     def _on_card_target_or_settings_changed(self, card_id: str) -> None:
         histogram_card = self._get_card(card_id)
@@ -658,6 +680,7 @@ class HistogramWidget(QWidget):
         selected_channel_name = current_channel_name if current_channel_name in channel_names else None
         self._set_combo_items(histogram_card.channel_combo, channel_names, selected_channel_name)
         self._card_channel_errors[histogram_card.card_id] = channel_error or ""
+        self._refresh_overlay_color_default(histogram_card)
 
     def _refresh_card_scale_options(self, histogram_card: _HistogramCard) -> None:
         sdata = self.selected_spatialdata
@@ -678,6 +701,16 @@ class HistogramWidget(QWidget):
         self._set_combo_items(histogram_card.scale_combo, scales, selected_scale)
         histogram_card.scale_combo.setEnabled(sdata is not None and image_name is not None and bool(scales))
         self._refresh_settings_summary(histogram_card)
+
+    def _refresh_overlay_color_default(self, histogram_card: _HistogramCard) -> None:
+        channel_index = histogram_card.channel_combo.currentIndex()
+        if channel_index < 0:
+            histogram_card.overlay_color_button.set_color(DEFAULT_OVERLAY_COLORS[0])
+            return
+
+        histogram_card.overlay_color_button.set_color(
+            DEFAULT_OVERLAY_COLORS[channel_index % len(DEFAULT_OVERLAY_COLORS)]
+        )
 
     def _set_combo_items(
         self,
@@ -815,13 +848,22 @@ class HistogramWidget(QWidget):
 
     def _bind_card_state(self, card_id: str) -> None:
         histogram_card = self._get_card(card_id)
-        binding = self._resolve_card_binding(histogram_card)
+        target, validation_error = self._resolve_card_target(histogram_card)
+        settings = None
+        if target is not None:
+            try:
+                settings = self._build_settings(histogram_card)
+            except ValueError as error:
+                validation_error = str(error)
+
+        # Bind invalid states too, so the controller clears stale calculable
+        # requests/results and owns the current warning message for the card.
         self._histogram_controller.bind(
             card_id,
             self.selected_spatialdata,
-            binding.target,
-            binding.settings,
-            validation_error=binding.validation_error,
+            target,
+            settings,
+            validation_error=validation_error,
         )
 
     def _refresh_card_after_controller_update(self, card_id: str) -> None:
@@ -839,6 +881,12 @@ class HistogramWidget(QWidget):
         except ValueError:
             return
 
+        target, _message = self._resolve_card_target(histogram_card)
+        can_load_overlay = (
+            self._app_state.viewer is not None and self.selected_spatialdata is not None and target is not None
+        )
+        histogram_card.overlay_color_button.setEnabled(can_load_overlay)
+        histogram_card.load_overlay_button.setEnabled(can_load_overlay)
         histogram_card.calculate_button.setEnabled(self._histogram_controller.can_calculate(card_id))
         message = self._histogram_controller.status_message(card_id)
         kind = self._histogram_controller.status_kind(card_id)
@@ -850,14 +898,19 @@ class HistogramWidget(QWidget):
             spec = build_histogram_error_card_spec(message)
         elif kind == "success":
             spec = build_histogram_calculated_card_spec(message)
-            if histogram_card.contrast_sync_message:
-                spec = _HistogramStatusCardSpec(
-                    title=spec.title,
-                    lines=(*spec.lines, histogram_card.contrast_sync_message),
-                    kind=spec.kind,
-                )
         else:
             spec = build_histogram_ready_card_spec(message)
+        extra_lines: list[str] = []
+        if histogram_card.overlay_load_message:
+            extra_lines.append(histogram_card.overlay_load_message)
+        if kind == "success" and histogram_card.contrast_sync_message:
+            extra_lines.append(histogram_card.contrast_sync_message)
+        if extra_lines:
+            spec = _HistogramStatusCardSpec(
+                title=spec.title,
+                lines=(*spec.lines, *extra_lines),
+                kind=spec.kind,
+            )
         self._apply_status_card_spec(histogram_card.status_label, spec)
 
     def _on_controller_state_changed(self, card_id: str) -> None:
@@ -1007,37 +1060,64 @@ class HistogramWidget(QWidget):
         # accepted limits.
         self._apply_layer_contrast_limits_to_plot(card_id)
 
-    def _resolve_card_binding(self, histogram_card: _HistogramCard) -> _HistogramCardBindingState:
+    def _resolve_card_target(self, histogram_card: _HistogramCard) -> tuple[HistogramTarget | None, str | None]:
         if self.selected_spatialdata is None:
-            return _HistogramCardBindingState(None, None, "No SpatialData loaded.")
+            return None, "No SpatialData loaded."
 
         coordinate_system = self._current_text_data(histogram_card.coordinate_system_combo)
         if coordinate_system is None:
-            return _HistogramCardBindingState(None, None, "Choose a coordinate system.")
+            return None, "Choose a coordinate system."
 
         image_name = self._current_text_data(histogram_card.image_combo)
         if image_name is None:
-            return _HistogramCardBindingState(None, None, "Choose an image.")
+            return None, "Choose an image."
 
         channel_error = self._card_channel_errors.get(histogram_card.card_id)
         if channel_error:
-            return _HistogramCardBindingState(None, None, channel_error)
+            return None, channel_error
 
         channel_name = self._current_text_data(histogram_card.channel_combo)
         if channel_name is None:
-            return _HistogramCardBindingState(None, None, "Choose a channel.")
+            return None, "Choose a channel."
 
         target = HistogramTarget(
             coordinate_system=coordinate_system,
             image_name=image_name,
             channel_name=channel_name,
         )
-        try:
-            settings = self._build_settings(histogram_card)
-        except ValueError as error:
-            return _HistogramCardBindingState(target, None, str(error))
+        return target, None
 
-        return _HistogramCardBindingState(target, settings)
+    def _load_card_overlay(self, card_id: str) -> None:
+        histogram_card = self._get_card(card_id)
+        target, validation_error = self._resolve_card_target(histogram_card)
+        if target is None or self.selected_spatialdata is None:
+            histogram_card.overlay_load_message = (
+                validation_error or "Choose an image and channel before loading an overlay."
+            )
+            self._update_card_status(card_id)
+            return
+
+        try:
+            result = self._app_state.viewer_adapter.ensure_image_overlay_channel_loaded(
+                self.selected_spatialdata,
+                target.image_name,
+                target.coordinate_system,
+                channel=target.channel_name,
+                channel_color=histogram_card.overlay_color_button.current_color,
+            )
+        except Exception as error:  # noqa: BLE001 - surface adapter validation/load errors in the card status.
+            histogram_card.overlay_load_message = f"Overlay could not be loaded: {error}"
+            self._update_card_status(card_id)
+            return
+
+        self._app_state.viewer_adapter.activate_layer(result.primary_layer)
+        action = "loaded" if result.created else "updated"
+        histogram_card.overlay_load_message = f"Overlay {action} in viewer."
+
+        calculated_result = self._histogram_controller.result_for_card(card_id)
+        if calculated_result is not None:
+            self._refresh_card_contrast_sync(histogram_card, calculated_result)
+        self._update_card_status(card_id)
 
     def _calculate_histogram(self, card_id: str) -> None:
         self._bind_card_state(card_id)

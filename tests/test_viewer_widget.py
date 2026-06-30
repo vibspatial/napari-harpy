@@ -19,6 +19,7 @@ from spatialdata.models import ShapesModel
 from spatialdata.transformations import Identity
 
 import napari_harpy._app_state as app_state_module
+import napari_harpy.widgets.overlay_color_button as overlay_color_button_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
 from napari_harpy._app_state import (
     ClassificationTableWrittenEvent,
@@ -29,13 +30,13 @@ from napari_harpy._points_value_index import PointsValueSelection, PointsValueTa
 from napari_harpy.core._color_source import ShapeColumnColorSourceSpec, TableColorSourceSpec
 from napari_harpy.viewer.adapter import PointsLayerIdentity
 from napari_harpy.viewer.shapes_styling import SHAPES_FACE_ALPHA
+from napari_harpy.widgets.overlay_color_button import OverlayColorButton
 from napari_harpy.widgets.shared_styles import (
     STATUS_CARD_PALETTE,
     WIDGET_MIN_WIDTH,
     CompactComboBox,
 )
 from napari_harpy.widgets.viewer.disclosure import _CollapsibleSectionWidget, _ElidedLabel, _ElidedToolButton
-from napari_harpy.widgets.viewer.image_widget import QColorDialog, _OverlayColorButton
 from napari_harpy.widgets.viewer.points_controller import PointsLoadRequest
 from napari_harpy.widgets.viewer.shapes_widget import ShapesLoadRequest
 from napari_harpy.widgets.viewer.widget import ViewerWidget
@@ -332,12 +333,12 @@ def test_viewer_disclosure_toggle_uses_compact_metrics(qtbot) -> None:
 
 
 def test_overlay_color_button_uses_color_dialog_selection(qtbot, monkeypatch) -> None:
-    button = _OverlayColorButton("#00FFFF")
+    button = OverlayColorButton("#00FFFF")
 
     qtbot.addWidget(button)
 
     monkeypatch.setattr(
-        QColorDialog,
+        overlay_color_button_module.QColorDialog,
         "getColor",
         lambda *args, **kwargs: QColor("#123456"),
     )

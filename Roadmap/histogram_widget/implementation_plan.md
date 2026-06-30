@@ -1230,7 +1230,7 @@ Tests:
 
 ### 8. Load Histogram Target As Overlay
 
-Status: [ ] Planned
+Status: [x] Implemented
 
 Goal:
 

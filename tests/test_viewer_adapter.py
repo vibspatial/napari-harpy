@@ -3410,6 +3410,95 @@ def test_viewer_adapter_ensure_image_loaded_overlay_removes_stale_channel_layers
     assert len(viewer.layers) == 2
 
 
+def test_viewer_adapter_ensure_image_overlay_channel_loaded_preserves_sibling_channels(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    existing_result = adapter.ensure_image_loaded(
+        sdata_blobs,
+        "blobs_image",
+        "global",
+        mode="overlay",
+        channels=[0, 2],
+        channel_colors=["blue", "magenta"],
+    )
+
+    result = adapter.ensure_image_overlay_channel_loaded(
+        sdata_blobs,
+        "blobs_image",
+        "global",
+        channel=1,
+        channel_color="#123456",
+    )
+
+    assert result.created is True
+    assert result.channels == (1, 0, 2)
+    assert result.channel_names == ("1", "0", "2")
+    assert result.primary_layer.name == "blobs_image[1]"
+    assert len(viewer.layers) == 3
+    assert existing_result.layers[0] in viewer.layers
+    assert existing_result.layers[1] in viewer.layers
+    assert result.primary_layer.colormap.name == "#123456"
+    assert existing_result.layers[0].colormap.name == "blue"
+    assert existing_result.layers[1].colormap.name == "magenta"
+
+
+def test_viewer_adapter_ensure_image_overlay_channel_loaded_preserves_changed_sibling_color(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    existing_result = adapter.ensure_image_loaded(
+        sdata_blobs,
+        "blobs_image",
+        "global",
+        mode="overlay",
+        channels=[0],
+        channel_colors=["blue"],
+    )
+    existing_result.primary_layer.colormap = "#ABCDEF"
+
+    result = adapter.ensure_image_overlay_channel_loaded(
+        sdata_blobs,
+        "blobs_image",
+        "global",
+        channel=1,
+        channel_color="#123456",
+    )
+
+    assert result.channels == (1, 0)
+    assert result.primary_layer.colormap.name == "#123456"
+    assert existing_result.primary_layer in viewer.layers
+    assert existing_result.primary_layer.colormap.name.lower() == "#abcdef"
+
+
+def test_viewer_adapter_ensure_image_overlay_channel_loaded_reuses_matching_channel(sdata_blobs) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+
+    existing_result = adapter.ensure_image_loaded(
+        sdata_blobs,
+        "blobs_image",
+        "global",
+        mode="overlay",
+        channels=[0],
+        channel_colors=["blue"],
+    )
+
+    result = adapter.ensure_image_overlay_channel_loaded(
+        sdata_blobs,
+        "blobs_image",
+        "global",
+        channel="0",
+        channel_color="#123456",
+    )
+
+    assert result.created is False
+    assert result.channels == (0,)
+    assert result.primary_layer is existing_result.primary_layer
+    assert len(viewer.layers) == 1
+    assert result.primary_layer.colormap.name == "#123456"
+
+
 def test_viewer_adapter_ensure_image_loaded_stack_removes_existing_overlay_layers(sdata_blobs) -> None:
     viewer = DummyViewer()
     adapter = ViewerAdapter(viewer)

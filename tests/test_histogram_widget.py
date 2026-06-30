@@ -37,11 +37,15 @@ class DummyEventEmitter:
 class DummyLayers(list):
     def __init__(self, layers: list[object] | None = None) -> None:
         super().__init__(layers or [])
+        self.selection = SimpleNamespace(active=None, select_only=self._select_only)
         self.events = SimpleNamespace(
             inserted=DummyEventEmitter(),
             removed=DummyEventEmitter(),
             reordered=DummyEventEmitter(),
         )
+
+    def _select_only(self, layer: object) -> None:
+        self.selection.active = layer
 
     def remove(self, layer: object) -> None:
         super().remove(layer)
@@ -372,20 +376,18 @@ def test_histogram_widget_settings_are_collapsed_optional_and_card_local(
     first_card.log_y_checkbox.setChecked(True)
     second_card.bins_spin.setValue(128)
 
-    first_binding = widget._resolve_card_binding(first_card)
-    second_binding = widget._resolve_card_binding(second_card)
+    first_settings = widget._build_settings(first_card)
+    second_settings = widget._build_settings(second_card)
 
-    assert first_binding.settings is not None
-    assert second_binding.settings is not None
-    assert first_binding.settings.bins == 512
-    assert first_binding.settings.value_range == (0.1, 0.9)
-    assert first_binding.settings.percentiles == (1.0, 99.0)
-    assert first_binding.settings.density is True
-    assert first_binding.settings.exclude_zeros is True
-    assert first_binding.settings.log_y is True
-    assert second_binding.settings.bins == 128
-    assert second_binding.settings.value_range is None
-    assert second_binding.settings.percentiles == ()
+    assert first_settings.bins == 512
+    assert first_settings.value_range == (0.1, 0.9)
+    assert first_settings.percentiles == (1.0, 99.0)
+    assert first_settings.density is True
+    assert first_settings.exclude_zeros is True
+    assert first_settings.log_y is True
+    assert second_settings.bins == 128
+    assert second_settings.value_range is None
+    assert second_settings.percentiles == ()
     first_settings_tooltip = tooltip_text(first_card.settings_toggle)
     assert first_card.settings_toggle.text() == "Settings"
     assert "value_range: (0.1, 0.9)" in first_settings_tooltip
@@ -396,8 +398,7 @@ def test_histogram_widget_settings_are_collapsed_optional_and_card_local(
 
     first_card.reset_settings_button.click()
 
-    reset_settings = widget._resolve_card_binding(first_card).settings
-    assert reset_settings is not None
+    reset_settings = widget._build_settings(first_card)
     assert reset_settings.bins == 256
     assert reset_settings.value_range is None
     assert reset_settings.percentiles == ()
@@ -405,8 +406,7 @@ def test_histogram_widget_settings_are_collapsed_optional_and_card_local(
     assert reset_settings.exclude_zeros is False
     assert reset_settings.log_y is False
     assert reset_settings.scale == "scale0"
-    second_settings = widget._resolve_card_binding(second_card).settings
-    assert second_settings is not None
+    second_settings = widget._build_settings(second_card)
     assert second_settings.bins == 128
 
 
@@ -440,6 +440,59 @@ def test_histogram_widget_invalid_optional_settings_disable_calculate(qtbot, sda
 
     assert not card.calculate_button.isEnabled()
     assert "requires both low and high values" in card.status_label.text()
+
+
+def test_histogram_widget_load_overlay_calls_adapter_without_calculating(
+    qtbot, monkeypatch, sdata_blobs: SpatialData
+) -> None:
+    viewer = LayerListDummyViewer()
+    widget = make_widget_with_viewer_and_sdata(qtbot, viewer, sdata_blobs)
+    card_id, card = add_valid_histogram_card(widget)
+    layer = make_overlay_layer()
+    recorded_calls: list[tuple[SpatialData, str, str, str, str]] = []
+
+    def fake_load_overlay_channel(
+        sdata: SpatialData,
+        image_name: str,
+        coordinate_system: str,
+        *,
+        channel: str,
+        channel_color: str,
+    ) -> object:
+        recorded_calls.append((sdata, image_name, coordinate_system, channel, channel_color))
+        return SimpleNamespace(primary_layer=layer, created=True)
+
+    monkeypatch.setattr(
+        widget.app_state.viewer_adapter, "ensure_image_overlay_channel_loaded", fake_load_overlay_channel
+    )
+
+    qtbot.mouseClick(card.load_overlay_button, Qt.MouseButton.LeftButton)
+
+    assert recorded_calls == [(sdata_blobs, "blobs_image", "global", "0", "#00FFFF")]
+    assert widget._histogram_controller.result_for_card(card_id) is None
+    assert viewer.layers.selection.active is layer
+    assert "Overlay loaded in viewer." in card.status_label.text()
+
+
+def test_histogram_widget_load_overlay_binds_contrast_sync_after_calculation(qtbot, sdata_blobs: SpatialData) -> None:
+    viewer = LayerListDummyViewer()
+    widget = make_widget_with_viewer_and_sdata(qtbot, viewer, sdata_blobs)
+    _card_id, card = add_valid_histogram_card(widget)
+    card.overlay_color_button.set_color("#123456")
+    calculate_card(widget, qtbot, card)
+
+    assert "open this image in overlay mode" in card.status_label.text()
+
+    qtbot.mouseClick(card.load_overlay_button, Qt.MouseButton.LeftButton)
+
+    assert len(viewer.layers) == 1
+    layer = viewer.layers[0]
+    assert layer.name == "blobs_image[0]"
+    assert layer.colormap.name == "#123456"
+    assert viewer.layers.selection.active is layer
+    assert card.plot_widget._contrast_region is not None
+    assert "Overlay loaded in viewer." in card.status_label.text()
+    assert "Contrast synced to napari overlay layer." in card.status_label.text()
 
 
 def test_histogram_widget_syncs_contrast_limits_with_unique_overlay_layer(qtbot, sdata_blobs: SpatialData) -> None:

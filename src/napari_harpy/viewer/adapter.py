@@ -1412,6 +1412,62 @@ class ViewerAdapter(QObject):
             channel_names=tuple(channel_name for _, channel_name in resolved_channels),
         )
 
+    def ensure_image_overlay_channel_loaded(
+        self,
+        sdata: SpatialData,
+        image_name: str,
+        coordinate_system: str,
+        *,
+        channel: int | str,
+        channel_color: str,
+    ) -> ImageLoadResult:
+        """Load or update one overlay channel while preserving loaded sibling channels."""
+        images = getattr(sdata, "images", {})
+        if image_name not in images:
+            raise ValueError(f"Image element `{image_name}` is not available in the selected SpatialData object.")
+
+        image_element = images[image_name]
+        available_coordinate_systems = set(get_transformation(image_element, get_all=True).keys())
+        if coordinate_system not in available_coordinate_systems:
+            raise ValueError(
+                f"Coordinate system `{coordinate_system}` is not available for image element `{image_name}`."
+            )
+
+        requested_channel_index, _requested_channel_name = _resolve_overlay_channels(image_element, [channel])[0]
+        channels: list[int] = [requested_channel_index]
+        colors: list[str] = [channel_color]
+        seen_channel_indices = {requested_channel_index}
+
+        existing_overlay_layers = self._get_loaded_image_layer_for_coordinate_system(
+            sdata,
+            image_name,
+            coordinate_system,
+            image_display_mode="overlay",
+        )
+        for layer in existing_overlay_layers:
+            binding = self._layer_bindings.get_binding(layer)
+            assert isinstance(binding, ImageLayerBinding)
+            if binding.channel_index is None or binding.channel_index in seen_channel_indices:
+                continue
+
+            channels.append(binding.channel_index)
+            colors.append(
+                _image_layer_colormap_name(
+                    layer,
+                    fallback=DEFAULT_OVERLAY_COLORS[binding.channel_index % len(DEFAULT_OVERLAY_COLORS)],
+                )
+            )
+            seen_channel_indices.add(binding.channel_index)
+
+        return self.ensure_image_loaded(
+            sdata,
+            image_name,
+            coordinate_system,
+            mode="overlay",
+            channels=channels,
+            channel_colors=colors,
+        )
+
     def ensure_shapes_loaded(self, sdata: SpatialData, shapes_name: str, coordinate_system: str) -> ShapesLoadResult:
         """Load a shapes element into napari if it is not already present."""
         existing_layer = self._get_loaded_shapes_layer_for_coordinate_system(sdata, shapes_name, coordinate_system)
@@ -1969,14 +2025,19 @@ def _resolve_overlay_channels(
                 raise ValueError(f"Channel index `{channel_index}` is out of range for the selected image element.")
             channel_name = str(channel_names[channel_index])
         else:
-            if channel not in channel_names:
-                raise ValueError(
-                    f"Channel `{channel}` is not available in the selected image element. "
-                    "If needed, update the channel names in the SpatialData object with "
-                    "`sdata.set_channel_names(...)`."
-                )
-            channel_index = channel_names.index(channel)
-            channel_name = str(channel)
+            if channel in channel_names:
+                channel_index = channel_names.index(channel)
+                channel_name = str(channel)
+            else:
+                string_channel_names = [str(channel_name) for channel_name in channel_names]
+                if channel not in string_channel_names:
+                    raise ValueError(
+                        f"Channel `{channel}` is not available in the selected image element. "
+                        "If needed, update the channel names in the SpatialData object with "
+                        "`sdata.set_channel_names(...)`."
+                    )
+                channel_index = string_channel_names.index(channel)
+                channel_name = channel
 
         if channel_index in seen_indices:
             raise ValueError("Overlay mode does not accept duplicate channel selections.")
@@ -1995,6 +2056,16 @@ def _resolve_overlay_colors(channel_count: int, channel_colors: Sequence[str] | 
         raise ValueError("The number of overlay channel colors must match the number of selected channels.")
 
     return list(channel_colors)
+
+
+def _image_layer_colormap_name(layer: Image, *, fallback: str) -> str:
+    colormap = getattr(layer, "colormap", None)
+    name = getattr(colormap, "name", None)
+    if isinstance(name, str) and name:
+        return name
+    if isinstance(colormap, str) and colormap:
+        return colormap
+    return fallback
 
 
 def _flatten_multiscale_element(element: DataTree) -> list[DataArray]:

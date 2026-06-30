@@ -3,10 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from qtpy.QtCore import QSignalBlocker, Qt, Signal
-from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QCheckBox,
-    QColorDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -17,11 +15,10 @@ from qtpy.QtWidgets import (
 )
 
 from napari_harpy.viewer.image_styling import DEFAULT_OVERLAY_COLORS, ImageDisplayMode
+from napari_harpy.widgets.overlay_color_button import OverlayColorButton
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     CHECKBOX_STYLESHEET,
-    WIDGET_ACCENT_BORDER_COLOR,
-    WIDGET_BORDER_STRONG_COLOR,
     WIDGET_TEXT_MUTED_COLOR,
     WIDGET_WARNING_TEXT_COLOR,
     format_tooltip,
@@ -33,29 +30,6 @@ _CHANNEL_WARNING_STYLESHEET = f"color: {WIDGET_WARNING_TEXT_COLOR}; font-weight:
 _CHANNEL_PANEL_STYLESHEET = "QWidget { background: transparent; }"
 _SUBSECTION_LABEL_STYLESHEET = f"color: {WIDGET_TEXT_MUTED_COLOR}; font-size: 11px; font-weight: 600;"
 _MAX_VISIBLE_OVERLAY_CHANNELS = 5
-_OVERLAY_COLOR_BUTTON_WIDTH = 34
-_OVERLAY_COLOR_BUTTON_HEIGHT = 22
-_OVERLAY_COLOR_BUTTON_RADIUS = 6
-_OVERLAY_COLOR_NAMES_BY_HEX = {
-    "#00FFFF": "Cyan",
-    "#FF00FF": "Magenta",
-    "#FFFF00": "Yellow",
-    "#00FF7F": "Green",
-    "#FF5050": "Red",
-    "#1E90FF": "Blue",
-    "#FFA500": "Orange",
-    "#9370DB": "Purple",
-    "#ADFF2F": "Green-yellow",
-    "#7B68EE": "Slate blue",
-    "#FF1493": "Deep pink",
-    "#20B2AA": "Teal",
-    "#FFD700": "Gold",
-    "#FF7F50": "Coral",
-    "#87CEFA": "Sky blue",
-    "#32CD32": "Lime green",
-    "#FF69B4": "Hot pink",
-    "#DDA0DD": "Plum",
-}
 
 
 @dataclass(frozen=True)
@@ -64,58 +38,6 @@ class ImageLoadRequest:
     mode: ImageDisplayMode
     channels: list[int]
     channel_colors: list[str]
-
-
-def _overlay_color_label(color: str) -> str:
-    return _OVERLAY_COLOR_NAMES_BY_HEX.get(color.upper(), color)
-
-
-def _normalize_hex_color(color: str) -> str:
-    normalized_color = QColor(color)
-    if not normalized_color.isValid():
-        return color.upper()
-    return normalized_color.name(QColor.NameFormat.HexRgb).upper()
-
-
-class _OverlayColorButton(QPushButton):
-    """Button that shows the current channel color and opens a color picker on click."""
-
-    def __init__(self, color: str, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._color = ""
-        self.setText("")
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedSize(_OVERLAY_COLOR_BUTTON_WIDTH, _OVERLAY_COLOR_BUTTON_HEIGHT)
-        self.clicked.connect(self.choose_color)
-        self.set_color(color)
-
-    @property
-    def current_color(self) -> str:
-        return self._color
-
-    def set_color(self, color: str) -> None:
-        self._color = _normalize_hex_color(color)
-        label = _overlay_color_label(self._color)
-        self.setAccessibleName(f"Channel color {label} {self._color}")
-        self.setToolTip(format_tooltip(f"Click to choose channel color. Current color: {label} ({self._color})."))
-        self.setStyleSheet(
-            "QPushButton {"
-            f"background-color: {self._color}; "
-            f"border: 1px solid {WIDGET_BORDER_STRONG_COLOR}; "
-            f"border-radius: {_OVERLAY_COLOR_BUTTON_RADIUS}px; "
-            f"min-height: {_OVERLAY_COLOR_BUTTON_HEIGHT}px; "
-            f"max-height: {_OVERLAY_COLOR_BUTTON_HEIGHT}px; "
-            f"min-width: {_OVERLAY_COLOR_BUTTON_WIDTH}px; "
-            f"max-width: {_OVERLAY_COLOR_BUTTON_WIDTH}px; "
-            "padding: 0px;}"
-            f"QPushButton:hover {{ border: 2px solid {WIDGET_ACCENT_BORDER_COLOR}; }}"
-            f"QPushButton:focus {{ border: 2px solid {WIDGET_ACCENT_BORDER_COLOR}; }}"
-        )
-
-    def choose_color(self) -> None:
-        selected_color = QColorDialog.getColor(QColor(self._color), self, "Select channel color")
-        if selected_color.isValid():
-            self.set_color(selected_color.name(QColor.NameFormat.HexRgb))
 
 
 class _ImageCardWidget(QFrame):
@@ -201,7 +123,7 @@ class _ImageCardWidget(QFrame):
         channel_layout.addWidget(self.channel_scroll_area)
 
         self.channel_checkboxes: list[QCheckBox] = []
-        self.channel_color_buttons: list[_OverlayColorButton] = []
+        self.channel_color_buttons: list[OverlayColorButton] = []
         channel_rows: list[QWidget] = []
 
         if channel_error is not None:
@@ -223,7 +145,7 @@ class _ImageCardWidget(QFrame):
                 checkbox.setObjectName(f"viewer_widget_channel_checkbox_{image_name}_{channel_name}")
                 checkbox.setStyleSheet(CHECKBOX_STYLESHEET)
 
-                color_button = _OverlayColorButton(DEFAULT_OVERLAY_COLORS[index % len(DEFAULT_OVERLAY_COLORS)])
+                color_button = OverlayColorButton(DEFAULT_OVERLAY_COLORS[index % len(DEFAULT_OVERLAY_COLORS)])
                 color_button.setObjectName(f"viewer_widget_channel_color_button_{image_name}_{channel_name}")
 
                 row_layout.addWidget(checkbox, 1)
