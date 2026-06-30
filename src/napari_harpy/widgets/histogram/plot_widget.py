@@ -4,6 +4,7 @@ from collections.abc import Mapping
 
 import numpy as np
 import pyqtgraph as pg
+from qtpy.QtCore import Signal
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import QGridLayout, QSizePolicy, QWidget
 
@@ -14,6 +15,8 @@ from napari_harpy.widgets.histogram.styles import (
     HISTOGRAM_BAR_EDGE_COLOR,
     HISTOGRAM_BAR_FILL_ALPHA,
     HISTOGRAM_BAR_FILL_COLOR,
+    HISTOGRAM_CONTRAST_LINE_COLOR,
+    HISTOGRAM_CONTRAST_REGION_ALPHA,
     HISTOGRAM_PLOT_BACKGROUND_COLOR,
 )
 
@@ -64,6 +67,15 @@ class _ScientificYAxisItem(pg.AxisItem):
 class _HistogramPlotWidget(QWidget):
     """Small pyqtgraph wrapper for card-local histogram rendering."""
 
+    # Contrast-limit drag flow:
+    # 1. _ensure_contrast_region creates the pyqtgraph LinearRegionItem and connects
+    #    LinearRegionItem.sigRegionChanged to _on_contrast_region_changed.
+    # 2. _on_contrast_region_changed reads the current low/high x-axis positions via
+    #    LinearRegionItem.getRegion(), normalizes them, then emits this signal.
+    # 3. HistogramWidget connects this signal with the owning card id and updates
+    #    the matching napari Image layer.contrast_limits.
+    contrast_limits_dragged = Signal(float, float)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("histogram_plot_widget")
@@ -96,6 +108,8 @@ class _HistogramPlotWidget(QWidget):
         layout.addWidget(self._plot_widget, 0, 0)
 
         self._bar_item: pg.BarGraphItem | None = None
+        self._contrast_region: pg.LinearRegionItem | None = None
+        self._updating_contrast_region = False
         self._last_result: HistogramResult | None = None
 
     def set_histogram(self, result: HistogramResult) -> None:
@@ -134,6 +148,7 @@ class _HistogramPlotWidget(QWidget):
         """Clear plotted histogram data; card state text lives in the status card."""
         self._last_result = None
         self._clear_bar_item()
+        self.set_contrast_limits(None)
         self.set_log_y(False)
         self._plot_item.setLabel("left", "Count", color=HISTOGRAM_AXIS_TEXT_COLOR)
 
@@ -144,12 +159,63 @@ class _HistogramPlotWidget(QWidget):
         self._plot_item.setLogMode(x=False, y=enabled)
 
     def set_contrast_limits(self, limits: tuple[float, float] | None) -> None:
-        """Reserve a stable API hook for the contrast-sync slice."""
-        _ = limits
+        """Set or clear the draggable contrast-limit region."""
+        normalized_limits = _normalize_contrast_limits(limits)
+        if normalized_limits is None:
+            if limits is None:
+                self._clear_contrast_region()
+            return
+
+        region = self._ensure_contrast_region(normalized_limits)
+        self._updating_contrast_region = True
+        try:
+            region.setRegion(normalized_limits)
+        finally:
+            self._updating_contrast_region = False
 
     def set_percentile_markers(self, markers: Mapping[float, float]) -> None:
         """Reserve a stable API hook for the percentile guide-line slice."""
         _ = markers
+
+    def _ensure_contrast_region(self, limits: tuple[float, float]) -> pg.LinearRegionItem:
+        if self._contrast_region is not None:
+            return self._contrast_region
+
+        pen = pg.mkPen(HISTOGRAM_CONTRAST_LINE_COLOR, width=2)
+        brush = pg.mkBrush(_qcolor(HISTOGRAM_CONTRAST_LINE_COLOR, HISTOGRAM_CONTRAST_REGION_ALPHA))
+        self._contrast_region = pg.LinearRegionItem(
+            values=limits,
+            orientation="vertical",
+            brush=brush,
+            pen=pen,
+            hoverPen=pen,
+            movable=True,
+        )
+        self._contrast_region.setZValue(10)
+        self._contrast_region.sigRegionChanged.connect(self._on_contrast_region_changed)
+        self._plot_item.addItem(self._contrast_region)
+        return self._contrast_region
+
+    def _clear_contrast_region(self) -> None:
+        if self._contrast_region is None:
+            return
+
+        try:
+            self._contrast_region.sigRegionChanged.disconnect(self._on_contrast_region_changed)
+        except (TypeError, RuntimeError):
+            pass
+        self._plot_item.removeItem(self._contrast_region)
+        self._contrast_region = None
+
+    def _on_contrast_region_changed(self, *_args: object) -> None:
+        if self._updating_contrast_region or self._contrast_region is None:
+            return
+
+        limits = _normalize_contrast_limits(tuple(float(value) for value in self._contrast_region.getRegion()))
+        if limits is None:
+            return
+
+        self.contrast_limits_dragged.emit(*limits)
 
     def _clear_bar_item(self) -> None:
         if self._bar_item is None:
@@ -186,6 +252,21 @@ def _qcolor(color: str, alpha: int | None = None) -> QColor:
     if alpha is not None:
         qcolor.setAlpha(alpha)
     return qcolor
+
+
+def _normalize_contrast_limits(limits: tuple[float, float] | None) -> tuple[float, float] | None:
+    if limits is None:
+        return None
+
+    low, high = (float(value) for value in limits)
+    if not np.isfinite(low) or not np.isfinite(high):
+        return None
+
+    low, high = sorted((low, high))
+    if low == high:
+        return None
+
+    return low, high
 
 
 def _create_bar_item(

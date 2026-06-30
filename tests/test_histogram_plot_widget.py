@@ -9,7 +9,11 @@ from qtpy.QtWidgets import QLabel
 
 from napari_harpy.core.histogram import HistogramResult, HistogramSettings, HistogramTarget
 from napari_harpy.widgets.histogram.plot_widget import _HistogramPlotWidget, _ScientificYAxisItem
-from napari_harpy.widgets.histogram.styles import HISTOGRAM_BAR_FILL_COLOR
+from napari_harpy.widgets.histogram.styles import (
+    HISTOGRAM_BAR_FILL_COLOR,
+    HISTOGRAM_CONTRAST_LINE_COLOR,
+    HISTOGRAM_CONTRAST_REGION_ALPHA,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -204,6 +208,64 @@ def test_histogram_plot_widget_clear_does_not_render_plot_messages(qtbot) -> Non
     assert plot_widget._bar_item is None
     assert not plot_widget._plot_item.ctrl.logYCheck.isChecked()
     assert plot_widget.findChild(QLabel, "histogram_plot_state_label") is None
+
+
+def test_histogram_plot_widget_set_contrast_limits_creates_and_updates_region(qtbot) -> None:
+    plot_widget = _HistogramPlotWidget()
+    qtbot.addWidget(plot_widget)
+
+    plot_widget.set_contrast_limits((0.8, 0.2))
+
+    region = plot_widget._contrast_region
+    assert region is not None
+    assert region in plot_widget._plot_item.items
+    np.testing.assert_allclose(region.getRegion(), (0.2, 0.8))
+    assert region.brush.color().alpha() == HISTOGRAM_CONTRAST_REGION_ALPHA
+    assert region.lines[0].pen.color().name().upper() == HISTOGRAM_CONTRAST_LINE_COLOR.upper()
+
+    plot_widget.set_contrast_limits((0.1, 0.9))
+
+    assert plot_widget._contrast_region is region
+    np.testing.assert_allclose(region.getRegion(), (0.1, 0.9))
+
+
+def test_histogram_plot_widget_clear_contrast_limits_keeps_histogram_bars(qtbot) -> None:
+    plot_widget = _HistogramPlotWidget()
+    qtbot.addWidget(plot_widget)
+    plot_widget.set_histogram(make_result())
+    bar_item = plot_widget._bar_item
+    plot_widget.set_contrast_limits((0.1, 0.9))
+
+    plot_widget.set_contrast_limits(None)
+
+    assert plot_widget._bar_item is bar_item
+    assert plot_widget._contrast_region is None
+    assert bar_item in plot_widget._plot_item.items
+
+
+def test_histogram_plot_widget_programmatic_contrast_update_does_not_emit(qtbot) -> None:
+    plot_widget = _HistogramPlotWidget()
+    qtbot.addWidget(plot_widget)
+    emitted_limits: list[tuple[float, float]] = []
+    plot_widget.contrast_limits_dragged.connect(lambda low, high: emitted_limits.append((low, high)))
+
+    plot_widget.set_contrast_limits((0.1, 0.9))
+    plot_widget.set_contrast_limits((0.2, 0.8))
+
+    assert emitted_limits == []
+
+
+def test_histogram_plot_widget_changed_contrast_region_emits_ordered_limits(qtbot) -> None:
+    plot_widget = _HistogramPlotWidget()
+    qtbot.addWidget(plot_widget)
+    emitted_limits: list[tuple[float, float]] = []
+    plot_widget.contrast_limits_dragged.connect(lambda low, high: emitted_limits.append((low, high)))
+    plot_widget.set_contrast_limits((0.1, 0.9))
+    assert plot_widget._contrast_region is not None
+
+    plot_widget._contrast_region.setRegion((0.75, 0.25))
+
+    assert emitted_limits == [(0.25, 0.75)]
 
 
 def test_pyqtgraph_imports_stay_out_of_core_and_controller() -> None:

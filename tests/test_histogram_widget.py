@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from html import unescape
+from types import SimpleNamespace
 
 import numpy as np
+from napari.layers import Image
 from qtpy.QtCore import QObject, Qt, Signal
 from qtpy.QtWidgets import QComboBox, QLabel, QWidget
 from spatialdata import SpatialData
@@ -17,6 +19,43 @@ from napari_harpy.widgets.histogram.widget import HistogramWidget
 
 class DummyViewer:
     pass
+
+
+class DummyEventEmitter:
+    def __init__(self) -> None:
+        self._callbacks: list[object] = []
+
+    def connect(self, callback) -> None:
+        self._callbacks.append(callback)
+
+    def emit(self, value: object | None = None) -> None:
+        event = SimpleNamespace(value=value)
+        for callback in list(self._callbacks):
+            callback(event)
+
+
+class DummyLayers(list):
+    def __init__(self, layers: list[object] | None = None) -> None:
+        super().__init__(layers or [])
+        self.events = SimpleNamespace(
+            inserted=DummyEventEmitter(),
+            removed=DummyEventEmitter(),
+            reordered=DummyEventEmitter(),
+        )
+
+    def remove(self, layer: object) -> None:
+        super().remove(layer)
+        self.events.removed.emit(layer)
+
+
+class LayerListDummyViewer:
+    def __init__(self, layers: list[object] | None = None) -> None:
+        self.layers = DummyLayers(layers)
+
+    def add_layer(self, layer: object) -> object:
+        self.layers.append(layer)
+        self.layers.events.inserted.emit(layer)
+        return layer
 
 
 class _DeferredWorker(QObject):
@@ -66,6 +105,13 @@ def make_widget_with_sdata(qtbot, sdata: SpatialData) -> HistogramWidget:
     return widget
 
 
+def make_widget_with_viewer_and_sdata(qtbot, viewer: object, sdata: SpatialData) -> HistogramWidget:
+    get_or_create_app_state(viewer).set_sdata(sdata)
+    widget = HistogramWidget(viewer)
+    qtbot.addWidget(widget)
+    return widget
+
+
 def add_valid_histogram_card(widget: HistogramWidget) -> tuple[str, object]:
     card_id = widget.add_histogram_card()
     card = widget._cards[card_id]
@@ -89,6 +135,43 @@ def make_job_result(job: HistogramJob) -> HistogramJobResult:
             percentile_values={},
             resolved_scale=job.settings.scale,
         ),
+    )
+
+
+def calculate_card(widget: HistogramWidget, qtbot, card) -> None:
+    deferred_workers: list[_DeferredWorker] = []
+
+    def capture_worker(job: HistogramJob) -> _DeferredWorker:
+        worker = _DeferredWorker(make_job_result(job))
+        deferred_workers.append(worker)
+        return worker
+
+    widget._histogram_controller._create_histogram_worker = capture_worker  # type: ignore[method-assign]
+    qtbot.mouseClick(card.calculate_button, Qt.MouseButton.LeftButton)
+    deferred_workers[0].emit_returned()
+
+
+def make_overlay_layer(*, name: str = "blobs_image[0]", contrast_limits: tuple[float, float] = (0.0, 1.0)) -> Image:
+    layer = Image(np.zeros((4, 4), dtype=np.float32), name=name)
+    layer.contrast_limits = contrast_limits
+    return layer
+
+
+def register_overlay_layer(
+    widget: HistogramWidget,
+    layer: Image,
+    sdata: SpatialData,
+    *,
+    channel_name: str = "0",
+) -> None:
+    widget.app_state.viewer_adapter.register_image_layer(
+        layer,
+        sdata=sdata,
+        image_name="blobs_image",
+        coordinate_system="global",
+        image_display_mode="overlay",
+        channel_index=int(channel_name),
+        channel_name=channel_name,
     )
 
 
@@ -196,7 +279,7 @@ def test_histogram_widget_preserves_existing_plot_while_recalculating(
 ) -> None:
     deferred_workers: list[_DeferredWorker] = []
     widget = make_widget_with_sdata(qtbot, sdata_blobs)
-    card_id, card = add_valid_histogram_card(widget)
+    _card_id, card = add_valid_histogram_card(widget)
 
     def capture_worker(job: HistogramJob) -> _DeferredWorker:
         worker = _DeferredWorker(make_job_result(job))
@@ -357,3 +440,96 @@ def test_histogram_widget_invalid_optional_settings_disable_calculate(qtbot, sda
 
     assert not card.calculate_button.isEnabled()
     assert "requires both low and high values" in card.status_label.text()
+
+
+def test_histogram_widget_syncs_contrast_limits_with_unique_overlay_layer(qtbot, sdata_blobs: SpatialData) -> None:
+    layer = make_overlay_layer(contrast_limits=(0.1, 0.8))
+    viewer = LayerListDummyViewer([layer])
+    widget = make_widget_with_viewer_and_sdata(qtbot, viewer, sdata_blobs)
+    register_overlay_layer(widget, layer, sdata_blobs)
+    _card_id, card = add_valid_histogram_card(widget)
+
+    calculate_card(widget, qtbot, card)
+
+    assert card.plot_widget._contrast_region is not None
+    np.testing.assert_allclose(card.plot_widget._contrast_region.getRegion(), (0.1, 0.8))
+    assert "Contrast synced to napari overlay layer." in card.status_label.text()
+
+    card.plot_widget.contrast_limits_dragged.emit(0.2, 0.7)
+    np.testing.assert_allclose(layer.contrast_limits, (0.2, 0.7))
+
+    layer.contrast_limits = (0.3, 0.6)
+    np.testing.assert_allclose(card.plot_widget._contrast_region.getRegion(), (0.3, 0.6))
+
+
+def test_histogram_widget_disables_contrast_sync_for_duplicate_overlay_layers(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    first_layer = make_overlay_layer(name="first")
+    second_layer = make_overlay_layer(name="second")
+    viewer = LayerListDummyViewer([first_layer, second_layer])
+    widget = make_widget_with_viewer_and_sdata(qtbot, viewer, sdata_blobs)
+    register_overlay_layer(widget, first_layer, sdata_blobs)
+    register_overlay_layer(widget, second_layer, sdata_blobs)
+    _card_id, card = add_valid_histogram_card(widget)
+
+    calculate_card(widget, qtbot, card)
+
+    assert card.plot_widget._contrast_region is None
+    assert card.plot_widget._bar_item is not None
+    assert "multiple matching overlay layers" in card.status_label.text()
+
+
+def test_histogram_widget_allows_two_cards_to_share_one_overlay_layer(qtbot, sdata_blobs: SpatialData) -> None:
+    layer = make_overlay_layer()
+    viewer = LayerListDummyViewer([layer])
+    widget = make_widget_with_viewer_and_sdata(qtbot, viewer, sdata_blobs)
+    register_overlay_layer(widget, layer, sdata_blobs)
+    _first_card_id, first_card = add_valid_histogram_card(widget)
+    _second_card_id, second_card = add_valid_histogram_card(widget)
+
+    calculate_card(widget, qtbot, first_card)
+    calculate_card(widget, qtbot, second_card)
+
+    layer.contrast_limits = (0.25, 0.75)
+
+    assert first_card.plot_widget._contrast_region is not None
+    assert second_card.plot_widget._contrast_region is not None
+    np.testing.assert_allclose(first_card.plot_widget._contrast_region.getRegion(), (0.25, 0.75))
+    np.testing.assert_allclose(second_card.plot_widget._contrast_region.getRegion(), (0.25, 0.75))
+
+
+def test_histogram_widget_layer_removal_clears_contrast_sync_without_clearing_histogram(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    layer = make_overlay_layer()
+    viewer = LayerListDummyViewer([layer])
+    widget = make_widget_with_viewer_and_sdata(qtbot, viewer, sdata_blobs)
+    register_overlay_layer(widget, layer, sdata_blobs)
+    _card_id, card = add_valid_histogram_card(widget)
+    calculate_card(widget, qtbot, card)
+
+    viewer.layers.remove(layer)
+
+    assert card.contrast_sync_state is None
+    assert card.plot_widget._contrast_region is None
+    assert card.plot_widget._bar_item is not None
+    assert "open this image in overlay mode" in card.status_label.text()
+
+
+def test_histogram_widget_settings_change_clears_contrast_sync(qtbot, sdata_blobs: SpatialData) -> None:
+    layer = make_overlay_layer()
+    viewer = LayerListDummyViewer([layer])
+    widget = make_widget_with_viewer_and_sdata(qtbot, viewer, sdata_blobs)
+    register_overlay_layer(widget, layer, sdata_blobs)
+    _card_id, card = add_valid_histogram_card(widget)
+    calculate_card(widget, qtbot, card)
+
+    card.bins_spin.setValue(512)
+
+    assert card.contrast_sync_state is None
+    assert card.plot_widget._contrast_region is None
+    assert card.plot_widget._bar_item is None
+    assert "Target or settings changed. Calculate again." in card.status_label.text()

@@ -1070,7 +1070,7 @@ Tests:
 
 ### 7. Contrast-Limit Synchronization
 
-Status: [ ] Planned
+Status: [x] Implemented
 
 Goal:
 

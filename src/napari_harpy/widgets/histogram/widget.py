@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import math
 import uuid
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -27,12 +29,13 @@ from xarray import DataArray, DataTree
 
 from napari_harpy._app_state import CoordinateSystemChangedEvent, HarpyAppState, get_or_create_app_state
 from napari_harpy._resources import get_logo_path
-from napari_harpy.core.histogram import HistogramSettings, HistogramTarget
+from napari_harpy.core.histogram import HistogramResult, HistogramSettings, HistogramTarget
 from napari_harpy.core.spatialdata import (
     get_coordinate_system_names_from_sdata,
     get_image_channel_names_from_sdata,
     get_spatialdata_image_options_for_coordinate_system_from_sdata,
 )
+from napari_harpy.viewer.adapter import ImageLayerBinding
 from napari_harpy.widgets.histogram.controller import HistogramController
 from napari_harpy.widgets.histogram.plot_widget import _HistogramPlotWidget
 from napari_harpy.widgets.histogram.status_card import (
@@ -130,7 +133,14 @@ class _HistogramCardBindingState:
     validation_error: str | None = None
 
 
-@dataclass(frozen=True)
+@dataclass
+class _HistogramContrastSyncState:
+    layer: object
+    contrast_limits_callback: Callable[[object], None]
+    updating_plot: bool = False
+
+
+@dataclass
 class _HistogramCard:
     card_id: str
     container: QFrame
@@ -155,6 +165,8 @@ class _HistogramCard:
     percentile_min_edit: QLineEdit
     percentile_max_edit: QLineEdit
     reset_settings_button: QPushButton
+    contrast_sync_state: _HistogramContrastSyncState | None = None
+    contrast_sync_message: str | None = None
 
 
 class HistogramWidget(QWidget):
@@ -230,6 +242,7 @@ class HistogramWidget(QWidget):
 
         self._app_state.sdata_changed.connect(self._on_sdata_changed)
         self._app_state.coordinate_system_changed.connect(self._on_coordinate_system_changed)
+        self._app_state.viewer_adapter.image_overlay_layers_changed.connect(self._on_image_overlay_layers_changed)
         self._update_empty_state()
 
     @property
@@ -269,6 +282,7 @@ class HistogramWidget(QWidget):
         """Remove a card-local histogram request UI without touching SpatialData."""
         histogram_card = self._cards.pop(card_id, None)
         self._card_channel_errors.pop(card_id, None)
+        self._clear_card_contrast_sync(card_id, histogram_card=histogram_card)
         self._histogram_controller.remove_card(card_id)
         if histogram_card is None:
             return
@@ -478,6 +492,9 @@ class HistogramWidget(QWidget):
 
         plot_widget = _HistogramPlotWidget()
         plot_widget.setObjectName(f"histogram_plot_widget_{card_id}")
+        plot_widget.contrast_limits_dragged.connect(
+            lambda low, high, current_card_id=card_id: self._on_plot_contrast_limits_dragged(current_card_id, low, high)
+        )
 
         layout.addWidget(header)
         layout.addLayout(form)
@@ -794,7 +811,7 @@ class HistogramWidget(QWidget):
 
     def _update_card_state(self, card_id: str) -> None:
         self._bind_card_state(card_id)
-        self._update_card_status(card_id)
+        self._refresh_card_after_controller_update(card_id)
 
     def _bind_card_state(self, card_id: str) -> None:
         histogram_card = self._get_card(card_id)
@@ -806,6 +823,15 @@ class HistogramWidget(QWidget):
             binding.settings,
             validation_error=binding.validation_error,
         )
+
+    def _refresh_card_after_controller_update(self, card_id: str) -> None:
+        try:
+            histogram_card = self._get_card(card_id)
+        except ValueError:
+            return
+
+        self._update_card_plot(histogram_card)
+        self._update_card_status(card_id)
 
     def _update_card_status(self, card_id: str) -> None:
         try:
@@ -824,13 +850,18 @@ class HistogramWidget(QWidget):
             spec = build_histogram_error_card_spec(message)
         elif kind == "success":
             spec = build_histogram_calculated_card_spec(message)
+            if histogram_card.contrast_sync_message:
+                spec = _HistogramStatusCardSpec(
+                    title=spec.title,
+                    lines=(*spec.lines, histogram_card.contrast_sync_message),
+                    kind=spec.kind,
+                )
         else:
             spec = build_histogram_ready_card_spec(message)
         self._apply_status_card_spec(histogram_card.status_label, spec)
-        self._update_card_plot(histogram_card)
 
     def _on_controller_state_changed(self, card_id: str) -> None:
-        self._update_card_status(card_id)
+        self._refresh_card_after_controller_update(card_id)
 
     def _update_card_plot(self, histogram_card: _HistogramCard) -> None:
         card_id = histogram_card.card_id
@@ -841,9 +872,157 @@ class HistogramWidget(QWidget):
         result = self._histogram_controller.result_for_card(card_id)
         if result is not None:
             histogram_card.plot_widget.set_histogram(result)
+            self._refresh_card_contrast_sync(histogram_card, result)
             return
 
+        self._clear_card_contrast_sync(card_id, histogram_card=histogram_card)
         histogram_card.plot_widget.clear_histogram()
+
+    def _on_image_overlay_layers_changed(self) -> None:
+        for histogram_card in self._cards.values():
+            result = self._histogram_controller.result_for_card(histogram_card.card_id)
+            if result is None:
+                continue
+
+            self._refresh_card_contrast_sync(histogram_card, result)
+            self._update_card_status(histogram_card.card_id)
+
+    def _refresh_card_contrast_sync(self, histogram_card: _HistogramCard, result: HistogramResult) -> None:
+        """Bind the card to the resolved napari layer for contrast-limit sync.
+
+        If the card is already connected to the correct layer, refresh the plot only.
+        Otherwise disconnect any old layer, connect the card to the resolved layer,
+        store the sync state, and draw the current contrast limits.
+        """
+        card_id = histogram_card.card_id
+        binding, unavailable_message = self._resolve_contrast_sync_binding(result)
+        if binding is None:
+            self._disable_card_contrast_sync(
+                card_id,
+                histogram_card=histogram_card,
+                message=unavailable_message or "Contrast sync unavailable.",
+            )
+            return
+
+        state = histogram_card.contrast_sync_state
+        if state is not None and state.layer is binding.layer:
+            histogram_card.contrast_sync_message = "Contrast synced to napari overlay layer."
+            self._apply_layer_contrast_limits_to_plot(card_id)
+            return
+
+        self._clear_card_contrast_sync(card_id, histogram_card=histogram_card)
+        callback = lambda _event, current_card_id=card_id: self._on_layer_contrast_limits_changed(current_card_id)
+        binding.layer.events.contrast_limits.connect(callback)
+        histogram_card.contrast_sync_state = _HistogramContrastSyncState(
+            layer=binding.layer,
+            contrast_limits_callback=callback,
+        )
+        histogram_card.contrast_sync_message = "Contrast synced to napari overlay layer."
+        self._apply_layer_contrast_limits_to_plot(card_id)
+
+    def _resolve_contrast_sync_binding(self, result: HistogramResult) -> tuple[ImageLayerBinding | None, str | None]:
+        sdata = self.selected_spatialdata
+        if sdata is None:
+            return None, "Contrast sync unavailable: no SpatialData loaded."
+
+        target = result.target
+        matches = self._app_state.viewer_adapter.layer_bindings.find_bindings(
+            sdata=sdata,
+            element_type="image",
+            element_name=target.image_name,
+            coordinate_system=target.coordinate_system,
+            image_display_mode="overlay",
+            channel_name=target.channel_name,
+        )
+        image_bindings = [binding for binding in matches if isinstance(binding, ImageLayerBinding)]
+        if not image_bindings:
+            return None, "Contrast sync unavailable: open this image in overlay mode."
+        if len(image_bindings) > 1:
+            return None, "Contrast sync unavailable: multiple matching overlay layers."
+
+        binding = image_bindings[0]
+        if bool(getattr(binding.layer, "rgb", False)):
+            return None, "Contrast sync unavailable for RGB image layers."
+        if _normalized_contrast_limits(getattr(binding.layer, "contrast_limits", None)) is None:
+            return None, "Contrast sync unavailable: layer contrast limits are invalid."
+
+        return binding, None
+
+    def _disable_card_contrast_sync(
+        self,
+        card_id: str,
+        *,
+        histogram_card: _HistogramCard | None = None,
+        message: str,
+    ) -> None:
+        self._clear_card_contrast_sync(card_id, histogram_card=histogram_card, clear_message=False)
+        card = histogram_card or self._cards.get(card_id)
+        if card is not None:
+            card.contrast_sync_message = message
+
+    def _clear_card_contrast_sync(
+        self,
+        card_id: str,
+        *,
+        histogram_card: _HistogramCard | None = None,
+        clear_message: bool = True,
+    ) -> None:
+        card = histogram_card or self._cards.get(card_id)
+        state = None if card is None else card.contrast_sync_state
+        if card is not None:
+            card.contrast_sync_state = None
+
+        if state is not None:
+            try:
+                state.layer.events.contrast_limits.disconnect(state.contrast_limits_callback)
+            except (TypeError, RuntimeError, ValueError):
+                pass
+
+        if clear_message and card is not None:
+            card.contrast_sync_message = None
+
+        if card is not None:
+            card.plot_widget.set_contrast_limits(None)
+
+    def _on_layer_contrast_limits_changed(self, card_id: str) -> None:
+        self._apply_layer_contrast_limits_to_plot(card_id)
+
+    def _apply_layer_contrast_limits_to_plot(self, card_id: str) -> None:
+        histogram_card = self._cards.get(card_id)
+        state = None if histogram_card is None else histogram_card.contrast_sync_state
+        if state is None or histogram_card is None:
+            return
+
+        limits = _normalized_contrast_limits(getattr(state.layer, "contrast_limits", None))
+        if limits is None:
+            histogram_card.contrast_sync_message = "Contrast sync unavailable: layer contrast limits are invalid."
+            histogram_card.plot_widget.set_contrast_limits(None)
+            self._update_card_status(card_id)
+            return
+
+        state.updating_plot = True
+        try:
+            histogram_card.plot_widget.set_contrast_limits(limits)
+        finally:
+            state.updating_plot = False
+
+    def _on_plot_contrast_limits_dragged(self, card_id: str, low: float, high: float) -> None:
+        histogram_card = self._cards.get(card_id)
+        state = None if histogram_card is None else histogram_card.contrast_sync_state
+        if state is None or state.updating_plot:
+            return
+
+        limits = _normalized_contrast_limits((low, high))
+        if limits is None:
+            return
+
+        state.layer.contrast_limits = limits
+        # Setting layer.contrast_limits normally emits the layer's contrast_limits event.
+        # During sync setup, that event is connected to _on_layer_contrast_limits_changed,
+        # which already calls _apply_layer_contrast_limits_to_plot(card_id). Keep this
+        # direct refresh as a local reconciliation step in case the layer adjusts the
+        # accepted limits.
+        self._apply_layer_contrast_limits_to_plot(card_id)
 
     def _resolve_card_binding(self, histogram_card: _HistogramCard) -> _HistogramCardBindingState:
         if self.selected_spatialdata is None:
@@ -880,7 +1059,7 @@ class HistogramWidget(QWidget):
     def _calculate_histogram(self, card_id: str) -> None:
         self._bind_card_state(card_id)
         self._histogram_controller.calculate(card_id)
-        self._update_card_status(card_id)
+        self._refresh_card_after_controller_update(card_id)
 
     def _build_settings(self, histogram_card: _HistogramCard) -> HistogramSettings:
         value_range = self._parse_optional_pair(
@@ -936,3 +1115,28 @@ class HistogramWidget(QWidget):
         has_cards = bool(self._cards)
         self.empty_state_label.setVisible(not has_cards)
         self.cards_container.setVisible(has_cards)
+
+
+def _normalized_contrast_limits(limits: object) -> tuple[float, float] | None:
+    if not isinstance(limits, Iterable) or isinstance(limits, (str, bytes)):
+        return None
+
+    values = tuple(limits)
+    if len(values) != 2:
+        return None
+    low, high = values
+
+    try:
+        low = float(low)
+        high = float(high)
+    except (TypeError, ValueError):
+        return None
+
+    if not math.isfinite(low) or not math.isfinite(high):
+        return None
+
+    low, high = sorted((low, high))
+    if low == high:
+        return None
+
+    return low, high
