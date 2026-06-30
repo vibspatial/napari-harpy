@@ -160,6 +160,7 @@ def test_histogram_widget_populates_target_selectors_and_starts_controller_job(
     assert combo_texts(card.image_combo) == ["blobs_image", "blobs_multiscale_image"]
     assert combo_texts(card.channel_combo) == ["0", "1", "2"]
     assert card.calculate_button.isEnabled()
+    assert card.calculate_button.styleSheet() == histogram_widget_module.CALCULATE_BUTTON_STYLESHEET
 
     qtbot.mouseClick(card.calculate_button, Qt.MouseButton.LeftButton)
 

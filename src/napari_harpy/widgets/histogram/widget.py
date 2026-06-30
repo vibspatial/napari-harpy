@@ -45,6 +45,7 @@ from napari_harpy.widgets.histogram.status_card import (
 )
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
+    CALCULATE_BUTTON_STYLESHEET,
     CHECKBOX_STYLESHEET,
     DISCLOSURE_CHEVRON_SIZE,
     SECONDARY_BUTTON_STYLESHEET,
@@ -454,6 +455,7 @@ class HistogramWidget(QWidget):
 
         action_row = QWidget()
         action_row.setObjectName(f"histogram_action_row_{card_id}")
+        action_row.setStyleSheet(f"QWidget#{action_row.objectName()} {{ background: transparent; }}")
         action_layout = QHBoxLayout(action_row)
         action_layout.setContentsMargins(0, 0, 0, 0)
         action_layout.setSpacing(8)
@@ -461,7 +463,7 @@ class HistogramWidget(QWidget):
         calculate_button = QPushButton("Calculate")
         calculate_button.setObjectName(f"histogram_calculate_button_{card_id}")
         calculate_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        calculate_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
+        calculate_button.setStyleSheet(CALCULATE_BUTTON_STYLESHEET)
         calculate_button.setEnabled(False)
         calculate_button.clicked.connect(
             lambda _checked=False, current_card_id=card_id: self._calculate_histogram(current_card_id)
