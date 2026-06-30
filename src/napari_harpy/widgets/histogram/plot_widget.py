@@ -19,7 +19,8 @@ from napari_harpy.widgets.histogram.styles import (
 
 _PLOT_MIN_HEIGHT = 150
 _PLOT_MAX_HEIGHT = 180
-_SCIENTIFIC_TICK_MIN_ABS = 10_000
+_SCIENTIFIC_TICK_HIGH_ABS = 10_000
+_SCIENTIFIC_TICK_LOW_ABS = 0.001
 _SCIENTIFIC_TICK_MAX_DECIMALS = 2
 _LOG_Y_SINGLE_DECADE_PADDING = 0.5
 
@@ -29,13 +30,13 @@ class _ScientificYAxisItem(pg.AxisItem):
 
     def tickStrings(self, values: list[float], scale: float, spacing: float) -> list[str]:
         if self.logMode:
-            return super().tickStrings(values, scale, spacing)
+            return [_format_log_tick(value, scale) for value in values]
 
         default_strings = super().tickStrings(values, scale, spacing)
         strings: list[str] = []
         for value, default_string in zip(values, default_strings, strict=True):
             scaled_value = value * scale
-            if abs(scaled_value) >= _SCIENTIFIC_TICK_MIN_ABS:
+            if _should_use_scientific_tick(scaled_value):
                 strings.append(_format_scientific_tick(scaled_value))
             else:
                 strings.append(default_string)
@@ -65,6 +66,8 @@ class _HistogramPlotWidget(QWidget):
         self._plot_item.setLabel("left", "Count", color=HISTOGRAM_AXIS_TEXT_COLOR)
         for axis_name in ("bottom", "left"):
             axis = self._plot_item.getAxis(axis_name)
+            if axis_name == "left":
+                axis.enableAutoSIPrefix(False)
             axis.setPen(pg.mkPen(HISTOGRAM_AXIS_GRID_COLOR, width=1))
             axis.setTextPen(pg.mkPen(HISTOGRAM_AXIS_TEXT_COLOR, width=1))
 
@@ -230,3 +233,19 @@ def _format_scientific_tick(value: float) -> str:
     mantissa, exponent = f"{value:.{_SCIENTIFIC_TICK_MAX_DECIMALS}e}".split("e")
     mantissa = mantissa.rstrip("0").rstrip(".")
     return f"{mantissa}e{int(exponent)}"
+
+
+def _format_log_tick(value: float, scale: float) -> str:
+    actual_value = np.power(10.0, value) * scale
+    if not np.isfinite(actual_value):
+        return ""
+    if _should_use_scientific_tick(actual_value):
+        return _format_scientific_tick(actual_value)
+    return f"{actual_value:g}"
+
+
+def _should_use_scientific_tick(value: float) -> bool:
+    absolute_value = abs(value)
+    return absolute_value != 0 and (
+        absolute_value >= _SCIENTIFIC_TICK_HIGH_ABS or absolute_value <= _SCIENTIFIC_TICK_LOW_ABS
+    )

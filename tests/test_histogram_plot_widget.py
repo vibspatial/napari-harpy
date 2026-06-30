@@ -138,6 +138,40 @@ def test_histogram_plot_widget_uses_scientific_y_axis_for_large_counts(qtbot) ->
     assert axis.tickStrings([0, 100_000, 500_000], 1.0, 100_000) == ["0", "1e5", "5e5"]
 
 
+def test_histogram_plot_widget_uses_scientific_ticks_for_small_density_values(qtbot) -> None:
+    plot_widget = _HistogramPlotWidget()
+    qtbot.addWidget(plot_widget)
+
+    plot_widget.set_histogram(
+        make_result(
+            counts=np.array([0.001, 0.00001]),
+            bin_edges=np.array([0.0, 0.5, 1.0]),
+            settings=HistogramSettings(scale="scale0", density=True),
+        )
+    )
+
+    axis = plot_widget._plot_item.getAxis("left")
+    assert axis.autoSIPrefix is False
+    assert "(x" not in axis.labelString()
+    assert axis.tickStrings([0.001, 0.00001], 1.0, 0.001) == ["1e-3", "1e-5"]
+
+
+def test_histogram_plot_widget_uses_scientific_ticks_for_log_density_values(qtbot) -> None:
+    plot_widget = _HistogramPlotWidget()
+    qtbot.addWidget(plot_widget)
+
+    plot_widget.set_histogram(
+        make_result(
+            counts=np.array([0.0001, 0.000001, 0.00000001]),
+            bin_edges=np.array([0.0, 1.0, 2.0, 3.0]),
+            settings=HistogramSettings(scale="scale0", density=True, log_y=True),
+        )
+    )
+
+    axis = plot_widget._plot_item.getAxis("left")
+    assert axis.tickStrings([-4, -6, -8], 1.0, 1.0) == ["1e-4", "1e-6", "1e-8"]
+
+
 def test_histogram_plot_widget_empty_running_and_stale_states_do_not_render_plot_messages(qtbot) -> None:
     plot_widget = _HistogramPlotWidget()
     qtbot.addWidget(plot_widget)
