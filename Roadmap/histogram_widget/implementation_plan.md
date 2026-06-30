@@ -1077,58 +1077,156 @@ Goal:
 - synchronize the movable histogram contrast region with matching napari image
   layers and napari's native image contrast controls.
 
+Current codebase context:
+
+- `ViewerAdapter.image_overlay_layers_changed` exists and is the only viewer
+  lifecycle signal this slice should consume;
+- `HistogramController` owns histogram calculation state and should remain free
+  of napari layer, pyqtgraph, and contrast synchronization concerns;
+- `HistogramWidget` owns card UI state, `HarpyAppState`, and access to
+  `viewer_adapter.layer_bindings`, so it owns card-to-layer synchronization;
+- `_HistogramPlotWidget` currently renders histogram bars and has a placeholder
+  `set_contrast_limits(...)`; this slice turns that placeholder into the real
+  pyqtgraph contrast-region API.
+
 Scope:
 
 - consume the viewer-adapter `image_overlay_layers_changed` signal introduced
   in Slice 6;
-- resolve matching overlay `ImageLayerBinding` for each card after calculation
-  and whenever overlay image layer lifecycle changes are emitted;
-- require exactly one matching overlay image binding for synchronization; zero
-  matches or multiple matching viewer layers disable synchronization for that
-  card without clearing the histogram;
+- connect `HistogramWidget` to that signal once during initialization and
+  re-resolve only cards with a calculated histogram result;
+- resolve matching overlay `ImageLayerBinding` from the calculated
+  `HistogramResult.target`, not from transient combo-box state;
+- use `viewer_adapter.layer_bindings.find_bindings(...)` with:
+  - current `SpatialData`;
+  - `element_type="image"`;
+  - `element_name=result.target.image_name`;
+  - `coordinate_system=result.target.coordinate_system`;
+  - `image_display_mode="overlay"`;
+  - `channel_name=result.target.channel_name`;
+- require exactly one matching overlay image binding for synchronization;
+- when zero matches are found, disable contrast synchronization for that card
+  without clearing the histogram;
+- when more than one matching viewer layer is found, treat the state as
+  ambiguous and disable contrast synchronization for that card without using
+  active-layer or layer-order tie-breaking;
 - allow multiple histogram cards to bind to the same unique overlay image layer
   when they intentionally target the same image/channel combination;
-- initialize the histogram contrast region from `layer.contrast_limits`;
-- draw the contrast limits with `pyqtgraph.LinearRegionItem` by default,
-  styled to read as two movable vertical contrast-limit lines with a subtle
-  selected-region fill;
-- do not add a histogram-widget contrast slider or contrast low/high numeric
-  fields; napari's native image contrast controls remain the non-plot control
-  surface;
-- `_HistogramPlotWidget` emits a card-level contrast-change signal when the
-  user finishes moving either boundary of the contrast region;
-- handling that signal updates
-  `layer.contrast_limits`;
-- `layer.events.contrast_limits` updates the histogram contrast region and any
-  marker readout text when napari's own contrast controls change;
-- prevent event feedback loops and keep lower/upper ordering valid while users
-  drag markers;
-- layer removal disables contrast synchronization without clearing the
-  histogram;
+- disable synchronization for RGB(A) napari image layers because their contrast
+  behavior is not the scalar contrast behavior this widget controls;
 - stack image layers do not participate in contrast synchronization; if the
   matching live layer is only present in stack mode, keep the histogram visible
   and show a clear non-blocking status;
-- RGB(A) layers disable contrast synchronization with a clear status.
+- add card-local widget state for the current sync binding, including the bound
+  napari layer, the stored `layer.events.contrast_limits` callback, and a guard
+  flag for programmatic updates;
+- initialize the histogram contrast region from `layer.contrast_limits` as soon
+  as a calculated card resolves exactly one compatible overlay layer;
+- clear only the contrast region, not the histogram bars, when a resolved layer
+  disappears or synchronization becomes unavailable;
+- clear both histogram bars and contrast region when the controller no longer
+  has a result for the card;
+- disconnect previous `layer.events.contrast_limits` callbacks on target
+  changes, settings changes, new calculation result binding, viewer layer
+  removal, `SpatialData` changes, and card removal;
+- do not add contrast synchronization state to `HistogramController`.
+
+Plot API:
+
+- `_HistogramPlotWidget` should expose a card-level signal:
+
+  ```python
+  contrast_limits_dragged = Signal(float, float)
+  ```
+
+- `_HistogramPlotWidget.set_contrast_limits(limits)` should:
+  - create the contrast region lazily when `limits` is a valid `(low, high)`
+    tuple;
+  - remove or hide the contrast region when `limits is None`;
+  - normalize the pair so `low < high`, or ignore invalid/non-finite values;
+  - update the existing region in place without replacing histogram bars;
+  - avoid emitting `contrast_limits_dragged` for programmatic updates.
+- use `pyqtgraph.LinearRegionItem` with vertical orientation by default,
+  styled to read as two draggable contrast-limit lines with a subtle selected
+  region fill;
+- use existing histogram palette constants:
+  `HISTOGRAM_CONTRAST_LINE_COLOR` and
+  `HISTOGRAM_CONTRAST_REGION_ALPHA`;
+- emit `contrast_limits_dragged(low, high)` only when the user finishes moving
+  the contrast region.
+
+Interaction flow:
+
+- after a successful histogram calculation, `_update_card_plot(...)` renders the
+  histogram and then resolves/binds contrast synchronization for that card;
+- when a user drags the histogram contrast region, the widget writes
+  `layer.contrast_limits = (low, high)`;
+- when napari's native contrast slider changes `layer.contrast_limits`, the
+  widget updates `_HistogramPlotWidget.set_contrast_limits(...)`;
+- use a per-card guard such as `_syncing_contrast_limits` so the programmatic
+  plot update from a napari event does not write back to `layer.contrast_limits`
+  again;
+- keep lower/upper ordering valid before assigning napari contrast limits;
+- do not add a histogram-widget contrast slider or contrast low/high numeric
+  fields; napari's native image contrast controls remain the non-plot control
+  surface;
+- do not couple contrast synchronization to active-layer changes.
+
+Status behavior:
+
+- keep the calculation status card as the single text surface; do not render
+  contrast-sync messages inside the plot area;
+- preserve the calculated histogram result when synchronization is unavailable;
+- supplement the calculated status with concise contrast-sync information, for
+  example:
+  - `Contrast synced to napari overlay layer.`;
+  - `Contrast sync unavailable: open this image in overlay mode.`;
+  - `Contrast sync unavailable: multiple matching overlay layers.`;
+  - `Contrast sync unavailable for RGB image layers.`;
+- synchronization unavailability must not make the calculate button disabled if
+  the histogram target/settings are otherwise valid.
+
+Non-goals:
+
+- do not sync stack image layers;
+- do not use active layer or viewer order to resolve duplicate overlay matches;
+- do not apply percentile values to contrast limits in this slice.
 
 Tests:
 
-- overlay channel target resolves the correct overlay layer;
-- duplicate matching overlay viewer layers disable contrast synchronization
-  with an ambiguity status;
-- two histogram cards targeting the same image/channel can share one unique
-  overlay layer and both update when `layer.contrast_limits` changes;
+- `_HistogramPlotWidget.set_contrast_limits((low, high))` creates or updates a
+  `LinearRegionItem`;
+- `_HistogramPlotWidget.set_contrast_limits(None)` removes or hides the
+  contrast region while leaving histogram bars intact;
+- programmatic `set_contrast_limits(...)` does not emit
+  `contrast_limits_dragged`;
+- finishing a user drag emits `contrast_limits_dragged(low, high)` with ordered
+  finite limits;
+- contrast-limit region styling uses the histogram contrast palette constants
+  and remains visually distinct from percentile styling;
+- after calculation, an overlay channel target resolves exactly one matching
+  overlay layer and initializes the region from `layer.contrast_limits`;
+- duplicate matching overlay viewer layers disable synchronization with an
+  ambiguity status;
+- zero matching overlay layers disable synchronization without clearing the
+  histogram;
 - stack image layers do not resolve to a contrast-sync binding;
-- emitting `image_overlay_layers_changed` causes affected cards to re-resolve
+- RGB image layers disable synchronization with a clear status;
+- emitting `image_overlay_layers_changed` causes calculated cards to re-resolve
   their sync binding;
-- moving the lower/upper histogram lines assigns `layer.contrast_limits`;
-- external napari contrast changes update the widget;
-- external napari contrast changes move the histogram contrast region;
+- viewer layer removal clears the sync binding and contrast region after the
+  viewer-adapter lifecycle signal;
+- moving the histogram contrast region assigns `layer.contrast_limits`;
+- changing napari's native contrast slider updates the histogram contrast
+  region;
 - programmatic contrast-region updates do not recursively reassign
   `layer.contrast_limits`;
-- contrast-limit line styling remains distinct from percentile styling;
-- layer removal clears the sync binding after the viewer-adapter lifecycle
-  signal;
-- RGB layers disable contrast synchronization.
+- two histogram cards targeting the same image/channel can share one unique
+  overlay layer and both update when `layer.contrast_limits` changes;
+- target/settings changes, `SpatialData` changes, and card removal disconnect
+  old layer callbacks;
+- `widgets/histogram/controller.py` remains free of napari layer and pyqtgraph
+  imports.
 
 ### 8. Percentile Guide Lines
 
