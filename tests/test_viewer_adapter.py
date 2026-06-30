@@ -1471,6 +1471,125 @@ def test_viewer_adapter_primary_labels_signal_ignores_styled_bindings(sdata_blob
     assert labels_events == ["changed", "changed"]
 
 
+def test_viewer_adapter_image_overlay_signal_emits_for_loaded_overlay_binding(sdata_blobs) -> None:
+    layer = make_image_layer(name="blobs_image[0]")
+    viewer = DummyViewer([layer])
+    adapter = ViewerAdapter(viewer)
+    emitted_channel_names: list[str | None] = []
+
+    def record_overlay_change() -> None:
+        binding = adapter.layer_bindings.get_binding(layer)
+        emitted_channel_names.append(binding.channel_name if isinstance(binding, ImageLayerBinding) else None)
+
+    adapter.image_overlay_layers_changed.connect(record_overlay_change)
+
+    adapter.register_image_layer(
+        layer,
+        sdata=sdata_blobs,
+        image_name="blobs_image",
+        coordinate_system="global",
+        image_display_mode="overlay",
+        channel_index=0,
+        channel_name="0",
+    )
+
+    assert emitted_channel_names == ["0"]
+
+
+def test_viewer_adapter_image_overlay_signal_ignores_stack_and_missing_channel(sdata_blobs) -> None:
+    stack_layer = make_image_layer(name="blobs_image")
+    overlay_without_channel = make_image_layer(name="blobs_image")
+    viewer = DummyViewer([stack_layer, overlay_without_channel])
+    adapter = ViewerAdapter(viewer)
+    overlay_events: list[str] = []
+
+    adapter.image_overlay_layers_changed.connect(lambda: overlay_events.append("changed"))
+
+    adapter.register_image_layer(
+        stack_layer,
+        sdata=sdata_blobs,
+        image_name="blobs_image",
+        coordinate_system="global",
+        image_display_mode="stack",
+    )
+    adapter.register_image_layer(
+        overlay_without_channel,
+        sdata=sdata_blobs,
+        image_name="blobs_image",
+        coordinate_system="global",
+        image_display_mode="overlay",
+    )
+
+    assert overlay_events == []
+
+
+def test_viewer_adapter_image_overlay_signal_emits_when_prebound_layer_is_inserted(sdata_blobs) -> None:
+    layer = make_image_layer(name="blobs_image[0]")
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    overlay_events: list[str] = []
+
+    adapter.image_overlay_layers_changed.connect(lambda: overlay_events.append("changed"))
+
+    adapter.register_image_layer(
+        layer,
+        sdata=sdata_blobs,
+        image_name="blobs_image",
+        coordinate_system="global",
+        image_display_mode="overlay",
+        channel_index=0,
+        channel_name="0",
+    )
+    assert overlay_events == []
+
+    viewer.add_layer(layer)
+
+    assert overlay_events == ["changed"]
+
+
+def test_viewer_adapter_image_overlay_signal_emits_after_registered_overlay_removal(sdata_blobs) -> None:
+    layer = make_image_layer(name="blobs_image[0]")
+    viewer = DummyViewer([layer])
+    adapter = ViewerAdapter(viewer)
+    bindings_seen_on_signal: list[ImageLayerBinding | None] = []
+
+    def record_overlay_change() -> None:
+        binding = adapter.layer_bindings.get_binding(layer)
+        bindings_seen_on_signal.append(binding if isinstance(binding, ImageLayerBinding) else None)
+
+    adapter.image_overlay_layers_changed.connect(record_overlay_change)
+
+    adapter.register_image_layer(
+        layer,
+        sdata=sdata_blobs,
+        image_name="blobs_image",
+        coordinate_system="global",
+        image_display_mode="overlay",
+        channel_index=0,
+        channel_name="0",
+    )
+    assert isinstance(bindings_seen_on_signal[-1], ImageLayerBinding)
+
+    bindings_seen_on_signal.clear()
+    viewer.layers.remove(layer)
+
+    assert bindings_seen_on_signal == [None]
+    assert adapter.layer_bindings.get_binding(layer) is None
+
+
+def test_viewer_adapter_image_overlay_signal_ignores_external_layer_removal() -> None:
+    layer = make_image_layer(name="external")
+    viewer = DummyViewer([layer])
+    adapter = ViewerAdapter(viewer)
+    overlay_events: list[str] = []
+
+    adapter.image_overlay_layers_changed.connect(lambda: overlay_events.append("changed"))
+
+    viewer.layers.remove(layer)
+
+    assert overlay_events == []
+
+
 def test_viewer_adapter_ensure_styled_labels_loaded_creates_registered_overlay_with_stored_palette(sdata_blobs) -> None:
     table = sdata_blobs["table"]
     region_rows = table.obs.loc[table.obs["region"] == "blobs_labels"].copy()

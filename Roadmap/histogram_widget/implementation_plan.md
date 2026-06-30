@@ -1018,7 +1018,7 @@ Tests:
 
 ### 6. Viewer Image Layer Lifecycle Signal
 
-Status: [ ] Planned
+Status: [x] Implemented
 
 Goal:
 

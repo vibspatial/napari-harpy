@@ -695,6 +695,10 @@ class ViewerAdapter(QObject):
     # Emitted after a primary shapes layer has a Harpy binding while loaded in
     # the viewer. Consumers can rely on the binding registry being ready.
     primary_shapes_layer_registered = Signal(object)
+    # Emitted when histogram-usable overlay image bindings are added or
+    # removed. Consumers should re-query `layer_bindings`; the signal carries
+    # no payload to avoid stale binding data on removal.
+    image_overlay_layers_changed = Signal()
     active_layer_changed = Signal(object)
 
     def __init__(self, viewer: Any | None = None, layer_bindings: LayerBindingRegistry | None = None) -> None:
@@ -866,6 +870,8 @@ class ViewerAdapter(QObject):
             self.primary_labels_layers_changed.emit()
         if _is_primary_shapes_binding(binding) and self._is_layer_loaded_in_viewer(binding.layer):
             self.primary_shapes_layer_registered.emit(binding)
+        if _is_histogram_usable_overlay_image_binding(binding) and self._is_layer_loaded_in_viewer(binding.layer):
+            self.image_overlay_layers_changed.emit()
 
     def unregister_layer(self, layer: Layer) -> LayerBinding | None:
         """Remove a layer from the shared binding registry."""
@@ -893,9 +899,10 @@ class ViewerAdapter(QObject):
 
         In the current built-in loading paths, Harpy usually adds the napari
         layer to the viewer first and registers it second, so this handler is
-        not the main signal path for primary labels availability. Keep it so
-        the adapter still behaves correctly for external or future flows where
-        a layer is registered before it is inserted into the viewer.
+        not the main signal path for primary labels or histogram-usable overlay
+        image availability. Keep it so the adapter still behaves correctly for
+        external or future flows where a layer is registered before it is
+        inserted into the viewer.
         """
         layer = getattr(event, "value", None)
         if not isinstance(layer, Layer):
@@ -904,6 +911,8 @@ class ViewerAdapter(QObject):
         binding = self._layer_bindings.get_binding(layer)
         if _is_pickable_primary_labels_layer(layer, binding):
             self.primary_labels_layers_changed.emit()
+        if _is_histogram_usable_overlay_image_binding(binding):
+            self.image_overlay_layers_changed.emit()
 
     def _on_viewer_layer_removed(self, event: Any) -> None:
         """Unregister Harpy-managed layers when they disappear from the viewer."""
@@ -913,6 +922,7 @@ class ViewerAdapter(QObject):
             return
         binding = self._layer_bindings.get_binding(layer)
         had_primary_labels_semantics = _is_pickable_primary_labels_layer(layer, binding)
+        had_histogram_usable_overlay_image_semantics = _is_histogram_usable_overlay_image_binding(binding)
         removed_binding = self.unregister_layer(layer)
         if removed_binding is None:
             logger.warning(
@@ -920,6 +930,8 @@ class ViewerAdapter(QObject):
             )
         if had_primary_labels_semantics:
             self.primary_labels_layers_changed.emit()
+        if had_histogram_usable_overlay_image_semantics:
+            self.image_overlay_layers_changed.emit()
 
     def _on_viewer_layers_reordered(self, event: Any) -> None:
         del event
@@ -1670,6 +1682,8 @@ class ViewerAdapter(QObject):
             binding = self.unregister_layer(layer)
             if _is_primary_labels_binding(binding):
                 self.primary_labels_layers_changed.emit()
+            if _is_histogram_usable_overlay_image_binding(binding):
+                self.image_overlay_layers_changed.emit()
 
     def _get_loaded_labels_layer_for_coordinate_system(
         self,
@@ -2457,6 +2471,15 @@ def _is_primary_labels_binding(binding: LayerBinding | None) -> TypeGuard[Labels
 
 def _is_primary_shapes_binding(binding: LayerBinding | None) -> TypeGuard[ShapesLayerBinding]:
     return isinstance(binding, ShapesLayerBinding) and binding.shapes_role == "primary"
+
+
+def _is_histogram_usable_overlay_image_binding(binding: LayerBinding | None) -> TypeGuard[ImageLayerBinding]:
+    return (
+        isinstance(binding, ImageLayerBinding)
+        and binding.image_display_mode == "overlay"
+        and isinstance(binding.channel_name, str)
+        and bool(binding.channel_name)
+    )
 
 
 def _is_pickable_primary_labels_layer(layer: Layer, binding: LayerBinding | None) -> bool:
