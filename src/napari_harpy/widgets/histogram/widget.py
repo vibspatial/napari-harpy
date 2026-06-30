@@ -83,6 +83,7 @@ _CARD_STYLESHEET = (
     "border-radius: 8px;}"
 )
 _CARD_TITLE_STYLESHEET = f"color: {WIDGET_TEXT_COLOR}; font-weight: 700; font-size: 13px; background: transparent;"
+_CARD_SUBCONTAINER_STYLESHEET = "QWidget { background: transparent; }"
 _SETTINGS_PANEL_STYLESHEET = "QWidget { background: transparent; }"
 _SETTINGS_TOGGLE_STYLESHEET = (
     "QToolButton {"
@@ -303,6 +304,7 @@ class HistogramWidget(QWidget):
 
         header = QWidget()
         header.setObjectName(f"histogram_card_header_{card_id}")
+        header.setStyleSheet(_CARD_SUBCONTAINER_STYLESHEET)
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(8)
@@ -455,7 +457,7 @@ class HistogramWidget(QWidget):
 
         action_row = QWidget()
         action_row.setObjectName(f"histogram_action_row_{card_id}")
-        action_row.setStyleSheet(f"QWidget#{action_row.objectName()} {{ background: transparent; }}")
+        action_row.setStyleSheet(_CARD_SUBCONTAINER_STYLESHEET)
         action_layout = QHBoxLayout(action_row)
         action_layout.setContentsMargins(0, 0, 0, 0)
         action_layout.setSpacing(8)
