@@ -23,10 +23,28 @@ _SCIENTIFIC_TICK_HIGH_ABS = 10_000
 _SCIENTIFIC_TICK_LOW_ABS = 0.001
 _SCIENTIFIC_TICK_MAX_DECIMALS = 2
 _LOG_Y_SINGLE_DECADE_PADDING = 0.5
+# Log labels are intentionally range-dependent: narrow views label 1/2/5 per decade,
+# while wider views fall back to sparse decade labels to avoid crowded y-axis text.
+_LOG_LABEL_MANTISSAS = (1, 2, 5)
+_LOG_MINOR_MANTISSAS = tuple(range(1, 10))
+_LOG_MAX_DECADE_LABELS = 6
 
 
 class _ScientificYAxisItem(pg.AxisItem):
     """Axis item that keeps large histogram counts compact."""
+
+    def logTickValues(
+        self,
+        minVal: float,
+        maxVal: float,
+        size: float,
+        stdTicks: list[tuple[float, list[float]]],
+    ) -> list[tuple[float | None, list[float]]]:
+        label_ticks = _log_label_ticks(minVal, maxVal)
+        if not label_ticks and stdTicks:
+            label_ticks = [float(value) for value in stdTicks[0][1]]
+        minor_ticks = _log_minor_ticks(minVal, maxVal, labeled_ticks=label_ticks)
+        return [(None, label_ticks), (None, minor_ticks)]
 
     def tickStrings(self, values: list[float], scale: float, spacing: float) -> list[str]:
         if self.logMode:
@@ -68,6 +86,7 @@ class _HistogramPlotWidget(QWidget):
             axis = self._plot_item.getAxis(axis_name)
             if axis_name == "left":
                 axis.enableAutoSIPrefix(False)
+                axis.setStyle(maxTextLevel=0)
             axis.setPen(pg.mkPen(HISTOGRAM_AXIS_GRID_COLOR, width=1))
             axis.setTextPen(pg.mkPen(HISTOGRAM_AXIS_TEXT_COLOR, width=1))
 
@@ -211,6 +230,38 @@ def _log_y_range(values: np.ndarray) -> tuple[float, float]:
     if low == high:
         return low - _LOG_Y_SINGLE_DECADE_PADDING, high + _LOG_Y_SINGLE_DECADE_PADDING
     return low, high
+
+
+def _log_label_ticks(min_log: float, max_log: float) -> list[float]:
+    min_log, max_log = sorted((min_log, max_log))
+    span = max_log - min_log
+    if span <= 2.5:
+        return _log_ticks_for_mantissas(min_log, max_log, _LOG_LABEL_MANTISSAS)
+
+    exponent_step = max(1, int(np.ceil(span / _LOG_MAX_DECADE_LABELS)))
+    first_exponent = int(np.ceil(min_log / exponent_step) * exponent_step)
+    last_exponent = int(np.floor(max_log))
+    return [float(exponent) for exponent in range(first_exponent, last_exponent + 1, exponent_step)]
+
+
+def _log_minor_ticks(min_log: float, max_log: float, *, labeled_ticks: list[float]) -> list[float]:
+    if max_log - min_log > 3:
+        return []
+
+    ticks = _log_ticks_for_mantissas(min_log, max_log, _LOG_MINOR_MANTISSAS)
+    return [tick for tick in ticks if not any(np.isclose(tick, labeled_tick) for labeled_tick in labeled_ticks)]
+
+
+def _log_ticks_for_mantissas(min_log: float, max_log: float, mantissas: tuple[int, ...]) -> list[float]:
+    first_exponent = int(np.floor(min_log))
+    last_exponent = int(np.ceil(max_log))
+    ticks: list[float] = []
+    for exponent in range(first_exponent, last_exponent + 1):
+        for mantissa in mantissas:
+            tick = float(exponent + np.log10(mantissa))
+            if min_log <= tick <= max_log:
+                ticks.append(tick)
+    return ticks
 
 
 def _format_scientific_tick(value: float) -> str:

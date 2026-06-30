@@ -172,6 +172,21 @@ def test_histogram_plot_widget_uses_scientific_ticks_for_log_density_values(qtbo
     assert axis.tickStrings([-4, -6, -8], 1.0, 1.0) == ["1e-4", "1e-6", "1e-8"]
 
 
+def test_histogram_plot_widget_log_y_uses_sparse_readable_tick_labels(qtbot) -> None:
+    plot_widget = _HistogramPlotWidget()
+    qtbot.addWidget(plot_widget)
+
+    axis = plot_widget._plot_item.getAxis("left")
+    axis.setLogMode(True)
+    tick_levels = axis.tickValues(-8.8, -7.65, 280)
+
+    label_ticks = tick_levels[0][1]
+    assert axis.style["maxTextLevel"] == 0
+    assert axis.tickStrings(label_ticks, 1.0, 1.0) == ["2e-9", "5e-9", "1e-8", "2e-8"]
+    assert len(tick_levels) == 2
+    assert len(tick_levels[1][1]) > len(label_ticks)
+
+
 def test_histogram_plot_widget_clear_does_not_render_plot_messages(qtbot) -> None:
     plot_widget = _HistogramPlotWidget()
     qtbot.addWidget(plot_widget)
