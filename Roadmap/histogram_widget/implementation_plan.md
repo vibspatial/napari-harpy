@@ -341,7 +341,9 @@ the same styling and accessibility behavior.
 ## Contrast Sync Policy
 
 After a card has a calculated histogram, resolve the matching live napari layer
-through `ViewerAdapter.layer_bindings`.
+through `ViewerAdapter.layer_bindings`. Refresh this binding from a dedicated
+viewer-adapter overlay image-layer lifecycle signal rather than polling the
+viewer or guessing from layer names.
 
 For overlay layers:
 
@@ -351,10 +353,16 @@ For overlay layers:
 
 For stack layers:
 
-- match `sdata`, `coordinate_system`, and `image_name`;
-- use the selected channel as the histogram source;
-- sync the stack layer's scalar `contrast_limits`;
-- communicate that independent per-channel contrast requires overlay mode.
+- do not emit the histogram-specific image layer lifecycle signal;
+- do not enable histogram contrast synchronization;
+- keep explicit histogram calculation available from the selected
+  `coordinate_system`, `image_name`, and `channel_name`;
+- communicate that live histogram contrast synchronization requires overlay
+  image display mode.
+
+Stack mode is intentionally excluded from the first contrast-sync path because a
+single napari stack layer does not provide an unambiguous per-channel image
+layer identity for a histogram card.
 
 For RGB(A) layers:
 
@@ -998,58 +1006,57 @@ Tests:
 - `core.histogram` and `widgets/histogram/controller.py` do not import
   pyqtgraph.
 
-### 6. Smooth Distribution Overlay
+### 6. Viewer Image Layer Lifecycle Signal
 
 Status: [ ] Planned
 
 Goal:
 
-- draw a smooth distribution approximation over the histogram bars without
-  asking users to tune smoothing parameters.
+- expose a precise viewer-adapter signal for Harpy-managed overlay image layer
+  lifecycle changes, so histogram contrast sync can resolve live napari image
+  layers without polling or relying on layer names.
 
 Scope:
 
-- reuse a library implementation rather than writing a custom smoothing
-  algorithm;
-- use `scipy.stats.gaussian_kde` with its automatic bandwidth selection by
-  default;
-- add `scipy` as a direct runtime dependency if it is not already direct by the
-  time this slice is implemented, because the histogram widget will import it
-  directly;
-- derive the smooth line from the already calculated histogram result, not by
-  re-reading or resampling the source image data;
-- use bin centers as the KDE sample positions and histogram counts as weights;
-- evaluate the KDE on a compact regular grid spanning the histogram bin edges;
-- scale the KDE line so it overlays the current y-axis semantics:
-  - for count histograms, scale the density by total count and bin width;
-  - for density histograms, keep the KDE in density units;
-- keep smoothing enabled by default if visual QA shows it improves readability;
-- expose only a simple card-local display toggle such as `Smooth line` if users
-  need to hide it; do not expose bandwidth, sigma, kernel, or sample-count
-  controls in the first implementation;
-- style the smooth line with a stable histogram palette constant, for example
-  `HISTOGRAM_SMOOTH_LINE_COLOR`, visually related to but distinct from the bar
-  fill color;
-- handle small, empty, flat, or otherwise invalid histogram results gracefully by
-  hiding the smooth line rather than showing an error.
+- add a dedicated `ViewerAdapter` signal for histogram-usable overlay image
+  layer changes, with a no-payload shape such as:
 
-Non-goals:
+  ```python
+  image_overlay_layers_changed = Signal()
+  ```
 
-- no user-facing bandwidth or smoothing-strength setting;
-- no additional Dask computation;
-- no KDE calculation from raw image pixels;
-- no ECDF/cumulative distribution calculation.
+- emit the signal only for registered `ImageLayerBinding` values where
+  `image_display_mode == "overlay"` and `channel_name` is available;
+- emit after overlay image layer registration, viewer insertion with an existing
+  overlay binding, and viewer removal/unregistration;
+- emit after the `LayerBindingRegistry` has already been updated, so consumers
+  can immediately re-query `viewer_adapter.layer_bindings`;
+- do not emit this signal for stack image layers;
+- do not emit this signal for unregistered external napari image layers or
+  legacy metadata-only layers;
+- keep stack image layers registered for existing viewer behavior, but exclude
+  them from this histogram-specific signal because stack mode does not identify
+  a stable channel layer for a histogram card;
+- do not calculate histograms, mutate contrast limits, or subscribe the
+  histogram widget in this slice.
+
+Rationale:
+
+- a no-payload `...changed` signal matches the existing registry-as-source-of-
+  truth pattern and avoids passing stale bindings during removal;
+- making the signal overlay-only keeps the later contrast-sync slice honest
+  about what can be synchronized safely.
 
 Tests:
 
-- smooth line is derived from `HistogramResult.counts` and `bin_edges`;
-- smooth line uses `scipy.stats.gaussian_kde` with weighted bin centers;
-- count-mode and density-mode overlays use the correct y-axis scaling;
-- empty, flat, or too-small histograms do not crash and hide the smooth line;
-- repeated histogram rendering replaces the previous smooth line instead of
-  accumulating duplicate plot items;
-- disabling the display toggle hides the smooth line without recalculating the
-  histogram.
+- registering a Harpy overlay image layer emits the signal once;
+- registering a Harpy stack image layer does not emit the signal;
+- removing a registered overlay image layer emits the signal and removes the
+  binding before consumers query the registry;
+- removing an unregistered external image layer does not emit the signal;
+- reinserting or re-registering an overlay layer emits only once for the
+  lifecycle event being handled;
+- existing labels/shapes/active-layer signals keep their current behavior.
 
 ### 7. Contrast-Limit Synchronization
 
@@ -1062,8 +1069,10 @@ Goal:
 
 Scope:
 
-- resolve matching `ImageLayerBinding` for each card after calculation and on
-  viewer layer lifecycle changes;
+- consume the viewer-adapter `image_overlay_layers_changed` signal introduced
+  in Slice 6;
+- resolve matching overlay `ImageLayerBinding` for each card after calculation
+  and whenever overlay image layer lifecycle changes are emitted;
 - initialize the histogram contrast region from `layer.contrast_limits`;
 - draw the contrast limits with `pyqtgraph.LinearRegionItem` by default,
   styled to read as two movable vertical contrast-limit lines with a subtle
@@ -1081,19 +1090,25 @@ Scope:
   drag markers;
 - layer removal disables contrast synchronization without clearing the
   histogram;
+- stack image layers do not participate in contrast synchronization; if the
+  matching live layer is only present in stack mode, keep the histogram visible
+  and show a clear non-blocking status;
 - RGB(A) layers disable contrast synchronization with a clear status.
 
 Tests:
 
 - overlay channel target resolves the correct overlay layer;
-- stack target resolves the stack layer;
+- stack image layers do not resolve to a contrast-sync binding;
+- emitting `image_overlay_layers_changed` causes affected cards to re-resolve
+  their sync binding;
 - moving the lower/upper histogram lines assigns `layer.contrast_limits`;
 - external napari contrast changes update the widget;
 - external napari contrast changes move the histogram contrast region;
 - programmatic contrast-region updates do not recursively reassign
   `layer.contrast_limits`;
 - contrast-limit line styling remains distinct from percentile styling;
-- layer removal clears the sync binding;
+- layer removal clears the sync binding after the viewer-adapter lifecycle
+  signal;
 - RGB layers disable contrast synchronization.
 
 ### 8. Percentile Guide Lines
@@ -1247,7 +1262,60 @@ Tests:
 - flat or nearly flat data falls back to a safe bin count with a clear status;
 - the suggestion action does not calculate or render the histogram by itself.
 
-### 12. Product Hardening
+### 12. Smooth Distribution Overlay
+
+Status: [ ] Planned
+
+Goal:
+
+- draw a smooth distribution approximation over the histogram bars without
+  asking users to tune smoothing parameters.
+
+Scope:
+
+- reuse a library implementation rather than writing a custom smoothing
+  algorithm;
+- use `scipy.stats.gaussian_kde` with its automatic bandwidth selection by
+  default;
+- add `scipy` as a direct runtime dependency if it is not already direct by the
+  time this slice is implemented, because the histogram widget will import it
+  directly;
+- derive the smooth line from the already calculated histogram result, not by
+  re-reading or resampling the source image data;
+- use bin centers as the KDE sample positions and histogram counts as weights;
+- evaluate the KDE on a compact regular grid spanning the histogram bin edges;
+- scale the KDE line so it overlays the current y-axis semantics:
+  - for count histograms, scale the density by total count and bin width;
+  - for density histograms, keep the KDE in density units;
+- keep smoothing enabled by default if visual QA shows it improves readability;
+- expose only a simple card-local display toggle such as `Smooth line` if users
+  need to hide it; do not expose bandwidth, sigma, kernel, or sample-count
+  controls in the first implementation;
+- style the smooth line with a stable histogram palette constant, for example
+  `HISTOGRAM_SMOOTH_LINE_COLOR`, visually related to but distinct from the bar
+  fill color;
+- handle small, empty, flat, or otherwise invalid histogram results gracefully by
+  hiding the smooth line rather than showing an error.
+
+Non-goals:
+
+- no user-facing bandwidth or smoothing-strength setting;
+- no additional Dask computation;
+- no KDE calculation from raw image pixels;
+- no ECDF/cumulative distribution calculation.
+
+Tests:
+
+- smooth line is derived from `HistogramResult.counts` and `bin_edges`;
+- smooth line uses `scipy.stats.gaussian_kde` with weighted bin centers;
+- count-mode and density-mode overlays use the correct y-axis scaling;
+- empty, flat, or too-small histograms do not crash and hide the smooth line;
+- repeated histogram rendering replaces the previous smooth line instead of
+  accumulating duplicate plot items;
+- disabling the display toggle hides the smooth line without recalculating the
+  histogram.
+
+### 13. Product Hardening
 
 Status: [ ] Planned
 
