@@ -193,8 +193,8 @@ Plot behavior:
   the bar item when the histogram result is otherwise unchanged;
 - log y-axis uses pyqtgraph's y-axis log mode and should handle zero-count bins
   without distorting the underlying histogram data;
-- the plot should show a quiet empty/stale/running state instead of a blank
-  black rectangle.
+- the plot should not duplicate empty/stale/running text inside the plotting
+  area; card state text belongs in the status card.
 
 ## Plot Palette And Styling
 
@@ -218,7 +218,7 @@ Recommended plot styling:
 | Contrast selected region fill | `WIDGET_SUCCESS_COLOR` at very low alpha |
 | Percentile lines | `WIDGET_WARNING_TEXT_COLOR`, dashed, 1 to 1.5 px |
 | Percentile labels | `WIDGET_WARNING_TEXT_COLOR` |
-| Empty/stale text | `WIDGET_TEXT_MUTED_COLOR` |
+| Empty/stale/running plot messages | Do not render in the plot; use the card status card |
 
 Rationale:
 
@@ -873,7 +873,7 @@ Tests:
 
 ### 5. Histogram Plot Rendering
 
-Status: [ ] Planned
+Status: [x] Implemented
 
 Goal:
 
@@ -898,8 +898,8 @@ Scope:
   derived from `widgets/shared_styles.py`;
 - use the palette decisions from "Plot Palette And Styling"; do not introduce
   ad hoc plot colors or a Matplotlib-style color cycle;
-- configure plot background, axes, grid, bar fill, empty/running/stale text, and
-  future marker styling from those constants;
+- configure plot background, axes, grid, bar fill, and future marker styling
+  from those constants;
 - use the following initial palette contract:
 
   ```python
@@ -909,8 +909,6 @@ Scope:
   HISTOGRAM_BAR_FILL_COLOR = "#7EA7FF"
   HISTOGRAM_BAR_FILL_ALPHA = 150
   HISTOGRAM_BAR_EDGE_COLOR = None
-  HISTOGRAM_EMPTY_TEXT_COLOR = WIDGET_TEXT_MUTED_COLOR
-  HISTOGRAM_STALE_TEXT_COLOR = WIDGET_TEXT_MUTED_COLOR
 
   # Defined now so later contrast/percentile slices do not invent new colors.
   HISTOGRAM_CONTRAST_LINE_COLOR = WIDGET_SUCCESS_COLOR
@@ -941,9 +939,11 @@ Scope:
   rendering work;
 - clear and replace the previous bar item when a new result is rendered, rather
   than accumulating plot items across repeated calculations;
-- show a quiet empty state before calculation, a running state while the
-  controller reports a running card, and a stale state after target/settings
-  changes clear the previous result;
+- keep the plot area free of card-status text before calculation, while running,
+  and after target/settings changes; the status card remains the only textual
+  state surface;
+- preserve existing bars while recalculating an unchanged target and clear bars
+  when target/settings changes invalidate the previous result;
 - when the controller reports a successful result, the widget reads
   `controller.result_for_card(card_id)` and calls the card plot widget's
   `set_histogram(...)`;
@@ -990,8 +990,8 @@ Tests:
   accumulating duplicate plot items;
 - log y-axis setting is applied from `HistogramSettings.log_y`;
 - y-axis label switches between count and density;
-- empty, running, and stale plot states are visible and do not leave stale bars
-  behind;
+- empty, running, and stale plot states do not render duplicate plot messages;
+- stale target/settings changes do not leave stale bars behind;
 - widget/controller integration renders `controller.result_for_card(card_id)`
   into the matching card when a job succeeds;
 - target/settings changes clear or stale-mark the card plot after the controller

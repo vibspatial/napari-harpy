@@ -34,6 +34,7 @@ from napari_harpy.core.spatialdata import (
     get_spatialdata_image_options_for_coordinate_system_from_sdata,
 )
 from napari_harpy.widgets.histogram.controller import HistogramController
+from napari_harpy.widgets.histogram.plot_widget import _HistogramPlotWidget
 from napari_harpy.widgets.histogram.status_card import (
     _HistogramStatusCardSpec,
     build_histogram_calculated_card_spec,
@@ -137,6 +138,7 @@ class _HistogramCard:
     channel_combo: CompactComboBox
     calculate_button: QPushButton
     remove_button: QToolButton
+    plot_widget: _HistogramPlotWidget
     status_label: QLabel
     settings_toggle: QToolButton
     settings_panel: QWidget
@@ -400,7 +402,7 @@ class HistogramWidget(QWidget):
         exclude_nan_checkbox = self._create_checkbox(f"histogram_exclude_nan_checkbox_{card_id}", "Exclude NaN")
         exclude_nan_checkbox.setChecked(_DEFAULT_SETTINGS.exclude_nan)
         exclude_zeros_checkbox = self._create_checkbox(f"histogram_exclude_zeros_checkbox_{card_id}", "Exclude zeros")
-        log_y_checkbox = self._create_checkbox(f"histogram_log_y_checkbox_{card_id}", "Log y")
+        log_y_checkbox = self._create_checkbox(f"histogram_log_y_checkbox_{card_id}", "Log scale")
         checkbox_panel = QWidget()
         checkbox_panel.setObjectName(f"histogram_filter_panel_{card_id}")
         checkbox_panel.setStyleSheet(_SETTINGS_PANEL_STYLESHEET)
@@ -470,11 +472,15 @@ class HistogramWidget(QWidget):
         status_label.setObjectName(f"histogram_status_label_{card_id}")
         status_label.setWordWrap(True)
 
+        plot_widget = _HistogramPlotWidget()
+        plot_widget.setObjectName(f"histogram_plot_widget_{card_id}")
+
         layout.addWidget(header)
         layout.addLayout(form)
         layout.addWidget(settings_toggle)
         layout.addWidget(settings_panel)
         layout.addWidget(action_row)
+        layout.addWidget(plot_widget)
         layout.addWidget(status_label)
 
         histogram_card = _HistogramCard(
@@ -486,6 +492,7 @@ class HistogramWidget(QWidget):
             channel_combo=channel_combo,
             calculate_button=calculate_button,
             remove_button=remove_button,
+            plot_widget=plot_widget,
             status_label=status_label,
             settings_toggle=settings_toggle,
             settings_panel=settings_panel,
@@ -816,9 +823,27 @@ class HistogramWidget(QWidget):
         else:
             spec = build_histogram_ready_card_spec(message)
         self._apply_status_card_spec(histogram_card.status_label, spec)
+        self._update_card_plot(histogram_card, message=message, kind=kind)
 
     def _on_controller_state_changed(self, card_id: str) -> None:
         self._update_card_status(card_id)
+
+    def _update_card_plot(self, histogram_card: _HistogramCard, *, message: str, kind: str) -> None:
+        card_id = histogram_card.card_id
+        if self._histogram_controller.is_running(card_id):
+            histogram_card.plot_widget.show_running(message)
+            return
+
+        result = self._histogram_controller.result_for_card(card_id)
+        if result is not None:
+            histogram_card.plot_widget.set_histogram(result)
+            return
+
+        if kind == "info" and message == "Target or settings changed. Calculate again.":
+            histogram_card.plot_widget.show_stale(message)
+            return
+
+        histogram_card.plot_widget.clear_histogram(message)
 
     def _resolve_card_binding(self, histogram_card: _HistogramCard) -> _HistogramCardBindingState:
         if self.selected_spatialdata is None:

@@ -28,6 +28,7 @@ os.environ["XDG_CACHE_HOME"] = str(TEST_CACHE)
 os.environ["XDG_CONFIG_HOME"] = str(TEST_CONFIG)
 os.environ["NAPARI_CONFIG"] = str(TEST_NAPARI_CONFIG)
 os.environ["NAPARI_CACHE_DIR"] = str(TEST_CACHE / "napari")
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 atexit.register(shutil.rmtree, TEST_HOME, ignore_errors=True)
 

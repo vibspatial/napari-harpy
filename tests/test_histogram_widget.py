@@ -178,6 +178,9 @@ def test_histogram_widget_populates_target_selectors_and_starts_controller_job(
     deferred_workers[0].emit_returned()
 
     assert "Histogram calculated." in card.status_label.text()
+    assert card.plot_widget._bar_item is not None
+    np.testing.assert_allclose(card.plot_widget._bar_item.opts["x"], np.array([0.25, 0.75]))
+    np.testing.assert_allclose(card.plot_widget._bar_item.opts["height"], np.array([2.0, 1.0]))
 
 
 def test_histogram_widget_refresh_preserves_valid_target_and_clears_invalid_downstream_selection(
