@@ -4,7 +4,9 @@ Status: investigation
 
 This note updates `Roadmap/shapes_elements/pan_zoom.md` after a closer look at
 the annotation widget, napari's Shapes mode lifecycle, and the installed napari
-0.7.0 mouse/key handling.
+mouse/key handling. The local environment was rechecked with napari 0.7.1; the
+Space/lasso behavior described below still matches the earlier 0.7.0
+investigation.
 
 ## Summary
 
@@ -86,6 +88,11 @@ This makes `mouse_pan` the useful lever. The implementation should avoid mode
 changes during an active lasso and should gate lasso callbacks during the
 temporary pan state.
 
+One important constraint: `layer.mouse_pan` only affects
+`viewer.camera.mouse_pan` when that layer is the active viewer layer. The custom
+Space-pan path must therefore prove the annotation layer is active before it
+sets `layer.mouse_pan = True`.
+
 ## Existing Harpy Fit
 
 The annotation widget already has a good extension point:
@@ -114,6 +121,10 @@ to prove that the tracked layer is still the widget-owned primary Shapes layer
 for the locked SpatialData target. That should be part of the behavior gate if
 the final implementation needs widget-level context.
 
+The guard itself currently has no viewer or widget context. Later slices should
+pass a small predicate from `ShapesAnnotation` into the guard rather than making
+the guard discover widget state on its own.
+
 ## Recommended Design
 
 Add a lasso-aware Space-pan path to the annotation layer guard.
@@ -123,6 +134,11 @@ Add a lasso-aware Space-pan path to the annotation layer guard.
 When the guard attaches, install an instance-level `Space` keybinding on the
 annotation layer. Store and restore any previous instance binding so user or
 plugin customizations on that layer are not lost.
+
+Napari coerces keymap keys into `KeyBinding` objects, so implementation should
+use `layer.bind_key("Space", ...)` or napari's keybinding coercion utilities
+when capturing/restoring Space. Direct `layer.keymap["Space"]` lookup will not
+find an existing Space binding.
 
 The keybinding should behave like this:
 
@@ -172,6 +188,11 @@ implementation may also need to update `layer.mouse_drag_callbacks` and
 `layer.mouse_move_callbacks` so the active callback lists point at the wrappers,
 not the original functions.
 
+The same callback-list concern applies whenever wrappers are installed while
+the layer is already in `Mode.ADD_POLYGON_LASSO`: changing `_drag_modes` and
+`_move_modes` alone does not rewrite callback functions already present in the
+active callback lists.
+
 ### Behavior Contract
 
 The custom Space-pan path should only run when all of these are true:
@@ -180,9 +201,8 @@ The custom Space-pan path should only run when all of these are true:
 - the layer is a napari `Shapes` layer;
 - `layer._mode == Mode.ADD_POLYGON_LASSO`;
 - `layer._is_creating is True`;
-- the layer is active in the viewer, if viewer context is available;
-- the layer still matches the widget-owned annotation binding, if widget
-  context is available.
+- the layer is active in the viewer;
+- the layer still matches the widget-owned annotation binding.
 
 It should not:
 
@@ -288,6 +308,7 @@ When attaching a new layer:
 - validate both are dict-like mappings;
 - keep the existing validation that `_drag_modes` exposes `Mode.DIRECT` and
   `Mode.VERTEX_REMOVE`;
+- additionally validate that `_drag_modes` exposes `Mode.ADD_POLYGON_LASSO`;
 - additionally validate that `_move_modes` exposes `Mode.ADD_POLYGON_LASSO`;
 - copy both mappings into instance-local dictionaries;
 - keep wrapping only `Mode.DIRECT` and `Mode.VERTEX_REMOVE` in `_drag_modes`;
