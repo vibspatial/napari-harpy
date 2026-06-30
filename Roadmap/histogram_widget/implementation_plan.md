@@ -349,7 +349,17 @@ For overlay layers:
 
 - match `sdata`, `coordinate_system`, `image_name`, and `channel_name` or
   `channel_index`;
-- sync contrast limits only to that channel layer.
+- sync contrast limits only when exactly one matching overlay layer exists;
+- if no matching overlay layer exists, keep the histogram visible and disable
+  contrast synchronization with a clear status;
+- if more than one matching overlay layer exists, treat the viewer state as
+  ambiguous and disable contrast synchronization with a clear status rather
+  than using the active layer or layer order as a tie-breaker.
+
+Multiple histogram cards may target the same image/channel combination. That is
+not ambiguous as long as the viewer contains exactly one matching overlay layer:
+each card can keep independent histogram calculation settings while sharing the
+same live napari `layer.contrast_limits` state.
 
 For stack layers:
 
@@ -1073,6 +1083,11 @@ Scope:
   in Slice 6;
 - resolve matching overlay `ImageLayerBinding` for each card after calculation
   and whenever overlay image layer lifecycle changes are emitted;
+- require exactly one matching overlay image binding for synchronization; zero
+  matches or multiple matching viewer layers disable synchronization for that
+  card without clearing the histogram;
+- allow multiple histogram cards to bind to the same unique overlay image layer
+  when they intentionally target the same image/channel combination;
 - initialize the histogram contrast region from `layer.contrast_limits`;
 - draw the contrast limits with `pyqtgraph.LinearRegionItem` by default,
   styled to read as two movable vertical contrast-limit lines with a subtle
@@ -1098,6 +1113,10 @@ Scope:
 Tests:
 
 - overlay channel target resolves the correct overlay layer;
+- duplicate matching overlay viewer layers disable contrast synchronization
+  with an ambiguity status;
+- two histogram cards targeting the same image/channel can share one unique
+  overlay layer and both update when `layer.contrast_limits` changes;
 - stack image layers do not resolve to a contrast-sync binding;
 - emitting `image_overlay_layers_changed` causes affected cards to re-resolve
   their sync binding;
