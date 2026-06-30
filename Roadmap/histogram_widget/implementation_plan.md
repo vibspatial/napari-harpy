@@ -1255,9 +1255,11 @@ UX direction:
 - use the same overlay palette as the Viewer widget
   (`DEFAULT_OVERLAY_COLORS`) and default the swatch from the selected channel
   index where possible;
-- prefer extracting a small shared overlay color-swatch control/helper from the
-  Viewer widget rather than duplicating private viewer-specific UI code in the
-  histogram widget;
+- extract the current Viewer widget overlay color swatch into
+  `src/napari_harpy/widgets/overlay_color_button.py` as a reusable
+  `OverlayColorButton`;
+- use `OverlayColorButton` from both the Viewer widget and the histogram widget
+  rather than duplicating private viewer-specific UI code;
 - the color selector controls the napari colormap used for this card's selected
   overlay channel only.
 
