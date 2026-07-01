@@ -669,18 +669,53 @@ Headless tests should prove:
 
 ### Slice 3: Space Keybinding State
 
-Add the guarded layer Space keybinding.
+Add the guarded layer Space keybinding, but keep the custom Space-pan drawing
+branch disabled until Slice 4 installs draw-callback suppression.
+
+The goal of this slice is to prove keybinding ownership, capture/restoration,
+and fallback behavior without exposing half-working drawing behavior. In this
+slice, pressing Space while actively drawing a supported mode must still follow
+napari-equivalent temporary pan-zoom behavior, because normal draw callbacks
+are not suppressed yet.
+
+Implementation contract:
+
+- add a private feature flag or predicate on `_AnnotationLayerEditGuard`, for
+  example `_space_pan_draw_callbacks_ready() -> bool`, that returns `False` in
+  Slice 3;
+- install an instance-level Space keybinding on the guarded layer during
+  `attach(...)`;
+- capture and restore any pre-existing instance Space binding on
+  `disconnect()`;
+- when Space is pressed and `_space_pan_draw_callbacks_ready()` is false,
+  delegate to napari-equivalent temporary pan-zoom, even if
+  `_can_space_pan_draw_mode(layer)` is true;
+- do not call `_begin_space_pan_key_hold(...)` or
+  `_end_space_pan_key_hold(...)` from real key events until the draw callbacks
+  are wrapped in Slice 4;
+- keep the direct helper tests from Slice 2 as the only tests that manually
+  call the state-machine helpers;
+- preserve `layer.mode`, layer data, selected rows, active callback lists, and
+  keymap restoration after disconnect.
+
+Slice 4 can then flip the readiness predicate to true after the draw callback
+wrappers are installed.
 
 Headless tests should prove:
 
-- active supported-draw Space press calls the state-machine key-hold begin
-  helper;
-- active supported-draw Space release calls the state-machine key-hold end
-  helper;
-- active supported-draw Space does not change `layer.mode`;
+- attaching installs an instance Space binding on the guarded layer;
+- disconnect restores a pre-existing instance Space binding;
+- disconnect removes the guard-created Space binding when no instance binding
+  existed before attach;
+- active supported-draw Space does not call the state-machine key-hold helpers
+  while draw callbacks are not ready;
+- active supported-draw Space still delegates to napari-equivalent temporary
+  pan-zoom while draw callbacks are not ready;
 - unsupported modes still behave like normal temporary pan-zoom;
 - Space keybinding capture/restoration preserves any pre-existing instance
-  Space binding.
+  Space binding whose value is `None` or sentinel-like;
+- helper calls and real Space key events do not mutate layer data, selected
+  rows, or active callback lists.
 
 ### Slice 4: Draw Callback Suppression
 
