@@ -1413,23 +1413,80 @@ Status: [ ] Planned
 
 Goal:
 
-- decide and implement a deliberate action for using percentiles as contrast
-  limits.
+- add a deliberate, one-click action that applies the calculated percentile
+  values as napari contrast limits for the card's synced overlay layer.
 
 Scope:
 
-- add an "Apply percentiles" button only when both percentile values and a live
-  contrast-sync layer are available;
-- applying percentiles sets `layer.contrast_limits` once;
+- add an explicit `Sync percentiles` action to each histogram card;
+- place the action in the existing card action row, next to `Show histogram`
+  and above the plot;
+- do not place the action inside the collapsed `Histogram Settings` panel: it
+  applies a calculated result to a synced napari layer, rather than changing the
+  histogram calculation settings;
+- keep `Show histogram` as the primary/wider action and style
+  `Sync percentiles` as the secondary/narrower action;
+- enable the action only when all of the following are true:
+  - the card has a successful cached `HistogramResult`;
+  - the cached result is current for the card target/settings;
+  - both `Percentile min` and `Percentile max` were provided by the user;
+  - both requested percentile values exist in `result.percentile_values`;
+  - `Percentile min` is strictly lower than `Percentile max`;
+  - the card has a unique live contrast-sync overlay layer;
+- disable the action with a tooltip/status reason when any required condition is
+  missing, for example missing percentile values, stale result, no overlay layer,
+  duplicate matching overlay layers, or invalid percentile ordering;
+- clicking `Sync percentiles` must not recalculate the histogram;
+- clicking `Sync percentiles` sets `layer.contrast_limits` once to the computed
+  percentile values;
+- rely on the existing napari `layer.events.contrast_limits` path to move the
+  green histogram contrast region after assignment;
 - keep ongoing two-way contrast sync after the assignment;
-- do not add a persistent auto-apply toggle unless the workflow proves it is
-  necessary.
+- preserve the existing manual contrast controls: draggable histogram contrast
+  lines and napari's native contrast slider remain the normal interactive
+  controls after applying percentiles;
+- do not automatically apply percentiles when the user types percentile values
+  or recalculates a histogram;
+- do not add a persistent auto-apply toggle in this slice.
+
+Implementation notes:
+
+- treat the two UI fields as semantic roles, not an unordered set:
+  `Percentile min` maps to the lower contrast limit and `Percentile max` maps to
+  the upper contrast limit;
+- if the computed intensity values are reversed or equal after percentile
+  calculation, do not silently sort them for this action; disable the action or
+  show a warning so the user understands the request is not applicable;
+- use the controller's cached result via `result_for_card(card_id)`; no new
+  worker should start from this action;
+- use the card's existing `_HistogramContrastSyncState.layer` as the target
+  layer; if sync is unavailable, the action is unavailable;
+- after setting `state.layer.contrast_limits`, keep the same local
+  reconciliation pattern used by histogram contrast dragging if needed, but the
+  normal happy path should be the layer event updating the plot.
+
+Non-goals:
+
+- no automatic percentile-to-contrast synchronization;
+- no live percentile application while typing;
+- no histogram recalculation;
+- no batch action across multiple histogram cards;
+- no ECDF/cumulative-distribution behavior.
 
 Tests:
 
-- button is disabled without a live layer or missing percentile values;
-- applying percentiles sets contrast limits to the computed values;
-- the normal contrast-limit event path updates the histogram contrast region.
+- action is disabled without a successful current cached result;
+- action is disabled when one or both percentile fields are empty;
+- action is disabled when requested percentile values are missing from
+  `result.percentile_values`;
+- action is disabled without a unique live contrast-sync overlay layer;
+- action is disabled when percentile ordering is invalid;
+- applying percentiles sets `layer.contrast_limits` to the computed lower/upper
+  percentile intensity values;
+- applying percentiles does not start a new histogram worker;
+- the normal contrast-limit event path updates the histogram contrast region;
+- after applying percentiles, draggable histogram contrast lines and napari's
+  native contrast slider remain synchronized.
 
 ### 11. Add Histogram From Active Image
 
