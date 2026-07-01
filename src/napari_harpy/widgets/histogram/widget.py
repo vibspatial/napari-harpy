@@ -1125,6 +1125,14 @@ class HistogramWidget(QWidget):
 
     def _calculate_histogram(self, card_id: str) -> None:
         self._bind_card_state(card_id)
+        cached_result = self._histogram_controller.result_for_card(card_id)
+        if cached_result is not None and not self._histogram_controller.is_running(card_id):
+            histogram_card = self._get_card(card_id)
+            histogram_card.plot_widget.reset_view(cached_result)
+            self._refresh_card_contrast_sync(histogram_card, cached_result)
+            self._update_card_status(card_id)
+            return
+
         self._histogram_controller.calculate(card_id)
         self._refresh_card_after_controller_update(card_id)
 

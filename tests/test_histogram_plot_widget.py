@@ -68,6 +68,22 @@ def test_histogram_plot_widget_replaces_previous_bars(qtbot) -> None:
     np.testing.assert_allclose(plot_widget._bar_item.opts["width"], np.array([1.0, 1.0, 2.0]))
 
 
+def test_histogram_plot_widget_reset_view_restores_fitted_range(qtbot) -> None:
+    plot_widget = _HistogramPlotWidget()
+    qtbot.addWidget(plot_widget)
+    result = make_result()
+    plot_widget.set_histogram(result)
+    fitted_range = plot_widget._plot_item.viewRange()
+
+    plot_widget._plot_item.setXRange(0.2, 0.4, padding=0.0)
+    plot_widget._plot_item.setYRange(0.0, 0.5, padding=0.0)
+    plot_widget.reset_view(result)
+
+    reset_range = plot_widget._plot_item.viewRange()
+    np.testing.assert_allclose(reset_range[0], fitted_range[0])
+    np.testing.assert_allclose(reset_range[1], fitted_range[1])
+
+
 def test_histogram_plot_widget_applies_log_y_and_density_label(qtbot) -> None:
     plot_widget = _HistogramPlotWidget()
     qtbot.addWidget(plot_widget)

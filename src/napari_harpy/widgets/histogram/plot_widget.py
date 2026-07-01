@@ -158,6 +158,19 @@ class _HistogramPlotWidget(QWidget):
         self.set_log_y(False)
         self._plot_item.setLabel("left", "Count", color=HISTOGRAM_AXIS_TEXT_COLOR)
 
+    def reset_view(self, result: HistogramResult) -> None:
+        """Reset pan/zoom to the fitted view for a calculated histogram.
+
+        In the normal widget flow, `result` is the controller's cached result
+        and matches the histogram already rendered as `_last_result`.
+        """
+        counts = np.asarray(result.counts, dtype=float)
+        bin_edges = np.asarray(result.bin_edges, dtype=float)
+        if counts.ndim != 1 or bin_edges.ndim != 1 or len(bin_edges) != len(counts) + 1:
+            return
+
+        self._fit_histogram_view(bin_edges, counts, log_y=result.settings.log_y)
+
     def set_log_y(self, enabled: bool) -> None:
         if enabled:
             # Avoid pyqtgraph exponentiating a stale linear y-range while switching the axis to log mode.

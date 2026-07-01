@@ -298,11 +298,12 @@ def test_histogram_widget_populates_target_selectors_and_starts_controller_job(
     np.testing.assert_allclose(card.plot_widget._bar_item.opts["height"], np.array([2.0, 1.0]))
 
 
-def test_histogram_widget_preserves_existing_plot_while_recalculating(
+def test_histogram_widget_reuses_current_result_and_resets_plot_on_repeated_show_click(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
     deferred_workers: list[_DeferredWorker] = []
+    reset_view_calls: list[bool] = []
     widget = make_widget_with_sdata(qtbot, sdata_blobs)
     _card_id, card = add_valid_histogram_card(widget)
 
@@ -317,10 +318,13 @@ def test_histogram_widget_preserves_existing_plot_while_recalculating(
     deferred_workers[0].emit_returned()
     first_bar_item = card.plot_widget._bar_item
     assert first_bar_item is not None
+    card.plot_widget.reset_view = lambda _result: reset_view_calls.append(True)  # type: ignore[method-assign]
 
     qtbot.mouseClick(card.calculate_button, Qt.MouseButton.LeftButton)
 
-    assert "Calculating histogram." in card.status_label.text()
+    assert len(deferred_workers) == 1
+    assert reset_view_calls == [True]
+    assert "Histogram calculated." in card.status_label.text()
     assert card.plot_widget._bar_item is first_bar_item
 
 
