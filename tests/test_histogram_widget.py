@@ -327,6 +327,36 @@ def test_histogram_widget_populates_target_selectors_and_starts_controller_job(
     np.testing.assert_allclose(card.plot_widget._bar_item.opts["height"], np.array([2.0, 1.0]))
 
 
+def test_histogram_widget_passes_selected_multiscale_scale_to_controller_job(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    captured_jobs: list[HistogramJob] = []
+    deferred_workers: list[_DeferredWorker] = []
+    widget = make_widget_with_sdata(qtbot, sdata_blobs)
+
+    card_id, card = add_valid_histogram_card(widget)
+    set_combo_data(card.image_combo, "blobs_multiscale_image")
+    set_combo_data(card.channel_combo, "0")
+    set_combo_data(card.scale_combo, "scale1")
+
+    def capture_worker(job: HistogramJob) -> _DeferredWorker:
+        captured_jobs.append(job)
+        worker = _DeferredWorker(make_job_result(job))
+        deferred_workers.append(worker)
+        return worker
+
+    widget._histogram_controller._create_histogram_worker = capture_worker  # type: ignore[method-assign]
+
+    qtbot.mouseClick(card.calculate_button, Qt.MouseButton.LeftButton)
+
+    assert len(captured_jobs) == 1
+    assert captured_jobs[0].card_id == card_id
+    assert captured_jobs[0].target.image_name == "blobs_multiscale_image"
+    assert captured_jobs[0].settings.scale == "scale1"
+    assert deferred_workers[0].started is True
+
+
 def test_histogram_widget_shows_percentile_values_in_status_card(qtbot, sdata_blobs: SpatialData) -> None:
     widget = make_widget_with_sdata(qtbot, sdata_blobs)
     _card_id, card = add_valid_histogram_card(widget)
@@ -819,6 +849,44 @@ def test_histogram_widget_allows_two_cards_to_share_one_overlay_layer(qtbot, sda
     assert second_card.plot_widget._contrast_region is not None
     np.testing.assert_allclose(first_card.plot_widget._contrast_region.getRegion(), (0.25, 0.75))
     np.testing.assert_allclose(second_card.plot_widget._contrast_region.getRegion(), (0.25, 0.75))
+
+
+def test_histogram_widget_does_not_duplicate_layer_callbacks_after_repeated_overlay_refreshes(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    layer = make_overlay_layer(contrast_limits=(0.1, 0.8))
+    viewer = LayerListDummyViewer([layer])
+    widget = make_widget_with_viewer_and_sdata(qtbot, viewer, sdata_blobs)
+    register_overlay_layer(widget, layer, sdata_blobs)
+    _card_id, card = add_valid_histogram_card(widget)
+    calculate_card(widget, qtbot, card)
+
+    for _ in range(3):
+        widget.app_state.viewer_adapter.image_overlay_layers_changed.emit()
+
+    contrast_updates: list[tuple[float, float] | None] = []
+    original_set_contrast_limits = card.plot_widget.set_contrast_limits
+
+    def record_contrast_limits(limits: tuple[float, float] | None) -> None:
+        contrast_updates.append(limits)
+        original_set_contrast_limits(limits)
+
+    color_updates: list[str] = []
+    original_set_color = card.overlay_color_button.set_color
+
+    def record_color(color: str) -> None:
+        color_updates.append(color)
+        original_set_color(color)
+
+    card.plot_widget.set_contrast_limits = record_contrast_limits  # type: ignore[method-assign]
+    card.overlay_color_button.set_color = record_color  # type: ignore[method-assign]
+
+    layer.contrast_limits = (0.2, 0.7)
+    layer.colormap = "#123456"
+
+    assert contrast_updates == [(0.2, 0.7)]
+    assert color_updates == ["#123456"]
 
 
 def test_histogram_widget_layer_removal_clears_contrast_sync_without_clearing_histogram(
