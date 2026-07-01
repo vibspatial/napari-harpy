@@ -895,7 +895,9 @@ def test_annotation_identity_feature_default_guard_reentrant_event_is_ignored() 
 def test_annotation_layer_edit_guard_delegates_direct_mode_and_restores_instance_mapping() -> None:
     layer = Shapes([], ndim=2)
     layer._drag_modes = dict(layer._drag_modes)
+    layer._move_modes = dict(layer._move_modes)
     original_drag_modes = layer._drag_modes
+    original_move_modes = layer._move_modes
     calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     def original_direct_callback(*args: object, **kwargs: object) -> str:
@@ -904,6 +906,7 @@ def test_annotation_layer_edit_guard_delegates_direct_mode_and_restores_instance
 
     original_drag_modes[Mode.DIRECT] = original_direct_callback
     original_vertex_remove_callback = original_drag_modes[Mode.VERTEX_REMOVE]
+    original_lasso_move_callback = original_move_modes[Mode.ADD_POLYGON_LASSO]
     guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
 
     guard.attach(layer)
@@ -912,8 +915,10 @@ def test_annotation_layer_edit_guard_delegates_direct_mode_and_restores_instance
 
     assert guard.layer is layer
     assert layer._drag_modes is not original_drag_modes
+    assert layer._move_modes is not original_move_modes
     assert wrapped_direct_callback is not original_direct_callback
     assert wrapped_vertex_remove_callback is not original_vertex_remove_callback
+    assert layer._move_modes[Mode.ADD_POLYGON_LASSO] is original_lasso_move_callback
     assert wrapped_direct_callback("event", value=3) == "delegated"
     assert calls == [(("event",), {"value": 3})]
 
@@ -921,31 +926,40 @@ def test_annotation_layer_edit_guard_delegates_direct_mode_and_restores_instance
 
     assert guard.layer is None
     assert layer._drag_modes is original_drag_modes
+    assert layer._move_modes is original_move_modes
     assert layer._drag_modes[Mode.DIRECT] is original_direct_callback
     assert layer._drag_modes[Mode.VERTEX_REMOVE] is original_vertex_remove_callback
+    assert layer._move_modes[Mode.ADD_POLYGON_LASSO] is original_lasso_move_callback
 
 
 def test_annotation_layer_edit_guard_attach_is_idempotent_and_restores_class_mapping() -> None:
     layer = Shapes([], ndim=2)
     original_direct_callback = layer._drag_modes[Mode.DIRECT]
     original_vertex_remove_callback = layer._drag_modes[Mode.VERTEX_REMOVE]
+    original_lasso_move_callback = layer._move_modes[Mode.ADD_POLYGON_LASSO]
     guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
 
     guard.attach(layer)
     first_wrapped_direct_callback = layer._drag_modes[Mode.DIRECT]
     first_wrapped_vertex_remove_callback = layer._drag_modes[Mode.VERTEX_REMOVE]
+    first_move_modes = layer._move_modes
     guard.attach(layer)
 
     assert layer._drag_modes[Mode.DIRECT] is first_wrapped_direct_callback
     assert layer._drag_modes[Mode.VERTEX_REMOVE] is first_wrapped_vertex_remove_callback
+    assert layer._move_modes is first_move_modes
+    assert layer._move_modes[Mode.ADD_POLYGON_LASSO] is original_lasso_move_callback
     assert "_drag_modes" in vars(layer)
+    assert "_move_modes" in vars(layer)
 
     guard.disconnect()
 
     assert guard.layer is None
     assert "_drag_modes" not in vars(layer)
+    assert "_move_modes" not in vars(layer)
     assert layer._drag_modes[Mode.DIRECT] is original_direct_callback
     assert layer._drag_modes[Mode.VERTEX_REMOVE] is original_vertex_remove_callback
+    assert layer._move_modes[Mode.ADD_POLYGON_LASSO] is original_lasso_move_callback
 
 
 def test_annotation_layer_edit_guard_replacing_layer_disconnects_previous_layer() -> None:
@@ -953,11 +967,13 @@ def test_annotation_layer_edit_guard_replacing_layer_disconnects_previous_layer(
     second_layer = Shapes([], ndim=2)
     first_direct_callback = first_layer._drag_modes[Mode.DIRECT]
     first_vertex_remove_callback = first_layer._drag_modes[Mode.VERTEX_REMOVE]
+    first_lasso_move_callback = first_layer._move_modes[Mode.ADD_POLYGON_LASSO]
     guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
 
     guard.attach(first_layer)
     first_wrapped_direct_callback = first_layer._drag_modes[Mode.DIRECT]
     first_wrapped_vertex_remove_callback = first_layer._drag_modes[Mode.VERTEX_REMOVE]
+    first_move_modes = first_layer._move_modes
     # `attach(...)` first calls `disconnect(...)`, so moving the guard to a new
     # layer must restore the previous layer before patching the new one.
     guard.attach(second_layer)
@@ -965,10 +981,52 @@ def test_annotation_layer_edit_guard_replacing_layer_disconnects_previous_layer(
     assert guard.layer is second_layer
     assert first_layer._drag_modes[Mode.DIRECT] is first_direct_callback
     assert first_layer._drag_modes[Mode.VERTEX_REMOVE] is first_vertex_remove_callback
+    assert first_layer._move_modes[Mode.ADD_POLYGON_LASSO] is first_lasso_move_callback
     assert "_drag_modes" not in vars(first_layer)
+    assert "_move_modes" not in vars(first_layer)
     assert "_drag_modes" in vars(second_layer)
+    assert "_move_modes" in vars(second_layer)
     assert second_layer._drag_modes[Mode.DIRECT] is not first_wrapped_direct_callback
     assert second_layer._drag_modes[Mode.VERTEX_REMOVE] is not first_wrapped_vertex_remove_callback
+    assert second_layer._move_modes is not first_move_modes
+
+
+def test_annotation_layer_edit_guard_slice_one_does_not_bind_space_or_change_mouse_state() -> None:
+    layer = Shapes([], ndim=2)
+    layer.mode = Mode.ADD_POLYGON_LASSO
+
+    def existing_space_keybinding(_layer: Shapes) -> None:
+        return None
+
+    layer.bind_key("Space", existing_space_keybinding, overwrite=True)
+    original_keymap = dict(layer.keymap)
+    original_mouse_pan = layer.mouse_pan
+    original_mode = layer.mode
+    original_drag_callbacks = list(layer.mouse_drag_callbacks)
+    original_move_callbacks = list(layer.mouse_move_callbacks)
+    original_lasso_drag_callback = layer._drag_modes[Mode.ADD_POLYGON_LASSO]
+    original_lasso_move_callback = layer._move_modes[Mode.ADD_POLYGON_LASSO]
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+
+    guard.attach(layer)
+
+    assert dict(layer.keymap) == original_keymap
+    assert layer.mouse_pan is original_mouse_pan
+    assert layer.mode == original_mode
+    assert list(layer.mouse_drag_callbacks) == original_drag_callbacks
+    assert list(layer.mouse_move_callbacks) == original_move_callbacks
+    assert layer._drag_modes[Mode.ADD_POLYGON_LASSO] is original_lasso_drag_callback
+    assert layer._move_modes[Mode.ADD_POLYGON_LASSO] is original_lasso_move_callback
+
+    guard.disconnect()
+
+    assert dict(layer.keymap) == original_keymap
+    assert layer.mouse_pan is original_mouse_pan
+    assert layer.mode == original_mode
+    assert list(layer.mouse_drag_callbacks) == original_drag_callbacks
+    assert list(layer.mouse_move_callbacks) == original_move_callbacks
+    assert layer._drag_modes[Mode.ADD_POLYGON_LASSO] is original_lasso_drag_callback
+    assert layer._move_modes[Mode.ADD_POLYGON_LASSO] is original_lasso_move_callback
 
 
 def test_annotation_layer_edit_guard_direct_drag_syncs_shell_anchor_group() -> None:
