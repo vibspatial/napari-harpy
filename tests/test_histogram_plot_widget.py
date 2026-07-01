@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
+from qtpy.QtCore import Qt
 from qtpy.QtWidgets import QLabel
 
 from napari_harpy.core.histogram import HistogramResult, HistogramSettings, HistogramTarget
@@ -13,6 +14,7 @@ from napari_harpy.widgets.histogram.styles import (
     HISTOGRAM_BAR_FILL_COLOR,
     HISTOGRAM_CONTRAST_LINE_COLOR,
     HISTOGRAM_CONTRAST_REGION_ALPHA,
+    HISTOGRAM_PERCENTILE_LINE_COLOR,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +25,7 @@ def make_result(
     counts: np.ndarray | None = None,
     bin_edges: np.ndarray | None = None,
     settings: HistogramSettings | None = None,
+    percentile_values: dict[float, float] | None = None,
 ) -> HistogramResult:
     target = HistogramTarget(coordinate_system="global", image_name="blobs_image", channel_name="0")
     resolved_settings = settings or HistogramSettings(scale="scale0")
@@ -32,7 +35,7 @@ def make_result(
         counts=np.array([2, 1]) if counts is None else counts,
         bin_edges=np.array([0.0, 0.25, 1.0]) if bin_edges is None else bin_edges,
         data_range=(0.0, 1.0),
-        percentile_values={},
+        percentile_values={} if percentile_values is None else percentile_values,
         resolved_scale=resolved_settings.scale,
     )
 
@@ -66,6 +69,44 @@ def test_histogram_plot_widget_replaces_previous_bars(qtbot) -> None:
     assert plot_widget._bar_item is not None
     np.testing.assert_allclose(plot_widget._bar_item.opts["x"], np.array([0.5, 1.5, 3.0]))
     np.testing.assert_allclose(plot_widget._bar_item.opts["width"], np.array([1.0, 1.0, 2.0]))
+
+
+def test_histogram_plot_widget_draws_unlabeled_percentile_markers(qtbot) -> None:
+    plot_widget = _HistogramPlotWidget()
+    qtbot.addWidget(plot_widget)
+
+    plot_widget.set_histogram(make_result(percentile_values={1.0: 0.1234, 99.0: 0.9876}))
+
+    marker_lines = plot_widget._percentile_marker_lines
+    assert len(marker_lines) == 2
+    assert all(not line.movable for line in marker_lines)
+    assert all(line.pen.style() == Qt.PenStyle.DashLine for line in marker_lines)
+    assert all(line.pen.color().name().upper() == HISTOGRAM_PERCENTILE_LINE_COLOR.upper() for line in marker_lines)
+    assert all(not hasattr(line, "label") for line in marker_lines)
+
+
+def test_histogram_plot_widget_omits_out_of_range_percentile_markers(qtbot) -> None:
+    plot_widget = _HistogramPlotWidget()
+    qtbot.addWidget(plot_widget)
+
+    plot_widget.set_histogram(make_result(percentile_values={1.0: -1.0, 50.0: 0.5, 99.0: 2.0}))
+
+    marker_lines = plot_widget._percentile_marker_lines
+    assert len(marker_lines) == 1
+    np.testing.assert_allclose(marker_lines[0].value(), 0.5)
+    assert not hasattr(marker_lines[0], "label")
+
+
+def test_histogram_plot_widget_clears_percentile_markers(qtbot) -> None:
+    plot_widget = _HistogramPlotWidget()
+    qtbot.addWidget(plot_widget)
+    plot_widget.set_histogram(make_result(percentile_values={50.0: 0.5}))
+    marker_line = plot_widget._percentile_marker_lines[0]
+
+    plot_widget.set_histogram(make_result())
+
+    assert plot_widget._percentile_marker_lines == []
+    assert marker_line not in plot_widget._plot_item.items
 
 
 def test_histogram_plot_widget_reset_view_restores_fitted_range(qtbot) -> None:

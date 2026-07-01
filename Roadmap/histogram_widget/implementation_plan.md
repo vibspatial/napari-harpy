@@ -155,9 +155,7 @@ Recommended pyqtgraph items:
   movable region with two boundary lines and subtle fill; if the UX needs fully
   independent line behavior, use two movable `pyqtgraph.InfiniteLine` items
   instead;
-- non-movable dashed `pyqtgraph.InfiniteLine` items for percentile markers;
-- `pyqtgraph.TextItem` labels only for percentile markers and compact marker
-  readouts where they do not clutter the plot.
+- non-movable dashed `pyqtgraph.InfiniteLine` items for percentile markers.
 
 The contrast region is preferred over two unrelated line objects because it
 keeps the lower/upper pair visually connected, makes dragging predictable, and
@@ -217,7 +215,6 @@ Recommended plot styling:
 | Contrast-limit lines | `WIDGET_SUCCESS_COLOR`, solid, 2 px |
 | Contrast selected region fill | `WIDGET_SUCCESS_COLOR` at very low alpha |
 | Percentile lines | `WIDGET_WARNING_TEXT_COLOR`, dashed, 1 to 1.5 px |
-| Percentile labels | `WIDGET_WARNING_TEXT_COLOR` |
 | Empty/stale/running plot messages | Do not render in the plot; use the card status card |
 
 Rationale:
@@ -1335,7 +1332,7 @@ Tests:
 
 ### 9. Percentile Guide Lines
 
-Status: [ ] Planned
+Status: [x] Implemented
 
 Goal:
 
@@ -1361,10 +1358,8 @@ Scope:
 - style percentile markers as secondary analytical guides, visually distinct
   from contrast-limit lines, for example thinner/dashed lines using a stable
   palette constant such as `HISTOGRAM_PERCENTILE_LINE_COLOR`;
-- label percentile markers compactly using the percentile and computed
-  intensity value, for example `p1 = 123.4` and `p99 = 987.6`;
-- keep labels small and anchored close to the marker so they do not dominate the
-  histogram plot;
+- do not label percentile markers in the plot; keep the plot visually quiet and
+  show the computed percentile values in the card status surface instead;
 - render percentile markers only after a histogram calculation has produced
   `HistogramResult.percentile_values`;
 - if a computed percentile value lies outside the plotted histogram x-range,
@@ -1394,7 +1389,7 @@ Tests:
 - percentile guide lines are drawn only when specified and successfully
   calculated;
 - percentile guide lines are visually distinct from contrast-limit lines;
-- compact labels are shown for in-range percentile values;
+- percentile guide lines are not labeled in the plot;
 - percentile values outside the histogram x-range are not drawn but remain
   present in the status card;
 - clearing a percentile field removes the corresponding marker after the next

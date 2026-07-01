@@ -17,6 +17,7 @@ from napari_harpy.widgets.histogram.styles import (
     HISTOGRAM_BAR_FILL_COLOR,
     HISTOGRAM_CONTRAST_LINE_COLOR,
     HISTOGRAM_CONTRAST_REGION_ALPHA,
+    HISTOGRAM_PERCENTILE_LINE_COLOR,
     HISTOGRAM_PLOT_BACKGROUND_COLOR,
 )
 
@@ -35,6 +36,7 @@ _LOG_MAX_DECADE_LABELS = 6
 _CONTRAST_MINIMUM_SHADES = 256
 _CONTRAST_LINE_WIDTH = 2
 _CONTRAST_HOVER_LINE_WIDTH = 10
+_PERCENTILE_LINE_WIDTH = 1
 
 
 class _ScientificYAxisItem(pg.AxisItem):
@@ -113,6 +115,7 @@ class _HistogramPlotWidget(QWidget):
 
         self._bar_item: pg.BarGraphItem | None = None
         self._contrast_region: pg.LinearRegionItem | None = None
+        self._percentile_marker_lines: list[pg.InfiniteLine] = []
         self._updating_contrast_region = False
         self._last_result: HistogramResult | None = None
         self._last_contrast_limits: tuple[float, float] | None = None
@@ -127,6 +130,7 @@ class _HistogramPlotWidget(QWidget):
 
         self._last_result = result
         self._clear_bar_item()
+        self._clear_percentile_markers()
         self.set_log_y(result.settings.log_y)
         self._plot_item.setLabel(
             "left",
@@ -148,12 +152,14 @@ class _HistogramPlotWidget(QWidget):
         )
         self._plot_item.addItem(self._bar_item)
         self._fit_histogram_view(bin_edges, counts, log_y=result.settings.log_y)
+        self.set_percentile_markers(result.percentile_values)
 
     def clear_histogram(self) -> None:
         """Clear plotted histogram data; card state text lives in the status card."""
         self._last_result = None
         self._last_contrast_limits = None
         self._clear_bar_item()
+        self._clear_percentile_markers()
         self.set_contrast_limits(None)
         self.set_log_y(False)
         self._plot_item.setLabel("left", "Count", color=HISTOGRAM_AXIS_TEXT_COLOR)
@@ -196,8 +202,35 @@ class _HistogramPlotWidget(QWidget):
         self._last_contrast_limits = normalized_limits
 
     def set_percentile_markers(self, markers: Mapping[float, float]) -> None:
-        """Reserve a stable API hook for the percentile guide-line slice."""
-        _ = markers
+        """Draw non-interactive percentile guide lines for in-range values."""
+        self._clear_percentile_markers()
+        x_range = _histogram_x_range(self._last_result)
+        if x_range is None:
+            return
+
+        x_min, x_max = x_range
+        pen = pg.mkPen(
+            HISTOGRAM_PERCENTILE_LINE_COLOR,
+            width=_PERCENTILE_LINE_WIDTH,
+            style=Qt.PenStyle.DashLine,
+        )
+        visible_marker_values: list[float] = []
+        for _percentile, value in sorted(markers.items()):
+            percentile_value = float(value)
+            if not np.isfinite(percentile_value) or percentile_value < x_min or percentile_value > x_max:
+                continue
+            visible_marker_values.append(percentile_value)
+
+        for percentile_value in visible_marker_values:
+            line = pg.InfiniteLine(
+                pos=percentile_value,
+                angle=90,
+                pen=pen,
+                movable=False,
+            )
+            line.setZValue(8)
+            self._plot_item.addItem(line)
+            self._percentile_marker_lines.append(line)
 
     def _ensure_contrast_region(self, limits: tuple[float, float]) -> pg.LinearRegionItem:
         if self._contrast_region is not None:
@@ -285,6 +318,11 @@ class _HistogramPlotWidget(QWidget):
         self._plot_item.removeItem(self._bar_item)
         self._bar_item = None
 
+    def _clear_percentile_markers(self) -> None:
+        for line in self._percentile_marker_lines:
+            self._plot_item.removeItem(line)
+        self._percentile_marker_lines.clear()
+
     def _fit_histogram_view(self, bin_edges: np.ndarray, counts: np.ndarray, *, log_y: bool) -> None:
         if len(bin_edges) >= 2 and np.all(np.isfinite(bin_edges[[0, -1]])):
             self._plot_item.setXRange(float(bin_edges[0]), float(bin_edges[-1]), padding=0.02)
@@ -327,6 +365,15 @@ def _ordered_finite_contrast_limits(limits: tuple[float, float] | None) -> tuple
 
 
 def _histogram_x_span(result: HistogramResult | None) -> float | None:
+    x_range = _histogram_x_range(result)
+    if x_range is None:
+        return None
+
+    span = abs(x_range[1] - x_range[0])
+    return span if span > 0 else None
+
+
+def _histogram_x_range(result: HistogramResult | None) -> tuple[float, float] | None:
     if result is None:
         return None
 
@@ -338,8 +385,7 @@ def _histogram_x_span(result: HistogramResult | None) -> float | None:
     if not np.isfinite(first) or not np.isfinite(last):
         return None
 
-    span = abs(last - first)
-    return span if span > 0 else None
+    return tuple(sorted((first, last)))
 
 
 def _fallback_span(limits: tuple[float, float]) -> float:

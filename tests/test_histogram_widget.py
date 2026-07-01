@@ -298,6 +298,35 @@ def test_histogram_widget_populates_target_selectors_and_starts_controller_job(
     np.testing.assert_allclose(card.plot_widget._bar_item.opts["height"], np.array([2.0, 1.0]))
 
 
+def test_histogram_widget_shows_percentile_values_in_status_card(qtbot, sdata_blobs: SpatialData) -> None:
+    widget = make_widget_with_sdata(qtbot, sdata_blobs)
+    _card_id, card = add_valid_histogram_card(widget)
+    card.percentile_min_edit.setText("1")
+    card.percentile_max_edit.setText("99")
+
+    def make_percentile_job_result(job: HistogramJob) -> HistogramJobResult:
+        return HistogramJobResult(
+            card_id=job.card_id,
+            job_id=job.job_id,
+            target=job.target,
+            settings=job.settings,
+            result=HistogramResult(
+                target=job.target,
+                settings=job.settings,
+                counts=np.array([2, 1]),
+                bin_edges=np.array([0.0, 0.5, 1.0]),
+                data_range=(0.0, 1.0),
+                percentile_values={1.0: -1.0, 99.0: 2.0},
+                resolved_scale=job.settings.scale,
+            ),
+        )
+
+    calculate_card(widget, qtbot, card, result_factory=make_percentile_job_result)
+
+    assert "Percentiles: p1 = -1, p99 = 2" in card.status_label.text()
+    assert card.plot_widget._percentile_marker_lines == []
+
+
 def test_histogram_widget_reuses_current_result_and_resets_plot_on_repeated_show_click(
     qtbot,
     sdata_blobs: SpatialData,

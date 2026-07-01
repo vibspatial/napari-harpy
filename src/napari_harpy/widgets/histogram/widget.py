@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -907,6 +907,10 @@ class HistogramWidget(QWidget):
         extra_lines: list[str] = []
         if histogram_card.overlay_load_message:
             extra_lines.append(histogram_card.overlay_load_message)
+        result = self._histogram_controller.result_for_card(card_id)
+        percentile_status_line = None if result is None else _format_percentile_status_line(result.percentile_values)
+        if kind == "success" and percentile_status_line:
+            extra_lines.append(percentile_status_line)
         if kind == "success" and histogram_card.contrast_sync_message:
             extra_lines.append(histogram_card.contrast_sync_message)
         if extra_lines:
@@ -914,6 +918,7 @@ class HistogramWidget(QWidget):
                 title=spec.title,
                 lines=(*spec.lines, *extra_lines),
                 kind=spec.kind,
+                tooltip_message=spec.tooltip_message,
             )
         self._apply_status_card_spec(histogram_card.status_label, spec)
 
@@ -1215,3 +1220,20 @@ def _normalized_contrast_limits(limits: object) -> tuple[float, float] | None:
         return None
 
     return low, high
+
+
+def _format_percentile_status_line(percentile_values: Mapping[float, float]) -> str | None:
+    if not percentile_values:
+        return None
+
+    values = ", ".join(
+        f"p{float(percentile):g} = {_format_compact_number(float(value))}"
+        for percentile, value in sorted(percentile_values.items())
+    )
+    return f"Percentiles: {values}"
+
+
+def _format_compact_number(value: float) -> str:
+    if not math.isfinite(value):
+        return str(value)
+    return f"{value:.4g}"
