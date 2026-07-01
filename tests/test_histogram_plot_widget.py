@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pyqtgraph as pg
 from qtpy.QtCore import QPoint, Qt
+from qtpy.QtGui import QPalette
 from qtpy.QtWidgets import QLabel
 
 from napari_harpy.core.histogram import HistogramResult, HistogramSettings, HistogramTarget
@@ -94,8 +95,17 @@ def test_histogram_plot_widget_draws_unlabeled_percentile_markers(qtbot) -> None
 def test_histogram_plot_widget_percentile_tooltip_uses_hover_event(qtbot, monkeypatch) -> None:
     shown_tooltips: list[tuple[QPoint, str]] = []
     hidden_tooltips: list[bool] = []
+    applied_palettes: list[QPalette] = []
 
     class FakeToolTip:
+        @staticmethod
+        def palette() -> QPalette:
+            return QPalette()
+
+        @staticmethod
+        def setPalette(palette: QPalette) -> None:
+            applied_palettes.append(palette)
+
         @staticmethod
         def showText(pos: QPoint, text: str) -> None:
             shown_tooltips.append((pos, text))
@@ -127,7 +137,12 @@ def test_histogram_plot_widget_percentile_tooltip_uses_hover_event(qtbot, monkey
     marker_line.hoverEvent(FakeHoverEvent(exit_event=False))
 
     assert marker_line.mouseHovering is True
-    assert shown_tooltips == [(QPoint(12, 34), "p50 = 0.5")]
+    assert len(applied_palettes) == 1
+    assert len(shown_tooltips) == 1
+    assert shown_tooltips[0][0] == QPoint(12, 34)
+    assert "p50 = 0.5" in shown_tooltips[0][1]
+    assert "background-color: #343944" in shown_tooltips[0][1]
+    assert "border: 1px solid #f0c36a" in shown_tooltips[0][1]
 
     marker_line.hoverEvent(FakeHoverEvent(exit_event=True))
 

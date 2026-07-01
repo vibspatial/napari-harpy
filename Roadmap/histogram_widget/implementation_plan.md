@@ -1361,9 +1361,10 @@ Scope:
 - do not label percentile markers in the plot; keep the plot visually quiet and
   show the computed percentile values in the card status surface instead;
 - add hover feedback for percentile lines, including a stronger hover pen and a
-  native tooltip with the compact percentile value, for example `p10 = 95`;
-  do not rely on a custom tooltip duration because Qt/the platform controls the
-  lifetime of native tooltips for pyqtgraph graphics items;
+  native tooltip styled with the Harpy palette and the compact percentile value,
+  for example `p10 = 95`; do not rely on a custom tooltip duration because
+  Qt/the platform controls the lifetime of native tooltips for pyqtgraph
+  graphics items;
 - render percentile markers only after a histogram calculation has produced
   `HistogramResult.percentile_values`;
 - if a computed percentile value lies outside the plotted histogram x-range,

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from html import escape
 
 import numpy as np
 import pyqtgraph as pg
 from qtpy.QtCore import Qt, Signal
-from qtpy.QtGui import QColor
+from qtpy.QtGui import QColor, QPalette
 from qtpy.QtWidgets import QGridLayout, QSizePolicy, QToolTip, QWidget
 
 from napari_harpy.core.histogram import HistogramResult
@@ -91,7 +92,8 @@ class _HoverablePercentileLine(pg.InfiniteLine):
         self.setMouseHover(True)
         # Qt/the platform owns native tooltip lifetime, so do not pass a custom
         # duration here; it is not reliable for pyqtgraph QGraphicsItem hover.
-        QToolTip.showText(ev.screenPos().toQPoint(), self._tooltip_text)
+        _apply_histogram_tooltip_palette()
+        QToolTip.showText(ev.screenPos().toQPoint(), _format_histogram_tooltip(self._tooltip_text))
 
 
 class _HistogramPlotWidget(QWidget):
@@ -537,6 +539,33 @@ def _format_log_tick(value: float, scale: float) -> str:
 
 def _format_percentile_tooltip(percentile: float, value: float) -> str:
     return f"p{percentile:g} = {_format_compact_number(value)}"
+
+
+def _apply_histogram_tooltip_palette() -> None:
+    palette = QToolTip.palette()
+    background = QColor(HISTOGRAM_PLOT_BACKGROUND_COLOR)
+    text = QColor(HISTOGRAM_AXIS_TEXT_COLOR)
+    palette.setColor(QPalette.ColorRole.ToolTipBase, background)
+    palette.setColor(QPalette.ColorRole.ToolTipText, text)
+    palette.setColor(QPalette.ColorRole.Window, background)
+    palette.setColor(QPalette.ColorRole.WindowText, text)
+    QToolTip.setPalette(palette)
+
+
+def _format_histogram_tooltip(text: str) -> str:
+    escaped_text = escape(text)
+    return (
+        "<qt>"
+        f"<div style='"
+        f"color: {HISTOGRAM_AXIS_TEXT_COLOR}; "
+        f"background-color: {HISTOGRAM_PLOT_BACKGROUND_COLOR}; "
+        f"border: 1px solid {HISTOGRAM_PERCENTILE_LINE_COLOR}; "
+        "padding: 4px 7px; "
+        "white-space: nowrap;'>"
+        f"{escaped_text}"
+        "</div>"
+        "</qt>"
+    )
 
 
 def _format_compact_number(value: float) -> str:
