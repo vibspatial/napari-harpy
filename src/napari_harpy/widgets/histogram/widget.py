@@ -357,9 +357,35 @@ class HistogramWidget(QWidget):
             lambda _index, current_card_id=card_id: self._on_card_channel_changed(current_card_id)
         )
 
+        overlay_color_button = OverlayColorButton(DEFAULT_OVERLAY_COLORS[0])
+        overlay_color_button.setObjectName(f"histogram_overlay_color_button_{card_id}")
+        overlay_color_button.setEnabled(False)
+
+        load_overlay_button = QPushButton("Load overlay")
+        load_overlay_button.setObjectName(f"histogram_load_overlay_button_{card_id}")
+        load_overlay_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        load_overlay_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
+        load_overlay_button.setToolTip(format_tooltip("Load selected channel as a napari overlay layer"))
+        load_overlay_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        load_overlay_button.setEnabled(False)
+        load_overlay_button.clicked.connect(
+            lambda _checked=False, current_card_id=card_id: self._load_card_overlay(current_card_id)
+        )
+
+        viewer_controls = QWidget()
+        viewer_controls.setObjectName(f"histogram_viewer_controls_{card_id}")
+        viewer_controls.setStyleSheet(_CARD_SUBCONTAINER_STYLESHEET)
+        viewer_controls.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        viewer_controls_layout = QHBoxLayout(viewer_controls)
+        viewer_controls_layout.setContentsMargins(0, 0, 0, 0)
+        viewer_controls_layout.setSpacing(8)
+        viewer_controls_layout.addWidget(load_overlay_button, 1)
+        viewer_controls_layout.addWidget(overlay_color_button)
+
         form.addRow(create_form_label("Coordinate system"), coordinate_system_combo)
         form.addRow(create_form_label("Image"), image_combo)
         form.addRow(create_form_label("Channel"), channel_combo)
+        form.addRow(create_form_label("Viewer"), viewer_controls)
 
         settings_toggle = QToolButton()
         settings_toggle.setObjectName(f"histogram_settings_toggle_{card_id}")
@@ -472,21 +498,7 @@ class HistogramWidget(QWidget):
         action_layout.setContentsMargins(0, 0, 0, 0)
         action_layout.setSpacing(8)
 
-        overlay_color_button = OverlayColorButton(DEFAULT_OVERLAY_COLORS[0])
-        overlay_color_button.setObjectName(f"histogram_overlay_color_button_{card_id}")
-        overlay_color_button.setEnabled(False)
-
-        load_overlay_button = QPushButton("Load overlay")
-        load_overlay_button.setObjectName(f"histogram_load_overlay_button_{card_id}")
-        load_overlay_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        load_overlay_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
-        load_overlay_button.setToolTip(format_tooltip("Load selected channel as a napari overlay layer"))
-        load_overlay_button.setEnabled(False)
-        load_overlay_button.clicked.connect(
-            lambda _checked=False, current_card_id=card_id: self._load_card_overlay(current_card_id)
-        )
-
-        calculate_button = QPushButton("Calculate")
+        calculate_button = QPushButton("Show histogram")
         calculate_button.setObjectName(f"histogram_calculate_button_{card_id}")
         calculate_button.setCursor(Qt.CursorShape.PointingHandCursor)
         calculate_button.setStyleSheet(CALCULATE_BUTTON_STYLESHEET)
@@ -494,8 +506,6 @@ class HistogramWidget(QWidget):
         calculate_button.clicked.connect(
             lambda _checked=False, current_card_id=card_id: self._calculate_histogram(current_card_id)
         )
-        action_layout.addWidget(overlay_color_button)
-        action_layout.addWidget(load_overlay_button)
         action_layout.addWidget(calculate_button, 1)
 
         status_label = QLabel()

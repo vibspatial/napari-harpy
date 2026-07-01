@@ -223,6 +223,11 @@ def test_histogram_cards_can_be_added_and_removed_without_mutating_sdata(qtbot, 
     assert widget.findChild(QWidget, f"histogram_action_row_{card_id}").styleSheet() == (
         histogram_widget_module._CARD_SUBCONTAINER_STYLESHEET
     )
+    assert widget.findChild(QWidget, f"histogram_viewer_controls_{card_id}").styleSheet() == (
+        histogram_widget_module._CARD_SUBCONTAINER_STYLESHEET
+    )
+    assert card.load_overlay_button.text() == "Load overlay"
+    assert card.calculate_button.text() == "Show histogram"
 
     card.remove_button.click()
 
