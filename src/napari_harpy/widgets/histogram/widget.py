@@ -1058,7 +1058,7 @@ class HistogramWidget(QWidget):
 
         state = histogram_card.contrast_sync_state
         if state is not None and state.layer is binding.layer:
-            histogram_card.contrast_sync_message = "Contrast synced to napari overlay layer."
+            histogram_card.contrast_sync_message = None
             self._apply_layer_contrast_limits_to_plot(card_id)
             return
 
@@ -1069,7 +1069,9 @@ class HistogramWidget(QWidget):
             layer=binding.layer,
             contrast_limits_callback=callback,
         )
-        histogram_card.contrast_sync_message = "Contrast synced to napari overlay layer."
+        # Successful sync is already visible via the contrast lines; keep the
+        # status card focused on warnings/errors instead of repeating that state.
+        histogram_card.contrast_sync_message = None
         self._apply_layer_contrast_limits_to_plot(card_id)
 
     def _resolve_contrast_sync_binding(self, result: HistogramResult) -> tuple[ImageLayerBinding | None, str | None]:

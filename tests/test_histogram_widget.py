@@ -576,7 +576,7 @@ def test_histogram_widget_load_overlay_binds_contrast_sync_after_calculation(qtb
     assert viewer.layers.selection.active is layer
     assert card.plot_widget._contrast_region is not None
     assert "Overlay loaded in viewer." in card.status_label.text()
-    assert "Contrast synced to napari overlay layer." in card.status_label.text()
+    assert "Contrast synced to napari overlay layer." not in card.status_label.text()
 
 
 def test_histogram_widget_syncs_viewer_color_from_matching_overlay_before_calculation(
@@ -671,7 +671,7 @@ def test_histogram_widget_syncs_contrast_limits_with_unique_overlay_layer(qtbot,
     card.plot_widget._contrast_region.mouseDragEvent(drag_event)
     assert not drag_event.accepted
     np.testing.assert_allclose(card.plot_widget._contrast_region.getRegion(), (0.1, 0.8))
-    assert "Contrast synced to napari overlay layer." in card.status_label.text()
+    assert "Contrast synced to napari overlay layer." not in card.status_label.text()
 
     card.plot_widget.contrast_limits_dragged.emit(0.2, 0.7)
     np.testing.assert_allclose(layer.contrast_limits, (0.2, 0.7))
