@@ -10,7 +10,9 @@ from napari_harpy._app_state import HarpyAppState, get_or_create_app_state
 if TYPE_CHECKING:
     from spatialdata import SpatialData
 
-HarpyWidgetId: TypeAlias = Literal["viewer", "feature_extraction", "object_classification", "shapes_annotation"]
+HarpyWidgetId: TypeAlias = Literal[
+    "viewer", "feature_extraction", "histogram", "object_classification", "shapes_annotation"
+]
 HarpyWidgetSelection: TypeAlias = Literal["all"] | HarpyWidgetId | Sequence[HarpyWidgetId]
 
 
@@ -32,8 +34,9 @@ class Interactive:
     widgets
         Which Harpy dock widgets to open. Defaults to ``"all"``. Possible
         values are ``"all"``, ``"viewer"``, ``"feature_extraction"``,
-        ``"object_classification"``, and ``"shapes_annotation"``. Pass a tuple
-        of widget ids to open a subset. ``"all"`` opens every Harpy widget.
+        ``"histogram"``, ``"object_classification"``, and
+        ``"shapes_annotation"``. Pass a tuple of widget ids to open a subset.
+        ``"all"`` opens every Harpy widget.
     async_slicing
         If ``True`` or ``False``, explicitly enable or disable napari's
         experimental async slicing for this session. If ``None``, leave napari's
@@ -44,12 +47,14 @@ class Interactive:
     _WIDGET_NAMES: dict[str, str] = {
         "viewer": "Viewer",
         "feature_extraction": "Feature Extraction",
+        "histogram": "Image Histogram",
         "object_classification": "Object Classification",
         "shapes_annotation": "Annotation",
     }
     _ALL_WIDGET_IDS: tuple[HarpyWidgetId, ...] = (
         "viewer",
         "feature_extraction",
+        "histogram",
         "object_classification",
         "shapes_annotation",
     )

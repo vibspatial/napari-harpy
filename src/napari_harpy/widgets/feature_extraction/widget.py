@@ -55,7 +55,7 @@ from napari_harpy.widgets.feature_extraction.status_card import (
     build_feature_extraction_status_card_entries,
 )
 from napari_harpy.widgets.shared_styles import (
-    ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,
+    CALCULATE_BUTTON_STYLESHEET as _CALCULATE_BUTTON_STYLESHEET,
 )
 from napari_harpy.widgets.shared_styles import (
     CHECKBOX_STYLESHEET as _FEATURE_CHECKBOX_STYLESHEET,
@@ -610,7 +610,7 @@ class FeatureExtractionWidget(QWidget):
         self.calculate_button.setEnabled(False)
         self.calculate_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.calculate_button.setMinimumHeight(28)
-        self.calculate_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
+        self.calculate_button.setStyleSheet(_CALCULATE_BUTTON_STYLESHEET)
         self._set_tooltip(
             self.calculate_button,
             "Calculation is enabled once the shared SpatialData selection and feature choices form a valid extraction request.",

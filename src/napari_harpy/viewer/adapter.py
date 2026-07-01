@@ -695,6 +695,10 @@ class ViewerAdapter(QObject):
     # Emitted after a primary shapes layer has a Harpy binding while loaded in
     # the viewer. Consumers can rely on the binding registry being ready.
     primary_shapes_layer_registered = Signal(object)
+    # Emitted when histogram-usable overlay image bindings are added or
+    # removed. Consumers should re-query `layer_bindings`; the signal carries
+    # no payload to avoid stale binding data on removal.
+    image_overlay_layers_changed = Signal()
     active_layer_changed = Signal(object)
 
     def __init__(self, viewer: Any | None = None, layer_bindings: LayerBindingRegistry | None = None) -> None:
@@ -866,6 +870,8 @@ class ViewerAdapter(QObject):
             self.primary_labels_layers_changed.emit()
         if _is_primary_shapes_binding(binding) and self._is_layer_loaded_in_viewer(binding.layer):
             self.primary_shapes_layer_registered.emit(binding)
+        if _is_histogram_usable_overlay_image_binding(binding) and self._is_layer_loaded_in_viewer(binding.layer):
+            self.image_overlay_layers_changed.emit()
 
     def unregister_layer(self, layer: Layer) -> LayerBinding | None:
         """Remove a layer from the shared binding registry."""
@@ -893,9 +899,10 @@ class ViewerAdapter(QObject):
 
         In the current built-in loading paths, Harpy usually adds the napari
         layer to the viewer first and registers it second, so this handler is
-        not the main signal path for primary labels availability. Keep it so
-        the adapter still behaves correctly for external or future flows where
-        a layer is registered before it is inserted into the viewer.
+        not the main signal path for primary labels or histogram-usable overlay
+        image availability. Keep it so the adapter still behaves correctly for
+        external or future flows where a layer is registered before it is
+        inserted into the viewer.
         """
         layer = getattr(event, "value", None)
         if not isinstance(layer, Layer):
@@ -904,6 +911,8 @@ class ViewerAdapter(QObject):
         binding = self._layer_bindings.get_binding(layer)
         if _is_pickable_primary_labels_layer(layer, binding):
             self.primary_labels_layers_changed.emit()
+        if _is_histogram_usable_overlay_image_binding(binding):
+            self.image_overlay_layers_changed.emit()
 
     def _on_viewer_layer_removed(self, event: Any) -> None:
         """Unregister Harpy-managed layers when they disappear from the viewer."""
@@ -913,6 +922,7 @@ class ViewerAdapter(QObject):
             return
         binding = self._layer_bindings.get_binding(layer)
         had_primary_labels_semantics = _is_pickable_primary_labels_layer(layer, binding)
+        had_histogram_usable_overlay_image_semantics = _is_histogram_usable_overlay_image_binding(binding)
         removed_binding = self.unregister_layer(layer)
         if removed_binding is None:
             logger.warning(
@@ -920,6 +930,8 @@ class ViewerAdapter(QObject):
             )
         if had_primary_labels_semantics:
             self.primary_labels_layers_changed.emit()
+        if had_histogram_usable_overlay_image_semantics:
+            self.image_overlay_layers_changed.emit()
 
     def _on_viewer_layers_reordered(self, event: Any) -> None:
         del event
@@ -1400,6 +1412,62 @@ class ViewerAdapter(QObject):
             channel_names=tuple(channel_name for _, channel_name in resolved_channels),
         )
 
+    def ensure_image_overlay_channel_loaded(
+        self,
+        sdata: SpatialData,
+        image_name: str,
+        coordinate_system: str,
+        *,
+        channel: int | str,
+        channel_color: str,
+    ) -> ImageLoadResult:
+        """Load or update one overlay channel while preserving loaded sibling channels."""
+        images = getattr(sdata, "images", {})
+        if image_name not in images:
+            raise ValueError(f"Image element `{image_name}` is not available in the selected SpatialData object.")
+
+        image_element = images[image_name]
+        available_coordinate_systems = set(get_transformation(image_element, get_all=True).keys())
+        if coordinate_system not in available_coordinate_systems:
+            raise ValueError(
+                f"Coordinate system `{coordinate_system}` is not available for image element `{image_name}`."
+            )
+
+        requested_channel_index, _requested_channel_name = _resolve_overlay_channels(image_element, [channel])[0]
+        channels: list[int] = [requested_channel_index]
+        colors: list[str] = [channel_color]
+        seen_channel_indices = {requested_channel_index}
+
+        existing_overlay_layers = self._get_loaded_image_layer_for_coordinate_system(
+            sdata,
+            image_name,
+            coordinate_system,
+            image_display_mode="overlay",
+        )
+        for layer in existing_overlay_layers:
+            binding = self._layer_bindings.get_binding(layer)
+            assert isinstance(binding, ImageLayerBinding)
+            if binding.channel_index is None or binding.channel_index in seen_channel_indices:
+                continue
+
+            channels.append(binding.channel_index)
+            colors.append(
+                _image_layer_colormap_name(
+                    layer,
+                    fallback=DEFAULT_OVERLAY_COLORS[binding.channel_index % len(DEFAULT_OVERLAY_COLORS)],
+                )
+            )
+            seen_channel_indices.add(binding.channel_index)
+
+        return self.ensure_image_loaded(
+            sdata,
+            image_name,
+            coordinate_system,
+            mode="overlay",
+            channels=channels,
+            channel_colors=colors,
+        )
+
     def ensure_shapes_loaded(self, sdata: SpatialData, shapes_name: str, coordinate_system: str) -> ShapesLoadResult:
         """Load a shapes element into napari if it is not already present."""
         existing_layer = self._get_loaded_shapes_layer_for_coordinate_system(sdata, shapes_name, coordinate_system)
@@ -1670,6 +1738,8 @@ class ViewerAdapter(QObject):
             binding = self.unregister_layer(layer)
             if _is_primary_labels_binding(binding):
                 self.primary_labels_layers_changed.emit()
+            if _is_histogram_usable_overlay_image_binding(binding):
+                self.image_overlay_layers_changed.emit()
 
     def _get_loaded_labels_layer_for_coordinate_system(
         self,
@@ -1955,14 +2025,19 @@ def _resolve_overlay_channels(
                 raise ValueError(f"Channel index `{channel_index}` is out of range for the selected image element.")
             channel_name = str(channel_names[channel_index])
         else:
-            if channel not in channel_names:
-                raise ValueError(
-                    f"Channel `{channel}` is not available in the selected image element. "
-                    "If needed, update the channel names in the SpatialData object with "
-                    "`sdata.set_channel_names(...)`."
-                )
-            channel_index = channel_names.index(channel)
-            channel_name = str(channel)
+            if channel in channel_names:
+                channel_index = channel_names.index(channel)
+                channel_name = str(channel)
+            else:
+                string_channel_names = [str(channel_name) for channel_name in channel_names]
+                if channel not in string_channel_names:
+                    raise ValueError(
+                        f"Channel `{channel}` is not available in the selected image element. "
+                        "If needed, update the channel names in the SpatialData object with "
+                        "`sdata.set_channel_names(...)`."
+                    )
+                channel_index = string_channel_names.index(channel)
+                channel_name = channel
 
         if channel_index in seen_indices:
             raise ValueError("Overlay mode does not accept duplicate channel selections.")
@@ -1981,6 +2056,16 @@ def _resolve_overlay_colors(channel_count: int, channel_colors: Sequence[str] | 
         raise ValueError("The number of overlay channel colors must match the number of selected channels.")
 
     return list(channel_colors)
+
+
+def _image_layer_colormap_name(layer: Image, *, fallback: str) -> str:
+    colormap = getattr(layer, "colormap", None)
+    name = getattr(colormap, "name", None)
+    if isinstance(name, str) and name:
+        return name
+    if isinstance(colormap, str) and colormap:
+        return colormap
+    return fallback
 
 
 def _flatten_multiscale_element(element: DataTree) -> list[DataArray]:
@@ -2457,6 +2542,15 @@ def _is_primary_labels_binding(binding: LayerBinding | None) -> TypeGuard[Labels
 
 def _is_primary_shapes_binding(binding: LayerBinding | None) -> TypeGuard[ShapesLayerBinding]:
     return isinstance(binding, ShapesLayerBinding) and binding.shapes_role == "primary"
+
+
+def _is_histogram_usable_overlay_image_binding(binding: LayerBinding | None) -> TypeGuard[ImageLayerBinding]:
+    return (
+        isinstance(binding, ImageLayerBinding)
+        and binding.image_display_mode == "overlay"
+        and isinstance(binding.channel_name, str)
+        and bool(binding.channel_name)
+    )
 
 
 def _is_pickable_primary_labels_layer(layer: Layer, binding: LayerBinding | None) -> bool:

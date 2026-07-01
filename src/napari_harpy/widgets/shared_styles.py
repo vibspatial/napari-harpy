@@ -4,8 +4,8 @@ import re
 from html import escape
 from typing import Literal, cast
 
-from qtpy.QtCore import QSize, Qt
-from qtpy.QtGui import QColor, QPalette
+from qtpy.QtCore import QPointF, QSize, Qt
+from qtpy.QtGui import QColor, QIcon, QPainter, QPalette, QPen, QPixmap
 from qtpy.QtWidgets import (
     QComboBox,
     QLabel,
@@ -42,11 +42,9 @@ WIDGET_WARNING_BACKGROUND_COLOR = "#3f3325"
 WIDGET_WARNING_BORDER_COLOR = "#c99845"
 WIDGET_WARNING_HOVER_COLOR = "#4f402c"
 TOOLTIP_TEXT_COLOR = WIDGET_TEXT_COLOR
+DISCLOSURE_CHEVRON_SIZE = 14
 FORM_LABEL_STYLESHEET = (
-    f"color: {WIDGET_TEXT_SECONDARY_COLOR}; "
-    "font-weight: 600; "
-    "padding-top: 6px; "
-    "background: transparent;"
+    f"color: {WIDGET_TEXT_SECONDARY_COLOR}; font-weight: 600; padding-top: 6px; background: transparent;"
 )
 ACTION_BUTTON_STYLESHEET = (
     "QPushButton {"
@@ -62,6 +60,7 @@ ACTION_BUTTON_STYLESHEET = (
     f"QPushButton:disabled {{ background-color: {WIDGET_PANEL_SUBTLE_COLOR}; "
     f"border-color: {WIDGET_DISABLED_BORDER_COLOR}; color: {WIDGET_DISABLED_TEXT_COLOR}; }}"
 )
+CALCULATE_BUTTON_STYLESHEET = ACTION_BUTTON_STYLESHEET
 CHECKBOX_STYLESHEET = (
     "QCheckBox {"
     f"color: {WIDGET_TEXT_COLOR}; "
@@ -144,6 +143,29 @@ def validate_status_card_kind(kind: str) -> StatusCardKind:
         raise ValueError(f"Invalid status card kind {kind!r}. Expected one of: {allowed_kinds}.")
 
     return cast(StatusCardKind, kind)
+
+
+def create_disclosure_chevron_icon(*, expanded: bool, color: str = WIDGET_TEXT_COLOR) -> QIcon:
+    pixmap = QPixmap(DISCLOSURE_CHEVRON_SIZE, DISCLOSURE_CHEVRON_SIZE)
+    pixmap.fill(Qt.GlobalColor.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    pen = QPen(QColor(color))
+    pen.setWidthF(2.0)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+
+    if expanded:
+        painter.drawLine(QPointF(3.5, 5.0), QPointF(7.0, 8.5))
+        painter.drawLine(QPointF(7.0, 8.5), QPointF(10.5, 5.0))
+    else:
+        painter.drawLine(QPointF(5.0, 3.5), QPointF(8.5, 7.0))
+        painter.drawLine(QPointF(8.5, 7.0), QPointF(5.0, 10.5))
+
+    painter.end()
+    return QIcon(pixmap)
 
 
 def build_input_control_stylesheet(control_selector: str) -> str:

@@ -14,6 +14,9 @@ contributions:
     - id: napari-harpy.feature_extraction
       title: Open feature extraction widget
       python_name: napari_harpy.widgets.feature_extraction.widget:FeatureExtractionWidget
+    - id: napari-harpy.histogram
+      title: Open image histogram widget
+      python_name: napari_harpy.widgets.histogram.widget:HistogramWidget
     - id: napari-harpy.object_classification
       title: Open object classification widget
       python_name: napari_harpy.widgets.object_classification.widget:ObjectClassificationWidget
@@ -25,6 +28,8 @@ contributions:
       display_name: Viewer
     - command: napari-harpy.feature_extraction
       display_name: Feature Extraction
+    - command: napari-harpy.histogram
+      display_name: Image Histogram
     - command: napari-harpy.object_classification
       display_name: Object Classification
     - command: napari-harpy.shapes_annotation

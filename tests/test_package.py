@@ -94,6 +94,19 @@ def test_manifest_contributes_shapes_annotation_widget() -> None:
     assert widgets["Annotation"]["command"] == "napari-harpy.shapes_annotation"
 
 
+def test_manifest_contributes_histogram_widget() -> None:
+    manifest = files("napari_harpy").joinpath("napari.yaml")
+    data = yaml.safe_load(manifest.read_text())
+
+    commands = {command["id"]: command for command in data["contributions"]["commands"]}
+    widgets = {widget["display_name"]: widget for widget in data["contributions"]["widgets"]}
+
+    assert commands["napari-harpy.histogram"]["python_name"] == (
+        "napari_harpy.widgets.histogram.widget:HistogramWidget"
+    )
+    assert widgets["Image Histogram"]["command"] == "napari-harpy.histogram"
+
+
 def test_blobs_multi_region_builds_a_multi_region_table() -> None:
     sdata = blobs_multi_region()
     table = sdata["table_multi"]
@@ -125,6 +138,4 @@ def test_blobs_points_repartitioned_can_be_written_and_read(tmp_path) -> None:
 
     assert "blobs_points_repartitioned" in reread.points
     assert reread.points["blobs_points_repartitioned"].npartitions == 4
-    assert reread.locate_element(reread.points["blobs_points_repartitioned"]) == [
-        "points/blobs_points_repartitioned"
-    ]
+    assert reread.locate_element(reread.points["blobs_points_repartitioned"]) == ["points/blobs_points_repartitioned"]

@@ -19,6 +19,7 @@ from spatialdata.models import ShapesModel
 from spatialdata.transformations import Identity
 
 import napari_harpy._app_state as app_state_module
+import napari_harpy.widgets.overlay_color_button as overlay_color_button_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
 from napari_harpy._app_state import (
     ClassificationTableWrittenEvent,
@@ -29,13 +30,13 @@ from napari_harpy._points_value_index import PointsValueSelection, PointsValueTa
 from napari_harpy.core._color_source import ShapeColumnColorSourceSpec, TableColorSourceSpec
 from napari_harpy.viewer.adapter import PointsLayerIdentity
 from napari_harpy.viewer.shapes_styling import SHAPES_FACE_ALPHA
+from napari_harpy.widgets.overlay_color_button import OverlayColorButton
 from napari_harpy.widgets.shared_styles import (
     STATUS_CARD_PALETTE,
     WIDGET_MIN_WIDTH,
     CompactComboBox,
 )
-from napari_harpy.widgets.viewer.disclosure import _ElidedLabel, _ElidedToolButton
-from napari_harpy.widgets.viewer.image_widget import QColorDialog, _OverlayColorButton
+from napari_harpy.widgets.viewer.disclosure import _CollapsibleSectionWidget, _ElidedLabel, _ElidedToolButton
 from napari_harpy.widgets.viewer.points_controller import PointsLoadRequest
 from napari_harpy.widgets.viewer.shapes_widget import ShapesLoadRequest
 from napari_harpy.widgets.viewer.widget import ViewerWidget
@@ -73,9 +74,7 @@ class DummyViewer:
         self.layers = DummyLayers()
 
 
-_FEEDBACK_BACKGROUND_BY_KIND = {
-    kind: palette["background"] for kind, palette in STATUS_CARD_PALETTE.items()
-}
+_FEEDBACK_BACKGROUND_BY_KIND = {kind: palette["background"] for kind, palette in STATUS_CARD_PALETTE.items()}
 
 
 def _assert_action_feedback_card(widget: ViewerWidget, *, title: str, kind: str) -> None:
@@ -320,13 +319,26 @@ def test_elided_tool_button_only_shows_tooltip_when_text_is_truncated(qtbot, mon
     assert "..." in button.text() or "\u2026" in button.text()
 
 
+def test_viewer_disclosure_toggle_uses_compact_metrics(qtbot) -> None:
+    section = _CollapsibleSectionWidget(
+        title="Images",
+        object_name="test_viewer_section",
+        toggle_object_name="test_viewer_section_toggle",
+    )
+
+    qtbot.addWidget(section)
+
+    assert "min-height: 26px" in section.toggle_button.styleSheet()
+    assert "padding: 3px 10px" in section.toggle_button.styleSheet()
+
+
 def test_overlay_color_button_uses_color_dialog_selection(qtbot, monkeypatch) -> None:
-    button = _OverlayColorButton("#00FFFF")
+    button = OverlayColorButton("#00FFFF")
 
     qtbot.addWidget(button)
 
     monkeypatch.setattr(
-        QColorDialog,
+        overlay_color_button_module.QColorDialog,
         "getColor",
         lambda *args, **kwargs: QColor("#123456"),
     )
@@ -603,11 +615,7 @@ def test_viewer_widget_expanded_detail_panels_fit_current_minimum_width(qtbot, m
         group_margins = group.layout().contentsMargins()
         row_margins = row.layout().contentsMargins()
         available_detail_width = (
-            content_width
-            - group_margins.left()
-            - group_margins.right()
-            - row_margins.left()
-            - row_margins.right()
+            content_width - group_margins.left() - group_margins.right() - row_margins.left() - row_margins.right()
         )
 
         assert card.minimumSizeHint().width() <= available_detail_width
@@ -1114,10 +1122,18 @@ def test_viewer_widget_refreshes_only_shapes_section_from_shapes_element_event(q
     qtbot.addWidget(widget)
 
     _patch_coordinate_system_names(monkeypatch, ["global"])
-    monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: names["images"])
-    monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: names["labels"])
-    monkeypatch.setattr(viewer_widget_module, "_get_shapes_in_coordinate_system", lambda sdata, coordinate_system: names["shapes"])
-    monkeypatch.setattr(viewer_widget_module, "_get_points_in_coordinate_system", lambda sdata, coordinate_system: names["points"])
+    monkeypatch.setattr(
+        viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: names["images"]
+    )
+    monkeypatch.setattr(
+        viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: names["labels"]
+    )
+    monkeypatch.setattr(
+        viewer_widget_module, "_get_shapes_in_coordinate_system", lambda sdata, coordinate_system: names["shapes"]
+    )
+    monkeypatch.setattr(
+        viewer_widget_module, "_get_points_in_coordinate_system", lambda sdata, coordinate_system: names["points"]
+    )
     monkeypatch.setattr(viewer_widget_module, "get_image_channel_names_from_sdata", lambda sdata, image_name: ["c0"])
     monkeypatch.setattr(viewer_widget_module, "get_annotating_table_names", lambda sdata, element_name: [])
     monkeypatch.setattr(viewer_widget_module, "get_table_color_source_options", lambda sdata, table_name: [])
@@ -2111,7 +2127,10 @@ def test_viewer_widget_add_update_shapes_with_table_source_dispatches_to_styled_
     assert viewer.layers.selection.active is result_layer
     _assert_action_feedback_card(widget, title="Styled Shapes Created", kind="info")
     assert 'Created styled shapes layer for obs["cell_type"]' in widget.global_action_feedback_label.text()
-    assert "Rendered point-radius shapes as napari points for faster display." in widget.global_action_feedback_label.text()
+    assert (
+        "Rendered point-radius shapes as napari points for faster display."
+        in widget.global_action_feedback_label.text()
+    )
     assert "Used the stored categorical palette." in widget.global_action_feedback_label.text()
     assert "Rendered 1 shape transparent because it has no row in the linked table." in (
         widget.global_action_feedback_label.text()

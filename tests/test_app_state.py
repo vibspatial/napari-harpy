@@ -450,6 +450,7 @@ def test_interactive_headless_sets_sdata_without_running_event_loop(monkeypatch,
     assert viewer.window.calls == [
         ("napari-harpy", "Viewer", True),
         ("napari-harpy", "Feature Extraction", True),
+        ("napari-harpy", "Image Histogram", True),
         ("napari-harpy", "Object Classification", True),
         ("napari-harpy", "Annotation", True),
     ]
@@ -538,6 +539,7 @@ def test_interactive_all_docks_every_harpy_widget(monkeypatch, sdata_blobs) -> N
     assert viewer.window.calls == [
         ("napari-harpy", "Viewer", True),
         ("napari-harpy", "Feature Extraction", True),
+        ("napari-harpy", "Image Histogram", True),
         ("napari-harpy", "Object Classification", True),
         ("napari-harpy", "Annotation", True),
     ]
@@ -589,6 +591,7 @@ def test_interactive_auto_runs_and_reuses_existing_plugin_widgets(monkeypatch, s
     assert viewer.window.calls == [
         ("napari-harpy", "Viewer", True),
         ("napari-harpy", "Feature Extraction", True),
+        ("napari-harpy", "Image Histogram", True),
         ("napari-harpy", "Object Classification", True),
         ("napari-harpy", "Annotation", True),
     ]
