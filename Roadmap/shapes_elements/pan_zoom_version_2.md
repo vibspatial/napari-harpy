@@ -534,8 +534,17 @@ test_annotation_layer_edit_guard_slice_one_does_not_bind_space_or_change_mouse_p
 
 ### Slice 2: Space-Pan State Machine
 
+Status: implemented.
+
 Add private state-machine helpers to `_AnnotationLayerEditGuard`, but do not
 install the Space keybinding and do not wrap draw callbacks yet.
+
+Implemented in `src/napari_harpy/widgets/shapes_annotation/widget.py` as
+internal guard helpers and covered by direct headless tests in
+`tests/test_shapes_annotation_widget.py`. The implementation includes the
+resumable draw-mode set, two release-order flags, key-hold and mouse-gesture
+begin/end helpers, restore-on-both-released logic, and disconnect cleanup.
+No user-facing Space keybinding or draw callback suppression is active yet.
 
 Suggested private helpers:
 
