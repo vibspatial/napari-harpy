@@ -1484,7 +1484,73 @@ Tests:
 - flat or nearly flat data falls back to a safe bin count with a clear status;
 - the suggestion action does not calculate or render the histogram by itself.
 
-### 13. Smooth Distribution Overlay
+### 13. Sync Viewer Color From Napari Colormap
+
+Status: [ ] Planned
+
+Goal:
+
+- keep the histogram card's Viewer color swatch aligned with the matching live
+  napari overlay layer when the user changes that layer's colormap in napari's
+  native layer controls.
+
+UX direction:
+
+- treat the napari layer colormap as the source of truth once the card target
+  has a unique matching overlay layer;
+- update the histogram card's Viewer color swatch when the matching napari
+  overlay layer colormap changes;
+- do not recalculate the histogram when only the colormap changes;
+- do not mutate histogram target/settings state when only the colormap changes;
+- keep the existing card-local color picker behavior for targets without a live
+  matching overlay layer;
+- if the user changes the card color and clicks `Load overlay`, that explicit
+  action should still update the napari layer colormap as Slice 8 defines.
+
+Scope:
+
+- support only overlay image layers with complete `ImageLayerBinding` metadata:
+  `SpatialData`, coordinate system, image name, display mode, and channel name;
+- ignore stack-mode image layers because there is no reliable per-card channel
+  color to sync;
+- reuse the existing layer-binding registry to find matching overlay layers for
+  a histogram card;
+- only sync when the match is unambiguous; if multiple matching overlay layers
+  exist, leave the card swatch unchanged and avoid guessing;
+- listen to the napari layer's `events.colormap` signal for the resolved
+  overlay layer;
+- disconnect old colormap callbacks when the card target changes, the matching
+  overlay layer changes, the card is removed, or `SpatialData` changes;
+- avoid feedback loops: programmatic swatch updates from napari should not call
+  `Load overlay` or write back to `layer.colormap`;
+- normalize the napari colormap into the same color string format accepted by
+  `OverlayColorButton`; when the colormap cannot be represented as one of our
+  simple color values, preserve the current swatch and do not fail the card.
+
+Implementation notes:
+
+- prefer a small per-card sync state, similar in spirit to contrast-sync state,
+  that stores the layer and the connected colormap callback;
+- consider a `ViewerAdapter` helper for extracting the current image-layer
+  colormap color if the logic is useful outside the histogram widget;
+- trigger sync refresh from the existing image overlay layer lifecycle signal
+  and from target changes, then rely on `layer.events.colormap` for live napari
+  UI color changes.
+
+Tests:
+
+- a card with one matching overlay layer updates its Viewer color swatch when
+  `layer.colormap` changes in napari;
+- changing a layer colormap does not call the histogram calculator and does not
+  clear the current histogram result;
+- card-local `Load overlay` still passes the selected swatch color to the
+  viewer adapter;
+- cards with no matching overlay layer keep their current/default swatch color;
+- cards with multiple matching overlay layers do not guess a color;
+- target changes and card removal disconnect the old layer colormap callback;
+- stack-mode image layers are ignored.
+
+### 14. Smooth Distribution Overlay
 
 Status: [ ] Planned
 
@@ -1537,7 +1603,7 @@ Tests:
 - disabling the display toggle hides the smooth line without recalculating the
   histogram.
 
-### 14. Product Hardening
+### 15. Product Hardening
 
 Status: [ ] Planned
 
