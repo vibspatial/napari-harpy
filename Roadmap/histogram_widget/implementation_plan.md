@@ -1424,8 +1424,8 @@ Scope:
 - do not place the action inside the collapsed `Histogram Settings` panel: it
   applies a calculated result to a synced napari layer, rather than changing the
   histogram calculation settings;
-- keep `Show histogram` as the primary/wider action and style
-  `Sync contrast limits` as the secondary/narrower action;
+- keep `Show histogram` as the wider action, but use the same button styling
+  for `Sync contrast limits` so enabled and pressed states are equally clear;
 - enable the action only when all of the following are true:
   - the card has a successful cached `HistogramResult`;
   - the cached result is current for the card target/settings;

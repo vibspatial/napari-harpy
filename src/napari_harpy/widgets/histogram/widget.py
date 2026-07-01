@@ -507,7 +507,7 @@ class HistogramWidget(QWidget):
         sync_percentiles_button = QPushButton("Sync contrast limits")
         sync_percentiles_button.setObjectName(f"histogram_sync_percentiles_button_{card_id}")
         sync_percentiles_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        sync_percentiles_button.setStyleSheet(SECONDARY_BUTTON_STYLESHEET)
+        sync_percentiles_button.setStyleSheet(CALCULATE_BUTTON_STYLESHEET)
         sync_percentiles_button.setEnabled(False)
         sync_percentiles_button.clicked.connect(
             lambda _checked=False, current_card_id=card_id: self._sync_percentiles_to_contrast_limits(current_card_id)

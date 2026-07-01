@@ -270,7 +270,7 @@ def test_histogram_cards_can_be_added_and_removed_without_mutating_sdata(qtbot, 
     assert card.load_overlay_button.text() == "Load overlay"
     assert card.calculate_button.text() == "Show histogram"
     assert card.sync_percentiles_button.text() == "Sync contrast limits"
-    assert card.sync_percentiles_button.styleSheet() == histogram_widget_module.SECONDARY_BUTTON_STYLESHEET
+    assert card.sync_percentiles_button.styleSheet() == histogram_widget_module.CALCULATE_BUTTON_STYLESHEET
     assert not card.sync_percentiles_button.isEnabled()
 
     card.remove_button.click()
