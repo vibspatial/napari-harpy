@@ -180,6 +180,10 @@ class _HistogramPlotWidget(QWidget):
         self._fit_histogram_view(bin_edges, counts, log_y=result.settings.log_y)
         self.set_percentile_markers(result.percentile_values)
 
+    def is_showing_result(self, result: HistogramResult) -> bool:
+        """Return whether this exact controller result is already rendered."""
+        return self._last_result is result
+
     def clear_histogram(self) -> None:
         """Clear plotted histogram data; card state text lives in the status card."""
         self._last_result = None

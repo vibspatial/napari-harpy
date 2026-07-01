@@ -416,6 +416,28 @@ def test_histogram_widget_reuses_current_result_and_resets_plot_on_repeated_show
     assert card.plot_widget._bar_item is first_bar_item
 
 
+def test_histogram_widget_reset_settings_does_not_refit_current_histogram(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    widget = make_widget_with_sdata(qtbot, sdata_blobs)
+    card_id, card = add_valid_histogram_card(widget)
+
+    calculate_card(widget, qtbot, card)
+
+    rendered_result = widget._histogram_controller.result_for_card(card_id)
+    assert rendered_result is not None
+    assert card.plot_widget.is_showing_result(rendered_result)
+    set_histogram_calls: list[HistogramResult] = []
+    card.plot_widget.set_histogram = set_histogram_calls.append  # type: ignore[method-assign]
+
+    qtbot.mouseClick(card.reset_settings_button, Qt.MouseButton.LeftButton)
+
+    assert set_histogram_calls == []
+    assert widget._histogram_controller.result_for_card(card_id) is rendered_result
+    assert "Histogram calculated." in card.status_label.text()
+
+
 def test_histogram_widget_refresh_preserves_valid_target_and_clears_invalid_downstream_selection(
     qtbot,
     monkeypatch,

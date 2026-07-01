@@ -955,7 +955,10 @@ class HistogramWidget(QWidget):
 
         result = self._histogram_controller.result_for_card(card_id)
         if result is not None:
-            histogram_card.plot_widget.set_histogram(result)
+            # Avoid re-rendering the same cached result on no-op UI refreshes
+            # such as Reset settings; set_histogram(...) also refits pan/zoom.
+            if not histogram_card.plot_widget.is_showing_result(result):
+                histogram_card.plot_widget.set_histogram(result)
             self._refresh_card_contrast_sync(histogram_card, result)
             return
 
