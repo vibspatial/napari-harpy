@@ -135,6 +135,14 @@ _ANNOTATION_FIELD_MIN_WIDTH = 180
 _STATUS_IDENTIFIER_MAX_LENGTH = 32
 _CREATE_SHAPES_OPTION_TEXT = "Create shapes..."
 _DEFAULT_NEW_SHAPES_NAME = "new_shapes"
+_SPACE_PAN_RESUMABLE_DRAW_MODES = frozenset(
+    {
+        Mode.ADD_POLYGON_LASSO,
+        Mode.ADD_PATH,
+        Mode.ADD_POLYGON,
+        Mode.ADD_POLYLINE,
+    }
+)
 _ShapesAnnotationTargetMode = Literal["create_new", "edit_existing"]
 _ShapesAnnotationLayerOrigin = Literal[
     "created_by_annotation",
@@ -314,7 +322,10 @@ class _AnnotationLayerEditGuard:
         self._wrapped_direct_callback: Callable[..., Any] | None = None
         self._wrapped_vertex_remove_callback: Callable[..., Any] | None = None
         self._is_syncing_anchor_drag = False
-        self._space_pan_active = False
+        # Track Space and mouse release independently so drawing resumes only
+        # after both halves of a temporary Space-pan have ended.
+        self._space_pan_key_held = False
+        self._space_pan_mouse_gesture_active = False
         self._previous_mouse_pan: bool | None = None
         self._previous_space_keybinding: object | None = None
         self._had_instance_space_keybinding = False
@@ -336,8 +347,8 @@ class _AnnotationLayerEditGuard:
             or not isinstance(move_modes, dict)
             or Mode.DIRECT not in drag_modes
             or Mode.VERTEX_REMOVE not in drag_modes
-            or Mode.ADD_POLYGON_LASSO not in drag_modes
-            or Mode.ADD_POLYGON_LASSO not in move_modes
+            or not _SPACE_PAN_RESUMABLE_DRAW_MODES.issubset(drag_modes)
+            or not _SPACE_PAN_RESUMABLE_DRAW_MODES.issubset(move_modes)
         ):
             raise ValueError("Shapes layer does not expose napari annotation edit mode hooks.")
 
@@ -386,6 +397,7 @@ class _AnnotationLayerEditGuard:
         original_move_modes = self._original_move_modes
         had_instance_drag_modes = self._had_instance_drag_modes
         had_instance_move_modes = self._had_instance_move_modes
+        previous_mouse_pan = self._previous_mouse_pan
 
         self._layer = None
         self._original_drag_modes = None
@@ -395,13 +407,18 @@ class _AnnotationLayerEditGuard:
         self._wrapped_direct_callback = None
         self._wrapped_vertex_remove_callback = None
         self._is_syncing_anchor_drag = False
-        self._space_pan_active = False
+        self._space_pan_key_held = False
+        self._space_pan_mouse_gesture_active = False
         self._previous_mouse_pan = None
         self._previous_space_keybinding = None
         self._had_instance_space_keybinding = False
 
         if layer is None:
             return
+        # If disconnect interrupts an active Space-pan, restore the layer
+        # mouse-pan setting that this guard temporarily changed.
+        if previous_mouse_pan is not None:
+            layer.mouse_pan = previous_mouse_pan
         if had_instance_drag_modes:
             if original_drag_modes is not None:
                 layer._drag_modes = original_drag_modes
@@ -415,6 +432,43 @@ class _AnnotationLayerEditGuard:
                 layer._move_modes = original_move_modes
         elif "_move_modes" in vars(layer):
             delattr(layer, "_move_modes")
+
+    def _drawing_is_suspended(self) -> bool:
+        """Return whether draw callbacks should stay paused during Space-pan.
+
+        Drawing remains suspended while either Space is still held or the
+        Space-started mouse pan gesture has not released yet. Tracking both
+        states lets either release order recover safely.
+        """
+        return self._space_pan_key_held or self._space_pan_mouse_gesture_active
+
+    def _can_space_pan_draw_mode(self, layer: Shapes) -> bool:
+        return bool(layer._is_creating and layer._mode in _SPACE_PAN_RESUMABLE_DRAW_MODES)
+
+    def _begin_space_pan_key_hold(self, layer: Shapes) -> None:
+        self._space_pan_key_held = True
+        if self._previous_mouse_pan is None:
+            self._previous_mouse_pan = layer.mouse_pan
+        layer.mouse_pan = True
+
+    def _end_space_pan_key_hold(self, layer: Shapes) -> None:
+        self._space_pan_key_held = False
+        self._restore_space_pan_if_complete(layer)
+
+    def _begin_space_pan_mouse_gesture(self) -> None:
+        self._space_pan_mouse_gesture_active = True
+
+    def _end_space_pan_mouse_gesture(self, layer: Shapes) -> None:
+        self._space_pan_mouse_gesture_active = False
+        self._restore_space_pan_if_complete(layer)
+
+    def _restore_space_pan_if_complete(self, layer: Shapes) -> None:
+        if self._space_pan_key_held or self._space_pan_mouse_gesture_active:
+            return
+        if self._previous_mouse_pan is None:
+            return
+        layer.mouse_pan = self._previous_mouse_pan
+        self._previous_mouse_pan = None
 
     def _iter_direct_drag_with_anchor_sync(
         self,
