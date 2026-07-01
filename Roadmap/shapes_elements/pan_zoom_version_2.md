@@ -157,6 +157,13 @@ The derived "lasso is suspended" state is:
 self._space_pan_key_held or self._space_pan_mouse_gesture_active
 ```
 
+Here, a Space-pan mouse gesture means the mouse button is down for a pan that
+began while the lasso was suspended by Space. It is intentionally separate from
+the Space-key state so release order is harmless: the user can release Space
+first or release the mouse first, and normal lasso input resumes only after
+both states are false. Starting that mouse gesture does not enable pan by
+itself; pan is enabled by the Space-key hold.
+
 The keybinding should behave like this:
 
 1. If the guarded layer is actively creating a polygon lasso:
@@ -477,22 +484,73 @@ test_annotation_layer_edit_guard_slice_one_does_not_bind_space_or_change_mouse_p
 - No lasso behavior changes are introduced in this slice.
 - Active mouse callback lists are unchanged in this slice.
 
-### Slice 2: Space Keybinding State
+### Slice 2: Space-Pan State Machine
+
+Add private state-machine helpers to `_AnnotationLayerEditGuard`, but do not
+install the Space keybinding and do not wrap lasso callbacks yet.
+
+Suggested private helpers:
+
+```python
+def _lasso_is_suspended(self) -> bool: ...
+def _begin_space_pan_key_hold(self, layer: Shapes) -> None: ...
+def _end_space_pan_key_hold(self, layer: Shapes) -> None: ...
+def _begin_space_pan_mouse_gesture(self) -> None: ...
+def _end_space_pan_mouse_gesture(self, layer: Shapes) -> None: ...
+def _restore_space_pan_if_complete(self, layer: Shapes) -> None: ...
+```
+
+Expected helper behavior:
+
+- `_lasso_is_suspended()` returns true when either `_space_pan_key_held` or
+  `_space_pan_mouse_gesture_active` is true;
+- `_begin_space_pan_key_hold(...)` sets `_space_pan_key_held`, captures the
+  previous `layer.mouse_pan` only once per Space-pan session, and sets
+  `layer.mouse_pan = True`;
+- `_end_space_pan_key_hold(...)` clears `_space_pan_key_held` and restores the
+  previous mouse-pan value only when no Space-pan mouse gesture is active;
+- `_begin_space_pan_mouse_gesture()` sets
+  `_space_pan_mouse_gesture_active` to record that the mouse button is now down
+  for the temporary Space-pan; it does not enable pan by itself;
+- `_end_space_pan_mouse_gesture(...)` clears `_space_pan_mouse_gesture_active`
+  and restores the previous mouse-pan value only when Space is no longer held;
+- `_restore_space_pan_if_complete(...)` is the only helper that restores
+  `layer.mouse_pan` and clears `_previous_mouse_pan`.
+
+This slice may change `layer.mouse_pan` only when helper methods are called
+directly by tests. It must not connect those helpers to real key or mouse
+events yet.
+
+Headless tests should prove:
+
+- beginning a Space-pan key hold sets `_space_pan_key_held`;
+- beginning a Space-pan key hold sets `layer.mouse_pan = True`;
+- ending a Space-pan key hold restores the previous mouse-pan value when no
+  Space-pan mouse gesture is active;
+- ending a Space-pan key hold does not restore the previous mouse-pan value
+  while a Space-pan mouse gesture is still active;
+- beginning and ending a Space-pan mouse gesture toggles
+  `_space_pan_mouse_gesture_active`;
+- if Space ends first, restoration happens only after the mouse gesture ends;
+- if the mouse gesture ends first, restoration happens only after Space ends;
+- repeated begin calls do not overwrite the captured previous mouse-pan value;
+- helper calls do not change `layer.mode`, layer data, selected rows, keymaps,
+  or active callback lists.
+
+### Slice 3: Space Keybinding State
 
 Add the guarded layer Space keybinding.
 
 Headless tests should prove:
 
-- active lasso Space press sets `_space_pan_key_held`;
-- active lasso Space press sets `layer.mouse_pan = True`;
-- Space release restores the previous mouse-pan value when no Space-pan mouse
-  gesture is active;
-- Space release does not restore the previous mouse-pan value while a Space-pan
-  mouse gesture is still active;
+- active lasso Space press calls the state-machine key-hold begin helper;
+- active lasso Space release calls the state-machine key-hold end helper;
 - active lasso Space does not change `layer.mode`;
-- non-lasso Space still behaves like normal temporary pan-zoom.
+- non-lasso Space still behaves like normal temporary pan-zoom;
+- Space keybinding capture/restoration preserves any pre-existing instance
+  Space binding.
 
-### Slice 3: Lasso Callback Suppression
+### Slice 4: Lasso Callback Suppression
 
 Wrap lasso drag and move callbacks.
 
@@ -501,13 +559,14 @@ Headless tests should prove:
 - while lasso is suspended, lasso move callback does not add vertices;
 - while lasso is suspended, lasso drag callback does not finish the active
   lasso;
-- mouse press during Space-pan sets `_space_pan_mouse_gesture_active`;
-- mouse release clears `_space_pan_mouse_gesture_active`;
+- mouse press during Space-pan calls the state-machine mouse-gesture begin
+  helper;
+- mouse release calls the state-machine mouse-gesture end helper;
 - if Space is released first, lasso callbacks resume only after mouse release;
 - if mouse is released first, lasso callbacks resume only after Space release;
 - layer data, selected rows, and current mode are preserved.
 
-### Slice 4: Widget Gating
+### Slice 5: Widget Gating
 
 If the guard needs widget context, pass a small predicate into the guard, for
 example `can_space_pan_lasso()`. It can reuse
@@ -519,7 +578,7 @@ Tests should prove the custom behavior no-ops when:
 - the binding no longer matches;
 - the layer is not the widget-owned primary Shapes layer.
 
-### Slice 5: Manual Napari QA
+### Slice 6: Manual Napari QA
 
 Manual matrix:
 
@@ -527,8 +586,9 @@ Manual matrix:
 - open an existing annotation layer;
 - adopt an active primary Shapes layer;
 - start a polygon lasso;
-- hold Space and drag the canvas;
-- release Space and continue the same lasso;
+- hold Space, press the mouse, and drag the canvas;
+- release Space and mouse in both possible orders;
+- continue the same lasso after both are released;
 - finish and save the annotation;
 - inspect geometry for unwanted long segments;
 - repeat after selecting a non-annotation layer;
