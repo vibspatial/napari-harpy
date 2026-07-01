@@ -34,7 +34,7 @@ _LOG_MAX_DECADE_LABELS = 6
 # Match napari's float32 contrast safety margin: keep at least 256 distinguishable intensity steps.
 _CONTRAST_MINIMUM_SHADES = 256
 _CONTRAST_LINE_WIDTH = 2
-_CONTRAST_HOVER_LINE_WIDTH = 6
+_CONTRAST_HOVER_LINE_WIDTH = 10
 
 
 class _ScientificYAxisItem(pg.AxisItem):

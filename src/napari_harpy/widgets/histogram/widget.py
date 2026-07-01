@@ -91,7 +91,7 @@ _CARD_SUBCONTAINER_STYLESHEET = "QWidget { background: transparent; }"
 _SETTINGS_PANEL_STYLESHEET = "QWidget { background: transparent; }"
 _SETTINGS_TOGGLE_STYLESHEET = (
     "QToolButton {"
-    f"background-color: {WIDGET_PANEL_SUBTLE_COLOR}; "
+    f"background-color: {WIDGET_PANEL_COLOR}; "
     f"border: 1px solid {WIDGET_BORDER_COLOR}; "
     "border-radius: 8px; "
     f"color: {WIDGET_TEXT_COLOR}; "
@@ -790,7 +790,7 @@ class HistogramWidget(QWidget):
         return -1
 
     def _refresh_settings_summary(self, histogram_card: _HistogramCard) -> None:
-        histogram_card.settings_toggle.setText("Settings")
+        histogram_card.settings_toggle.setText("Histogram Settings")
         histogram_card.settings_toggle.setToolTip(
             format_tooltip("\n".join(self._settings_tooltip_lines(histogram_card)))
         )

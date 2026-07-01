@@ -380,7 +380,7 @@ def test_histogram_widget_settings_are_collapsed_optional_and_card_local(
     _second_id, second_card = add_valid_histogram_card(widget)
 
     assert first_card.settings_panel.isHidden()
-    assert first_card.settings_toggle.text() == "Settings"
+    assert first_card.settings_toggle.text() == "Histogram Settings"
     assert "scale: scale0" in tooltip_text(first_card.settings_toggle)
     assert "bins: 256" in tooltip_text(first_card.settings_toggle)
 
@@ -407,7 +407,7 @@ def test_histogram_widget_settings_are_collapsed_optional_and_card_local(
     assert second_settings.value_range is None
     assert second_settings.percentiles == ()
     first_settings_tooltip = tooltip_text(first_card.settings_toggle)
-    assert first_card.settings_toggle.text() == "Settings"
+    assert first_card.settings_toggle.text() == "Histogram Settings"
     assert "value_range: (0.1, 0.9)" in first_settings_tooltip
     assert "density: True" in first_settings_tooltip
     assert "exclude_zeros: True" in first_settings_tooltip
@@ -441,6 +441,7 @@ def test_histogram_widget_settings_panel_stays_compact_at_dock_width(qtbot, sdat
 
     assert card.settings_toggle.icon().cacheKey() != closed_icon_key
     assert "QToolButton:checked" in card.settings_toggle.styleSheet()
+    assert f"background-color: {histogram_widget_module.WIDGET_PANEL_COLOR}" in card.settings_toggle.styleSheet()
     assert "min-height: 26px" in card.settings_toggle.styleSheet()
     assert "padding: 3px 10px" in card.settings_toggle.styleSheet()
     assert "font-size: 13px" in card.settings_toggle.styleSheet()
