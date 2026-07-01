@@ -140,15 +140,35 @@ use `layer.bind_key("Space", ...)` or napari's keybinding coercion utilities
 when capturing/restoring Space. Direct `layer.keymap["Space"]` lookup will not
 find an existing Space binding.
 
+The keybinding should track Space-key state separately from mouse-gesture state.
+Do not model the workflow with only one boolean.
+
+Suggested state fields:
+
+```python
+self._space_pan_key_held = False
+self._space_pan_mouse_gesture_active = False
+self._previous_mouse_pan: bool | None = None
+```
+
+The derived "lasso is suspended" state is:
+
+```python
+self._space_pan_key_held or self._space_pan_mouse_gesture_active
+```
+
 The keybinding should behave like this:
 
 1. If the guarded layer is actively creating a polygon lasso:
-   - mark `space_pan_active = True`;
+   - mark `_space_pan_key_held = True`;
    - remember the previous `layer.mouse_pan` value;
    - set `layer.mouse_pan = True`;
    - yield until Space release;
-   - restore the previous `layer.mouse_pan`;
-   - mark `space_pan_active = False`.
+   - mark `_space_pan_key_held = False`;
+   - if `_space_pan_mouse_gesture_active` is false, restore the previous
+     `layer.mouse_pan` and fully resume lasso callbacks;
+   - if `_space_pan_mouse_gesture_active` is true, keep lasso callbacks
+     suspended and keep pan enabled until that mouse gesture releases.
 2. Otherwise, delegate to napari-equivalent Space behavior:
    - store the current mode;
    - switch to `PAN_ZOOM`;
@@ -173,15 +193,23 @@ Wrap:
 - `_drag_modes[Mode.ADD_POLYGON_LASSO]`;
 - `_move_modes[Mode.ADD_POLYGON_LASSO]`.
 
-When `space_pan_active` is true and the layer is actively creating a lasso:
+When lasso is suspended and the layer is actively creating a lasso:
 
 - the lasso move callback should no-op, so pointer movement during Space-pan
   does not add lasso vertices;
-- the lasso drag callback should no-op on mouse press, so dragging the canvas
-  while Space is held does not finish the lasso.
+- the lasso drag callback should no-op on mouse press, so pressing the mouse
+  while Space is held does not finish the lasso;
+- the lasso drag callback should mark `_space_pan_mouse_gesture_active = True`
+  when it suppresses a mouse press during Space-pan;
+- the lasso drag callback should clear `_space_pan_mouse_gesture_active` on the
+  matching mouse release.
 
-When `space_pan_active` is false, both wrappers should delegate to napari's
-original callbacks.
+When `_space_pan_mouse_gesture_active` becomes false after mouse release, the
+guard should fully resume lasso callbacks only if `_space_pan_key_held` is also
+false. If Space is still held, keep lasso suspended.
+
+When lasso is not suspended, both wrappers should delegate to napari's original
+callbacks.
 
 If the annotation layer is already in lasso mode when the guard attaches, the
 implementation may also need to update `layer.mouse_drag_callbacks` and
@@ -213,6 +241,38 @@ It should not:
 - affect styled Shapes layers or non-annotation Shapes layers;
 - change behavior for other layers in the viewer.
 
+### Release-Order Contract
+
+The implementation must recover cleanly from both possible release orders after
+the user starts a mouse pan while holding Space.
+
+Case A: Space release happens before mouse release.
+
+1. User starts a lasso.
+2. User holds Space.
+3. User presses the mouse and drags to pan.
+4. User releases Space while the mouse is still down.
+5. The guard keeps lasso callbacks suspended and keeps pan enabled.
+6. User releases the mouse.
+7. The guard clears `_space_pan_mouse_gesture_active`, restores the previous
+   mouse-pan value, and resumes normal lasso callbacks.
+
+Case B: mouse release happens before Space release.
+
+1. User starts a lasso.
+2. User holds Space.
+3. User presses the mouse and drags to pan.
+4. User releases the mouse while Space is still down.
+5. The guard clears `_space_pan_mouse_gesture_active` but keeps lasso callbacks
+   suspended because `_space_pan_key_held` is still true.
+6. User releases Space.
+7. The guard restores the previous mouse-pan value and resumes normal lasso
+   callbacks.
+
+In both cases the active lasso must remain unfinished, `layer.mode` must remain
+`Mode.ADD_POLYGON_LASSO`, and the next normal mouse move after recovery should
+continue the same lasso.
+
 ## Expected UX
 
 Target workflow:
@@ -221,9 +281,10 @@ Target workflow:
 2. User selects napari's polygon lasso tool.
 3. User clicks to start a lasso.
 4. User holds Space.
-5. User drags the canvas to pan.
-6. User releases Space.
-7. User continues the same lasso and finishes it normally.
+5. User presses the mouse and drags the canvas to pan.
+6. User releases Space and mouse in either order.
+7. Once both are released, the user continues the same lasso and finishes it
+   normally.
 
 Mouse-wheel zoom should continue to be left to napari unless testing shows a
 separate issue.
@@ -238,11 +299,12 @@ pre-pan coordinate to the new post-pan coordinate. That can create a long edge
 after large pans. Small pans should be much less risky, but manual QA is needed.
 
 The harder case is tablet-style lasso drawing where the mouse button is already
-held down when Space is pressed. A first implementation can focus on the common
-mouse-draw workflow: click to start, move without holding the mouse button,
-hold Space and drag to pan, release Space, then continue drawing. Supporting
-mid-drag pause perfectly may require wrapping an already-running lasso drag
-generator and deciding how release events should behave while paused.
+held down before Space is pressed. A first implementation can focus on the
+common mouse-draw workflow: click to start, move without holding the mouse
+button, hold Space, press the mouse to pan, release Space and mouse in either
+order, then continue drawing. Supporting pause after an already-running lasso
+drag generator has started may require additional handling and can remain
+outside the first Space-pan behavior slice.
 
 ## Suggested Implementation Slices
 
@@ -287,7 +349,8 @@ self._had_instance_move_modes = False
 Add fields reserved for the Space-pan lifecycle:
 
 ```python
-self._space_pan_active = False
+self._space_pan_key_held = False
+self._space_pan_mouse_gesture_active = False
 self._previous_mouse_pan: bool | None = None
 self._previous_space_keybinding: Callable[..., Any] | object | None = None
 self._had_instance_space_keybinding = False
@@ -336,7 +399,8 @@ On disconnect:
 - clear the tracked layer reference;
 - clear original mapping references;
 - clear wrapped direct and vertex-remove callback references;
-- reset `_space_pan_active` to `False`;
+- reset `_space_pan_key_held` to `False`;
+- reset `_space_pan_mouse_gesture_active` to `False`;
 - reset `_previous_mouse_pan` to `None`;
 - reset previous Space keybinding bookkeeping;
 - restore `_drag_modes` exactly as today;
@@ -419,9 +483,12 @@ Add the guarded layer Space keybinding.
 
 Headless tests should prove:
 
-- active lasso Space press sets `space_pan_active`;
+- active lasso Space press sets `_space_pan_key_held`;
 - active lasso Space press sets `layer.mouse_pan = True`;
-- Space release restores the previous mouse-pan value;
+- Space release restores the previous mouse-pan value when no Space-pan mouse
+  gesture is active;
+- Space release does not restore the previous mouse-pan value while a Space-pan
+  mouse gesture is still active;
 - active lasso Space does not change `layer.mode`;
 - non-lasso Space still behaves like normal temporary pan-zoom.
 
@@ -431,10 +498,13 @@ Wrap lasso drag and move callbacks.
 
 Headless tests should prove:
 
-- while `space_pan_active` is true, lasso move callback does not add vertices;
-- while `space_pan_active` is true, lasso drag callback does not finish the
-  active lasso;
-- after Space release, original lasso callbacks resume;
+- while lasso is suspended, lasso move callback does not add vertices;
+- while lasso is suspended, lasso drag callback does not finish the active
+  lasso;
+- mouse press during Space-pan sets `_space_pan_mouse_gesture_active`;
+- mouse release clears `_space_pan_mouse_gesture_active`;
+- if Space is released first, lasso callbacks resume only after mouse release;
+- if mouse is released first, lasso callbacks resume only after Space release;
 - layer data, selected rows, and current mode are preserved.
 
 ### Slice 4: Widget Gating
