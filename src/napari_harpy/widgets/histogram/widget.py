@@ -87,7 +87,6 @@ _CARD_STYLESHEET = (
     f"border: 1px solid {WIDGET_BORDER_COLOR}; "
     "border-radius: 8px;}"
 )
-_CARD_TITLE_STYLESHEET = f"color: {WIDGET_TEXT_COLOR}; font-weight: 700; font-size: 13px; background: transparent;"
 _CARD_SUBCONTAINER_STYLESHEET = "QWidget { background: transparent; }"
 _SETTINGS_PANEL_STYLESHEET = "QWidget { background: transparent; }"
 _SETTINGS_TOGGLE_STYLESHEET = (
@@ -137,7 +136,6 @@ class _HistogramContrastSyncState:
 class _HistogramCard:
     card_id: str
     container: QFrame
-    title_label: QLabel
     coordinate_system_combo: CompactComboBox
     image_combo: CompactComboBox
     channel_combo: CompactComboBox
@@ -319,11 +317,6 @@ class HistogramWidget(QWidget):
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(8)
 
-        title_label = QLabel("Histogram")
-        title_label.setObjectName(f"histogram_card_title_{card_id}")
-        title_label.setStyleSheet(_CARD_TITLE_STYLESHEET)
-        header_layout.addWidget(title_label, 1)
-
         remove_button = QToolButton()
         remove_button.setObjectName(f"histogram_remove_button_{card_id}")
         remove_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
@@ -334,10 +327,12 @@ class HistogramWidget(QWidget):
         remove_button.clicked.connect(
             lambda _checked=False, current_card_id=card_id: self.remove_histogram_card(current_card_id)
         )
+        header_layout.addStretch(1)
         header_layout.addWidget(remove_button)
 
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         form.setHorizontalSpacing(12)
         form.setVerticalSpacing(8)
 
@@ -529,7 +524,6 @@ class HistogramWidget(QWidget):
         histogram_card = _HistogramCard(
             card_id=card_id,
             container=container,
-            title_label=title_label,
             coordinate_system_combo=coordinate_system_combo,
             image_combo=image_combo,
             channel_combo=channel_combo,

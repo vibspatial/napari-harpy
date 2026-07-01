@@ -215,6 +215,7 @@ def test_histogram_cards_can_be_added_and_removed_without_mutating_sdata(qtbot, 
 
     assert widget.card_count == 1
     assert widget.empty_state_label.isHidden()
+    assert widget.findChild(QLabel, f"histogram_card_title_{card_id}") is None
     assert "Remove histogram" in tooltip_text(card.remove_button)
     assert card.remove_button.accessibleName() == "Remove histogram"
     assert widget.findChild(QWidget, f"histogram_card_header_{card_id}").styleSheet() == (
