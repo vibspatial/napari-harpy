@@ -142,11 +142,11 @@ def make_job_result(job: HistogramJob) -> HistogramJobResult:
     )
 
 
-def calculate_card(widget: HistogramWidget, qtbot, card) -> None:
+def calculate_card(widget: HistogramWidget, qtbot, card, result_factory=make_job_result) -> None:
     deferred_workers: list[_DeferredWorker] = []
 
     def capture_worker(job: HistogramJob) -> _DeferredWorker:
-        worker = _DeferredWorker(make_job_result(job))
+        worker = _DeferredWorker(result_factory(job))
         deferred_workers.append(worker)
         return worker
 
@@ -519,6 +519,40 @@ def test_histogram_widget_syncs_contrast_limits_with_unique_overlay_layer(qtbot,
 
     layer.contrast_limits = (0.3, 0.6)
     np.testing.assert_allclose(card.plot_widget._contrast_region.getRegion(), (0.3, 0.6))
+
+
+def test_histogram_widget_clamps_collapsed_histogram_contrast_handles(qtbot, sdata_blobs: SpatialData) -> None:
+    layer = make_overlay_layer(contrast_limits=(15_000.0, 16_000.0))
+    viewer = LayerListDummyViewer([layer])
+    widget = make_widget_with_viewer_and_sdata(qtbot, viewer, sdata_blobs)
+    register_overlay_layer(widget, layer, sdata_blobs)
+    _card_id, card = add_valid_histogram_card(widget)
+
+    def high_intensity_result(job: HistogramJob) -> HistogramJobResult:
+        return HistogramJobResult(
+            card_id=job.card_id,
+            job_id=job.job_id,
+            target=job.target,
+            settings=job.settings,
+            result=HistogramResult(
+                target=job.target,
+                settings=job.settings,
+                counts=np.array([2, 1]),
+                bin_edges=np.array([15_000.0, 15_500.0, 16_000.0]),
+                data_range=(15_000.0, 16_000.0),
+                percentile_values={},
+                resolved_scale=job.settings.scale,
+            ),
+        )
+
+    calculate_card(widget, qtbot, card, result_factory=high_intensity_result)
+
+    assert card.plot_widget._contrast_region is not None
+    card.plot_widget._contrast_region.setRegion((16_000.0, 16_000.0))
+
+    low, high = layer.contrast_limits
+    assert high - low >= 1.0
+    np.testing.assert_allclose(card.plot_widget._contrast_region.getRegion(), (low, high))
 
 
 def test_histogram_widget_disables_contrast_sync_for_duplicate_overlay_layers(

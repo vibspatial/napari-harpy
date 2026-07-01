@@ -31,6 +31,8 @@ _LOG_Y_SINGLE_DECADE_PADDING = 0.5
 _LOG_LABEL_MANTISSAS = (1, 2, 5)
 _LOG_MINOR_MANTISSAS = tuple(range(1, 10))
 _LOG_MAX_DECADE_LABELS = 6
+# Match napari's float32 contrast safety margin: keep at least 256 distinguishable intensity steps.
+_CONTRAST_MINIMUM_SHADES = 256
 
 
 class _ScientificYAxisItem(pg.AxisItem):
@@ -71,7 +73,7 @@ class _HistogramPlotWidget(QWidget):
     # 1. _ensure_contrast_region creates the pyqtgraph LinearRegionItem and connects
     #    LinearRegionItem.sigRegionChanged to _on_contrast_region_changed.
     # 2. _on_contrast_region_changed reads the current low/high x-axis positions via
-    #    LinearRegionItem.getRegion(), normalizes them, then emits this signal.
+    #    LinearRegionItem.getRegion(), clamps collapsed handles apart, then emits this signal.
     # 3. HistogramWidget connects this signal with the owning card id and updates
     #    the matching napari Image layer.contrast_limits.
     contrast_limits_dragged = Signal(float, float)
@@ -111,6 +113,7 @@ class _HistogramPlotWidget(QWidget):
         self._contrast_region: pg.LinearRegionItem | None = None
         self._updating_contrast_region = False
         self._last_result: HistogramResult | None = None
+        self._last_contrast_limits: tuple[float, float] | None = None
 
     def set_histogram(self, result: HistogramResult) -> None:
         """Render histogram bars from a calculated histogram result."""
@@ -147,6 +150,7 @@ class _HistogramPlotWidget(QWidget):
     def clear_histogram(self) -> None:
         """Clear plotted histogram data; card state text lives in the status card."""
         self._last_result = None
+        self._last_contrast_limits = None
         self._clear_bar_item()
         self.set_contrast_limits(None)
         self.set_log_y(False)
@@ -160,18 +164,21 @@ class _HistogramPlotWidget(QWidget):
 
     def set_contrast_limits(self, limits: tuple[float, float] | None) -> None:
         """Set or clear the draggable contrast-limit region."""
-        normalized_limits = _normalize_contrast_limits(limits)
+        normalized_limits = _ordered_finite_contrast_limits(limits)
         if normalized_limits is None:
             if limits is None:
+                self._last_contrast_limits = None
                 self._clear_contrast_region()
             return
 
+        normalized_limits = self._with_minimum_contrast_width(normalized_limits)
         region = self._ensure_contrast_region(normalized_limits)
         self._updating_contrast_region = True
         try:
             region.setRegion(normalized_limits)
         finally:
             self._updating_contrast_region = False
+        self._last_contrast_limits = normalized_limits
 
     def set_percentile_markers(self, markers: Mapping[float, float]) -> None:
         """Reserve a stable API hook for the percentile guide-line slice."""
@@ -190,6 +197,7 @@ class _HistogramPlotWidget(QWidget):
             pen=pen,
             hoverPen=pen,
             movable=True,
+            swapMode="block",
         )
         self._contrast_region.setZValue(10)
         self._contrast_region.sigRegionChanged.connect(self._on_contrast_region_changed)
@@ -211,11 +219,43 @@ class _HistogramPlotWidget(QWidget):
         if self._updating_contrast_region or self._contrast_region is None:
             return
 
-        limits = _normalize_contrast_limits(tuple(float(value) for value in self._contrast_region.getRegion()))
-        if limits is None:
+        raw_limits = _ordered_finite_contrast_limits(tuple(float(value) for value in self._contrast_region.getRegion()))
+        if raw_limits is None:
             return
 
+        limits = self._with_minimum_contrast_width(raw_limits)
+        if limits != raw_limits:
+            self._updating_contrast_region = True
+            try:
+                self._contrast_region.setRegion(limits)
+            finally:
+                self._updating_contrast_region = False
+
+        self._last_contrast_limits = limits
         self.contrast_limits_dragged.emit(*limits)
+
+    def _with_minimum_contrast_width(self, limits: tuple[float, float]) -> tuple[float, float]:
+        low, high = limits
+        min_width = self._minimum_contrast_width(limits)
+        if high - low >= min_width:
+            return limits
+
+        previous_limits = self._last_contrast_limits
+        if previous_limits is not None:
+            low_delta = abs(low - previous_limits[0])
+            high_delta = abs(high - previous_limits[1])
+            if low_delta > high_delta:
+                return high - min_width, high
+            return low, low + min_width
+
+        center = (low + high) / 2
+        half_width = min_width / 2
+        return center - half_width, center + half_width
+
+    def _minimum_contrast_width(self, limits: tuple[float, float]) -> float:
+        display_step = _display_step_for_span(_histogram_x_span(self._last_result) or _fallback_span(limits))
+        precision_width = _float32_precision_width(limits)
+        return max(display_step, precision_width)
 
     def _clear_bar_item(self) -> None:
         if self._bar_item is None:
@@ -254,7 +294,7 @@ def _qcolor(color: str, alpha: int | None = None) -> QColor:
     return qcolor
 
 
-def _normalize_contrast_limits(limits: tuple[float, float] | None) -> tuple[float, float] | None:
+def _ordered_finite_contrast_limits(limits: tuple[float, float] | None) -> tuple[float, float] | None:
     if limits is None:
         return None
 
@@ -262,11 +302,45 @@ def _normalize_contrast_limits(limits: tuple[float, float] | None) -> tuple[floa
     if not np.isfinite(low) or not np.isfinite(high):
         return None
 
-    low, high = sorted((low, high))
-    if low == high:
+    return tuple(sorted((low, high)))
+
+
+def _histogram_x_span(result: HistogramResult | None) -> float | None:
+    if result is None:
         return None
 
-    return low, high
+    bin_edges = np.asarray(result.bin_edges, dtype=float)
+    if bin_edges.ndim != 1 or bin_edges.size < 2:
+        return None
+
+    first, last = float(bin_edges[0]), float(bin_edges[-1])
+    if not np.isfinite(first) or not np.isfinite(last):
+        return None
+
+    span = abs(last - first)
+    return span if span > 0 else None
+
+
+def _fallback_span(limits: tuple[float, float]) -> float:
+    low, high = limits
+    return max(abs(high - low), abs(low), abs(high), 1.0)
+
+
+def _display_step_for_span(span: float) -> float:
+    if not np.isfinite(span) or span <= 0:
+        return 0.001
+
+    decimals = min(64, max(int(3 - np.log10(span)), 0))
+    return float(10**-decimals)
+
+
+def _float32_precision_width(limits: tuple[float, float]) -> float:
+    low, high = limits
+    # float32 spacing grows with value magnitude, so high-intensity ranges need
+    # a wider minimum span than ranges near zero.
+    low_spacing = abs(float(np.spacing(np.float32(low))))
+    high_spacing = abs(float(np.spacing(np.float32(high))))
+    return max(low_spacing, high_spacing) * _CONTRAST_MINIMUM_SHADES
 
 
 def _create_bar_item(
