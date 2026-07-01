@@ -525,6 +525,10 @@ def test_histogram_widget_syncs_contrast_limits_with_unique_overlay_layer(qtbot,
     assert card.plot_widget._contrast_region is not None
     np.testing.assert_allclose(card.plot_widget._contrast_region.getRegion(), (0.1, 0.8))
     assert all(line.movable for line in card.plot_widget._contrast_region.lines)
+    assert all(
+        line.hoverPen.width() > line.pen.width() and line.cursor().shape() == Qt.CursorShape.SizeHorCursor
+        for line in card.plot_widget._contrast_region.lines
+    )
     drag_event = DummyMouseDragEvent()
     card.plot_widget._contrast_region.mouseDragEvent(drag_event)
     assert drag_event.accepted

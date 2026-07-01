@@ -4,7 +4,7 @@ from collections.abc import Mapping
 
 import numpy as np
 import pyqtgraph as pg
-from qtpy.QtCore import Signal
+from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import QGridLayout, QSizePolicy, QWidget
 
@@ -33,6 +33,8 @@ _LOG_MINOR_MANTISSAS = tuple(range(1, 10))
 _LOG_MAX_DECADE_LABELS = 6
 # Match napari's float32 contrast safety margin: keep at least 256 distinguishable intensity steps.
 _CONTRAST_MINIMUM_SHADES = 256
+_CONTRAST_LINE_WIDTH = 2
+_CONTRAST_HOVER_LINE_WIDTH = 6
 
 
 class _ScientificYAxisItem(pg.AxisItem):
@@ -197,17 +199,20 @@ class _HistogramPlotWidget(QWidget):
         if self._contrast_region is not None:
             return self._contrast_region
 
-        pen = pg.mkPen(HISTOGRAM_CONTRAST_LINE_COLOR, width=2)
+        pen = pg.mkPen(HISTOGRAM_CONTRAST_LINE_COLOR, width=_CONTRAST_LINE_WIDTH)
+        hover_pen = pg.mkPen(HISTOGRAM_CONTRAST_LINE_COLOR, width=_CONTRAST_HOVER_LINE_WIDTH)
         brush = pg.mkBrush(_qcolor(HISTOGRAM_CONTRAST_LINE_COLOR, HISTOGRAM_CONTRAST_REGION_ALPHA))
         self._contrast_region = _BoundaryOnlyLinearRegionItem(
             values=limits,
             orientation="vertical",
             brush=brush,
             pen=pen,
-            hoverPen=pen,
+            hoverPen=hover_pen,
             movable=True,
             swapMode="block",
         )
+        for line in self._contrast_region.lines:
+            line.setCursor(Qt.CursorShape.SizeHorCursor)
         self._contrast_region.setZValue(10)
         self._contrast_region.sigRegionChanged.connect(self._on_contrast_region_changed)
         self._plot_item.addItem(self._contrast_region)
