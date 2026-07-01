@@ -1409,7 +1409,7 @@ Tests:
 
 ### 10. Explicit Percentile-To-Contrast Action
 
-Status: [ ] Planned
+Status: [x] Implemented
 
 Goal:
 
@@ -1418,14 +1418,14 @@ Goal:
 
 Scope:
 
-- add an explicit `Sync percentiles` action to each histogram card;
+- add an explicit `Sync contrast limits` action to each histogram card;
 - place the action in the existing card action row, next to `Show histogram`
   and above the plot;
 - do not place the action inside the collapsed `Histogram Settings` panel: it
   applies a calculated result to a synced napari layer, rather than changing the
   histogram calculation settings;
 - keep `Show histogram` as the primary/wider action and style
-  `Sync percentiles` as the secondary/narrower action;
+  `Sync contrast limits` as the secondary/narrower action;
 - enable the action only when all of the following are true:
   - the card has a successful cached `HistogramResult`;
   - the cached result is current for the card target/settings;
@@ -1436,9 +1436,9 @@ Scope:
 - disable the action with a tooltip/status reason when any required condition is
   missing, for example missing percentile values, stale result, no overlay layer,
   duplicate matching overlay layers, or invalid percentile ordering;
-- clicking `Sync percentiles` must not recalculate the histogram;
-- clicking `Sync percentiles` sets `layer.contrast_limits` once to the computed
-  percentile values;
+- clicking `Sync contrast limits` must not recalculate the histogram;
+- clicking `Sync contrast limits` sets `layer.contrast_limits` once to the
+  computed percentile values;
 - rely on the existing napari `layer.events.contrast_limits` path to move the
   green histogram contrast region after assignment;
 - keep ongoing two-way contrast sync after the assignment;

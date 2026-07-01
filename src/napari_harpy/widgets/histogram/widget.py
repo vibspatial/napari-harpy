@@ -142,6 +142,7 @@ class _HistogramCard:
     overlay_color_button: OverlayColorButton
     load_overlay_button: QPushButton
     calculate_button: QPushButton
+    sync_percentiles_button: QPushButton
     remove_button: QToolButton
     plot_widget: _HistogramPlotWidget
     status_label: QLabel
@@ -501,7 +502,17 @@ class HistogramWidget(QWidget):
         calculate_button.clicked.connect(
             lambda _checked=False, current_card_id=card_id: self._calculate_histogram(current_card_id)
         )
-        action_layout.addWidget(calculate_button, 1)
+        action_layout.addWidget(calculate_button, 2)
+
+        sync_percentiles_button = QPushButton("Sync contrast limits")
+        sync_percentiles_button.setObjectName(f"histogram_sync_percentiles_button_{card_id}")
+        sync_percentiles_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        sync_percentiles_button.setStyleSheet(SECONDARY_BUTTON_STYLESHEET)
+        sync_percentiles_button.setEnabled(False)
+        sync_percentiles_button.clicked.connect(
+            lambda _checked=False, current_card_id=card_id: self._sync_percentiles_to_contrast_limits(current_card_id)
+        )
+        action_layout.addWidget(sync_percentiles_button, 1)
 
         status_label = QLabel()
         status_label.setObjectName(f"histogram_status_label_{card_id}")
@@ -530,6 +541,7 @@ class HistogramWidget(QWidget):
             overlay_color_button=overlay_color_button,
             load_overlay_button=load_overlay_button,
             calculate_button=calculate_button,
+            sync_percentiles_button=sync_percentiles_button,
             remove_button=remove_button,
             plot_widget=plot_widget,
             status_label=status_label,
@@ -892,6 +904,7 @@ class HistogramWidget(QWidget):
         histogram_card.overlay_color_button.setEnabled(can_load_overlay)
         histogram_card.load_overlay_button.setEnabled(can_load_overlay)
         histogram_card.calculate_button.setEnabled(self._histogram_controller.can_calculate(card_id))
+        self._refresh_sync_percentiles_button(histogram_card)
         message = self._histogram_controller.status_message(card_id)
         kind = self._histogram_controller.status_kind(card_id)
         if self._histogram_controller.is_running(card_id):
@@ -1068,6 +1081,69 @@ class HistogramWidget(QWidget):
         # direct refresh as a local reconciliation step in case the layer adjusts the
         # accepted limits.
         self._apply_layer_contrast_limits_to_plot(card_id)
+
+    def _refresh_sync_percentiles_button(self, histogram_card: _HistogramCard) -> None:
+        limits, reason = self._resolve_percentile_sync_limits(histogram_card)
+        can_sync = limits is not None
+        histogram_card.sync_percentiles_button.setEnabled(can_sync)
+        if can_sync:
+            histogram_card.sync_percentiles_button.setToolTip(
+                format_tooltip("Synchronize contrast limits to calculated percentile values.")
+            )
+            return
+
+        histogram_card.sync_percentiles_button.setToolTip(format_tooltip(reason or "Percentiles cannot be synced."))
+
+    def _sync_percentiles_to_contrast_limits(self, card_id: str) -> None:
+        histogram_card = self._get_card(card_id)
+        limits, _reason = self._resolve_percentile_sync_limits(histogram_card)
+        state = histogram_card.contrast_sync_state
+        if limits is None or state is None:
+            self._refresh_sync_percentiles_button(histogram_card)
+            return
+
+        state.layer.contrast_limits = limits
+        # Setting layer.contrast_limits should emit the layer event that drives
+        # _apply_layer_contrast_limits_to_plot(card_id). Keep the direct refresh
+        # as local reconciliation in case napari clamps or normalizes the
+        # accepted layer contrast limits.
+        self._apply_layer_contrast_limits_to_plot(card_id)
+        self._update_card_status(card_id)
+
+    def _resolve_percentile_sync_limits(
+        self,
+        histogram_card: _HistogramCard,
+    ) -> tuple[tuple[float, float] | None, str | None]:
+        percentile_min_text = histogram_card.percentile_min_edit.text().strip()
+        percentile_max_text = histogram_card.percentile_max_edit.text().strip()
+        if not percentile_min_text or not percentile_max_text:
+            return None, "Enter both Percentile min and Percentile max, then show the histogram."
+
+        try:
+            percentile_min = self._parse_float(percentile_min_text, field_name="percentile min")
+            percentile_max = self._parse_float(percentile_max_text, field_name="percentile max")
+        except ValueError as error:
+            return None, str(error)
+
+        if percentile_min >= percentile_max:
+            return None, "Percentile min must be lower than Percentile max."
+
+        result = self._histogram_controller.result_for_card(histogram_card.card_id)
+        if result is None:
+            return None, "Show the histogram after entering percentile values."
+
+        if percentile_min not in result.percentile_values or percentile_max not in result.percentile_values:
+            return None, "Show the histogram again to calculate both percentile values."
+
+        low = float(result.percentile_values[percentile_min])
+        high = float(result.percentile_values[percentile_max])
+        if not math.isfinite(low) or not math.isfinite(high) or low >= high:
+            return None, "Calculated percentile contrast limits are invalid."
+
+        if histogram_card.contrast_sync_state is None:
+            return None, histogram_card.contrast_sync_message or "Open this image in overlay mode before syncing."
+
+        return (low, high), None
 
     def _resolve_card_target(self, histogram_card: _HistogramCard) -> tuple[HistogramTarget | None, str | None]:
         if self.selected_spatialdata is None:

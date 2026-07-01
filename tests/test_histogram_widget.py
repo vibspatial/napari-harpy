@@ -154,6 +154,28 @@ def make_job_result(job: HistogramJob) -> HistogramJobResult:
     )
 
 
+def make_percentile_job_result(
+    job: HistogramJob,
+    *,
+    percentile_values: dict[float, float] | None = None,
+) -> HistogramJobResult:
+    return HistogramJobResult(
+        card_id=job.card_id,
+        job_id=job.job_id,
+        target=job.target,
+        settings=job.settings,
+        result=HistogramResult(
+            target=job.target,
+            settings=job.settings,
+            counts=np.array([2, 1]),
+            bin_edges=np.array([0.0, 0.5, 1.0]),
+            data_range=(0.0, 1.0),
+            percentile_values={10.0: 0.2, 90.0: 0.7} if percentile_values is None else percentile_values,
+            resolved_scale=job.settings.scale,
+        ),
+    )
+
+
 def calculate_card(widget: HistogramWidget, qtbot, card, result_factory=make_job_result) -> None:
     deferred_workers: list[_DeferredWorker] = []
 
@@ -239,11 +261,17 @@ def test_histogram_cards_can_be_added_and_removed_without_mutating_sdata(qtbot, 
     assert widget.findChild(QWidget, f"histogram_action_row_{card_id}").styleSheet() == (
         histogram_widget_module._CARD_SUBCONTAINER_STYLESHEET
     )
+    card_action_row = widget.findChild(QWidget, f"histogram_action_row_{card_id}")
+    assert card_action_row.layout().itemAt(0).widget() is card.calculate_button
+    assert card_action_row.layout().itemAt(1).widget() is card.sync_percentiles_button
     assert widget.findChild(QWidget, f"histogram_viewer_controls_{card_id}").styleSheet() == (
         histogram_widget_module._CARD_SUBCONTAINER_STYLESHEET
     )
     assert card.load_overlay_button.text() == "Load overlay"
     assert card.calculate_button.text() == "Show histogram"
+    assert card.sync_percentiles_button.text() == "Sync contrast limits"
+    assert card.sync_percentiles_button.styleSheet() == histogram_widget_module.SECONDARY_BUTTON_STYLESHEET
+    assert not card.sync_percentiles_button.isEnabled()
 
     card.remove_button.click()
 
@@ -275,6 +303,7 @@ def test_histogram_widget_populates_target_selectors_and_starts_controller_job(
     assert combo_texts(card.channel_combo) == ["0", "1", "2"]
     assert card.calculate_button.isEnabled()
     assert card.calculate_button.styleSheet() == histogram_widget_module.CALCULATE_BUTTON_STYLESHEET
+    assert not card.sync_percentiles_button.isEnabled()
 
     qtbot.mouseClick(card.calculate_button, Qt.MouseButton.LeftButton)
 
@@ -578,6 +607,75 @@ def test_histogram_widget_syncs_contrast_limits_with_unique_overlay_layer(qtbot,
 
     layer.contrast_limits = (0.3, 0.6)
     np.testing.assert_allclose(card.plot_widget._contrast_region.getRegion(), (0.3, 0.6))
+
+
+def test_histogram_widget_syncs_percentiles_to_contrast_limits_without_recalculating(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    layer = make_overlay_layer(contrast_limits=(0.1, 0.8))
+    viewer = LayerListDummyViewer([layer])
+    widget = make_widget_with_viewer_and_sdata(qtbot, viewer, sdata_blobs)
+    register_overlay_layer(widget, layer, sdata_blobs)
+    _card_id, card = add_valid_histogram_card(widget)
+    card.percentile_min_edit.setText("10")
+    card.percentile_max_edit.setText("90")
+    deferred_workers: list[_DeferredWorker] = []
+
+    def capture_worker(job: HistogramJob) -> _DeferredWorker:
+        worker = _DeferredWorker(make_percentile_job_result(job))
+        deferred_workers.append(worker)
+        return worker
+
+    widget._histogram_controller._create_histogram_worker = capture_worker  # type: ignore[method-assign]
+
+    qtbot.mouseClick(card.calculate_button, Qt.MouseButton.LeftButton)
+    deferred_workers[0].emit_returned()
+
+    assert card.sync_percentiles_button.isEnabled()
+    assert "Synchronize contrast limits to calculated percentile values" in tooltip_text(card.sync_percentiles_button)
+
+    qtbot.mouseClick(card.sync_percentiles_button, Qt.MouseButton.LeftButton)
+
+    assert len(deferred_workers) == 1
+    np.testing.assert_allclose(layer.contrast_limits, (0.2, 0.7))
+    assert card.plot_widget._contrast_region is not None
+    np.testing.assert_allclose(card.plot_widget._contrast_region.getRegion(), (0.2, 0.7))
+
+
+def test_histogram_widget_disables_percentile_sync_without_overlay_layer(qtbot, sdata_blobs: SpatialData) -> None:
+    widget = make_widget_with_sdata(qtbot, sdata_blobs)
+    _card_id, card = add_valid_histogram_card(widget)
+    card.percentile_min_edit.setText("10")
+    card.percentile_max_edit.setText("90")
+
+    calculate_card(widget, qtbot, card, result_factory=make_percentile_job_result)
+
+    assert not card.sync_percentiles_button.isEnabled()
+    assert "open this image in overlay mode" in tooltip_text(card.sync_percentiles_button).lower()
+
+
+def test_histogram_widget_disables_percentile_sync_for_invalid_percentile_order(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    layer = make_overlay_layer()
+    viewer = LayerListDummyViewer([layer])
+    widget = make_widget_with_viewer_and_sdata(qtbot, viewer, sdata_blobs)
+    register_overlay_layer(widget, layer, sdata_blobs)
+    _card_id, card = add_valid_histogram_card(widget)
+    card.percentile_min_edit.setText("90")
+    card.percentile_max_edit.setText("10")
+
+    calculate_card(
+        widget,
+        qtbot,
+        card,
+        result_factory=lambda job: make_percentile_job_result(job, percentile_values={90.0: 0.7, 10.0: 0.2}),
+    )
+
+    assert not card.sync_percentiles_button.isEnabled()
+    assert "Percentile min must be lower than Percentile max" in tooltip_text(card.sync_percentiles_button)
 
 
 def test_histogram_widget_clamps_collapsed_histogram_contrast_handles(qtbot, sdata_blobs: SpatialData) -> None:
