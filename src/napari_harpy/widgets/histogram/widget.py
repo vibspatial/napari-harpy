@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from qtpy.QtCore import QSignalBlocker, QSize, Qt
-from qtpy.QtGui import QPixmap
+from qtpy.QtGui import QColor, QPixmap
 from qtpy.QtWidgets import (
     QCheckBox,
     QFormLayout,
@@ -133,6 +133,12 @@ class _HistogramContrastSyncState:
 
 
 @dataclass
+class _HistogramColormapSyncState:
+    layer: object
+    colormap_callback: Callable[[object], None]
+
+
+@dataclass
 class _HistogramCard:
     card_id: str
     container: QFrame
@@ -162,6 +168,7 @@ class _HistogramCard:
     overlay_load_message: str | None = None
     contrast_sync_state: _HistogramContrastSyncState | None = None
     contrast_sync_message: str | None = None
+    colormap_sync_state: _HistogramColormapSyncState | None = None
 
 
 class HistogramWidget(QWidget):
@@ -282,6 +289,7 @@ class HistogramWidget(QWidget):
             return
 
         self._clear_card_contrast_sync(histogram_card)
+        self._disconnect_card_colormap_sync(histogram_card)
         self.cards_layout.removeWidget(histogram_card.container)
         histogram_card.container.deleteLater()
         self._update_empty_state()
@@ -889,6 +897,7 @@ class HistogramWidget(QWidget):
             return
 
         self._update_card_plot(histogram_card)
+        self._refresh_card_colormap_sync(histogram_card)
         self._update_card_status(card_id)
 
     def _update_card_status(self, card_id: str) -> None:
@@ -955,12 +964,81 @@ class HistogramWidget(QWidget):
 
     def _on_image_overlay_layers_changed(self) -> None:
         for histogram_card in self._cards.values():
+            self._refresh_card_colormap_sync(histogram_card)
             result = self._histogram_controller.result_for_card(histogram_card.card_id)
             if result is None:
                 continue
 
             self._refresh_card_contrast_sync(histogram_card, result)
             self._update_card_status(histogram_card.card_id)
+
+    def _refresh_card_colormap_sync(self, histogram_card: _HistogramCard) -> None:
+        binding = self._resolve_colormap_sync_binding(histogram_card)
+        if binding is None:
+            self._disconnect_card_colormap_sync(histogram_card)
+            return
+
+        state = histogram_card.colormap_sync_state
+        if state is not None and state.layer is binding.layer:
+            self._apply_layer_colormap_to_card(histogram_card)
+            return
+
+        self._disconnect_card_colormap_sync(histogram_card)
+        callback = lambda _event, current_card_id=histogram_card.card_id: self._on_layer_colormap_changed(
+            current_card_id
+        )
+        binding.layer.events.colormap.connect(callback)
+        histogram_card.colormap_sync_state = _HistogramColormapSyncState(
+            layer=binding.layer,
+            colormap_callback=callback,
+        )
+        self._apply_layer_colormap_to_card(histogram_card)
+
+    def _resolve_colormap_sync_binding(self, histogram_card: _HistogramCard) -> ImageLayerBinding | None:
+        sdata = self.selected_spatialdata
+        target, _message = self._resolve_card_target(histogram_card)
+        if sdata is None or target is None:
+            return None
+
+        matches = self._app_state.viewer_adapter.layer_bindings.find_bindings(
+            sdata=sdata,
+            element_type="image",
+            element_name=target.image_name,
+            coordinate_system=target.coordinate_system,
+            image_display_mode="overlay",
+            channel_name=target.channel_name,
+        )
+        image_bindings = [binding for binding in matches if isinstance(binding, ImageLayerBinding)]
+        if len(image_bindings) != 1:
+            return None
+
+        return image_bindings[0]
+
+    def _on_layer_colormap_changed(self, card_id: str) -> None:
+        histogram_card = self._cards.get(card_id)
+        if histogram_card is None:
+            return
+
+        self._apply_layer_colormap_to_card(histogram_card)
+
+    def _apply_layer_colormap_to_card(self, histogram_card: _HistogramCard) -> None:
+        state = histogram_card.colormap_sync_state
+        if state is None:
+            return
+
+        color = _single_swatch_color_from_image_layer(state.layer)
+        if color is not None:
+            histogram_card.overlay_color_button.set_color(color)
+
+    def _disconnect_card_colormap_sync(self, histogram_card: _HistogramCard) -> None:
+        state = histogram_card.colormap_sync_state
+        histogram_card.colormap_sync_state = None
+
+        if state is not None:
+            try:
+                state.layer.events.colormap.disconnect(state.colormap_callback)
+            except (TypeError, RuntimeError, ValueError):
+                pass
 
     def _refresh_card_contrast_sync(self, histogram_card: _HistogramCard, result: HistogramResult) -> None:
         """Bind the card to the resolved napari layer for contrast-limit sync.
@@ -1198,6 +1276,7 @@ class HistogramWidget(QWidget):
         self._app_state.viewer_adapter.activate_layer(result.primary_layer)
         action = "loaded" if result.created else "updated"
         histogram_card.overlay_load_message = f"Overlay {action} in viewer."
+        self._refresh_card_colormap_sync(histogram_card)
 
         calculated_result = self._histogram_controller.result_for_card(card_id)
         if calculated_result is not None:
@@ -1313,3 +1392,80 @@ def _format_compact_number(value: float) -> str:
     if not math.isfinite(value):
         return str(value)
     return f"{value:.4g}"
+
+
+def _single_swatch_color_from_image_layer(layer: object) -> str | None:
+    colormap = getattr(layer, "colormap", None)
+    color_from_colors = _single_swatch_color_from_colormap_colors(getattr(colormap, "colors", None))
+    if color_from_colors is not None:
+        return color_from_colors
+
+    name = getattr(colormap, "name", None)
+    if isinstance(name, str):
+        return _qcolor_hex_or_none(name)
+
+    if isinstance(colormap, str):
+        return _qcolor_hex_or_none(colormap)
+
+    return None
+
+
+def _single_swatch_color_from_colormap_colors(colors: object) -> str | None:
+    try:
+        rows = tuple(colors)  # type: ignore[arg-type]
+    except TypeError:
+        return None
+
+    if not rows:
+        return None
+
+    if len(rows) == 1:
+        return _color_row_to_hex(rows[0])
+
+    if len(rows) == 2 and _is_black_color_row(rows[0]):
+        return _color_row_to_hex(rows[1])
+
+    return None
+
+
+def _is_black_color_row(row: object) -> bool:
+    rgb = _color_row_rgb_components(row)
+    return rgb is not None and all(abs(component) <= 1e-6 for component in rgb)
+
+
+def _color_row_to_hex(row: object) -> str | None:
+    rgb = _color_row_rgb_components(row)
+    if rgb is None:
+        return None
+
+    return "#" + "".join(f"{round(component * 255):02X}" for component in rgb)
+
+
+def _color_row_rgb_components(row: object) -> tuple[float, float, float] | None:
+    try:
+        values = tuple(row)  # type: ignore[arg-type]
+    except TypeError:
+        return None
+
+    if len(values) < 3:
+        return None
+
+    rgb: list[float] = []
+    for component in values[:3]:
+        try:
+            value = float(component)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(value) or value < 0.0 or value > 1.0:
+            return None
+        rgb.append(value)
+
+    return rgb[0], rgb[1], rgb[2]
+
+
+def _qcolor_hex_or_none(color: str) -> str | None:
+    qcolor = QColor(color)
+    if not qcolor.isValid():
+        return None
+
+    return qcolor.name(QColor.NameFormat.HexRgb).upper()

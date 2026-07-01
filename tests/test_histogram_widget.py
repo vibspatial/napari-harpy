@@ -579,6 +579,77 @@ def test_histogram_widget_load_overlay_binds_contrast_sync_after_calculation(qtb
     assert "Contrast synced to napari overlay layer." in card.status_label.text()
 
 
+def test_histogram_widget_syncs_viewer_color_from_matching_overlay_before_calculation(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    layer = make_overlay_layer()
+    layer.colormap = "#ABCDEF"
+    viewer = LayerListDummyViewer([layer])
+    widget = make_widget_with_viewer_and_sdata(qtbot, viewer, sdata_blobs)
+    register_overlay_layer(widget, layer, sdata_blobs)
+    card_id, card = add_valid_histogram_card(widget)
+
+    assert widget._histogram_controller.result_for_card(card_id) is None
+    assert card.colormap_sync_state is not None
+    assert card.overlay_color_button.current_color == "#ABCDEF"
+
+    layer.colormap = "#123456"
+
+    assert card.overlay_color_button.current_color == "#123456"
+    assert widget._histogram_controller.result_for_card(card_id) is None
+
+
+def test_histogram_widget_keeps_viewer_color_for_duplicate_matching_overlay_layers(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    first_layer = make_overlay_layer(name="first")
+    first_layer.colormap = "#ABCDEF"
+    second_layer = make_overlay_layer(name="second")
+    second_layer.colormap = "#123456"
+    viewer = LayerListDummyViewer([first_layer, second_layer])
+    widget = make_widget_with_viewer_and_sdata(qtbot, viewer, sdata_blobs)
+    register_overlay_layer(widget, first_layer, sdata_blobs)
+    register_overlay_layer(widget, second_layer, sdata_blobs)
+    _card_id, card = add_valid_histogram_card(widget)
+
+    assert card.colormap_sync_state is None
+    assert card.overlay_color_button.current_color == "#00FFFF"
+
+
+def test_histogram_widget_ignores_complex_overlay_colormap_for_viewer_color(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    layer = make_overlay_layer()
+    layer.colormap = "viridis"
+    viewer = LayerListDummyViewer([layer])
+    widget = make_widget_with_viewer_and_sdata(qtbot, viewer, sdata_blobs)
+    register_overlay_layer(widget, layer, sdata_blobs)
+    _card_id, card = add_valid_histogram_card(widget)
+
+    assert card.colormap_sync_state is not None
+    assert card.overlay_color_button.current_color == "#00FFFF"
+
+
+def test_histogram_widget_colormap_sync_disconnects_when_target_changes(qtbot, sdata_blobs: SpatialData) -> None:
+    layer = make_overlay_layer()
+    layer.colormap = "#ABCDEF"
+    viewer = LayerListDummyViewer([layer])
+    widget = make_widget_with_viewer_and_sdata(qtbot, viewer, sdata_blobs)
+    register_overlay_layer(widget, layer, sdata_blobs)
+    _card_id, card = add_valid_histogram_card(widget)
+
+    assert card.colormap_sync_state is not None
+
+    set_combo_data(card.channel_combo, "1")
+    layer.colormap = "#123456"
+
+    assert card.colormap_sync_state is None
+    assert card.overlay_color_button.current_color == "#FF00FF"
+
+
 def test_histogram_widget_syncs_contrast_limits_with_unique_overlay_layer(qtbot, sdata_blobs: SpatialData) -> None:
     layer = make_overlay_layer(contrast_limits=(0.1, 0.8))
     viewer = LayerListDummyViewer([layer])

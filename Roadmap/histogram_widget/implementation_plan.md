@@ -1490,7 +1490,7 @@ Tests:
 
 ### 11. Sync Viewer Color From Napari Colormap
 
-Status: [ ] Planned
+Status: [x] Implemented
 
 Goal:
 
