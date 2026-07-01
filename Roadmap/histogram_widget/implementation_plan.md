@@ -29,8 +29,8 @@ Use explicit histogram target cards as the source of truth.
 Do not make the active napari layer the canonical selection. Active-layer
 following is convenient, but it becomes ambiguous once coordinate systems,
 stack/overlay image modes, unloaded images, and multiple histograms are in play.
-The active layer can still be used later as a convenience action such as
-"Add card from active image layer".
+Instead, keep the card target explicit and let users load that target into the
+viewer from the histogram card when they need a matching overlay layer.
 
 Compute histogram values with a small napari-harpy core calculator that mirrors
 Harpy's filtering and Dask semantics, rather than using
@@ -1488,59 +1488,7 @@ Tests:
 - after applying percentiles, draggable histogram contrast lines and napari's
   native contrast slider remain synchronized.
 
-### 11. Add Histogram From Active Image
-
-Status: [ ] Planned
-
-Goal:
-
-- provide a fast, explicit path from the currently selected napari image layer
-  to a histogram card without making active-layer following the canonical
-  selection model.
-
-Scope:
-
-- add a header action next to `Add histogram`, labeled `Add from active image`
-  or `Add histogram from active image`;
-- keep explicit cards as the source of truth; the active layer only pre-fills a
-  new card or focuses an equivalent existing card;
-- do not silently retarget existing histogram cards when the napari active layer
-  changes;
-- resolve the active layer through `HarpyAppState.viewer_adapter` and
-  `LayerBindingRegistry`, not through layer names or legacy metadata;
-- enable the action only when the active layer is a Harpy-managed napari
-  `Image` layer for the currently loaded `SpatialData`;
-- for overlay layers, use `ImageLayerBinding.coordinate_system`,
-  `element_name`, and `channel_name` to create a complete histogram target;
-- for stack layers, use `ImageLayerBinding.coordinate_system` and
-  `element_name`, then resolve the active channel from napari dims only if that
-  mapping is reliable; otherwise create the card with image/coordinate system
-  prefilled and require the user to choose the channel explicitly;
-- preserve the card's default histogram settings unless a later product decision
-  adds a separate "copy settings from selected card" action;
-- after creating the card, scroll/focus it and leave calculation explicit via
-  that card's `Calculate` button;
-- if no resolvable active image layer exists, keep the action disabled or show a
-  clear widget-level status such as `Select a Harpy image layer in the viewer.`;
-- after Slice 3 is implemented, consider a separate `Add and calculate from
-  active image` action only if the two-click flow proves too slow in practice.
-
-Tests:
-
-- action is disabled or reports a clear status when no viewer, no active layer,
-  or a non-image active layer is present;
-- unregistered external napari image layers are ignored;
-- active overlay image layer creates a card with coordinate system, image, and
-  channel selected from `ImageLayerBinding`;
-- active stack image layer creates a card with coordinate system and image
-  selected, and either resolves the active channel safely or leaves channel
-  selection explicit;
-- clicking the action does not call `calculate_histogram(...)`;
-- clicking the action does not mutate existing histogram cards;
-- repeated clicks either add separate cards intentionally or focus an existing
-  equivalent card, whichever behavior is chosen for implementation.
-
-### 12. Automatic Bin Suggestion
+### 11. Automatic Bin Suggestion
 
 Status: [ ] Planned
 
@@ -1590,7 +1538,7 @@ Tests:
 - flat or nearly flat data falls back to a safe bin count with a clear status;
 - the suggestion action does not calculate or render the histogram by itself.
 
-### 13. Sync Viewer Color From Napari Colormap
+### 12. Sync Viewer Color From Napari Colormap
 
 Status: [ ] Planned
 
@@ -1656,7 +1604,7 @@ Tests:
 - target changes and card removal disconnect the old layer colormap callback;
 - stack-mode image layers are ignored.
 
-### 14. Smooth Distribution Overlay
+### 13. Smooth Distribution Overlay
 
 Status: [ ] Planned
 
@@ -1709,7 +1657,7 @@ Tests:
 - disabling the display toggle hides the smooth line without recalculating the
   histogram.
 
-### 15. Product Hardening
+### 14. Product Hardening
 
 Status: [ ] Planned
 
