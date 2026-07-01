@@ -271,6 +271,7 @@ This slice must not:
 - change `layer.mode`;
 - set `layer.mouse_pan`;
 - suppress lasso callbacks;
+- mutate `layer.mouse_drag_callbacks` or `layer.mouse_move_callbacks`;
 - patch napari class-level mappings;
 - alter behavior for non-annotation Shapes layers.
 
@@ -297,6 +298,9 @@ types. The important contract is that the guard can distinguish "there was no
 instance Space binding" from "there was an instance Space binding whose value
 was `None` or another sentinel-like value".
 
+Using a private sentinel object is acceptable if it makes that distinction
+clearer than relying on `None`.
+
 #### Attach Contract
 
 `attach(layer)` should still be idempotent when called with the current layer.
@@ -314,7 +318,9 @@ When attaching a new layer:
 - keep wrapping only `Mode.DIRECT` and `Mode.VERTEX_REMOVE` in `_drag_modes`;
 - leave every `_move_modes` callback unchanged in this slice;
 - assign both copied mappings back to the layer instance;
-- capture whether each mapping was originally present in `vars(layer)`.
+- capture whether each mapping was originally present in `vars(layer)`;
+- leave `layer.mouse_drag_callbacks` and `layer.mouse_move_callbacks`
+  unchanged.
 
 The copied `_move_modes` mapping is intentionally behavior-neutral in this
 slice. Its purpose is to prove that the guard can own and restore the mapping
@@ -360,7 +366,7 @@ def _restore_space_keybinding(self, layer: Shapes) -> None: ...
 ```
 
 These helpers may be implemented now if they simplify tests, but `attach(...)`
-should not change `layer.keymap["Space"]` yet.
+should not change the layer's keymap yet.
 
 #### Tests
 
@@ -385,6 +391,8 @@ Required coverage:
 - Slice 1 does not change `layer.mouse_pan`;
 - Slice 1 does not change `layer.mode`;
 - Slice 1 does not replace `_move_modes[Mode.ADD_POLYGON_LASSO]` yet.
+- Slice 1 does not mutate `layer.mouse_drag_callbacks` or
+  `layer.mouse_move_callbacks`.
 
 Suggested focused test names:
 
@@ -403,6 +411,7 @@ test_annotation_layer_edit_guard_slice_one_does_not_bind_space_or_change_mouse_p
 - New tests prove move-mode restoration and behavior neutrality.
 - No Space keybinding behavior is active yet.
 - No lasso behavior changes are introduced in this slice.
+- Active mouse callback lists are unchanged in this slice.
 
 ### Slice 2: Space Keybinding State
 
