@@ -1339,24 +1339,71 @@ Status: [ ] Planned
 
 Goal:
 
-- visualize user-specified percentile markers on the histogram.
+- render calculated percentile guide lines on the histogram for the existing
+  per-card percentile inputs.
 
 Scope:
 
-- add `percentile_min` and `percentile_max` numeric fields;
-- validate values in `[0, 100]`;
-- compute percentile values in the histogram job;
-- draw labeled percentile guide lines distinct from contrast-limit lines;
-- show the computed percentile intensity values in the card;
-- do not automatically update contrast limits from percentile values.
+- keep the existing `Percentile min` and `Percentile max` optional fields in
+  the advanced histogram settings panel;
+- keep translating those fields into `HistogramSettings.percentiles`;
+- keep percentile validation in `HistogramSettings.__post_init__`, where values
+  must be finite values in `[0, 100]`;
+- keep percentile calculation in the existing background histogram job via
+  `dask.array.percentile(..., internal_method="tdigest")`;
+- preserve existing Harpy semantics: compute percentile values after the same
+  NaN/zero filtering used by the histogram, and before applying
+  `HistogramSettings.value_range`;
+- implement `_HistogramPlotWidget.set_percentile_markers(...)` for real using
+  pyqtgraph items;
+- draw percentile markers as non-draggable vertical guide lines, using
+  `pyqtgraph.InfiniteLine` or an equivalent pyqtgraph primitive;
+- style percentile markers as secondary analytical guides, visually distinct
+  from contrast-limit lines, for example thinner/dashed lines using a stable
+  palette constant such as `HISTOGRAM_PERCENTILE_LINE_COLOR`;
+- label percentile markers compactly using the percentile and computed
+  intensity value, for example `p1 = 123.4` and `p99 = 987.6`;
+- keep labels small and anchored close to the marker so they do not dominate the
+  histogram plot;
+- render percentile markers only after a histogram calculation has produced
+  `HistogramResult.percentile_values`;
+- if a computed percentile value lies outside the plotted histogram x-range,
+  keep it in `HistogramResult.percentile_values` but do not draw that marker in
+  the plot;
+- show the computed percentile values in the card status surface so off-range
+  values remain discoverable to the user;
+- clearing a percentile field should remove the corresponding marker after the
+  next successful histogram calculation;
+- repeated `Show histogram` clicks with an unchanged cached result should reset
+  the plot view and keep/redraw percentile markers without starting a new
+  histogram calculation;
+- do not automatically update contrast limits from percentile values in this
+  slice.
+
+Non-goals:
+
+- no percentile-to-contrast action; that remains Slice 10;
+- no live marker update while typing before recalculation;
+- no draggable percentile markers;
+- no ECDF/cumulative distribution calculation.
 
 Tests:
 
-- percentile values are computed from the filtered data;
-- percentile lines are drawn only when specified;
+- percentile values are computed from the filtered data before histogram
+  `value_range` clipping;
+- percentile guide lines are drawn only when specified and successfully
+  calculated;
+- percentile guide lines are visually distinct from contrast-limit lines;
+- compact labels are shown for in-range percentile values;
+- percentile values outside the histogram x-range are not drawn but remain
+  present in the status card;
 - clearing a percentile field removes the corresponding marker after the next
   calculation;
-- changing percentile settings marks the card stale.
+- changing percentile settings marks the card stale;
+- repeated `Show histogram` with an unchanged cached result does not start a new
+  worker and preserves percentile marker rendering;
+- percentile markers are removed when the histogram result is cleared or
+  replaced.
 
 ### 10. Explicit Percentile-To-Contrast Action
 
