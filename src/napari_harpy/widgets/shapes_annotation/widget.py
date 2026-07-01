@@ -452,6 +452,8 @@ class _AnnotationLayerEditGuard:
         layer.mouse_pan = True
 
     def _end_space_pan_key_hold(self, layer: Shapes) -> None:
+        # This handles Space release, whether it happens before or after the
+        # mouse pan gesture ends; restoration is gated by both state flags.
         self._space_pan_key_held = False
         self._restore_space_pan_if_complete(layer)
 
@@ -459,10 +461,14 @@ class _AnnotationLayerEditGuard:
         self._space_pan_mouse_gesture_active = True
 
     def _end_space_pan_mouse_gesture(self, layer: Shapes) -> None:
+        # This handles mouse release, whether it happens before or after Space
+        # release; restoration is gated by both state flags.
         self._space_pan_mouse_gesture_active = False
         self._restore_space_pan_if_complete(layer)
 
     def _restore_space_pan_if_complete(self, layer: Shapes) -> None:
+        # Wait until both release flags are clear: Space is no longer held and
+        # the Space-started mouse pan gesture has ended.
         if self._space_pan_key_held or self._space_pan_mouse_gesture_active:
             return
         if self._previous_mouse_pan is None:
