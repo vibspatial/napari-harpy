@@ -1610,7 +1610,7 @@ Tests:
 
 ### 12. Product Hardening
 
-Status: [ ] Planned
+Status: [x] Implemented
 
 Goal:
 
@@ -1620,10 +1620,7 @@ Scope:
 
 - add card-level empty, running, success, warning, and error states;
 - ensure repeated add/remove/calculate cycles do not leak layer event handlers;
-- keep lower-resolution multiscale choices explicit and label the scale used;
-- add an optional "Calculate all" action only after per-card behavior is solid;
-- document that histogram results are computed from `SpatialData`, while
-  contrast sync requires a matching live napari layer.
+- keep lower-resolution multiscale choices explicit and label the scale used.
 
 Tests:
 
