@@ -66,6 +66,15 @@ class _ScientificYAxisItem(pg.AxisItem):
         return strings
 
 
+class _BoundaryOnlyLinearRegionItem(pg.LinearRegionItem):
+    """Linear region whose boundary lines are draggable, but whose filled body is not."""
+
+    def mouseDragEvent(self, ev) -> None:
+        # Swallow drags on the filled region body; the internal InfiniteLine
+        # handles keep their own drag behavior for min/max adjustment.
+        ev.accept()
+
+
 class _HistogramPlotWidget(QWidget):
     """Small pyqtgraph wrapper for card-local histogram rendering."""
 
@@ -190,7 +199,7 @@ class _HistogramPlotWidget(QWidget):
 
         pen = pg.mkPen(HISTOGRAM_CONTRAST_LINE_COLOR, width=2)
         brush = pg.mkBrush(_qcolor(HISTOGRAM_CONTRAST_LINE_COLOR, HISTOGRAM_CONTRAST_REGION_ALPHA))
-        self._contrast_region = pg.LinearRegionItem(
+        self._contrast_region = _BoundaryOnlyLinearRegionItem(
             values=limits,
             orientation="vertical",
             brush=brush,
