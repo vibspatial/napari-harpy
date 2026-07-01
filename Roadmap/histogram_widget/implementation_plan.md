@@ -1488,57 +1488,7 @@ Tests:
 - after applying percentiles, draggable histogram contrast lines and napari's
   native contrast slider remain synchronized.
 
-### 11. Automatic Bin Suggestion
-
-Status: [ ] Planned
-
-Goal:
-
-- offer a sensible per-histogram bin-count suggestion without relying on
-  unsupported `dask.array.histogram(..., bins="auto")` behavior.
-
-Scope:
-
-- decide the exact UX before implementation, including whether the control is a
-  button, menu option, inline `Auto` action, or some other explicit per-card
-  affordance;
-- keep `HistogramSettings.bins` as an explicit positive integer passed to
-  `dask.array.histogram(...)`;
-- do not pass string estimators such as `"auto"`, `"fd"`, or `"sturges"` to
-  Dask, because Dask's histogram API supports integer bin counts or explicit
-  bin edges, not NumPy-style string bin estimators;
-- add an optional UI action such as `Suggest bins` or `Auto` beside the bins
-  spin box;
-- calculate a suggested integer bin count from the selected target and current
-  filtering/range settings;
-- make the suggestion explicit by writing the resulting integer into the card's
-  bins control, so the calculation remains reproducible and visible;
-- prefer a bounded, robust estimator suitable for large image arrays, for
-  example an approximate Freedman-Diaconis-style estimate based on Dask
-  percentiles, optionally with sampling if full percentile calculation proves
-  too expensive;
-- clamp the suggested value to a product-defined range, for example
-  `32 <= bins <= 2048`, to avoid unreadable plots and unexpectedly expensive
-  calculations;
-- treat `HistogramSettings.value_range` as the range being inspected when it is
-  provided; otherwise derive the range from the filtered data as in the core
-  calculator;
-- keep the existing default of `256` bins until the user explicitly asks for a
-  suggestion;
-- show a clear warning if a robust suggestion cannot be computed, for example
-  because the filtered data has too few finite values or near-zero spread.
-
-Tests:
-
-- default histogram cards still start with `256` bins;
-- clicking the suggestion action writes a positive integer into the bins control;
-- suggested bins are clamped to the configured min/max bounds;
-- the suggestion respects NaN/zero filtering and explicit histogram
-  `value_range`;
-- flat or nearly flat data falls back to a safe bin count with a clear status;
-- the suggestion action does not calculate or render the histogram by itself.
-
-### 12. Sync Viewer Color From Napari Colormap
+### 11. Sync Viewer Color From Napari Colormap
 
 Status: [ ] Planned
 
@@ -1547,6 +1497,21 @@ Goal:
 - keep the histogram card's Viewer color swatch aligned with the matching live
   napari overlay layer when the user changes that layer's colormap in napari's
   native layer controls.
+
+Current codebase context:
+
+- `OverlayColorButton` is already shared between the Viewer widget and the
+  histogram widget;
+- histogram cards already expose a Viewer row with `Load overlay` and the
+  card-local `OverlayColorButton`;
+- `ViewerAdapter.image_overlay_layers_changed` already signals overlay image
+  layer lifecycle changes;
+- `ImageLayerBinding` already stores the identity needed for matching:
+  `SpatialData`, coordinate system, image name, overlay display mode, channel
+  index, and channel name;
+- contrast-limit synchronization already establishes the per-card pattern of
+  resolving a unique overlay layer, connecting to one layer event, and
+  disconnecting when the card target or live layer changes.
 
 UX direction:
 
@@ -1567,8 +1532,17 @@ Scope:
   `SpatialData`, coordinate system, image name, display mode, and channel name;
 - ignore stack-mode image layers because there is no reliable per-card channel
   color to sync;
-- reuse the existing layer-binding registry to find matching overlay layers for
-  a histogram card;
+- resolve the matching overlay layer from the current validated histogram card
+  target, not from `HistogramResult`, so color sync works before histogram
+  calculation;
+- reuse the existing layer-binding registry to find matching overlay layers
+  with:
+  - current `SpatialData`;
+  - `element_type="image"`;
+  - current card `coordinate_system`;
+  - current card `image_name`;
+  - `image_display_mode="overlay"`;
+  - current card `channel_name`;
 - only sync when the match is unambiguous; if multiple matching overlay layers
   exist, leave the card swatch unchanged and avoid guessing;
 - listen to the napari layer's `events.colormap` signal for the resolved
@@ -1578,33 +1552,63 @@ Scope:
 - avoid feedback loops: programmatic swatch updates from napari should not call
   `Load overlay` or write back to `layer.colormap`;
 - normalize the napari colormap into the same color string format accepted by
-  `OverlayColorButton`; when the colormap cannot be represented as one of our
-  simple color values, preserve the current swatch and do not fail the card.
+  `OverlayColorButton`;
+- if the napari colormap can be represented as one simple color, update the
+  swatch with that color;
+- if the napari colormap is a complex multi-color colormap that cannot be
+  represented by the single-color swatch, keep the current swatch unchanged and
+  do not fail the card;
+- refresh colormap sync after a successful `Load overlay` action, after card
+  target changes, after `SpatialData` changes, and after
+  `image_overlay_layers_changed`.
 
 Implementation notes:
 
-- prefer a small per-card sync state, similar in spirit to contrast-sync state,
-  that stores the layer and the connected colormap callback;
-- consider a `ViewerAdapter` helper for extracting the current image-layer
-  colormap color if the logic is useful outside the histogram widget;
-- trigger sync refresh from the existing image overlay layer lifecycle signal
-  and from target changes, then rely on `layer.events.colormap` for live napari
-  UI color changes.
+- add a small per-card sync state on `_HistogramCard`, similar in spirit to
+  `_HistogramContrastSyncState`:
+
+  ```python
+  @dataclass
+  class _HistogramColormapSyncState:
+      layer: object
+      colormap_callback: Callable[[object], None]
+  ```
+
+- store this state as `colormap_sync_state:
+  _HistogramColormapSyncState | None` on `_HistogramCard`;
+- add helper methods that mirror the contrast-sync shape, for example:
+  `_refresh_card_colormap_sync(...)`, `_disconnect_card_colormap_sync(...)`,
+  and `_apply_layer_colormap_to_card(...)`;
+- when already connected to the correct layer, only refresh the swatch from the
+  layer;
+- when the resolved layer changes, disconnect the old callback, connect to the
+  new layer's `events.colormap`, store the sync state, and update the swatch
+  once from the current layer colormap;
+- keep the first implementation widget-owned; add a `ViewerAdapter` helper only
+  if the colormap-to-single-color conversion becomes useful outside the
+  histogram widget;
+- rely on `layer.events.colormap` for live napari UI color changes after the
+  initial sync has been established.
 
 Tests:
 
 - a card with one matching overlay layer updates its Viewer color swatch when
   `layer.colormap` changes in napari;
+- a matching overlay layer updates the card swatch even before the histogram has
+  been calculated;
 - changing a layer colormap does not call the histogram calculator and does not
   clear the current histogram result;
 - card-local `Load overlay` still passes the selected swatch color to the
   viewer adapter;
 - cards with no matching overlay layer keep their current/default swatch color;
 - cards with multiple matching overlay layers do not guess a color;
+- complex napari colormaps that cannot be represented as one swatch color leave
+  the current swatch unchanged;
 - target changes and card removal disconnect the old layer colormap callback;
+- `SpatialData` changes disconnect old colormap callbacks;
 - stack-mode image layers are ignored.
 
-### 13. Smooth Distribution Overlay
+### 12. Smooth Distribution Overlay
 
 Status: [ ] Planned
 
@@ -1657,7 +1661,7 @@ Tests:
 - disabling the display toggle hides the smooth line without recalculating the
   histogram.
 
-### 14. Product Hardening
+### 13. Product Hardening
 
 Status: [ ] Planned
 
