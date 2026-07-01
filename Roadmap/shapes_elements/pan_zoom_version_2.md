@@ -164,6 +164,17 @@ first or release the mouse first, and normal lasso input resumes only after
 both states are false. Starting that mouse gesture does not enable pan by
 itself; pan is enabled by the Space-key hold.
 
+This routing was checked against the locally installed napari 0.7.1 source.
+Setting `layer.mouse_pan = True` on the active layer propagates to
+`viewer.camera.mouse_pan`, enabling camera pan without changing
+`layer.mode`. Vispy's camera may mark the canvas mouse event as handled, but
+Vispy's event emitter keeps calling later callbacks unless the event is
+blocked. Napari's canvas mouse dispatcher still calls the active layer's mouse
+callbacks after the viewer callbacks. Therefore the guard can detect the
+temporary pan mouse gesture from the wrapped `Mode.ADD_POLYGON_LASSO` drag
+callback on `mouse_press` while lasso is suspended; no separate canvas-level
+event hook is expected for this state.
+
 The keybinding should behave like this:
 
 1. If the guarded layer is actively creating a polygon lasso:
@@ -611,6 +622,15 @@ Headless tests should prove:
 ### Slice 4: Lasso Callback Suppression
 
 Wrap lasso drag and move callbacks.
+
+The lasso drag wrapper is the expected place to track the temporary pan mouse
+gesture. When `_lasso_is_suspended()` is true and the wrapped lasso drag
+callback receives `event.type == "mouse_press"`, call
+`_begin_space_pan_mouse_gesture()` and suppress napari's original lasso drag
+callback for that gesture. On the matching mouse release/end of the wrapper
+generator, call `_end_space_pan_mouse_gesture(layer)`. This should still work
+while `layer.mouse_pan = True`, because napari dispatches canvas mouse events
+to the active layer callbacks even when camera pan is enabled.
 
 Headless tests should prove:
 
