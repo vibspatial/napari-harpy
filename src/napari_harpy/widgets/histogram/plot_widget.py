@@ -68,15 +68,6 @@ class _ScientificYAxisItem(pg.AxisItem):
         return strings
 
 
-class _BoundaryOnlyLinearRegionItem(pg.LinearRegionItem):
-    """Linear region whose boundary lines are draggable, but whose filled body is not."""
-
-    def mouseDragEvent(self, ev) -> None:
-        # Swallow drags on the filled region body; the internal InfiniteLine
-        # handles keep their own drag behavior for min/max adjustment.
-        ev.accept()
-
-
 class _HistogramPlotWidget(QWidget):
     """Small pyqtgraph wrapper for card-local histogram rendering."""
 
@@ -202,16 +193,19 @@ class _HistogramPlotWidget(QWidget):
         pen = pg.mkPen(HISTOGRAM_CONTRAST_LINE_COLOR, width=_CONTRAST_LINE_WIDTH)
         hover_pen = pg.mkPen(HISTOGRAM_CONTRAST_LINE_COLOR, width=_CONTRAST_HOVER_LINE_WIDTH)
         brush = pg.mkBrush(_qcolor(HISTOGRAM_CONTRAST_LINE_COLOR, HISTOGRAM_CONTRAST_REGION_ALPHA))
-        self._contrast_region = _BoundaryOnlyLinearRegionItem(
+        self._contrast_region = pg.LinearRegionItem(
             values=limits,
             orientation="vertical",
             brush=brush,
             pen=pen,
             hoverPen=hover_pen,
-            movable=True,
+            movable=False,
             swapMode="block",
         )
         for line in self._contrast_region.lines:
+            # Keep the filled region body passive so drags between the lines pan
+            # the plot, while the two InfiniteLine handles remain draggable.
+            line.setMovable(True)
             line.setCursor(Qt.CursorShape.SizeHorCursor)
         self._contrast_region.setZValue(10)
         self._contrast_region.sigRegionChanged.connect(self._on_contrast_region_changed)

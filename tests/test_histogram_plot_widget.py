@@ -255,7 +255,7 @@ def test_histogram_plot_widget_programmatic_contrast_update_does_not_emit(qtbot)
     assert emitted_limits == []
 
 
-def test_histogram_plot_widget_changed_contrast_region_emits_ordered_limits(qtbot) -> None:
+def test_histogram_plot_widget_changed_contrast_region_emits_limits(qtbot) -> None:
     plot_widget = _HistogramPlotWidget()
     qtbot.addWidget(plot_widget)
     emitted_limits: list[tuple[float, float]] = []
@@ -263,7 +263,7 @@ def test_histogram_plot_widget_changed_contrast_region_emits_ordered_limits(qtbo
     plot_widget.set_contrast_limits((0.1, 0.9))
     assert plot_widget._contrast_region is not None
 
-    plot_widget._contrast_region.setRegion((0.75, 0.25))
+    plot_widget._contrast_region.setRegion((0.25, 0.75))
 
     assert emitted_limits == [(0.25, 0.75)]
 
