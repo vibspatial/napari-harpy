@@ -500,6 +500,64 @@ def _end_space_pan_mouse_gesture(self, layer: Shapes) -> None: ...
 def _restore_space_pan_if_complete(self, layer: Shapes) -> None: ...
 ```
 
+#### Implementation Skeleton
+
+Slice 2 should replace any single `_space_pan_active` boolean with the two
+explicit release-order flags reserved in Slice 1:
+
+```python
+self._space_pan_key_held = False
+self._space_pan_mouse_gesture_active = False
+self._previous_mouse_pan: bool | None = None
+```
+
+Do not keep `_space_pan_active` as the source of truth. A single boolean cannot
+represent the two half-complete recovery states:
+
+- Space was released, but the mouse button is still down for the pan;
+- the mouse button was released, but Space is still held.
+
+The state machine should be intentionally small and live on
+`_AnnotationLayerEditGuard`:
+
+```python
+def _lasso_is_suspended(self) -> bool:
+    return self._space_pan_key_held or self._space_pan_mouse_gesture_active
+
+
+def _begin_space_pan_key_hold(self, layer: Shapes) -> None:
+    self._space_pan_key_held = True
+    if self._previous_mouse_pan is None:
+        self._previous_mouse_pan = layer.mouse_pan
+    layer.mouse_pan = True
+
+
+def _end_space_pan_key_hold(self, layer: Shapes) -> None:
+    self._space_pan_key_held = False
+    self._restore_space_pan_if_complete(layer)
+
+
+def _begin_space_pan_mouse_gesture(self) -> None:
+    self._space_pan_mouse_gesture_active = True
+
+
+def _end_space_pan_mouse_gesture(self, layer: Shapes) -> None:
+    self._space_pan_mouse_gesture_active = False
+    self._restore_space_pan_if_complete(layer)
+
+
+def _restore_space_pan_if_complete(self, layer: Shapes) -> None:
+    if self._space_pan_key_held or self._space_pan_mouse_gesture_active:
+        return
+    if self._previous_mouse_pan is None:
+        return
+    layer.mouse_pan = self._previous_mouse_pan
+    self._previous_mouse_pan = None
+```
+
+The key invariant is that restoration happens only when both state flags are
+false. This is what makes the user release order irrelevant.
+
 Expected helper behavior:
 
 - `_lasso_is_suspended()` returns true when either `_space_pan_key_held` or
