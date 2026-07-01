@@ -199,13 +199,16 @@ def test_histogram_widget_instantiates_without_viewer(qtbot) -> None:
     assert widget.app_state.sdata is None
     assert widget.card_count == 0
     assert not widget.empty_state_label.isHidden()
-    assert widget.add_button.text() == "Add histogram"
+    assert widget.add_button.text() == "Add"
     assert widget.findChild(QLabel, "histogram_header_logo") is not None
     assert widget.findChild(QLabel, "histogram_title") is None
-    action_row = widget.findChild(QWidget, "histogram_header_action_row")
+    action_row = widget.findChild(QWidget, "histogram_add_action_row")
     assert action_row is not None
     assert action_row.layout().itemAt(0).widget() is widget.add_button
     assert action_row.layout().itemAt(1).spacerItem() is not None
+    assert widget.scroll_content.layout().indexOf(action_row) < widget.scroll_content.layout().indexOf(
+        widget.cards_container
+    )
 
 
 def test_histogram_widget_attaches_to_shared_app_state(qtbot) -> None:

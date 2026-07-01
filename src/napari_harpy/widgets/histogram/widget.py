@@ -202,11 +202,11 @@ class HistogramWidget(QWidget):
         header_logo = self._create_header_logo()
 
         action_row = QWidget()
-        action_row.setObjectName("histogram_header_action_row")
+        action_row.setObjectName("histogram_add_action_row")
         action_layout = QHBoxLayout(action_row)
         action_layout.setContentsMargins(0, 0, 0, 0)
         action_layout.setSpacing(8)
-        self.add_button = QPushButton("Add histogram")
+        self.add_button = QPushButton("Add")
         self.add_button.setObjectName("histogram_add_button")
         self.add_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.add_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
