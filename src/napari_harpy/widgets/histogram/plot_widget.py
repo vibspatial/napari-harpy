@@ -4,7 +4,7 @@ from collections.abc import Mapping
 
 import numpy as np
 import pyqtgraph as pg
-from qtpy.QtCore import QRect, Qt, Signal
+from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import QGridLayout, QSizePolicy, QToolTip, QWidget
 
@@ -38,7 +38,6 @@ _CONTRAST_LINE_WIDTH = 2
 _CONTRAST_HOVER_LINE_WIDTH = 10
 _PERCENTILE_LINE_WIDTH = 1
 _PERCENTILE_HOVER_LINE_WIDTH = 4
-_PERCENTILE_TOOLTIP_DISPLAY_MS = 60_000
 
 
 class _ScientificYAxisItem(pg.AxisItem):
@@ -90,13 +89,9 @@ class _HoverablePercentileLine(pg.InfiniteLine):
             return
 
         self.setMouseHover(True)
-        QToolTip.showText(
-            ev.screenPos().toQPoint(),
-            self._tooltip_text,
-            None,
-            QRect(),
-            _PERCENTILE_TOOLTIP_DISPLAY_MS,
-        )
+        # Qt/the platform owns native tooltip lifetime, so do not pass a custom
+        # duration here; it is not reliable for pyqtgraph QGraphicsItem hover.
+        QToolTip.showText(ev.screenPos().toQPoint(), self._tooltip_text)
 
 
 class _HistogramPlotWidget(QWidget):
