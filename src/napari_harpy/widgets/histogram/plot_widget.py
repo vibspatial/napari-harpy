@@ -4,9 +4,9 @@ from collections.abc import Mapping
 
 import numpy as np
 import pyqtgraph as pg
-from qtpy.QtCore import Qt, Signal
+from qtpy.QtCore import QRect, Qt, Signal
 from qtpy.QtGui import QColor
-from qtpy.QtWidgets import QGridLayout, QSizePolicy, QWidget
+from qtpy.QtWidgets import QGridLayout, QSizePolicy, QToolTip, QWidget
 
 from napari_harpy.core.histogram import HistogramResult
 from napari_harpy.widgets.histogram.styles import (
@@ -37,6 +37,8 @@ _CONTRAST_MINIMUM_SHADES = 256
 _CONTRAST_LINE_WIDTH = 2
 _CONTRAST_HOVER_LINE_WIDTH = 10
 _PERCENTILE_LINE_WIDTH = 1
+_PERCENTILE_HOVER_LINE_WIDTH = 4
+_PERCENTILE_TOOLTIP_DISPLAY_MS = 60_000
 
 
 class _ScientificYAxisItem(pg.AxisItem):
@@ -68,6 +70,33 @@ class _ScientificYAxisItem(pg.AxisItem):
             else:
                 strings.append(default_string)
         return strings
+
+
+class _HoverablePercentileLine(pg.InfiniteLine):
+    """Non-movable percentile line that still gives hover feedback."""
+
+    def __init__(self, *args: object, tooltip_text: str, **kwargs: object) -> None:
+        kwargs.pop("movable", None)
+        self._tooltip_text = tooltip_text
+        super().__init__(*args, movable=False, **kwargs)
+        self.setAcceptHoverEvents(True)
+
+    def hoverEvent(self, ev) -> None:
+        # InfiniteLine only applies hoverPen for movable lines by default. Percentile
+        # guides are read-only, so we handle hover explicitly without accepting drags.
+        if ev.isExit():
+            self.setMouseHover(False)
+            QToolTip.hideText()
+            return
+
+        self.setMouseHover(True)
+        QToolTip.showText(
+            ev.screenPos().toQPoint(),
+            self._tooltip_text,
+            None,
+            QRect(),
+            _PERCENTILE_TOOLTIP_DISPLAY_MS,
+        )
 
 
 class _HistogramPlotWidget(QWidget):
@@ -214,18 +243,25 @@ class _HistogramPlotWidget(QWidget):
             width=_PERCENTILE_LINE_WIDTH,
             style=Qt.PenStyle.DashLine,
         )
-        visible_marker_values: list[float] = []
-        for _percentile, value in sorted(markers.items()):
+        hover_pen = pg.mkPen(
+            HISTOGRAM_PERCENTILE_LINE_COLOR,
+            width=_PERCENTILE_HOVER_LINE_WIDTH,
+            style=Qt.PenStyle.DashLine,
+        )
+        visible_markers: list[tuple[float, float]] = []
+        for percentile, value in sorted(markers.items()):
             percentile_value = float(value)
             if not np.isfinite(percentile_value) or percentile_value < x_min or percentile_value > x_max:
                 continue
-            visible_marker_values.append(percentile_value)
+            visible_markers.append((float(percentile), percentile_value))
 
-        for percentile_value in visible_marker_values:
-            line = pg.InfiniteLine(
+        for percentile, percentile_value in visible_markers:
+            line = _HoverablePercentileLine(
                 pos=percentile_value,
                 angle=90,
                 pen=pen,
+                hoverPen=hover_pen,
+                tooltip_text=_format_percentile_tooltip(percentile, percentile_value),
                 movable=False,
             )
             line.setZValue(8)
@@ -502,6 +538,16 @@ def _format_log_tick(value: float, scale: float) -> str:
     if _should_use_scientific_tick(actual_value):
         return _format_scientific_tick(actual_value)
     return f"{actual_value:g}"
+
+
+def _format_percentile_tooltip(percentile: float, value: float) -> str:
+    return f"p{percentile:g} = {_format_compact_number(value)}"
+
+
+def _format_compact_number(value: float) -> str:
+    if not np.isfinite(value):
+        return str(value)
+    return f"{value:.4g}"
 
 
 def _should_use_scientific_tick(value: float) -> bool:

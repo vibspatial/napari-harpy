@@ -5,10 +5,11 @@ from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
-from qtpy.QtCore import Qt
+from qtpy.QtCore import QPoint, Qt
 from qtpy.QtWidgets import QLabel
 
 from napari_harpy.core.histogram import HistogramResult, HistogramSettings, HistogramTarget
+from napari_harpy.widgets.histogram import plot_widget as plot_widget_module
 from napari_harpy.widgets.histogram.plot_widget import _HistogramPlotWidget, _ScientificYAxisItem
 from napari_harpy.widgets.histogram.styles import (
     HISTOGRAM_BAR_FILL_COLOR,
@@ -83,6 +84,55 @@ def test_histogram_plot_widget_draws_unlabeled_percentile_markers(qtbot) -> None
     assert all(line.pen.style() == Qt.PenStyle.DashLine for line in marker_lines)
     assert all(line.pen.color().name().upper() == HISTOGRAM_PERCENTILE_LINE_COLOR.upper() for line in marker_lines)
     assert all(not hasattr(line, "label") for line in marker_lines)
+    assert [line._tooltip_text for line in marker_lines] == ["p1 = 0.1234", "p99 = 0.9876"]
+    assert all(line.toolTip() == "" for line in marker_lines)
+    assert all(line.acceptHoverEvents() for line in marker_lines)
+    assert all(line.hoverPen.width() > line.pen.width() for line in marker_lines)
+    assert all(line.hoverPen.color().name().upper() == HISTOGRAM_PERCENTILE_LINE_COLOR.upper() for line in marker_lines)
+
+
+def test_histogram_plot_widget_percentile_tooltip_uses_hover_event(qtbot, monkeypatch) -> None:
+    shown_tooltips: list[tuple[QPoint, str, int]] = []
+    hidden_tooltips: list[bool] = []
+
+    class FakeToolTip:
+        @staticmethod
+        def showText(pos: QPoint, text: str, _widget, _rect, display_time_ms: int) -> None:
+            shown_tooltips.append((pos, text, display_time_ms))
+
+        @staticmethod
+        def hideText() -> None:
+            hidden_tooltips.append(True)
+
+    class FakeScreenPos:
+        def toQPoint(self) -> QPoint:
+            return QPoint(12, 34)
+
+    class FakeHoverEvent:
+        def __init__(self, *, exit_event: bool) -> None:
+            self._exit_event = exit_event
+
+        def isExit(self) -> bool:
+            return self._exit_event
+
+        def screenPos(self) -> FakeScreenPos:
+            return FakeScreenPos()
+
+    monkeypatch.setattr(plot_widget_module, "QToolTip", FakeToolTip)
+    plot_widget = _HistogramPlotWidget()
+    qtbot.addWidget(plot_widget)
+    plot_widget.set_histogram(make_result(percentile_values={50.0: 0.5}))
+    marker_line = plot_widget._percentile_marker_lines[0]
+
+    marker_line.hoverEvent(FakeHoverEvent(exit_event=False))
+
+    assert marker_line.mouseHovering is True
+    assert shown_tooltips == [(QPoint(12, 34), "p50 = 0.5", 60_000)]
+
+    marker_line.hoverEvent(FakeHoverEvent(exit_event=True))
+
+    assert marker_line.mouseHovering is False
+    assert hidden_tooltips == [True]
 
 
 def test_histogram_plot_widget_omits_out_of_range_percentile_markers(qtbot) -> None:

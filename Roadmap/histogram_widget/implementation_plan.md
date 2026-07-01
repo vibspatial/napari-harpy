@@ -1360,6 +1360,8 @@ Scope:
   palette constant such as `HISTOGRAM_PERCENTILE_LINE_COLOR`;
 - do not label percentile markers in the plot; keep the plot visually quiet and
   show the computed percentile values in the card status surface instead;
+- add hover feedback for percentile lines, including a stronger hover pen and a
+  tooltip with the compact percentile value, for example `p10 = 95`;
 - render percentile markers only after a histogram calculation has produced
   `HistogramResult.percentile_values`;
 - if a computed percentile value lies outside the plotted histogram x-range,
@@ -1390,6 +1392,8 @@ Tests:
   calculated;
 - percentile guide lines are visually distinct from contrast-limit lines;
 - percentile guide lines are not labeled in the plot;
+- percentile guide lines expose compact tooltip values and visible hover
+  feedback;
 - percentile values outside the histogram x-range are not drawn but remain
   present in the status card;
 - clearing a percentile field removes the corresponding marker after the next
