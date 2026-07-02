@@ -31,13 +31,13 @@ The desired mental model is:
 1. draw a rough lasso around the intended object or tissue region;
 2. click inside that lasso on a representative pixel;
 3. Harpy grows a pixel region similar to the clicked pixel, constrained by the
-   lasso;
+   selected annotation boundary;
 4. Harpy converts the grown region back into an editable/savable polygon row.
 
-The lasso should be the safety boundary. A classic magic wand can run away when
-contrast is poor. In Harpy, the selected lasso polygon should cap how far the
-wand is allowed to grow unless the user explicitly enables a margin outside the
-lasso.
+The selected annotation should be the safety boundary. A classic magic wand can
+run away when contrast is poor. In Harpy, the selected polygon annotation should
+cap how far the wand is allowed to grow unless the user explicitly enables a
+boundary margin around the annotation.
 
 ## Short Recommendation
 
@@ -50,7 +50,7 @@ That means:
 - the finished polygon row is selected in the annotation `Shapes` layer;
 - the user enables wand refinement and clicks a seed point inside that selected
   polygon;
-- Harpy computes a candidate mask inside the lasso constraint;
+- Harpy computes a candidate mask inside the boundary constraint;
 - Harpy previews the candidate boundary;
 - the user applies it, replacing the selected polygon row while preserving row
   identity and features.
@@ -110,8 +110,8 @@ The first implementation should not be:
    - source image layer;
    - source channel or visible overlay channel;
    - tolerance;
-   - optional lasso margin, meaning how far the wand is allowed to grow outside
-     the original lasso.
+   - optional boundary margin, meaning how far the wand is allowed to grow
+     away from the current positive annotation region.
 7. User clicks `Refine`.
 8. Harpy enters seed-pick mode.
 9. User clicks a representative seed point for the selected polygon.
@@ -137,17 +137,17 @@ picker:
 - when the selected row changes, any pending preview or seed-pick state is
   cancelled and the card refreshes for the new row.
 
-The selected row is the refinement target and lasso constraint. It is a current
-napari row index from `layer.selected_data`, not a source GeoDataFrame index
-value stored in `layer.features`.
+The selected row is the refinement target and boundary constraint. It is a
+current napari row index from `layer.selected_data`, not a source GeoDataFrame
+index value stored in `layer.features`.
 
 User action inside the card:
 
 1. User selects/refines card parameters.
 2. User clicks `Refine`.
 3. The next valid click in the viewer is interpreted as the seed point.
-4. The seed click must land inside the selected polygon or its configured lasso
-   margin.
+4. The seed click must land inside the selected polygon's positive annotation
+   region.
 5. Harpy shows a preview and exposes `Apply` / `Cancel`.
 
 Do not start seed-pick mode merely because a polygon row is selected. The row
@@ -157,7 +157,7 @@ selection opens/enables the card; `Refine` arms the one-click seed interaction.
 
 After replacement refinement is stable, add a mode selector:
 
-- `Replace`: selected lasso row becomes the wand region.
+- `Replace`: selected polygon row becomes the wand region.
 - `Add`: selected row becomes `selected_polygon.union(wand_region)`.
 - `Subtract`: selected row becomes `selected_polygon.difference(wand_region)`.
 
@@ -179,11 +179,13 @@ Recommended controls in the Shapes Annotation widget:
   - RGB/composite support can be deferred.
 - Tolerance slider in normalized intensity units.
 - Connectivity selector, default `8-connected`.
-- Lasso margin numeric control:
-  - default `0`, meaning the candidate cannot leave the selected lasso;
-  - positive values dilate the lasso constraint, allowing the candidate to grow
-    outside the original lasso by that many image pixels or coordinate-system
-    units, depending on the final unit decision.
+- Boundary margin numeric control:
+  - default `0`, meaning the candidate cannot leave the selected polygon's
+    positive annotation region;
+  - positive values dilate the positive annotation mask, allowing the candidate
+    to grow away from both exterior boundaries and hole boundaries by that many
+    image pixels or coordinate-system units, depending on the final unit
+    decision.
 - Smooth/simplify controls:
   - smoothing radius for the mask before contouring;
   - polygon simplification tolerance after contouring.
@@ -203,7 +205,7 @@ Required input:
 - exactly one selected row in `layer.selected_data`;
 - selected row has `shape_type == "polygon"`;
 - selected row can be decoded by `napari_polygon_vertices_to_shapely_polygon(...)`;
-- selected row is the lasso constraint and the row that will be replaced on
+- selected row is the boundary constraint and the row that will be replaced on
   apply.
 
 Selection-driven card behavior:
@@ -249,26 +251,62 @@ Defer full support for:
 - rotated/sheared transforms;
 - huge lazy dask reads that exceed the configured ROI pixel budget.
 
-### Lasso Constraint
+### Boundary Constraint
 
-The selected polygon row defines a binary constraint mask.
+The selected polygon row defines a positive annotation mask. For a simple
+polygon this is the shell interior. For a polygon with holes this is:
+
+```text
+positive_annotation_mask = shell_mask & ~hole_masks
+```
+
+The boundary margin is measured from that positive annotation mask, not from the
+exterior shell alone. This avoids special-case "inside/outside" rules for holes:
+hole interiors are outside the positive annotation in exactly the same sense as
+the area outside the shell.
 
 Default behavior:
 
-- candidate pixels must be inside the selected lasso polygon;
-- the seed click must be inside the selected lasso polygon;
-- flood growth is clipped to the lasso mask;
-- the final polygon is also clipped to the lasso-derived constraint.
+- candidate pixels must be inside the selected polygon's positive annotation
+  mask;
+- the seed click must be inside the positive annotation mask, not inside a hole
+  and not merely inside the boundary-margin band;
+- flood growth is clipped to the positive annotation mask;
+- the final polygon is also clipped to that positive annotation mask.
 
 Optional margin behavior:
 
-- if margin is positive, dilate the rasterized lasso mask before region growth;
-- the seed still has to be near or inside the original selected polygon;
+- if margin is positive, dilate the positive annotation mask before region
+  growth;
+- the seed still has to be inside the original positive annotation mask;
+- exterior boundaries may grow outward by up to the margin;
+- hole boundaries may grow inward into hole interiors by up to the margin;
+- the middle of a large hole remains blocked if it is farther than the margin
+  from the positive annotation;
 - the preview should make it clear when the result extends beyond the original
-  lasso.
+  positive annotation.
 
-This makes the lasso a user-controlled safety guard instead of just an initial
-guess.
+This makes the selected annotation a user-controlled safety guard instead of
+just an initial guess.
+
+Raster implementation:
+
+```python
+positive_mask = rasterize_polygon_with_holes(selected_polygon)
+if boundary_margin_pixels > 0:
+    allowed_mask = skimage.morphology.isotropic_dilation(
+        positive_mask,
+        radius=boundary_margin_pixels,
+    )
+else:
+    allowed_mask = positive_mask
+
+candidate_mask = similarity_mask & allowed_mask
+candidate_mask = connected_component_containing_seed(candidate_mask, seed)
+```
+
+Keep only the connected component containing the seed so the margin cannot turn
+nearby disconnected regions into a `MultiPolygon`.
 
 ### Output Geometry
 
@@ -340,8 +378,8 @@ unavailable for the current image/annotation transform.
 
 ### 2. Extract A Bounded ROI
 
-Compute the selected polygon's image-space bounding box, expanded by the lasso
-margin and a small contouring pad.
+Compute the selected polygon's image-space bounding box, expanded by the
+boundary margin and a small contouring pad.
 
 Then:
 
@@ -374,7 +412,7 @@ The first version should use one scalar image plane.
 
 Recommended normalization:
 
-1. Extract ROI pixels inside the lasso constraint.
+1. Extract ROI pixels inside the positive annotation mask.
 2. Compute robust percentiles, for example 1st and 99th.
 3. Clip and scale to `[0, 1]`.
 4. Use the seed pixel value in normalized units.
@@ -402,17 +440,17 @@ Future extensions:
 Compute the connected component containing the seed inside:
 
 ```text
-similarity_mask & lasso_constraint_mask
+similarity_mask & allowed_mask
 ```
 
 Implementation recommendation:
 
-- compute `similarity_mask & lasso_constraint_mask`;
+- compute `similarity_mask & allowed_mask`;
 - label connected components with `skimage.measure.label(...)`;
 - keep the label under the seed pixel;
 - reject the result if the seed pixel is not in a valid component.
 
-This keeps the lasso constraint explicit and avoids a custom flood-fill loop.
+This keeps the boundary constraint explicit and avoids a custom flood-fill loop.
 
 ### 6. Clean The Mask
 
@@ -557,7 +595,7 @@ Tests:
 - seed outside constraint is rejected;
 - no similar pixels returns a clear error;
 - 4-connected and 8-connected behavior differ as expected;
-- growth cannot cross the lasso constraint;
+- growth cannot cross the allowed boundary mask;
 - tolerance controls candidate size monotonically;
 - non-finite image values are ignored or rejected deterministically.
 
@@ -652,7 +690,7 @@ Prefer "no mutation plus status-card warning" over partial mutation.
 The operation should leave the selected row unchanged when:
 
 - source image cannot be resolved;
-- seed is outside the selected lasso;
+- seed is outside the selected polygon's positive annotation region;
 - seed maps outside the image plane;
 - ROI exceeds budget;
 - no valid candidate mask exists;
@@ -662,7 +700,7 @@ The operation should leave the selected row unchanged when:
 
 Warnings should be short and actionable, for example:
 
-- "Click inside the selected lasso."
+- "Click inside the selected annotation, not inside a hole."
 - "Increase tolerance; no connected pixels matched the seed."
 - "Decrease tolerance; the region filled the lasso boundary."
 - "The selected image transform is not supported for wand refinement yet."
@@ -701,8 +739,8 @@ Later QA:
   percentile units, or raw image units?
 - Should the default source signal follow the currently visible image contrast
   limits or recompute robust normalization inside the lasso?
-- Should lasso margin be expressed in image pixels, coordinate-system units, or
-  screen pixels?
+- Should boundary margin be expressed in image pixels, coordinate-system units,
+  or screen pixels?
 - What default area threshold should separate preserved direct holes from small
   noisy holes that are filled during cleanup?
 - Should the wand support multi-seed refinement in the first version?
@@ -715,10 +753,10 @@ Later QA:
 
 The initial product scope is:
 
-- one selected lasso polygon row;
+- one selected polygon annotation row;
 - one scalar loaded image layer or selected channel;
 - one seed click;
-- lasso-constrained region growing;
+- boundary-constrained region growing;
 - preview contour;
 - replace selected row on apply;
 - add/subtract modes are deferred until replacement refinement is robust;

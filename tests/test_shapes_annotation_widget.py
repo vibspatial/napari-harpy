@@ -13,6 +13,7 @@ from matplotlib.colors import to_rgba
 from napari.layers import Image, Points, Shapes
 from napari.layers.base._base_constants import ActionType
 from napari.layers.shapes._shapes_constants import Mode
+from napari.utils.key_bindings import KeymapHandler, coerce_keybinding
 from napari_builtins.io import csv_to_layer_data, napari_write_shapes
 from qtpy.QtWidgets import QComboBox, QLabel
 from shapely.geometry import Polygon
@@ -991,9 +992,10 @@ def test_annotation_layer_edit_guard_replacing_layer_disconnects_previous_layer(
     assert second_layer._move_modes is not first_move_modes
 
 
-def test_annotation_layer_edit_guard_slice_one_does_not_bind_space_or_change_mouse_state() -> None:
+def test_annotation_layer_edit_guard_space_binding_preserves_existing_binding_and_mouse_state() -> None:
     layer = Shapes([], ndim=2)
     layer.mode = Mode.ADD_POLYGON_LASSO
+    space_key = coerce_keybinding("Space")
 
     def existing_space_keybinding(_layer: Shapes) -> None:
         return None
@@ -1014,7 +1016,10 @@ def test_annotation_layer_edit_guard_slice_one_does_not_bind_space_or_change_mou
 
     guard.attach(layer)
 
-    assert dict(layer.keymap) == original_keymap
+    assert "Space" not in layer.keymap
+    assert layer.keymap[space_key] is guard._wrapped_space_keybinding
+    assert guard._had_instance_space_keybinding is True
+    assert guard._previous_space_keybinding is existing_space_keybinding
     assert layer.mouse_pan is original_mouse_pan
     assert layer.mode == original_mode
     assert list(layer.mouse_drag_callbacks) == original_drag_callbacks
@@ -1027,6 +1032,7 @@ def test_annotation_layer_edit_guard_slice_one_does_not_bind_space_or_change_mou
     guard.disconnect()
 
     assert dict(layer.keymap) == original_keymap
+    assert layer.keymap[space_key] is existing_space_keybinding
     assert layer.mouse_pan is original_mouse_pan
     assert layer.mode == original_mode
     assert list(layer.mouse_drag_callbacks) == original_drag_callbacks
@@ -1035,6 +1041,43 @@ def test_annotation_layer_edit_guard_slice_one_does_not_bind_space_or_change_mou
         assert layer._drag_modes[mode] is callback
     for mode, callback in original_resumable_move_callbacks.items():
         assert layer._move_modes[mode] is callback
+
+
+def test_annotation_layer_edit_guard_space_binding_is_removed_when_guard_created_it() -> None:
+    layer = Shapes([], ndim=2)
+    space_key = coerce_keybinding("Space")
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+
+    assert space_key not in layer.keymap
+
+    guard.attach(layer)
+
+    assert "Space" not in layer.keymap
+    assert layer.keymap[space_key] is guard._wrapped_space_keybinding
+    assert guard._had_instance_space_keybinding is False
+    assert guard._previous_space_keybinding is None
+
+    guard.disconnect()
+
+    assert space_key not in layer.keymap
+
+
+def test_annotation_layer_edit_guard_space_binding_restores_none_like_existing_value() -> None:
+    layer = Shapes([], ndim=2)
+    space_key = coerce_keybinding("Space")
+    layer.keymap[space_key] = None
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+
+    guard.attach(layer)
+
+    assert layer.keymap[space_key] is guard._wrapped_space_keybinding
+    assert guard._had_instance_space_keybinding is True
+    assert guard._previous_space_keybinding is None
+
+    guard.disconnect()
+
+    assert space_key in layer.keymap
+    assert layer.keymap[space_key] is None
 
 
 def test_annotation_layer_edit_guard_space_pan_resumable_draw_modes_are_explicit() -> None:
@@ -1066,6 +1109,63 @@ def test_annotation_layer_edit_guard_can_space_pan_only_for_active_resumable_dra
         layer._is_creating = True
 
         assert guard._can_space_pan_draw_mode(layer) is False
+
+
+def test_annotation_layer_edit_guard_space_key_delegates_until_draw_callbacks_are_ready(
+    monkeypatch,
+) -> None:
+    layer = Shapes([], ndim=2)
+    layer.mode = Mode.ADD_POLYGON
+    event = SimpleNamespace(position=(0.0, 0.0), pos=np.asarray([0.0, 0.0]))
+    layer._drag_modes[Mode.ADD_POLYGON](layer, event)
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+
+    def fail_if_custom_space_pan_starts(_layer: Shapes) -> None:
+        raise AssertionError("custom Space-pan branch should stay disabled in Slice 3")
+
+    monkeypatch.setattr(guard, "_begin_space_pan_key_hold", fail_if_custom_space_pan_starts)
+    monkeypatch.setattr(guard, "_end_space_pan_key_hold", fail_if_custom_space_pan_starts)
+    handler = KeymapHandler()
+    handler.keymap_providers = [layer]
+
+    assert layer._is_creating is True
+    assert handler.press_key("Space") is True
+
+    assert layer.mode == Mode.PAN_ZOOM
+    assert guard._space_pan_key_held is False
+    assert guard._previous_mouse_pan is None
+
+    assert handler.release_key("Space") is True
+
+    assert layer.mode == Mode.ADD_POLYGON
+    assert guard._space_pan_key_held is False
+    assert guard._previous_mouse_pan is None
+
+
+def test_annotation_layer_edit_guard_space_key_delegates_for_unsupported_modes() -> None:
+    layer = Shapes([], ndim=2)
+    layer.mode = Mode.ADD_LINE
+    original_drag_callbacks = list(layer.mouse_drag_callbacks)
+    original_move_callbacks = list(layer.mouse_move_callbacks)
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+    handler = KeymapHandler()
+    handler.keymap_providers = [layer]
+
+    assert handler.press_key("Space") is True
+
+    assert layer.mode == Mode.PAN_ZOOM
+    assert guard._space_pan_key_held is False
+    assert guard._previous_mouse_pan is None
+
+    assert handler.release_key("Space") is True
+
+    assert layer.mode == Mode.ADD_LINE
+    assert guard._space_pan_key_held is False
+    assert guard._previous_mouse_pan is None
+    assert list(layer.mouse_drag_callbacks) == original_drag_callbacks
+    assert list(layer.mouse_move_callbacks) == original_move_callbacks
 
 
 def test_annotation_layer_edit_guard_space_pan_key_hold_restores_mouse_pan() -> None:

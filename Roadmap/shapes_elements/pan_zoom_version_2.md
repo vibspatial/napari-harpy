@@ -669,8 +669,17 @@ Headless tests should prove:
 
 ### Slice 3: Space Keybinding State
 
+Status: implemented.
+
 Add the guarded layer Space keybinding, but keep the custom Space-pan drawing
 branch disabled until Slice 4 installs draw-callback suppression.
+
+Implemented in `src/napari_harpy/widgets/shapes_annotation/widget.py` as
+Space keymap capture/install/restore logic on `_AnnotationLayerEditGuard`.
+The implementation uses napari's coerced Space key for direct keymap
+inspection, installs the binding through `layer.bind_key(...)`, restores or
+removes the instance binding on disconnect, and keeps the custom Space-pan draw
+branch disabled behind `_space_pan_draw_callbacks_ready()`.
 
 The goal of this slice is to prove keybinding ownership, capture/restoration,
 and fallback behavior without exposing half-working drawing behavior. In this
@@ -735,6 +744,30 @@ Headless tests should prove:
 
 Wrap drag and move callbacks for every mode in `SPACE_PAN_RESUMABLE_DRAW_MODES`.
 
+This slice is where the Space keybinding switches active supported drawing away
+from the Slice 3 fallback. After the supported draw callbacks are wrapped,
+`_space_pan_draw_callbacks_ready()` should return `True`, and
+`_handle_space_keybinding(...)` should use the custom state-machine branch for
+active supported drawing:
+
+```python
+if self._space_pan_draw_callbacks_ready() and self._can_space_pan_draw_mode(layer):
+    self._begin_space_pan_key_hold(layer)
+    try:
+        yield
+    finally:
+        self._end_space_pan_key_hold(layer)
+    return
+
+yield from self._temporary_pan_zoom_key_hold(layer)
+```
+
+`_temporary_pan_zoom_key_hold(...)` remains the fallback path for unsupported
+modes, inactive drawing modes, and any future not-ready guard condition. It
+should no longer be used for active drawing in `Mode.ADD_POLYGON_LASSO`,
+`Mode.ADD_PATH`, `Mode.ADD_POLYGON`, or `Mode.ADD_POLYLINE` once this slice is
+complete.
+
 The drag wrapper is the expected place to track the temporary pan mouse
 gesture. When `_drawing_is_suspended()` is true and a wrapped supported-mode
 drag callback receives `event.type == "mouse_press"`, call
@@ -753,6 +786,10 @@ Headless tests should prove:
 - mouse press during Space-pan calls the state-machine mouse-gesture begin
   helper;
 - mouse release calls the state-machine mouse-gesture end helper;
+- active supported-draw Space calls the state-machine key-hold begin/end
+  helpers instead of delegating to `_temporary_pan_zoom_key_hold(...)`;
+- `_temporary_pan_zoom_key_hold(...)` remains the behavior for unsupported modes
+  and non-active drawing;
 - if Space is released first, draw callbacks resume only after mouse release;
 - if mouse is released first, draw callbacks resume only after Space release;
 - unsupported draw modes (`ADD_LINE`, `ADD_RECTANGLE`, `ADD_ELLIPSE`) remain
