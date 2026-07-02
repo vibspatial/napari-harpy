@@ -768,17 +768,52 @@ should no longer be used for active drawing in `Mode.ADD_POLYGON_LASSO`,
 `Mode.ADD_PATH`, `Mode.ADD_POLYGON`, or `Mode.ADD_POLYLINE` once this slice is
 complete.
 
-The drag wrapper is the expected place to track the temporary pan mouse
-gesture. When `_drawing_is_suspended()` is true and a wrapped supported-mode
-drag callback receives `event.type == "mouse_press"`, call
-`_begin_space_pan_mouse_gesture()` and suppress napari's original drag callback
-for that gesture. On the matching mouse release/end of the wrapper generator,
-call `_end_space_pan_mouse_gesture(layer)`. This should still work while
-`layer.mouse_pan = True`, because napari dispatches canvas mouse events to the
-active layer callbacks even when camera pan is enabled.
+Implementation contract:
+
+- in `attach(...)`, capture the original supported-mode callbacks before
+  replacing them;
+- install wrapped callbacks in the instance `_drag_modes` and `_move_modes`
+  mappings for every mode in `SPACE_PAN_RESUMABLE_DRAW_MODES`;
+- keep existing `Mode.DIRECT` and `Mode.VERTEX_REMOVE` wrappers unchanged;
+- when `_drawing_is_suspended()` is false, each supported-mode wrapper must
+  delegate to napari's original callback exactly as before;
+- when `_drawing_is_suspended()` is true, each supported move callback must
+  suppress napari's original move callback and return without adding vertices,
+  moving the active vertex, or changing layer data;
+- when `_drawing_is_suspended()` is true, each supported drag callback must
+  suppress napari's original drag callback for the Space-pan mouse gesture;
+- after these wrappers are installed, `_space_pan_draw_callbacks_ready()` should
+  return `True` so active supported drawing takes the custom Space-pan branch.
+
+The drag wrapper is the expected place to track the temporary pan mouse gesture.
+When `_drawing_is_suspended()` is true and a wrapped supported-mode drag callback
+receives a mouse press, call `_begin_space_pan_mouse_gesture()` and suppress
+napari's original drag callback for that gesture. On the matching mouse
+release/end of the wrapper generator, call `_end_space_pan_mouse_gesture(layer)`.
+This should still work while `layer.mouse_pan = True`, because napari dispatches
+canvas mouse events to the active layer callbacks even when camera pan is
+enabled.
+
+The gesture lifetime must be independent of release order:
+
+- if Space is released first, `_space_pan_key_held` becomes `False` but
+  `_space_pan_mouse_gesture_active` keeps drawing suspended until the mouse
+  gesture ends;
+- if the mouse is released first, `_space_pan_mouse_gesture_active` becomes
+  `False` but `_space_pan_key_held` keeps drawing suspended until Space is
+  released;
+- only after both flags are false should `layer.mouse_pan` restore to its
+  previous value and drawing callbacks delegate normally again.
+
+Implementation note: the wrapper should be robust to napari callbacks that
+return either a generator or a plain value. When delegating, preserve the
+original callback's return shape. When suppressing during Space-pan, do not run
+the original callback body.
 
 Headless tests should prove:
 
+- when drawing is not suspended, supported drag and move wrappers delegate to
+  napari's original callbacks;
 - while drawing is suspended, supported move callbacks do not add vertices or
   move the active vertex;
 - while drawing is suspended, supported drag callbacks do not add vertices or
@@ -786,6 +821,8 @@ Headless tests should prove:
 - mouse press during Space-pan calls the state-machine mouse-gesture begin
   helper;
 - mouse release calls the state-machine mouse-gesture end helper;
+- draw-callback suppression never calls the original supported-mode callback
+  while `_drawing_is_suspended()` is true;
 - active supported-draw Space calls the state-machine key-hold begin/end
   helpers instead of delegating to `_temporary_pan_zoom_key_hold(...)`;
 - `_temporary_pan_zoom_key_hold(...)` remains the behavior for unsupported modes
