@@ -680,13 +680,25 @@ are not suppressed yet.
 
 Implementation contract:
 
+- use napari's keybinding coercion when inspecting the keymap:
+  `coerce_keybinding("Space")` is the key stored in `layer.keymap`, not the
+  raw string `"Space"`;
+- install the custom binding with `layer.bind_key("Space", callback,
+  overwrite=True)` rather than manually inserting a raw string key;
 - add a private feature flag or predicate on `_AnnotationLayerEditGuard`, for
   example `_space_pan_draw_callbacks_ready() -> bool`, that returns `False` in
   Slice 3;
 - install an instance-level Space keybinding on the guarded layer during
   `attach(...)`;
-- capture and restore any pre-existing instance Space binding on
-  `disconnect()`;
+- capture whether the guarded layer had an instance Space binding before
+  attach with `space_key = coerce_keybinding("Space")`;
+- store the previous value from `layer.keymap[space_key]` only if that coerced
+  key existed in the instance keymap;
+- on `disconnect()`, restore the previous value if an instance binding existed
+  before attach;
+- on `disconnect()`, remove the guard-created binding with
+  `layer.keymap.pop(space_key, None)` if no instance binding existed before
+  attach;
 - when Space is pressed and `_space_pan_draw_callbacks_ready()` is false,
   delegate to napari-equivalent temporary pan-zoom, even if
   `_can_space_pan_draw_mode(layer)` is true;
@@ -704,6 +716,8 @@ wrappers are installed.
 Headless tests should prove:
 
 - attaching installs an instance Space binding on the guarded layer;
+- raw `"Space"` lookup is not used for capture/restoration; tests should use
+  napari's coerced `KeyBinding` or `layer.bind_key(...)`;
 - disconnect restores a pre-existing instance Space binding;
 - disconnect removes the guard-created Space binding when no instance binding
   existed before attach;
