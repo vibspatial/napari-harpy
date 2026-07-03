@@ -43,6 +43,7 @@ from napari_harpy._app_state import (
     get_or_create_app_state,
 )
 from napari_harpy._resources import get_logo_path
+from napari_harpy._shapes_triangulation import ensure_shapes_triangulation_backend
 from napari_harpy.core.shapes_annotation import (
     DEFAULT_SHAPES_INDEX_NAME,
     DEFAULT_SHAPES_INDEX_PREFIX,
@@ -796,6 +797,7 @@ class _AnnotationLayerEditGuard:
             # but can leave old clickable vertex indices behind, so a later
             # hit-test may report an index that no longer exists in
             # `layer.data[row_index]`.
+            ensure_shapes_triangulation_backend()
             layer.data = rebuilt_data
 
         layer.opacity = style_snapshot.opacity

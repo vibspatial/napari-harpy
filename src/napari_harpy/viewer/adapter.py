@@ -19,6 +19,7 @@ from spatialdata.models import get_axes_names
 from spatialdata.transformations import get_transformation
 from xarray import DataArray, DataTree
 
+from napari_harpy._shapes_triangulation import ensure_shapes_triangulation_backend
 from napari_harpy.core._color_source import (
     ShapeColumnColorSourceSpec,
     TableColorSourceSpec,
@@ -2136,6 +2137,7 @@ def _build_shapes_layer(
             f"Shapes element `{shapes_name}` has no renderable geometries in coordinate system `{coordinate_system}`."
         )
 
+    ensure_shapes_triangulation_backend()
     layer = _HarpyShapes(
         napari_layer_inputs.data,
         name=name,
@@ -2161,6 +2163,7 @@ def _build_empty_primary_shapes_layer(
     name: str,
     source_shapes_index_feature_name: str = DEFAULT_SHAPES_INDEX_FEATURE_NAME,
 ) -> _HarpyShapes:
+    ensure_shapes_triangulation_backend()
     layer = _HarpyShapes(
         [],
         ndim=2,
@@ -2193,6 +2196,7 @@ def _build_harpy_shapes_layer_from_native_layer(
     if data:
         kwargs["shape_type"] = shape_type
 
+    ensure_shapes_triangulation_backend()
     replacement = _HarpyShapes(data, **kwargs)
     _apply_primary_shapes_layer_style(replacement)
     replacement.opacity = layer.opacity
