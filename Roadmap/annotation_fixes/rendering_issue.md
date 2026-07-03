@@ -257,6 +257,109 @@ symdiff vs target: 0.001147616
 The exact floating-point values may vary slightly by platform or dependency
 version, so tests should use tolerances rather than exact metric equality.
 
+### Preferred Harpy Regression Fixture
+
+The reduced fixture above is useful for explaining the `bermuda` failure, but
+it is not the best primary Harpy regression fixture. In the napari UI, the
+reduced CSV example can still be confusing because a layer may have been opened
+before Harpy switches the backend, or may keep a cached `bermuda` mesh even
+after `get_backend()` later reports `Numba`.
+
+For Harpy's own unit test, use a hardcoded fixture that stays close to the real
+`new_shapes` / `__annotation_1` geometry from:
+
+`/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium_3_6_26.zarr`
+
+This fixture should keep the original coordinate scale and ring complexity:
+
+- 17 shell coordinates including the closing coordinate;
+- 3 interior rings;
+- interior ring coordinate counts of 8, 7, and 6 including closures;
+- a resulting napari direct-hole path with 41 `(y, x)` vertices.
+
+Use this Shapely `(x, y)` fixture in the regression test:
+
+```python
+from shapely.geometry import Polygon
+
+
+ANNOTATION_1_HOLE_TRIANGULATION_REGRESSION_POLYGON = Polygon(
+    shell=[
+        (1883.543213, 2352.524414),
+        (2182.454590, 2429.829102),
+        (2208.222656, 2496.826416),
+        (2208.222656, 2615.360107),
+        (2177.300781, 2713.279297),
+        (2120.610840, 2780.276855),
+        (2063.920654, 2821.505859),
+        (1966.001465, 2852.427734),
+        (1899.004150, 2852.427734),
+        (1821.699463, 2831.813232),
+        (1775.316772, 2800.891357),
+        (1713.473022, 2697.818359),
+        (1698.012085, 2620.513916),
+        (1698.012085, 2543.209229),
+        (1734.087524, 2460.750977),
+        (1832.006836, 2373.138916),
+        (1883.543213, 2352.524414),
+    ],
+    holes=[
+        [
+            (1841.824951, 2505.260742),
+            (1814.584351, 2521.605225),
+            (1790.067871, 2548.845703),
+            (1803.688110, 2581.534424),
+            (1847.273071, 2589.706543),
+            (1877.237793, 2581.534424),
+            (1888.134033, 2543.397705),
+            (1841.824951, 2505.260742),
+        ],
+        [
+            (2037.957397, 2584.258545),
+            (2010.716797, 2600.602783),
+            (1988.924316, 2630.567627),
+            (2002.544556, 2660.532227),
+            (2037.957397, 2663.256348),
+            (2067.922119, 2636.015625),
+            (2037.957397, 2584.258545),
+        ],
+        [
+            (2007.992676, 2502.536621),
+            (2016.164917, 2540.673584),
+            (2054.301758, 2540.673584),
+            (2081.542236, 2513.432861),
+            (2086.990479, 2486.192383),
+            (2007.992676, 2502.536621),
+        ],
+    ],
+)
+```
+
+Observed mesh behavior for this original-scale fixture:
+
+```text
+Backend: Fastest available / bermuda
+shape mesh path:  _set_meshes_compiled_bermuda
+face vertices:    34
+face triangles:   38
+overdraw:          ~1272.448430
+symdiff vs target: ~23.224523
+
+Backend: Numba / VisPy path
+shape mesh path:  _set_meshes_py
+face vertices:    36
+face triangles:   38
+overdraw:          0.0
+symdiff vs target: 0.0 when compared to the layer-decoded polygon
+```
+
+The test should compare the mesh to
+`napari_polygon_vertices_to_shapely_polygon(layer.data[0])`, not only to the
+original Python literal. Napari can introduce tiny internal floating-point
+differences when creating a `Shapes` layer; comparing against the layer-decoded
+polygon keeps the test focused on triangulation correctness rather than
+coordinate storage noise.
+
 ## Regression Test Contract
 
 The Harpy regression test should validate the backend guard and the rendered
@@ -293,15 +396,19 @@ second assertion catches overlapping triangles that can still make the final
 union look almost correct but render visibly wrong because semi-transparent
 faces are drawn multiple times.
 
-Recommended Harpy test flow:
+Recommended Slice 1 test flow:
 
 1. Set napari settings/runtime state to an unsafe backend such as
    `Fastest available`.
-2. Construct a Harpy-managed generic `Shapes` layer from
-   `BERMUDA_HOLE_TRIANGULATION_REGRESSION_POLYGON`.
-3. Assert Harpy switched settings and runtime triangulation to `Numba`.
-4. Assert the resulting napari shape mesh matches the Shapely polygon using the
-   mesh invariant above.
+2. Import or reload `napari_harpy`.
+3. Assert importing Harpy switched settings and runtime triangulation to
+   `Numba`.
+4. Construct a plain napari `Shapes` layer from
+   `ANNOTATION_1_HOLE_TRIANGULATION_REGRESSION_POLYGON`.
+5. Assert the shape mesh path is `_set_meshes_py`, not
+   `_set_meshes_compiled_bermuda`.
+6. Decode `layer.data[0]` back to a Shapely polygon and assert the resulting
+   napari shape mesh matches that polygon using the mesh invariant above.
 
 An optional upstream-facing test can directly force `Fastest available` with
 `bermuda` installed and assert that the reduced fixture produces nonzero
@@ -466,63 +573,65 @@ def _ensure_harpy_shapes_triangulation_backend() -> None:
     settings = get_settings()
     settings_backend = settings.experimental.triangulation_backend
     runtime_backend = get_backend()
+    switched_from = {
+        backend
+        for backend in (settings_backend, runtime_backend)
+        if backend in _UNSAFE_HARPY_SHAPES_TRIANGULATION_BACKENDS
+    }
 
-    if settings_backend in _UNSAFE_HARPY_SHAPES_TRIANGULATION_BACKENDS:
+    if switched_from:
         settings.experimental.triangulation_backend = _HARPY_SHAPES_TRIANGULATION_BACKEND
-
-    if runtime_backend in _UNSAFE_HARPY_SHAPES_TRIANGULATION_BACKENDS:
-        set_backend(_HARPY_SHAPES_TRIANGULATION_BACKEND)
+        if get_backend() != _HARPY_SHAPES_TRIANGULATION_BACKEND:
+            set_backend(_HARPY_SHAPES_TRIANGULATION_BACKEND)
 ```
 
-The helper should be called only at concrete Harpy remesh/construction points.
-Do not scatter it around every annotation action. The current codebase remeshes
-Shapes through napari implicitly when Harpy constructs `_HarpyShapes(...)` or
-assigns public `layer.data = ...`.
+### Slice 1: Import-Time Numba Backend Policy
 
-Concrete integration points:
+Current code state after rollback:
 
-1. In `viewer/adapter.py::_build_shapes_layer(...)`, call
-   `_ensure_harpy_shapes_triangulation_backend()` only in the generic
-   `_HarpyShapes(...)` branch, immediately before constructing `_HarpyShapes`.
-   Do not call it in the point-radius `_HarpyPointRadiusShapes(...)` branch,
-   because point-radius shapes render as napari `Points` and do not use Shapes
-   face triangulation.
-2. In `viewer/adapter.py::_build_empty_primary_shapes_layer(...)`, call the
-   helper immediately before constructing the empty editable `_HarpyShapes`
-   layer. The layer starts empty, but users will draw polygons into it.
-3. In `viewer/adapter.py::_build_harpy_shapes_layer_from_native_layer(...)`,
-   call the helper immediately before `replacement = _HarpyShapes(data,
-   **kwargs)`. This is the native-import adoption remesh point: Harpy copies
-   `layer.data`, not the native layer's cached mesh, and creates a fresh Harpy
-   replacement layer.
-4. In `widgets/shapes_annotation/_create_holes.py::_apply_create_holes_plan(...)`,
-   call the helper immediately before `layer.data = rebuilt_data`. Create-holes
-   can create a repeated-anchor hole-bearing polygon row, and the public data
-   setter rebuilds napari's private rendering cache.
-5. In
-   `widgets/shapes_annotation/widget.py::_replace_shape_row_rebuilding_vertex_cache(...)`,
-   call the helper immediately before `layer.data = rebuilt_data`. This helper
-   exists specifically for row-replacement edits that must rebuild napari's
-   private vertex/rendering cache.
-6. Investigate whether napari exposes a layer-local triangulation setting. If
-   not, global backend switching must be treated carefully because it may affect
-   other Shapes layers.
-7. Report a minimal reproduction upstream to napari/bermuda using the
-   `__annotation_1` vertex row.
+- `src/napari_harpy/__init__.py` currently only resolves `__version__` and
+  installs lazy module attributes through `lazy_loader`.
+- There is no triangulation helper in `src/napari_harpy`.
+- `viewer/adapter.py` and the annotation widget do not currently set napari's
+  triangulation backend.
 
-Places not to guard initially:
+Slice 1 should be deliberately minimal: set Harpy's Shapes triangulation policy
+as soon as `napari_harpy` is imported, then verify that a Shapes layer created
+after that import uses the Numba/VisPy path for the `__annotation_1`-like
+fixture.
 
-- `_normalize_native_shapes_layer_transform(...)`: it can assign data on the
-  temporary native layer, but native adoption immediately rebuilds a fresh
-  `_HarpyShapes` replacement in `_build_harpy_shapes_layer_from_native_layer(...)`.
-  The replacement construction is the final visible mesh we need to protect.
-- `_sync_anchor_drag(...)` and other per-mouse-move `_data_view.edit(...)` paths:
-  these are hot interaction paths. If Harpy sets the backend at construction and
-  explicit public data-rebuild points, direct edit remeshing should already use
-  the safe backend. Add a guard here only if a later test proves napari settings
-  can reset mid-edit.
-- generic layer registration, selection changes, style changes, or status-card
-  updates: these do not construct Shapes or assign `layer.data`.
+Implementation specification:
+
+1. Add a small private helper in `src/napari_harpy/__init__.py`, or in a tiny
+   internal module imported by `__init__.py`, that applies the backend policy.
+2. Call that helper during `napari_harpy` package import.
+3. If either napari settings or runtime backend is unsafe
+   (`Fastest available` or `bermuda`), set
+   `settings.experimental.triangulation_backend` to
+   `TriangulationBackend.numba` and ensure `get_backend()` also reports
+   `Numba`.
+4. Do not inspect individual shapes, rows, or polygons for holes.
+5. Do not reconstruct or mutate any existing layers in this slice.
+
+This import-time policy should help both Harpy-managed Shapes and plain napari
+CSV/native Shapes workflows, as long as `napari_harpy` is imported before the
+Shapes layer is constructed. If the backend setting is persisted by napari
+settings, it may also help later napari processes, but the unit test should only
+rely on behavior within the current Python process.
+
+Important limitation: Slice 1 does not repair a Shapes layer that was already
+constructed under `bermuda`. Such a layer can keep a cached bad face mesh until
+it is reconstructed or its public `layer.data` is reassigned under a safe
+backend. That repair path is explicitly out of scope for this first slice.
+
+Out of scope for Slice 1:
+
+- adding adapter-level guards before `_HarpyShapes(...)` construction;
+- adding annotation-widget guards before `layer.data = ...` remeshes;
+- reassigning `layer.data = [row.copy() for row in layer.data]`;
+- native-layer adoption remesh repairs;
+- per-shape or per-row hole detection;
+- changing saved geometry or Harpy's direct-hole encoding.
 
 The most important design constraint is that the mitigation should not corrupt
 or rewrite the saved geometry. The stored Shapely polygon and Harpy's encoded
@@ -551,24 +660,36 @@ explicit and log when Harpy switches from an unsafe backend to `Numba`.
 
 ## Suggested Next Step
 
-Implement a small backend guard in the viewer/annotation code path, covered by
-tests that verify:
+Implement Slice 1 only, then report back before adding broader remesh hooks.
 
-- constructing any Harpy generic Shapes layer switches unsafe
-  `Fastest available` or `bermuda` settings/runtime state to `Numba`;
-- point-radius shapes rendered as napari `Points` do not call the Shapes
-  triangulation guard;
-- native napari Shapes adoption rebuilds the Harpy replacement under `Numba`
-  even if the native layer was constructed under `Fastest available`;
-- create-holes calls the guard before its public `layer.data = rebuilt_data`
-  remesh;
-- row-replacement vertex-cache rebuild calls the guard before its public
-  `layer.data = rebuilt_data` remesh;
-- direct `set_backend(Numba)` is not the only operation performed; the napari
-  settings value is also updated;
-- a layer constructed under `Fastest available` keeps its cached bad mesh even
-  after the backend is later switched to `Numba`;
-- reconstructing or reassigning that layer's data under `Numba` rebuilds the
-  mesh and makes the invariant pass;
-- the `__annotation_1` regression row triangulates exactly under the selected
-  backend.
+Slice 1 test coverage should verify:
+
+- importing or reloading `napari_harpy` with unsafe napari settings/runtime
+  backend state switches both to `Numba`;
+- the implementation updates napari settings as well as runtime state, not only
+  `set_backend(Numba)`;
+- after `import napari_harpy`, constructing a plain napari `Shapes` layer from
+  `ANNOTATION_1_HOLE_TRIANGULATION_REGRESSION_POLYGON` uses the Numba/VisPy
+  mesh path rather than `_set_meshes_compiled_bermuda`;
+- the same fixture triangulates without overdraw when the resulting mesh is
+  compared to `napari_polygon_vertices_to_shapely_polygon(layer.data[0])`;
+- tests restore both napari settings and runtime backend after each case, since
+  triangulation backend state is process-global.
+
+Manual verification after Slice 1:
+
+1. Start from unsafe backend state (`Fastest available` / `bermuda`).
+2. Import `napari_harpy`.
+3. Create or open the `bermuda_hole_regression` Shapes layer only after that
+   import.
+4. Confirm `get_backend()` reports `Numba`.
+5. Inspect the shape mesh path:
+
+```python
+shape = layer._data_view.shapes[0]
+print(getattr(shape._set_meshes, "__name__", None))
+```
+
+The expected mesh path is `_set_meshes_py`. If the napari UI still renders the
+fixture incorrectly under this setup, stop after Slice 1 and investigate the
+remaining rendering path before adding remesh or adapter-level fixes.
