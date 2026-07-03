@@ -308,6 +308,60 @@ An optional upstream-facing test can directly force `Fastest available` with
 overdraw. That test documents the napari/bermuda failure itself, but Harpy's
 own regression should focus on proving that Harpy avoids the unsafe backend.
 
+## Cached Mesh Finding
+
+One important follow-up finding: `get_backend() == TriangulationBackend.numba`
+does not prove that an already-loaded `Shapes` layer was triangulated with
+Numba.
+
+Napari builds and caches each shape's face mesh when the shape is constructed
+or remeshed. If a layer was created while the active backend selected
+`bermuda`, that layer can keep the bad `bermuda` triangles even after the
+global backend later reports `Numba`.
+
+Observed with the reduced regression fixture:
+
+```text
+Layer created under Numba:
+current backend:  Numba
+shape mesh path:  _set_meshes_py
+face vertices:    12
+face triangles:   12
+overdraw:         0.0
+
+Layer created under Fastest available / bermuda:
+current backend:  Fastest available
+shape mesh path:  _set_meshes_compiled_bermuda
+face vertices:    10
+face triangles:   12
+overdraw:         ~0.128
+
+Same bad layer after switching backend to Numba:
+current backend:  Numba
+shape mesh path:  _set_meshes_compiled_bermuda
+face vertices:    10
+face triangles:   12
+overdraw:         ~0.128
+```
+
+Calling `layer.refresh()` did not rebuild the face mesh. Reassigning the layer
+data under the safe backend did rebuild it:
+
+```python
+set_backend(TriangulationBackend.numba)
+layer.data = [row.copy() for row in layer.data]
+```
+
+After data reassignment, the same layer rebuilt through `_set_meshes_py` and the
+mesh invariant passed.
+
+This means the Harpy fix must do more than make `get_backend()` print `Numba`.
+Harpy must ensure the backend is safe before constructing Harpy-managed Shapes
+layers, and any existing native napari Shapes layer that Harpy adopts or
+rewrites should be reconstructed or have its data reassigned after the backend
+guard has run. Existing cached bad meshes are not repaired by changing backend
+state alone.
+
 ## Relevant Code Paths
 
 Harpy encoding:
@@ -347,6 +401,15 @@ incorrect rendered fill even though the underlying geometry is valid.
 
 The issue may become more visible when napari defaults to, or is configured for,
 `Fastest available` triangulation and `bermuda` is installed.
+
+Checking only `get_backend()` can be misleading. The currently active backend
+may be `Numba` while a specific already-loaded layer still contains a cached
+`bermuda` mesh. Debugging should inspect the shape mesh path as well:
+
+```python
+shape = layer._data_view.shapes[0]
+print(getattr(shape._set_meshes, "__name__", None))
+```
 
 ## Potential Mitigations
 
@@ -414,7 +477,10 @@ def _ensure_harpy_shapes_triangulation_backend() -> None:
 The helper should be called whenever Harpy is about to create, open, import, or
 mutate a napari `Shapes` layer that Harpy owns or manages. We should not call it
 for point-radius shapes rendered as napari `Points`, because those do not use
-Shapes face triangulation.
+Shapes face triangulation. For already-existing native napari `Shapes` layers,
+the helper must run before Harpy adopts or copies the layer, and the adopted
+Harpy-managed layer must be reconstructed or remeshed after the safe backend is
+active.
 
 Likely integration points:
 
@@ -428,7 +494,9 @@ Likely integration points:
 4. Before applying create-holes mutations, call the same helper because the
    operation creates a repeated-anchor hole-bearing polygon row.
 5. When importing or attaching to an existing native napari Shapes layer, call
-   the same helper before Harpy enables editing or rewrites layer data.
+   the same helper before Harpy enables editing or rewrites layer data. Do not
+   trust the native layer's existing cached mesh; reconstruct the Harpy-managed
+   layer or reassign copied `layer.data` after the safe backend is active.
 6. Investigate whether napari exposes a layer-local triangulation setting. If
    not, global backend switching must be treated carefully because it may affect
    other Shapes layers.
@@ -471,5 +539,9 @@ tests that verify:
   triangulation guard;
 - direct `set_backend(Numba)` is not the only operation performed; the napari
   settings value is also updated;
+- a layer constructed under `Fastest available` keeps its cached bad mesh even
+  after the backend is later switched to `Numba`;
+- reconstructing or reassigning that layer's data under `Numba` rebuilds the
+  mesh and makes the invariant pass;
 - the `__annotation_1` regression row triangulates exactly under the selected
   backend.
