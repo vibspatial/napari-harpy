@@ -678,8 +678,8 @@ Implemented in `src/napari_harpy/widgets/shapes_annotation/widget.py` as
 Space keymap capture/install/restore logic on `_AnnotationLayerEditGuard`.
 The implementation uses napari's coerced Space key for direct keymap
 inspection, installs the binding through `layer.bind_key(...)`, restores or
-removes the instance binding on disconnect, and keeps the custom Space-pan draw
-branch disabled behind `_space_pan_draw_callbacks_ready()`.
+removes the instance binding on disconnect, and kept the custom Space-pan draw
+branch disabled until Slice 4 added callback suppression.
 
 The goal of this slice is to prove keybinding ownership, capture/restoration,
 and fallback behavior without exposing half-working drawing behavior. In this
@@ -694,8 +694,8 @@ Implementation contract:
   raw string `"Space"`;
 - install the custom binding with `layer.bind_key("Space", callback,
   overwrite=True)` rather than manually inserting a raw string key;
-- add a private feature flag or predicate on `_AnnotationLayerEditGuard`, for
-  example `_space_pan_draw_callbacks_ready() -> bool`, that returns `False` in
+- keep real key events on the fallback path until Slice 4 wraps draw callbacks;
+  this may be done with a temporary private feature flag or predicate in
   Slice 3;
 - install an instance-level Space keybinding on the guarded layer during
   `attach(...)`;
@@ -708,8 +708,8 @@ Implementation contract:
 - on `disconnect()`, remove the guard-created binding with
   `layer.keymap.pop(space_key, None)` if no instance binding existed before
   attach;
-- when Space is pressed and `_space_pan_draw_callbacks_ready()` is false,
-  delegate to napari-equivalent temporary pan-zoom, even if
+- when Space is pressed before draw suppression is installed, delegate to
+  napari-equivalent temporary pan-zoom, even if
   `_can_space_pan_draw_mode(layer)` is true;
 - do not call `_begin_space_pan_key_hold(...)` or
   `_end_space_pan_key_hold(...)` from real key events until the draw callbacks
@@ -719,8 +719,8 @@ Implementation contract:
 - preserve `layer.mode`, layer data, selected rows, active callback lists, and
   keymap restoration after disconnect.
 
-Slice 4 can then flip the readiness predicate to true after the draw callback
-wrappers are installed.
+Slice 4 can then replace the temporary not-ready gate with the final guarded
+layer check after the draw callback wrappers are installed.
 
 Headless tests should prove:
 
@@ -731,9 +731,9 @@ Headless tests should prove:
 - disconnect removes the guard-created Space binding when no instance binding
   existed before attach;
 - active supported-draw Space does not call the state-machine key-hold helpers
-  while draw callbacks are not ready;
+  before draw suppression is installed;
 - active supported-draw Space still delegates to napari-equivalent temporary
-  pan-zoom while draw callbacks are not ready;
+  pan-zoom before draw suppression is installed;
 - unsupported modes still behave like normal temporary pan-zoom;
 - Space keybinding capture/restoration preserves any pre-existing instance
   Space binding whose value is `None` or sentinel-like;
@@ -742,16 +742,25 @@ Headless tests should prove:
 
 ### Slice 4: Draw Callback Suppression
 
+Status: implemented.
+
 Wrap drag and move callbacks for every mode in `SPACE_PAN_RESUMABLE_DRAW_MODES`.
+
+Implemented in `src/napari_harpy/widgets/shapes_annotation/widget.py` as
+supported draw/move callback wrappers on `_AnnotationLayerEditGuard`. The
+wrappers delegate normally when drawing is not suspended, suppress supported
+draw behavior during Space-pan, track the Space-started mouse gesture through a
+small drag generator, and make active supported drawing use the custom
+Space-pan keybinding branch.
 
 This slice is where the Space keybinding switches active supported drawing away
 from the Slice 3 fallback. After the supported draw callbacks are wrapped,
-`_space_pan_draw_callbacks_ready()` should return `True`, and
-`_handle_space_keybinding(...)` should use the custom state-machine branch for
-active supported drawing:
+`_handle_space_keybinding(...)` should require the key event layer to still be
+the guarded layer, then use the custom state-machine branch for active supported
+drawing:
 
 ```python
-if self._space_pan_draw_callbacks_ready() and self._can_space_pan_draw_mode(layer):
+if self._layer is layer and self._can_space_pan_draw_mode(layer):
     self._begin_space_pan_key_hold(layer)
     try:
         yield
@@ -759,10 +768,10 @@ if self._space_pan_draw_callbacks_ready() and self._can_space_pan_draw_mode(laye
         self._end_space_pan_key_hold(layer)
     return
 
-yield from self._temporary_pan_zoom_key_hold(layer)
+yield from self._fallback_pan_zoom_key_hold(layer)
 ```
 
-`_temporary_pan_zoom_key_hold(...)` remains the fallback path for unsupported
+`_fallback_pan_zoom_key_hold(...)` remains the fallback path for unsupported
 modes, inactive drawing modes, and any future not-ready guard condition. It
 should no longer be used for active drawing in `Mode.ADD_POLYGON_LASSO`,
 `Mode.ADD_PATH`, `Mode.ADD_POLYGON`, or `Mode.ADD_POLYLINE` once this slice is
@@ -782,8 +791,8 @@ Implementation contract:
   moving the active vertex, or changing layer data;
 - when `_drawing_is_suspended()` is true, each supported drag callback must
   suppress napari's original drag callback for the Space-pan mouse gesture;
-- after these wrappers are installed, `_space_pan_draw_callbacks_ready()` should
-  return `True` so active supported drawing takes the custom Space-pan branch.
+- after these wrappers are installed, active supported drawing should take the
+  custom Space-pan branch only when the key event belongs to the guarded layer.
 
 The drag wrapper is the expected place to track the temporary pan mouse gesture.
 When `_drawing_is_suspended()` is true and a wrapped supported-mode drag callback
@@ -824,8 +833,8 @@ Headless tests should prove:
 - draw-callback suppression never calls the original supported-mode callback
   while `_drawing_is_suspended()` is true;
 - active supported-draw Space calls the state-machine key-hold begin/end
-  helpers instead of delegating to `_temporary_pan_zoom_key_hold(...)`;
-- `_temporary_pan_zoom_key_hold(...)` remains the behavior for unsupported modes
+  helpers instead of delegating to `_fallback_pan_zoom_key_hold(...)`;
+- `_fallback_pan_zoom_key_hold(...)` remains the behavior for unsupported modes
   and non-active drawing;
 - if Space is released first, draw callbacks resume only after mouse release;
 - if mouse is released first, draw callbacks resume only after Space release;

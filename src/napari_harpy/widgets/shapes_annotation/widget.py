@@ -382,6 +382,14 @@ class _AnnotationLayerEditGuard:
         patched_drag_modes[Mode.DIRECT] = wrapped_direct_callback
         patched_drag_modes[Mode.VERTEX_REMOVE] = wrapped_vertex_remove_callback
         patched_move_modes = dict(move_modes)
+        for mode in _SPACE_PAN_RESUMABLE_DRAW_MODES:
+            patched_drag_modes[mode] = self._wrap_supported_draw_drag_callback(
+                layer,
+                drag_modes[mode],
+            )
+            patched_move_modes[mode] = self._wrap_supported_draw_move_callback(
+                move_modes[mode],
+            )
 
         self._capture_space_keybinding(layer)
 
@@ -478,7 +486,13 @@ class _AnnotationLayerEditGuard:
             layer.keymap.pop(_SPACE_KEYBINDING, None)
 
     def _handle_space_keybinding(self, layer: Shapes) -> Iterator[None]:
-        if self._space_pan_draw_callbacks_ready() and self._can_space_pan_draw_mode(layer):
+        """Handle the layer instance napari passes to the Space keybinding.
+
+        Napari calls layer keybindings with the bound layer as the first
+        argument. Checking that argument against `self._layer` keeps the custom
+        Space-pan branch scoped to the layer this guard currently owns.
+        """
+        if self._layer is layer and self._can_space_pan_draw_mode(layer):
             # Custom resumable drawing path: once Slice 4 enables callback
             # suppression, active supported drawings use Space to toggle
             # mouse-pan without leaving the current drawing mode.
@@ -492,19 +506,10 @@ class _AnnotationLayerEditGuard:
         # Fallback path: keep napari-equivalent temporary pan/zoom behavior for
         # unsupported modes, inactive drawing modes, and any state where the
         # custom resumable drawing path is not ready.
-        yield from self._temporary_pan_zoom_key_hold(layer)
+        yield from self._fallback_pan_zoom_key_hold(layer)
 
-    def _space_pan_draw_callbacks_ready(self) -> bool:
-        """Return whether Space may use the custom resumable drawing branch.
-
-        Slice 3 owns the Space keybinding only. Slice 4 can flip this after draw
-        callbacks are wrapped to suppress their normal drawing behavior during
-        Space-pan.
-        """
-        return False
-
-    def _temporary_pan_zoom_key_hold(self, layer: Shapes) -> Iterator[None]:
-        """Delegate Space to napari-equivalent temporary pan-zoom behavior."""
+    def _fallback_pan_zoom_key_hold(self, layer: Shapes) -> Iterator[None]:
+        """Delegate Space to napari-equivalent fallback pan/zoom behavior."""
         previous_mode = layer.mode
         pan_zoom = layer._modeclass.PAN_ZOOM
         if previous_mode == pan_zoom:
@@ -528,6 +533,56 @@ class _AnnotationLayerEditGuard:
 
     def _can_space_pan_draw_mode(self, layer: Shapes) -> bool:
         return bool(layer._is_creating and layer._mode in _SPACE_PAN_RESUMABLE_DRAW_MODES)
+
+    def _wrap_supported_draw_drag_callback(
+        self,
+        layer: Shapes,
+        original_callback: Callable[..., Any],
+    ) -> Callable[..., Any]:
+        def wrapped_supported_draw_drag_callback(*args: Any, **kwargs: Any) -> Any:
+            if not self._drawing_is_suspended():
+                return original_callback(*args, **kwargs)
+            event = args[1] if len(args) > 1 else kwargs.get("event")
+            if getattr(event, "type", None) == "mouse_press":
+                # Return a small generator so napari advances us on mouse
+                # move/release and we can clear the Space-pan mouse gesture.
+                return self._iter_suppressed_space_pan_drag(layer, event)
+            return None
+
+        return wrapped_supported_draw_drag_callback
+
+    def _wrap_supported_draw_move_callback(
+        self,
+        original_callback: Callable[..., Any],
+    ) -> Callable[..., Any]:
+        def wrapped_supported_draw_move_callback(*args: Any, **kwargs: Any) -> Any:
+            if self._drawing_is_suspended():
+                return None
+            return original_callback(*args, **kwargs)
+
+        return wrapped_supported_draw_move_callback
+
+    def _iter_suppressed_space_pan_drag(
+        self,
+        layer: Shapes,
+        event: object,
+    ) -> Iterator[None]:
+        """Track a Space-pan mouse gesture while suppressing drawing.
+
+        Napari keeps drag callbacks alive by storing the generator returned from
+        mouse press and advancing it on mouse move/release. Returning this
+        generator lets us mark the mouse gesture active without running napari's
+        original draw callback, then clear that state when the gesture ends so
+        drawing resumes safely regardless of whether Space or mouse releases
+        first.
+        """
+        self._begin_space_pan_mouse_gesture()
+        try:
+            yield
+            while getattr(event, "type", None) == "mouse_move":
+                yield
+        finally:
+            self._end_space_pan_mouse_gesture(layer)
 
     def _begin_space_pan_key_hold(self, layer: Shapes) -> None:
         self._space_pan_key_held = True

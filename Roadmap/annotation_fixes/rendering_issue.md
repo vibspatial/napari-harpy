@@ -474,34 +474,55 @@ def _ensure_harpy_shapes_triangulation_backend() -> None:
         set_backend(_HARPY_SHAPES_TRIANGULATION_BACKEND)
 ```
 
-The helper should be called whenever Harpy is about to create, open, import, or
-mutate a napari `Shapes` layer that Harpy owns or manages. We should not call it
-for point-radius shapes rendered as napari `Points`, because those do not use
-Shapes face triangulation. For already-existing native napari `Shapes` layers,
-the helper must run before Harpy adopts or copies the layer, and the adopted
-Harpy-managed layer must be reconstructed or remeshed after the safe backend is
-active.
+The helper should be called only at concrete Harpy remesh/construction points.
+Do not scatter it around every annotation action. The current codebase remeshes
+Shapes through napari implicitly when Harpy constructs `_HarpyShapes(...)` or
+assigns public `layer.data = ...`.
 
-Likely integration points:
+Concrete integration points:
 
-1. In `_build_shapes_layer(...)`, call
-   `_ensure_harpy_shapes_triangulation_backend()` before constructing
-   `_HarpyShapes(...)` for generic shapes rendering.
-2. In `_build_empty_primary_shapes_layer(...)`, call the same helper before
-   constructing an empty editable `_HarpyShapes` layer.
-3. In `_replace_shapes_layer_preserving_state(...)`, call the same helper before
-   constructing the replacement `_HarpyShapes` layer.
-4. Before applying create-holes mutations, call the same helper because the
-   operation creates a repeated-anchor hole-bearing polygon row.
-5. When importing or attaching to an existing native napari Shapes layer, call
-   the same helper before Harpy enables editing or rewrites layer data. Do not
-   trust the native layer's existing cached mesh; reconstruct the Harpy-managed
-   layer or reassign copied `layer.data` after the safe backend is active.
+1. In `viewer/adapter.py::_build_shapes_layer(...)`, call
+   `_ensure_harpy_shapes_triangulation_backend()` only in the generic
+   `_HarpyShapes(...)` branch, immediately before constructing `_HarpyShapes`.
+   Do not call it in the point-radius `_HarpyPointRadiusShapes(...)` branch,
+   because point-radius shapes render as napari `Points` and do not use Shapes
+   face triangulation.
+2. In `viewer/adapter.py::_build_empty_primary_shapes_layer(...)`, call the
+   helper immediately before constructing the empty editable `_HarpyShapes`
+   layer. The layer starts empty, but users will draw polygons into it.
+3. In `viewer/adapter.py::_build_harpy_shapes_layer_from_native_layer(...)`,
+   call the helper immediately before `replacement = _HarpyShapes(data,
+   **kwargs)`. This is the native-import adoption remesh point: Harpy copies
+   `layer.data`, not the native layer's cached mesh, and creates a fresh Harpy
+   replacement layer.
+4. In `widgets/shapes_annotation/_create_holes.py::_apply_create_holes_plan(...)`,
+   call the helper immediately before `layer.data = rebuilt_data`. Create-holes
+   can create a repeated-anchor hole-bearing polygon row, and the public data
+   setter rebuilds napari's private rendering cache.
+5. In
+   `widgets/shapes_annotation/widget.py::_replace_shape_row_rebuilding_vertex_cache(...)`,
+   call the helper immediately before `layer.data = rebuilt_data`. This helper
+   exists specifically for row-replacement edits that must rebuild napari's
+   private vertex/rendering cache.
 6. Investigate whether napari exposes a layer-local triangulation setting. If
    not, global backend switching must be treated carefully because it may affect
    other Shapes layers.
 7. Report a minimal reproduction upstream to napari/bermuda using the
    `__annotation_1` vertex row.
+
+Places not to guard initially:
+
+- `_normalize_native_shapes_layer_transform(...)`: it can assign data on the
+  temporary native layer, but native adoption immediately rebuilds a fresh
+  `_HarpyShapes` replacement in `_build_harpy_shapes_layer_from_native_layer(...)`.
+  The replacement construction is the final visible mesh we need to protect.
+- `_sync_anchor_drag(...)` and other per-mouse-move `_data_view.edit(...)` paths:
+  these are hot interaction paths. If Harpy sets the backend at construction and
+  explicit public data-rebuild points, direct edit remeshing should already use
+  the safe backend. Add a guard here only if a later test proves napari settings
+  can reset mid-edit.
+- generic layer registration, selection changes, style changes, or status-card
+  updates: these do not construct Shapes or assign `layer.data`.
 
 The most important design constraint is that the mitigation should not corrupt
 or rewrite the saved geometry. The stored Shapely polygon and Harpy's encoded
@@ -535,8 +556,14 @@ tests that verify:
 
 - constructing any Harpy generic Shapes layer switches unsafe
   `Fastest available` or `bermuda` settings/runtime state to `Numba`;
-- point-radius shapes rendered as napari `Points` do not need the Shapes
+- point-radius shapes rendered as napari `Points` do not call the Shapes
   triangulation guard;
+- native napari Shapes adoption rebuilds the Harpy replacement under `Numba`
+  even if the native layer was constructed under `Fastest available`;
+- create-holes calls the guard before its public `layer.data = rebuilt_data`
+  remesh;
+- row-replacement vertex-cache rebuild calls the guard before its public
+  `layer.data = rebuilt_data` remesh;
 - direct `set_backend(Numba)` is not the only operation performed; the napari
   settings value is also updated;
 - a layer constructed under `Fastest available` keeps its cached bad mesh even
