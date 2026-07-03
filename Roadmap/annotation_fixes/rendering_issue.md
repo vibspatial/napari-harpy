@@ -137,6 +137,177 @@ produce an equivalent hole-aware face mesh.
 So the problem appears to be a napari/bermuda rendering backend incompatibility
 with this repeated-anchor direct-hole encoding.
 
+## What `bermuda` Does Wrong
+
+For a polygon fill, triangulation should produce a non-overlapping triangle mesh
+whose union is exactly the intended filled region:
+
+```text
+triangle union == polygon shell minus polygon holes
+triangle interiors do not overlap
+no triangle area lies inside a hole
+```
+
+For `__annotation_1`, the `bermuda` result is not a clean partition of the
+filled polygon. It creates overlapping triangles and a small amount of fill
+outside the intended Shapely polygon.
+
+Observed metrics for the original `__annotation_1` row:
+
+```text
+Backend: Numba / VisPy
+target area:       188061.368643
+triangle sum:      188061.368643
+triangle union:    188061.368643
+overdraw:          0.0
+symdiff vs target: 0.0
+
+Backend: Fastest available / bermuda
+target area:       188061.368643
+triangle sum:      189357.041160
+triangle union:    188084.592730
+overdraw:          1272.448430
+symdiff vs target: 23.224087
+```
+
+`overdraw` is:
+
+```text
+sum(triangle.area) - unary_union(triangles).area
+```
+
+This is important because the visible artifact can come from overlapping
+triangles even when the final triangle union is close to the intended polygon.
+With semi-transparent face rendering, overlapping triangles are drawn multiple
+times and appear as darker wedges or stripes.
+
+The likely failure mode is that `bermuda` mishandles napari's repeated-anchor
+multi-ring path. Harpy encodes holes as one path:
+
+```text
+shell, shell anchor, hole, hole anchor, shell anchor
+```
+
+The bridge edges between shell and holes are meant to cancel out or be removed
+before face triangulation. Napari's VisPy path handles that correctly. For this
+geometry layout, `bermuda` appears to keep or reinterpret part of that repeated
+path structure and generates invalid diagonals between shell/hole vertices,
+which produces overlapping face triangles.
+
+## Regression Geometry
+
+The regression test should not depend on loading the full SpatialData Zarr
+store. Use a hardcoded minimal Shapely geometry derived from `__annotation_1`:
+
+- translate the original geometry to the origin;
+- scale by `0.01`;
+- simplify while preserving topology;
+- keep the two triangular holes that still reproduce the `bermuda` overdraw.
+
+The resulting fixture is a quadrilateral shell with two triangular holes. Use
+Shapely `(x, y)` coordinate order:
+
+```python
+from shapely.geometry import Polygon
+
+
+BERMUDA_HOLE_TRIANGULATION_REGRESSION_POLYGON = Polygon(
+    shell=[
+        (1.855311, 0.000000),
+        (5.102106, 1.443020),
+        (2.679894, 4.999033),
+        (0.000000, 2.679895),
+        (1.855311, 0.000000),
+    ],
+    holes=[
+        [
+            (3.699100, 2.834912),
+            (2.909122, 2.780432),
+            (3.045325, 3.080078),
+            (3.699100, 2.834912),
+        ],
+        [
+            (3.099806, 1.500122),
+            (3.562897, 1.881492),
+            (3.889784, 1.336680),
+            (3.099806, 1.500122),
+        ],
+    ],
+)
+```
+
+Observed metrics for this reduced fixture:
+
+```text
+Backend: Numba / VisPy
+target area:       12.959622812
+triangle sum:      12.959621970
+triangle union:    12.959621970
+overdraw:          0.0
+symdiff vs target: 0.000001194
+
+Backend: Fastest available / bermuda
+target area:       12.959622812
+triangle sum:      13.089189184
+triangle union:    12.960768406
+overdraw:          0.128420778
+symdiff vs target: 0.001147616
+```
+
+The exact floating-point values may vary slightly by platform or dependency
+version, so tests should use tolerances rather than exact metric equality.
+
+## Regression Test Contract
+
+The Harpy regression test should validate the backend guard and the rendered
+mesh invariant.
+
+Suggested mesh assertion:
+
+```python
+from shapely.geometry import Polygon
+from shapely.ops import unary_union
+
+
+def _assert_shape_mesh_matches_polygon(layer, row, expected):
+    shape = layer._data_view.shapes[row]
+    vertices = shape._face_vertices
+    triangles = shape._face_triangles
+
+    triangle_polygons = [
+        Polygon([(vertices[index][1], vertices[index][0]) for index in triangle])
+        for triangle in triangles
+    ]
+    triangle_polygons = [polygon for polygon in triangle_polygons if polygon.area > 0]
+
+    triangle_union = unary_union(triangle_polygons)
+    triangle_area_sum = sum(polygon.area for polygon in triangle_polygons)
+    tolerance = expected.area * 1e-6
+
+    assert triangle_union.symmetric_difference(expected).area < tolerance
+    assert triangle_area_sum - triangle_union.area < tolerance
+```
+
+The first assertion catches triangles that fill holes or miss shell area. The
+second assertion catches overlapping triangles that can still make the final
+union look almost correct but render visibly wrong because semi-transparent
+faces are drawn multiple times.
+
+Recommended Harpy test flow:
+
+1. Set napari settings/runtime state to an unsafe backend such as
+   `Fastest available`.
+2. Construct a Harpy-managed generic `Shapes` layer from
+   `BERMUDA_HOLE_TRIANGULATION_REGRESSION_POLYGON`.
+3. Assert Harpy switched settings and runtime triangulation to `Numba`.
+4. Assert the resulting napari shape mesh matches the Shapely polygon using the
+   mesh invariant above.
+
+An optional upstream-facing test can directly force `Fastest available` with
+`bermuda` installed and assert that the reduced fixture produces nonzero
+overdraw. That test documents the napari/bermuda failure itself, but Harpy's
+own regression should focus on proving that Harpy avoids the unsafe backend.
+
 ## Relevant Code Paths
 
 Harpy encoding:
