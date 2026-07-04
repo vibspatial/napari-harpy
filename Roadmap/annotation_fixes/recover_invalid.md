@@ -213,6 +213,79 @@ After Slice 1, implement the actual edit recovery behavior:
 - restore the cached last-valid vertices and warn once when the candidate is
   invalid.
 
+Implementation detail against the current code:
+
+- replace `_AnchorDragState` with `_PolygonVertexDragState`;
+- rename `_iter_direct_drag_with_anchor_sync(...)` to reflect validation and
+  rollback, for example `_iter_direct_drag_with_polygon_validation(...)`;
+- replace `_capture_anchor_drag_state(...)` with
+  `_capture_polygon_vertex_drag_state(...)`;
+- replace `_sync_anchor_drag(...)` with a helper that applies conditional anchor
+  synchronization and then validates or rolls back the candidate row.
+
+Suggested state:
+
+```python
+@dataclass
+class _PolygonVertexDragState:
+    row_index: int
+    moved_vertex_index: int
+    topology: NapariPolygonTopology
+    last_valid_vertices: np.ndarray
+    warned_invalid_drag: bool = False
+```
+
+The state is captured after the first `next(direct_drag)`, exactly where the
+current code captures `_AnchorDragState`. At that point napari has populated
+`layer._moving_value`, but no vertex has moved yet.
+
+Capture should return a state when:
+
+- `layer._moving_value` is `(row_index, vertex_index)`;
+- the row and vertex indices are in range;
+- the shape type at the row is `"polygon"`;
+- `layer.data[row_index]` can be coerced to numeric vertices;
+- `napari_polygon_vertices_to_topology(...)` can parse the row;
+- `napari_polygon_vertices_to_shapely_polygon(...)` can validate the row.
+
+Capture should return `None` for malformed rows or rows that are already not
+valid Shapely polygons. Slice 2 is primarily prevention: valid rows should not
+be allowed to become invalid during a drag. Recovering rows that are already
+invalid is out of scope and is not currently planned.
+
+On each `mouse_move`, after napari's native direct-drag callback has advanced,
+the helper should:
+
+1. Read `candidate_vertices = np.asarray(layer.data[state.row_index], dtype=float)`.
+2. If the row index or moved vertex index is no longer addressable, skip Harpy
+   sync/validation/rollback for that event and return without additional
+   mutation. This is a defensive branch for an unexpected structural change; it
+   should not blindly restore `state.last_valid_vertices` because the stored row
+   may no longer be safe to address.
+3. Compute `is_synchronized_anchor_vertex` from
+   `state.topology.synchronized_anchor_groups`.
+4. If true, call `sync_napari_polygon_anchor_vertex(...)` and use the returned
+   vertices as the candidate.
+5. Validate the candidate with `napari_polygon_vertices_to_shapely_polygon(...)`.
+6. If validation succeeds:
+   - write synchronized vertices only when they differ from the layer row;
+   - call `layer.refresh()` after such a write;
+   - update `state.last_valid_vertices` to a copy of the accepted candidate.
+7. If validation fails:
+   - restore `state.last_valid_vertices` with `layer._data_view.edit(...)`;
+   - call `layer.refresh()`;
+   - warn once for the drag through `_warn(...)`;
+   - do not update `state.last_valid_vertices`.
+
+Because `last_valid_vertices` changes during a drag, `_PolygonVertexDragState`
+should not be frozen, or the helper should return an updated state.
+
+The implementation should include an inline comment next to the `mouse_move`
+validation branch making the performance/correctness tradeoff explicit. The
+comment should say that Shapely validation intentionally runs on every mouse
+move for the active polygon row so invalid geometry is rejected immediately,
+instead of allowing the layer to remain invalid until mouse release.
+
 ## Edit-Time Contract
 
 For polygon rows, Harpy should own the direct-drag validation path instead of
@@ -257,6 +330,7 @@ class _PolygonVertexDragState:
     moved_vertex_index: int
     topology: NapariPolygonTopology
     last_valid_vertices: np.ndarray
+    warned_invalid_drag: bool = False
 ```
 
 For simple polygons, `topology` is the empty topology and no anchor
@@ -306,6 +380,16 @@ from accepting a polygon row that it cannot later save. The same state object
 covers regular polygon vertices, shell vertices of polygons with holes, ordinary
 hole vertices, and duplicated anchor/separator vertices.
 
+The invalid-drag warning should be intentionally generic and stable enough for
+tests, for example:
+
+```text
+Polygon edit was rejected because it would create invalid geometry.
+```
+
+The warning should be emitted once per drag gesture, not once per mouse-move
+event.
+
 ## Vertex-Delete Plan
 
 The existing vertex deletion path already uses `delete_napari_polygon_vertex(...)`
@@ -347,11 +431,11 @@ last_valid_vertices)` after an invalid move, but this must be tested through a
 full press, move, release sequence.
 
 Another edge case is opening a row that is already invalid but still raw
-parseable. Parse-only topology lets Harpy keep duplicated anchors synchronized,
-but a row with no known valid baseline cannot be rolled back to a valid state.
-The first implementation should prioritize preventing valid rows from becoming
-invalid. Recovery UX for already-invalid rows can be handled separately if
-needed.
+parseable. Parse-only topology lets Harpy identify duplicated anchors, but a row
+with no known valid baseline cannot be rolled back to a valid state. This is
+out of scope: we do not currently plan to implement recovery from an
+already-invalid row. The implementation should prioritize preventing valid rows
+from becoming invalid.
 
 ## Regression Tests
 
@@ -362,6 +446,16 @@ Add focused tests for both geometry helpers and widget behavior:
 - dragging hole anchor `39` outside the shell in the `__annotation_1` fixture is
   rejected or rolled back, and vertices `34` and `39` remain synchronized;
 - dragging an ordinary hole vertex outside the shell is rejected or rolled back;
+- dragging an ordinary shell vertex of a simple polygon into a self-intersecting
+  shape is rejected or rolled back;
+- dragging an ordinary vertex through a sequence of valid moves updates the
+  cached last-valid row, so a later invalid move rolls back to the latest valid
+  accepted position rather than the original press position;
+- invalid drag warning emits once per drag, even if multiple mouse-move events
+  produce invalid candidates;
+- direct-drag release completes without leaving napari's private moving state
+  visibly broken; at minimum, tests should advance the wrapped generator through
+  press, one or more moves, and release;
 - deleting a vertex that would make a hole-bearing polygon invalid leaves
   `layer.data` unchanged and emits a warning;
 - deleting from a parseable hole-bearing row does not fall back to napari's
