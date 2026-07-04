@@ -16,7 +16,7 @@ from napari_harpy.core.shapes_geometry import (
     shapely_polygon_to_napari_polygon_vertices,
 )
 
-POLYGON_WITH_HOLES_TRIANGULATION_FIXTURE = Polygon(
+POLYGON_WITH_HOLES_TRIANGULATION_FIXTURE_1 = Polygon(
     shell=[
         (1883.543213, 2352.524414),
         (2182.454590, 2429.829102),
@@ -67,6 +67,35 @@ POLYGON_WITH_HOLES_TRIANGULATION_FIXTURE = Polygon(
     ],
 )
 
+POLYGON_WITH_HOLES_TRIANGULATION_FIXTURE_2 = Polygon(
+    shell=[
+        (1.855311, 0.000000),
+        (5.102106, 1.443020),
+        (2.679894, 4.999033),
+        (0.000000, 2.679895),
+        (1.855311, 0.000000),
+    ],
+    holes=[
+        [
+            (3.699100, 2.834912),
+            (2.909122, 2.780432),
+            (3.045325, 3.080078),
+            (3.699100, 2.834912),
+        ],
+        [
+            (3.099806, 1.500122),
+            (3.562897, 1.881492),
+            (3.889784, 1.336680),
+            (3.099806, 1.500122),
+        ],
+    ],
+)
+
+TRIANGULATION_REGRESSION_POLYGONS = (
+    pytest.param(POLYGON_WITH_HOLES_TRIANGULATION_FIXTURE_1, id="annotation_1"),
+    pytest.param(POLYGON_WITH_HOLES_TRIANGULATION_FIXTURE_2, id="annotation_2"),
+)
+
 
 @pytest.fixture
 def restore_triangulation_backend() -> Iterator[None]:
@@ -83,11 +112,25 @@ def restore_triangulation_backend() -> Iterator[None]:
 
 
 def _shape_mesh_metrics(layer: Shapes, expected: Polygon) -> tuple[str | None, float, float]:
+    """Return napari's mesh path plus triangle overlap and coverage error.
+
+    Napari renders a filled polygon by triangulating it into face vertices and
+    face triangles. ``overdraw`` compares the summed area of those triangles
+    with the area of their union; a positive value means generated triangles
+    overlap each other. ``symmetric_difference`` compares that triangle union
+    with the expected polygon, catching holes or filled regions that render in
+    the wrong place.
+    """
     shape = layer._data_view.shapes[0]
     face_vertices = np.asarray(shape._face_vertices, dtype=float)
     face_triangles = np.asarray(shape._face_triangles, dtype=int)
+    # Reconstruct each rendered mesh triangle as a Shapely polygon. Napari
+    # stores coordinates in (y, x) order, so flip them back to Shapely's (x, y).
     triangle_polygons = [Polygon(face_vertices[triangle][:, ::-1]) for triangle in face_triangles if len(triangle) == 3]
+    # Drop degenerate zero-area triangles before computing rendered coverage.
     triangle_polygons = [polygon for polygon in triangle_polygons if polygon.area > 0]
+    # Compare the summed triangle area with the union area (where overlapping
+    # regions count only once) to detect overdraw from intersecting mesh triangles.
     triangle_union = unary_union(triangle_polygons)
     triangle_area_sum = sum(polygon.area for polygon in triangle_polygons)
     overdraw = triangle_area_sum - triangle_union.area
@@ -96,15 +139,17 @@ def _shape_mesh_metrics(layer: Shapes, expected: Polygon) -> tuple[str | None, f
     return mesh_path, overdraw, symmetric_difference
 
 
-def test_shapes_triangulation_backend_helper_makes_annotation_1_fixture_use_numba_mesh(
+@pytest.mark.parametrize("polygon", TRIANGULATION_REGRESSION_POLYGONS)
+def test_shapes_triangulation_backend_helper_makes_polygon_fixtures_use_numba_mesh(
     restore_triangulation_backend: None,
+    polygon: Polygon,
 ) -> None:
     settings = get_settings()
     settings.experimental.triangulation_backend = TriangulationBackend.fastest_available
     set_backend(TriangulationBackend.fastest_available)
 
     ensure_shapes_triangulation_backend()
-    vertices = shapely_polygon_to_napari_polygon_vertices(POLYGON_WITH_HOLES_TRIANGULATION_FIXTURE)
+    vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
     layer = Shapes([vertices], shape_type="polygon")
     expected = napari_polygon_vertices_to_shapely_polygon(layer.data[0])
     mesh_path, overdraw, symmetric_difference = _shape_mesh_metrics(layer, expected)
@@ -115,14 +160,16 @@ def test_shapes_triangulation_backend_helper_makes_annotation_1_fixture_use_numb
     assert symmetric_difference == 0
 
 
-def test_bermuda_triangulation_backend_overdraws_annotation_1_fixture(
+@pytest.mark.parametrize("polygon", TRIANGULATION_REGRESSION_POLYGONS)
+def test_bermuda_triangulation_backend_overdraws_polygon_fixtures(
     restore_triangulation_backend: None,
+    polygon: Polygon,
 ) -> None:
     settings = get_settings()
     settings.experimental.triangulation_backend = TriangulationBackend.bermuda
     set_backend(TriangulationBackend.bermuda)
 
-    vertices = shapely_polygon_to_napari_polygon_vertices(POLYGON_WITH_HOLES_TRIANGULATION_FIXTURE)
+    vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
     layer = Shapes([vertices], shape_type="polygon")
     expected = napari_polygon_vertices_to_shapely_polygon(layer.data[0])
     mesh_path, overdraw, symmetric_difference = _shape_mesh_metrics(layer, expected)
