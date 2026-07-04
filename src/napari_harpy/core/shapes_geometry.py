@@ -121,10 +121,7 @@ def create_polygon_with_direct_holes(shell: Polygon, holes: Sequence[Polygon]) -
 
 def napari_polygon_vertices_to_topology(vertices: ArrayLike) -> NapariPolygonTopology:
     """Return synchronized anchor groups for one napari polygon vertex row."""
-    parsed = _parse_napari_polygon_vertices(vertices)
-    if parsed.holes:
-        _make_valid_polygon_with_holes(parsed.shell, list(parsed.holes))
-    return parsed.topology
+    return _parse_napari_polygon_vertices(vertices).topology
 
 
 # Topology-preserving edit helpers for one napari polygon vertex row.
@@ -208,6 +205,9 @@ def insert_napari_polygon_vertex(
     )
     # Re-parse the updated row as a grammar check: parsed_topology is what the
     # new vertices actually encode.
+    # Validate explicitly because topology parsing only describes the encoded
+    # row; it does not prove the row can be saved as a Shapely polygon.
+    _ = napari_polygon_vertices_to_shapely_polygon(inserted_vertices)
     parsed_topology = napari_polygon_vertices_to_topology(inserted_vertices)
     if parsed_topology != shifted_topology:
         raise ValueError("Inserted polygon vertex produced ambiguous polygon topology.")
@@ -258,6 +258,9 @@ def delete_napari_polygon_vertex(
     )
     # Re-parse the updated row as a grammar check: parsed_topology is what the
     # new vertices actually encode.
+    # Validate explicitly because topology parsing only describes the encoded
+    # row; it does not prove the row can be saved as a Shapely polygon.
+    _ = napari_polygon_vertices_to_shapely_polygon(deleted_vertices)
     parsed_topology = napari_polygon_vertices_to_topology(deleted_vertices)
     if parsed_topology != shifted_topology:
         raise ValueError("Deleted polygon vertex produced ambiguous polygon topology.")

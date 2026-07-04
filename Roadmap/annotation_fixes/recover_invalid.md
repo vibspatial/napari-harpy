@@ -168,6 +168,8 @@ This also keeps call sites explicit:
 
 ### Slice 1: Separate Topology Parsing From Validation
 
+Status: implemented.
+
 Refactor the geometry helpers before changing drag behavior.
 
 - Change `napari_polygon_vertices_to_topology(...)` so it only parses topology.
