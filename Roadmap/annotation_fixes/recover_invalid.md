@@ -201,6 +201,8 @@ Slice 1 should include unit tests proving that:
 
 ### Slice 2: Polygon Vertex Drag Rollback
 
+Status: implemented.
+
 After Slice 1, implement the actual edit recovery behavior:
 
 - replace anchor-only drag tracking with `_PolygonVertexDragState`;
@@ -286,6 +288,41 @@ comment should say that Shapely validation intentionally runs on every mouse
 move for the active polygon row so invalid geometry is rejected immediately,
 instead of allowing the layer to remain invalid until mouse release.
 
+### Slice 3: Reset Transient Drag Warnings
+
+Status: planned.
+
+Slice 2 can show a warning while the user is dragging, for example:
+
+```text
+Polygon edit was rejected because it would create invalid geometry.
+```
+
+That warning is correct during the drag, because Harpy rejected an invalid
+candidate and restored `state.last_valid_vertices`. However, after mouse
+release the row is valid again, so the status card should return to the normal
+annotation state instead of continuing to show the transient drag warning.
+
+Implementation direction:
+
+- add an optional edit-finished callback to `_AnnotationLayerEditGuard`;
+- call it when `_iter_direct_drag_with_polygon_validation(...)` finishes a
+  guarded direct-drag gesture;
+- in `ShapesAnnotation`, have that callback recompute the normal annotation
+  status card, for example by refreshing the save/readiness state and applying
+  its returned status card spec;
+- only reset the status for guarded drags that captured an active
+  `_PolygonVertexDragState`.
+
+Do not reset warnings for rows that were already invalid at mouse press. In
+that case capture returns `None` because there is no valid rollback baseline,
+and the "already invalid" warning should remain visible. Recovery from an
+already-invalid row is not planned.
+
+This slice should also rename the warning-card title from the delete-specific
+wording to a more general edit title, such as `Edit Rejected`, because the same
+status-card path is now used for both vertex deletion and drag rollback.
+
 ## Edit-Time Contract
 
 For polygon rows, Harpy should own the direct-drag validation path instead of
@@ -317,8 +354,9 @@ would make a hole-bearing polygon invalid should be rejected without mutating
 
 ## Direct-Drag Plan
 
-The current direct-drag wrapper only captures anchor drags. That is too narrow.
-It should become a polygon vertex drag guard using a state object named
+Before Slice 2, the direct-drag wrapper only captured anchor drags. That was too
+narrow. The implemented wrapper is now a polygon vertex drag guard using a state
+object named
 `_PolygonVertexDragState`.
 
 Suggested shape:
@@ -453,6 +491,10 @@ Add focused tests for both geometry helpers and widget behavior:
   accepted position rather than the original press position;
 - invalid drag warning emits once per drag, even if multiple mouse-move events
   produce invalid candidates;
+- transient invalid drag warnings are cleared after mouse release when the
+  guarded drag restored the row to a valid state;
+- warnings for rows that are already invalid at mouse press are not cleared by
+  drag release, because Harpy did not capture a rollback baseline;
 - direct-drag release completes without leaving napari's private moving state
   visibly broken; at minimum, tests should advance the wrapped generator through
   press, one or more moves, and release;

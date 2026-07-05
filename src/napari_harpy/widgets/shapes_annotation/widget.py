@@ -57,6 +57,7 @@ from napari_harpy.core.shapes_annotation import (
 from napari_harpy.core.shapes_geometry import (
     NapariPolygonTopology,
     delete_napari_polygon_vertex,
+    napari_polygon_vertices_to_shapely_polygon,
     napari_polygon_vertices_to_topology,
     sync_napari_polygon_anchor_vertex,
 )
@@ -138,6 +139,8 @@ _STATUS_IDENTIFIER_MAX_LENGTH = 32
 _CREATE_SHAPES_OPTION_TEXT = "Create shapes..."
 _DEFAULT_NEW_SHAPES_NAME = "new_shapes"
 _SPACE_KEYBINDING = coerce_keybinding("Space")
+_INVALID_POLYGON_DRAG_WARNING = "Polygon edit was rejected because it would create invalid geometry."
+_ALREADY_INVALID_POLYGON_DRAG_WARNING = "This polygon is already invalid, so this edit cannot be safely rolled back."
 _SPACE_PAN_RESUMABLE_DRAW_MODES = frozenset(
     {
         Mode.ADD_POLYGON_LASSO,
@@ -291,11 +294,13 @@ class _AnnotationLayerReadiness:
     status: _ShapesAnnotationStatusCardSpec | None = None
 
 
-@dataclass(frozen=True)
-class _AnchorDragState:
+@dataclass
+class _PolygonVertexDragState:
     row_index: int
     moved_vertex_index: int
     topology: NapariPolygonTopology
+    last_valid_vertices: np.ndarray
+    warned_invalid_drag: bool = False
 
 
 @dataclass(frozen=True)
@@ -325,7 +330,7 @@ class _AnnotationLayerEditGuard:
         self._wrapped_direct_callback: Callable[..., Any] | None = None
         self._wrapped_vertex_remove_callback: Callable[..., Any] | None = None
         self._wrapped_space_keybinding: Callable[..., Any] | None = None
-        self._is_syncing_anchor_drag = False
+        self._is_applying_polygon_drag_edit = False
         # Track Space and mouse release independently so drawing resumes only
         # after both halves of a temporary Space-pan have ended.
         self._space_pan_key_held = False
@@ -364,7 +369,7 @@ class _AnnotationLayerEditGuard:
             if not hasattr(direct_drag, "__next__"):
                 return direct_drag
             event = args[1] if len(args) > 1 else kwargs.get("event")
-            return self._iter_direct_drag_with_anchor_sync(layer, direct_drag, event)
+            return self._iter_direct_drag_with_polygon_validation(layer, direct_drag, event)
 
         def wrapped_vertex_remove_callback(*args: Any, **kwargs: Any) -> Any:
             event = args[1] if len(args) > 1 else kwargs.get("event")
@@ -433,7 +438,7 @@ class _AnnotationLayerEditGuard:
         self._wrapped_direct_callback = None
         self._wrapped_vertex_remove_callback = None
         self._wrapped_space_keybinding = None
-        self._is_syncing_anchor_drag = False
+        self._is_applying_polygon_drag_edit = False
         self._space_pan_key_held = False
         self._space_pan_mouse_gesture_active = False
         self._previous_mouse_pan = None
@@ -544,7 +549,7 @@ class _AnnotationLayerEditGuard:
             if not self._drawing_is_suspended():
                 return original_callback(*args, **kwargs)
             event = args[1] if len(args) > 1 else kwargs.get("event")
-            if getattr(event, "type", None) == "mouse_press":
+            if event.type == "mouse_press":
                 # Return a small generator so napari advances us on mouse
                 # move/release and we can clear the Space-pan mouse gesture.
                 return self._iter_suppressed_space_pan_drag(layer, event)
@@ -580,7 +585,7 @@ class _AnnotationLayerEditGuard:
         self._begin_space_pan_mouse_gesture()
         try:
             yield
-            while getattr(event, "type", None) == "mouse_move":
+            while event.type == "mouse_move":
                 yield
         finally:
             self._end_space_pan_mouse_gesture(layer)
@@ -616,34 +621,39 @@ class _AnnotationLayerEditGuard:
         layer.mouse_pan = self._previous_mouse_pan
         self._previous_mouse_pan = None
 
-    def _iter_direct_drag_with_anchor_sync(
+    def _iter_direct_drag_with_polygon_validation(
         self,
         layer: Shapes,
         direct_drag: Iterator[Any],
         event: object,
     ) -> Iterator[Any]:
-        """Mirror napari's direct-drag generator while repairing anchor copies.
+        """Mirror napari's direct-drag generator while validating polygon rows.
 
         The first ``next(direct_drag)`` runs napari's mouse-press setup and
         pauses at its first ``yield``. At that point napari has populated
         ``layer._moving_value`` but has not moved any vertex yet, so after a
-        mouse-press step we can safely cache the pre-move hole topology. Later
-        ``next(...)`` calls let napari process mouse moves first; after each
-        mouse move we synchronize any duplicated anchor/separator vertices from
-        the cached topology.
+        mouse-press step we can safely cache the current valid polygon row.
+        Later ``next(...)`` calls let napari process mouse moves first; after
+        each mouse move we optionally synchronize duplicated anchor/separator
+        vertices, then validate or roll back the candidate row.
+
+        The cached drag state lives only for this one generator/gesture. When
+        mouse release ends the generator, the state is discarded, so per-drag
+        flags such as ``warned_invalid_drag`` reset naturally on the next mouse
+        press.
         """
-        active_drag: _AnchorDragState | None = None
+        active_drag: _PolygonVertexDragState | None = None
         try:
             try:
                 yielded = next(direct_drag)
             except StopIteration:
                 return
 
-            # Defensive guard: the normal napari path reaches this point from
-            # mouse press, but unexpected event phases should fall back to
-            # napari's original behavior instead of caching topology.
-            if getattr(event, "type", None) == "mouse_press":
-                active_drag = self._capture_anchor_drag_state(layer)
+            # The normal napari path reaches this point from mouse press. Use
+            # `event.type` directly so a broken mouse-event contract fails
+            # loudly instead of silently skipping validation setup.
+            if event.type == "mouse_press":
+                active_drag = self._capture_polygon_vertex_drag_state(layer)
             yield yielded
 
             while True:
@@ -652,16 +662,16 @@ class _AnnotationLayerEditGuard:
                 except StopIteration:
                     return
 
-                if getattr(event, "type", None) == "mouse_move":
-                    self._sync_anchor_drag(layer, active_drag)
+                if event.type == "mouse_move":
+                    # Validate every mouse move, not only release, so invalid
+                    # polygon edits are rolled back immediately.
+                    self._validate_polygon_vertex_drag(layer, active_drag)
                 yield yielded
         finally:
-            close = getattr(direct_drag, "close", None)
-            if callable(close):
-                close()
+            direct_drag.close()
 
-    def _capture_anchor_drag_state(self, layer: Shapes) -> _AnchorDragState | None:
-        moving_value = getattr(layer, "_moving_value", None)
+    def _capture_polygon_vertex_drag_state(self, layer: Shapes) -> _PolygonVertexDragState | None:
+        moving_value = layer._moving_value
         if not isinstance(moving_value, tuple) or len(moving_value) != 2:
             return None
 
@@ -679,21 +689,44 @@ class _AnnotationLayerEditGuard:
             return None
 
         try:
-            topology = napari_polygon_vertices_to_topology(layer.data[row_index])
-        except ValueError:
+            vertices = np.asarray(layer.data[row_index], dtype=float).copy()
+        except (TypeError, ValueError):
+            return None
+        if moved_vertex_index >= len(vertices):
             return None
 
-        for group in topology.synchronized_anchor_groups:
-            if moved_vertex_index in group:
-                return _AnchorDragState(
-                    row_index=row_index,
-                    moved_vertex_index=moved_vertex_index,
-                    topology=topology,
-                )
-        return None
+        try:
+            topology = napari_polygon_vertices_to_topology(vertices)
+        except ValueError:
+            # Malformed path encoding means Harpy cannot reliably identify
+            # topology/anchors for this drag, so we fall back to napari's
+            # native direct-drag behavior.
+            return None
 
-    def _sync_anchor_drag(self, layer: Shapes, active_drag: _AnchorDragState | None) -> None:
-        if active_drag is None or self._is_syncing_anchor_drag:
+        try:
+            # Capture only starts from valid polygon rows; this establishes the
+            # baseline that later mouse moves can roll back to. If the napari
+            # vertices cannot convert to a Shapely polygon, there is no valid
+            # baseline for this guard, so the ValueError path returns None and
+            # falls back to napari's native direct-drag behavior.
+            _ = napari_polygon_vertices_to_shapely_polygon(vertices)
+        except ValueError:
+            self._warn(_ALREADY_INVALID_POLYGON_DRAG_WARNING)
+            return None
+
+        return _PolygonVertexDragState(
+            row_index=row_index,
+            moved_vertex_index=moved_vertex_index,
+            topology=topology,
+            last_valid_vertices=vertices,
+        )
+
+    def _validate_polygon_vertex_drag(
+        self,
+        layer: Shapes,
+        active_drag: _PolygonVertexDragState | None,
+    ) -> None:
+        if active_drag is None or self._is_applying_polygon_drag_edit:
             return
         if active_drag.row_index >= len(layer.data):
             return
@@ -702,29 +735,59 @@ class _AnnotationLayerEditGuard:
         if active_drag.moved_vertex_index >= len(vertices):
             return
 
-        moved_coordinate = vertices[active_drag.moved_vertex_index]
+        candidate_vertices = vertices
+        is_synchronized_anchor_vertex = any(
+            active_drag.moved_vertex_index in group for group in active_drag.topology.synchronized_anchor_groups
+        )
+        if is_synchronized_anchor_vertex:
+            moved_coordinate = candidate_vertices[active_drag.moved_vertex_index]
+            try:
+                candidate_vertices = sync_napari_polygon_anchor_vertex(
+                    candidate_vertices,
+                    active_drag.topology,
+                    active_drag.moved_vertex_index,
+                    moved_coordinate,
+                )
+            except ValueError:
+                return
+
+        # This Shapely conversion intentionally runs on every mouse move for
+        # the active polygon row. Rejecting invalid geometry immediately keeps
+        # `layer.data` out of an invalid intermediate state, and avoids possible
+        # broken triangulation, instead of waiting until mouse release.
         try:
-            synchronized_vertices = sync_napari_polygon_anchor_vertex(
-                vertices,
-                active_drag.topology,
-                active_drag.moved_vertex_index,
-                moved_coordinate,
-            )
+            _ = napari_polygon_vertices_to_shapely_polygon(candidate_vertices)
         except ValueError:
+            self._restore_polygon_drag_last_valid_vertices(layer, active_drag)
+            if not active_drag.warned_invalid_drag:
+                self._warn(_INVALID_POLYGON_DRAG_WARNING)
+                active_drag.warned_invalid_drag = True
             return
 
-        if np.array_equal(vertices, synchronized_vertices):
-            return
+        if is_synchronized_anchor_vertex and not np.array_equal(vertices, candidate_vertices):
+            self._is_applying_polygon_drag_edit = True
+            try:
+                # Mirror napari's direct-drag write path. Anchor synchronization
+                # only changes coordinates, so the row length and vertex cache
+                # stay stable.
+                layer._data_view.edit(active_drag.row_index, candidate_vertices)
+                layer.refresh()
+            finally:
+                self._is_applying_polygon_drag_edit = False
 
-        self._is_syncing_anchor_drag = True
+        active_drag.last_valid_vertices = np.asarray(candidate_vertices, dtype=float).copy()
+
+    def _restore_polygon_drag_last_valid_vertices(
+        self,
+        layer: Shapes,
+        active_drag: _PolygonVertexDragState,
+    ) -> None:
+        self._is_applying_polygon_drag_edit = True
         try:
-            # Mirror napari's direct-drag write path. Anchor synchronization
-            # only changes coordinates, so the row length and vertex cache stay
-            # stable.
-            layer._data_view.edit(active_drag.row_index, synchronized_vertices)
+            layer._data_view.edit(active_drag.row_index, active_drag.last_valid_vertices)
             layer.refresh()
         finally:
-            self._is_syncing_anchor_drag = False
+            self._is_applying_polygon_drag_edit = False
 
     def _route_vertex_remove(
         self,
