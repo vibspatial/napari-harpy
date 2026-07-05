@@ -340,6 +340,57 @@ Slice 3 should include widget/edit-guard tests proving that:
   rollback baseline was captured;
 - vertex-delete warnings still use the renamed generic warning-card title.
 
+### Slice 4: Reset Stale Delete Warnings After Successful Delete
+
+Status: planned.
+
+Rejected Harpy-owned vertex deletes currently show the generic `Edit Rejected`
+status card with the validation error, for example:
+
+```text
+Polygon holes must be contained by the exterior ring.
+```
+
+That warning should remain visible immediately after the rejected delete. It is
+the useful feedback for that click. However, if the user then performs a later
+successful Harpy-owned vertex delete, the old rejection is no longer the current
+state of the widget. The status card should return to the normal annotation
+readiness/info card, for example:
+
+```text
+Existing Shapes Opened
+Edit shapes layer "..." in coordinate system "...".
+```
+
+Do not show a success card for every successful delete. Vertex deletion is a
+discrete edit, but logging every successful delete would add unnecessary
+status-card churn. The goal is only to clear stale rejection feedback once a
+subsequent Harpy-owned delete succeeds.
+
+Implementation direction:
+
+- keep rejected delete behavior unchanged:
+  `_route_vertex_remove(...)` catches `ValueError`, calls `_warn(str(error))`,
+  and returns without mutating `layer.data`;
+- add an optional `polygon_delete_finished_callback` to
+  `_AnnotationLayerEditGuard`;
+- call it only after the successful Harpy-owned vertex-delete path has emitted
+  its existing napari data events and called `layer.refresh()`;
+- wire `ShapesAnnotation` to pass
+  `polygon_delete_finished_callback=self._reset_annotation_edit_warning`;
+- reuse `_reset_annotation_edit_warning(...)`, which recomputes normal
+  readiness and applies `readiness.status`;
+- do not call the callback for delegated/native deletes where
+  `_capture_vertex_delete_state(...)` returns `None`.
+
+Slice 4 should include widget/edit-guard tests proving that:
+
+- a rejected Harpy-owned delete shows `Edit Rejected` and leaves `layer.data`
+  unchanged;
+- a later successful Harpy-owned delete clears the stale warning and restores
+  the normal annotation info card;
+- delegated/native deletes do not call the delete-finished callback.
+
 ## Edit-Time Contract
 
 For polygon rows, Harpy should own the direct-drag validation path instead of
