@@ -305,14 +305,23 @@ annotation state instead of continuing to show the transient drag warning.
 
 Implementation direction:
 
-- add an optional edit-finished callback to `_AnnotationLayerEditGuard`;
+- keep warning emission on the existing path:
+  `_AnnotationLayerEditGuard(warning_callback=...)` calls
+  `ShapesAnnotation._set_annotation_edit_warning(...)`;
+- add an optional `polygon_drag_finished_callback` to
+  `_AnnotationLayerEditGuard`;
 - call it when `_iter_direct_drag_with_polygon_validation(...)` finishes a
-  guarded direct-drag gesture;
-- in `ShapesAnnotation`, have that callback recompute the normal annotation
-  status card, for example by refreshing the save/readiness state and applying
-  its returned status card spec;
-- only reset the status for guarded drags that captured an active
-  `_PolygonVertexDragState`.
+  guarded direct-drag gesture with `active_drag is not None`;
+- in `ShapesAnnotation`, implement the callback by recomputing the normal
+  annotation status card:
+
+```python
+readiness = self._refresh_save_shapes_state()
+self._apply_status_card_spec(readiness.status)
+```
+
+Only reset the status for guarded drags that captured an active
+`_PolygonVertexDragState`.
 
 Do not reset warnings for rows that were already invalid at mouse press. In
 that case capture returns `None` because there is no valid rollback baseline,
@@ -322,6 +331,14 @@ already-invalid row is not planned.
 This slice should also rename the warning-card title from the delete-specific
 wording to a more general edit title, such as `Edit Rejected`, because the same
 status-card path is now used for both vertex deletion and drag rollback.
+
+Slice 3 should include widget/edit-guard tests proving that:
+
+- an invalid drag warning appears during the drag and clears after mouse
+  release;
+- an already-invalid-at-press warning does not clear on release, because no
+  rollback baseline was captured;
+- vertex-delete warnings still use the renamed generic warning-card title.
 
 ## Edit-Time Contract
 
