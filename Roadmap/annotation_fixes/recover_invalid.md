@@ -290,7 +290,7 @@ instead of allowing the layer to remain invalid until mouse release.
 
 ### Slice 3: Reset Transient Drag Warnings
 
-Status: planned.
+Status: implemented.
 
 Slice 2 can show a warning while the user is dragging, for example:
 

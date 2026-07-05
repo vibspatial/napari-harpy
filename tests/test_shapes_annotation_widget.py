@@ -2257,6 +2257,93 @@ def test_shapes_annotation_widget_create_layer_adds_registered_active_empty_shap
     assert "Annotation Layer Ready" in _status_text(widget)
 
 
+def test_shapes_annotation_widget_invalid_drag_warning_clears_after_release(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
+    widget.create_layer_button.click()
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    polygon, _ = _polygon_hole_roundtrip_fixture()
+    original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
+    layer.add_polygons(original_vertices)
+    _install_direct_drag_callback_for_annotation_guard(
+        widget,
+        layer,
+        moved_vertex_index=8,
+        moved_coordinate=np.asarray([10_000.0, 10_000.0]),
+    )
+    event = SimpleNamespace(type="mouse_press")
+
+    drag = layer._drag_modes[Mode.DIRECT](layer, event)
+    assert next(drag) == "press"
+    event.type = "mouse_move"
+    assert next(drag) == "move"
+
+    status = _status_text(widget)
+    assert "Edit Rejected" in status
+    assert shapes_annotation_widget_module._INVALID_POLYGON_DRAG_WARNING in status
+
+    event.type = "mouse_release"
+    with pytest.raises(StopIteration):
+        next(drag)
+
+    status = _status_text(widget)
+    assert "Annotation Layer Ready" in status
+    assert shapes_annotation_widget_module._INVALID_POLYGON_DRAG_WARNING not in status
+
+
+def test_shapes_annotation_widget_already_invalid_drag_warning_does_not_clear_after_release(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
+    widget.create_layer_button.click()
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    source = Polygon(
+        [(0, 0), (4, 0), (4, 4), (0, 4)],
+        holes=[[(6, 6), (6, 8), (8, 8), (8, 6)]],
+    )
+    invalid_vertices = shapely_polygon_to_napari_polygon_vertices(source)
+    layer.add_polygons(invalid_vertices)
+    _install_direct_drag_callback_for_annotation_guard(
+        widget,
+        layer,
+        moved_vertex_index=6,
+        moved_coordinate=invalid_vertices[6] + np.asarray([1.0, 1.0]),
+    )
+    event = SimpleNamespace(type="mouse_press")
+
+    drag = layer._drag_modes[Mode.DIRECT](layer, event)
+    assert next(drag) == "press"
+    event.type = "mouse_move"
+    assert next(drag) == "move"
+
+    event.type = "mouse_release"
+    with pytest.raises(StopIteration):
+        next(drag)
+
+    status = _status_text(widget)
+    assert "Edit Rejected" in status
+    assert shapes_annotation_widget_module._ALREADY_INVALID_POLYGON_DRAG_WARNING in status
+
+
+def test_shapes_annotation_widget_annotation_edit_warning_uses_generic_title(qtbot) -> None:
+    widget = ShapesAnnotation(DummyViewer())
+    qtbot.addWidget(widget)
+
+    widget._set_annotation_edit_warning("Deletion would make the polygon invalid.")
+
+    status = _status_text(widget)
+    assert "Edit Rejected" in status
+    assert "Deletion would make the polygon invalid." in status
+    assert "Could Not Delete Vertex" not in status
+
+
 def test_shapes_annotation_widget_cancelling_coordinate_change_preserves_annotation_layer(
     qtbot,
     monkeypatch,

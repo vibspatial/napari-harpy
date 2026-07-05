@@ -321,7 +321,12 @@ def _shape_type_at(layer: Shapes, row_index: int) -> object:
 class _AnnotationLayerEditGuard:
     """Install and restore annotation-specific Shapes direct-edit hooks."""
 
-    def __init__(self, *, warning_callback: Callable[[str], None] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        warning_callback: Callable[[str], None] | None = None,
+        polygon_drag_finished_callback: Callable[[], None] | None = None,
+    ) -> None:
         self._layer: Shapes | None = None
         self._original_drag_modes: dict[object, Callable[..., Any]] | None = None
         self._original_move_modes: dict[object, Callable[..., Any]] | None = None
@@ -339,6 +344,7 @@ class _AnnotationLayerEditGuard:
         self._previous_space_keybinding: object | None = None
         self._had_instance_space_keybinding = False
         self._warning_callback = warning_callback
+        self._polygon_drag_finished_callback = polygon_drag_finished_callback
 
     @property
     def layer(self) -> Shapes | None:
@@ -669,6 +675,11 @@ class _AnnotationLayerEditGuard:
                 yield yielded
         finally:
             direct_drag.close()
+            if active_drag is not None and self._polygon_drag_finished_callback is not None:
+                # The guarded drag may have shown a transient rollback
+                # warning; once the gesture ends, let the widget restore its
+                # normal annotation status card.
+                self._polygon_drag_finished_callback()
 
     def _capture_polygon_vertex_drag_state(self, layer: Shapes) -> _PolygonVertexDragState | None:
         moving_value = layer._moving_value
@@ -1106,7 +1117,10 @@ class ShapesAnnotation(QWidget):
         self._validated_shapes_name: str | None = None
         self._annotation_session: _ShapesAnnotationSession | None = None
         self._annotation_layer: Shapes | None = None
-        self._annotation_edit_guard = _AnnotationLayerEditGuard(warning_callback=self._set_annotation_edit_warning)
+        self._annotation_edit_guard = _AnnotationLayerEditGuard(
+            warning_callback=self._set_annotation_edit_warning,
+            polygon_drag_finished_callback=self._reset_annotation_edit_warning,
+        )
         self._annotation_identity_feature_default_guard = _AnnotationIdentityFeatureDefaultGuard()
         self._annotation_has_been_saved = False
         self._annotation_clean_snapshot: _ShapesAnnotationLayerSnapshot | None = None
@@ -2287,6 +2301,10 @@ class ShapesAnnotation(QWidget):
 
     def _set_annotation_edit_warning(self, message: str) -> None:
         self._apply_status_card_spec(build_annotation_edit_warning_card_spec(message))
+
+    def _reset_annotation_edit_warning(self) -> None:
+        readiness = self._refresh_save_shapes_state()
+        self._apply_status_card_spec(readiness.status)
 
     def _confirm_discard_annotation_layer(self, *, context: Literal["coordinate_system", "target"]) -> bool:
         if context == "coordinate_system":

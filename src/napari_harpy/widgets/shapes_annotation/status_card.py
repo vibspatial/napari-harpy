@@ -294,7 +294,7 @@ def build_create_holes_error_card_spec(message: str) -> _ShapesAnnotationStatusC
 
 def build_annotation_edit_warning_card_spec(message: str) -> _ShapesAnnotationStatusCardSpec:
     return _ShapesAnnotationStatusCardSpec(
-        title="Could Not Delete Vertex",
+        title="Edit Rejected",
         lines=(message,),
         kind="warning",
     )
