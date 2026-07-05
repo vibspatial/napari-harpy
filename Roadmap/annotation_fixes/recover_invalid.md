@@ -342,7 +342,7 @@ Slice 3 should include widget/edit-guard tests proving that:
 
 ### Slice 4: Reset Stale Delete Warnings After Successful Delete
 
-Status: planned.
+Status: implemented.
 
 Rejected Harpy-owned vertex deletes currently show the generic `Edit Rejected`
 status card with the validation error, for example:

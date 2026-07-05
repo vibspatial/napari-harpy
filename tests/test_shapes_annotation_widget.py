@@ -1733,7 +1733,10 @@ def test_annotation_layer_edit_guard_vertex_remove_delegates_simple_polygon(monk
 
     monkeypatch.setattr(layer, "get_value", lambda position, world=True: (0, 1))
     layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
-    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    finished_calls: list[str] = []
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard(
+        vertex_delete_finished_callback=lambda: finished_calls.append("finished"),
+    )
     guard.attach(layer)
     event = SimpleNamespace(position=(0.0, 0.0))
 
@@ -1741,6 +1744,7 @@ def test_annotation_layer_edit_guard_vertex_remove_delegates_simple_polygon(monk
 
     assert result == "delegated"
     assert calls == [((layer, event), {})]
+    assert finished_calls == []
 
 
 def test_annotation_layer_edit_guard_vertex_remove_uses_helper_for_hole_bearing_polygon(monkeypatch) -> None:
@@ -2342,6 +2346,53 @@ def test_shapes_annotation_widget_annotation_edit_warning_uses_generic_title(qtb
     assert "Edit Rejected" in status
     assert "Deletion would make the polygon invalid." in status
     assert "Could Not Delete Vertex" not in status
+
+
+def test_shapes_annotation_widget_successful_vertex_delete_clears_stale_edit_warning(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
+    widget.create_layer_button.click()
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    polygon, _ = _polygon_hole_roundtrip_fixture()
+    original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
+    layer.add_polygons(original_vertices)
+    original_delete_helper = shapes_annotation_widget_module.delete_napari_polygon_vertex
+    hit_values = iter([(0, 0), (0, 8)])
+    call_count = 0
+
+    def reject_then_delete(
+        vertices: np.ndarray,
+        topology: object,
+        deleted_vertex_index: int,
+    ) -> tuple[np.ndarray, object]:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise ValueError("Polygon holes must be contained by the exterior ring.")
+        return original_delete_helper(vertices, topology, deleted_vertex_index)
+
+    monkeypatch.setattr(layer, "get_value", lambda position, world=True: next(hit_values))
+    monkeypatch.setattr(shapes_annotation_widget_module, "delete_napari_polygon_vertex", reject_then_delete)
+
+    layer._drag_modes[Mode.VERTEX_REMOVE](layer, SimpleNamespace(position=(0.0, 0.0)))
+
+    status = _status_text(widget)
+    assert "Edit Rejected" in status
+    assert "Polygon holes must be contained by the exterior ring." in status
+    np.testing.assert_allclose(np.asarray(layer.data[0], dtype=float), original_vertices)
+
+    layer._drag_modes[Mode.VERTEX_REMOVE](layer, SimpleNamespace(position=(0.0, 0.0)))
+
+    status = _status_text(widget)
+    assert "Annotation Layer Ready" in status
+    assert "Edit Rejected" not in status
+    assert "Polygon holes must be contained by the exterior ring." not in status
+    assert call_count == 2
 
 
 def test_shapes_annotation_widget_cancelling_coordinate_change_preserves_annotation_layer(

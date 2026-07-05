@@ -326,6 +326,7 @@ class _AnnotationLayerEditGuard:
         *,
         warning_callback: Callable[[str], None] | None = None,
         polygon_drag_finished_callback: Callable[[], None] | None = None,
+        vertex_delete_finished_callback: Callable[[], None] | None = None,
     ) -> None:
         self._layer: Shapes | None = None
         self._original_drag_modes: dict[object, Callable[..., Any]] | None = None
@@ -345,6 +346,7 @@ class _AnnotationLayerEditGuard:
         self._had_instance_space_keybinding = False
         self._warning_callback = warning_callback
         self._polygon_drag_finished_callback = polygon_drag_finished_callback
+        self._vertex_delete_finished_callback = vertex_delete_finished_callback
 
     @property
     def layer(self) -> Shapes | None:
@@ -845,6 +847,10 @@ class _AnnotationLayerEditGuard:
             vertex_indices=((delete_state.deleted_vertex_index,),),
         )
         layer.refresh()
+        if self._vertex_delete_finished_callback is not None:
+            # A successful guarded delete makes any previous delete warning
+            # stale; let the widget restore its normal annotation status card.
+            self._vertex_delete_finished_callback()
         return None
 
     def _replace_shape_row_rebuilding_vertex_cache(
@@ -1120,6 +1126,7 @@ class ShapesAnnotation(QWidget):
         self._annotation_edit_guard = _AnnotationLayerEditGuard(
             warning_callback=self._set_annotation_edit_warning,
             polygon_drag_finished_callback=self._reset_annotation_edit_warning,
+            vertex_delete_finished_callback=self._reset_annotation_edit_warning,
         )
         self._annotation_identity_feature_default_guard = _AnnotationIdentityFeatureDefaultGuard()
         self._annotation_has_been_saved = False
