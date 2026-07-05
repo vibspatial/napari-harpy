@@ -303,6 +303,7 @@ def _direct_drag_callback_moving_vertex(
     moved_vertex_index: int,
     moved_coordinate: np.ndarray,
 ) -> Callable[[Shapes, object], object]:
+    """Return a deterministic fake for napari's direct vertex-drag callback."""
     return _direct_drag_callback_moving_vertex_sequence(
         moved_vertex_index=moved_vertex_index,
         moved_coordinates=[moved_coordinate],
