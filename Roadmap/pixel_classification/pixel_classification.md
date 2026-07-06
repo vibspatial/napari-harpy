@@ -1,9 +1,17 @@
 Roadmap note for pixel classification.
 
+**Product Quality Bar**
+This roadmap is for a professional, product-grade pixel-classification workflow, not a disposable MVP or prototype.
+
+Phasing is still useful: the first shipped slice should be narrow enough to finish well. But every phase should be
+designed as part of the durable product architecture, with robust data contracts, predictable cache management,
+clear user-facing states, progress/cancellation behavior for long-running work, tests around the core contracts,
+and a path to reproducible reuse across sessions and datasets.
+
 **Short Answer**
 I would implement pixel classification as a new, separate pipeline beside the existing object-classification pipeline.
 
-For the first feature extractor, use one **small convolutional feature extractor**, not DINO first. The MVP choice is:
+For the first production feature extractor, use one **small convolutional feature extractor**, not DINO first. The initial production choice is:
 
 **ConvNeXt-Tiny early-layer features**, with raw normalized channel intensities appended, and with optional PCA/random-projection compression before caching.
 
@@ -151,7 +159,7 @@ layout such as `images/<image_name>`. The manifest should record:
 The cache id should be a hash of the canonical feature manifest, excluding runtime-only fields such as
 creation time or last-used time.
 
-MVP behavior:
+Initial production behavior:
 
 - if `sdata.is_backed()` and `sdata.path` is a writable local path, default to a sibling sidecar named
   like `<source>.harpy-cache.zarr`;
@@ -210,7 +218,7 @@ Approximate persistent cache sizes:
 | `10000 x 10000` | `6.89 GiB` | `12.11 GiB` | `12.85 GiB` | `17.51 GiB` |
 | `20000 x 20000` | `27.57 GiB` | `48.43 GiB` | `51.41 GiB` | `70.04 GiB` |
 
-The practical MVP default should probably be conservative, for example `C + 16` or `C + 32` planes,
+The practical production default should probably be conservative, for example `C + 16` or `C + 32` planes,
 with `C` usually between `1` and `5`. A `5 + 32 = 37` plane cache is much more manageable than a
 `30 + 64 = 94` plane cache, while still giving the classifier texture/context features beyond raw
 marker intensity alone.
@@ -239,18 +247,18 @@ Better:
 Convpaint’s memory mode is useful inspiration for avoiding repeated annotation-feature extraction, but napari-harpy should use a persistent feature-image cache because whole-image prediction and re-use across sessions matter here.
 
 **Model Choice**
-MVP choice: **ConvNeXt-Tiny early convolutional layers**, tile-friendly, modern, finite receptive field, and faster than transformer/foundation options.
+Initial production choice: **ConvNeXt-Tiny early convolutional layers**, tile-friendly, modern, finite receptive field, and faster than transformer/foundation options.
 
-Fallback/reference baseline: **VGG16 first layer + scales `[1, 2, 4]`**, because Convpaint’s docs explicitly recommend early VGG layers for local texture/color/edge tasks and its source already validates that design. This should be documented as a comparison point, not as the first implementation target.
+Fallback/reference baseline: **VGG16 first layer + scales `[1, 2, 4]`**, because Convpaint’s docs explicitly recommend early VGG layers for local texture/color/edge tasks and its source already validates that design. This should be documented as a comparison point, not as the initial production backend.
 
-I would not start with DINOv2/JAFAR for multiplex. Convpaint documents DINOv2/JAFAR as strong for semantic/contextual tasks and high spatial resolution, but DINO-style RGB patch features are costly and awkward for many-channel fluorescence. Good future optional backend, not MVP.
+I would not start with DINOv2/JAFAR for multiplex. Convpaint documents DINOv2/JAFAR as strong for semantic/contextual tasks and high spatial resolution, but DINO-style RGB patch features are costly and awkward for many-channel fluorescence. Good future optional backend, not the initial production backend.
 
 **Model Download and Loading**
 Use TorchVision pretrained weights. TorchVision downloads the weight file automatically on the first call
 and then reuses the local PyTorch cache on later runs. For napari-harpy this should probably live behind
 an optional dependency group, because `torch` / `torchvision` are large dependencies.
 
-MVP backend:
+Initial production backend:
 
 ```python
 from torchvision.models import ConvNeXt_Tiny_Weights, convnext_tiny
@@ -276,7 +284,7 @@ model.eval()
 
 For VGG-only feature extraction, TorchVision also exposes `VGG16_Weights.IMAGENET1K_FEATURES`, which
 contains valid weights for the `features` module without usable classifier weights. This is useful to
-document because Convpaint's default VGG-style extraction is feature-oriented, but it is not the MVP
+document because Convpaint's default VGG-style extraction is feature-oriented, but it is not the initial production
 backend if we choose ConvNeXt-Tiny first.
 
 Sources:
