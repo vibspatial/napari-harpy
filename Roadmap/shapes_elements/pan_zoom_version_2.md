@@ -1,6 +1,6 @@
 # Pan And Zoom While Drawing Shapes: Version 2
 
-Status: implemented through Slice 6
+Status: implemented
 
 This note updates `Roadmap/shapes_elements/pan_zoom.md` after a closer look at
 the annotation widget, napari's Shapes mode lifecycle, and the installed napari
@@ -1002,6 +1002,8 @@ Tests should prove:
 
 ### Slice 7: Manual Napari QA
 
+Status: implemented.
+
 Manual matrix:
 
 - create a new annotation layer;
@@ -1021,9 +1023,13 @@ Record whether the Vispy camera pans correctly when `layer.mouse_pan` is toggled
 without changing layer mode. The headless simulation proves this does not finish
 the active drawing state, but real canvas panning still needs GUI verification.
 
+Manual napari verification passed: Space-pan works while drawing supported
+annotation shapes, both Space/mouse release orders recover back to drawing, and
+unsupported draw modes keep napari's normal behavior.
+
 ## Recommendation
 
-Implement the scoped Space-pan workaround through `_AnnotationLayerEditGuard`
-if manual proof-of-concept confirms that toggling `layer.mouse_pan` is enough
-for the real napari canvas to pan while the layer remains in the original
-supported draw mode.
+The scoped Space-pan workaround has been implemented through
+`_AnnotationLayerEditGuard`. Manual napari verification confirmed that toggling
+`layer.mouse_pan` is enough for the real canvas to pan while the layer remains
+in the original supported draw mode.
