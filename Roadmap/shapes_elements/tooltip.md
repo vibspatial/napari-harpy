@@ -60,14 +60,30 @@ For Space-pan, there is no dedicated button, so a tooltip alone is not enough.
 Add a short tip to the normal annotation-ready status card when an annotation
 layer is open.
 
-Suggested status-card text:
+Do not add a separate `TIP` status card for now. The current widget has a
+single status-card label, and adding a second persistent card would introduce
+extra layout and lifecycle questions. Instead, keep the existing one-card
+pattern and add the Space-pan tip to both normal editable-layer readiness
+states:
+
+- create-new annotation layer:
 
 ```text
+Draw shapes in the viewer, then click Save shapes.
 Tip: while drawing polygon, path, polyline, or lasso, hold Space and drag to pan without ending the shape.
 ```
 
-This should appear only in the active annotation-layer state, not in every
-target-selection readiness card.
+- edit-existing annotation layer:
+
+```text
+Edit shapes layer "..." in coordinate system "...".
+Tip: while drawing polygon, path, polyline, or lasso, hold Space and drag to pan without ending the shape.
+```
+
+This should appear only in active annotation-layer states, not in
+target-selection readiness cards. Existing warning/success cards, such as
+Create holes errors or save results, should continue to replace the normal
+readiness card while they are current.
 
 ## Implementation Notes
 
@@ -87,6 +103,10 @@ target-selection readiness card.
 Slice 1: Widget Tooltips And Status Tip
 
 - Add tooltips to `Create layer`, `Create holes`, and `Save shapes`.
-- Extend the annotation-layer-ready status card with the Space-pan tip.
+- Extend both normal editable-layer status cards with the Space-pan tip:
+  `build_annotation_layer_ready_card_spec()` for create-new sessions and
+  `build_annotation_existing_shapes_opened_card_spec(...)` for edit-existing
+  sessions.
 - Add tests that assert the button tooltips are present and that the ready
-  status card includes the Space-pan tip when a layer is open.
+  status card includes the Space-pan tip for both create-new and edit-existing
+  annotation layers.
