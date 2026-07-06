@@ -1,6 +1,6 @@
 # Pan And Zoom While Drawing Shapes: Version 2
 
-Status: implemented through Slice 4
+Status: implemented through Slice 6
 
 This note updates `Roadmap/shapes_elements/pan_zoom.md` after a closer look at
 the annotation widget, napari's Shapes mode lifecycle, and the installed napari
@@ -907,7 +907,7 @@ Headless tests should prove:
 
 ### Slice 6: Widget Gating
 
-Status: planned.
+Status: implemented.
 
 This is a hardening slice rather than core happy-path behavior. The current
 guard is already scoped to the widget-owned annotation layer during normal
@@ -937,6 +937,8 @@ can_space_pan_draw: Callable[[Shapes], bool] | None = None
 ```
 
 - pass that predicate from `ShapesAnnotation`;
+- if the predicate is missing, fail closed and use fallback pan/zoom rather than
+  allowing custom Space-pan;
 - make the predicate return true only when:
 
 ```python
@@ -959,6 +961,14 @@ active = getattr(active, "__wrapped__", active)
 - do not block cleanup for an already-active Space-pan session. If
   `_begin_space_pan_key_hold(...)` already ran, release handling must still
   restore `layer.mouse_pan`.
+
+This gate is intentionally scoped to the optional custom Space-pan entry path.
+It should not be copied blindly to the direct-drag or vertex-delete hooks:
+those hooks protect Harpy's polygon-with-holes encoding. Falling back to raw
+napari behavior there can reintroduce invalid hole geometry or unsynchronized
+anchor/separator copies. Draw callback suppression remains driven by the
+Space-pan state itself, so gating Space-pan entry also gates normal suppression
+entry while still allowing cleanup for an already-started custom session.
 
 `_handle_space_keybinding(...)` should conceptually become:
 

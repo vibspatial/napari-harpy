@@ -338,6 +338,7 @@ class _AnnotationLayerEditGuard:
         warning_callback: Callable[[str], None] | None = None,
         polygon_vertex_drag_finished_callback: Callable[[], None] | None = None,
         polygon_vertex_delete_finished_callback: Callable[[], None] | None = None,
+        can_space_pan_draw: Callable[[Shapes], bool] | None = None,
     ) -> None:
         self._layer: Shapes | None = None
         self._original_drag_modes: dict[object, Callable[..., Any]] | None = None
@@ -358,6 +359,7 @@ class _AnnotationLayerEditGuard:
         self._warning_callback = warning_callback
         self._polygon_vertex_drag_finished_callback = polygon_vertex_drag_finished_callback
         self._polygon_vertex_delete_finished_callback = polygon_vertex_delete_finished_callback
+        self._can_space_pan_draw = can_space_pan_draw
 
     @property
     def layer(self) -> Shapes | None:
@@ -582,7 +584,11 @@ class _AnnotationLayerEditGuard:
         argument. Checking that argument against `self._layer` keeps the custom
         Space-pan branch scoped to the layer this guard currently owns.
         """
-        if self._layer is layer and self._can_space_pan_draw_mode(layer):
+        if (
+            self._layer is layer
+            and self._can_space_pan_draw_mode(layer)
+            and self._can_use_custom_space_pan(layer)
+        ):
             # Custom resumable drawing path: once Slice 4 enables callback
             # suppression, active supported drawings use Space to toggle
             # mouse-pan without leaving the current drawing mode.
@@ -597,6 +603,12 @@ class _AnnotationLayerEditGuard:
         # unsupported modes, inactive drawing modes, and any state where the
         # custom resumable drawing path is not ready.
         yield from self._fallback_pan_zoom_key_hold(layer)
+
+    def _can_use_custom_space_pan(self, layer: Shapes) -> bool:
+        """Return whether widget ownership allows the custom Space-pan path."""
+        if self._can_space_pan_draw is None:
+            return False
+        return bool(self._can_space_pan_draw(layer))
 
     def _fallback_pan_zoom_key_hold(self, layer: Shapes) -> Iterator[None]:
         """Delegate Space to napari-equivalent fallback pan/zoom behavior."""
@@ -1204,6 +1216,7 @@ class ShapesAnnotation(QWidget):
             warning_callback=self._set_annotation_edit_warning,
             polygon_vertex_drag_finished_callback=self._reset_annotation_edit_warning,
             polygon_vertex_delete_finished_callback=self._reset_annotation_edit_warning,
+            can_space_pan_draw=self._can_annotation_layer_space_pan_draw,
         )
         self._annotation_identity_feature_default_guard = _AnnotationIdentityFeatureDefaultGuard()
         self._annotation_has_been_saved = False
@@ -2367,6 +2380,18 @@ class ShapesAnnotation(QWidget):
             and getattr(binding, "style_spec", None) is None
             and getattr(binding, "source_shapes_index_feature_name", None) == source_shapes_index_feature_name
         )
+
+    def _can_annotation_layer_space_pan_draw(self, layer: Shapes) -> bool:
+        if layer is not self._annotation_layer:
+            return False
+        if not self._annotation_layer_binding_matches():
+            return False
+
+        active_layer = self._viewer.layers.selection.active
+        # napari may expose the active layer through a PublicOnlyProxy in
+        # plugin widgets; compare against the underlying layer when present.
+        active_layer = getattr(active_layer, "__wrapped__", active_layer)
+        return active_layer is layer
 
     def _apply_status_card_spec(self, spec: _ShapesAnnotationStatusCardSpec | None) -> None:
         if spec is None:

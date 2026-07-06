@@ -685,6 +685,70 @@ def test_shapes_annotation_widget_adopts_proxy_active_primary_shapes_after_regis
     assert widget.shapes_combo.currentText() == "blobs_polygons"
 
 
+def test_shapes_annotation_widget_space_pan_predicate_requires_active_widget_owned_layer(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = ProxyActiveAutoActivatingDummyViewer()
+    widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
+    widget.create_layer_button.click()
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    assert getattr(viewer.layers.selection.active, "__wrapped__", None) is layer
+
+    assert widget._can_annotation_layer_space_pan_draw(layer) is True
+
+    other_layer = Shapes([], ndim=2)
+    viewer.layers.selection._active = SimpleNamespace(__wrapped__=other_layer)
+
+    assert widget._can_annotation_layer_space_pan_draw(layer) is False
+    assert widget._can_annotation_layer_space_pan_draw(other_layer) is False
+
+    viewer.layers.selection._active = SimpleNamespace(__wrapped__=layer)
+    widget.app_state.viewer_adapter.unregister_layer(layer)
+
+    assert widget._can_annotation_layer_space_pan_draw(layer) is False
+
+
+def test_shapes_annotation_widget_space_key_falls_back_when_annotation_layer_is_inactive(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = AutoActivatingDummyViewer()
+    widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
+    widget.create_layer_button.click()
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    assert viewer.layers.selection.active is layer
+    layer.mode = Mode.ADD_POLYGON
+    layer._is_creating = True
+    guard = widget._annotation_edit_guard
+    fallback_layers: list[Shapes] = []
+
+    def fallback_pan_zoom_key_hold(fallback_layer: Shapes) -> Iterator[None]:
+        fallback_layers.append(fallback_layer)
+        yield
+
+    monkeypatch.setattr(guard, "_fallback_pan_zoom_key_hold", fallback_pan_zoom_key_hold)
+    viewer.layers.selection._active = Shapes([], ndim=2)
+    handler = KeymapHandler()
+    handler.keymap_providers = [layer]
+
+    assert handler.press_key("Space") is True
+
+    assert fallback_layers == [layer]
+    assert guard._space_pan_key_held is False
+    assert guard._space_pan_mouse_gesture_active is False
+    assert guard._previous_mouse_pan is None
+
+    assert handler.release_key("Space") is True
+
+    assert guard._space_pan_key_held is False
+    assert guard._space_pan_mouse_gesture_active is False
+    assert guard._previous_mouse_pan is None
+
+
 def test_shapes_annotation_widget_primary_shapes_registration_ignores_inactive_layer(
     qtbot,
     sdata_blobs: SpatialData,
@@ -1326,7 +1390,7 @@ def test_annotation_layer_edit_guard_space_key_uses_custom_branch_for_active_sup
     layer.mode = Mode.ADD_POLYGON
     event = SimpleNamespace(position=(0.0, 0.0), pos=np.asarray([0.0, 0.0]))
     layer._drag_modes[Mode.ADD_POLYGON](layer, event)
-    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard(can_space_pan_draw=lambda candidate: candidate is layer)
     guard.attach(layer)
 
     original_mouse_pan = layer.mouse_pan
@@ -1353,6 +1417,70 @@ def test_annotation_layer_edit_guard_space_key_uses_custom_branch_for_active_sup
     assert guard._space_pan_key_held is False
     assert guard._previous_mouse_pan is None
     assert layer.mouse_pan is original_mouse_pan
+
+
+def test_annotation_layer_edit_guard_space_key_delegates_when_widget_predicate_rejects(
+    monkeypatch,
+) -> None:
+    layer = Shapes([], ndim=2)
+    layer.mode = Mode.ADD_POLYGON
+    layer._is_creating = True
+    fallback_layers: list[Shapes] = []
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard(can_space_pan_draw=lambda _layer: False)
+    guard.attach(layer)
+
+    def fallback_pan_zoom_key_hold(fallback_layer: Shapes) -> Iterator[None]:
+        fallback_layers.append(fallback_layer)
+        yield
+
+    monkeypatch.setattr(guard, "_fallback_pan_zoom_key_hold", fallback_pan_zoom_key_hold)
+    handler = KeymapHandler()
+    handler.keymap_providers = [layer]
+
+    assert handler.press_key("Space") is True
+
+    assert fallback_layers == [layer]
+    assert guard._space_pan_key_held is False
+    assert guard._space_pan_mouse_gesture_active is False
+    assert guard._previous_mouse_pan is None
+
+    assert handler.release_key("Space") is True
+
+    assert guard._space_pan_key_held is False
+    assert guard._space_pan_mouse_gesture_active is False
+    assert guard._previous_mouse_pan is None
+
+
+def test_annotation_layer_edit_guard_space_key_delegates_when_widget_predicate_is_missing(
+    monkeypatch,
+) -> None:
+    layer = Shapes([], ndim=2)
+    layer.mode = Mode.ADD_POLYGON
+    layer._is_creating = True
+    fallback_layers: list[Shapes] = []
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+
+    def fallback_pan_zoom_key_hold(fallback_layer: Shapes) -> Iterator[None]:
+        fallback_layers.append(fallback_layer)
+        yield
+
+    monkeypatch.setattr(guard, "_fallback_pan_zoom_key_hold", fallback_pan_zoom_key_hold)
+    handler = KeymapHandler()
+    handler.keymap_providers = [layer]
+
+    assert handler.press_key("Space") is True
+
+    assert fallback_layers == [layer]
+    assert guard._space_pan_key_held is False
+    assert guard._space_pan_mouse_gesture_active is False
+    assert guard._previous_mouse_pan is None
+
+    assert handler.release_key("Space") is True
+
+    assert guard._space_pan_key_held is False
+    assert guard._space_pan_mouse_gesture_active is False
+    assert guard._previous_mouse_pan is None
 
 
 def test_annotation_layer_edit_guard_space_key_delegates_for_unsupported_modes() -> None:
