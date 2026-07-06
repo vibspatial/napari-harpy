@@ -138,7 +138,7 @@ we decide to standardize it.
 
 ## Proposed Non-UI Path
 
-Add a Qt-free helper in `napari_harpy.core.feature_matrix`.
+Add a Qt-free helper in `napari_harpy.core.feature_matrix_metadata`.
 
 This module should own generic feature-matrix concerns that are not specific to
 classifier training, feature extraction, or Qt widgets:
@@ -329,11 +329,12 @@ matrix metadata is part of the persisted table state.
 
 ### Slice 1: Core Metadata Helper
 
-Add `napari_harpy.core.feature_matrix` as the Qt-free home for generic
+Add `napari_harpy.core.feature_matrix_metadata` as the Qt-free home for generic
 feature-matrix logic.
 
 Move the existing `_normalize_feature_matrix(...)` implementation out of
-`napari_harpy.core.classifier` and into `napari_harpy.core.feature_matrix`.
+`napari_harpy.core.classifier` and into
+`napari_harpy.core.feature_matrix_metadata`.
 Update callers to import the moved function from the new module. Do not keep a
 compatibility alias in `classifier.py`; tests and callers should use the new
 module path.
