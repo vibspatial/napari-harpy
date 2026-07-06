@@ -24,6 +24,7 @@ from spatialdata.transformations import Identity
 
 import napari_harpy._app_state as app_state_module
 import napari_harpy.widgets.shapes_annotation._edit_guard as shapes_annotation_edit_guard_module
+import napari_harpy.widgets.shapes_annotation._identity_feature_defaults as shapes_annotation_identity_defaults_module
 import napari_harpy.widgets.shapes_annotation.widget as shapes_annotation_widget_module
 from napari_harpy._app_state import ShapesElementWrittenEvent, get_or_create_app_state
 from napari_harpy.core._color_source import ShapeColumnColorSourceSpec
@@ -982,7 +983,7 @@ def test_annotation_identity_feature_default_guard_reentrant_event_is_ignored() 
         shape_type="polygon",
         features=pd.DataFrame({"instance_id": ["__annotation_0"]}),
     )
-    guard = shapes_annotation_widget_module._AnnotationIdentityFeatureDefaultGuard()
+    guard = shapes_annotation_identity_defaults_module._AnnotationIdentityFeatureDefaultGuard()
 
     guard.attach(layer, feature_name="instance_id")
     _assert_identity_feature_default_missing(layer, "instance_id")
