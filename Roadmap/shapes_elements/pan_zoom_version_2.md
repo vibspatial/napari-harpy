@@ -1,6 +1,6 @@
 # Pan And Zoom While Drawing Shapes: Version 2
 
-Status: investigation
+Status: implemented through Slice 4
 
 This note updates `Roadmap/shapes_elements/pan_zoom.md` after a closer look at
 the annotation widget, napari's Shapes mode lifecycle, and the installed napari
@@ -363,6 +363,8 @@ held" state as lasso, path, polygon, and polyline.
 ## Suggested Implementation Slices
 
 ### Slice 1: Guard Plumbing
+
+Status: implemented.
 
 Goal: extend `_AnnotationLayerEditGuard` so it can safely own all state that
 later Space-pan slices need, without changing draw behavior yet.
