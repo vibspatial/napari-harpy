@@ -395,6 +395,7 @@ table and feature key. This should not mutate the table.
 The state should distinguish:
 
 - missing from `.obsm`;
+- present in `.obsm` but not a usable feature matrix;
 - present but unregistered;
 - registered and valid;
 - registered but mismatched with the live matrix shape.
@@ -402,6 +403,7 @@ The state should distinguish:
 The helper should also report useful details for UI and error text, such as:
 
 - live matrix width;
+- live matrix validation error, when the `.obsm` value is present but unusable;
 - number of metadata columns;
 - whether metadata has `source_kind == "custom_obsm"`.
 
@@ -413,6 +415,7 @@ reported as registered/valid, regardless of whether `source_kind` is present.
 Tests:
 
 - missing matrix key reports a missing-matrix state;
+- present but non-2D or wrong-row-count matrix reports an invalid-matrix state;
 - matrix without `feature_matrices` metadata reports unregistered;
 - valid custom metadata reports registered/valid;
 - valid metadata without `source_kind` reports registered/valid but not custom;
