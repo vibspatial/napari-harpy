@@ -1735,7 +1735,7 @@ def test_annotation_layer_edit_guard_vertex_remove_delegates_simple_polygon(monk
     layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
     finished_calls: list[str] = []
     guard = shapes_annotation_widget_module._AnnotationLayerEditGuard(
-        vertex_delete_finished_callback=lambda: finished_calls.append("finished"),
+        polygon_vertex_delete_finished_callback=lambda: finished_calls.append("finished"),
     )
     guard.attach(layer)
     event = SimpleNamespace(position=(0.0, 0.0))

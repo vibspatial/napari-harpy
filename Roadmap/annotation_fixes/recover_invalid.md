@@ -308,7 +308,7 @@ Implementation direction:
 - keep warning emission on the existing path:
   `_AnnotationLayerEditGuard(warning_callback=...)` calls
   `ShapesAnnotation._set_annotation_edit_warning(...)`;
-- add an optional `polygon_drag_finished_callback` to
+- add an optional `polygon_vertex_drag_finished_callback` to
   `_AnnotationLayerEditGuard`;
 - call it when `_iter_direct_drag_with_polygon_validation(...)` finishes a
   guarded direct-drag gesture with `active_drag is not None`;
@@ -372,12 +372,12 @@ Implementation direction:
 - keep rejected delete behavior unchanged:
   `_route_vertex_remove(...)` catches `ValueError`, calls `_warn(str(error))`,
   and returns without mutating `layer.data`;
-- add an optional `vertex_delete_finished_callback` to
+- add an optional `polygon_vertex_delete_finished_callback` to
   `_AnnotationLayerEditGuard`;
 - call it only after the successful Harpy-owned vertex-delete path has emitted
   its existing napari data events and called `layer.refresh()`;
 - wire `ShapesAnnotation` to pass
-  `vertex_delete_finished_callback=self._reset_annotation_edit_warning`;
+  `polygon_vertex_delete_finished_callback=self._reset_annotation_edit_warning`;
 - reuse `_reset_annotation_edit_warning(...)`, which recomputes normal
   readiness and applies `readiness.status`;
 - do not call the callback for delegated/native deletes where
