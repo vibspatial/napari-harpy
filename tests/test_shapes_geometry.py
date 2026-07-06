@@ -187,6 +187,20 @@ def test_napari_polygon_vertices_to_topology_distinguishes_multiple_hole_anchors
     assert topology.synchronized_anchor_groups == ((0, 4, 10, 16), (5, 9), (11, 15))
 
 
+def test_napari_polygon_vertices_to_topology_parses_hole_outside_shell() -> None:
+    source = Polygon(
+        [(0, 0), (4, 0), (4, 4), (0, 4)],
+        holes=[[(6, 6), (6, 8), (8, 8), (8, 6)]],
+    )
+
+    topology = napari_polygon_vertices_to_topology(shapely_polygon_to_napari_polygon_vertices(source))
+
+    assert topology == NapariPolygonTopology(
+        shell_anchor_group=(0, 4, 10),
+        hole_anchor_groups=((5, 9),),
+    )
+
+
 def test_napari_polygon_topology_normalizes_anchor_groups() -> None:
     topology = NapariPolygonTopology(
         shell_anchor_group=[0, np.int64(4), 10],
@@ -549,6 +563,23 @@ def test_insert_napari_polygon_vertex_rejects_ambiguous_inserted_coordinate() ->
             topology,
             insert_index=3,
             inserted_coordinate=vertices[0],
+        )
+
+
+def test_insert_napari_polygon_vertex_rejects_geometry_invalid_after_insert() -> None:
+    source = Polygon(
+        [(0, 0), (10, 0), (10, 10), (0, 10)],
+        holes=[[(2, 2), (2, 3), (3, 3), (3, 2)]],
+    )
+    vertices = shapely_polygon_to_napari_polygon_vertices(source)
+    topology = napari_polygon_vertices_to_topology(vertices)
+
+    with pytest.raises(ValueError, match="valid polygon"):
+        insert_napari_polygon_vertex(
+            vertices,
+            topology,
+            insert_index=2,
+            inserted_coordinate=np.asarray([20.0, 0.0]),
         )
 
 

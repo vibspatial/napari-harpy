@@ -27,7 +27,7 @@ def test_package_import_is_lazy() -> None:
 
         import napari_harpy
 
-        forbidden_roots = ("napari", "qtpy")
+        forbidden_roots = ("napari", "qtpy", "napari_harpy.widgets")
         loaded = sorted(
             name
             for name in sys.modules
@@ -47,7 +47,7 @@ def test_headless_import_is_lazy() -> None:
 
         from napari_harpy import headless
 
-        forbidden_roots = ("napari", "napari_harpy.widgets", "qtpy")
+        forbidden_roots = ("napari", "qtpy", "napari_harpy.widgets")
         loaded = sorted(
             name
             for name in sys.modules

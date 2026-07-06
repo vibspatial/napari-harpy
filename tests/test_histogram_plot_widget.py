@@ -42,6 +42,11 @@ def make_result(
     )
 
 
+def _view_axis_lower_limits(plot_widget: _HistogramPlotWidget) -> tuple[float, float]:
+    limits = plot_widget._plot_item.getViewBox().state["limits"]
+    return float(limits["xLimits"][0]), float(limits["yLimits"][0])
+
+
 def test_histogram_plot_widget_renders_bars_from_bin_edges(qtbot) -> None:
     plot_widget = _HistogramPlotWidget()
     qtbot.addWidget(plot_widget)
@@ -55,6 +60,28 @@ def test_histogram_plot_widget_renders_bars_from_bin_edges(qtbot) -> None:
     np.testing.assert_allclose(bar_item.opts["height"], np.array([2.0, 1.0]))
     assert bar_item.opts["brush"].color().name().upper() == HISTOGRAM_BAR_FILL_COLOR.upper()
     assert plot_widget.findChild(QLabel, "histogram_plot_state_label") is None
+
+
+def test_histogram_plot_widget_view_limits_allow_negative_x_and_prevent_negative_linear_y(qtbot) -> None:
+    plot_widget = _HistogramPlotWidget()
+    qtbot.addWidget(plot_widget)
+
+    plot_widget.set_histogram(make_result())
+
+    x_lower_limit, y_lower_limit = _view_axis_lower_limits(plot_widget)
+    assert x_lower_limit < 0.0
+    assert y_lower_limit == 0.0
+
+    plot_widget.set_contrast_limits((-0.25, 0.8))
+    assert plot_widget._contrast_region is not None
+    np.testing.assert_allclose(plot_widget._contrast_region.getRegion(), (-0.25, 0.8))
+
+    plot_widget._plot_item.setXRange(-10.0, 0.5, padding=0.0)
+    plot_widget._plot_item.setYRange(-5.0, 0.5, padding=0.0)
+
+    x_range, y_range = plot_widget._plot_item.viewRange()
+    assert x_range[0] < 0.0
+    assert y_range[0] >= 0.0
 
 
 def test_histogram_plot_widget_replaces_previous_bars(qtbot) -> None:
@@ -295,6 +322,9 @@ def test_histogram_plot_widget_uses_scientific_ticks_for_log_density_values(qtbo
     )
 
     axis = plot_widget._plot_item.getAxis("left")
+    x_lower_limit, y_lower_limit = _view_axis_lower_limits(plot_widget)
+    assert x_lower_limit < 0.0
+    assert y_lower_limit == -8.0
     assert axis.tickStrings([-4, -6, -8], 1.0, 1.0) == ["1e-4", "1e-6", "1e-8"]
 
 

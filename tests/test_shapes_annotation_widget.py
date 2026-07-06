@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from html import unescape
 from types import SimpleNamespace
 
@@ -9,10 +9,12 @@ import anndata as ad
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import pytest
 from matplotlib.colors import to_rgba
 from napari.layers import Image, Points, Shapes
 from napari.layers.base._base_constants import ActionType
 from napari.layers.shapes._shapes_constants import Mode
+from napari.utils.key_bindings import KeymapHandler, coerce_keybinding
 from napari_builtins.io import csv_to_layer_data, napari_write_shapes
 from qtpy.QtWidgets import QComboBox, QLabel
 from shapely.geometry import Polygon
@@ -21,6 +23,8 @@ from spatialdata.models import ShapesModel, TableModel
 from spatialdata.transformations import Identity
 
 import napari_harpy._app_state as app_state_module
+import napari_harpy.widgets.shapes_annotation._edit_guard as shapes_annotation_edit_guard_module
+import napari_harpy.widgets.shapes_annotation._identity_feature_defaults as shapes_annotation_identity_defaults_module
 import napari_harpy.widgets.shapes_annotation.widget as shapes_annotation_widget_module
 from napari_harpy._app_state import ShapesElementWrittenEvent, get_or_create_app_state
 from napari_harpy.core._color_source import ShapeColumnColorSourceSpec
@@ -40,6 +44,10 @@ from napari_harpy.viewer.shapes_styling import (
 )
 from napari_harpy.widgets import ShapesAnnotation as LazyShapesAnnotation
 from napari_harpy.widgets.shapes_annotation.widget import ShapesAnnotation
+
+_SPACE_PAN_TIP_TEXT = (
+    "Tip: while drawing in polygon, path, polyline or lasso mode, hold Space and drag to pan without ending the shape."
+)
 
 
 def _rgba(color: str) -> np.ndarray:
@@ -141,8 +149,12 @@ def _status_text(widget: ShapesAnnotation) -> str:
     return unescape(widget.status_label.text())
 
 
+def _clean_tooltip_text(text: str) -> str:
+    return unescape(text).replace("&#8203;", "").replace("\u200b", "")
+
+
 def _tooltip_text(widget: ShapesAnnotation) -> str:
-    return unescape(widget.status_label.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    return _clean_tooltip_text(widget.status_label.toolTip())
 
 
 def _first_current_property_value(layer: Shapes, feature_name: str) -> object:
@@ -301,18 +313,44 @@ def _direct_drag_callback_moving_vertex(
     moved_vertex_index: int,
     moved_coordinate: np.ndarray,
 ) -> Callable[[Shapes, object], object]:
+    """Return a deterministic fake for napari's direct vertex-drag callback."""
+    return _direct_drag_callback_moving_vertex_sequence(
+        moved_vertex_index=moved_vertex_index,
+        moved_coordinates=[moved_coordinate],
+    )
+
+
+def _direct_drag_callback_moving_vertex_sequence(
+    *,
+    moved_vertex_index: int,
+    moved_coordinates: list[np.ndarray],
+) -> Callable[[Shapes, object], object]:
     def direct_drag_callback(layer: Shapes, event: object) -> object:
         layer._moving_value = (0, moved_vertex_index)
         yield "press"
 
+        move_index = 0
         while getattr(event, "type", None) == "mouse_move":
+            moved_coordinate = moved_coordinates[min(move_index, len(moved_coordinates) - 1)]
             vertices = np.asarray(layer.data[0], dtype=float).copy()
             vertices[moved_vertex_index] = moved_coordinate
             layer._data_view.edit(0, vertices)
             layer.refresh()
+            move_index += 1
             yield "move"
 
+        layer._moving_value = (None, None)
+
     return direct_drag_callback
+
+
+def _exhaust_generator(iterator: Iterator[object]) -> list[object]:
+    values: list[object] = []
+    while True:
+        try:
+            values.append(next(iterator))
+        except StopIteration:
+            return values
 
 
 def _install_direct_drag_callback_for_annotation_guard(
@@ -451,6 +489,11 @@ def test_shapes_annotation_widget_can_be_instantiated(qtbot) -> None:
     assert widget.create_layer_button.isEnabled() is False
     assert widget.create_holes_button.isEnabled() is False
     assert widget.save_shapes_button.isEnabled() is False
+    assert "Create an editable annotation Shapes layer" in _clean_tooltip_text(widget.create_layer_button.toolTip())
+    create_holes_tooltip = _clean_tooltip_text(widget.create_holes_button.toolTip())
+    assert "Select one shell polygon and one or more polygons fully inside it" in create_holes_tooltip
+    assert "Shift-click polygons to add them to the selection" in create_holes_tooltip
+    assert "Save the current annotation layer back" in _clean_tooltip_text(widget.save_shapes_button.toolTip())
     assert "No SpatialData Loaded" in _status_text(widget)
 
 
@@ -655,6 +698,70 @@ def test_shapes_annotation_widget_adopts_proxy_active_primary_shapes_after_regis
     assert widget._annotation_session is not None
     assert widget._annotation_session.shapes_name == "blobs_polygons"
     assert widget.shapes_combo.currentText() == "blobs_polygons"
+
+
+def test_shapes_annotation_widget_space_pan_predicate_requires_active_widget_owned_layer(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = ProxyActiveAutoActivatingDummyViewer()
+    widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
+    widget.create_layer_button.click()
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    assert getattr(viewer.layers.selection.active, "__wrapped__", None) is layer
+
+    assert widget._can_annotation_layer_space_pan_draw(layer) is True
+
+    other_layer = Shapes([], ndim=2)
+    viewer.layers.selection._active = SimpleNamespace(__wrapped__=other_layer)
+
+    assert widget._can_annotation_layer_space_pan_draw(layer) is False
+    assert widget._can_annotation_layer_space_pan_draw(other_layer) is False
+
+    viewer.layers.selection._active = SimpleNamespace(__wrapped__=layer)
+    widget.app_state.viewer_adapter.unregister_layer(layer)
+
+    assert widget._can_annotation_layer_space_pan_draw(layer) is False
+
+
+def test_shapes_annotation_widget_space_key_falls_back_when_annotation_layer_is_inactive(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = AutoActivatingDummyViewer()
+    widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
+    widget.create_layer_button.click()
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    assert viewer.layers.selection.active is layer
+    layer.mode = Mode.ADD_POLYGON
+    layer._is_creating = True
+    guard = widget._annotation_edit_guard
+    fallback_layers: list[Shapes] = []
+
+    def fallback_pan_zoom_key_hold(fallback_layer: Shapes) -> Iterator[None]:
+        fallback_layers.append(fallback_layer)
+        yield
+
+    monkeypatch.setattr(guard, "_fallback_pan_zoom_key_hold", fallback_pan_zoom_key_hold)
+    viewer.layers.selection._active = Shapes([], ndim=2)
+    handler = KeymapHandler()
+    handler.keymap_providers = [layer]
+
+    assert handler.press_key("Space") is True
+
+    assert fallback_layers == [layer]
+    assert guard._space_pan_key_held is False
+    assert guard._space_pan_mouse_gesture_active is False
+    assert guard._previous_mouse_pan is None
+
+    assert handler.release_key("Space") is True
+
+    assert guard._space_pan_key_held is False
+    assert guard._space_pan_mouse_gesture_active is False
+    assert guard._previous_mouse_pan is None
 
 
 def test_shapes_annotation_widget_primary_shapes_registration_ignores_inactive_layer(
@@ -876,7 +983,7 @@ def test_annotation_identity_feature_default_guard_reentrant_event_is_ignored() 
         shape_type="polygon",
         features=pd.DataFrame({"instance_id": ["__annotation_0"]}),
     )
-    guard = shapes_annotation_widget_module._AnnotationIdentityFeatureDefaultGuard()
+    guard = shapes_annotation_identity_defaults_module._AnnotationIdentityFeatureDefaultGuard()
 
     guard.attach(layer, feature_name="instance_id")
     _assert_identity_feature_default_missing(layer, "instance_id")
@@ -895,7 +1002,9 @@ def test_annotation_identity_feature_default_guard_reentrant_event_is_ignored() 
 def test_annotation_layer_edit_guard_delegates_direct_mode_and_restores_instance_mapping() -> None:
     layer = Shapes([], ndim=2)
     layer._drag_modes = dict(layer._drag_modes)
+    layer._move_modes = dict(layer._move_modes)
     original_drag_modes = layer._drag_modes
+    original_move_modes = layer._move_modes
     calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     def original_direct_callback(*args: object, **kwargs: object) -> str:
@@ -904,7 +1013,9 @@ def test_annotation_layer_edit_guard_delegates_direct_mode_and_restores_instance
 
     original_drag_modes[Mode.DIRECT] = original_direct_callback
     original_vertex_remove_callback = original_drag_modes[Mode.VERTEX_REMOVE]
-    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    original_lasso_move_callback = original_move_modes[Mode.ADD_POLYGON_LASSO]
+    original_lasso_drag_callback = original_drag_modes[Mode.ADD_POLYGON_LASSO]
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
 
     guard.attach(layer)
     wrapped_direct_callback = layer._drag_modes[Mode.DIRECT]
@@ -912,8 +1023,11 @@ def test_annotation_layer_edit_guard_delegates_direct_mode_and_restores_instance
 
     assert guard.layer is layer
     assert layer._drag_modes is not original_drag_modes
+    assert layer._move_modes is not original_move_modes
     assert wrapped_direct_callback is not original_direct_callback
     assert wrapped_vertex_remove_callback is not original_vertex_remove_callback
+    assert layer._drag_modes[Mode.ADD_POLYGON_LASSO] is not original_lasso_drag_callback
+    assert layer._move_modes[Mode.ADD_POLYGON_LASSO] is not original_lasso_move_callback
     assert wrapped_direct_callback("event", value=3) == "delegated"
     assert calls == [(("event",), {"value": 3})]
 
@@ -921,31 +1035,44 @@ def test_annotation_layer_edit_guard_delegates_direct_mode_and_restores_instance
 
     assert guard.layer is None
     assert layer._drag_modes is original_drag_modes
+    assert layer._move_modes is original_move_modes
     assert layer._drag_modes[Mode.DIRECT] is original_direct_callback
     assert layer._drag_modes[Mode.VERTEX_REMOVE] is original_vertex_remove_callback
+    assert layer._drag_modes[Mode.ADD_POLYGON_LASSO] is original_lasso_drag_callback
+    assert layer._move_modes[Mode.ADD_POLYGON_LASSO] is original_lasso_move_callback
 
 
 def test_annotation_layer_edit_guard_attach_is_idempotent_and_restores_class_mapping() -> None:
     layer = Shapes([], ndim=2)
     original_direct_callback = layer._drag_modes[Mode.DIRECT]
     original_vertex_remove_callback = layer._drag_modes[Mode.VERTEX_REMOVE]
-    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    original_lasso_move_callback = layer._move_modes[Mode.ADD_POLYGON_LASSO]
+    original_lasso_drag_callback = layer._drag_modes[Mode.ADD_POLYGON_LASSO]
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
 
     guard.attach(layer)
     first_wrapped_direct_callback = layer._drag_modes[Mode.DIRECT]
     first_wrapped_vertex_remove_callback = layer._drag_modes[Mode.VERTEX_REMOVE]
+    first_move_modes = layer._move_modes
     guard.attach(layer)
 
     assert layer._drag_modes[Mode.DIRECT] is first_wrapped_direct_callback
     assert layer._drag_modes[Mode.VERTEX_REMOVE] is first_wrapped_vertex_remove_callback
+    assert layer._move_modes is first_move_modes
+    assert layer._drag_modes[Mode.ADD_POLYGON_LASSO] is not original_lasso_drag_callback
+    assert layer._move_modes[Mode.ADD_POLYGON_LASSO] is not original_lasso_move_callback
     assert "_drag_modes" in vars(layer)
+    assert "_move_modes" in vars(layer)
 
     guard.disconnect()
 
     assert guard.layer is None
     assert "_drag_modes" not in vars(layer)
+    assert "_move_modes" not in vars(layer)
     assert layer._drag_modes[Mode.DIRECT] is original_direct_callback
     assert layer._drag_modes[Mode.VERTEX_REMOVE] is original_vertex_remove_callback
+    assert layer._drag_modes[Mode.ADD_POLYGON_LASSO] is original_lasso_drag_callback
+    assert layer._move_modes[Mode.ADD_POLYGON_LASSO] is original_lasso_move_callback
 
 
 def test_annotation_layer_edit_guard_replacing_layer_disconnects_previous_layer() -> None:
@@ -953,11 +1080,14 @@ def test_annotation_layer_edit_guard_replacing_layer_disconnects_previous_layer(
     second_layer = Shapes([], ndim=2)
     first_direct_callback = first_layer._drag_modes[Mode.DIRECT]
     first_vertex_remove_callback = first_layer._drag_modes[Mode.VERTEX_REMOVE]
-    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    first_lasso_move_callback = first_layer._move_modes[Mode.ADD_POLYGON_LASSO]
+    first_lasso_drag_callback = first_layer._drag_modes[Mode.ADD_POLYGON_LASSO]
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
 
     guard.attach(first_layer)
     first_wrapped_direct_callback = first_layer._drag_modes[Mode.DIRECT]
     first_wrapped_vertex_remove_callback = first_layer._drag_modes[Mode.VERTEX_REMOVE]
+    first_move_modes = first_layer._move_modes
     # `attach(...)` first calls `disconnect(...)`, so moving the guard to a new
     # layer must restore the previous layer before patching the new one.
     guard.attach(second_layer)
@@ -965,22 +1095,586 @@ def test_annotation_layer_edit_guard_replacing_layer_disconnects_previous_layer(
     assert guard.layer is second_layer
     assert first_layer._drag_modes[Mode.DIRECT] is first_direct_callback
     assert first_layer._drag_modes[Mode.VERTEX_REMOVE] is first_vertex_remove_callback
+    assert first_layer._drag_modes[Mode.ADD_POLYGON_LASSO] is first_lasso_drag_callback
+    assert first_layer._move_modes[Mode.ADD_POLYGON_LASSO] is first_lasso_move_callback
     assert "_drag_modes" not in vars(first_layer)
+    assert "_move_modes" not in vars(first_layer)
     assert "_drag_modes" in vars(second_layer)
+    assert "_move_modes" in vars(second_layer)
     assert second_layer._drag_modes[Mode.DIRECT] is not first_wrapped_direct_callback
     assert second_layer._drag_modes[Mode.VERTEX_REMOVE] is not first_wrapped_vertex_remove_callback
+    assert second_layer._move_modes is not first_move_modes
+
+
+def test_annotation_layer_edit_guard_space_binding_preserves_existing_binding_and_mouse_state() -> None:
+    layer = Shapes([], ndim=2)
+    layer.mode = Mode.ADD_POLYGON_LASSO
+    space_key = coerce_keybinding("Space")
+
+    def existing_space_keybinding(_layer: Shapes) -> None:
+        return None
+
+    layer.bind_key("Space", existing_space_keybinding, overwrite=True)
+    original_keymap = dict(layer.keymap)
+    original_mouse_pan = layer.mouse_pan
+    original_mode = layer.mode
+    original_drag_callbacks = list(layer.mouse_drag_callbacks)
+    original_move_callbacks = list(layer.mouse_move_callbacks)
+    original_resumable_drag_callbacks = {
+        mode: layer._drag_modes[mode] for mode in shapes_annotation_edit_guard_module._SPACE_PAN_RESUMABLE_DRAW_MODES
+    }
+    original_resumable_move_callbacks = {
+        mode: layer._move_modes[mode] for mode in shapes_annotation_edit_guard_module._SPACE_PAN_RESUMABLE_DRAW_MODES
+    }
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
+
+    guard.attach(layer)
+
+    assert "Space" not in layer.keymap
+    assert layer.keymap[space_key] is guard._wrapped_space_keybinding
+    assert guard._had_instance_space_keybinding is True
+    assert guard._previous_space_keybinding is existing_space_keybinding
+    assert layer.mouse_pan is original_mouse_pan
+    assert layer.mode == original_mode
+    assert original_drag_callbacks[0] not in layer.mouse_drag_callbacks
+    assert layer._drag_modes[Mode.ADD_POLYGON_LASSO] in layer.mouse_drag_callbacks
+    assert original_move_callbacks[0] not in layer.mouse_move_callbacks
+    assert layer._move_modes[Mode.ADD_POLYGON_LASSO] in layer.mouse_move_callbacks
+    for mode, callback in original_resumable_drag_callbacks.items():
+        assert layer._drag_modes[mode] is not callback
+    for mode, callback in original_resumable_move_callbacks.items():
+        assert layer._move_modes[mode] is not callback
+
+    guard.disconnect()
+
+    assert dict(layer.keymap) == original_keymap
+    assert layer.keymap[space_key] is existing_space_keybinding
+    assert layer.mouse_pan is original_mouse_pan
+    assert layer.mode == original_mode
+    assert list(layer.mouse_drag_callbacks) == original_drag_callbacks
+    assert list(layer.mouse_move_callbacks) == original_move_callbacks
+    for mode, callback in original_resumable_drag_callbacks.items():
+        assert layer._drag_modes[mode] is callback
+    for mode, callback in original_resumable_move_callbacks.items():
+        assert layer._move_modes[mode] is callback
+
+
+def test_annotation_layer_edit_guard_replaces_active_supported_draw_callbacks() -> None:
+    layer = Shapes([], ndim=2)
+    layer.mode = Mode.ADD_POLYGON_LASSO
+    original_mode = layer.mode
+    original_drag_callback = layer.mouse_drag_callbacks[0]
+    original_move_callback = layer.mouse_move_callbacks[0]
+
+    def unrelated_drag_callback(_layer: Shapes, _event: object) -> None:
+        return None
+
+    def unrelated_move_callback(_layer: Shapes, _event: object) -> None:
+        return None
+
+    layer.mouse_drag_callbacks.append(unrelated_drag_callback)
+    layer.mouse_move_callbacks.append(unrelated_move_callback)
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
+
+    guard.attach(layer)
+
+    wrapped_drag_callback = layer._drag_modes[Mode.ADD_POLYGON_LASSO]
+    wrapped_move_callback = layer._move_modes[Mode.ADD_POLYGON_LASSO]
+    assert layer.mode == original_mode
+    assert original_drag_callback not in layer.mouse_drag_callbacks
+    assert wrapped_drag_callback in layer.mouse_drag_callbacks
+    assert unrelated_drag_callback in layer.mouse_drag_callbacks
+    assert original_move_callback not in layer.mouse_move_callbacks
+    assert wrapped_move_callback in layer.mouse_move_callbacks
+    assert unrelated_move_callback in layer.mouse_move_callbacks
+
+    guard.disconnect()
+
+    assert layer.mode == original_mode
+    assert original_drag_callback in layer.mouse_drag_callbacks
+    assert wrapped_drag_callback not in layer.mouse_drag_callbacks
+    assert unrelated_drag_callback in layer.mouse_drag_callbacks
+    assert original_move_callback in layer.mouse_move_callbacks
+    assert wrapped_move_callback not in layer.mouse_move_callbacks
+    assert unrelated_move_callback in layer.mouse_move_callbacks
+
+
+def test_annotation_layer_edit_guard_leaves_active_callbacks_for_non_resumable_mode() -> None:
+    layer = Shapes([], ndim=2)
+    layer.mode = Mode.ADD_LINE
+    original_mode = layer.mode
+    original_drag_callbacks = list(layer.mouse_drag_callbacks)
+    original_move_callbacks = list(layer.mouse_move_callbacks)
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
+
+    guard.attach(layer)
+
+    assert layer.mode == original_mode
+    assert list(layer.mouse_drag_callbacks) == original_drag_callbacks
+    assert list(layer.mouse_move_callbacks) == original_move_callbacks
+
+    guard.disconnect()
+
+    assert layer.mode == original_mode
+    assert list(layer.mouse_drag_callbacks) == original_drag_callbacks
+    assert list(layer.mouse_move_callbacks) == original_move_callbacks
+
+
+def test_annotation_layer_edit_guard_space_binding_is_removed_when_guard_created_it() -> None:
+    layer = Shapes([], ndim=2)
+    space_key = coerce_keybinding("Space")
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
+
+    assert space_key not in layer.keymap
+
+    guard.attach(layer)
+
+    assert "Space" not in layer.keymap
+    assert layer.keymap[space_key] is guard._wrapped_space_keybinding
+    assert guard._had_instance_space_keybinding is False
+    assert guard._previous_space_keybinding is None
+
+    guard.disconnect()
+
+    assert space_key not in layer.keymap
+
+
+def test_annotation_layer_edit_guard_space_binding_restores_none_like_existing_value() -> None:
+    layer = Shapes([], ndim=2)
+    space_key = coerce_keybinding("Space")
+    layer.keymap[space_key] = None
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
+
+    guard.attach(layer)
+
+    assert layer.keymap[space_key] is guard._wrapped_space_keybinding
+    assert guard._had_instance_space_keybinding is True
+    assert guard._previous_space_keybinding is None
+
+    guard.disconnect()
+
+    assert space_key in layer.keymap
+    assert layer.keymap[space_key] is None
+
+
+def test_annotation_layer_edit_guard_space_pan_resumable_draw_modes_are_explicit() -> None:
+    supported_modes = shapes_annotation_edit_guard_module._SPACE_PAN_RESUMABLE_DRAW_MODES
+    assert supported_modes == {
+        Mode.ADD_POLYGON_LASSO,
+        Mode.ADD_PATH,
+        Mode.ADD_POLYGON,
+        Mode.ADD_POLYLINE,
+    }
+
+
+def test_annotation_layer_edit_guard_can_space_pan_only_for_active_resumable_draw_modes() -> None:
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
+
+    for mode in shapes_annotation_edit_guard_module._SPACE_PAN_RESUMABLE_DRAW_MODES:
+        layer = Shapes([], ndim=2)
+        layer.mode = mode
+
+        assert guard._can_space_pan_draw_mode(layer) is False
+
+        layer._is_creating = True
+
+        assert guard._can_space_pan_draw_mode(layer) is True
+
+    for mode in {Mode.ADD_LINE, Mode.ADD_RECTANGLE, Mode.ADD_ELLIPSE}:
+        layer = Shapes([], ndim=2)
+        layer.mode = mode
+        layer._is_creating = True
+
+        assert guard._can_space_pan_draw_mode(layer) is False
+
+
+def test_annotation_layer_edit_guard_supported_wrappers_delegate_when_drawing_is_not_suspended() -> None:
+    layer = Shapes([], ndim=2)
+    layer._drag_modes = dict(layer._drag_modes)
+    layer._move_modes = dict(layer._move_modes)
+    drag_calls: list[str] = []
+    move_calls: list[str] = []
+
+    def original_drag_callback(_layer: Shapes, event: object) -> Iterator[str]:
+        drag_calls.append(getattr(event, "type", ""))
+        yield "press"
+        while getattr(event, "type", None) == "mouse_move":
+            drag_calls.append(getattr(event, "type", ""))
+            yield "move"
+
+    def original_move_callback(_layer: Shapes, event: object) -> str:
+        move_calls.append(getattr(event, "type", ""))
+        return "moved"
+
+    layer._drag_modes[Mode.ADD_POLYGON] = original_drag_callback
+    layer._move_modes[Mode.ADD_POLYGON] = original_move_callback
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+
+    drag_event = SimpleNamespace(type="mouse_press")
+    drag = layer._drag_modes[Mode.ADD_POLYGON](layer, drag_event)
+
+    assert next(drag) == "press"
+    drag_event.type = "mouse_move"
+    assert next(drag) == "move"
+    drag_event.type = "mouse_release"
+    assert _exhaust_generator(drag) == []
+    assert drag_calls == ["mouse_press", "mouse_move"]
+
+    move_event = SimpleNamespace(type="mouse_move")
+    assert layer._move_modes[Mode.ADD_POLYGON](layer, move_event) == "moved"
+    assert move_calls == ["mouse_move"]
+
+
+def test_annotation_layer_edit_guard_supported_wrappers_suppress_while_drawing_is_suspended() -> None:
+    layer = Shapes([], ndim=2)
+    layer._drag_modes = dict(layer._drag_modes)
+    layer._move_modes = dict(layer._move_modes)
+    original_mouse_pan = layer.mouse_pan
+    original_data = list(layer.data)
+    calls: list[str] = []
+
+    def original_drag_callback(_layer: Shapes, _event: object) -> None:
+        calls.append("drag")
+        raise AssertionError("suspended drag should not call the original callback")
+
+    def original_move_callback(_layer: Shapes, _event: object) -> None:
+        calls.append("move")
+        raise AssertionError("suspended move should not call the original callback")
+
+    layer._drag_modes[Mode.ADD_POLYGON] = original_drag_callback
+    layer._move_modes[Mode.ADD_POLYGON] = original_move_callback
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+    guard._begin_space_pan_key_hold(layer)
+
+    assert layer._move_modes[Mode.ADD_POLYGON](layer, SimpleNamespace(type="mouse_move")) is None
+
+    drag_event = SimpleNamespace(type="mouse_press")
+    drag = layer._drag_modes[Mode.ADD_POLYGON](layer, drag_event)
+
+    assert guard._space_pan_mouse_gesture_active is False
+    assert next(drag) is None
+    assert guard._space_pan_mouse_gesture_active is True
+
+    drag_event.type = "mouse_move"
+    assert next(drag) is None
+    drag_event.type = "mouse_release"
+    assert _exhaust_generator(drag) == []
+
+    assert guard._space_pan_key_held is True
+    assert guard._space_pan_mouse_gesture_active is False
+    assert layer.mouse_pan is True
+    assert calls == []
+    assert list(layer.data) == original_data
+
+    guard._end_space_pan_key_hold(layer)
+
+    assert layer.mouse_pan is original_mouse_pan
+
+
+def test_annotation_layer_edit_guard_supported_wrappers_restore_if_space_releases_before_mouse() -> None:
+    layer = Shapes([], ndim=2)
+    original_mouse_pan = layer.mouse_pan
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+    guard._begin_space_pan_key_hold(layer)
+    drag_event = SimpleNamespace(type="mouse_press")
+    drag = layer._drag_modes[Mode.ADD_POLYGON](layer, drag_event)
+
+    assert next(drag) is None
+
+    guard._end_space_pan_key_hold(layer)
+
+    assert guard._space_pan_key_held is False
+    assert guard._space_pan_mouse_gesture_active is True
+    assert layer.mouse_pan is True
+
+    drag_event.type = "mouse_release"
+    assert _exhaust_generator(drag) == []
+
+    assert guard._space_pan_key_held is False
+    assert guard._space_pan_mouse_gesture_active is False
+    assert layer.mouse_pan is original_mouse_pan
+
+
+def test_annotation_layer_edit_guard_space_key_uses_custom_branch_for_active_supported_draw(
+    monkeypatch,
+) -> None:
+    layer = Shapes([], ndim=2)
+    layer.mode = Mode.ADD_POLYGON
+    event = SimpleNamespace(position=(0.0, 0.0), pos=np.asarray([0.0, 0.0]))
+    layer._drag_modes[Mode.ADD_POLYGON](layer, event)
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(can_space_pan_draw=lambda candidate: candidate is layer)
+    guard.attach(layer)
+
+    original_mouse_pan = layer.mouse_pan
+
+    def fail_if_fallback_is_used(_layer: Shapes) -> Iterator[None]:
+        raise AssertionError("active supported drawing should use the custom Space-pan branch")
+        yield
+
+    monkeypatch.setattr(guard, "_fallback_pan_zoom_key_hold", fail_if_fallback_is_used)
+    handler = KeymapHandler()
+    handler.keymap_providers = [layer]
+
+    assert layer._is_creating is True
+    assert handler.press_key("Space") is True
+
+    assert layer.mode == Mode.ADD_POLYGON
+    assert layer.mouse_pan is True
+    assert guard._space_pan_key_held is True
+    assert guard._previous_mouse_pan is original_mouse_pan
+
+    assert handler.release_key("Space") is True
+
+    assert layer.mode == Mode.ADD_POLYGON
+    assert guard._space_pan_key_held is False
+    assert guard._previous_mouse_pan is None
+    assert layer.mouse_pan is original_mouse_pan
+
+
+def test_annotation_layer_edit_guard_space_key_delegates_when_widget_predicate_rejects(
+    monkeypatch,
+) -> None:
+    layer = Shapes([], ndim=2)
+    layer.mode = Mode.ADD_POLYGON
+    layer._is_creating = True
+    fallback_layers: list[Shapes] = []
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(can_space_pan_draw=lambda _layer: False)
+    guard.attach(layer)
+
+    def fallback_pan_zoom_key_hold(fallback_layer: Shapes) -> Iterator[None]:
+        fallback_layers.append(fallback_layer)
+        yield
+
+    monkeypatch.setattr(guard, "_fallback_pan_zoom_key_hold", fallback_pan_zoom_key_hold)
+    handler = KeymapHandler()
+    handler.keymap_providers = [layer]
+
+    assert handler.press_key("Space") is True
+
+    assert fallback_layers == [layer]
+    assert guard._space_pan_key_held is False
+    assert guard._space_pan_mouse_gesture_active is False
+    assert guard._previous_mouse_pan is None
+
+    assert handler.release_key("Space") is True
+
+    assert guard._space_pan_key_held is False
+    assert guard._space_pan_mouse_gesture_active is False
+    assert guard._previous_mouse_pan is None
+
+
+def test_annotation_layer_edit_guard_space_key_delegates_when_widget_predicate_is_missing(
+    monkeypatch,
+) -> None:
+    layer = Shapes([], ndim=2)
+    layer.mode = Mode.ADD_POLYGON
+    layer._is_creating = True
+    fallback_layers: list[Shapes] = []
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+
+    def fallback_pan_zoom_key_hold(fallback_layer: Shapes) -> Iterator[None]:
+        fallback_layers.append(fallback_layer)
+        yield
+
+    monkeypatch.setattr(guard, "_fallback_pan_zoom_key_hold", fallback_pan_zoom_key_hold)
+    handler = KeymapHandler()
+    handler.keymap_providers = [layer]
+
+    assert handler.press_key("Space") is True
+
+    assert fallback_layers == [layer]
+    assert guard._space_pan_key_held is False
+    assert guard._space_pan_mouse_gesture_active is False
+    assert guard._previous_mouse_pan is None
+
+    assert handler.release_key("Space") is True
+
+    assert guard._space_pan_key_held is False
+    assert guard._space_pan_mouse_gesture_active is False
+    assert guard._previous_mouse_pan is None
+
+
+def test_annotation_layer_edit_guard_space_key_delegates_for_unsupported_modes() -> None:
+    layer = Shapes([], ndim=2)
+    layer.mode = Mode.ADD_LINE
+    original_drag_callbacks = list(layer.mouse_drag_callbacks)
+    original_move_callbacks = list(layer.mouse_move_callbacks)
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+    handler = KeymapHandler()
+    handler.keymap_providers = [layer]
+
+    assert handler.press_key("Space") is True
+
+    assert layer.mode == Mode.PAN_ZOOM
+    assert guard._space_pan_key_held is False
+    assert guard._previous_mouse_pan is None
+
+    assert handler.release_key("Space") is True
+
+    assert layer.mode == Mode.ADD_LINE
+    assert guard._space_pan_key_held is False
+    assert guard._previous_mouse_pan is None
+    assert list(layer.mouse_drag_callbacks) == original_drag_callbacks
+    assert list(layer.mouse_move_callbacks) == original_move_callbacks
+
+
+def test_annotation_layer_edit_guard_space_pan_key_hold_restores_mouse_pan() -> None:
+    layer = Shapes([], ndim=2)
+    layer.mode = Mode.ADD_POLYGON_LASSO
+    original_mouse_pan = layer.mouse_pan
+    original_mode = layer.mode
+    original_keymap = dict(layer.keymap)
+    original_drag_callbacks = list(layer.mouse_drag_callbacks)
+    original_move_callbacks = list(layer.mouse_move_callbacks)
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
+
+    assert original_mouse_pan is False
+    assert guard._drawing_is_suspended() is False
+
+    guard._begin_space_pan_key_hold(layer)
+
+    assert guard._space_pan_key_held is True
+    assert guard._space_pan_mouse_gesture_active is False
+    assert guard._previous_mouse_pan is original_mouse_pan
+    assert guard._drawing_is_suspended() is True
+    assert layer.mouse_pan is True
+
+    guard._end_space_pan_key_hold(layer)
+
+    assert guard._space_pan_key_held is False
+    assert guard._space_pan_mouse_gesture_active is False
+    assert guard._previous_mouse_pan is None
+    assert guard._drawing_is_suspended() is False
+    assert layer.mouse_pan is original_mouse_pan
+    assert layer.mode == original_mode
+    assert dict(layer.keymap) == original_keymap
+    assert list(layer.mouse_drag_callbacks) == original_drag_callbacks
+    assert list(layer.mouse_move_callbacks) == original_move_callbacks
+
+
+def test_annotation_layer_edit_guard_space_pan_repeated_begin_keeps_original_mouse_pan() -> None:
+    layer = Shapes([], ndim=2)
+    layer.mode = Mode.ADD_POLYGON_LASSO
+    original_mouse_pan = layer.mouse_pan
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
+
+    assert original_mouse_pan is False
+
+    guard._begin_space_pan_key_hold(layer)
+    guard._begin_space_pan_key_hold(layer)
+    guard._end_space_pan_key_hold(layer)
+
+    assert guard._previous_mouse_pan is None
+    assert layer.mouse_pan is original_mouse_pan
+
+
+def test_annotation_layer_edit_guard_space_pan_restores_after_space_released_first() -> None:
+    layer = Shapes([], ndim=2)
+    layer.mode = Mode.ADD_POLYGON_LASSO
+    original_mouse_pan = layer.mouse_pan
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
+
+    guard._begin_space_pan_key_hold(layer)
+    guard._begin_space_pan_mouse_gesture()
+    guard._end_space_pan_key_hold(layer)
+
+    assert guard._space_pan_key_held is False
+    assert guard._space_pan_mouse_gesture_active is True
+    assert guard._previous_mouse_pan is original_mouse_pan
+    assert guard._drawing_is_suspended() is True
+    assert layer.mouse_pan is True
+
+    guard._end_space_pan_mouse_gesture(layer)
+
+    assert guard._space_pan_key_held is False
+    assert guard._space_pan_mouse_gesture_active is False
+    assert guard._previous_mouse_pan is None
+    assert guard._drawing_is_suspended() is False
+    assert layer.mouse_pan is original_mouse_pan
+
+
+def test_annotation_layer_edit_guard_space_pan_restores_after_mouse_released_first() -> None:
+    layer = Shapes([], ndim=2)
+    layer.mode = Mode.ADD_POLYGON_LASSO
+    original_mouse_pan = layer.mouse_pan
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
+
+    guard._begin_space_pan_key_hold(layer)
+    guard._begin_space_pan_mouse_gesture()
+    guard._end_space_pan_mouse_gesture(layer)
+
+    assert guard._space_pan_key_held is True
+    assert guard._space_pan_mouse_gesture_active is False
+    assert guard._previous_mouse_pan is original_mouse_pan
+    assert guard._drawing_is_suspended() is True
+    assert layer.mouse_pan is True
+
+    guard._end_space_pan_key_hold(layer)
+
+    assert guard._space_pan_key_held is False
+    assert guard._space_pan_mouse_gesture_active is False
+    assert guard._previous_mouse_pan is None
+    assert guard._drawing_is_suspended() is False
+    assert layer.mouse_pan is original_mouse_pan
+
+
+def test_annotation_layer_edit_guard_space_pan_mouse_gesture_only_does_not_change_mouse_pan() -> None:
+    layer = Shapes([], ndim=2)
+    layer.mode = Mode.ADD_POLYGON_LASSO
+    original_mouse_pan = layer.mouse_pan
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
+
+    guard._begin_space_pan_mouse_gesture()
+
+    assert guard._space_pan_key_held is False
+    assert guard._space_pan_mouse_gesture_active is True
+    assert guard._previous_mouse_pan is None
+    assert guard._drawing_is_suspended() is True
+    assert layer.mouse_pan is original_mouse_pan
+
+    guard._end_space_pan_mouse_gesture(layer)
+
+    assert guard._space_pan_key_held is False
+    assert guard._space_pan_mouse_gesture_active is False
+    assert guard._previous_mouse_pan is None
+    assert guard._drawing_is_suspended() is False
+    assert layer.mouse_pan is original_mouse_pan
+
+
+def test_annotation_layer_edit_guard_disconnect_restores_active_space_pan_mouse_state() -> None:
+    layer = Shapes([], ndim=2)
+    layer.mode = Mode.ADD_POLYGON_LASSO
+    original_mouse_pan = layer.mouse_pan
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+
+    guard._begin_space_pan_key_hold(layer)
+    guard._begin_space_pan_mouse_gesture()
+    guard.disconnect()
+
+    assert guard.layer is None
+    assert guard._space_pan_key_held is False
+    assert guard._space_pan_mouse_gesture_active is False
+    assert guard._previous_mouse_pan is None
+    assert layer.mouse_pan is original_mouse_pan
 
 
 def test_annotation_layer_edit_guard_direct_drag_syncs_shell_anchor_group() -> None:
     polygon, _ = _polygon_hole_roundtrip_fixture()
-    moved_coordinate = np.asarray([1234.0, 2345.0])
-    layer = Shapes([shapely_polygon_to_napari_polygon_vertices(polygon)], shape_type="polygon")
+    original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
+    moved_coordinate = original_vertices[0] + np.asarray([1.0, 1.0])
+    layer = Shapes([original_vertices], shape_type="polygon")
     layer._drag_modes = dict(layer._drag_modes)
     layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex(
         moved_vertex_index=0,
         moved_coordinate=moved_coordinate,
     )
-    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
     guard.attach(layer)
     event = SimpleNamespace(type="mouse_press")
 
@@ -995,14 +1689,15 @@ def test_annotation_layer_edit_guard_direct_drag_syncs_shell_anchor_group() -> N
 
 def test_annotation_layer_edit_guard_direct_drag_syncs_shell_separator_group() -> None:
     polygon, _ = _polygon_hole_roundtrip_fixture()
-    moved_coordinate = np.asarray([1234.0, 2345.0])
-    layer = Shapes([shapely_polygon_to_napari_polygon_vertices(polygon)], shape_type="polygon")
+    original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
+    moved_coordinate = original_vertices[12] + np.asarray([1.0, 1.0])
+    layer = Shapes([original_vertices], shape_type="polygon")
     layer._drag_modes = dict(layer._drag_modes)
     layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex(
         moved_vertex_index=12,
         moved_coordinate=moved_coordinate,
     )
-    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
     guard.attach(layer)
     event = SimpleNamespace(type="mouse_press")
 
@@ -1017,14 +1712,15 @@ def test_annotation_layer_edit_guard_direct_drag_syncs_shell_separator_group() -
 
 def test_annotation_layer_edit_guard_direct_drag_syncs_hole_anchor_group() -> None:
     polygon, _ = _polygon_hole_roundtrip_fixture()
-    moved_coordinate = np.asarray([1234.0, 2345.0])
-    layer = Shapes([shapely_polygon_to_napari_polygon_vertices(polygon)], shape_type="polygon")
+    original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
+    moved_coordinate = original_vertices[6] + np.asarray([1.0, 1.0])
+    layer = Shapes([original_vertices], shape_type="polygon")
     layer._drag_modes = dict(layer._drag_modes)
     layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex(
         moved_vertex_index=6,
         moved_coordinate=moved_coordinate,
     )
-    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
     guard.attach(layer)
     event = SimpleNamespace(type="mouse_press")
 
@@ -1040,14 +1736,14 @@ def test_annotation_layer_edit_guard_direct_drag_syncs_hole_anchor_group() -> No
 def test_annotation_layer_edit_guard_direct_drag_leaves_non_anchor_vertex_local() -> None:
     polygon, _ = _polygon_hole_roundtrip_fixture()
     original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
-    moved_coordinate = np.asarray([1234.0, 2345.0])
+    moved_coordinate = original_vertices[8] + np.asarray([1.0, 0.0])
     layer = Shapes([original_vertices], shape_type="polygon")
     layer._drag_modes = dict(layer._drag_modes)
     layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex(
         moved_vertex_index=8,
         moved_coordinate=moved_coordinate,
     )
-    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
     guard.attach(layer)
     event = SimpleNamespace(type="mouse_press")
 
@@ -1062,6 +1758,129 @@ def test_annotation_layer_edit_guard_direct_drag_leaves_non_anchor_vertex_local(
     np.testing.assert_allclose(edited_vertices[[6, 11]], original_vertices[[6, 11]])
 
 
+def test_annotation_layer_edit_guard_direct_drag_rolls_back_invalid_hole_vertex_once_per_drag() -> None:
+    polygon, _ = _polygon_hole_roundtrip_fixture()
+    original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
+    invalid_coordinates = [np.asarray([10_000.0, 10_000.0]), np.asarray([20_000.0, 20_000.0])]
+    layer = Shapes([original_vertices], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex_sequence(
+        moved_vertex_index=8,
+        moved_coordinates=invalid_coordinates,
+    )
+    warnings: list[str] = []
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(warning_callback=warnings.append)
+    guard.attach(layer)
+    event = SimpleNamespace(type="mouse_press")
+
+    drag = layer._drag_modes[Mode.DIRECT](layer, event)
+    assert next(drag) == "press"
+    event.type = "mouse_move"
+    assert next(drag) == "move"
+    assert next(drag) == "move"
+    event.type = "mouse_release"
+    with pytest.raises(StopIteration):
+        next(drag)
+
+    np.testing.assert_allclose(np.asarray(layer.data[0], dtype=float), original_vertices)
+    assert warnings == [shapes_annotation_edit_guard_module._INVALID_POLYGON_DRAG_WARNING]
+    assert layer._moving_value == (None, None)
+
+
+def test_annotation_layer_edit_guard_direct_drag_rolls_back_invalid_hole_anchor() -> None:
+    polygon, _ = _polygon_hole_roundtrip_fixture()
+    original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
+    invalid_coordinate = np.asarray([10_000.0, 10_000.0])
+    layer = Shapes([original_vertices], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex_sequence(
+        moved_vertex_index=6,
+        moved_coordinates=[invalid_coordinate],
+    )
+    warnings: list[str] = []
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(warning_callback=warnings.append)
+    guard.attach(layer)
+    event = SimpleNamespace(type="mouse_press")
+
+    drag = layer._drag_modes[Mode.DIRECT](layer, event)
+    assert next(drag) == "press"
+    event.type = "mouse_move"
+    assert next(drag) == "move"
+
+    edited_vertices = np.asarray(layer.data[0], dtype=float)
+    np.testing.assert_allclose(edited_vertices, original_vertices)
+    np.testing.assert_allclose(edited_vertices[[6, 11]], original_vertices[[6, 11]])
+    assert warnings == [shapes_annotation_edit_guard_module._INVALID_POLYGON_DRAG_WARNING]
+
+
+def test_annotation_layer_edit_guard_direct_drag_rolls_back_invalid_simple_polygon_to_latest_valid() -> None:
+    original_vertices = np.asarray(
+        [
+            [0.0, 0.0],
+            [0.0, 10.0],
+            [10.0, 10.0],
+            [10.0, 0.0],
+        ],
+        dtype=float,
+    )
+    valid_coordinate = np.asarray([0.0, 11.0])
+    invalid_coordinate = np.asarray([20.0, 0.0])
+    layer = Shapes([original_vertices], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex_sequence(
+        moved_vertex_index=1,
+        moved_coordinates=[valid_coordinate, invalid_coordinate],
+    )
+    warnings: list[str] = []
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(warning_callback=warnings.append)
+    guard.attach(layer)
+    event = SimpleNamespace(type="mouse_press")
+
+    drag = layer._drag_modes[Mode.DIRECT](layer, event)
+    assert next(drag) == "press"
+    event.type = "mouse_move"
+    assert next(drag) == "move"
+    accepted_vertices = np.asarray(layer.data[0], dtype=float).copy()
+    np.testing.assert_allclose(accepted_vertices[1], valid_coordinate)
+    assert next(drag) == "move"
+    event.type = "mouse_release"
+    with pytest.raises(StopIteration):
+        next(drag)
+
+    np.testing.assert_allclose(np.asarray(layer.data[0], dtype=float), accepted_vertices)
+    assert warnings == [shapes_annotation_edit_guard_module._INVALID_POLYGON_DRAG_WARNING]
+    assert layer._moving_value == (None, None)
+
+
+def test_annotation_layer_edit_guard_direct_drag_warns_for_already_invalid_polygon() -> None:
+    source = Polygon(
+        [(0, 0), (4, 0), (4, 4), (0, 4)],
+        holes=[[(6, 6), (6, 8), (8, 8), (8, 6)]],
+    )
+    invalid_vertices = shapely_polygon_to_napari_polygon_vertices(source)
+    moved_coordinate = invalid_vertices[6] + np.asarray([1.0, 1.0])
+    layer = Shapes([invalid_vertices], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex(
+        moved_vertex_index=6,
+        moved_coordinate=moved_coordinate,
+    )
+    warnings: list[str] = []
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(warning_callback=warnings.append)
+    guard.attach(layer)
+    event = SimpleNamespace(type="mouse_press")
+
+    drag = layer._drag_modes[Mode.DIRECT](layer, event)
+    assert next(drag) == "press"
+    event.type = "mouse_move"
+    assert next(drag) == "move"
+
+    edited_vertices = np.asarray(layer.data[0], dtype=float)
+    np.testing.assert_allclose(edited_vertices[6], moved_coordinate)
+    np.testing.assert_allclose(edited_vertices[9], invalid_vertices[9])
+    assert warnings == [shapes_annotation_edit_guard_module._ALREADY_INVALID_POLYGON_DRAG_WARNING]
+
+
 def test_annotation_layer_edit_guard_direct_drag_does_not_guess_malformed_topology() -> None:
     polygon, _ = _polygon_hole_roundtrip_fixture()
     original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)[:-1]
@@ -1072,7 +1891,7 @@ def test_annotation_layer_edit_guard_direct_drag_does_not_guess_malformed_topolo
         moved_vertex_index=0,
         moved_coordinate=moved_coordinate,
     )
-    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
     guard.attach(layer)
     event = SimpleNamespace(type="mouse_press")
 
@@ -1098,7 +1917,7 @@ def test_annotation_layer_edit_guard_vertex_remove_delegates_when_no_vertex(monk
 
     monkeypatch.setattr(layer, "get_value", lambda position, world=True: (0, None))
     layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
-    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
     guard.attach(layer)
     event = SimpleNamespace(position=(0.0, 0.0))
 
@@ -1120,7 +1939,10 @@ def test_annotation_layer_edit_guard_vertex_remove_delegates_simple_polygon(monk
 
     monkeypatch.setattr(layer, "get_value", lambda position, world=True: (0, 1))
     layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
-    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    finished_calls: list[str] = []
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(
+        polygon_vertex_delete_finished_callback=lambda: finished_calls.append("finished"),
+    )
     guard.attach(layer)
     event = SimpleNamespace(position=(0.0, 0.0))
 
@@ -1128,6 +1950,7 @@ def test_annotation_layer_edit_guard_vertex_remove_delegates_simple_polygon(monk
 
     assert result == "delegated"
     assert calls == [((layer, event), {})]
+    assert finished_calls == []
 
 
 def test_annotation_layer_edit_guard_vertex_remove_uses_helper_for_hole_bearing_polygon(monkeypatch) -> None:
@@ -1159,7 +1982,7 @@ def test_annotation_layer_edit_guard_vertex_remove_uses_helper_for_hole_bearing_
         )
         layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
         layer.events.data.connect(record_data_event)
-        guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+        guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
         guard.attach(layer)
 
         layer._drag_modes[Mode.VERTEX_REMOVE](layer, event)
@@ -1186,7 +2009,7 @@ def test_annotation_layer_edit_guard_vertex_remove_removes_minimal_hole(monkeypa
 
     monkeypatch.setattr(layer, "get_value", lambda position, world=True: (0, 5))
     layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
-    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
     guard.attach(layer)
 
     layer._drag_modes[Mode.VERTEX_REMOVE](layer, SimpleNamespace(position=(0.0, 0.0)))
@@ -1220,7 +2043,7 @@ def test_annotation_layer_edit_guard_vertex_remove_rebuilds_cache_after_shorteni
         events.append((event.action, event.data_indices, event.vertex_indices))
 
     layer.events.data.connect(record_data_event)
-    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
     guard.attach(layer)
 
     layer._drag_modes[Mode.VERTEX_REMOVE](layer, SimpleNamespace(position=original_hole_vertices[7]))
@@ -1304,7 +2127,7 @@ def test_annotation_layer_edit_guard_vertex_remove_preserves_styles_with_stale_n
 
     monkeypatch.setattr(layer, "get_value", lambda position, world=True: (0, deleted_vertex_index))
     layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
-    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
     guard.attach(layer)
 
     with warnings.catch_warnings(record=True) as caught_warnings:
@@ -1343,7 +2166,7 @@ def test_annotation_layer_edit_guard_vertex_remove_delegates_malformed_topology(
 
     monkeypatch.setattr(layer, "get_value", lambda position, world=True: (0, 0))
     layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
-    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
     guard.attach(layer)
     event = SimpleNamespace(position=(0.0, 0.0))
 
@@ -1368,10 +2191,10 @@ def test_annotation_layer_edit_guard_vertex_remove_helper_error_warns_without_mu
         raise ValueError("Deletion would make the polygon invalid.")
 
     monkeypatch.setattr(layer, "get_value", lambda position, world=True: (0, 0))
-    monkeypatch.setattr(shapes_annotation_widget_module, "delete_napari_polygon_vertex", reject_delete)
+    monkeypatch.setattr(shapes_annotation_edit_guard_module, "delete_napari_polygon_vertex", reject_delete)
     layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
     layer.events.data.connect(events.append)
-    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard(warning_callback=warnings.append)
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(warning_callback=warnings.append)
     guard.attach(layer)
 
     layer._drag_modes[Mode.VERTEX_REMOVE](layer, SimpleNamespace(position=(0.0, 0.0)))
@@ -1439,7 +2262,10 @@ def test_shapes_annotation_widget_shapes_selector_auto_opens_existing_target(
     assert widget.create_layer_button.text() == "Create layer"
     assert widget.create_layer_button.isEnabled() is False
     assert widget.save_shapes_button.isEnabled() is True
-    assert "Existing Shapes Opened" in _status_text(widget)
+    status = _status_text(widget)
+    assert "Existing Shapes Opened" in status
+    assert 'Edit shapes layer "blobs_polygons" in coordinate system "global".' in status
+    assert _SPACE_PAN_TIP_TEXT in status
 
 
 def test_shapes_annotation_widget_shapes_selector_defaults_back_to_create_when_existing_disappears(
@@ -1603,6 +2429,7 @@ def test_shapes_annotation_widget_create_layer_adds_registered_active_empty_shap
     widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
 
     assert widget.create_layer_button.isEnabled() is True
+    assert _SPACE_PAN_TIP_TEXT not in _status_text(widget)
     widget.create_layer_button.click()
 
     assert len(viewer.layers) == 1
@@ -1617,6 +2444,10 @@ def test_shapes_annotation_widget_create_layer_adds_registered_active_empty_shap
     assert layer.opacity == 0.8
     assert hasattr(layer, _SHAPES_EDGE_WIDTH_SYNC_CALLBACK_ATTR)
     assert hasattr(layer, _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR)
+    status = _status_text(widget)
+    assert "Annotation Layer Ready" in status
+    assert "Draw shapes in the viewer, then click Save shapes." in status
+    assert _SPACE_PAN_TIP_TEXT in status
 
     binding = widget.app_state.viewer_adapter.layer_bindings.get_binding(layer)
     assert isinstance(binding, ShapesLayerBinding)
@@ -1642,6 +2473,140 @@ def test_shapes_annotation_widget_create_layer_adds_registered_active_empty_shap
     assert widget.create_layer_button.isEnabled() is False
     assert widget.save_shapes_button.isEnabled() is True
     assert "Annotation Layer Ready" in _status_text(widget)
+
+
+def test_shapes_annotation_widget_invalid_drag_warning_clears_after_release(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
+    widget.create_layer_button.click()
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    polygon, _ = _polygon_hole_roundtrip_fixture()
+    original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
+    layer.add_polygons(original_vertices)
+    _install_direct_drag_callback_for_annotation_guard(
+        widget,
+        layer,
+        moved_vertex_index=8,
+        moved_coordinate=np.asarray([10_000.0, 10_000.0]),
+    )
+    event = SimpleNamespace(type="mouse_press")
+
+    drag = layer._drag_modes[Mode.DIRECT](layer, event)
+    assert next(drag) == "press"
+    event.type = "mouse_move"
+    assert next(drag) == "move"
+
+    status = _status_text(widget)
+    assert "Edit Rejected" in status
+    assert shapes_annotation_edit_guard_module._INVALID_POLYGON_DRAG_WARNING in status
+
+    event.type = "mouse_release"
+    with pytest.raises(StopIteration):
+        next(drag)
+
+    status = _status_text(widget)
+    assert "Annotation Layer Ready" in status
+    assert shapes_annotation_edit_guard_module._INVALID_POLYGON_DRAG_WARNING not in status
+
+
+def test_shapes_annotation_widget_already_invalid_drag_warning_does_not_clear_after_release(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
+    widget.create_layer_button.click()
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    source = Polygon(
+        [(0, 0), (4, 0), (4, 4), (0, 4)],
+        holes=[[(6, 6), (6, 8), (8, 8), (8, 6)]],
+    )
+    invalid_vertices = shapely_polygon_to_napari_polygon_vertices(source)
+    layer.add_polygons(invalid_vertices)
+    _install_direct_drag_callback_for_annotation_guard(
+        widget,
+        layer,
+        moved_vertex_index=6,
+        moved_coordinate=invalid_vertices[6] + np.asarray([1.0, 1.0]),
+    )
+    event = SimpleNamespace(type="mouse_press")
+
+    drag = layer._drag_modes[Mode.DIRECT](layer, event)
+    assert next(drag) == "press"
+    event.type = "mouse_move"
+    assert next(drag) == "move"
+
+    event.type = "mouse_release"
+    with pytest.raises(StopIteration):
+        next(drag)
+
+    status = _status_text(widget)
+    assert "Edit Rejected" in status
+    assert shapes_annotation_edit_guard_module._ALREADY_INVALID_POLYGON_DRAG_WARNING in status
+
+
+def test_shapes_annotation_widget_annotation_edit_warning_uses_generic_title(qtbot) -> None:
+    widget = ShapesAnnotation(DummyViewer())
+    qtbot.addWidget(widget)
+
+    widget._set_annotation_edit_warning("Deletion would make the polygon invalid.")
+
+    status = _status_text(widget)
+    assert "Edit Rejected" in status
+    assert "Deletion would make the polygon invalid." in status
+    assert "Could Not Delete Vertex" not in status
+
+
+def test_shapes_annotation_widget_successful_vertex_delete_clears_stale_edit_warning(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
+    widget.create_layer_button.click()
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    polygon, _ = _polygon_hole_roundtrip_fixture()
+    original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
+    layer.add_polygons(original_vertices)
+    original_delete_helper = shapes_annotation_edit_guard_module.delete_napari_polygon_vertex
+    hit_values = iter([(0, 0), (0, 8)])
+    call_count = 0
+
+    def reject_then_delete(
+        vertices: np.ndarray,
+        topology: object,
+        deleted_vertex_index: int,
+    ) -> tuple[np.ndarray, object]:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise ValueError("Polygon holes must be contained by the exterior ring.")
+        return original_delete_helper(vertices, topology, deleted_vertex_index)
+
+    monkeypatch.setattr(layer, "get_value", lambda position, world=True: next(hit_values))
+    monkeypatch.setattr(shapes_annotation_edit_guard_module, "delete_napari_polygon_vertex", reject_then_delete)
+
+    layer._drag_modes[Mode.VERTEX_REMOVE](layer, SimpleNamespace(position=(0.0, 0.0)))
+
+    status = _status_text(widget)
+    assert "Edit Rejected" in status
+    assert "Polygon holes must be contained by the exterior ring." in status
+    np.testing.assert_allclose(np.asarray(layer.data[0], dtype=float), original_vertices)
+
+    layer._drag_modes[Mode.VERTEX_REMOVE](layer, SimpleNamespace(position=(0.0, 0.0)))
+
+    status = _status_text(widget)
+    assert "Annotation Layer Ready" in status
+    assert "Edit Rejected" not in status
+    assert "Polygon holes must be contained by the exterior ring." not in status
+    assert call_count == 2
 
 
 def test_shapes_annotation_widget_cancelling_coordinate_change_preserves_annotation_layer(

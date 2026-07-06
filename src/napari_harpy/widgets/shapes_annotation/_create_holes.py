@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 from napari.layers import Shapes
 
+from napari_harpy._shapes_triangulation import ensure_shapes_triangulation_backend
 from napari_harpy.core.shapes_geometry import (
     create_polygon_with_direct_holes,
     napari_polygon_vertices_to_shapely_polygon,
@@ -125,6 +126,7 @@ def _apply_create_holes_plan(layer: Shapes, plan: _CreateHolesShapesLayerPlan) -
     # Assign through `layer.data`, not `_data_view.edit(...)`: create-holes can
     # change the shell row's vertex count, and the public setter rebuilds
     # napari's private rendering and hit-testing cache.
+    ensure_shapes_triangulation_backend()
     layer.data = rebuilt_data
     layer.remove(list(hole_row_indices))
     layer.opacity = style_snapshot.opacity
@@ -172,4 +174,3 @@ def _shape_type_at(layer: Shapes, row_index: int) -> object:
         return layer.shape_type[row_index]
     except (IndexError, TypeError):
         return None
-
