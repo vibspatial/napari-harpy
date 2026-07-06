@@ -47,7 +47,7 @@ Create an editable annotation Shapes layer for the selected coordinate system.
 Suggested `Create holes` tooltip:
 
 ```text
-Select one shell polygon and one or more polygons fully inside it, then click Create holes. The largest selected polygon becomes the shell; selected inner polygons become holes and their rows are removed.
+Select one shell polygon and one or more polygons fully inside it, then click Create holes. Shift-click polygons to add them to the selection. The largest selected polygon becomes the shell; selected inner polygons become holes.
 ```
 
 Suggested `Save shapes` tooltip:
