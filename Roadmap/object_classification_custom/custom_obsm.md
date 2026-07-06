@@ -410,6 +410,11 @@ Tests:
 
 Keep the existing validation semantics, but add clearer custom-specific error
 messages for compatibility failures involving `source_kind == "custom_obsm"`.
+The custom-specific path should apply when either side of the compatibility
+check is custom:
+
+- the exported classifier bundle has `source_kind == "custom_obsm"`;
+- the target feature matrix metadata has `source_kind == "custom_obsm"`.
 
 The validation should still require:
 
@@ -425,11 +430,25 @@ Custom-specific messages should explain:
 - live matrix width must match the metadata/schema;
 - users should register/select a matching matrix or retrain.
 
+Implementation notes:
+
+- `_validate_feature_matrix_compatible_with_bundle(...)` is the central place
+  for source-versus-target `feature_columns` schema compatibility.
+- `_validate_current_feature_matrix_matches_columns(...)` is the central place
+  for checking that the live `.obsm` matrix width still matches its target
+  metadata.
+- `ClassifierExportBundle.source_kind` and the target metadata
+  `source_kind` should decide whether to use custom-specific wording.
+- Harpy metadata with `source_kind == "harpy_add_feature_matrix"` can keep the
+  current generic wording unless we separately improve all messages.
+
 Tests:
 
 - custom `.obsm` apply is rejected when target metadata has the same key but a
   different ordered `feature_columns` schema, with a message explaining that
   custom matrices require the same columns in the same order;
+- custom `.obsm` target metadata gets the same custom-specific schema error
+  even if the classifier bundle itself was trained from Harpy metadata;
 - custom `.obsm` apply is rejected when target metadata matches but the live
   target matrix has a different number of columns, with a message explaining
   that the metadata and live matrix are internally inconsistent;
