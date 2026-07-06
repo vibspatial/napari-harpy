@@ -18,7 +18,6 @@ from napari_harpy.core.annotation import UNLABELED_CLASS, USER_CLASS_COLUMN
 from napari_harpy.core.classifier import (
     _get_feature_metadata,
     _get_finite_feature_row_mask,
-    _normalize_feature_matrix,
     _normalize_prediction_regions,
     _resolve_region_row_positions,
 )
@@ -29,6 +28,7 @@ from napari_harpy.core.classifier_export import (
     normalize_feature_columns,
     write_classifier_export_bundle,
 )
+from napari_harpy.core.feature_matrix_metadata import normalize_feature_matrix
 from napari_harpy.core.spatialdata import SpatialDataTableMetadata, get_table, get_table_metadata
 
 
@@ -537,7 +537,7 @@ class ClassifierController:
         try:
             # Preparation only needs counts and validity masks, so avoid copying
             # the matrix on every widget refresh/status update.
-            feature_matrix = _normalize_feature_matrix(table.obsm[self._selected_feature_key], table.n_obs, copy=False)
+            feature_matrix = normalize_feature_matrix(table.obsm[self._selected_feature_key], table.n_obs, copy=False)
         except KeyError:
             return ClassifierPreparationSummary(
                 training_scope=pre_feature_scopes.training,
@@ -696,7 +696,7 @@ class ClassifierController:
             # Worker jobs must own an eager snapshot of feature values at launch
             # time. If `.obsm` later supports lazy arrays, this path should
             # explicitly materialize them instead of relying on `.copy()`.
-            feature_matrix = _normalize_feature_matrix(
+            feature_matrix = normalize_feature_matrix(
                 table.obsm[self._selected_feature_key],
                 table.n_obs,
                 copy=True,
@@ -962,7 +962,7 @@ class ClassifierController:
         feature_columns: tuple[str, ...],
     ) -> None:
         try:
-            feature_matrix = _normalize_feature_matrix(table.obsm[feature_key], table.n_obs, copy=False)
+            feature_matrix = normalize_feature_matrix(table.obsm[feature_key], table.n_obs, copy=False)
         except KeyError as error:
             raise ValueError(f'Feature matrix "{feature_key}" is not available in ".obsm".') from error
 

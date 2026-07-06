@@ -15,6 +15,7 @@ from numpy.typing import NDArray
 from napari_harpy.core.annotation import UNLABELED_CLASS
 from napari_harpy.core.class_palette import set_class_annotation_state
 from napari_harpy.core.classifier_export import ClassifierExportBundle, normalize_feature_columns
+from napari_harpy.core.feature_matrix_metadata import normalize_feature_matrix
 from napari_harpy.core.spatialdata import get_table, get_table_metadata
 from napari_harpy.core.validation import normalize_spatialdata_dataframe_column_name
 
@@ -82,7 +83,7 @@ def apply_classifier(
     table = get_table(sdata, resolved_table_name)
     metadata = get_table_metadata(sdata, resolved_table_name)
     _validate_feature_matrix_compatible_with_bundle(table, resolved_feature_key, bundle)
-    feature_matrix = _normalize_feature_matrix(table.obsm[resolved_feature_key], table.n_obs, copy=False)
+    feature_matrix = normalize_feature_matrix(table.obsm[resolved_feature_key], table.n_obs, copy=False)
     _validate_estimator_matches_feature_matrix(bundle, feature_matrix, resolved_feature_key)
 
     # Resolve the requested regions against the table metadata so typos fail instead of being skipped silently.
@@ -188,7 +189,7 @@ def _validate_current_feature_matrix_matches_columns(
     feature_columns: tuple[str, ...],
 ) -> None:
     try:
-        feature_matrix = _normalize_feature_matrix(table.obsm[feature_key], table.n_obs, copy=False)
+        feature_matrix = normalize_feature_matrix(table.obsm[feature_key], table.n_obs, copy=False)
     except KeyError as error:
         raise ValueError(f"Feature matrix `{feature_key}` is not available in `.obsm`.") from error
 
@@ -266,29 +267,6 @@ def _normalize_nonempty_str(value: str, name: str) -> str:
     if not normalized:
         raise ValueError(f"{name} must not be empty.")
     return normalized
-
-
-def _normalize_feature_matrix(feature_matrix: Any, n_obs: int, *, copy: bool = True) -> Any:
-    # `copy=True` is the eager-array snapshot path for worker payloads.
-    # If `.obsm` later accepts lazy arrays, callers should explicitly
-    # materialize them before relying on `.copy()` for isolation.
-    if issparse(feature_matrix):
-        if feature_matrix.ndim != 2:
-            raise ValueError("Feature matrices stored in `.obsm` must be 2-dimensional.")
-        if feature_matrix.shape[0] != n_obs:
-            raise ValueError(
-                f"Feature matrix has {feature_matrix.shape[0]} rows but the table has {n_obs} observations."
-            )
-        return feature_matrix.copy() if copy else feature_matrix
-
-    array = np.asarray(feature_matrix, dtype=np.float64)
-    if array.ndim == 1:
-        array = array.reshape(-1, 1)
-    if array.ndim != 2:
-        raise ValueError("Feature matrices stored in `.obsm` must be 2-dimensional.")
-    if array.shape[0] != n_obs:
-        raise ValueError(f"Feature matrix has {array.shape[0]} rows but the table has {n_obs} observations.")
-    return array.copy() if copy else array
 
 
 def _get_finite_feature_row_mask(feature_matrix: Any) -> BoolArray:

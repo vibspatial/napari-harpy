@@ -571,14 +571,14 @@ def test_classifier_controller_describes_current_preparation_without_building_wo
         },
     )
 
-    original_normalize_feature_matrix = classifier_module._normalize_feature_matrix
+    original_normalize_feature_matrix = classifier_module.normalize_feature_matrix
 
     def fail_worker_feature_snapshot(feature_matrix, n_obs, *, copy):
         if copy:
             raise AssertionError("preparation summary should not construct worker feature arrays")
         return original_normalize_feature_matrix(feature_matrix, n_obs, copy=copy)
 
-    monkeypatch.setattr(classifier_module, "_normalize_feature_matrix", fail_worker_feature_snapshot)
+    monkeypatch.setattr(classifier_module, "normalize_feature_matrix", fail_worker_feature_snapshot)
 
     def fail_training_worker(*args, **kwargs):
         del args, kwargs
@@ -659,7 +659,7 @@ def test_classifier_controller_validates_feature_matrix_shape(qtbot, monkeypatch
         del feature_matrix, n_obs, copy
         raise ValueError("Feature matrix has 25 rows but the table has 26 observations.")
 
-    monkeypatch.setattr(classifier_module, "_normalize_feature_matrix", raise_shape_error)
+    monkeypatch.setattr(classifier_module, "normalize_feature_matrix", raise_shape_error)
 
     controller = ClassifierController(
         debounce_interval_ms=0,
