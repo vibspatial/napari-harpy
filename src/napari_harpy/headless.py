@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING
 
 from harpy.utils._keys import _FEATURE_MATRICES_KEY
 
@@ -27,15 +27,13 @@ from napari_harpy.core.feature_extraction import (
     _resolve_harpy_image_name_parameter,
     _resolve_harpy_labels_name_parameter,
 )
+from napari_harpy.core.feature_matrix_metadata import CUSTOM_OBSM_SOURCE_KIND
 from napari_harpy.core.persistence import write_table_prediction_state
 from napari_harpy.core.spatialdata import _get_element_coordinate_systems, get_table
 from napari_harpy.core.validation import normalize_spatialdata_name
 
 if TYPE_CHECKING:
     from spatialdata import SpatialData
-
-T = TypeVar("T")
-
 
 @dataclass(frozen=True)
 class HeadlessFeatureTarget:
@@ -64,6 +62,14 @@ def compute_features_for_classifier(
     `source_channels` feature metadata so the computed matrix preserves the
     training schema.
     """
+    if classifier.source_kind == CUSTOM_OBSM_SOURCE_KIND:
+        raise ValueError(
+            "Custom `.obsm` classifier bundles cannot recompute features with "
+            "`headless.compute_features_for_classifier(...)`. Use `headless.apply_classifier(...)` "
+            "on a table that already contains a compatible feature matrix registered with "
+            "`napari_harpy.core.feature_matrix_metadata.register_feature_matrix_metadata(...)`."
+        )
+
     resolved_target = _normalize_headless_feature_target(target)
     feature_names = classifier.feature_names
     source_channels = _resolve_classifier_source_channels(classifier)
@@ -450,7 +456,7 @@ def _normalize_optional_parallel_names(
     return _broadcast_parallel_values(normalized, expected_count, name)
 
 
-def _broadcast_parallel_values(values: tuple[T, ...], expected_count: int, name: str) -> tuple[T, ...]:
+def _broadcast_parallel_values[T](values: tuple[T, ...], expected_count: int, name: str) -> tuple[T, ...]:
     if len(values) == 1:
         return values * expected_count
     if len(values) != expected_count:

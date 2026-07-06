@@ -114,6 +114,16 @@ def _make_classifier_bundle(
     )
 
 
+def _make_custom_obsm_classifier_bundle(sdata: SpatialData) -> ClassifierExportBundle:
+    _set_deterministic_features(sdata)
+    register_feature_matrix_metadata(
+        sdata["table"],
+        "features_1",
+        feature_columns=("is_large", "instance_fraction"),
+    )
+    return _make_classifier_bundle(sdata)
+
+
 def _make_area_classifier_bundle() -> ClassifierExportBundle:
     classifier = RandomForestClassifier(n_estimators=10, random_state=0, n_jobs=1)
     classifier.fit(np.array([[0.0], [100.0]], dtype=np.float64), np.array([1, 2], dtype=np.int64))
@@ -330,6 +340,29 @@ def test_compute_features_for_classifier_rejects_explicit_triplet_channels(sdata
     assert "computed_features" not in sdata_blobs["table"].obsm
 
 
+def test_compute_features_for_classifier_rejects_custom_obsm_bundle(sdata_blobs: SpatialData) -> None:
+    classifier = _make_custom_obsm_classifier_bundle(sdata_blobs)
+
+    with pytest.raises(ValueError, match="headless.apply_classifier"):
+        headless.compute_features_for_classifier(
+            sdata_blobs,
+            classifier=classifier,
+            target=headless.HeadlessFeatureTarget(
+                table_name="table",
+                feature_key="computed_features",
+                triplets=(
+                    headless.FeatureExtractionTriplet(
+                        coordinate_system="global",
+                        labels_name="blobs_labels",
+                        image_name=None,
+                    ),
+                ),
+            ),
+        )
+
+    assert "computed_features" not in sdata_blobs["table"].obsm
+
+
 def test_apply_classifier_with_feature_extraction_uses_classifier_source_channels(sdata_blobs: SpatialData) -> None:
     _set_deterministic_features(sdata_blobs)
     _set_feature_metadata(
@@ -357,6 +390,34 @@ def test_apply_classifier_with_feature_extraction_uses_classifier_source_channel
     metadata = sdata_blobs["table"].uns[_FEATURE_MATRICES_KEY]["computed_features"]
     assert list(metadata["feature_columns"]) == ["mean__1", "mean__0"]
     assert list(metadata["source_channels"]) == ["1", "0"]
+
+
+def test_apply_classifier_with_feature_extraction_rejects_custom_obsm_bundle(sdata_blobs: SpatialData) -> None:
+    classifier = _make_custom_obsm_classifier_bundle(sdata_blobs)
+
+    with pytest.raises(ValueError, match="register_feature_matrix_metadata"):
+        headless.apply_classifier_with_feature_extraction(
+            sdata_blobs,
+            classifier=classifier,
+            table_name="table",
+            labels_name="blobs_labels",
+            feature_key="computed_features",
+            coordinate_system="global",
+        )
+
+    assert "computed_features" not in sdata_blobs["table"].obsm
+
+
+def test_apply_classifier_accepts_custom_obsm_bundle_with_existing_compatible_matrix(
+    sdata_blobs: SpatialData,
+) -> None:
+    classifier = _make_custom_obsm_classifier_bundle(sdata_blobs)
+
+    result = headless.apply_classifier(sdata_blobs, classifier=classifier, table_name="table")
+
+    assert result.feature_key == "features_1"
+    assert result.n_predicted_rows == sdata_blobs["table"].n_obs
+    assert PRED_CLASS_COLUMN in sdata_blobs["table"].obs
 
 
 def test_apply_classifier_with_feature_extraction_rejects_missing_source_channels(sdata_blobs: SpatialData) -> None:

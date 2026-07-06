@@ -459,6 +459,8 @@ Tests:
 
 ### Slice 4: Headless Recompute Guard
 
+Status: implemented.
+
 Make the headless API behavior explicit:
 
 - `headless.apply_classifier(...)` should continue to accept custom `.obsm`
