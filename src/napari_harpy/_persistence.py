@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 import anndata as ad
 import pandas as pd
 import zarr
+from harpy.utils._keys import _FEATURE_MATRICES_KEY
 from spatialdata.models import TableModel
 
 from napari_harpy._app_state import HarpyAppState
@@ -269,7 +270,7 @@ class PersistenceController:
         return table_path
 
     def write_table_state(self) -> str:
-        """Write table annotations, predictions, and selected classifier metadata to the backed zarr store."""
+        """Write table annotations, predictions, and selected table metadata to the backed zarr store."""
         sdata = self._require_selected_spatialdata()
         table_name = self._require_selected_table_name()
         table_path = write_table_prediction_state(
@@ -280,6 +281,7 @@ class PersistenceController:
                 PRED_CLASS_COLORS_KEY,
                 CLASSIFIER_CONFIG_KEY,
                 CLASSIFIER_APPLY_CONFIG_KEY,
+                _FEATURE_MATRICES_KEY,
             ),
         )
         self.clear_dirty()

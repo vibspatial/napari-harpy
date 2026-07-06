@@ -507,13 +507,31 @@ Tests:
 
 ### Slice 5: Persistence
 
+Status: implemented.
+
 Include `feature_matrices` in the selected table-state write path.
+
+This slice is persistence plumbing only. The core
+`register_feature_matrix_metadata(...)` helper intentionally has no app-state
+context, so it should not mark a backed table dirty by itself. Dirty-state
+marking belongs to the later UI/action slice that calls the registration helper.
+
+Implementation notes:
+
+- add `feature_matrices` to the `uns_keys` whitelist used by
+  `PersistenceController.write_table_state(...)`;
+- keep reload behavior unchanged, because reload already reads the full table
+  `uns` mapping from zarr;
+- do not write arbitrary new `.obsm` matrices from this path. Feature
+  extraction remains responsible for feature-matrix data writes. This slice only
+  ensures registration metadata for an already-present feature key is persisted.
 
 Tests:
 
-- registering custom metadata marks the backed table dirty;
 - `Write Table State` writes `uns["feature_matrices"]` to zarr;
-- reload preserves the registered custom metadata.
+- reload preserves the registered custom metadata;
+- writing table state clears an already-dirty table after the metadata has been
+  persisted.
 
 ### Slice 6: Widget UI State
 
