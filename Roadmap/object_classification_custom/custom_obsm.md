@@ -138,8 +138,14 @@ we decide to standardize it.
 
 ## Proposed Non-UI Path
 
-Add a Qt-free helper, likely in a small core module such as
-`napari_harpy.core.feature_matrix_metadata`.
+Add a Qt-free helper in `napari_harpy.core.feature_matrix`.
+
+This module should own generic feature-matrix concerns that are not specific to
+classifier training, feature extraction, or Qt widgets:
+
+- normalizing/validating `.obsm` feature-matrix shape;
+- inferring matrix width and dtype/backend facts;
+- registering feature-matrix schema metadata.
 
 Suggested API:
 
@@ -323,8 +329,17 @@ matrix metadata is part of the persisted table state.
 
 ### Slice 1: Core Metadata Helper
 
-Add a Qt-free helper to register metadata for an existing `.obsm` matrix.
-This is the non-UI API and the foundation for the widget path.
+Add `napari_harpy.core.feature_matrix` as the Qt-free home for generic
+feature-matrix logic.
+
+Move the existing `_normalize_feature_matrix(...)` implementation out of
+`napari_harpy.core.classifier` and into `napari_harpy.core.feature_matrix`.
+Update callers to import the moved function from the new module. Do not keep a
+compatibility alias in `classifier.py`; tests and callers should use the new
+module path.
+
+Then add the non-UI metadata registration helper. This is the foundation for
+the widget path.
 
 Suggested public/core API:
 
@@ -342,7 +357,7 @@ register_feature_matrix_metadata(
 The helper should:
 
 - validate that `table.obsm[feature_key]` exists;
-- normalize the matrix with the same shape rules as classifier training;
+- normalize the matrix with the moved `normalize_feature_matrix(...)` behavior;
 - infer matrix width;
 - generate deterministic `feature_columns` when none are provided;
 - write `table.uns["feature_matrices"][feature_key]`;
