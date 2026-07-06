@@ -329,6 +329,8 @@ matrix metadata is part of the persisted table state.
 
 ### Slice 1: Core Metadata Helper
 
+Status: implemented.
+
 Add `napari_harpy.core.feature_matrix_metadata` as the Qt-free home for generic
 feature-matrix logic.
 
@@ -385,6 +387,8 @@ Tests:
 
 ### Slice 2: Metadata State Inspection
 
+Status: specification.
+
 Add a Qt-free helper/model that describes the metadata state for one selected
 table and feature key. This should not mutate the table.
 
@@ -399,16 +403,19 @@ The helper should also report useful details for UI and error text, such as:
 
 - live matrix width;
 - number of metadata columns;
-- whether metadata has `source_kind == "custom_obsm"`;
-- whether metadata appears Harpy-style or legacy Harpy-style.
+- whether metadata has `source_kind == "custom_obsm"`.
+
+Do not classify registered metadata as Harpy-style versus legacy Harpy-style.
+That distinction is not needed for the widget flow. Any metadata with usable
+`feature_columns` and a live matrix width that matches those columns should be
+reported as registered/valid, regardless of whether `source_kind` is present.
 
 Tests:
 
 - missing matrix key reports a missing-matrix state;
 - matrix without `feature_matrices` metadata reports unregistered;
 - valid custom metadata reports registered/valid;
-- valid legacy Harpy metadata without `source_kind` reports registered/valid
-  but not custom;
+- valid metadata without `source_kind` reports registered/valid but not custom;
 - metadata column count mismatch reports a mismatched state.
 
 ### Slice 3: Classifier/Headless Compatibility Errors
@@ -485,8 +492,7 @@ The widget should use the metadata-state helper to drive:
 
 - whether the selected matrix is already registered;
 - whether registration is available;
-- whether existing metadata is mismatched;
-- whether the selected matrix is legacy Harpy-created metadata.
+- whether existing metadata is mismatched.
 
 Suggested UI behavior:
 
@@ -500,7 +506,7 @@ Tests:
 
 - button/status state is correct for unregistered matrix;
 - button/status state is correct for valid custom metadata;
-- button/status state is correct for valid legacy Harpy metadata;
+- button/status state is correct for valid metadata without `source_kind`;
 - mismatched metadata produces a warning state.
 
 ### Slice 7: Register Feature Matrix Button
