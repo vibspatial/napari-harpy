@@ -408,6 +408,8 @@ Tests:
 
 ### Slice 3: Classifier/Headless Compatibility Errors
 
+Status: implemented.
+
 Keep the existing validation semantics, but add clearer custom-specific error
 messages for compatibility failures involving `source_kind == "custom_obsm"`.
 The custom-specific path should apply when either side of the compatibility

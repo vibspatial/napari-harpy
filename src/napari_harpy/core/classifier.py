@@ -15,7 +15,11 @@ from numpy.typing import NDArray
 from napari_harpy.core.annotation import UNLABELED_CLASS
 from napari_harpy.core.class_palette import set_class_annotation_state
 from napari_harpy.core.classifier_export import ClassifierExportBundle, normalize_feature_columns
-from napari_harpy.core.feature_matrix_metadata import normalize_feature_matrix, normalize_feature_matrix_source_kind
+from napari_harpy.core.feature_matrix_metadata import (
+    CUSTOM_OBSM_SOURCE_KIND,
+    normalize_feature_matrix,
+    normalize_feature_matrix_source_kind,
+)
 from napari_harpy.core.spatialdata import get_table, get_table_metadata
 from napari_harpy.core.validation import normalize_spatialdata_dataframe_column_name
 
@@ -172,21 +176,49 @@ def _validate_feature_matrix_compatible_with_bundle(
     feature_key: str,
     bundle: ClassifierExportBundle,
 ) -> None:
+    """Validate that a target feature matrix can be used with a classifier bundle.
+
+    The target matrix source kind does not need to match the bundle source
+    kind. For example, a classifier trained from Harpy-generated metadata can
+    be applied to a custom `.obsm` matrix when both declare the exact same
+    ordered `feature_columns` schema and the live matrix width matches that
+    schema.
+
+    Matching dimensions alone are not sufficient. A bundle expecting
+    `("area", "mean")` is compatible with a target custom matrix declaring
+    `("area", "mean")`, but not with one declaring `("mean", "area")`, even
+    though both matrices have two columns. The estimator must receive the same
+    feature meaning in each column position that it saw during training.
+    """
     if feature_key not in table.obsm:
         raise ValueError(f"Feature matrix `{feature_key}` is not available in `.obsm`.")
     feature_metadata = _get_feature_metadata(table, feature_key)
+    target_source_kind = normalize_feature_matrix_source_kind(feature_metadata)
+    custom_obsm_involved = bundle.source_kind == CUSTOM_OBSM_SOURCE_KIND or target_source_kind == CUSTOM_OBSM_SOURCE_KIND
     target_feature_columns = normalize_feature_columns(feature_metadata)
     if target_feature_columns != bundle.feature_columns:
-        raise ValueError(
-            f"Feature matrix `{feature_key}` columns do not match the classifier bundle feature schema."
-        )
-    _validate_current_feature_matrix_matches_columns(table, feature_key, target_feature_columns)
+        if custom_obsm_involved:
+            raise ValueError(
+                f"Custom feature matrix `{feature_key}` columns do not match the classifier bundle feature schema. "
+                "Custom matrices require the same `feature_columns` in the same order. "
+                "Register/select a matching matrix or retrain the classifier."
+            )
+        raise ValueError(f"Feature matrix `{feature_key}` columns do not match the classifier bundle feature schema.")
+
+    _validate_current_feature_matrix_matches_columns(
+        table,
+        feature_key,
+        target_feature_columns,
+        custom_obsm=custom_obsm_involved,
+    )
 
 
 def _validate_current_feature_matrix_matches_columns(
     table: AnnData,
     feature_key: str,
     feature_columns: tuple[str, ...],
+    *,
+    custom_obsm: bool = False,
 ) -> None:
     try:
         feature_matrix = normalize_feature_matrix(table.obsm[feature_key], table.n_obs, copy=False)
@@ -195,8 +227,12 @@ def _validate_current_feature_matrix_matches_columns(
 
     if int(feature_matrix.shape[1]) != len(feature_columns):
         raise ValueError(
-            f"Feature matrix `{feature_key}` has {int(feature_matrix.shape[1])} column(s), but its metadata "
-            f"describes {len(feature_columns)} feature column(s)."
+            _format_feature_matrix_width_mismatch_error(
+                feature_key,
+                n_features=int(feature_matrix.shape[1]),
+                metadata_n_features=len(feature_columns),
+                custom_obsm=custom_obsm,
+            )
         )
 
 
@@ -211,6 +247,25 @@ def _validate_estimator_matches_feature_matrix(
             f"Feature matrix `{feature_key}` has {int(feature_matrix.shape[1])} column(s), but the classifier "
             f"estimator expects {int(estimator_feature_count)} feature column(s)."
         )
+
+
+def _format_feature_matrix_width_mismatch_error(
+    feature_key: str,
+    *,
+    n_features: int,
+    metadata_n_features: int,
+    custom_obsm: bool,
+) -> str:
+    if custom_obsm:
+        return (
+            f"Custom feature matrix `{feature_key}` has {n_features} column(s), but its metadata describes "
+            f"{metadata_n_features} feature column(s). Custom matrices require the live `.obsm` width to match "
+            "the registered `feature_columns`. Register/select a matching matrix or retrain the classifier."
+        )
+    return (
+        f"Feature matrix `{feature_key}` has {n_features} column(s), but its metadata describes "
+        f"{metadata_n_features} feature column(s)."
+    )
 
 
 def _resolve_prediction_regions(

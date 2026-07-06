@@ -28,7 +28,11 @@ from napari_harpy.core.classifier_export import (
     normalize_feature_columns,
     write_classifier_export_bundle,
 )
-from napari_harpy.core.feature_matrix_metadata import normalize_feature_matrix
+from napari_harpy.core.feature_matrix_metadata import (
+    CUSTOM_OBSM_SOURCE_KIND,
+    normalize_feature_matrix,
+    normalize_feature_matrix_source_kind,
+)
 from napari_harpy.core.spatialdata import SpatialDataTableMetadata, get_table, get_table_metadata
 
 
@@ -904,9 +908,15 @@ class ClassifierController:
         try:
             feature_metadata = _get_feature_metadata(table, result.feature_key)
             feature_columns = normalize_feature_columns(feature_metadata)
+            source_kind = normalize_feature_matrix_source_kind(feature_metadata)
             # Export relies on `.uns["feature_matrices"]` for column order, so
             # ensure that metadata still matches the live `.obsm` matrix shape.
-            self._validate_current_feature_matrix_matches_columns(table, result.feature_key, feature_columns)
+            _classifier_core._validate_current_feature_matrix_matches_columns(
+                table,
+                result.feature_key,
+                feature_columns,
+                custom_obsm=source_kind == CUSTOM_OBSM_SOURCE_KIND,
+            )
         except ValueError as error:
             self._clear_model_snapshot(str(error))
             return
@@ -945,7 +955,9 @@ class ClassifierController:
                 f'The selected feature matrix "{self._selected_feature_key}" does not match the fitted model '
                 f'feature matrix "{snapshot.feature_key}".'
             )
-        current_feature_columns = normalize_feature_columns(_get_feature_metadata(table, snapshot.feature_key))
+        current_feature_metadata = _get_feature_metadata(table, snapshot.feature_key)
+        current_feature_columns = normalize_feature_columns(current_feature_metadata)
+        current_source_kind = normalize_feature_matrix_source_kind(current_feature_metadata)
         if current_feature_columns != snapshot.feature_columns:
             raise ValueError(
                 "Current feature metadata no longer matches the fitted model snapshot. "
@@ -953,24 +965,12 @@ class ClassifierController:
             )
         # Export relies on `.uns["feature_matrices"]` for column order, so
         # ensure that metadata still matches the live `.obsm` matrix shape.
-        self._validate_current_feature_matrix_matches_columns(table, snapshot.feature_key, snapshot.feature_columns)
-
-    def _validate_current_feature_matrix_matches_columns(
-        self,
-        table: AnnData,
-        feature_key: str,
-        feature_columns: tuple[str, ...],
-    ) -> None:
-        try:
-            feature_matrix = normalize_feature_matrix(table.obsm[feature_key], table.n_obs, copy=False)
-        except KeyError as error:
-            raise ValueError(f'Feature matrix "{feature_key}" is not available in ".obsm".') from error
-
-        if int(feature_matrix.shape[1]) != len(feature_columns):
-            raise ValueError(
-                f'Feature matrix "{feature_key}" has {int(feature_matrix.shape[1])} column(s), but its metadata '
-                f"describes {len(feature_columns)} feature column(s)."
-            )
+        _classifier_core._validate_current_feature_matrix_matches_columns(
+            table,
+            snapshot.feature_key,
+            snapshot.feature_columns,
+            custom_obsm=current_source_kind == CUSTOM_OBSM_SOURCE_KIND,
+        )
 
     def _get_bound_table(self) -> AnnData | None:
         if self._selected_spatialdata is None or self._selected_table_name is None:

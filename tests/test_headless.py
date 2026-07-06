@@ -22,7 +22,10 @@ from napari_harpy.core.classifier_export import (
     ClassifierExportBundle,
     write_classifier_export_bundle,
 )
-from napari_harpy.core.feature_matrix_metadata import HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND
+from napari_harpy.core.feature_matrix_metadata import (
+    HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND,
+    register_feature_matrix_metadata,
+)
 
 _FEATURE_MATRICES_KEY = "feature_matrices"
 _MISSING = object()
@@ -585,6 +588,28 @@ def test_apply_classifier_rejects_feature_matrix_shape_drift(sdata_blobs: Spatia
         headless.apply_classifier(sdata_blobs, bundle, table_name="table")
 
 
+def test_apply_classifier_rejects_custom_feature_matrix_shape_drift_with_custom_message(
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_deterministic_features(sdata_blobs)
+    table = sdata_blobs["table"]
+    register_feature_matrix_metadata(
+        table,
+        "features_1",
+        feature_columns=("is_large", "instance_fraction"),
+    )
+    bundle = _make_classifier_bundle(sdata_blobs)
+    # Simulate stale custom metadata: the registered schema still has two
+    # feature columns, but `np.column_stack(...)` adds a third live `.obsm`
+    # column below.
+    table.obsm["features_1"] = np.column_stack(
+        [np.asarray(table.obsm["features_1"], dtype=np.float64), np.zeros(table.n_obs)]
+    )
+
+    with pytest.raises(ValueError, match="live `.obsm` width"):
+        headless.apply_classifier(sdata_blobs, bundle, table_name="table")
+
+
 def test_apply_classifier_rejects_feature_column_order_mismatch(sdata_blobs: SpatialData) -> None:
     _set_deterministic_features(sdata_blobs)
     _set_feature_metadata(sdata_blobs)
@@ -595,6 +620,45 @@ def test_apply_classifier_rejects_feature_column_order_mismatch(sdata_blobs: Spa
     ]
 
     with pytest.raises(ValueError, match="do not match"):
+        headless.apply_classifier(sdata_blobs, bundle, table_name="table")
+
+
+def test_apply_classifier_rejects_custom_feature_column_order_mismatch_with_custom_message(
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_deterministic_features(sdata_blobs)
+    table = sdata_blobs["table"]
+    register_feature_matrix_metadata(
+        table,
+        "features_1",
+        feature_columns=("is_large", "instance_fraction"),
+    )
+    bundle = _make_classifier_bundle(sdata_blobs)
+    table.uns[_FEATURE_MATRICES_KEY]["features_1"]["feature_columns"] = [
+        "instance_fraction",
+        "is_large",
+    ]
+
+    with pytest.raises(ValueError, match="same `feature_columns` in the same order"):
+        headless.apply_classifier(sdata_blobs, bundle, table_name="table")
+
+
+def test_apply_classifier_rejects_custom_target_feature_order_mismatch_with_custom_message(
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_deterministic_features(sdata_blobs)
+    # Build the bundle from Harpy-style metadata with feature columns
+    # `is_large`, `instance_fraction`.
+    _set_feature_metadata(sdata_blobs)
+    bundle = _make_classifier_bundle(sdata_blobs)
+    register_feature_matrix_metadata(
+        sdata_blobs["table"],
+        "features_1",
+        feature_columns=("instance_fraction", "is_large"),
+        overwrite=True,
+    )
+
+    with pytest.raises(ValueError, match="same `feature_columns` in the same order"):
         headless.apply_classifier(sdata_blobs, bundle, table_name="table")
 
 
