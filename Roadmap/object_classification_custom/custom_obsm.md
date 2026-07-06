@@ -66,16 +66,75 @@ table.uns["feature_matrices"][feature_key] = {
 For custom `.obsm` matrices, the minimum classifier/export contract is:
 
 - `feature_columns`: exact ordered feature-column names;
-- `features`: required by classifier export as the source feature names;
+- `features`: required by classifier export as the source feature names, but
+  for custom matrices this should be a stable custom marker rather than
+  inferred Harpy feature names;
 - `schema_version`: useful for future migration;
 - `dtype` and `backend`: useful diagnostics;
-- source/provenance fields may be empty or explicitly marked as custom because
-  there may be no Harpy feature-extraction source.
+- `source_kind`: explicitly marks that the matrix came from a custom `.obsm`
+  registration path.
+
+Do not invent Harpy feature-extraction provenance for custom matrices.
+Fields such as `source_image`, `source_channels`, `source_label`, and
+`coordinate_system` are meaningful for matrices produced by
+`hp.tb.add_feature_matrix(...)`, but they are usually meaningless for a custom
+`.obsm` matrix. They should be omitted unless a future custom-registration API
+can provide real, validated provenance.
 
 The crucial invariant is that `feature_columns` must have exactly the same
 length and order as the selected `.obsm[feature_key]` columns. A classifier
 bundle should remain reusable only when the target metadata declares the same
 ordered feature schema.
+
+For applying an exported classifier to a custom `.obsm` matrix, compatibility
+is stricter than "the key exists". The target table must provide the same
+ordered schema and a live matrix with the same width:
+
+1. `table.obsm[feature_key]` exists.
+2. `table.uns["feature_matrices"][feature_key]["feature_columns"]` exists.
+3. Target `feature_columns` exactly equals the classifier bundle's
+   `feature_columns`.
+4. The live target matrix has `shape[1] == len(feature_columns)`.
+5. If the estimator exposes `n_features_in_`, it must match the live matrix
+   width.
+
+This means that a custom `.obsm` matrix with the same key but a different
+number or order of columns is not compatible.
+
+## `source_kind` Compatibility
+
+`source_kind` is a proposed napari-harpy metadata marker for disambiguating how
+feature metadata should be interpreted. Current Harpy feature-matrix metadata
+written by `hp.tb.add_feature_matrix(...)` does not include this key.
+
+Suggested source kinds:
+
+- `"custom_obsm"`: metadata was registered for an arbitrary existing `.obsm`
+  matrix, and should be treated as a feature schema only;
+- `"harpy_add_feature_matrix"`: metadata was produced by
+  `hp.tb.add_feature_matrix(...)`, and can be treated as a Harpy
+  feature-extraction recipe for the recompute path.
+
+For backwards compatibility, napari-harpy should not require `source_kind` on
+existing Harpy-created metadata. Missing `source_kind` should be interpreted as
+legacy Harpy feature metadata when the metadata otherwise follows the
+`hp.tb.add_feature_matrix(...)` shape.
+
+It would be useful for Harpy itself to eventually write
+`source_kind="harpy_add_feature_matrix"` from `hp.tb.add_feature_matrix(...)`.
+That would make future metadata self-describing. However, this is not a blocker
+for custom `.obsm` support:
+
+- the custom registration path can write `source_kind="custom_obsm"`;
+- the headless guard can reject only explicit `"custom_obsm"` metadata;
+- legacy Harpy metadata without `source_kind` can continue through the current
+  recompute path.
+
+Do not patch or post-process Harpy-created metadata in napari-harpy just to add
+`source_kind`. Harpy owns the feature-matrix metadata schema and backed
+persistence for `hp.tb.add_feature_matrix(...)`, so adding
+`source_kind="harpy_add_feature_matrix"` should be an upstream Harpy change if
+we decide to standardize it.
 
 ## Proposed Non-UI Path
 
@@ -107,9 +166,10 @@ Behavior:
    default: `f"{feature_key}_{index}"`, or another stable, documented pattern.
 5. Validate that generated or supplied column names are non-empty, unique, and
    match `n_features`.
-6. If `features` is omitted, set it to the same list as `feature_columns`, or to
-   a stable custom marker if we decide export should distinguish source feature
-   groups from concrete columns.
+6. If `features` is omitted, set it to a stable custom marker such as
+   `["custom_obsm"]`. Do not default it to `feature_columns`: names such as
+   `"mean"` could accidentally be interpreted as Harpy intensity features by
+   headless feature-extraction code.
 7. Refuse to replace existing metadata unless `overwrite=True`.
 8. Write `table.uns["feature_matrices"][feature_key]`.
 9. Return the written metadata.
@@ -122,11 +182,7 @@ Suggested metadata for a custom matrix:
     "schema_version": 1,
     "backend": "sparse" if issparse(matrix) else "numpy",
     "dtype": str(matrix.dtype),
-    "source_label": [],
-    "source_image": [],
-    "source_channels": None,
-    "coordinate_system": [],
-    "features": list(features),
+    "features": ["custom_obsm"],
     "source_kind": "custom_obsm",
 }
 ```
@@ -134,6 +190,63 @@ Suggested metadata for a custom matrix:
 The helper should not silently train or export anything. It only registers the
 selected `.obsm` matrix as a classifier feature matrix by creating the schema
 metadata that export/apply already require.
+
+## Headless API Semantics
+
+Custom `.obsm` support should distinguish two headless paths:
+
+- `headless.apply_classifier(...)` applies an exported classifier to an
+  existing compatible feature matrix. This should support custom `.obsm`
+  matrices, as long as the target table already contains `.obsm[feature_key]`
+  and matching `feature_columns` metadata. Matching metadata means the exact
+  same ordered feature schema as the exported classifier, and the live target
+  matrix width must match that schema.
+- `headless.apply_classifier_with_feature_extraction(...)` recomputes features
+  by calling `hp.tb.add_feature_matrix(...)`. This should not support custom
+  `.obsm` classifier bundles, because napari-harpy does not know how to
+  reconstruct an arbitrary custom matrix from image/labels elements.
+
+The current recompute path inspects `classifier.feature_names` and, for
+intensity-derived Harpy features, requires `classifier.source_channels`.
+For custom `.obsm` metadata, `features` must therefore avoid names that look
+like Harpy feature names, and the recompute path should fail clearly when
+`source_kind == "custom_obsm"`. Missing `source_kind` should not be rejected:
+that is the legacy Harpy metadata case.
+
+Suggested error:
+
+```python
+raise ValueError(
+    "This classifier was trained on a registered custom `.obsm` feature matrix. "
+    "napari-harpy cannot recompute that matrix with `hp.tb.add_feature_matrix`. "
+    "Use `headless.apply_classifier(...)` on a table that already contains a "
+    "compatible `.obsm` matrix."
+)
+```
+
+For `headless.apply_classifier(...)`, custom `.obsm` compatibility failures
+should also use clearer custom-specific messages. Generic errors such as
+"columns do not match the classifier bundle feature schema" are technically
+correct, but they do not explain the custom matrix contract. When
+`source_kind == "custom_obsm"` is involved, errors should explicitly say that
+custom `.obsm` classifiers require the same feature columns in the same order
+and a live matrix with the same width.
+
+Suggested schema-mismatch message shape:
+
+```text
+Custom feature matrix `my_features` is not compatible with this classifier.
+Custom `.obsm` classifiers require the same feature columns in the same order.
+Register or select a feature matrix with matching metadata, or retrain the classifier.
+```
+
+Suggested metadata/matrix-width mismatch message shape:
+
+```text
+Custom feature matrix `my_features` is not internally consistent.
+Its metadata describes 10 feature columns, but `.obsm["my_features"]` has 12 columns.
+Update the metadata or replace the matrix before applying this classifier.
+```
 
 ## Proposed UI Path
 
@@ -190,7 +303,11 @@ matrix metadata is part of the persisted table state.
 
 - Synthetic column names become part of the classifier contract. If a user
   exports a classifier trained on a custom matrix, any target dataset must use
-  the same ordered `feature_columns` to apply it.
+  the same ordered `feature_columns` and the same matrix width to apply it.
+- Custom `.obsm` classifier bundles are compatible with existing-matrix
+  headless apply, not with headless feature recomputation. The UI and errors
+  should avoid suggesting that napari-harpy can reconstruct arbitrary custom
+  matrices.
 - Auto-generated names must be deterministic and documented.
 - Existing Harpy-created metadata should not be overwritten accidentally.
 - Missing metadata and mismatched metadata are different states:
@@ -217,7 +334,13 @@ Tests:
 - supplied `feature_columns` are preserved;
 - duplicate, empty, or wrong-length `feature_columns` are rejected;
 - existing metadata is not overwritten unless `overwrite=True`;
-- written metadata satisfies `normalize_feature_columns(...)`.
+- written metadata satisfies `normalize_feature_columns(...)`;
+- written metadata uses `features == ["custom_obsm"]` by default and
+  `source_kind == "custom_obsm"`;
+- written metadata does not invent `source_image`, `source_channels`,
+  `source_label`, or `coordinate_system`;
+- existing Harpy-style metadata without `source_kind` is not treated as custom
+  metadata.
 
 ### Slice 2: Controller/Widget Metadata State
 
@@ -265,3 +388,47 @@ Tests:
 Only if needed later, add a small advanced dialog for editing feature column
 names before registration. The first implementation can use deterministic names
 without a dialog, because this keeps the feature small and testable.
+
+### Slice 6: Headless Custom Matrix Guard
+
+Make the headless API behavior explicit:
+
+- `headless.apply_classifier(...)` should continue to accept custom `.obsm`
+  classifier bundles when the target table already has a compatible matrix and
+  matching metadata.
+- `headless.apply_classifier_with_feature_extraction(...)` should reject
+  classifier bundles whose source metadata has `source_kind == "custom_obsm"`,
+  with a clear message telling users to use `headless.apply_classifier(...)`
+  on an existing compatible matrix.
+- Missing `source_kind` should remain compatible with existing Harpy-created
+  classifier bundles.
+
+Tests:
+
+- exported custom `.obsm` classifier can be applied with
+  `headless.apply_classifier(...)` to a table that contains matching
+  `feature_columns` and a matching live matrix width;
+- custom `.obsm` apply is rejected when target metadata has the same key but a
+  different ordered `feature_columns` schema, with a message explaining that
+  custom matrices require the same columns in the same order;
+- custom `.obsm` apply is rejected when target metadata matches but the live
+  target matrix has a different number of columns, with a message explaining
+  that the metadata and live matrix are internally inconsistent;
+- the same classifier is rejected by
+  `headless.apply_classifier_with_feature_extraction(...)`;
+- no `source_channels` requirement is triggered for custom `.obsm` metadata;
+- legacy Harpy classifier metadata without `source_kind` still follows the
+  existing recompute behavior.
+
+### Future Harpy Metadata Schema Cleanup
+
+If we want every feature matrix to carry an explicit source kind, adapt
+`hp.tb.add_feature_matrix(...)` upstream in Harpy to write:
+
+```python
+"source_kind": "harpy_add_feature_matrix"
+```
+
+This should be a separate Harpy metadata-schema change, not a napari-harpy
+post-processing step. napari-harpy should remain compatible with both new
+Harpy metadata that includes this key and older metadata that does not.
