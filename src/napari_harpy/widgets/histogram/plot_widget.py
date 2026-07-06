@@ -121,6 +121,7 @@ class _HistogramPlotWidget(QWidget):
         self._plot_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self._plot_item = self._plot_widget.getPlotItem()
+        self._set_view_y_lower_limit()
         self._plot_item.setMenuEnabled(False)
         self._plot_item.hideButtons()
         self._plot_item.showGrid(x=True, y=True, alpha=0.18)
@@ -208,6 +209,8 @@ class _HistogramPlotWidget(QWidget):
         self._fit_histogram_view(bin_edges, counts, log_y=result.settings.log_y)
 
     def set_log_y(self, enabled: bool) -> None:
+        if not enabled:
+            self._set_view_y_lower_limit()
         if enabled:
             # Avoid pyqtgraph exponentiating a stale linear y-range while switching the axis to log mode.
             self._plot_item.setYRange(0.0, 1.0, padding=0.0)
@@ -366,21 +369,29 @@ class _HistogramPlotWidget(QWidget):
 
         finite_counts = counts[np.isfinite(counts)]
         if finite_counts.size == 0:
+            self._set_view_y_lower_limit()
             self._plot_item.setYRange(0.0, 1.0, padding=0.0)
             return
 
         if log_y:
             positive_counts = _positive_values(finite_counts)
             if positive_counts.size == 0:
+                self._set_view_y_lower_limit()
                 self._plot_item.setYRange(0.0, 1.0, padding=0.0)
                 return
 
             low, high = _log_y_range(positive_counts)
+            self._set_view_y_lower_limit(y_min=low)
             self._plot_item.setYRange(low, high, padding=0.0)
             return
 
+        self._set_view_y_lower_limit()
         maximum = float(np.max(finite_counts))
         self._plot_item.setYRange(0.0, maximum * 1.05 if maximum > 0 else 1.0, padding=0.0)
+
+    def _set_view_y_lower_limit(self, *, y_min: float = 0.0) -> None:
+        """Prevent y panning/zooming below zero, or below the fitted log-y floor."""
+        self._plot_item.getViewBox().setLimits(yMin=float(y_min))
 
 
 def _qcolor(color: str, alpha: int | None = None) -> QColor:
