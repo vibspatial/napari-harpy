@@ -907,15 +907,88 @@ Headless tests should prove:
 
 ### Slice 6: Widget Gating
 
-If the guard needs widget context, pass a small predicate into the guard, for
-example `can_space_pan_draw()`. It can reuse
-`_annotation_layer_binding_matches()` and the viewer active-layer check.
+Status: planned.
 
-Tests should prove the custom behavior no-ops when:
+This is a hardening slice rather than core happy-path behavior. The current
+guard is already scoped to the widget-owned annotation layer during normal
+create/open/adopt flows, and the Space keybinding is installed on that layer
+instance. In normal napari use, that layer-local keybinding is invoked only when
+the layer is active.
 
+The remaining edge is stale widget ownership: if the Harpy binding is removed
+or no longer matches while the guard is still attached, the guard itself does
+not currently know that. `_handle_space_keybinding(...)` can enter the custom
+Space-pan branch when:
+
+```python
+self._layer is layer
+and self._can_space_pan_draw_mode(layer)
+```
+
+It does not independently verify that the layer is still the active
+widget-owned primary Shapes layer.
+
+Implementation direction:
+
+- add an optional widget predicate to `_AnnotationLayerEditGuard`, for example:
+
+```python
+can_space_pan_draw: Callable[[Shapes], bool] | None = None
+```
+
+- pass that predicate from `ShapesAnnotation`;
+- make the predicate return true only when:
+
+```python
+layer is self._annotation_layer
+and self._annotation_layer_binding_matches()
+and active_viewer_layer is layer
+```
+
+- unwrap proxy active-layer values before comparison, matching existing widget
+  test patterns:
+
+```python
+active = getattr(selection, "active", None)
+active = getattr(active, "__wrapped__", active)
+```
+
+- require the predicate only when starting the custom Space-pan branch;
+- keep fallback pan/zoom behavior for unsupported modes, inactive drawings,
+  inactive annotation layers, stale bindings, and non-widget-owned layers;
+- do not block cleanup for an already-active Space-pan session. If
+  `_begin_space_pan_key_hold(...)` already ran, release handling must still
+  restore `layer.mouse_pan`.
+
+`_handle_space_keybinding(...)` should conceptually become:
+
+```python
+if (
+    self._layer is layer
+    and self._can_space_pan_draw_mode(layer)
+    and self._can_use_custom_space_pan(layer)
+):
+    self._begin_space_pan_key_hold(layer)
+    try:
+        yield
+    finally:
+        self._end_space_pan_key_hold(layer)
+    return
+
+yield from self._fallback_pan_zoom_key_hold(layer)
+```
+
+Tests should prove:
+
+- active widget-owned annotation layer uses the custom Space-pan branch;
 - the annotation layer is no longer active;
-- the binding no longer matches;
-- the layer is not the widget-owned primary Shapes layer.
+- a stale/missing binding no longer uses the custom Space-pan branch;
+- a non-widget-owned Shapes layer does not use the custom Space-pan branch;
+- unsupported modes still use fallback pan/zoom;
+- fallback does not leave `_space_pan_key_held`, `_space_pan_mouse_gesture_active`,
+  or `_previous_mouse_pan` set;
+- disconnect still restores `layer.mouse_pan` if a custom Space-pan session had
+  already started before the gating state changed.
 
 ### Slice 7: Manual Napari QA
 
