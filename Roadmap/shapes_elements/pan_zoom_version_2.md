@@ -844,7 +844,68 @@ Headless tests should prove:
   delegated to napari behavior;
 - layer data, selected rows, and current mode are preserved.
 
-### Slice 5: Widget Gating
+### Slice 5: Active Callback List Refresh
+
+Status: planned.
+
+Slice 4 wraps `_drag_modes` and `_move_modes`. That covers the normal
+annotation-widget lifecycle, where the guard is attached before the user enters
+a supported draw mode. However, napari also keeps active callback lists for the
+current mode:
+
+```python
+layer.mouse_drag_callbacks
+layer.mouse_move_callbacks
+```
+
+Those lists contain callback objects copied from the current mode mappings. If
+the guard attaches while the layer is already in
+`SPACE_PAN_RESUMABLE_DRAW_MODES`, replacing `_drag_modes[mode]` and
+`_move_modes[mode]` may not update the already-active callback lists. The layer
+could then keep calling napari's original draw callbacks until the mode changes
+or napari otherwise rebuilds those lists.
+
+Do not solve this by toggling `layer.mode` away and back. Mode switching while
+`layer._is_creating` is true is the root cause of the original lasso
+interruption.
+
+Implementation direction:
+
+- when `attach(...)` installs supported-mode wrappers, check the current
+  `layer._mode`;
+- if the current mode is in `SPACE_PAN_RESUMABLE_DRAW_MODES`, replace only the
+  matching original callbacks in `layer.mouse_drag_callbacks` and
+  `layer.mouse_move_callbacks`;
+- do not clear or rebuild the whole callback lists, because other napari/plugin
+  callbacks may be present;
+- on `disconnect(...)`, reverse that replacement if the active callback lists
+  still contain the guard wrappers;
+- keep this replacement best-effort and callback-object-specific: if the
+  expected original callback is not present, leave the list unchanged;
+- preserve the existing `_drag_modes` and `_move_modes` restoration semantics.
+
+Suggested helper shape:
+
+```python
+def _replace_callback(
+    callbacks: list[Callable[..., Any]],
+    *,
+    old_callback: Callable[..., Any],
+    new_callback: Callable[..., Any],
+) -> None:
+    ...
+```
+
+Headless tests should prove:
+
+- attaching while `layer.mode` is already `Mode.ADD_POLYGON_LASSO` replaces the
+  active drag and move callbacks with the guard wrappers;
+- disconnect restores the original active callbacks for that mode;
+- attaching in a non-resumable mode does not mutate active callback lists;
+- callback-list replacement preserves unrelated callbacks in the same list;
+- no test or helper changes `layer.mode` to force callback-list refresh.
+
+### Slice 6: Widget Gating
 
 If the guard needs widget context, pass a small predicate into the guard, for
 example `can_space_pan_draw()`. It can reuse
@@ -856,7 +917,7 @@ Tests should prove the custom behavior no-ops when:
 - the binding no longer matches;
 - the layer is not the widget-owned primary Shapes layer.
 
-### Slice 6: Manual Napari QA
+### Slice 7: Manual Napari QA
 
 Manual matrix:
 
