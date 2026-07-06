@@ -138,6 +138,13 @@ _ANNOTATION_FIELD_MIN_WIDTH = 180
 _STATUS_IDENTIFIER_MAX_LENGTH = 32
 _CREATE_SHAPES_OPTION_TEXT = "Create shapes..."
 _DEFAULT_NEW_SHAPES_NAME = "new_shapes"
+_CREATE_LAYER_TOOLTIP = "Create an editable annotation Shapes layer for the selected coordinate system."
+_CREATE_HOLES_TOOLTIP = (
+    "Select one shell polygon and one or more polygons fully inside it, then click Create holes. "
+    "Shift-click polygons to add them to the selection. The largest selected polygon becomes the shell; "
+    "selected inner polygons become holes."
+)
+_SAVE_SHAPES_TOOLTIP = "Save the current annotation layer back to the selected SpatialData shapes element."
 _SPACE_KEYBINDING = coerce_keybinding("Space")
 _INVALID_POLYGON_DRAG_WARNING = "Polygon edit was rejected because it would create invalid geometry."
 _ALREADY_INVALID_POLYGON_DRAG_WARNING = "This polygon is already invalid, so this edit cannot be safely rolled back."
@@ -1292,16 +1299,19 @@ class ShapesAnnotation(QWidget):
         self.create_layer_button.setObjectName("shapes_annotation_create_layer_button")
         self.create_layer_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.create_layer_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
+        self.create_layer_button.setToolTip(format_tooltip(_CREATE_LAYER_TOOLTIP))
 
         self.create_holes_button = QPushButton("Create holes")
         self.create_holes_button.setObjectName("shapes_annotation_create_holes_button")
         self.create_holes_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.create_holes_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
+        self.create_holes_button.setToolTip(format_tooltip(_CREATE_HOLES_TOOLTIP))
 
         self.save_shapes_button = QPushButton("Save shapes")
         self.save_shapes_button.setObjectName("shapes_annotation_save_shapes_button")
         self.save_shapes_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.save_shapes_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
+        self.save_shapes_button.setToolTip(format_tooltip(_SAVE_SHAPES_TOOLTIP))
 
         button_row.addWidget(self.create_layer_button)
         button_row.addWidget(self.create_holes_button)

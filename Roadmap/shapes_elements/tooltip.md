@@ -1,6 +1,6 @@
 # Annotation Discoverability: Tooltips And User Guidance
 
-Status: recommendation.
+Status: implemented.
 
 Goal: make the Shapes Annotation widget easier to discover for normal napari
 users, especially for two non-obvious workflows:
@@ -70,14 +70,14 @@ states:
 
 ```text
 Draw shapes in the viewer, then click Save shapes.
-Tip: while drawing polygon, path, polyline, or lasso, hold Space and drag to pan without ending the shape.
+Tip: while drawing in polygon, path, polyline or lasso mode, hold Space and drag to pan without ending the shape.
 ```
 
 - edit-existing annotation layer:
 
 ```text
 Edit shapes layer "..." in coordinate system "...".
-Tip: while drawing polygon, path, polyline, or lasso, hold Space and drag to pan without ending the shape.
+Tip: while drawing in polygon, path, polyline or lasso mode, hold Space and drag to pan without ending the shape.
 ```
 
 This should appear only in active annotation-layer states, not in
@@ -101,6 +101,8 @@ readiness card while they are current.
 ## Suggested Slice
 
 Slice 1: Widget Tooltips And Status Tip
+
+Status: implemented.
 
 - Add tooltips to `Create layer`, `Create holes`, and `Save shapes`.
 - Extend both normal editable-layer status cards with the Space-pan tip:

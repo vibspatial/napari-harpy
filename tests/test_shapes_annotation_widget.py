@@ -43,6 +43,10 @@ from napari_harpy.viewer.shapes_styling import (
 from napari_harpy.widgets import ShapesAnnotation as LazyShapesAnnotation
 from napari_harpy.widgets.shapes_annotation.widget import ShapesAnnotation
 
+_SPACE_PAN_TIP_TEXT = (
+    "Tip: while drawing in polygon, path, polyline or lasso mode, hold Space and drag to pan without ending the shape."
+)
+
 
 def _rgba(color: str) -> np.ndarray:
     return np.asarray(to_rgba(color), dtype=float)
@@ -143,8 +147,12 @@ def _status_text(widget: ShapesAnnotation) -> str:
     return unescape(widget.status_label.text())
 
 
+def _clean_tooltip_text(text: str) -> str:
+    return unescape(text).replace("&#8203;", "").replace("\u200b", "")
+
+
 def _tooltip_text(widget: ShapesAnnotation) -> str:
-    return unescape(widget.status_label.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    return _clean_tooltip_text(widget.status_label.toolTip())
 
 
 def _first_current_property_value(layer: Shapes, feature_name: str) -> object:
@@ -479,6 +487,11 @@ def test_shapes_annotation_widget_can_be_instantiated(qtbot) -> None:
     assert widget.create_layer_button.isEnabled() is False
     assert widget.create_holes_button.isEnabled() is False
     assert widget.save_shapes_button.isEnabled() is False
+    assert "Create an editable annotation Shapes layer" in _clean_tooltip_text(widget.create_layer_button.toolTip())
+    create_holes_tooltip = _clean_tooltip_text(widget.create_holes_button.toolTip())
+    assert "Select one shell polygon and one or more polygons fully inside it" in create_holes_tooltip
+    assert "Shift-click polygons to add them to the selection" in create_holes_tooltip
+    assert "Save the current annotation layer back" in _clean_tooltip_text(widget.save_shapes_button.toolTip())
     assert "No SpatialData Loaded" in _status_text(widget)
 
 
@@ -2247,7 +2260,10 @@ def test_shapes_annotation_widget_shapes_selector_auto_opens_existing_target(
     assert widget.create_layer_button.text() == "Create layer"
     assert widget.create_layer_button.isEnabled() is False
     assert widget.save_shapes_button.isEnabled() is True
-    assert "Existing Shapes Opened" in _status_text(widget)
+    status = _status_text(widget)
+    assert "Existing Shapes Opened" in status
+    assert 'Edit shapes layer "blobs_polygons" in coordinate system "global".' in status
+    assert _SPACE_PAN_TIP_TEXT in status
 
 
 def test_shapes_annotation_widget_shapes_selector_defaults_back_to_create_when_existing_disappears(
@@ -2411,6 +2427,7 @@ def test_shapes_annotation_widget_create_layer_adds_registered_active_empty_shap
     widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
 
     assert widget.create_layer_button.isEnabled() is True
+    assert _SPACE_PAN_TIP_TEXT not in _status_text(widget)
     widget.create_layer_button.click()
 
     assert len(viewer.layers) == 1
@@ -2425,6 +2442,10 @@ def test_shapes_annotation_widget_create_layer_adds_registered_active_empty_shap
     assert layer.opacity == 0.8
     assert hasattr(layer, _SHAPES_EDGE_WIDTH_SYNC_CALLBACK_ATTR)
     assert hasattr(layer, _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR)
+    status = _status_text(widget)
+    assert "Annotation Layer Ready" in status
+    assert "Draw shapes in the viewer, then click Save shapes." in status
+    assert _SPACE_PAN_TIP_TEXT in status
 
     binding = widget.app_state.viewer_adapter.layer_bindings.get_binding(layer)
     assert isinstance(binding, ShapesLayerBinding)

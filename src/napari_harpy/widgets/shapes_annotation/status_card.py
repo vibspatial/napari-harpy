@@ -6,6 +6,9 @@ from typing import TYPE_CHECKING
 from napari_harpy.widgets.shared_styles import StatusCardKind, format_feedback_identifier, validate_status_card_kind
 
 _STATUS_IDENTIFIER_MAX_LENGTH = 32
+_ANNOTATION_SPACE_PAN_TIP = (
+    "Tip: while drawing in polygon, path, polyline or lasso mode, hold Space and drag to pan without ending the shape."
+)
 
 if TYPE_CHECKING:
     from napari_harpy.core.shapes_annotation import AnnotateShapesElementResult
@@ -164,7 +167,10 @@ def build_annotation_existing_shapes_opened_card_spec(
         coordinate_system,
         max_length=_STATUS_IDENTIFIER_MAX_LENGTH,
     )
-    lines = [f'Edit shapes layer "{visible_shapes_name}" in coordinate system "{visible_coordinate_system}".']
+    lines = [
+        f'Edit shapes layer "{visible_shapes_name}" in coordinate system "{visible_coordinate_system}".',
+        _ANNOTATION_SPACE_PAN_TIP,
+    ]
     if table_linked:
         lines.append("Linked tables are not updated by Annotation and may go out of sync if rows are added or removed.")
 
@@ -184,7 +190,10 @@ def build_annotation_existing_shapes_opened_card_spec(
 def build_annotation_layer_ready_card_spec() -> _ShapesAnnotationStatusCardSpec:
     return _ShapesAnnotationStatusCardSpec(
         title="Annotation Layer Ready",
-        lines=("Draw shapes in the viewer, then click Save shapes.",),
+        lines=(
+            "Draw shapes in the viewer, then click Save shapes.",
+            _ANNOTATION_SPACE_PAN_TIP,
+        ),
         kind="info",
     )
 
