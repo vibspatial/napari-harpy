@@ -321,9 +321,34 @@ matrix metadata is part of the persisted table state.
 
 ## Proposed Implementation Slices
 
-### Slice 1: Core Metadata Registration Helper
+### Slice 1: Core Metadata Helper
 
 Add a Qt-free helper to register metadata for an existing `.obsm` matrix.
+This is the non-UI API and the foundation for the widget path.
+
+Suggested public/core API:
+
+```python
+register_feature_matrix_metadata(
+    table,
+    feature_key,
+    *,
+    feature_columns=None,
+    features=None,
+    overwrite=False,
+)
+```
+
+The helper should:
+
+- validate that `table.obsm[feature_key]` exists;
+- normalize the matrix with the same shape rules as classifier training;
+- infer matrix width;
+- generate deterministic `feature_columns` when none are provided;
+- write `table.uns["feature_matrices"][feature_key]`;
+- use `features == ["custom_obsm"]` by default;
+- use `source_kind == "custom_obsm"`;
+- avoid inventing Harpy extraction provenance fields.
 
 Tests:
 
@@ -342,54 +367,65 @@ Tests:
 - existing Harpy-style metadata without `source_kind` is not treated as custom
   metadata.
 
-### Slice 2: Controller/Widget Metadata State
+### Slice 2: Metadata State Inspection
 
-Add a small metadata-state check for the selected table and feature key.
+Add a Qt-free helper/model that describes the metadata state for one selected
+table and feature key. This should not mutate the table.
 
-The widget should know whether the selected feature matrix is:
+The state should distinguish:
 
 - missing from `.obsm`;
 - present but unregistered;
 - registered and valid;
 - registered but mismatched with the live matrix shape.
 
-Use this state to drive the button, warning text, and tooltip.
+The helper should also report useful details for UI and error text, such as:
 
-### Slice 3: Register Feature Matrix Button
-
-Add the UI button and wire it to the core helper.
-
-On success:
-
-- mark table state dirty;
-- clear/refresh any stale warning;
-- mark classifier stale if appropriate;
-- refresh classifier/export controls.
+- live matrix width;
+- number of metadata columns;
+- whether metadata has `source_kind == "custom_obsm"`;
+- whether metadata appears Harpy-style or legacy Harpy-style.
 
 Tests:
 
-- button is enabled for a selected unregistered `.obsm` matrix;
-- clicking registers metadata under `table.uns["feature_matrices"][feature_key]`;
-- classifier export becomes possible after registering metadata and retraining;
-- already registered matrices do not enable accidental overwrite.
+- missing matrix key reports a missing-matrix state;
+- matrix without `feature_matrices` metadata reports unregistered;
+- valid custom metadata reports registered/valid;
+- valid legacy Harpy metadata without `source_kind` reports registered/valid
+  but not custom;
+- metadata column count mismatch reports a mismatched state.
 
-### Slice 4: Persist Feature Matrix Metadata
+### Slice 3: Classifier/Headless Compatibility Errors
 
-Include `feature_matrices` in the selected table-state write path.
+Keep the existing validation semantics, but add clearer custom-specific error
+messages for compatibility failures involving `source_kind == "custom_obsm"`.
+
+The validation should still require:
+
+- target metadata `feature_columns` exactly matches the classifier bundle's
+  `feature_columns`;
+- target live matrix width matches the target metadata;
+- estimator `n_features_in_`, when present, matches live matrix width.
+
+Custom-specific messages should explain:
+
+- same feature columns are required;
+- the order must be the same;
+- live matrix width must match the metadata/schema;
+- users should register/select a matching matrix or retrain.
 
 Tests:
 
-- registering custom metadata marks the backed table dirty;
-- `Write Table State` writes `uns["feature_matrices"]` to zarr;
-- reload preserves the registered custom metadata.
+- custom `.obsm` apply is rejected when target metadata has the same key but a
+  different ordered `feature_columns` schema, with a message explaining that
+  custom matrices require the same columns in the same order;
+- custom `.obsm` apply is rejected when target metadata matches but the live
+  target matrix has a different number of columns, with a message explaining
+  that the metadata and live matrix are internally inconsistent;
+- legacy Harpy metadata keeps the current generic behavior unless separately
+  improved.
 
-### Slice 5: Optional Explicit Column-Name UI
-
-Only if needed later, add a small advanced dialog for editing feature column
-names before registration. The first implementation can use deterministic names
-without a dialog, because this keeps the feature small and testable.
-
-### Slice 6: Headless Custom Matrix Guard
+### Slice 4: Headless Recompute Guard
 
 Make the headless API behavior explicit:
 
@@ -408,17 +444,72 @@ Tests:
 - exported custom `.obsm` classifier can be applied with
   `headless.apply_classifier(...)` to a table that contains matching
   `feature_columns` and a matching live matrix width;
-- custom `.obsm` apply is rejected when target metadata has the same key but a
-  different ordered `feature_columns` schema, with a message explaining that
-  custom matrices require the same columns in the same order;
-- custom `.obsm` apply is rejected when target metadata matches but the live
-  target matrix has a different number of columns, with a message explaining
-  that the metadata and live matrix are internally inconsistent;
 - the same classifier is rejected by
   `headless.apply_classifier_with_feature_extraction(...)`;
 - no `source_channels` requirement is triggered for custom `.obsm` metadata;
 - legacy Harpy classifier metadata without `source_kind` still follows the
   existing recompute behavior.
+
+### Slice 5: Persistence
+
+Include `feature_matrices` in the selected table-state write path.
+
+Tests:
+
+- registering custom metadata marks the backed table dirty;
+- `Write Table State` writes `uns["feature_matrices"]` to zarr;
+- reload preserves the registered custom metadata.
+
+### Slice 6: Widget UI State
+
+Add the widget state, status text, and tooltips needed to expose custom metadata
+registration without yet wiring the button action.
+
+The widget should use the metadata-state helper to drive:
+
+- whether the selected matrix is already registered;
+- whether registration is available;
+- whether existing metadata is mismatched;
+- whether the selected matrix is legacy Harpy-created metadata.
+
+Suggested UI behavior:
+
+- valid registered metadata: button disabled, tooltip says it is already
+  registered;
+- missing metadata: button enabled;
+- mismatched metadata: warning status and no silent overwrite;
+- no selected table/key: button disabled with normal selection tooltip.
+
+Tests:
+
+- button/status state is correct for unregistered matrix;
+- button/status state is correct for valid custom metadata;
+- button/status state is correct for valid legacy Harpy metadata;
+- mismatched metadata produces a warning state.
+
+### Slice 7: Register Feature Matrix Button
+
+Wire the UI button to the core registration helper.
+
+On success:
+
+- mark table state dirty;
+- clear/refresh any stale warning;
+- mark classifier stale if appropriate;
+- refresh classifier/export controls.
+
+Tests:
+
+- button is enabled for a selected unregistered `.obsm` matrix;
+- clicking registers metadata under `table.uns["feature_matrices"][feature_key]`;
+- classifier export becomes possible after registering metadata and retraining;
+- already registered matrices do not enable accidental overwrite.
+
+### Slice 8: Optional Explicit Column-Name UI
+
+Only if needed later, add a small advanced dialog for editing feature column
+names before registration. The first implementation can use deterministic names
+without a dialog, because this keeps the feature small and testable.
 
 ### Future Harpy Metadata Schema Cleanup
 
