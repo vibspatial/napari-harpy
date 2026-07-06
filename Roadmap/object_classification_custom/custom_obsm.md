@@ -464,6 +464,10 @@ Make the headless API behavior explicit:
 - `headless.apply_classifier(...)` should continue to accept custom `.obsm`
   classifier bundles when the target table already has a compatible matrix and
   matching metadata.
+- `headless.compute_features_for_classifier(...)` should reject classifier
+  bundles whose source metadata has `source_kind == "custom_obsm"`, because it
+  recomputes features through `hp.tb.add_feature_matrix(...)` and therefore
+  requires a Harpy feature-extraction recipe.
 - `headless.apply_classifier_with_feature_extraction(...)` should reject
   classifier bundles whose source metadata has `source_kind == "custom_obsm"`,
   with a clear message telling users to use `headless.apply_classifier(...)`
@@ -471,13 +475,30 @@ Make the headless API behavior explicit:
 - Missing or unknown `source_kind` should be rejected as invalid feature
   metadata.
 
+Implementation notes:
+
+- Put the guard in `compute_features_for_classifier(...)`, before
+  `_resolve_classifier_source_channels(...)`. Custom `.obsm` metadata should
+  not be inspected as if it were Harpy feature-extraction metadata.
+- `apply_classifier_with_feature_extraction(...)` and
+  `apply_classifier_with_feature_extraction_from_path(...)` should inherit this
+  behavior through `compute_features_for_classifier(...)`.
+- The error should explain that custom `.obsm` classifiers cannot recompute
+  features and that users should call `headless.apply_classifier(...)` on a
+  table that already contains a compatible registered matrix.
+- `source_kind == "harpy_add_feature_matrix"` should continue through the
+  current recompute path.
+
 Tests:
 
 - exported custom `.obsm` classifier can be applied with
   `headless.apply_classifier(...)` to a table that contains matching
   `feature_columns` and a matching live matrix width;
+- the same classifier is rejected by `headless.compute_features_for_classifier(...)`;
 - the same classifier is rejected by
   `headless.apply_classifier_with_feature_extraction(...)`;
+- the rejection message points users to `headless.apply_classifier(...)` with
+  an existing compatible matrix;
 - no `source_channels` requirement is triggered for custom `.obsm` metadata;
 - Harpy classifier metadata with `source_kind == "harpy_add_feature_matrix"`
   still follows the existing recompute behavior.
