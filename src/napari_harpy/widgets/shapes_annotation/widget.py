@@ -318,6 +318,17 @@ def _shape_type_at(layer: Shapes, row_index: int) -> object:
         return None
 
 
+def _replace_callback(
+    callbacks: list[Callable[..., Any]],
+    *,
+    old_callback: Callable[..., Any],
+    new_callback: Callable[..., Any],
+) -> None:
+    for index, callback in enumerate(callbacks):
+        if callback is old_callback:
+            callbacks[index] = new_callback
+
+
 class _AnnotationLayerEditGuard:
     """Install and restore annotation-specific Shapes direct-edit hooks."""
 
@@ -421,6 +432,16 @@ class _AnnotationLayerEditGuard:
         self._wrapped_space_keybinding = wrapped_space_keybinding
         layer._drag_modes = patched_drag_modes
         layer._move_modes = patched_move_modes
+        # Defensive guard for layers already in a supported draw mode: napari's
+        # active mouse callback lists may still point at the original callbacks
+        # even after we replace `_drag_modes` / `_move_modes`.
+        self._replace_current_supported_draw_callbacks(
+            layer,
+            original_drag_modes=drag_modes,
+            original_move_modes=move_modes,
+            patched_drag_modes=patched_drag_modes,
+            patched_move_modes=patched_move_modes,
+        )
         # `bind_key(...)` accepts raw strings and performs napari's key coercion;
         # this ends up roughly like assigning
         # `layer.keymap[_SPACE_KEYBINDING] = wrapped_space_keybinding`, but keeps
@@ -464,6 +485,17 @@ class _AnnotationLayerEditGuard:
             previous_space_keybinding=previous_space_keybinding,
             had_instance_space_keybinding=had_instance_space_keybinding,
         )
+        if original_drag_modes is not None and original_move_modes is not None:
+            # Edge case: if attach happened while this layer was already in a
+            # supported draw mode, attach swapped the active mouse callback
+            # lists from napari's originals to our wrappers. Swap those entries
+            # back before restoring the mode mappings so disconnect leaves the
+            # currently active mode usable without requiring a mode change.
+            self._restore_supported_draw_callbacks(
+                layer,
+                original_drag_modes=original_drag_modes,
+                original_move_modes=original_move_modes,
+            )
         if had_instance_drag_modes:
             if original_drag_modes is not None:
                 layer._drag_modes = original_drag_modes
@@ -477,6 +509,50 @@ class _AnnotationLayerEditGuard:
                 layer._move_modes = original_move_modes
         elif "_move_modes" in vars(layer):
             delattr(layer, "_move_modes")
+
+    def _replace_current_supported_draw_callbacks(
+        self,
+        layer: Shapes,
+        *,
+        original_drag_modes: dict[object, Callable[..., Any]],
+        original_move_modes: dict[object, Callable[..., Any]],
+        patched_drag_modes: dict[object, Callable[..., Any]],
+        patched_move_modes: dict[object, Callable[..., Any]],
+    ) -> None:
+        mode = layer._mode
+        if mode not in _SPACE_PAN_RESUMABLE_DRAW_MODES:
+            return
+        _replace_callback(
+            layer.mouse_drag_callbacks,
+            old_callback=original_drag_modes[mode],
+            new_callback=patched_drag_modes[mode],
+        )
+        _replace_callback(
+            layer.mouse_move_callbacks,
+            old_callback=original_move_modes[mode],
+            new_callback=patched_move_modes[mode],
+        )
+
+    def _restore_supported_draw_callbacks(
+        self,
+        layer: Shapes,
+        *,
+        original_drag_modes: dict[object, Callable[..., Any]],
+        original_move_modes: dict[object, Callable[..., Any]],
+    ) -> None:
+        patched_drag_modes = layer._drag_modes
+        patched_move_modes = layer._move_modes
+        for mode in _SPACE_PAN_RESUMABLE_DRAW_MODES:
+            _replace_callback(
+                layer.mouse_drag_callbacks,
+                old_callback=patched_drag_modes[mode],
+                new_callback=original_drag_modes[mode],
+            )
+            _replace_callback(
+                layer.mouse_move_callbacks,
+                old_callback=patched_move_modes[mode],
+                new_callback=original_move_modes[mode],
+            )
 
     def _capture_space_keybinding(self, layer: Shapes) -> None:
         # Napari stores keymap entries under coerced KeyBinding objects, not the

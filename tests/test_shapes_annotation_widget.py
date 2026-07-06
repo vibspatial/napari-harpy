@@ -1057,8 +1057,10 @@ def test_annotation_layer_edit_guard_space_binding_preserves_existing_binding_an
     assert guard._previous_space_keybinding is existing_space_keybinding
     assert layer.mouse_pan is original_mouse_pan
     assert layer.mode == original_mode
-    assert list(layer.mouse_drag_callbacks) == original_drag_callbacks
-    assert list(layer.mouse_move_callbacks) == original_move_callbacks
+    assert original_drag_callbacks[0] not in layer.mouse_drag_callbacks
+    assert layer._drag_modes[Mode.ADD_POLYGON_LASSO] in layer.mouse_drag_callbacks
+    assert original_move_callbacks[0] not in layer.mouse_move_callbacks
+    assert layer._move_modes[Mode.ADD_POLYGON_LASSO] in layer.mouse_move_callbacks
     for mode, callback in original_resumable_drag_callbacks.items():
         assert layer._drag_modes[mode] is not callback
     for mode, callback in original_resumable_move_callbacks.items():
@@ -1076,6 +1078,67 @@ def test_annotation_layer_edit_guard_space_binding_preserves_existing_binding_an
         assert layer._drag_modes[mode] is callback
     for mode, callback in original_resumable_move_callbacks.items():
         assert layer._move_modes[mode] is callback
+
+
+def test_annotation_layer_edit_guard_replaces_active_supported_draw_callbacks() -> None:
+    layer = Shapes([], ndim=2)
+    layer.mode = Mode.ADD_POLYGON_LASSO
+    original_mode = layer.mode
+    original_drag_callback = layer.mouse_drag_callbacks[0]
+    original_move_callback = layer.mouse_move_callbacks[0]
+
+    def unrelated_drag_callback(_layer: Shapes, _event: object) -> None:
+        return None
+
+    def unrelated_move_callback(_layer: Shapes, _event: object) -> None:
+        return None
+
+    layer.mouse_drag_callbacks.append(unrelated_drag_callback)
+    layer.mouse_move_callbacks.append(unrelated_move_callback)
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+
+    guard.attach(layer)
+
+    wrapped_drag_callback = layer._drag_modes[Mode.ADD_POLYGON_LASSO]
+    wrapped_move_callback = layer._move_modes[Mode.ADD_POLYGON_LASSO]
+    assert layer.mode == original_mode
+    assert original_drag_callback not in layer.mouse_drag_callbacks
+    assert wrapped_drag_callback in layer.mouse_drag_callbacks
+    assert unrelated_drag_callback in layer.mouse_drag_callbacks
+    assert original_move_callback not in layer.mouse_move_callbacks
+    assert wrapped_move_callback in layer.mouse_move_callbacks
+    assert unrelated_move_callback in layer.mouse_move_callbacks
+
+    guard.disconnect()
+
+    assert layer.mode == original_mode
+    assert original_drag_callback in layer.mouse_drag_callbacks
+    assert wrapped_drag_callback not in layer.mouse_drag_callbacks
+    assert unrelated_drag_callback in layer.mouse_drag_callbacks
+    assert original_move_callback in layer.mouse_move_callbacks
+    assert wrapped_move_callback not in layer.mouse_move_callbacks
+    assert unrelated_move_callback in layer.mouse_move_callbacks
+
+
+def test_annotation_layer_edit_guard_leaves_active_callbacks_for_non_resumable_mode() -> None:
+    layer = Shapes([], ndim=2)
+    layer.mode = Mode.ADD_LINE
+    original_mode = layer.mode
+    original_drag_callbacks = list(layer.mouse_drag_callbacks)
+    original_move_callbacks = list(layer.mouse_move_callbacks)
+    guard = shapes_annotation_widget_module._AnnotationLayerEditGuard()
+
+    guard.attach(layer)
+
+    assert layer.mode == original_mode
+    assert list(layer.mouse_drag_callbacks) == original_drag_callbacks
+    assert list(layer.mouse_move_callbacks) == original_move_callbacks
+
+    guard.disconnect()
+
+    assert layer.mode == original_mode
+    assert list(layer.mouse_drag_callbacks) == original_drag_callbacks
+    assert list(layer.mouse_move_callbacks) == original_move_callbacks
 
 
 def test_annotation_layer_edit_guard_space_binding_is_removed_when_guard_created_it() -> None:

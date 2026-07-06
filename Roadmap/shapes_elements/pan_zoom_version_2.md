@@ -846,7 +846,7 @@ Headless tests should prove:
 
 ### Slice 5: Active Callback List Refresh
 
-Status: planned.
+Status: implemented.
 
 Slice 4 wraps `_drag_modes` and `_move_modes`. That covers the normal
 annotation-widget lifecycle, where the guard is attached before the user enters
