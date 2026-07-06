@@ -2377,6 +2377,7 @@ def test_viewer_adapter_normalizes_native_shapes_layer_to_harpy_status_layer() -
         ],
         shape_type="polygon",
         features=pd.DataFrame({"instance_id": ["cell_1"]}),
+        affine=np.asarray([[1.0, 0.0, 5.0], [0.0, 1.0, 7.0], [0.0, 0.0, 1.0]]),
         name="native_shapes",
     )
     viewer = DummyViewer([native_layer])
@@ -2390,9 +2391,21 @@ def test_viewer_adapter_normalizes_native_shapes_layer_to_harpy_status_layer() -
     assert replacement is not native_layer
     assert native_layer not in viewer.layers
     assert viewer.layers == [replacement]
+    np.testing.assert_allclose(
+        replacement.data[0],
+        np.asarray(
+            [
+                [5.0, 7.0],
+                [5.0, 11.0],
+                [9.0, 11.0],
+                [9.0, 7.0],
+            ]
+        ),
+    )
+    np.testing.assert_allclose(replacement.affine.affine_matrix, np.eye(3))
     assert list(replacement.features.columns) == ["instance_id"]
     assert replacement.features["instance_id"].to_list() == ["cell_1"]
-    assert "instance_id: cell_1" in replacement.get_status(position=(1, 1))["value"]
+    assert "instance_id: cell_1" in replacement.get_status(position=(6, 8))["value"]
 
 
 def test_viewer_adapter_ensure_shapes_loaded_uses_internal_row_ids_with_duplicate_geodataframe_index() -> None:

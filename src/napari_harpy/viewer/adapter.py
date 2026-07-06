@@ -836,6 +836,7 @@ class ViewerAdapter(QObject):
         if not self._is_layer_loaded_in_viewer(layer):
             raise ValueError("Cannot normalize a Shapes layer that is not loaded in the viewer.")
 
+        _normalize_native_shapes_layer_transform(layer)
         replacement = _build_harpy_shapes_layer_from_native_layer(
             layer,
             source_shapes_index_feature_name=source_shapes_index_feature_name,
@@ -2172,6 +2173,26 @@ def _build_empty_primary_shapes_layer(
     )
     _apply_primary_shapes_layer_style(layer)
     return layer
+
+
+def _normalize_native_shapes_layer_transform(layer: Shapes) -> None:
+    """Bake one native napari Shapes-layer transform into its vertices."""
+    baked_data = [
+        # `Shapes.data_to_world(...)` is a single-position helper; use the
+        # array-capable underlying transform so one call can transform the
+        # whole `(n_vertices, ndim)` array at once.
+        np.asarray(layer._data_to_world(vertices), dtype=float)
+        for vertices in layer.data
+    ]
+
+    layer.scale = (1.0,) * layer.ndim
+    layer.translate = (0.0,) * layer.ndim
+    layer.rotate = 0.0
+    layer.shear = (0.0,) * max(layer.ndim * (layer.ndim - 1) // 2, 0)
+    layer.affine = np.eye(layer.ndim + 1, dtype=float)
+
+    if baked_data:
+        layer.data = baked_data
 
 
 def _build_harpy_shapes_layer_from_native_layer(
