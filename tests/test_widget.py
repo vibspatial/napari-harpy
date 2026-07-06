@@ -28,6 +28,7 @@ from napari_harpy._app_state import ClassificationTableWrittenEvent, FeatureMatr
 from napari_harpy.core.annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
 from napari_harpy.core.class_palette import default_class_colors
 from napari_harpy.core.classifier_export import DEFAULT_CLASSIFIER_EXPORT_SUFFIX, read_classifier_export_bundle
+from napari_harpy.core.feature_matrix_metadata import HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND
 from napari_harpy.core.spatialdata import SpatialDataLabelsOption
 from napari_harpy.widgets.object_classification.controller import (
     CLASSIFIER_CONFIG_KEY,
@@ -182,6 +183,7 @@ def _set_feature_metadata(
         "source_image": None,
         "coordinate_system": "global",
         "features": [f"feature_{index}" for index in range(n_features)],
+        "source_kind": HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND,
     }
 
 

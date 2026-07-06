@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +22,7 @@ from napari_harpy.core.classifier_export import (
     ClassifierExportBundle,
     write_classifier_export_bundle,
 )
+from napari_harpy.core.feature_matrix_metadata import HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND
 
 _FEATURE_MATRICES_KEY = "feature_matrices"
 _MISSING = object()
@@ -59,6 +61,7 @@ def _set_feature_metadata(
         "source_image": source_image,
         "coordinate_system": "global",
         "features": list(features),
+        "source_kind": HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND,
     }
     if source_channels is not _MISSING:
         metadata["source_channels"] = source_channels
@@ -147,6 +150,7 @@ def _make_area_classifier_bundle() -> ClassifierExportBundle:
             "source_channels": None,
             "coordinate_system": "global",
             "features": ["area"],
+            "source_kind": HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND,
         },
     )
 
@@ -205,6 +209,16 @@ def test_apply_classifier_from_path_writes_predictions_and_apply_config(
     assert config["prediction_regions"] == ["blobs_labels"]
     assert config["pred_class_column"] == PRED_CLASS_COLUMN
     assert config["pred_confidence_column"] == PRED_CONFIDENCE_COLUMN
+
+
+def test_write_classifier_export_bundle_rejects_missing_source_kind(tmp_path: Path) -> None:
+    bundle = _make_area_classifier_bundle()
+    source_feature_metadata = dict(bundle.source_feature_metadata)
+    del source_feature_metadata["source_kind"]
+    invalid_bundle = replace(bundle, source_feature_metadata=source_feature_metadata)
+
+    with pytest.raises(ValueError, match="source_kind"):
+        write_classifier_export_bundle(tmp_path / "missing-source-kind.harpy-classifier.joblib", invalid_bundle)
 
 
 def test_apply_classifier_can_write_custom_prediction_columns(sdata_blobs: SpatialData) -> None:

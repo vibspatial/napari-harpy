@@ -15,7 +15,7 @@ from numpy.typing import NDArray
 from napari_harpy.core.annotation import UNLABELED_CLASS
 from napari_harpy.core.class_palette import set_class_annotation_state
 from napari_harpy.core.classifier_export import ClassifierExportBundle, normalize_feature_columns
-from napari_harpy.core.feature_matrix_metadata import normalize_feature_matrix
+from napari_harpy.core.feature_matrix_metadata import normalize_feature_matrix, normalize_feature_matrix_source_kind
 from napari_harpy.core.spatialdata import get_table, get_table_metadata
 from napari_harpy.core.validation import normalize_spatialdata_dataframe_column_name
 
@@ -317,6 +317,7 @@ def _get_feature_metadata(table: AnnData, feature_key: str) -> dict[str, object]
             f"Feature matrix `{feature_key}` is missing Harpy metadata in "
             f"`.uns[{_FEATURE_MATRICES_KEY!r}][{feature_key!r}]`."
         )
+    normalize_feature_matrix_source_kind(feature_metadata)
     return dict(feature_metadata)
 
 

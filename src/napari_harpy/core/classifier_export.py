@@ -90,6 +90,13 @@ class ClassifierExportBundle:
         return normalize_source_channels(self.source_feature_metadata)
 
     @property
+    def source_kind(self) -> str:
+        """Return the source kind captured in the feature metadata."""
+        from napari_harpy.core.feature_matrix_metadata import normalize_feature_matrix_source_kind
+
+        return normalize_feature_matrix_source_kind(self.source_feature_metadata)
+
+    @property
     def n_features(self) -> int:
         """Return the number of feature columns expected by the estimator."""
         return len(self.feature_columns)
@@ -246,6 +253,7 @@ def _validate_export_bundle(bundle: ClassifierExportBundle) -> None:
         raise ValueError("Classifier export bundle estimator must be a RandomForestClassifier.")
     if bundle.model_type != "RandomForestClassifier":
         raise ValueError(f"Unsupported classifier model type: {bundle.model_type!r}.")
+    _ = bundle.source_kind
     if bundle.n_features <= 0:
         raise ValueError("Classifier export bundle must describe at least one feature column.")
     estimator_feature_count = getattr(bundle.estimator, "n_features_in_", None)

@@ -101,13 +101,13 @@ ordered schema and a live matrix with the same width:
 This means that a custom `.obsm` matrix with the same key but a different
 number or order of columns is not compatible.
 
-## `source_kind` Compatibility
+## `source_kind` Contract
 
-`source_kind` is a proposed napari-harpy metadata marker for disambiguating how
-feature metadata should be interpreted. Current Harpy feature-matrix metadata
-written by `hp.tb.add_feature_matrix(...)` does not include this key.
+`source_kind` is a required metadata marker for disambiguating how feature
+metadata should be interpreted. Harpy feature-matrix metadata written by
+`hp.tb.add_feature_matrix(...)` now includes this key.
 
-Suggested source kinds:
+Allowed source kinds:
 
 - `"custom_obsm"`: metadata was registered for an arbitrary existing `.obsm`
   matrix, and should be treated as a feature schema only;
@@ -115,26 +115,9 @@ Suggested source kinds:
   `hp.tb.add_feature_matrix(...)`, and can be treated as a Harpy
   feature-extraction recipe for the recompute path.
 
-For backwards compatibility, napari-harpy should not require `source_kind` on
-existing Harpy-created metadata. Missing `source_kind` should be interpreted as
-legacy Harpy feature metadata when the metadata otherwise follows the
-`hp.tb.add_feature_matrix(...)` shape.
-
-It would be useful for Harpy itself to eventually write
-`source_kind="harpy_add_feature_matrix"` from `hp.tb.add_feature_matrix(...)`.
-That would make future metadata self-describing. However, this is not a blocker
-for custom `.obsm` support:
-
-- the custom registration path can write `source_kind="custom_obsm"`;
-- the headless guard can reject only explicit `"custom_obsm"` metadata;
-- legacy Harpy metadata without `source_kind` can continue through the current
-  recompute path.
-
-Do not patch or post-process Harpy-created metadata in napari-harpy just to add
-`source_kind`. Harpy owns the feature-matrix metadata schema and backed
-persistence for `hp.tb.add_feature_matrix(...)`, so adding
-`source_kind="harpy_add_feature_matrix"` should be an upstream Harpy change if
-we decide to standardize it.
+napari-harpy should be strict: missing, non-string, or unknown `source_kind`
+values are invalid metadata. We do not need a legacy fallback for metadata
+without `source_kind`.
 
 ## Proposed Non-UI Path
 
@@ -216,8 +199,8 @@ The current recompute path inspects `classifier.feature_names` and, for
 intensity-derived Harpy features, requires `classifier.source_channels`.
 For custom `.obsm` metadata, `features` must therefore avoid names that look
 like Harpy feature names, and the recompute path should fail clearly when
-`source_kind == "custom_obsm"`. Missing `source_kind` should not be rejected:
-that is the legacy Harpy metadata case.
+`source_kind == "custom_obsm"`. Missing or unknown `source_kind` is invalid
+feature metadata.
 
 Suggested error:
 
@@ -382,12 +365,12 @@ Tests:
   `source_kind == "custom_obsm"`;
 - written metadata does not invent `source_image`, `source_channels`,
   `source_label`, or `coordinate_system`;
-- existing Harpy-style metadata without `source_kind` is not treated as custom
-  metadata.
+- existing Harpy metadata with `source_kind == "harpy_add_feature_matrix"` is
+  not treated as custom metadata.
 
 ### Slice 2: Metadata State Inspection
 
-Status: specification.
+Status: implemented.
 
 Add a Qt-free helper/model that describes the metadata state for one selected
 table and feature key. This should not mutate the table.
@@ -405,12 +388,12 @@ The helper should also report useful details for UI and error text, such as:
 - live matrix width;
 - live matrix validation error, when the `.obsm` value is present but unusable;
 - number of metadata columns;
+- the validated `source_kind`;
 - whether metadata has `source_kind == "custom_obsm"`.
 
-Do not classify registered metadata as Harpy-style versus legacy Harpy-style.
-That distinction is not needed for the widget flow. Any metadata with usable
-`feature_columns` and a live matrix width that matches those columns should be
-reported as registered/valid, regardless of whether `source_kind` is present.
+Only the allowed source kinds are valid: `"harpy_add_feature_matrix"` and
+`"custom_obsm"`. Missing or unknown `source_kind` values should report
+registered-but-mismatched metadata.
 
 Tests:
 
@@ -418,7 +401,9 @@ Tests:
 - present but non-2D or wrong-row-count matrix reports an invalid-matrix state;
 - matrix without `feature_matrices` metadata reports unregistered;
 - valid custom metadata reports registered/valid;
-- valid metadata without `source_kind` reports registered/valid but not custom;
+- valid Harpy metadata with `source_kind == "harpy_add_feature_matrix"` reports
+  registered/valid but not custom;
+- metadata without `source_kind` reports mismatched metadata;
 - metadata column count mismatch reports a mismatched state.
 
 ### Slice 3: Classifier/Headless Compatibility Errors
@@ -448,8 +433,8 @@ Tests:
 - custom `.obsm` apply is rejected when target metadata matches but the live
   target matrix has a different number of columns, with a message explaining
   that the metadata and live matrix are internally inconsistent;
-- legacy Harpy metadata keeps the current generic behavior unless separately
-  improved.
+- Harpy metadata with `source_kind == "harpy_add_feature_matrix"` keeps the
+  current generic behavior unless separately improved.
 
 ### Slice 4: Headless Recompute Guard
 
@@ -462,8 +447,8 @@ Make the headless API behavior explicit:
   classifier bundles whose source metadata has `source_kind == "custom_obsm"`,
   with a clear message telling users to use `headless.apply_classifier(...)`
   on an existing compatible matrix.
-- Missing `source_kind` should remain compatible with existing Harpy-created
-  classifier bundles.
+- Missing or unknown `source_kind` should be rejected as invalid feature
+  metadata.
 
 Tests:
 
@@ -473,8 +458,8 @@ Tests:
 - the same classifier is rejected by
   `headless.apply_classifier_with_feature_extraction(...)`;
 - no `source_channels` requirement is triggered for custom `.obsm` metadata;
-- legacy Harpy classifier metadata without `source_kind` still follows the
-  existing recompute behavior.
+- Harpy classifier metadata with `source_kind == "harpy_add_feature_matrix"`
+  still follows the existing recompute behavior.
 
 ### Slice 5: Persistence
 
@@ -509,7 +494,9 @@ Tests:
 
 - button/status state is correct for unregistered matrix;
 - button/status state is correct for valid custom metadata;
-- button/status state is correct for valid metadata without `source_kind`;
+- button/status state is correct for valid Harpy metadata with
+  `source_kind == "harpy_add_feature_matrix"`;
+- missing or unknown `source_kind` produces a warning state;
 - mismatched metadata produces a warning state.
 
 ### Slice 7: Register Feature Matrix Button
