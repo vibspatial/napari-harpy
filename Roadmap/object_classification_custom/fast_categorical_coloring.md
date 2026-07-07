@@ -177,6 +177,30 @@ The helper should:
 Layer assignment belongs to the calling code in later slices. Slice 1 should be
 pure construction: input RGBA mapping in, napari `DirectLabelColormap` out.
 
+The intended implementation shape is:
+
+```python
+small = {
+    None: color_dict[None],
+    0: color_dict[0],
+}
+
+cmap = DirectLabelColormap(
+    color_dict=small,
+    background_value=0,
+)
+
+object.__setattr__(cmap, "color_dict", color_dict)
+cmap._clear_cache()
+
+return cmap
+```
+
+The important distinction from the current slow path is that the large
+`color_dict` is not passed to `DirectLabelColormap(...)`. The constructor only
+sees the tiny default/background mapping, while the already-normalized full
+mapping is installed afterwards.
+
 Tests should verify:
 
 - `map(...)` matches normal `DirectLabelColormap(...)` for representative label
