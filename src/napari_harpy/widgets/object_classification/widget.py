@@ -86,6 +86,7 @@ from napari_harpy.widgets.shared_styles import (
 from napari_harpy.widgets.shared_styles import (
     PRIMARY_BUTTON_STYLESHEET,
     SECONDARY_BUTTON_STYLESHEET,
+    SMALL_ACTION_BUTTON_STYLESHEET,
     WARNING_BUTTON_STYLESHEET,
     WIDGET_BORDER_COLOR,
     WIDGET_PANEL_COLOR,
@@ -315,8 +316,7 @@ class ObjectClassificationWidget(QWidget):
         self.register_feature_matrix_button.setObjectName("register_feature_matrix_button")
         self.register_feature_matrix_button.setEnabled(False)
         self.register_feature_matrix_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.register_feature_matrix_button.setMinimumHeight(28)
-        self.register_feature_matrix_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
+        self.register_feature_matrix_button.setStyleSheet(SMALL_ACTION_BUTTON_STYLESHEET)
         self.feature_matrix_registration_row = QWidget()
         self.feature_matrix_registration_row.setObjectName("feature_matrix_registration_row")
         feature_matrix_registration_layout = QHBoxLayout(self.feature_matrix_registration_row)
