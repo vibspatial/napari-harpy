@@ -278,22 +278,29 @@ Acceptance criteria:
 ### Slice 3: Use Helper In Object-Classification Labels Styling
 
 Update `src/napari_harpy/widgets/object_classification/viewer_styling.py` for
-class-like label coloring paths:
+all direct labels coloring paths:
 
 - `user_class`
 - `pred_class`
+- `pred_confidence`
 
-These are categorical class states and also construct `DirectLabelColormap`
-objects. They should use the same helper once their color dictionaries follow
-the trusted Harpy-generated RGBA contract.
+These paths share the same final `DirectLabelColormap(...)` assignment, so they
+should share the same fast helper once their color dictionaries follow the
+trusted Harpy-generated RGBA contract.
 
 Implementation details:
 
 - import `direct_label_colormap_from_rgba(...)`;
 - replace direct `DirectLabelColormap(color_dict=..., background_value=0)`
-  construction at the `user_class` and `pred_class` assignment points;
+  construction at the shared object-classification labels assignment point;
 - ensure default/background entries use numeric transparent RGBA arrays instead
   of string colors;
+- ensure all assigned colors are numeric RGBA arrays before they reach
+  `direct_label_colormap_from_rgba(...)`. This includes:
+  - class colors from `user_class` and `pred_class`;
+  - missing prediction-confidence color, currently represented as
+    `MISSING_CONTINUOUS_COLOR`;
+  - matplotlib `pred_confidence` colormap outputs;
 - keep sparse `user_class` behavior unchanged: unlabeled/default rows should
   still be represented by the default/background colors, and only nonzero
   class labels should need explicit per-label entries;
@@ -312,8 +319,11 @@ Acceptance criteria:
 
 - `user_class` and `pred_class` color dictionaries use numeric transparent RGBA
   defaults for `None` and `0`;
+- `pred_confidence` color dictionaries use numeric RGBA arrays for missing and
+  non-missing confidence colors;
 - existing sparse `user_class` behavior remains intact;
 - `pred_class` coloring remains visually equivalent;
+- `pred_confidence` coloring remains visually equivalent;
 - row-scoped user-class annotation refresh still works;
 - fallback full refresh behavior remains available.
 - full color refresh and row-scoped user-class color refresh do not call a
