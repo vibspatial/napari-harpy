@@ -1053,6 +1053,8 @@ class ObjectClassificationWidget(QWidget):
         self._update_selection_status()
 
     def _update_selection_status(self) -> None:
+        # The widget inspects feature metadata only to drive registration UI
+        # state. Classifier training eligibility is owned by the controller.
         feature_matrix_metadata_state = self._selected_feature_matrix_metadata_state()
         self._update_validation_status(feature_matrix_metadata_state)
         self._update_selection_status_card()

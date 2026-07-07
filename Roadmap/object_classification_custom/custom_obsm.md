@@ -1,6 +1,6 @@
 # Object Classification on Custom `.obsm` Feature Matrices
 
-Status: investigation
+Status: implemented
 
 ## Goal
 
@@ -60,6 +60,7 @@ table.uns["feature_matrices"][feature_key] = {
     "source_channels": ...,
     "coordinate_system": [...],
     "features": list(requested_features),
+    "source_kind": "harpy_add_feature_matrix",
 }
 ```
 
@@ -735,7 +736,7 @@ Tests:
 
 ### Slice 8: Move Training Metadata Gate Into Classifier Controller
 
-Status: specified.
+Status: implemented.
 
 The current widget blocks `Train Classifier` when the selected feature matrix
 metadata is not `registered_valid`. That works, but it makes classifier
@@ -867,24 +868,27 @@ Tests:
   Classifier` button alone does not reset stale predictions;
 - widget `Train Classifier` state still recovers after Slice 7 registration,
   now through controller eligibility rather than a widget-side metadata gate;
-- auto-train does not schedule when the controller reports metadata as
-  non-trainable.
+- auto-train can call `schedule_retrain(...)`, but the controller returns `False`
+  for metadata blockers without debounce, worker launch, prediction clearing, or
+  ineligible classifier-config writes.
 
-### Slice 9: Optional Explicit Column-Name UI
+Verification:
 
-Only if needed later, add a small advanced dialog for editing feature column
-names before registration. The first implementation can use deterministic names
-without a dialog, because this keeps the feature small and testable.
+- `.venv/bin/pytest tests/test_classifier.py`
+- `.venv/bin/pytest tests/test_widget.py`
+- `.venv/bin/ruff check src/napari_harpy/widgets/object_classification tests/test_classifier.py tests/test_widget.py`
 
-### Future Harpy Metadata Schema Cleanup
+### Harpy Metadata Schema Cleanup
 
-If we want every feature matrix to carry an explicit source kind, adapt
-`hp.tb.add_feature_matrix(...)` upstream in Harpy to write:
+Status: implemented upstream.
+
+`hp.tb.add_feature_matrix(...)` now writes:
 
 ```python
 "source_kind": "harpy_add_feature_matrix"
 ```
 
-This should be a separate Harpy metadata-schema change, not a napari-harpy
-post-processing step. napari-harpy should remain compatible with both new
-Harpy metadata that includes this key and older metadata that does not.
+napari-harpy treats `source_kind` as part of the required feature-matrix metadata
+contract. The optional explicit column-name UI is not planned; custom matrices use
+deterministic default column names unless callers provide explicit names through
+the non-UI registration API.
