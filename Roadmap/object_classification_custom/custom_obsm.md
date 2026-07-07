@@ -538,28 +538,77 @@ Tests:
 Add the widget state, status text, and tooltips needed to expose custom metadata
 registration without yet wiring the button action.
 
+This slice is UI state only. It should add the visible registration affordance
+and all state/tooltip/warning behavior, but the button must not register
+metadata yet. Actual registration, dirty marking, classifier stale marking, and
+success feedback belong to Slice 7.
+
+Implementation notes:
+
+- add a `Register Feature Matrix` button near the feature matrix selector;
+- give the button a stable object name such as
+  `register_feature_matrix_button`;
+- do not connect the button to a click action yet;
+- use `inspect_feature_matrix_metadata(...)` to derive the selected feature
+  matrix metadata state;
+- add a focused widget helper such as
+  `_update_feature_matrix_metadata_controls()`;
+- call that helper from the central `_update_selection_status()` refresh path
+  so table, feature-key, reload, and shared feature-matrix events all refresh
+  the button consistently;
+- reuse the existing validation/status area for invalid or mismatched metadata
+  warnings rather than introducing a second warning card in this slice.
+
 The widget should use the metadata-state helper to drive:
 
 - whether the selected matrix is already registered;
 - whether registration is available;
 - whether existing metadata is mismatched.
 
+State flow:
+
+1. The user selects a feature matrix.
+2. The widget calls `inspect_feature_matrix_metadata(table, feature_key)`.
+3. If the state is `unregistered`, enable `Register Feature Matrix`.
+4. If the state is `registered_valid`, disable the button because no
+   registration action is needed.
+5. If the state is `registered_mismatched`, disable the button and show a
+   warning. Do not offer a UI repair/overwrite path.
+6. If the state is `invalid_matrix` or `missing_matrix`, disable the button and
+   show/tooltip the problem. Do not offer a UI repair path.
+
+The widget should not treat `registered_mismatched` as "safe to register."
+That state means metadata already exists but does not match the live matrix or
+does not satisfy the current metadata contract. Silently overwriting it could
+discard meaningful schema information, so the UI should only report the problem.
+Fixing mismatched metadata remains a non-UI/manual responsibility for now.
+
 Suggested UI behavior:
 
-- valid registered metadata: button disabled, tooltip says it is already
-  registered;
-- missing metadata: button enabled;
-- mismatched metadata: warning status and no silent overwrite;
-- no selected table/key: button disabled with normal selection tooltip.
+- no selected table/key: button disabled with normal selection tooltip;
+- missing `.obsm` key or invalid matrix: button disabled and warning status;
+- unregistered valid matrix: button enabled, tooltip explains that registering
+  records feature-column metadata for export/reuse;
+- valid custom metadata: button disabled, tooltip says it is already registered
+  as a custom `.obsm` feature matrix;
+- valid Harpy metadata with `source_kind == "harpy_add_feature_matrix"`:
+  button disabled, tooltip says it is already registered from Harpy feature
+  extraction;
+- mismatched metadata: button disabled, warning status, and no silent overwrite.
 
 Tests:
 
+- button exists with object name `register_feature_matrix_button`;
+- no selected table/key disables the button with a selection tooltip;
 - button/status state is correct for unregistered matrix;
 - button/status state is correct for valid custom metadata;
 - button/status state is correct for valid Harpy metadata with
   `source_kind == "harpy_add_feature_matrix"`;
-- missing or unknown `source_kind` produces a warning state;
-- mismatched metadata produces a warning state.
+- invalid live `.obsm` matrix disables the button and produces a warning
+  state;
+- missing or unknown `source_kind` disables the button and produces a warning
+  state;
+- mismatched metadata disables the button and produces a warning state.
 
 ### Slice 7: Register Feature Matrix Button
 
