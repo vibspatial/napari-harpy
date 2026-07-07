@@ -535,6 +535,8 @@ Tests:
 
 ### Slice 6: Widget UI State
 
+Status: implemented.
+
 Add the widget state, status text, and tooltips needed to expose custom metadata
 registration without yet wiring the button action.
 
@@ -553,7 +555,7 @@ Implementation notes:
   matrix metadata state;
 - do not introduce a mutable state-machine/controller class. The UI state is
   purely derived from the current selection and metadata inspection result;
-- add a small private immutable UI spec, for example:
+- add a small private immutable button-state object, for example:
 
   ```python
   @dataclass(frozen=True)

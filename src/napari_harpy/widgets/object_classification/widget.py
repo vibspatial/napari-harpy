@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -33,12 +34,19 @@ from napari_harpy._persistence import PersistenceController
 from napari_harpy._resources import get_logo_path
 from napari_harpy.core.annotation import UNLABELED_CLASS, USER_CLASS_COLUMN
 from napari_harpy.core.classifier_export import DEFAULT_CLASSIFIER_EXPORT_SUFFIX
+from napari_harpy.core.feature_matrix_metadata import (
+    CUSTOM_OBSM_SOURCE_KIND,
+    HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND,
+    FeatureMatrixMetadataState,
+    inspect_feature_matrix_metadata,
+)
 from napari_harpy.core.spatialdata import (
     SpatialDataLabelsOption,
     SpatialDataTableMetadata,
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
     get_spatialdata_labels_options_for_coordinate_system_from_sdata,
+    get_table,
     get_table_metadata,
     get_table_obsm_keys,
     validate_table_binding,
@@ -81,7 +89,6 @@ from napari_harpy.widgets.shared_styles import (
     WARNING_BUTTON_STYLESHEET,
     WIDGET_BORDER_COLOR,
     WIDGET_PANEL_COLOR,
-    WIDGET_WARNING_TEXT_COLOR,
     CompactComboBox,
     StatusCardKind,
     apply_scroll_content_surface,
@@ -106,6 +113,13 @@ class _DirtyReloadDecision(Enum):
     CANCEL = "cancel"
 
 
+@dataclass(frozen=True)
+class _FeatureMatrixRegistrationButtonState:
+    enabled: bool
+    tooltip: str
+    warning_message: str | None = None
+
+
 _APPLY_CLASS_SHORTCUT = "A"
 _REMOVE_CLASS_SHORTCUT = "R"
 _INPUT_CONTROL_STYLESHEET = build_input_control_stylesheet("QComboBox, QSpinBox")
@@ -118,6 +132,66 @@ _CLASS_EDITOR_STYLESHEET = (
     f"QWidget#class_editor {{background-color: {WIDGET_PANEL_COLOR}; "
     f"border: 1px solid {WIDGET_BORDER_COLOR}; border-radius: 10px;}}"
 )
+
+
+def _build_feature_matrix_registration_button_state(
+    metadata_state: FeatureMatrixMetadataState | None,
+) -> _FeatureMatrixRegistrationButtonState:
+    if metadata_state is None:
+        return _FeatureMatrixRegistrationButtonState(
+            enabled=False,
+            tooltip="Choose an annotation table and feature matrix before registering feature metadata.",
+        )
+
+    feature_key = metadata_state.feature_key
+    if metadata_state.status == "unregistered":
+        return _FeatureMatrixRegistrationButtonState(
+            enabled=True,
+            tooltip=(
+                f'Register feature-column metadata for "{feature_key}" so classifiers trained on this matrix '
+                "can be exported and reused."
+            ),
+        )
+
+    if metadata_state.status == "registered_valid":
+        if metadata_state.source_kind == CUSTOM_OBSM_SOURCE_KIND:
+            tooltip = f'Feature matrix "{feature_key}" is already registered as a custom `.obsm` feature matrix.'
+        elif metadata_state.source_kind == HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND:
+            tooltip = f'Feature matrix "{feature_key}" is already registered from Harpy feature extraction.'
+        else:
+            tooltip = f'Feature matrix "{feature_key}" is already registered.'
+        return _FeatureMatrixRegistrationButtonState(enabled=False, tooltip=tooltip)
+
+    if metadata_state.status == "registered_mismatched":
+        detail = metadata_state.error or "Existing feature metadata does not match the live matrix."
+        warning_message = (
+            f'Feature matrix "{feature_key}" has mismatched metadata. {detail} '
+            "Registration from the widget is disabled to avoid overwriting existing metadata."
+        )
+        return _FeatureMatrixRegistrationButtonState(
+            enabled=False,
+            tooltip=warning_message,
+            warning_message=warning_message,
+        )
+
+    if metadata_state.status == "invalid_matrix":
+        detail = metadata_state.error or "The selected matrix is not a valid feature matrix."
+        warning_message = f'Feature matrix "{feature_key}" cannot be registered. {detail}'
+        return _FeatureMatrixRegistrationButtonState(
+            enabled=False,
+            tooltip=warning_message,
+            warning_message=warning_message,
+        )
+
+    if metadata_state.status == "missing_matrix":
+        warning_message = metadata_state.error or f'Feature matrix "{feature_key}" is not available in `.obsm`.'
+        return _FeatureMatrixRegistrationButtonState(
+            enabled=False,
+            tooltip=warning_message,
+            warning_message=warning_message,
+        )
+
+    raise ValueError(f"Unsupported feature matrix metadata status: {metadata_state.status!r}.")
 
 
 class ObjectClassificationWidget(QWidget):
@@ -237,6 +311,19 @@ class ObjectClassificationWidget(QWidget):
         self.feature_matrix_combo.currentIndexChanged.connect(self._on_feature_matrix_changed)
         self.feature_matrix_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
 
+        self.register_feature_matrix_button = QPushButton("Register Feature Matrix")
+        self.register_feature_matrix_button.setObjectName("register_feature_matrix_button")
+        self.register_feature_matrix_button.setEnabled(False)
+        self.register_feature_matrix_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.register_feature_matrix_button.setMinimumHeight(28)
+        self.register_feature_matrix_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
+        self.feature_matrix_registration_row = QWidget()
+        self.feature_matrix_registration_row.setObjectName("feature_matrix_registration_row")
+        feature_matrix_registration_layout = QHBoxLayout(self.feature_matrix_registration_row)
+        feature_matrix_registration_layout.setContentsMargins(0, 0, 0, 0)
+        feature_matrix_registration_layout.setSpacing(0)
+        feature_matrix_registration_layout.addWidget(self.register_feature_matrix_button, 1)
+
         self.training_scope_combo = CompactComboBox()
         self.training_scope_combo.setObjectName("training_scope_combo")
         self.training_scope_combo.addItem(_TABLE_WIDE_TRAINING_SCOPE_LABEL, "all")
@@ -336,7 +423,6 @@ class ObjectClassificationWidget(QWidget):
         self.validation_status = QLabel()
         self.validation_status.setObjectName("validation_status")
         self.validation_status.setWordWrap(True)
-        self.validation_status.setStyleSheet(f"color: {WIDGET_WARNING_TEXT_COLOR}; font-weight: 600;")
         self.validation_status.hide()
 
         self.selection_status = QLabel()
@@ -394,6 +480,7 @@ class ObjectClassificationWidget(QWidget):
         selector_layout.addRow(self._create_form_label("Labels element"), self.segmentation_combo)
         selector_layout.addRow(self._create_form_label("Table"), self.table_combo)
         selector_layout.addRow(self._create_form_label("Feature matrix"), self.feature_matrix_combo)
+        selector_layout.addRow(self._create_form_label("Feature metadata"), self.feature_matrix_registration_row)
         selector_layout.addRow(self._create_form_label("Training scope"), self.training_scope_combo)
         selector_layout.addRow(self._create_form_label("Prediction scope"), self.prediction_scope_combo)
         selector_layout.addRow(self._create_form_label("Color by"), self.color_by_combo)
@@ -1032,14 +1119,28 @@ class ObjectClassificationWidget(QWidget):
         self._update_selection_status()
 
     def _update_selection_status(self) -> None:
-        self._update_validation_status()
+        feature_matrix_metadata_state = self._selected_feature_matrix_metadata_state()
+        self._update_validation_status(feature_matrix_metadata_state)
         self._update_selection_status_card()
+        self._update_feature_matrix_metadata_controls(feature_matrix_metadata_state)
         self._update_annotation_controls()
         self._update_color_by_controls()
         self._update_classifier_controls()
         self._update_persistence_controls()
 
-    def _update_validation_status(self) -> None:
+    def _selected_feature_matrix_metadata_state(self) -> FeatureMatrixMetadataState | None:
+        if (
+            self.selected_spatialdata is None
+            or self.selected_table_name is None
+            or self.selected_feature_key is None
+            or self._table_binding_error is not None
+        ):
+            return None
+
+        table = get_table(self.selected_spatialdata, self.selected_table_name)
+        return inspect_feature_matrix_metadata(table, self.selected_feature_key)
+
+    def _update_validation_status(self, feature_matrix_metadata_state: FeatureMatrixMetadataState | None) -> None:
         message = None
 
         if self.selected_table_name is not None and self.feature_matrix_combo.count() == 0:
@@ -1047,9 +1148,34 @@ class ObjectClassificationWidget(QWidget):
                 'Warning: the selected table does not contain any feature matrices in ".obsm". '
                 "Add one before continuing."
             )
+        else:
+            message = _build_feature_matrix_registration_button_state(feature_matrix_metadata_state).warning_message
 
-        self.validation_status.setText("" if message is None else message)
-        self.validation_status.setVisible(message is not None)
+        if message is None:
+            self.validation_status.setText("")
+            self.validation_status.setToolTip("")
+            self.validation_status.setVisible(False)
+            return
+
+        set_status_card(
+            self.validation_status,
+            title="Feature Metadata Warning",
+            lines=[message],
+            kind="warning",
+        )
+
+    def _update_feature_matrix_metadata_controls(
+        self,
+        feature_matrix_metadata_state: FeatureMatrixMetadataState | None,
+    ) -> None:
+        if self._table_binding_error is not None:
+            self.register_feature_matrix_button.setEnabled(False)
+            self._set_tooltip(self.register_feature_matrix_button, self._table_binding_error)
+            return
+
+        state = _build_feature_matrix_registration_button_state(feature_matrix_metadata_state)
+        self.register_feature_matrix_button.setEnabled(state.enabled)
+        self._set_tooltip(self.register_feature_matrix_button, state.tooltip)
 
     def _update_selection_status_card(self) -> None:
         spec = build_object_classification_selection_status_card_spec(

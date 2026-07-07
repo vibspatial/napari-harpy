@@ -9,6 +9,7 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 import zarr
+from harpy.utils._keys import _FEATURE_MATRICES_KEY
 from matplotlib.colors import to_rgba
 from napari.layers import Image, Labels
 from napari.utils.colormaps import DirectLabelColormap
@@ -28,7 +29,11 @@ from napari_harpy._app_state import ClassificationTableWrittenEvent, FeatureMatr
 from napari_harpy.core.annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
 from napari_harpy.core.class_palette import default_class_colors
 from napari_harpy.core.classifier_export import DEFAULT_CLASSIFIER_EXPORT_SUFFIX, read_classifier_export_bundle
-from napari_harpy.core.feature_matrix_metadata import HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND
+from napari_harpy.core.feature_matrix_metadata import (
+    CUSTOM_OBSM_SOURCE_KIND,
+    HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND,
+    register_feature_matrix_metadata,
+)
 from napari_harpy.core.spatialdata import SpatialDataLabelsOption
 from napari_harpy.widgets.object_classification.controller import (
     CLASSIFIER_CONFIG_KEY,
@@ -131,6 +136,10 @@ def _combo_texts(combo: QComboBox) -> list[str]:
     return [combo.itemText(index) for index in range(combo.count())]
 
 
+def _tooltip_text(widget: object) -> str:
+    return unescape(widget.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+
+
 def _add_feature_table_for_labels(
     sdata: SpatialData,
     *,
@@ -164,6 +173,16 @@ def _assert_persistence_success_feedback(widget: HarpyWidget, expected_message: 
     assert f"color: {_SUCCESS_FEEDBACK_STYLE['text']}" in stylesheet
     assert f"background-color: {_SUCCESS_FEEDBACK_STYLE['background']}" in stylesheet
     assert f"border: 1px solid {_SUCCESS_FEEDBACK_STYLE['border']}" in stylesheet
+
+
+def _assert_feature_metadata_warning_card(widget: HarpyWidget) -> None:
+    assert "Feature Metadata Warning" in widget.validation_status.text()
+
+    stylesheet = widget.validation_status.styleSheet()
+    warning_style = STATUS_CARD_PALETTE["warning"]
+    assert f"color: {warning_style['text']}" in stylesheet
+    assert f"background-color: {warning_style['background']}" in stylesheet
+    assert f"border: 1px solid {warning_style['border']}" in stylesheet
 
 
 def _set_feature_metadata(
@@ -289,6 +308,9 @@ def test_widget_can_be_instantiated(qtbot) -> None:
     assert widget.findChild(QCheckBox, "auto_train_checkbox") is widget.auto_train_checkbox
     assert widget.auto_train_checkbox.text() == "Auto-train classifier"
     assert widget.auto_train_checkbox.isChecked() is False
+    assert widget.register_feature_matrix_button.objectName() == "register_feature_matrix_button"
+    assert not widget.register_feature_matrix_button.isEnabled()
+    assert "Choose an annotation table and feature matrix" in _tooltip_text(widget.register_feature_matrix_button)
     assert "QCheckBox" in widget.auto_train_checkbox.styleSheet()
     assert widget._auto_train_enabled is False
     assert all(button.text() != "Rescan Viewer" for button in widget.findChildren(type(widget.retrain_button)))
@@ -862,6 +884,136 @@ def test_widget_updates_selected_feature_key_when_feature_matrix_changes(qtbot, 
     assert widget.selected_feature_key == "features_2"
     assert bind_calls == [("selected_segmentation_only", classifier_module.DEFAULT_PREDICTION_SCOPE)]
     assert "feature matrix changed" in widget.classifier_feedback.text()
+
+
+def test_widget_feature_matrix_registration_button_enables_for_unregistered_matrix(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs["table"]
+    table.uns.pop(_FEATURE_MATRICES_KEY, None)
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    assert widget.register_feature_matrix_button.objectName() == "register_feature_matrix_button"
+    assert widget.register_feature_matrix_button.isEnabled()
+    assert "Register feature-column metadata" in _tooltip_text(widget.register_feature_matrix_button)
+    assert widget.validation_status.isHidden()
+
+
+def test_widget_feature_matrix_registration_button_disables_for_valid_custom_metadata(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs["table"]
+    register_feature_matrix_metadata(table, "features_1", overwrite=True)
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    assert widget.register_feature_matrix_button.isEnabled() is False
+    assert 'already registered as a custom ".obsm" feature matrix' in _tooltip_text(
+        widget.register_feature_matrix_button
+    )
+    assert table.uns[_FEATURE_MATRICES_KEY]["features_1"]["source_kind"] == CUSTOM_OBSM_SOURCE_KIND
+    assert widget.validation_status.isHidden()
+
+
+def test_widget_feature_matrix_registration_button_disables_for_valid_harpy_metadata(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_feature_metadata(sdata_blobs)
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    assert widget.register_feature_matrix_button.isEnabled() is False
+    assert "already registered from Harpy feature extraction" in _tooltip_text(widget.register_feature_matrix_button)
+    assert widget.validation_status.isHidden()
+
+
+def test_widget_feature_matrix_registration_button_warns_for_invalid_matrix(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs["table"]
+    table.obsm["bad_features"] = np.ones((table.n_obs, 2, 2), dtype=np.float64)
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+    widget.feature_matrix_combo.setCurrentIndex(widget.feature_matrix_combo.findData("bad_features"))
+
+    assert widget.selected_feature_key == "bad_features"
+    assert widget.register_feature_matrix_button.isEnabled() is False
+    _assert_feature_metadata_warning_card(widget)
+    assert "cannot be registered" in widget.validation_status.text()
+    assert "2-dimensional" in widget.validation_status.text()
+    assert "cannot be registered" in _tooltip_text(widget.register_feature_matrix_button)
+
+
+def test_widget_feature_matrix_registration_button_warns_for_missing_source_kind(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs["table"]
+    table.uns[_FEATURE_MATRICES_KEY] = {
+        "features_1": {
+            "feature_columns": [f"feature_{index}" for index in range(table.obsm["features_1"].shape[1])],
+            "features": ["custom"],
+        },
+    }
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    assert widget.register_feature_matrix_button.isEnabled() is False
+    _assert_feature_metadata_warning_card(widget)
+    assert "mismatched metadata" in widget.validation_status.text()
+    assert "source_kind" in widget.validation_status.text()
+    assert "avoid overwriting existing metadata" in _tooltip_text(widget.register_feature_matrix_button)
+
+
+def test_widget_feature_matrix_registration_button_warns_for_mismatched_metadata(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs["table"]
+    table.uns[_FEATURE_MATRICES_KEY] = {
+        "features_1": {
+            "feature_columns": ["feature_0"],
+            "features": ["feature_0"],
+            "source_kind": HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND,
+        },
+    }
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    assert widget.register_feature_matrix_button.isEnabled() is False
+    _assert_feature_metadata_warning_card(widget)
+    assert "mismatched metadata" in widget.validation_status.text()
+    assert "metadata describes 1 feature column" in widget.validation_status.text()
+    assert "avoid overwriting existing metadata" in _tooltip_text(widget.register_feature_matrix_button)
 
 
 def test_widget_marks_classifier_dirty_when_training_scope_changes(
