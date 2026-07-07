@@ -170,7 +170,12 @@ The helper should:
 - construct a tiny normal `DirectLabelColormap`;
 - install the full normalized mapping without re-transforming every color;
 - clear napari colormap caches;
-- return a normal `DirectLabelColormap` with working events.
+- return a normal `DirectLabelColormap` with working events;
+- not assign the colormap to any layer;
+- not call `layer.refresh()` or otherwise trigger viewer refresh work.
+
+Layer assignment belongs to the calling code in later slices. Slice 1 should be
+pure construction: input RGBA mapping in, napari `DirectLabelColormap` out.
 
 Tests should verify:
 
