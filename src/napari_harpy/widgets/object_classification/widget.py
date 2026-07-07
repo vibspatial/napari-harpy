@@ -1320,8 +1320,9 @@ class ObjectClassificationWidget(QWidget):
 
     def _update_persistence_controls(self) -> None:
         can_sync = self._persistence_controller.can_sync
+        can_write = self._persistence_controller.can_write_table_state
         can_reload = self._persistence_controller.can_reload
-        self.sync_button.setEnabled(can_sync)
+        self.sync_button.setEnabled(can_write)
         self.reload_button.setEnabled(can_reload)
 
         if self.selected_spatialdata is None or self.selected_table_name is None:
@@ -1342,15 +1343,21 @@ class ObjectClassificationWidget(QWidget):
         else:
             table_store_path = self._persistence_controller.selected_table_store_path
             destination = self.selected_spatialdata.path if table_store_path is None else table_store_path
-            sync_tooltip = (
-                f'Write annotations, predictions, and classifier metadata for "{self.selected_table_name}" '
-                f'to "{destination}".'
-            )
+            is_dirty = self._persistence_controller.is_dirty
+            if is_dirty:
+                sync_tooltip = (
+                    f'Write annotations, predictions, and classifier metadata for "{self.selected_table_name}" '
+                    f'to "{destination}".'
+                )
+            else:
+                sync_tooltip = (
+                    f'The selected "{self.selected_table_name}" table has no unsynced local in-memory changes to write.'
+                )
             reload_tooltip = (
                 f'Discard the current in-memory "{self.selected_table_name}" table state and reload the table from '
                 f'"{destination}".'
             )
-            if self._persistence_controller.is_dirty:
+            if is_dirty:
                 sync_tooltip += " Unsynced local in-memory table changes are present."
                 reload_tooltip += " Unsynced local in-memory table changes would be discarded."
 

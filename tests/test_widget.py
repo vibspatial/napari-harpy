@@ -941,16 +941,16 @@ def test_widget_disables_retrain_button_for_unregistered_feature_matrix_metadata
 def test_widget_register_feature_matrix_button_registers_metadata_and_recovers_training(
     qtbot,
     monkeypatch,
-    sdata_blobs: SpatialData,
+    backed_sdata_blobs: SpatialData,
 ) -> None:
-    table = sdata_blobs["table"]
+    table = backed_sdata_blobs["table"]
     instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
         [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
         categories=[0, 1, 2],
     )
     table.uns.pop(_FEATURE_MATRICES_KEY, None)
-    layer = make_blobs_labels_layer(sdata_blobs)
+    layer = make_blobs_labels_layer(backed_sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
     widget = HarpyWidget(viewer)
@@ -966,6 +966,7 @@ def test_widget_register_feature_matrix_button_registers_metadata_and_recovers_t
     assert widget.register_feature_matrix_button.isEnabled()
     assert widget.retrain_button.isEnabled() is False
     assert widget._persistence_controller.is_dirty is False
+    assert not widget.sync_button.isEnabled()
 
     widget.register_feature_matrix_button.click()
 
@@ -975,6 +976,7 @@ def test_widget_register_feature_matrix_button_registers_metadata_and_recovers_t
     assert widget.retrain_button.isEnabled()
     assert widget.validation_status.isHidden()
     assert widget._persistence_controller.is_dirty is True
+    assert widget.sync_button.isEnabled()
     assert mark_dirty_reasons == ["feature matrix metadata registered"]
 
 
@@ -2263,7 +2265,7 @@ def test_widget_does_not_log_warning_when_existing_user_class_colors_are_overwri
     assert warnings == []
 
 
-def test_widget_enables_sync_for_backed_spatialdata(qtbot, backed_sdata_blobs: SpatialData) -> None:
+def test_widget_disables_sync_for_clean_backed_spatialdata(qtbot, backed_sdata_blobs: SpatialData) -> None:
     layer = make_blobs_labels_layer(backed_sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
@@ -2274,11 +2276,9 @@ def test_widget_enables_sync_for_backed_spatialdata(qtbot, backed_sdata_blobs: S
     sync_tooltip = unescape(widget.sync_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
     reload_tooltip = unescape(widget.reload_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
 
-    assert widget.sync_button.isEnabled()
+    assert not widget.sync_button.isEnabled()
     assert widget.reload_button.isEnabled()
-    assert f'Write annotations, predictions, and classifier metadata for "table" to "{expected_table_path}".' in (
-        sync_tooltip
-    )
+    assert 'The selected "table" table has no unsynced local in-memory changes to write.' in sync_tooltip
     assert f'Discard the current in-memory "table" table state and reload the table from "{expected_table_path}".' in (
         reload_tooltip
     )
@@ -2302,6 +2302,7 @@ def test_widget_marks_persistence_dirty_on_annotation_change_and_clears_it_on_sy
     reload_tooltip = unescape(widget.reload_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
 
     assert widget._persistence_controller.is_dirty is True
+    assert widget.sync_button.isEnabled()
     assert "Unsynced local in-memory table changes are present." in sync_tooltip
     assert "Unsynced local in-memory table changes would be discarded." in reload_tooltip
 
@@ -2310,6 +2311,7 @@ def test_widget_marks_persistence_dirty_on_annotation_change_and_clears_it_on_sy
     reload_tooltip = unescape(widget.reload_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
 
     assert widget._persistence_controller.is_dirty is False
+    assert not widget.sync_button.isEnabled()
     assert "Unsynced local in-memory table changes are present." not in sync_tooltip
     assert "Unsynced local in-memory table changes would be discarded." not in reload_tooltip
 
@@ -2326,12 +2328,13 @@ def test_widget_syncs_user_class_to_backed_zarr(qtbot, backed_sdata_blobs: Spati
     layer.selected_label = 5
     widget.class_spinbox.setValue(3)
     widget.apply_class_button.click()
+    assert widget.sync_button.isEnabled()
     widget.sync_button.click()
 
     reread = read_zarr(backed_sdata_blobs.path)
     mask = (reread["table"].obs["region"] == "blobs_labels") & (reread["table"].obs["instance_id"] == 5)
 
-    assert widget.sync_button.isEnabled()
+    assert not widget.sync_button.isEnabled()
     assert widget.reload_button.isEnabled()
     _assert_persistence_success_feedback(
         widget,
@@ -2375,6 +2378,7 @@ def test_widget_marks_persistence_dirty_after_classifier_writes_results(qtbot, b
     reload_tooltip = unescape(widget.reload_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
 
     assert widget._persistence_controller.is_dirty is True
+    assert widget.sync_button.isEnabled()
     assert "Unsynced local in-memory table changes are present." in sync_tooltip
     assert "Unsynced local in-memory table changes would be discarded." in reload_tooltip
 
