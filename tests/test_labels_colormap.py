@@ -60,14 +60,14 @@ def test_direct_label_colormap_from_rgba_keeps_event_emitters_and_clear_cache() 
     assert "_label_mapping_and_color_dict" not in colormap.__dict__
 
 
-def test_direct_label_colormap_from_rgba_rejects_string_colors() -> None:
+def test_direct_label_colormap_from_rgba_rejects_string_default_colors() -> None:
     color_dict = {
         None: _rgba(0.0, 0.0, 0.0, 0.0),
         0: "transparent",
         1: _rgba(1.0, 0.0, 0.0, 1.0),
     }
 
-    with pytest.raises(ValueError, match="pre-normalized numpy array"):
+    with pytest.raises(ValueError, match="default/background color"):
         direct_label_colormap_from_rgba(color_dict)  # type: ignore[arg-type]
 
 
@@ -83,24 +83,12 @@ def test_direct_label_colormap_from_rgba_rejects_string_colors() -> None:
             "background label",
         ),
         (
-            {None: _rgba(0.0, 0.0, 0.0, 0.0), 0: _rgba(0.0, 0.0, 0.0, 0.0), 1.5: _rgba(1.0, 0.0, 0.0, 1.0)},
-            "integer label ids",
-        ),
-        (
-            {None: _rgba(0.0, 0.0, 0.0, 0.0), 0: _rgba(0.0, 0.0, 0.0, 0.0), 1: np.asarray([1.0, 0.0, 0.0])},
+            {None: _rgba(0.0, 0.0, 0.0, 0.0), 0: np.asarray([0.0, 0.0, 0.0]), 1: _rgba(1.0, 0.0, 0.0, 1.0)},
             "shape",
-        ),
-        (
-            {None: _rgba(0.0, 0.0, 0.0, 0.0), 0: _rgba(0.0, 0.0, 0.0, 0.0), 1: np.asarray([1.0, 0.0, 0.0, np.nan])},
-            "finite",
-        ),
-        (
-            {None: _rgba(0.0, 0.0, 0.0, 0.0), 0: _rgba(0.0, 0.0, 0.0, 0.0), 1: np.asarray([1.5, 0.0, 0.0, 1.0])},
-            "between 0 and 1",
         ),
     ],
 )
-def test_direct_label_colormap_from_rgba_rejects_invalid_input(
+def test_direct_label_colormap_from_rgba_rejects_invalid_default_input(
     color_dict: dict[object, object],
     match: str,
 ) -> None:
@@ -108,7 +96,21 @@ def test_direct_label_colormap_from_rgba_rejects_invalid_input(
         direct_label_colormap_from_rgba(color_dict)  # type: ignore[arg-type]
 
 
-def test_direct_label_colormap_from_rgba_copies_mapping_container() -> None:
+def test_direct_label_colormap_from_rgba_trusts_per_label_values() -> None:
+    color_dict = {
+        None: _rgba(0.0, 0.0, 0.0, 0.0),
+        0: _rgba(0.0, 0.0, 0.0, 0.0),
+        1.5: _rgba(1.0, 0.0, 0.0, 1.0),
+        2: "trusted-by-caller",
+    }
+
+    colormap = direct_label_colormap_from_rgba(color_dict)  # type: ignore[arg-type]
+
+    assert 1.5 in colormap.color_dict
+    assert colormap.color_dict[2] == "trusted-by-caller"
+
+
+def test_direct_label_colormap_from_rgba_uses_trusted_mapping_without_copying() -> None:
     color_dict = {
         None: _rgba(0.0, 0.0, 0.0, 0.0),
         0: _rgba(0.0, 0.0, 0.0, 0.0),
@@ -118,4 +120,5 @@ def test_direct_label_colormap_from_rgba_copies_mapping_container() -> None:
     colormap = direct_label_colormap_from_rgba(color_dict)
     color_dict[2] = _rgba(0.0, 1.0, 0.0, 1.0)
 
-    assert 2 not in colormap.color_dict
+    assert colormap.color_dict is color_dict
+    assert 2 in colormap.color_dict

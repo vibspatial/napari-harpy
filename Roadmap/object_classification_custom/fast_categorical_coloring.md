@@ -217,6 +217,8 @@ but correctness tests should be deterministic.
 
 ### Slice 2: Use Helper In Styled Labels Direct Coloring
 
+Status: implemented.
+
 Update `src/napari_harpy/viewer/labels_styling.py`.
 
 The main path is:
