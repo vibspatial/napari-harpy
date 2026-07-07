@@ -248,7 +248,7 @@ default/background entries:
 ```
 
 with numeric transparent RGBA arrays, so the entire mapping satisfies
-`direct_label_colormap_from_rgba(...)`'s strict input contract.
+`direct_label_colormap_from_rgba(...)`'s trusted Harpy-generated RGBA contract.
 
 `_apply_labels_colormap(...)` should assign the helper result to
 `layer.colormap`:
@@ -284,17 +284,40 @@ class-like label coloring paths:
 - `pred_class`
 
 These are categorical class states and also construct `DirectLabelColormap`
-objects. They should use the same helper when the color dictionary is already
-numeric RGBA.
+objects. They should use the same helper once their color dictionaries follow
+the trusted Harpy-generated RGBA contract.
+
+Implementation details:
+
+- import `direct_label_colormap_from_rgba(...)`;
+- replace direct `DirectLabelColormap(color_dict=..., background_value=0)`
+  construction at the `user_class` and `pred_class` assignment points;
+- ensure default/background entries use numeric transparent RGBA arrays instead
+  of string colors;
+- keep sparse `user_class` behavior unchanged: unlabeled/default rows should
+  still be represented by the default/background colors, and only nonzero
+  class labels should need explicit per-label entries;
+- keep row-scoped `user_class` updates sparse and avoid rebuilding full feature
+  rows when the existing code already avoids that;
+- remove the explicit `layer.refresh()` calls that currently follow
+  `layer.colormap = ...` in both the full color refresh path and the
+  row-scoped `refresh_user_class_colormap_and_feature(...)` path. Napari's
+  colormap assignment already refreshes the layer, so these are redundant.
+- keep `refresh_user_class_feature(...)` unchanged; that feature-only path
+  already avoids a color repaint and explicit refresh.
 
 This slice is only about faster categorical color application.
 
 Acceptance criteria:
 
+- `user_class` and `pred_class` color dictionaries use numeric transparent RGBA
+  defaults for `None` and `0`;
 - existing sparse `user_class` behavior remains intact;
 - `pred_class` coloring remains visually equivalent;
 - row-scoped user-class annotation refresh still works;
 - fallback full refresh behavior remains available.
+- full color refresh and row-scoped user-class color refresh do not call a
+  second explicit `refresh()` after colormap assignment.
 
 ### Slice 4: Benchmark And Decide On Further Caching
 
