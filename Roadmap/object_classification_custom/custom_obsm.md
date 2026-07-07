@@ -733,7 +733,84 @@ Tests:
 - classifier export becomes possible after registering metadata and retraining;
 - already registered matrices do not enable accidental overwrite.
 
-### Slice 8: Optional Explicit Column-Name UI
+### Slice 8: Move Training Metadata Gate Into Classifier Controller
+
+Status: follow-up.
+
+The current widget blocks `Train Classifier` when the selected feature matrix
+metadata is not `registered_valid`. That works, but it makes classifier
+eligibility depend on widget-side metadata state plumbing. The cleaner
+responsibility boundary is:
+
+- `ClassifierController` decides whether classifier training is valid;
+- `ObjectClassificationWidget` decides how feature-matrix registration is exposed
+  in the UI.
+
+The controller already owns `can_retrain`, `schedule_retrain(...)`,
+`describe_current_preparation()`, model snapshots, and export readiness. It also
+already validates feature metadata when storing/exporting fitted models. Training
+metadata eligibility should therefore move into the controller so training and
+export use one classifier contract.
+
+Current behavior to preserve/clarify:
+
+- The manual `Train Classifier` button is already disabled when
+  `describe_current_preparation()` returns an ineligible summary, for example
+  when only one labeled class remains. In that case the tooltip shows the
+  preparation reason (`Need at least two labeled classes...`).
+- Auto-train and direct controller calls are different: `_on_annotation_changed`
+  can call `schedule_retrain(...)`, and `schedule_retrain(...)` can currently
+  enter the ineligible-job path even when the preparation summary is not
+  eligible.
+- That ineligible-job path intentionally handles ordinary classifier-data
+  problems, such as too few labeled classes, by clearing stale predictions,
+  writing a `trained=False` classifier config, and showing the warning reason.
+- Feature-metadata problems should not reuse that path. A missing or invalid
+  registration schema means "do not start classifier training yet", not "clear
+  predictions because the class labels are currently untrainable."
+
+Desired behavior:
+
+1. During classifier preparation, inspect the selected feature matrix metadata.
+2. Only allow training when metadata is `registered_valid`.
+3. If metadata is `unregistered`, return/emit a clear reason such as:
+   `Register feature metadata for "features_1" before training the classifier.`
+4. If metadata is `registered_mismatched`, `invalid_matrix`, or `missing_matrix`,
+   return/emit the existing clear metadata problem.
+5. `can_retrain` should be `False` for non-`registered_valid` metadata.
+6. `schedule_retrain(...)` should return `False` for these metadata blockers and
+   set classifier status to the same warning reason.
+7. Do not treat missing/invalid registration metadata like ordinary ineligible
+   class labels. Ineligible class labels may clear stale predictions via the
+   existing ineligible-job path, but missing/invalid feature metadata should be a
+   hard training blocker: no worker launch, no prediction clearing, and no
+   ineligible classifier config write.
+8. After this move, `ObjectClassificationWidget._update_classifier_controls()`
+   should rely on controller preparation/`can_retrain` state instead of receiving
+   or recomputing feature-metadata state.
+9. Keep `inspect_feature_matrix_metadata(...)` in the widget only for the
+   registration button and feature metadata warning/status card.
+10. Remove widget-side training gate helpers that become redundant, such as
+    `_feature_matrix_metadata_training_unavailable_reason(...)`.
+
+Tests:
+
+- controller `can_retrain` is `False` for unregistered metadata even when labels
+  and the live `.obsm` matrix are otherwise trainable;
+- controller `schedule_retrain(...)` returns `False` for unregistered metadata
+  and sets a clear warning status;
+- controller blocks mismatched/invalid/missing metadata with the relevant reason;
+- controller still allows retraining for `registered_valid` custom metadata and
+  `registered_valid` Harpy metadata;
+- when `schedule_retrain(...)` is invoked, ordinary ineligible label states still
+  use the existing ineligible-job behavior; the disabled manual `Train
+  Classifier` button alone does not reset stale predictions;
+- widget `Train Classifier` state still recovers after Slice 7 registration,
+  now through controller eligibility rather than a widget-side metadata gate;
+- auto-train does not schedule when the controller reports metadata as
+  non-trainable.
+
+### Slice 9: Optional Explicit Column-Name UI
 
 Only if needed later, add a small advanced dialog for editing feature column
 names before registration. The first implementation can use deterministic names
