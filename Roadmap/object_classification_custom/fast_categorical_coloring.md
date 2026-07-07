@@ -1,0 +1,321 @@
+# Fast Categorical Labels Coloring
+
+Status: investigation; recommended implementation path specified.
+
+## Goal
+
+Make labels-layer coloring by categorical `.obs` columns fast enough for large
+segmentation tables.
+
+The first target is the current styled-labels path where users color a labels
+element by a table observation column, for example:
+
+- labels: `cell_labels_global_ROI1`
+- table: `table_global_ROI1`
+- `.obs` categorical column: `leiden`
+- rows/cells: roughly `406,611`
+
+The fix should improve categorical `.obs` coloring generally.
+
+## Current Bottleneck
+
+For labels colored by an instance id column, Harpy uses napari's procedural
+`label_colormap(...)`. That path is fast because it does not need one explicit
+color entry per label id.
+
+For labels colored by a categorical `.obs` column, Harpy currently builds a
+napari `DirectLabelColormap` with one entry per visible label id:
+
+```text
+label_id -> RGBA
+```
+
+This is necessary because the labels image stores object ids, not category
+codes. For a column such as `leiden`, the image values are still cell ids, so
+napari needs to know which cell id maps to which category color.
+
+Observed timing on the Xenium full-data example:
+
+```text
+Color by cell_ID:
+  value_kind: instance
+  colormap: CyclicLabelColormap / label_colormap(...)
+  apply_table_color_source_to_labels_layer: ~0.17 s
+  ensure_styled_labels_loaded: ~1.16 s
+
+Color by leiden:
+  value_kind: categorical
+  colormap: DirectLabelColormap
+  apply_table_color_source_to_labels_layer: ~2.35 s
+  ensure_styled_labels_loaded: ~2.98 s
+```
+
+Isolated styling path:
+
+```text
+cell_ID:
+  build style:    ~0.0002 s
+  apply colormap: ~0.002 s
+  set features:   ~0.026 s
+
+leiden:
+  build color dict: ~0.059 s
+  apply colormap:   ~2.22 s
+  set features:     ~0.026 s
+```
+
+The main bottleneck is applying/building napari's `DirectLabelColormap` for a
+large explicit label-id mapping.
+
+## Napari Constraint
+
+The ideal compact categorical representation would be:
+
+```text
+label_id -> category_code
+category_code -> RGBA
+```
+
+That would store roughly one mapping per label id plus one color per category,
+instead of repeating the same RGBA arrays for all labels in the same category.
+
+Napari's current public `DirectLabelColormap` API does not expose that as a
+first-class model. It accepts:
+
+```text
+label_id -> RGBA
+```
+
+Internally, napari does compress labels that share the same RGBA into shared
+texture values, but creating the `DirectLabelColormap` through the public
+constructor still pays per-entry pydantic validation and color transformation.
+
+So the practical Harpy-side fix is:
+
+- keep the public napari rendering semantics;
+- keep one explicit label-id mapping for categorical `.obs` columns;
+- make construction of that mapping much faster when Harpy already owns
+  validated RGBA arrays.
+
+## Recommended Fix
+
+Add a shared Harpy helper for constructing `DirectLabelColormap` from
+pre-normalized RGBA values.
+
+Do not use `DirectLabelColormap.model_construct(...)` directly. It is very fast,
+but it bypasses normal `EventedModel` setup, including field event emitters.
+
+The safer fast path is:
+
+1. Build a tiny normal `DirectLabelColormap` with only default/background
+   colors. This lets napari/pydantic initialize the model and event emitters.
+2. Install Harpy's prevalidated large `color_dict` via low-level attribute
+   assignment.
+3. Clear napari colormap caches with `_clear_cache()`.
+4. Return the resulting normal `DirectLabelColormap` object.
+
+Synthetic check with roughly `406k` labels:
+
+```text
+normal DirectLabelColormap(...):          ~1.23 s
+tiny normal init + install RGBA dict:     ~0.0003 s
+```
+
+This keeps event emitters intact, unlike direct `model_construct(...)`.
+
+## Safety Contract
+
+The fast helper should only accept already-normalized RGBA values.
+
+Expected input contract:
+
+- keys are `int` label ids plus optional `None`;
+- background label `0` is present and transparent;
+- `None` default color is present;
+- values are numeric RGBA arrays with shape `(4,)`;
+- values are finite floats in the normal napari color range;
+- no string colors are passed into the fast path.
+
+If a caller has string colors or untrusted values, it should either normalize
+them first or use the normal `DirectLabelColormap(...)` constructor.
+
+This keeps the pydantic bypass narrow and explicit: Harpy may skip repeated
+napari color transformation only after Harpy has already produced numeric RGBA
+arrays.
+
+## Implementation Slices
+
+### Slice 1: Shared Fast Colormap Helper
+
+Add a helper in a shared labels-viewer module, for example:
+
+```text
+src/napari_harpy/viewer/labels_colormap.py
+```
+
+Suggested API:
+
+```python
+def direct_label_colormap_from_rgba(
+    color_dict: Mapping[int | None, np.ndarray],
+    *,
+    background_value: int = 0,
+) -> DirectLabelColormap:
+    ...
+```
+
+The helper should:
+
+- validate the minimal RGBA contract above;
+- construct a tiny normal `DirectLabelColormap`;
+- install the full normalized mapping without re-transforming every color;
+- clear napari colormap caches;
+- return a normal `DirectLabelColormap` with working events.
+
+Tests should verify:
+
+- `map(...)` matches normal `DirectLabelColormap(...)` for representative label
+  ids, missing ids, and background;
+- event emitters such as `events.color_dict` exist;
+- `_clear_cache()` can be called after construction;
+- invalid keys or non-RGBA values fail loudly;
+- the helper does not accept string colors.
+
+Do not add timing assertions to unit tests. A small local benchmark note is fine,
+but correctness tests should be deterministic.
+
+### Slice 2: Use Helper In Styled Labels `.obs` Coloring
+
+Update `src/napari_harpy/viewer/labels_styling.py`.
+
+The main path is:
+
+```text
+apply_table_color_source_to_labels_layer(...)
+  -> _build_obs_column_colormap(...)
+  -> _build_categorical_color_dict(...)
+  -> _apply_labels_colormap(...)
+```
+
+For categorical `.obs` columns, `_build_categorical_color_dict(...)` already
+receives vectorized RGBA rows from `categorical_rgba_for_values(...)`. Convert
+default/background colors to RGBA arrays as well, then pass the full mapping to
+the shared fast helper.
+
+`_apply_labels_colormap(...)` should assign the helper result to
+`layer.colormap`:
+
+```python
+layer.colormap = direct_label_colormap_from_rgba(layer_color_dict, background_value=0)
+```
+
+Do not call an additional explicit `layer.refresh()` after that assignment
+unless manual QA proves it is required. In current napari, assigning
+`Labels.colormap` already emits the colormap event and calls
+`layer.refresh(extent=False)`, so the extra refresh would be redundant work on
+large labels layers.
+
+Acceptance criteria:
+
+- coloring by categorical `.obs` columns remains visually equivalent;
+- background label `0` stays transparent;
+- unknown/missing labels use the `None` default color;
+- categorical color application triggers only the napari refresh caused by
+  `layer.colormap` assignment, not an additional explicit refresh call;
+- no table or labels data are rewritten;
+- categorical bool, binary integer, categorical dtype, and string-like
+  categorical coercion tests keep passing.
+
+### Slice 3: Use Helper In Object-Classification Labels Styling
+
+Update `src/napari_harpy/widgets/object_classification/viewer_styling.py` for
+class-like label coloring paths:
+
+- `user_class`
+- `pred_class`
+
+These are categorical class states and also construct `DirectLabelColormap`
+objects. They should use the same helper when the color dictionary is already
+numeric RGBA.
+
+This slice is only about faster categorical color application.
+
+Acceptance criteria:
+
+- existing sparse `user_class` behavior remains intact;
+- `pred_class` coloring remains visually equivalent;
+- row-scoped user-class annotation refresh still works;
+- fallback full refresh behavior remains available.
+
+### Slice 4: Benchmark And Decide On Further Caching
+
+After Slices 1-3, re-measure:
+
+```text
+apply_table_color_source_to_labels_layer(...)
+ensure_styled_labels_loaded(...)
+```
+
+on the Xenium full-data categorical `.obs` case.
+
+If first-load categorical coloring is still too slow, investigate the remaining
+costs separately:
+
+- building the Python `label_id -> RGBA` dictionary;
+- napari's first internal label-id-to-texture mapping;
+- reslicing/redrawing the current labels view;
+- repeated restyling of an already-loaded styled labels layer.
+
+`ensure_styled_labels_loaded(...)` already reuses an existing styled labels
+layer for the same style specification, but it still reapplies styling on every
+call. If repeated calls are still expensive after the fast constructor, add a
+separate cache/invalidation design rather than hiding it inside the constructor
+helper.
+
+## Non-Goals
+
+- Do not rewrite the labels image to category codes.
+- Do not lose per-cell label identity.
+- Do not change hover/status feature semantics.
+- Do not depend on direct `DirectLabelColormap.model_construct(...)`.
+- Do not patch napari source code in this slice.
+- Do not introduce a private napari vispy visual.
+
+## Longer-Term Upstream Direction
+
+The real long-term solution would be native napari support for a compact
+categorical labels colormap:
+
+```text
+label_id -> category_code
+category_code -> RGBA
+```
+
+That would avoid storing repeated RGBA arrays for hundreds of thousands of
+labels when only a few categories are present.
+
+For now, Harpy should keep the public `DirectLabelColormap` contract and remove
+the avoidable pydantic/color-transformation overhead that dominates the current
+categorical `.obs` path.
+
+## Suggested Verification
+
+Focused tests:
+
+```text
+.venv/bin/pytest tests/test_viewer_adapter.py tests/test_viewer_styling.py
+```
+
+Lint:
+
+```text
+.venv/bin/ruff check src/napari_harpy/viewer src/napari_harpy/widgets/object_classification tests/test_viewer_adapter.py tests/test_viewer_styling.py
+```
+
+Manual benchmark target:
+
+- compare `apply_table_color_source_to_labels_layer(...)` before/after for
+  `table_global_ROI1.obs["leiden"]`;
+- confirm the time previously attributed to `DirectLabelColormap` construction
+  drops substantially;
+- confirm visual categorical colors match the previous implementation.
