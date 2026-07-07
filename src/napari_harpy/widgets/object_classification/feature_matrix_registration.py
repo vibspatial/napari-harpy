@@ -74,24 +74,3 @@ def _build_feature_matrix_registration_button_state(
         )
 
     raise ValueError(f"Unsupported feature matrix metadata status: {metadata_state.status!r}.")
-
-
-def _feature_matrix_metadata_training_unavailable_reason(
-    metadata_state: FeatureMatrixMetadataState | None,
-) -> str | None:
-    if metadata_state is None or metadata_state.status == "registered_valid":
-        return None
-
-    # `unregistered` is a valid matrix that the UI can register, so it does not
-    # show a warning card; training still waits until the feature schema is
-    # explicitly recorded in metadata.
-    if metadata_state.status == "unregistered":
-        return f'Register feature metadata for "{metadata_state.feature_key}" before training the classifier.'
-
-    button_state = _build_feature_matrix_registration_button_state(metadata_state)
-    if button_state.warning_message is None:
-        raise ValueError(
-            f"Feature matrix metadata state {metadata_state.status!r} must provide a warning message when it "
-            "blocks classifier training."
-        )
-    return button_state.warning_message

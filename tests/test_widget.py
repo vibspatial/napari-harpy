@@ -907,7 +907,6 @@ def test_widget_feature_matrix_registration_button_enables_for_unregistered_matr
 
 def test_widget_disables_retrain_button_for_unregistered_feature_matrix_metadata(
     qtbot,
-    monkeypatch,
     sdata_blobs: SpatialData,
 ) -> None:
     table = sdata_blobs["table"]
@@ -923,20 +922,20 @@ def test_widget_disables_retrain_button_for_unregistered_feature_matrix_metadata
     widget = HarpyWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
-    schedule_calls: list[str] = []
-    monkeypatch.setattr(widget._classifier_controller, "schedule_retrain", lambda: schedule_calls.append("schedule"))
 
     assert widget.register_feature_matrix_button.isEnabled()
     assert widget.retrain_button.isEnabled() is False
     assert "Register feature metadata" in _tooltip_text(widget.retrain_button)
-    assert "Training annotations: 4 rows" in widget.classifier_preparation_status.text()
+    assert "Register feature metadata" in widget.classifier_preparation_status.text()
 
     widget.auto_train_checkbox.setChecked(True)
     layer.selected_label = 5
     widget.class_spinbox.setValue(2)
     widget.apply_class_button.click()
 
-    assert schedule_calls == []
+    assert widget._classifier_controller.is_training is False
+    assert CLASSIFIER_CONFIG_KEY not in table.uns
+    assert "Register feature metadata" in widget._classifier_controller.status_message
 
 
 def test_widget_register_feature_matrix_button_registers_metadata_and_recovers_training(
@@ -1245,6 +1244,7 @@ def test_widget_shows_classifier_preparation_hidden_write_notice_for_table_wide_
     qtbot, sdata_blobs_multi_region: SpatialData
 ) -> None:
     table = sdata_blobs_multi_region["table_multi"]
+    _set_feature_metadata(sdata_blobs_multi_region, table_name="table_multi")
     region_values = table.obs["region"].astype("string")
     instance_values = table.obs["instance_id"].to_numpy(dtype=np.int64)
     class_values = np.zeros(table.n_obs, dtype=np.int64)
@@ -1292,6 +1292,7 @@ def test_widget_omits_hidden_write_line_for_effectively_selected_prediction_scop
 
 def test_widget_shows_eligible_classifier_preparation_summary(qtbot, sdata_blobs: SpatialData) -> None:
     table = sdata_blobs["table"]
+    _set_feature_metadata(sdata_blobs)
     instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
         [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
@@ -1388,6 +1389,7 @@ def test_widget_invalidates_classifier_when_selected_feature_matrix_is_overwritt
         [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
         categories=[0, 1, 2],
     )
+    _set_feature_metadata(sdata_blobs)
     training_scope = classifier_module.ResolvedClassifierScope(
         mode="selected_segmentation_only",
         regions=("blobs_labels",),
@@ -1413,7 +1415,6 @@ def test_widget_invalidates_classifier_when_selected_feature_matrix_is_overwritt
             summary=classifier_module.ClassifierPreparationSummary(
                 training_scope=training_scope,
                 prediction_scope=prediction_scope,
-                eligible=True,
                 reason="Ready to train.",
                 labeled_count=2,
                 class_labels=(1, 2),
@@ -2712,6 +2713,7 @@ def test_widget_retrain_button_recovers_after_worker_finishes(qtbot, monkeypatch
 def test_widget_classifier_status_changes_do_not_refresh_layer_styling(
     qtbot, monkeypatch, sdata_blobs: SpatialData
 ) -> None:
+    _set_feature_metadata(sdata_blobs)
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
     widget = HarpyWidget(viewer)
@@ -2734,6 +2736,7 @@ def test_widget_classifier_status_changes_do_not_refresh_layer_styling(
 
 
 def test_widget_destroyed_shuts_down_classifier_controller(qtbot, monkeypatch, sdata_blobs: SpatialData) -> None:
+    _set_feature_metadata(sdata_blobs)
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
     widget = HarpyWidget(viewer)

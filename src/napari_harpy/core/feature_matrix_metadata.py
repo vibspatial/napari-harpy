@@ -44,6 +44,11 @@ FEATURE_MATRIX_METADATA_STATUSES: tuple[FeatureMatrixMetadataStatus, ...] = (
     "registered_valid",
     "registered_mismatched",
 )
+_FEATURE_MATRIX_METADATA_STATUSES_REQUIRING_ERROR: tuple[FeatureMatrixMetadataStatus, ...] = (
+    "missing_matrix",
+    "invalid_matrix",
+    "registered_mismatched",
+)
 
 
 @dataclass(frozen=True)
@@ -82,6 +87,8 @@ class FeatureMatrixMetadataState:
             raise ValueError(f"Unsupported feature matrix metadata status: {self.status!r}.")
         if self.source_kind is not None and self.source_kind not in FEATURE_MATRIX_SOURCE_KINDS:
             raise ValueError(f"Unsupported feature matrix metadata source kind: {self.source_kind!r}.")
+        if self.status in _FEATURE_MATRIX_METADATA_STATUSES_REQUIRING_ERROR and not self.error:
+            raise ValueError(f"Feature matrix metadata status {self.status!r} must include an error message.")
 
     @property
     def is_custom_obsm(self) -> bool:

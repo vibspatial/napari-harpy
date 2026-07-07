@@ -191,6 +191,12 @@ def test_feature_matrix_metadata_state_rejects_unknown_source_kind() -> None:
         FeatureMatrixMetadataState(feature_key="custom", status="registered_valid", source_kind="unknown")
 
 
+@pytest.mark.parametrize("status", ["missing_matrix", "invalid_matrix", "registered_mismatched"])
+def test_feature_matrix_metadata_state_requires_error_for_problem_statuses(status: str) -> None:
+    with pytest.raises(ValueError, match="must include an error message"):
+        FeatureMatrixMetadataState(feature_key="custom", status=status)
+
+
 def test_inspect_feature_matrix_metadata_reports_missing_matrix() -> None:
     table = _make_table()
 
