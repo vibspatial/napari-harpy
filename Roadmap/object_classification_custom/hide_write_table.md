@@ -1,6 +1,6 @@
 # Enable `Write Table State` Only For Dirty Tables
 
-Status: specified.
+Status: implemented.
 
 ## Goal
 
@@ -151,3 +151,8 @@ Existing tests likely needing adjustment:
 - Do not disable `Reload Table State` just because the table is clean.
 - Do not change lower-level `write_table_state()` into an error for clean writes.
 - Do not change how dirty state is recorded in `HarpyAppState`.
+
+## Verification
+
+- `.venv/bin/pytest tests/test_persistence.py tests/test_widget.py`
+- `.venv/bin/ruff check src/napari_harpy/_persistence.py src/napari_harpy/widgets/object_classification/widget.py tests/test_persistence.py tests/test_widget.py`

@@ -64,6 +64,33 @@ def test_persistence_controller_reads_dirty_state_from_shared_app_state(sdata_bl
     assert controller.is_dirty is True
 
 
+def test_persistence_controller_can_write_table_state_requires_backed_dirty_table(
+    sdata_blobs: SpatialData,
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    controller = PersistenceController()
+    controller.bind(sdata_blobs, "table")
+
+    assert controller.can_sync is False
+    assert controller.can_write_table_state is False
+
+    controller.bind(backed_sdata_blobs, "table")
+
+    assert controller.can_sync is True
+    assert controller.is_dirty is False
+    assert controller.can_write_table_state is False
+
+    controller.mark_dirty()
+
+    assert controller.can_sync is True
+    assert controller.is_dirty is True
+    assert controller.can_write_table_state is True
+
+    controller.clear_dirty()
+
+    assert controller.can_write_table_state is False
+
+
 def test_persistence_controller_syncs_table_obs_and_colors_to_backed_store(backed_sdata_blobs: SpatialData) -> None:
     controller = PersistenceController()
     controller.bind(backed_sdata_blobs, "table")

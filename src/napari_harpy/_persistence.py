@@ -52,6 +52,11 @@ class PersistenceController:
         )
 
     @property
+    def can_write_table_state(self) -> bool:
+        """Return whether the selected table has local changes that can be written."""
+        return self.can_sync and self.is_dirty
+
+    @property
     def can_reload(self) -> bool:
         """Return whether the currently selected table can be reloaded from zarr."""
         return self.can_sync
