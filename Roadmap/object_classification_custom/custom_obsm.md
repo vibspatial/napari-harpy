@@ -551,6 +551,22 @@ Implementation notes:
 - do not connect the button to a click action yet;
 - use `inspect_feature_matrix_metadata(...)` to derive the selected feature
   matrix metadata state;
+- do not introduce a mutable state-machine/controller class. The UI state is
+  purely derived from the current selection and metadata inspection result;
+- add a small private immutable UI spec, for example:
+
+  ```python
+  @dataclass(frozen=True)
+  class _FeatureMatrixRegistrationButtonState:
+      enabled: bool
+      tooltip: str
+      warning_message: str | None = None
+  ```
+
+- add a pure mapping helper, for example
+  `_build_feature_matrix_registration_button_state(...)`, that translates a
+  `FeatureMatrixMetadataState` plus selection context into the button
+  enabled/tooltip/warning outcome;
 - add a focused widget helper such as
   `_update_feature_matrix_metadata_controls()`;
 - call that helper from the central `_update_selection_status()` refresh path
@@ -569,12 +585,14 @@ State flow:
 
 1. The user selects a feature matrix.
 2. The widget calls `inspect_feature_matrix_metadata(table, feature_key)`.
-3. If the state is `unregistered`, enable `Register Feature Matrix`.
-4. If the state is `registered_valid`, disable the button because no
+3. The widget maps the metadata state to
+   `_FeatureMatrixRegistrationButtonState`.
+4. If the state is `unregistered`, enable `Register Feature Matrix`.
+5. If the state is `registered_valid`, disable the button because no
    registration action is needed.
-5. If the state is `registered_mismatched`, disable the button and show a
+6. If the state is `registered_mismatched`, disable the button and show a
    warning. Do not offer a UI repair/overwrite path.
-6. If the state is `invalid_matrix` or `missing_matrix`, disable the button and
+7. If the state is `invalid_matrix` or `missing_matrix`, disable the button and
    show/tooltip the problem. Do not offer a UI repair path.
 
 The widget should not treat `registered_mismatched` as "safe to register."
