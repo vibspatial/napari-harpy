@@ -648,6 +648,37 @@ Tests:
 
 Wire the UI button to the core registration helper.
 
+Status: specified.
+
+The button exists after Slice 6, but it is intentionally not connected yet.
+Slice 7 should add the click handler and make registration a complete
+user-visible workflow.
+
+Implementation flow:
+
+1. Connect `register_feature_matrix_button.clicked` to a private widget handler,
+   e.g. `_register_selected_feature_matrix_metadata`.
+2. In the handler, require the same concrete context as the state helper:
+   selected `SpatialData`, selected table name, selected feature key, and no
+   table-binding error. If any of these are missing, refresh selection status and
+   return without mutation.
+3. Resolve the current table with `get_table(...)`.
+4. Call `inspect_feature_matrix_metadata(table, selected_feature_key)` before
+   writing. Only proceed when the state is `unregistered`.
+5. Call `register_feature_matrix_metadata(table, selected_feature_key)`.
+   Do not pass `overwrite=True`; mismatched or already registered metadata must
+   remain non-UI/manual repair.
+6. Mark table persistence dirty through the existing widget helper
+   `_mark_persistence_dirty()`.
+7. Mark the classifier stale, for example with
+   `self._classifier_controller.mark_dirty(reason="feature matrix metadata registered")`.
+   This makes the classifier/export status honest after the schema becomes
+   exportable.
+8. Clear or replace stale feature metadata warnings with the normal derived UI
+   state.
+9. Call `_update_selection_status()` so all derived controls are refreshed from
+   the newly written metadata.
+
 On success:
 
 - mark table state dirty;
@@ -669,12 +700,37 @@ This recovery behavior is part of the Slice 7 contract: a user who clicks
 `Register Feature Matrix` on an otherwise trainable unregistered matrix should
 immediately be able to click `Train Classifier`.
 
+Error handling:
+
+- Treat registration as an all-or-nothing UI action. If
+  `register_feature_matrix_metadata(...)` raises `ValueError`, assume no
+  metadata was successfully registered.
+- For that failure path, show the error message in the existing feature metadata
+  warning/status area and refresh the button state.
+- Do not call `_mark_persistence_dirty()` on failed registration, because there
+  is no successful metadata mutation to save.
+- Do not call `classifier_controller.mark_dirty(...)` on failed registration,
+  because no new registered schema exists for training/export.
+- If the preflight state is no longer `unregistered`, do not register. Refresh
+  selection status instead. This handles stale clicks after table/feature changes
+  or after metadata was registered elsewhere.
+- Keep the helper strict: unexpected states should fail loudly in the pure state
+  mapping helpers rather than silently enabling registration.
+
 Tests:
 
 - button is enabled for a selected unregistered `.obsm` matrix;
 - clicking registers metadata under `table.uns["feature_matrices"][feature_key]`;
 - after clicking, the registration button disables and `Train Classifier`
   becomes enabled when classifier preparation is otherwise eligible;
+- clicking marks table persistence dirty;
+- clicking marks the classifier stale with a registration-specific reason;
+- clicking clears/refreshes stale feature metadata warnings via
+  `_update_selection_status()`;
+- clicking does nothing destructive when the current state is already
+  `registered_valid` or `registered_mismatched`;
+- registration errors show a warning/status message and do not dirty table
+  persistence;
 - classifier export becomes possible after registering metadata and retraining;
 - already registered matrices do not enable accidental overwrite.
 
