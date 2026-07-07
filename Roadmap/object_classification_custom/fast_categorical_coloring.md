@@ -147,6 +147,8 @@ arrays.
 
 ### Slice 1: Shared Fast Colormap Helper
 
+Status: implemented.
+
 Add a helper in a shared labels-viewer module, for example:
 
 ```text
@@ -182,12 +184,12 @@ The intended implementation shape is:
 ```python
 small = {
     None: color_dict[None],
-    0: color_dict[0],
+    background_value: color_dict[background_value],
 }
 
 cmap = DirectLabelColormap(
     color_dict=small,
-    background_value=0,
+    background_value=background_value,
 )
 
 object.__setattr__(cmap, "color_dict", color_dict)
@@ -213,7 +215,7 @@ Tests should verify:
 Do not add timing assertions to unit tests. A small local benchmark note is fine,
 but correctness tests should be deterministic.
 
-### Slice 2: Use Helper In Styled Labels `.obs` Coloring
+### Slice 2: Use Helper In Styled Labels Direct Coloring
 
 Update `src/napari_harpy/viewer/labels_styling.py`.
 
@@ -226,10 +228,25 @@ apply_table_color_source_to_labels_layer(...)
   -> _apply_labels_colormap(...)
 ```
 
-For categorical `.obs` columns, `_build_categorical_color_dict(...)` already
-receives vectorized RGBA rows from `categorical_rgba_for_values(...)`. Convert
-default/background colors to RGBA arrays as well, then pass the full mapping to
-the shared fast helper.
+Use the fast helper for all direct styled-labels color maps built by this
+module, not only categorical `.obs` columns. This includes:
+
+- categorical `.obs` columns;
+- continuous `.obs` columns;
+- `.X` / `.var` feature coloring.
+
+`_build_categorical_color_dict(...)` and `_build_continuous_color_dict(...)`
+already receive vectorized numeric RGBA rows from
+`categorical_rgba_for_values(...)` / `continuous_rgba_for_values(...)` for the
+real label ids. The remaining cleanup is to replace the current string
+default/background entries:
+
+```python
+{None: "transparent", 0: "transparent"}
+```
+
+with numeric transparent RGBA arrays, so the entire mapping satisfies
+`direct_label_colormap_from_rgba(...)`'s strict input contract.
 
 `_apply_labels_colormap(...)` should assign the helper result to
 `layer.colormap`:
@@ -246,7 +263,8 @@ large labels layers.
 
 Acceptance criteria:
 
-- coloring by categorical `.obs` columns remains visually equivalent;
+- coloring by categorical and continuous direct labels sources remains visually
+  equivalent;
 - background label `0` stays transparent;
 - unknown/missing labels use the `None` default color;
 - categorical color application triggers only the napari refresh caused by
