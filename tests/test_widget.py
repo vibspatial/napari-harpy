@@ -939,6 +939,119 @@ def test_widget_disables_retrain_button_for_unregistered_feature_matrix_metadata
     assert schedule_calls == []
 
 
+def test_widget_register_feature_matrix_button_registers_metadata_and_recovers_training(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs["table"]
+    instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(
+        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
+        categories=[0, 1, 2],
+    )
+    table.uns.pop(_FEATURE_MATRICES_KEY, None)
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+    mark_dirty_reasons: list[str | None] = []
+    monkeypatch.setattr(
+        widget._classifier_controller,
+        "mark_dirty",
+        lambda *, reason=None: mark_dirty_reasons.append(reason),
+    )
+
+    assert widget.register_feature_matrix_button.isEnabled()
+    assert widget.retrain_button.isEnabled() is False
+    assert widget._persistence_controller.is_dirty is False
+
+    widget.register_feature_matrix_button.click()
+
+    metadata = table.uns[_FEATURE_MATRICES_KEY]["features_1"]
+    assert metadata["source_kind"] == CUSTOM_OBSM_SOURCE_KIND
+    assert widget.register_feature_matrix_button.isEnabled() is False
+    assert widget.retrain_button.isEnabled()
+    assert widget.validation_status.isHidden()
+    assert widget._persistence_controller.is_dirty is True
+    assert mark_dirty_reasons == ["feature matrix metadata registered"]
+
+
+def test_widget_register_feature_matrix_button_shows_error_without_dirty_side_effects(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs["table"]
+    table.uns.pop(_FEATURE_MATRICES_KEY, None)
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+    mark_dirty_reasons: list[str | None] = []
+    monkeypatch.setattr(
+        widget._classifier_controller,
+        "mark_dirty",
+        lambda *, reason=None: mark_dirty_reasons.append(reason),
+    )
+
+    def fail_registration(*args, **kwargs) -> None:
+        del args, kwargs
+        raise ValueError("registration failed")
+
+    monkeypatch.setattr(widget_module, "register_feature_matrix_metadata", fail_registration)
+
+    widget.register_feature_matrix_button.click()
+
+    assert _FEATURE_MATRICES_KEY not in table.uns
+    _assert_feature_metadata_warning_card(widget)
+    assert "registration failed" in widget.validation_status.text()
+    assert widget.register_feature_matrix_button.isEnabled()
+    assert widget._persistence_controller.is_dirty is False
+    assert mark_dirty_reasons == []
+
+
+def test_widget_register_feature_matrix_button_ignores_stale_click_after_external_registration(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs["table"]
+    table.uns.pop(_FEATURE_MATRICES_KEY, None)
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+    assert widget.register_feature_matrix_button.isEnabled()
+
+    register_feature_matrix_metadata(table, "features_1")
+    registration_calls: list[str] = []
+    mark_dirty_reasons: list[str | None] = []
+    monkeypatch.setattr(
+        widget_module,
+        "register_feature_matrix_metadata",
+        lambda *args, **kwargs: registration_calls.append("register"),
+    )
+    monkeypatch.setattr(
+        widget._classifier_controller,
+        "mark_dirty",
+        lambda *, reason=None: mark_dirty_reasons.append(reason),
+    )
+
+    widget.register_feature_matrix_button.click()
+
+    assert registration_calls == []
+    assert mark_dirty_reasons == []
+    assert widget._persistence_controller.is_dirty is False
+    assert widget.register_feature_matrix_button.isEnabled() is False
+
+
 def test_widget_feature_matrix_registration_button_disables_for_valid_custom_metadata(
     qtbot,
     sdata_blobs: SpatialData,

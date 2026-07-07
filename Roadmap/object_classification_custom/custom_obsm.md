@@ -648,11 +648,10 @@ Tests:
 
 Wire the UI button to the core registration helper.
 
-Status: specified.
+Status: implemented.
 
-The button exists after Slice 6, but it is intentionally not connected yet.
-Slice 7 should add the click handler and make registration a complete
-user-visible workflow.
+The button already existed after Slice 6. Slice 7 adds the click handler and
+makes registration a complete user-visible workflow.
 
 Implementation flow:
 

@@ -36,6 +36,7 @@ from napari_harpy.core.classifier_export import DEFAULT_CLASSIFIER_EXPORT_SUFFIX
 from napari_harpy.core.feature_matrix_metadata import (
     FeatureMatrixMetadataState,
     inspect_feature_matrix_metadata,
+    register_feature_matrix_metadata,
 )
 from napari_harpy.core.spatialdata import (
     SpatialDataLabelsOption,
@@ -247,6 +248,7 @@ class ObjectClassificationWidget(QWidget):
 
         self.register_feature_matrix_button = QPushButton("Register Feature Matrix")
         self.register_feature_matrix_button.setObjectName("register_feature_matrix_button")
+        self.register_feature_matrix_button.clicked.connect(self._register_selected_feature_matrix_metadata)
         self.register_feature_matrix_button.setEnabled(False)
         self.register_feature_matrix_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.register_feature_matrix_button.setStyleSheet(SMALL_ACTION_BUTTON_STYLESHEET)
@@ -1072,6 +1074,47 @@ class ObjectClassificationWidget(QWidget):
 
         table = get_table(self.selected_spatialdata, self.selected_table_name)
         return inspect_feature_matrix_metadata(table, self.selected_feature_key)
+
+    def _register_selected_feature_matrix_metadata(self) -> None:
+        if (
+            self.selected_spatialdata is None
+            or self.selected_table_name is None
+            or self.selected_feature_key is None
+            or self._table_binding_error is not None
+        ):
+            self._update_selection_status()
+            return
+
+        table = get_table(self.selected_spatialdata, self.selected_table_name)
+        feature_matrix_metadata_state = inspect_feature_matrix_metadata(table, self.selected_feature_key)
+        # Re-check the live metadata state at click time. The button may still
+        # reflect an older UI state, but registration must never overwrite
+        # metadata that was added or changed elsewhere.
+        if feature_matrix_metadata_state.status != "unregistered":
+            self._update_selection_status()
+            return
+
+        # Registration is an all-or-nothing UI action: if the core helper
+        # rejects the matrix, show the error without marking persistence dirty
+        # or making the classifier stale.
+        try:
+            register_feature_matrix_metadata(table, self.selected_feature_key)
+        except ValueError as error:
+            feature_matrix_metadata_state = self._selected_feature_matrix_metadata_state()
+            self._update_feature_matrix_metadata_controls(feature_matrix_metadata_state)
+            self._update_classifier_controls(feature_matrix_metadata_state)
+            self._update_persistence_controls()
+            set_status_card(
+                self.validation_status,
+                title="Feature Metadata Warning",
+                lines=[str(error)],
+                kind="warning",
+            )
+            return
+
+        self._mark_persistence_dirty()
+        self._classifier_controller.mark_dirty(reason="feature matrix metadata registered")
+        self._update_selection_status()
 
     def _update_validation_status(self, feature_matrix_metadata_state: FeatureMatrixMetadataState | None) -> None:
         message = None
