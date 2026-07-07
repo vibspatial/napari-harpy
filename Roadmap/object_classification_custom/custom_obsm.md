@@ -581,7 +581,16 @@ The widget should use the metadata-state helper to drive:
 
 - whether the selected matrix is already registered;
 - whether registration is available;
-- whether existing metadata is mismatched.
+- whether existing metadata is mismatched;
+- whether classifier training is available for the selected matrix.
+
+Classifier training should only be available when the selected feature matrix has
+`registered_valid` metadata. An unregistered matrix may be valid enough to show
+the registration button, but it is not valid enough to train/export a classifier
+because the feature schema is not yet recorded. Invalid, missing, or mismatched
+metadata should also disable training and explain the problem in the Train
+Classifier tooltip. Auto-train should use the same gate, so annotation edits
+cannot silently schedule training against an unregistered or mismatched matrix.
 
 State flow:
 
@@ -614,7 +623,10 @@ Suggested UI behavior:
 - valid Harpy metadata with `source_kind == "harpy_add_feature_matrix"`:
   button disabled, tooltip says it is already registered from Harpy feature
   extraction;
-- mismatched metadata: button disabled, warning status, and no silent overwrite.
+- mismatched metadata: button disabled, warning status, and no silent overwrite;
+- train button: disabled unless the selected matrix metadata is
+  `registered_valid`; for `unregistered`, the tooltip should tell the user to
+  register feature metadata first.
 
 Tests:
 
@@ -628,7 +640,9 @@ Tests:
   state;
 - missing or unknown `source_kind` disables the button and produces a warning
   state;
-- mismatched metadata disables the button and produces a warning state.
+- mismatched metadata disables the button and produces a warning state;
+- unregistered metadata disables Train Classifier and prevents auto-training
+  from scheduling after annotation edits.
 
 ### Slice 7: Register Feature Matrix Button
 
@@ -641,10 +655,26 @@ On success:
 - mark classifier stale if appropriate;
 - refresh classifier/export controls.
 
+The click handler must explicitly refresh the widget state after writing
+metadata. The widget does not observe arbitrary `.uns["feature_matrices"]`
+mutations, so simply calling `register_feature_matrix_metadata(...)` is not
+enough. After registration, call the existing selection refresh path, e.g.
+`_update_selection_status()`, so the widget re-runs
+`inspect_feature_matrix_metadata(...)`, sees `registered_valid`, disables the
+registration button, clears stale feature-metadata warnings, and allows
+`Train Classifier` to become enabled when classifier preparation is otherwise
+eligible.
+
+This recovery behavior is part of the Slice 7 contract: a user who clicks
+`Register Feature Matrix` on an otherwise trainable unregistered matrix should
+immediately be able to click `Train Classifier`.
+
 Tests:
 
 - button is enabled for a selected unregistered `.obsm` matrix;
 - clicking registers metadata under `table.uns["feature_matrices"][feature_key]`;
+- after clicking, the registration button disables and `Train Classifier`
+  becomes enabled when classifier preparation is otherwise eligible;
 - classifier export becomes possible after registering metadata and retraining;
 - already registered matrices do not enable accidental overwrite.
 

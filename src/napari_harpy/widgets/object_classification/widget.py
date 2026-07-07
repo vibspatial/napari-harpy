@@ -195,6 +195,27 @@ def _build_feature_matrix_registration_button_state(
     raise ValueError(f"Unsupported feature matrix metadata status: {metadata_state.status!r}.")
 
 
+def _feature_matrix_metadata_training_unavailable_reason(
+    metadata_state: FeatureMatrixMetadataState | None,
+) -> str | None:
+    if metadata_state is None or metadata_state.status == "registered_valid":
+        return None
+
+    # `unregistered` is a valid matrix that the UI can register, so it does not
+    # show a warning card; training still waits until the feature schema is
+    # explicitly recorded in metadata.
+    if metadata_state.status == "unregistered":
+        return f'Register feature metadata for "{metadata_state.feature_key}" before training the classifier.'
+
+    button_state = _build_feature_matrix_registration_button_state(metadata_state)
+    if button_state.warning_message is None:
+        raise ValueError(
+            f"Feature matrix metadata state {metadata_state.status!r} must provide a warning message when it "
+            "blocks classifier training."
+        )
+    return button_state.warning_message
+
+
 class ObjectClassificationWidget(QWidget):
     """
     Widget for object classification.
@@ -1125,7 +1146,7 @@ class ObjectClassificationWidget(QWidget):
         self._update_feature_matrix_metadata_controls(feature_matrix_metadata_state)
         self._update_annotation_controls()
         self._update_color_by_controls()
-        self._update_classifier_controls()
+        self._update_classifier_controls(feature_matrix_metadata_state)
         self._update_persistence_controls()
 
     def _selected_feature_matrix_metadata_state(self) -> FeatureMatrixMetadataState | None:
@@ -1401,7 +1422,17 @@ class ObjectClassificationWidget(QWidget):
 
         self._set_tooltip(self.color_by_combo, tooltip)
 
-    def _update_classifier_controls(self) -> None:
+    def _update_classifier_controls(
+        self,
+        feature_matrix_metadata_state: FeatureMatrixMetadataState | None = None,
+    ) -> None:
+        if (
+            feature_matrix_metadata_state is None
+            and self.selected_feature_key is not None
+            and self._table_binding_error is None
+        ):
+            feature_matrix_metadata_state = self._selected_feature_matrix_metadata_state()
+
         can_configure_scope = (
             self.selected_spatialdata is not None
             and self.selected_segmentation_name is not None
@@ -1450,10 +1481,14 @@ class ObjectClassificationWidget(QWidget):
         )
         self._apply_status_card_spec(self.classifier_preparation_status, classifier_preparation_spec)
 
+        feature_matrix_training_unavailable_reason = _feature_matrix_metadata_training_unavailable_reason(
+            feature_matrix_metadata_state
+        )
         can_retrain = (
             classifier_preparation_summary is not None
             and classifier_preparation_summary.eligible
             and not self._classifier_controller.is_training
+            and feature_matrix_training_unavailable_reason is None
         )
         self.retrain_button.setEnabled(can_retrain)
         can_export = self._classifier_controller.can_export_classifier
@@ -1467,6 +1502,8 @@ class ObjectClassificationWidget(QWidget):
             tooltip = "Choose a feature matrix before training the classifier."
         elif self._classifier_controller.is_training:
             tooltip = "A classifier training job is currently running."
+        elif feature_matrix_training_unavailable_reason is not None:
+            tooltip = feature_matrix_training_unavailable_reason
         elif classifier_preparation_summary is not None and not classifier_preparation_summary.eligible:
             tooltip = classifier_preparation_summary.reason
         elif self._classifier_controller.is_dirty:
@@ -1652,7 +1689,11 @@ class ObjectClassificationWidget(QWidget):
             self._emit_classification_table_written(columns=(USER_CLASS_COLUMN,))
         self._classifier_controller.mark_dirty(reason="the annotations changed")
         self._refresh_after_user_class_annotation(change)
-        if self._auto_train_enabled:
+        if (
+            self._auto_train_enabled
+            and _feature_matrix_metadata_training_unavailable_reason(self._selected_feature_matrix_metadata_state())
+            is None
+        ):
             self._classifier_controller.schedule_retrain()
         self._update_selection_status()
 
@@ -1674,8 +1715,12 @@ class ObjectClassificationWidget(QWidget):
         self._update_classifier_controls()
 
     def _retrain_classifier(self) -> None:
-        if not self._classifier_controller.can_retrain:
-            self._update_classifier_controls()
+        feature_matrix_metadata_state = self._selected_feature_matrix_metadata_state()
+        if (
+            not self._classifier_controller.can_retrain
+            or _feature_matrix_metadata_training_unavailable_reason(feature_matrix_metadata_state) is not None
+        ):
+            self._update_classifier_controls(feature_matrix_metadata_state)
             return
 
         self._classifier_controller.mark_dirty(reason="the user requested classifier training")

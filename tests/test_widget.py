@@ -905,6 +905,40 @@ def test_widget_feature_matrix_registration_button_enables_for_unregistered_matr
     assert widget.validation_status.isHidden()
 
 
+def test_widget_disables_retrain_button_for_unregistered_feature_matrix_metadata(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs["table"]
+    instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(
+        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
+        categories=[0, 1, 2],
+    )
+    table.uns.pop(_FEATURE_MATRICES_KEY, None)
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+    schedule_calls: list[str] = []
+    monkeypatch.setattr(widget._classifier_controller, "schedule_retrain", lambda: schedule_calls.append("schedule"))
+
+    assert widget.register_feature_matrix_button.isEnabled()
+    assert widget.retrain_button.isEnabled() is False
+    assert "Register feature metadata" in _tooltip_text(widget.retrain_button)
+    assert "Training annotations: 4 rows" in widget.classifier_preparation_status.text()
+
+    widget.auto_train_checkbox.setChecked(True)
+    layer.selected_label = 5
+    widget.class_spinbox.setValue(2)
+    widget.apply_class_button.click()
+
+    assert schedule_calls == []
+
+
 def test_widget_feature_matrix_registration_button_disables_for_valid_custom_metadata(
     qtbot,
     sdata_blobs: SpatialData,
@@ -1174,6 +1208,7 @@ def test_widget_disables_retrain_button_when_preparation_is_not_trainable(qtbot,
         [1 if int(instance_id) in {1, 2} else 0 for instance_id in instance_ids],
         categories=[0, 1],
     )
+    _set_feature_metadata(sdata_blobs)
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
@@ -1991,6 +2026,7 @@ def test_widget_auto_train_prediction_color_mode_keeps_immediate_refresh_feature
     monkeypatch,
     sdata_blobs: SpatialData,
 ) -> None:
+    _set_feature_metadata(sdata_blobs)
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
     widget = HarpyWidget(viewer)
@@ -2027,6 +2063,7 @@ def test_widget_auto_train_prediction_color_mode_keeps_immediate_refresh_feature
 def test_widget_auto_train_toggle_controls_annotation_retraining(
     qtbot, monkeypatch, backed_sdata_blobs: SpatialData
 ) -> None:
+    _set_feature_metadata(backed_sdata_blobs)
     layer = make_blobs_labels_layer(backed_sdata_blobs)
     viewer = DummyViewer(layers=[layer])
     widget = HarpyWidget(viewer)
@@ -2201,6 +2238,7 @@ def test_widget_marks_persistence_dirty_after_classifier_writes_results(qtbot, b
             instance_ids.astype(np.float64) / instance_ids.max(),
         ]
     )
+    _set_feature_metadata(backed_sdata_blobs)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
         [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
         categories=[0, 1, 2],
@@ -2414,6 +2452,7 @@ def test_widget_reload_freezes_classifier_worker_and_ignores_late_results(
             instance_ids.astype(np.float64) / instance_ids.max(),
         ]
     )
+    _set_feature_metadata(backed_sdata_blobs)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
         [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
         categories=[0, 1, 2],
@@ -2505,6 +2544,7 @@ def test_widget_retrain_button_recovers_after_worker_finishes(qtbot, monkeypatch
             instance_ids.astype(np.float64) / instance_ids.max(),
         ]
     )
+    _set_feature_metadata(sdata_blobs)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
         [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
         categories=[0, 1, 2],
@@ -2618,6 +2658,7 @@ def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs:
             instance_ids.astype(np.float64) / instance_ids.max(),
         ]
     )
+    _set_feature_metadata(sdata_blobs)
 
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
@@ -2672,6 +2713,7 @@ def test_widget_colors_predictions_using_pred_class_palette_in_pred_class_mode(q
             instance_ids.astype(np.float64) / instance_ids.max(),
         ]
     )
+    _set_feature_metadata(sdata_blobs)
 
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
@@ -2754,6 +2796,7 @@ def test_widget_retrain_button_triggers_manual_retraining(qtbot, monkeypatch, sd
         [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
         categories=[0, 1, 2],
     )
+    _set_feature_metadata(sdata_blobs)
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
     widget = HarpyWidget(viewer)
