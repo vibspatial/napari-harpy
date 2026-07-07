@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pandas as pd
 from matplotlib import colormaps
+from matplotlib.colors import to_rgba
 from napari.utils.colormaps import DirectLabelColormap
 
 from napari_harpy.core.annotation import (
@@ -28,6 +29,7 @@ from napari_harpy.core.spatialdata import (
     get_table_metadata,
 )
 from napari_harpy.viewer.adapter import ViewerAdapter
+from napari_harpy.viewer.labels_colormap import direct_label_colormap_from_rgba
 from napari_harpy.viewer.labels_styling import _build_labels_features, _get_region_rows_by_instance
 from napari_harpy.widgets.object_classification.controller import (
     PRED_CLASS_COLORS_KEY,
@@ -52,6 +54,7 @@ COLOR_BY_OPTIONS = (
 
 MISSING_CONTINUOUS_COLOR = "#80808099"
 PRED_CONFIDENCE_COLORMAP = "viridis"
+_TRANSPARENT_RGBA = np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
 
 
 class ViewerStylingController:
@@ -139,12 +142,13 @@ class ViewerStylingController:
 
         if self._color_by == COLOR_BY_PRED_CONFIDENCE:
             cmap = colormaps[PRED_CONFIDENCE_COLORMAP]
+            missing_confidence_color = _rgba_array(MISSING_CONTINUOUS_COLOR)
             for instance_id in instance_ids:
                 confidence = float(feature_rows.at[instance_id, PRED_CONFIDENCE_COLUMN])
                 if np.isnan(confidence):
-                    color_dict[instance_id] = MISSING_CONTINUOUS_COLOR
+                    color_dict[int(instance_id)] = missing_confidence_color
                 else:
-                    color_dict[instance_id] = cmap(float(np.clip(confidence, 0.0, 1.0)))
+                    color_dict[int(instance_id)] = _rgba_array(cmap(float(np.clip(confidence, 0.0, 1.0))))
         else:
             class_by_instance = feature_rows[self._color_by]
             category_column = USER_CLASS_COLUMN
@@ -160,7 +164,11 @@ class ViewerStylingController:
                 unlabeled_class=UNLABELED_CLASS,
                 unlabeled_color=UNLABELED_COLOR,
             )
-            unlabeled_color = class_color_lookup.get(UNLABELED_CLASS, UNLABELED_COLOR)
+            unlabeled_color = class_color_lookup.get(UNLABELED_CLASS)
+            if unlabeled_color is None:
+                # Defensive fallback for an unexpectedly incomplete lookup;
+                # the normal path already returns an RGBA array for class 0.
+                unlabeled_color = _rgba_array(UNLABELED_COLOR)
             color_dict = _base_labels_color_dict(unlabeled_color)
             if self._color_by == COLOR_BY_USER_CLASS:
                 class_by_instance = class_by_instance[class_by_instance != UNLABELED_CLASS]
@@ -171,10 +179,7 @@ class ViewerStylingController:
                     continue
                 color_dict[int(instance_id)] = class_color_lookup.get(class_id, unlabeled_color)
 
-        self._labels_layer.colormap = DirectLabelColormap(color_dict=color_dict, background_value=0)
-        refresh = getattr(self._labels_layer, "refresh", None)
-        if callable(refresh):
-            refresh()
+        self._labels_layer.colormap = direct_label_colormap_from_rgba(color_dict, background_value=0)
 
     def refresh_layer_features(self, *, feature_rows: pd.DataFrame | None = None) -> None:
         """Expose current label and prediction values as napari layer features."""
@@ -211,11 +216,8 @@ class ViewerStylingController:
         if color_dict is None or feature_rows is None:
             return False
 
-        self._labels_layer.colormap = DirectLabelColormap(color_dict=color_dict, background_value=0)
+        self._labels_layer.colormap = direct_label_colormap_from_rgba(color_dict, background_value=0)
         self._labels_layer.features = feature_rows
-        refresh = getattr(self._labels_layer, "refresh", None)
-        if callable(refresh):
-            refresh()
 
         return True
 
@@ -241,7 +243,7 @@ class ViewerStylingController:
     def _build_user_class_annotation_color_dict(
         self,
         change: UserClassAnnotationChange,
-    ) -> dict[int | None, Any] | None:
+    ) -> dict[int | None, np.ndarray] | None:
         colormap = getattr(self._labels_layer, "colormap", None)
         if not isinstance(colormap, DirectLabelColormap):
             return None
@@ -283,17 +285,20 @@ class ViewerStylingController:
         updated_features.loc[matching_rows, USER_CLASS_COLUMN] = int(change.class_id)
         return updated_features
 
-    def _get_valid_user_class_color_lookup(self) -> dict[int, str] | None:
+    def _get_valid_user_class_color_lookup(self) -> dict[int, np.ndarray] | None:
         table = self._get_bound_table()
         if table is None or USER_CLASS_COLUMN not in table.obs:
             return None
 
-        return _valid_categorical_class_color_lookup(
+        lookup = _valid_categorical_class_color_lookup(
             table.obs[USER_CLASS_COLUMN],
             table.uns.get(USER_CLASS_COLORS_KEY),
             unlabeled_class=UNLABELED_CLASS,
             unlabeled_color=UNLABELED_COLOR,
         )
+        if lookup is None:
+            return None
+        return _rgba_color_lookup(lookup)
 
     def _get_bound_table(self) -> AnnData | None:
         if self._selected_spatialdata is None or self._selected_table_name is None:
@@ -369,7 +374,7 @@ class ViewerStylingController:
         unlabeled_class: int = UNLABELED_CLASS,
         unlabeled_color: str = UNLABELED_COLOR,
         extra_class_values: pd.Series | None = None,
-    ) -> dict[int, str]:
+    ) -> dict[int, np.ndarray]:
         """Build a class-id -> color lookup for a discrete table column.
 
         Stored palettes in ``table.uns[colors_key]`` are interpreted in category order
@@ -399,28 +404,34 @@ class ViewerStylingController:
                     if extra_class_ids is None:
                         # Defensive fallback for unexpected dirty feature values. This preserves
                         # robust class-value normalization instead of trusting a corrupt fast path.
-                        return self._get_class_color_lookup_from_normalized_values(
-                            category_column=category_column,
-                            colors_key=colors_key,
-                            unlabeled_class=unlabeled_class,
-                            unlabeled_color=unlabeled_color,
-                            extra_class_values=extra_class_values,
+                        return _rgba_color_lookup(
+                            self._get_class_color_lookup_from_normalized_values(
+                                category_column=category_column,
+                                colors_key=colors_key,
+                                unlabeled_class=unlabeled_class,
+                                unlabeled_color=unlabeled_color,
+                                extra_class_values=extra_class_values,
+                            )
                         )
                     categories.update(extra_class_ids)
 
-                return backfill_missing_class_colors(
-                    fast_lookup,
-                    sorted(categories),
-                    unlabeled_class=unlabeled_class,
-                    unlabeled_color=unlabeled_color,
+                return _rgba_color_lookup(
+                    backfill_missing_class_colors(
+                        fast_lookup,
+                        sorted(categories),
+                        unlabeled_class=unlabeled_class,
+                        unlabeled_color=unlabeled_color,
+                    )
                 )
 
-        return self._get_class_color_lookup_from_normalized_values(
-            category_column=category_column,
-            colors_key=colors_key,
-            unlabeled_class=unlabeled_class,
-            unlabeled_color=unlabeled_color,
-            extra_class_values=extra_class_values,
+        return _rgba_color_lookup(
+            self._get_class_color_lookup_from_normalized_values(
+                category_column=category_column,
+                colors_key=colors_key,
+                unlabeled_class=unlabeled_class,
+                unlabeled_color=unlabeled_color,
+                extra_class_values=extra_class_values,
+            )
         )
 
     def _get_class_color_lookup_from_normalized_values(
@@ -556,5 +567,13 @@ def _read_class_values_without_normalizing(values: pd.Series, *, unlabeled_class
     return categories
 
 
-def _base_labels_color_dict(default_color: Any) -> dict[int | None, Any]:
-    return {None: default_color, 0: "transparent"}
+def _base_labels_color_dict(default_color: Any) -> dict[int | None, np.ndarray]:
+    return {None: _rgba_array(default_color), 0: _TRANSPARENT_RGBA.copy()}
+
+
+def _rgba_color_lookup(color_lookup: dict[int, Any]) -> dict[int, np.ndarray]:
+    return {class_id: _rgba_array(color) for class_id, color in color_lookup.items()}
+
+
+def _rgba_array(color: Any) -> np.ndarray:
+    return np.asarray(to_rgba(color), dtype=np.float32)

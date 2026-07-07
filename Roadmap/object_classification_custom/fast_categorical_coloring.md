@@ -277,6 +277,8 @@ Acceptance criteria:
 
 ### Slice 3: Use Helper In Object-Classification Labels Styling
 
+Status: implemented.
+
 Update `src/napari_harpy/widgets/object_classification/viewer_styling.py` for
 all direct labels coloring paths:
 
