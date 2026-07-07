@@ -18,7 +18,6 @@ from napari_harpy.core.annotation import UNLABELED_CLASS, USER_CLASS_COLUMN
 from napari_harpy.core.classifier import (
     _get_feature_metadata,
     _get_finite_feature_row_mask,
-    _normalize_feature_matrix,
     _normalize_prediction_regions,
     _resolve_region_row_positions,
 )
@@ -28,6 +27,13 @@ from napari_harpy.core.classifier_export import (
     build_classifier_export_bundle,
     normalize_feature_columns,
     write_classifier_export_bundle,
+)
+from napari_harpy.core.feature_matrix_metadata import (
+    CUSTOM_OBSM_SOURCE_KIND,
+    FeatureMatrixMetadataState,
+    inspect_feature_matrix_metadata,
+    normalize_feature_matrix,
+    normalize_feature_matrix_source_kind,
 )
 from napari_harpy.core.spatialdata import SpatialDataTableMetadata, get_table, get_table_metadata
 
@@ -56,6 +62,8 @@ CLASSIFIER_CONFIG_KEY = _classifier_core.CLASSIFIER_CONFIG_KEY
 
 DEFAULT_RETRAIN_DEBOUNCE_MS = 300
 MIN_LABELED_SAMPLES = 2
+ClassifierTrainingBlockerKind = Literal["metadata", "data"]
+_CLASSIFIER_TRAINING_BLOCKER_KINDS: tuple[ClassifierTrainingBlockerKind, ...] = ("metadata", "data")
 RANDOM_FOREST_PARAMS = {
     "n_estimators": 100,
     "random_state": 0,
@@ -110,11 +118,22 @@ class ClassifierPreparationSummary:
 
     training_scope: ResolvedClassifierScope
     prediction_scope: ResolvedClassifierScope
-    eligible: bool
     reason: str
     labeled_count: int
     class_labels: tuple[int, ...]
     n_features: int | None
+    training_blocker_kind: ClassifierTrainingBlockerKind | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            self.training_blocker_kind is not None
+            and self.training_blocker_kind not in _CLASSIFIER_TRAINING_BLOCKER_KINDS
+        ):
+            raise ValueError(f"Unsupported classifier training blocker kind: {self.training_blocker_kind!r}.")
+
+    @property
+    def eligible(self) -> bool:
+        return self.training_blocker_kind is None
 
     @property
     def resolved_training_row_count(self) -> int:
@@ -202,6 +221,30 @@ def _fit_classifier_job(job: ClassifierJob) -> ClassifierJobResult:
         summary=job.summary,
         estimator=classifier,
     )
+
+
+def _feature_matrix_metadata_training_blocker_reason(
+    metadata_state: FeatureMatrixMetadataState,
+) -> str | None:
+    if metadata_state.status == "registered_valid":
+        return None
+    if metadata_state.status == "unregistered":
+        return f'Register feature metadata for "{metadata_state.feature_key}" before training the classifier.'
+    if metadata_state.status == "registered_mismatched":
+        if not metadata_state.error:
+            raise ValueError("Feature matrix metadata state 'registered_mismatched' must include an error message.")
+        detail = metadata_state.error
+        return f'Feature matrix "{metadata_state.feature_key}" has mismatched metadata. {detail}'
+    if metadata_state.status == "invalid_matrix":
+        if not metadata_state.error:
+            raise ValueError("Feature matrix metadata state 'invalid_matrix' must include an error message.")
+        detail = metadata_state.error
+        return f'Feature matrix "{metadata_state.feature_key}" cannot be used for training. {detail}'
+    if metadata_state.status == "missing_matrix":
+        if not metadata_state.error:
+            raise ValueError("Feature matrix metadata state 'missing_matrix' must include an error message.")
+        return metadata_state.error
+    raise ValueError(f"Unsupported feature matrix metadata status: {metadata_state.status!r}.")
 
 
 class ClassifierController:
@@ -381,6 +424,14 @@ class ClassifierController:
             self._set_status("Classifier: choose a feature matrix before training.", kind="warning")
             return False
 
+        summary = self._prepare_classifier_summary()
+        if summary is None:
+            self._set_status("Classifier: choose an annotation table and feature matrix.", kind="warning")
+            return False
+        if summary.training_blocker_kind == "metadata":
+            self._set_status(f"Classifier: {summary.reason}", kind="warning")
+            return False
+
         self._latest_requested_job_id += 1
         self._debounce_timer.stop()
         self._cancel_active_worker()
@@ -492,6 +543,9 @@ class ClassifierController:
 
         summary = job.summary
         if not summary.eligible:
+            if summary.training_blocker_kind == "metadata":
+                self._set_status(f"Classifier: {summary.reason}", kind="warning")
+                return
             self._apply_ineligible_state(job)
             return
 
@@ -527,36 +581,51 @@ class ClassifierController:
             return ClassifierPreparationSummary(
                 training_scope=pre_feature_scopes.training,
                 prediction_scope=pre_feature_scopes.prediction,
-                eligible=False,
                 reason="Choose a feature matrix before training the classifier.",
                 labeled_count=0,
                 class_labels=(),
                 n_features=None,
+                training_blocker_kind="data",
+            )
+
+        feature_matrix_metadata_state = inspect_feature_matrix_metadata(table, self._selected_feature_key)
+        feature_matrix_metadata_blocker_reason = _feature_matrix_metadata_training_blocker_reason(
+            feature_matrix_metadata_state
+        )
+        if feature_matrix_metadata_blocker_reason is not None:
+            return ClassifierPreparationSummary(
+                training_scope=pre_feature_scopes.training,
+                prediction_scope=pre_feature_scopes.prediction,
+                reason=feature_matrix_metadata_blocker_reason,
+                labeled_count=0,
+                class_labels=(),
+                n_features=feature_matrix_metadata_state.n_features,
+                training_blocker_kind="metadata",
             )
 
         try:
             # Preparation only needs counts and validity masks, so avoid copying
             # the matrix on every widget refresh/status update.
-            feature_matrix = _normalize_feature_matrix(table.obsm[self._selected_feature_key], table.n_obs, copy=False)
+            feature_matrix = normalize_feature_matrix(table.obsm[self._selected_feature_key], table.n_obs, copy=False)
         except KeyError:
             return ClassifierPreparationSummary(
                 training_scope=pre_feature_scopes.training,
                 prediction_scope=pre_feature_scopes.prediction,
-                eligible=False,
                 reason=f'Feature matrix "{self._selected_feature_key}" is not available in ".obsm".',
                 labeled_count=0,
                 class_labels=(),
                 n_features=None,
+                training_blocker_kind="data",
             )
         except ValueError as error:
             return ClassifierPreparationSummary(
                 training_scope=pre_feature_scopes.training,
                 prediction_scope=pre_feature_scopes.prediction,
-                eligible=False,
                 reason=str(error),
                 labeled_count=0,
                 class_labels=(),
                 n_features=None,
+                training_blocker_kind="data",
             )
 
         feature_valid_row_mask = _get_finite_feature_row_mask(feature_matrix)
@@ -569,7 +638,6 @@ class ClassifierController:
             return ClassifierPreparationSummary(
                 training_scope=training_scope,
                 prediction_scope=prediction_scope,
-                eligible=False,
                 reason=(
                     f'No table rows for labels element "{self._selected_labels_name}" were found in '
                     f'"{self._selected_table_name}".'
@@ -577,13 +645,13 @@ class ClassifierController:
                 labeled_count=0,
                 class_labels=(),
                 n_features=n_features,
+                training_blocker_kind="data",
             )
 
         if prediction_scope.n_eligible_rows == 0:
             return ClassifierPreparationSummary(
                 training_scope=training_scope,
                 prediction_scope=prediction_scope,
-                eligible=False,
                 reason=(
                     f'Feature matrix "{self._selected_feature_key}" has no usable rows in the prediction scope: '
                     f"all {prediction_scope.n_rows_in_regions} row(s) have non-finite or missing values."
@@ -591,24 +659,24 @@ class ClassifierController:
                 labeled_count=0,
                 class_labels=(),
                 n_features=n_features,
+                training_blocker_kind="data",
             )
 
         if n_features == 0:
             return ClassifierPreparationSummary(
                 training_scope=training_scope,
                 prediction_scope=prediction_scope,
-                eligible=False,
                 reason=f'Feature matrix "{self._selected_feature_key}" does not contain any columns.',
                 labeled_count=0,
                 class_labels=(),
                 n_features=0,
+                training_blocker_kind="data",
             )
 
         if training_scope.n_rows_in_regions > 0 and training_scope.n_eligible_rows == 0:
             return ClassifierPreparationSummary(
                 training_scope=training_scope,
                 prediction_scope=prediction_scope,
-                eligible=False,
                 reason=(
                     f'Feature matrix "{self._selected_feature_key}" has no usable rows in the training scope: '
                     f"all {training_scope.n_rows_in_regions} row(s) have non-finite or missing values."
@@ -616,6 +684,7 @@ class ClassifierController:
                 labeled_count=0,
                 class_labels=(),
                 n_features=n_features,
+                training_blocker_kind="data",
             )
 
         user_class_values = _get_user_class_values(table.obs, len(table.obs))
@@ -625,7 +694,6 @@ class ClassifierController:
         summary = ClassifierPreparationSummary(
             training_scope=training_scope,
             prediction_scope=prediction_scope,
-            eligible=True,
             reason="Ready to train.",
             labeled_count=int(labeled_mask.sum()),
             class_labels=class_labels,
@@ -634,7 +702,6 @@ class ClassifierController:
 
         if summary.labeled_count < MIN_LABELED_SAMPLES:
             summary = ClassifierPreparationSummary(
-                eligible=False,
                 reason=(
                     f"Need at least {MIN_LABELED_SAMPLES} labeled samples before training the classifier. "
                     f"Resolved {summary.resolved_training_row_count} eligible training row(s) across "
@@ -646,10 +713,10 @@ class ClassifierController:
                 labeled_count=summary.labeled_count,
                 class_labels=summary.class_labels,
                 n_features=summary.n_features,
+                training_blocker_kind="data",
             )
         elif len(summary.class_labels) < 2:
             summary = ClassifierPreparationSummary(
-                eligible=False,
                 reason=(
                     "Need at least two labeled classes before training the classifier. "
                     f"Resolved {summary.resolved_training_row_count} eligible training row(s) across "
@@ -662,6 +729,7 @@ class ClassifierController:
                 labeled_count=summary.labeled_count,
                 class_labels=summary.class_labels,
                 n_features=summary.n_features,
+                training_blocker_kind="data",
             )
 
         return summary
@@ -696,7 +764,7 @@ class ClassifierController:
             # Worker jobs must own an eager snapshot of feature values at launch
             # time. If `.obsm` later supports lazy arrays, this path should
             # explicitly materialize them instead of relying on `.copy()`.
-            feature_matrix = _normalize_feature_matrix(
+            feature_matrix = normalize_feature_matrix(
                 table.obsm[self._selected_feature_key],
                 table.n_obs,
                 copy=True,
@@ -705,11 +773,11 @@ class ClassifierController:
             summary = ClassifierPreparationSummary(
                 training_scope=summary.training_scope,
                 prediction_scope=summary.prediction_scope,
-                eligible=False,
                 reason=f'Feature matrix "{self._selected_feature_key}" is not available in ".obsm".',
                 labeled_count=summary.labeled_count,
                 class_labels=summary.class_labels,
                 n_features=None,
+                training_blocker_kind="data",
             )
             return ClassifierJob(
                 job_id=job_id,
@@ -725,11 +793,11 @@ class ClassifierController:
             summary = ClassifierPreparationSummary(
                 training_scope=summary.training_scope,
                 prediction_scope=summary.prediction_scope,
-                eligible=False,
                 reason=str(error),
                 labeled_count=summary.labeled_count,
                 class_labels=summary.class_labels,
                 n_features=None,
+                training_blocker_kind="data",
             )
             return ClassifierJob(
                 job_id=job_id,
@@ -836,14 +904,14 @@ class ClassifierController:
                 error_summary = ClassifierPreparationSummary(
                     training_scope=_empty_resolved_classifier_scope(self._selected_training_scope),
                     prediction_scope=_empty_resolved_classifier_scope(self._selected_prediction_scope),
-                    eligible=False,
                     reason=str(error),
                     labeled_count=0,
                     class_labels=(),
                     n_features=None,
+                    training_blocker_kind="data",
                 )
             else:
-                error_summary = replace(active_job.summary, eligible=False, reason=str(error))
+                error_summary = replace(active_job.summary, reason=str(error), training_blocker_kind="data")
             table.uns[CLASSIFIER_CONFIG_KEY] = self._build_classifier_config(
                 feature_key=None if active_job is None else active_job.feature_key,
                 table_name=None if active_job is None else active_job.table_name,
@@ -904,9 +972,15 @@ class ClassifierController:
         try:
             feature_metadata = _get_feature_metadata(table, result.feature_key)
             feature_columns = normalize_feature_columns(feature_metadata)
+            source_kind = normalize_feature_matrix_source_kind(feature_metadata)
             # Export relies on `.uns["feature_matrices"]` for column order, so
             # ensure that metadata still matches the live `.obsm` matrix shape.
-            self._validate_current_feature_matrix_matches_columns(table, result.feature_key, feature_columns)
+            _classifier_core._validate_current_feature_matrix_matches_columns(
+                table,
+                result.feature_key,
+                feature_columns,
+                custom_obsm=source_kind == CUSTOM_OBSM_SOURCE_KIND,
+            )
         except ValueError as error:
             self._clear_model_snapshot(str(error))
             return
@@ -945,7 +1019,9 @@ class ClassifierController:
                 f'The selected feature matrix "{self._selected_feature_key}" does not match the fitted model '
                 f'feature matrix "{snapshot.feature_key}".'
             )
-        current_feature_columns = normalize_feature_columns(_get_feature_metadata(table, snapshot.feature_key))
+        current_feature_metadata = _get_feature_metadata(table, snapshot.feature_key)
+        current_feature_columns = normalize_feature_columns(current_feature_metadata)
+        current_source_kind = normalize_feature_matrix_source_kind(current_feature_metadata)
         if current_feature_columns != snapshot.feature_columns:
             raise ValueError(
                 "Current feature metadata no longer matches the fitted model snapshot. "
@@ -953,24 +1029,12 @@ class ClassifierController:
             )
         # Export relies on `.uns["feature_matrices"]` for column order, so
         # ensure that metadata still matches the live `.obsm` matrix shape.
-        self._validate_current_feature_matrix_matches_columns(table, snapshot.feature_key, snapshot.feature_columns)
-
-    def _validate_current_feature_matrix_matches_columns(
-        self,
-        table: AnnData,
-        feature_key: str,
-        feature_columns: tuple[str, ...],
-    ) -> None:
-        try:
-            feature_matrix = _normalize_feature_matrix(table.obsm[feature_key], table.n_obs, copy=False)
-        except KeyError as error:
-            raise ValueError(f'Feature matrix "{feature_key}" is not available in ".obsm".') from error
-
-        if int(feature_matrix.shape[1]) != len(feature_columns):
-            raise ValueError(
-                f'Feature matrix "{feature_key}" has {int(feature_matrix.shape[1])} column(s), but its metadata '
-                f"describes {len(feature_columns)} feature column(s)."
-            )
+        _classifier_core._validate_current_feature_matrix_matches_columns(
+            table,
+            snapshot.feature_key,
+            snapshot.feature_columns,
+            custom_obsm=current_source_kind == CUSTOM_OBSM_SOURCE_KIND,
+        )
 
     def _get_bound_table(self) -> AnnData | None:
         if self._selected_spatialdata is None or self._selected_table_name is None:

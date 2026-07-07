@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -20,6 +21,10 @@ from napari_harpy.core.classifier_export import (
     CLASSIFIER_EXPORT_SCHEMA_VERSION,
     ClassifierExportBundle,
     write_classifier_export_bundle,
+)
+from napari_harpy.core.feature_matrix_metadata import (
+    HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND,
+    register_feature_matrix_metadata,
 )
 
 _FEATURE_MATRICES_KEY = "feature_matrices"
@@ -59,6 +64,7 @@ def _set_feature_metadata(
         "source_image": source_image,
         "coordinate_system": "global",
         "features": list(features),
+        "source_kind": HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND,
     }
     if source_channels is not _MISSING:
         metadata["source_channels"] = source_channels
@@ -108,6 +114,16 @@ def _make_classifier_bundle(
     )
 
 
+def _make_custom_obsm_classifier_bundle(sdata: SpatialData) -> ClassifierExportBundle:
+    _set_deterministic_features(sdata)
+    register_feature_matrix_metadata(
+        sdata["table"],
+        "features_1",
+        feature_columns=("is_large", "instance_fraction"),
+    )
+    return _make_classifier_bundle(sdata)
+
+
 def _make_area_classifier_bundle() -> ClassifierExportBundle:
     classifier = RandomForestClassifier(n_estimators=10, random_state=0, n_jobs=1)
     classifier.fit(np.array([[0.0], [100.0]], dtype=np.float64), np.array([1, 2], dtype=np.int64))
@@ -147,6 +163,7 @@ def _make_area_classifier_bundle() -> ClassifierExportBundle:
             "source_channels": None,
             "coordinate_system": "global",
             "features": ["area"],
+            "source_kind": HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND,
         },
     )
 
@@ -205,6 +222,16 @@ def test_apply_classifier_from_path_writes_predictions_and_apply_config(
     assert config["prediction_regions"] == ["blobs_labels"]
     assert config["pred_class_column"] == PRED_CLASS_COLUMN
     assert config["pred_confidence_column"] == PRED_CONFIDENCE_COLUMN
+
+
+def test_write_classifier_export_bundle_rejects_missing_source_kind(tmp_path: Path) -> None:
+    bundle = _make_area_classifier_bundle()
+    source_feature_metadata = dict(bundle.source_feature_metadata)
+    del source_feature_metadata["source_kind"]
+    invalid_bundle = replace(bundle, source_feature_metadata=source_feature_metadata)
+
+    with pytest.raises(ValueError, match="source_kind"):
+        write_classifier_export_bundle(tmp_path / "missing-source-kind.harpy-classifier.joblib", invalid_bundle)
 
 
 def test_apply_classifier_can_write_custom_prediction_columns(sdata_blobs: SpatialData) -> None:
@@ -313,6 +340,29 @@ def test_compute_features_for_classifier_rejects_explicit_triplet_channels(sdata
     assert "computed_features" not in sdata_blobs["table"].obsm
 
 
+def test_compute_features_for_classifier_rejects_custom_obsm_bundle(sdata_blobs: SpatialData) -> None:
+    classifier = _make_custom_obsm_classifier_bundle(sdata_blobs)
+
+    with pytest.raises(ValueError, match="headless.apply_classifier"):
+        headless.compute_features_for_classifier(
+            sdata_blobs,
+            classifier=classifier,
+            target=headless.HeadlessFeatureTarget(
+                table_name="table",
+                feature_key="computed_features",
+                triplets=(
+                    headless.FeatureExtractionTriplet(
+                        coordinate_system="global",
+                        labels_name="blobs_labels",
+                        image_name=None,
+                    ),
+                ),
+            ),
+        )
+
+    assert "computed_features" not in sdata_blobs["table"].obsm
+
+
 def test_apply_classifier_with_feature_extraction_uses_classifier_source_channels(sdata_blobs: SpatialData) -> None:
     _set_deterministic_features(sdata_blobs)
     _set_feature_metadata(
@@ -340,6 +390,34 @@ def test_apply_classifier_with_feature_extraction_uses_classifier_source_channel
     metadata = sdata_blobs["table"].uns[_FEATURE_MATRICES_KEY]["computed_features"]
     assert list(metadata["feature_columns"]) == ["mean__1", "mean__0"]
     assert list(metadata["source_channels"]) == ["1", "0"]
+
+
+def test_apply_classifier_with_feature_extraction_rejects_custom_obsm_bundle(sdata_blobs: SpatialData) -> None:
+    classifier = _make_custom_obsm_classifier_bundle(sdata_blobs)
+
+    with pytest.raises(ValueError, match="register_feature_matrix_metadata"):
+        headless.apply_classifier_with_feature_extraction(
+            sdata_blobs,
+            classifier=classifier,
+            table_name="table",
+            labels_name="blobs_labels",
+            feature_key="computed_features",
+            coordinate_system="global",
+        )
+
+    assert "computed_features" not in sdata_blobs["table"].obsm
+
+
+def test_apply_classifier_accepts_custom_obsm_bundle_with_existing_compatible_matrix(
+    sdata_blobs: SpatialData,
+) -> None:
+    classifier = _make_custom_obsm_classifier_bundle(sdata_blobs)
+
+    result = headless.apply_classifier(sdata_blobs, classifier=classifier, table_name="table")
+
+    assert result.feature_key == "features_1"
+    assert result.n_predicted_rows == sdata_blobs["table"].n_obs
+    assert PRED_CLASS_COLUMN in sdata_blobs["table"].obs
 
 
 def test_apply_classifier_with_feature_extraction_rejects_missing_source_channels(sdata_blobs: SpatialData) -> None:
@@ -571,6 +649,28 @@ def test_apply_classifier_rejects_feature_matrix_shape_drift(sdata_blobs: Spatia
         headless.apply_classifier(sdata_blobs, bundle, table_name="table")
 
 
+def test_apply_classifier_rejects_custom_feature_matrix_shape_drift_with_custom_message(
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_deterministic_features(sdata_blobs)
+    table = sdata_blobs["table"]
+    register_feature_matrix_metadata(
+        table,
+        "features_1",
+        feature_columns=("is_large", "instance_fraction"),
+    )
+    bundle = _make_classifier_bundle(sdata_blobs)
+    # Simulate stale custom metadata: the registered schema still has two
+    # feature columns, but `np.column_stack(...)` adds a third live `.obsm`
+    # column below.
+    table.obsm["features_1"] = np.column_stack(
+        [np.asarray(table.obsm["features_1"], dtype=np.float64), np.zeros(table.n_obs)]
+    )
+
+    with pytest.raises(ValueError, match="live `.obsm` width"):
+        headless.apply_classifier(sdata_blobs, bundle, table_name="table")
+
+
 def test_apply_classifier_rejects_feature_column_order_mismatch(sdata_blobs: SpatialData) -> None:
     _set_deterministic_features(sdata_blobs)
     _set_feature_metadata(sdata_blobs)
@@ -581,6 +681,45 @@ def test_apply_classifier_rejects_feature_column_order_mismatch(sdata_blobs: Spa
     ]
 
     with pytest.raises(ValueError, match="do not match"):
+        headless.apply_classifier(sdata_blobs, bundle, table_name="table")
+
+
+def test_apply_classifier_rejects_custom_feature_column_order_mismatch_with_custom_message(
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_deterministic_features(sdata_blobs)
+    table = sdata_blobs["table"]
+    register_feature_matrix_metadata(
+        table,
+        "features_1",
+        feature_columns=("is_large", "instance_fraction"),
+    )
+    bundle = _make_classifier_bundle(sdata_blobs)
+    table.uns[_FEATURE_MATRICES_KEY]["features_1"]["feature_columns"] = [
+        "instance_fraction",
+        "is_large",
+    ]
+
+    with pytest.raises(ValueError, match="same `feature_columns` in the same order"):
+        headless.apply_classifier(sdata_blobs, bundle, table_name="table")
+
+
+def test_apply_classifier_rejects_custom_target_feature_order_mismatch_with_custom_message(
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_deterministic_features(sdata_blobs)
+    # Build the bundle from Harpy-style metadata with feature columns
+    # `is_large`, `instance_fraction`.
+    _set_feature_metadata(sdata_blobs)
+    bundle = _make_classifier_bundle(sdata_blobs)
+    register_feature_matrix_metadata(
+        sdata_blobs["table"],
+        "features_1",
+        feature_columns=("instance_fraction", "is_large"),
+        overwrite=True,
+    )
+
+    with pytest.raises(ValueError, match="same `feature_columns` in the same order"):
         headless.apply_classifier(sdata_blobs, bundle, table_name="table")
 
 

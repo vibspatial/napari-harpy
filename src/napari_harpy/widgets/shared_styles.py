@@ -60,6 +60,20 @@ ACTION_BUTTON_STYLESHEET = (
     f"QPushButton:disabled {{ background-color: {WIDGET_PANEL_SUBTLE_COLOR}; "
     f"border-color: {WIDGET_DISABLED_BORDER_COLOR}; color: {WIDGET_DISABLED_TEXT_COLOR}; }}"
 )
+SMALL_ACTION_BUTTON_STYLESHEET = (
+    "QPushButton {"
+    f"background-color: {WIDGET_PANEL_COLOR}; "
+    f"border: 1px solid {WIDGET_BORDER_COLOR}; "
+    "border-radius: 8px; "
+    f"color: {WIDGET_TEXT_COLOR}; "
+    "font-weight: 600; "
+    "padding: 4px 10px; "
+    "min-height: 20px;}"
+    f"QPushButton:hover {{ background-color: {WIDGET_PANEL_MUTED_COLOR}; border-color: {WIDGET_BORDER_STRONG_COLOR}; }}"
+    f"QPushButton:pressed {{ background-color: {WIDGET_PRESSED_COLOR}; border-color: {WIDGET_BORDER_STRONG_COLOR}; }}"
+    f"QPushButton:disabled {{ background-color: {WIDGET_PANEL_SUBTLE_COLOR}; "
+    f"border-color: {WIDGET_DISABLED_BORDER_COLOR}; color: {WIDGET_DISABLED_TEXT_COLOR}; }}"
+)
 CALCULATE_BUTTON_STYLESHEET = ACTION_BUTTON_STYLESHEET
 CHECKBOX_STYLESHEET = (
     "QCheckBox {"

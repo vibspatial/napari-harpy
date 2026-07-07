@@ -5,12 +5,14 @@ import numpy as np
 import pandas as pd
 import pytest
 import zarr
+from harpy.utils._keys import _FEATURE_MATRICES_KEY
 from spatialdata import SpatialData, read_zarr
 from spatialdata.models import TableModel
 
 from napari_harpy._app_state import HarpyAppState
 from napari_harpy._persistence import PersistenceController
 from napari_harpy.core.annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
+from napari_harpy.core.feature_matrix_metadata import CUSTOM_OBSM_SOURCE_KIND, register_feature_matrix_metadata
 from napari_harpy.core.spatialdata import get_table
 from napari_harpy.widgets.object_classification.controller import (
     CLASSIFIER_CONFIG_KEY,
@@ -120,6 +122,62 @@ def test_persistence_controller_syncs_table_obs_and_colors_to_backed_store(backe
     assert reread["table"].uns[CLASSIFIER_CONFIG_KEY]["feature_key"] == "features_1"
     assert reread["table"].uns[CLASSIFIER_CONFIG_KEY]["prediction_scope"] == "selected_segmentation_only"
     assert sorted(reread["table"].obsm.keys()) == ["features_1", "features_2"]
+
+
+def test_persistence_controller_syncs_feature_matrix_metadata_to_backed_store(
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    controller = PersistenceController()
+    controller.bind(backed_sdata_blobs, "table")
+    table = backed_sdata_blobs["table"]
+    feature_key = "features_1"
+    feature_columns = [f"custom_feature_{index}" for index in range(table.obsm[feature_key].shape[1])]
+    register_feature_matrix_metadata(
+        table,
+        feature_key,
+        feature_columns=feature_columns,
+        overwrite=True,
+    )
+    controller.mark_dirty()
+
+    assert controller.is_dirty is True
+
+    table_path = controller.write_table_state()
+    reread = read_zarr(backed_sdata_blobs.path)
+    metadata = reread["table"].uns[_FEATURE_MATRICES_KEY][feature_key]
+
+    assert table_path == "tables/table"
+    assert metadata["source_kind"] == CUSTOM_OBSM_SOURCE_KIND
+    assert list(metadata["feature_columns"]) == feature_columns
+    assert controller.is_dirty is False
+
+
+def test_persistence_controller_reloads_registered_custom_feature_matrix_metadata(
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    controller = PersistenceController()
+    controller.bind(backed_sdata_blobs, "table")
+    table = backed_sdata_blobs["table"]
+    feature_key = "features_1"
+    feature_columns = [f"custom_feature_{index}" for index in range(table.obsm[feature_key].shape[1])]
+    register_feature_matrix_metadata(
+        table,
+        feature_key,
+        feature_columns=feature_columns,
+        overwrite=True,
+    )
+    controller.write_table_state()
+
+    # Deliberately corrupt only the in-memory metadata so reload must prove it
+    # restores the valid custom metadata that was already written to zarr.
+    table.uns[_FEATURE_MATRICES_KEY][feature_key] = {"source_kind": "stale_in_memory"}
+
+    table_path = controller.reload_table_state()
+    metadata = table.uns[_FEATURE_MATRICES_KEY][feature_key]
+
+    assert table_path == "tables/table"
+    assert metadata["source_kind"] == CUSTOM_OBSM_SOURCE_KIND
+    assert list(metadata["feature_columns"]) == feature_columns
 
 
 def test_persistence_controller_syncs_multi_region_classifier_config_fields(

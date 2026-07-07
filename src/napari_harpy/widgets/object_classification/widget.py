@@ -33,12 +33,18 @@ from napari_harpy._persistence import PersistenceController
 from napari_harpy._resources import get_logo_path
 from napari_harpy.core.annotation import UNLABELED_CLASS, USER_CLASS_COLUMN
 from napari_harpy.core.classifier_export import DEFAULT_CLASSIFIER_EXPORT_SUFFIX
+from napari_harpy.core.feature_matrix_metadata import (
+    FeatureMatrixMetadataState,
+    inspect_feature_matrix_metadata,
+    register_feature_matrix_metadata,
+)
 from napari_harpy.core.spatialdata import (
     SpatialDataLabelsOption,
     SpatialDataTableMetadata,
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
     get_spatialdata_labels_options_for_coordinate_system_from_sdata,
+    get_table,
     get_table_metadata,
     get_table_obsm_keys,
     validate_table_binding,
@@ -54,6 +60,9 @@ from napari_harpy.widgets.object_classification.controller import (
     PRED_CONFIDENCE_COLUMN,
     ClassifierController,
     ClassifierScopeMode,
+)
+from napari_harpy.widgets.object_classification.feature_matrix_registration import (
+    _build_feature_matrix_registration_button_state,
 )
 from napari_harpy.widgets.object_classification.status_card import (
     _LabelsLayerPreparationResult,
@@ -78,10 +87,10 @@ from napari_harpy.widgets.shared_styles import (
 from napari_harpy.widgets.shared_styles import (
     PRIMARY_BUTTON_STYLESHEET,
     SECONDARY_BUTTON_STYLESHEET,
+    SMALL_ACTION_BUTTON_STYLESHEET,
     WARNING_BUTTON_STYLESHEET,
     WIDGET_BORDER_COLOR,
     WIDGET_PANEL_COLOR,
-    WIDGET_WARNING_TEXT_COLOR,
     CompactComboBox,
     StatusCardKind,
     apply_scroll_content_surface,
@@ -145,8 +154,7 @@ class ObjectClassificationWidget(QWidget):
         self.setMinimumWidth(_WIDGET_MIN_WIDTH)
         self._viewer = napari_viewer
         # The napari viewer identifies which shared Harpy session this widget
-        # belongs to. We use it to attach to the per-viewer HarpyAppState even
-        # though some legacy refresh UX is still being cleaned up in VW-05.
+        # belongs to. We use it to attach to the per-viewer HarpyAppState.
         self._app_state = get_or_create_app_state(napari_viewer)
         self._annotation_controller = AnnotationController(
             self._app_state.viewer_adapter,
@@ -236,6 +244,19 @@ class ObjectClassificationWidget(QWidget):
         self.feature_matrix_combo.setObjectName("feature_matrix_combo")
         self.feature_matrix_combo.currentIndexChanged.connect(self._on_feature_matrix_changed)
         self.feature_matrix_combo.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
+
+        self.register_feature_matrix_button = QPushButton("Register Feature Matrix")
+        self.register_feature_matrix_button.setObjectName("register_feature_matrix_button")
+        self.register_feature_matrix_button.clicked.connect(self._register_selected_feature_matrix_metadata)
+        self.register_feature_matrix_button.setEnabled(False)
+        self.register_feature_matrix_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.register_feature_matrix_button.setStyleSheet(SMALL_ACTION_BUTTON_STYLESHEET)
+        self.feature_matrix_registration_row = QWidget()
+        self.feature_matrix_registration_row.setObjectName("feature_matrix_registration_row")
+        feature_matrix_registration_layout = QHBoxLayout(self.feature_matrix_registration_row)
+        feature_matrix_registration_layout.setContentsMargins(0, 0, 0, 0)
+        feature_matrix_registration_layout.setSpacing(0)
+        feature_matrix_registration_layout.addWidget(self.register_feature_matrix_button, 1)
 
         self.training_scope_combo = CompactComboBox()
         self.training_scope_combo.setObjectName("training_scope_combo")
@@ -336,7 +357,6 @@ class ObjectClassificationWidget(QWidget):
         self.validation_status = QLabel()
         self.validation_status.setObjectName("validation_status")
         self.validation_status.setWordWrap(True)
-        self.validation_status.setStyleSheet(f"color: {WIDGET_WARNING_TEXT_COLOR}; font-weight: 600;")
         self.validation_status.hide()
 
         self.selection_status = QLabel()
@@ -394,6 +414,7 @@ class ObjectClassificationWidget(QWidget):
         selector_layout.addRow(self._create_form_label("Labels element"), self.segmentation_combo)
         selector_layout.addRow(self._create_form_label("Table"), self.table_combo)
         selector_layout.addRow(self._create_form_label("Feature matrix"), self.feature_matrix_combo)
+        selector_layout.addRow(self._create_form_label("Feature metadata"), self.feature_matrix_registration_row)
         selector_layout.addRow(self._create_form_label("Training scope"), self.training_scope_combo)
         selector_layout.addRow(self._create_form_label("Prediction scope"), self.prediction_scope_combo)
         selector_layout.addRow(self._create_form_label("Color by"), self.color_by_combo)
@@ -1032,14 +1053,71 @@ class ObjectClassificationWidget(QWidget):
         self._update_selection_status()
 
     def _update_selection_status(self) -> None:
-        self._update_validation_status()
+        # The widget inspects feature metadata only to drive registration UI
+        # state. Classifier training eligibility is owned by the controller.
+        feature_matrix_metadata_state = self._selected_feature_matrix_metadata_state()
+        self._update_validation_status(feature_matrix_metadata_state)
         self._update_selection_status_card()
+        self._update_feature_matrix_metadata_controls(feature_matrix_metadata_state)
         self._update_annotation_controls()
         self._update_color_by_controls()
         self._update_classifier_controls()
         self._update_persistence_controls()
 
-    def _update_validation_status(self) -> None:
+    def _selected_feature_matrix_metadata_state(self) -> FeatureMatrixMetadataState | None:
+        if (
+            self.selected_spatialdata is None
+            or self.selected_table_name is None
+            or self.selected_feature_key is None
+            or self._table_binding_error is not None
+        ):
+            return None
+
+        table = get_table(self.selected_spatialdata, self.selected_table_name)
+        return inspect_feature_matrix_metadata(table, self.selected_feature_key)
+
+    def _register_selected_feature_matrix_metadata(self) -> None:
+        if (
+            self.selected_spatialdata is None
+            or self.selected_table_name is None
+            or self.selected_feature_key is None
+            or self._table_binding_error is not None
+        ):
+            self._update_selection_status()
+            return
+
+        table = get_table(self.selected_spatialdata, self.selected_table_name)
+        feature_matrix_metadata_state = inspect_feature_matrix_metadata(table, self.selected_feature_key)
+        # Re-check the live metadata state at click time. The button may still
+        # reflect an older UI state, but registration must never overwrite
+        # metadata that was added or changed elsewhere.
+        if feature_matrix_metadata_state.status != "unregistered":
+            self._update_selection_status()
+            return
+
+        # Registration is an all-or-nothing UI action: if the core helper
+        # rejects the matrix, show the error without marking persistence dirty
+        # or making the classifier stale.
+        try:
+            register_feature_matrix_metadata(table, self.selected_feature_key)
+        except ValueError as error:
+            feature_matrix_metadata_state = self._selected_feature_matrix_metadata_state()
+            self._update_feature_matrix_metadata_controls(feature_matrix_metadata_state)
+            self._update_classifier_controls()
+            self._update_persistence_controls()
+            set_status_card(
+                self.validation_status,
+                title="Feature Metadata Warning",
+                lines=[str(error)],
+                kind="warning",
+            )
+            return
+
+        self._mark_persistence_dirty()
+        self._classifier_controller.mark_dirty(reason="feature matrix metadata registered")
+        self._update_selection_status()
+
+    def _update_validation_status(self, feature_matrix_metadata_state: FeatureMatrixMetadataState | None) -> None:
         message = None
 
         if self.selected_table_name is not None and self.feature_matrix_combo.count() == 0:
@@ -1047,9 +1125,34 @@ class ObjectClassificationWidget(QWidget):
                 'Warning: the selected table does not contain any feature matrices in ".obsm". '
                 "Add one before continuing."
             )
+        else:
+            message = _build_feature_matrix_registration_button_state(feature_matrix_metadata_state).warning_message
 
-        self.validation_status.setText("" if message is None else message)
-        self.validation_status.setVisible(message is not None)
+        if message is None:
+            self.validation_status.setText("")
+            self.validation_status.setToolTip("")
+            self.validation_status.setVisible(False)
+            return
+
+        set_status_card(
+            self.validation_status,
+            title="Feature Metadata Warning",
+            lines=[message],
+            kind="warning",
+        )
+
+    def _update_feature_matrix_metadata_controls(
+        self,
+        feature_matrix_metadata_state: FeatureMatrixMetadataState | None,
+    ) -> None:
+        if self._table_binding_error is not None:
+            self.register_feature_matrix_button.setEnabled(False)
+            self._set_tooltip(self.register_feature_matrix_button, self._table_binding_error)
+            return
+
+        state = _build_feature_matrix_registration_button_state(feature_matrix_metadata_state)
+        self.register_feature_matrix_button.setEnabled(state.enabled)
+        self._set_tooltip(self.register_feature_matrix_button, state.tooltip)
 
     def _update_selection_status_card(self) -> None:
         spec = build_object_classification_selection_status_card_spec(

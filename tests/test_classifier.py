@@ -12,6 +12,7 @@ import napari_harpy.widgets.object_classification.controller as classifier_modul
 from napari_harpy.core.annotation import USER_CLASS_COLUMN
 from napari_harpy.core.class_palette import default_class_colors
 from napari_harpy.core.classifier_export import read_classifier_export_bundle
+from napari_harpy.core.feature_matrix_metadata import HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND, FeatureMatrixMetadataState
 from napari_harpy.widgets.object_classification.controller import (
     CLASSIFIER_CONFIG_KEY,
     PRED_CLASS_COLORS_KEY,
@@ -71,7 +72,17 @@ def _set_feature_metadata(
         "source_image": None,
         "coordinate_system": "global",
         "features": list(features),
+        "source_kind": HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND,
     }
+
+
+def _set_multi_region_feature_metadata(sdata: SpatialData) -> None:
+    _set_feature_metadata(
+        sdata,
+        table_name="table_multi",
+        feature_columns=("feature_0", "feature_1", "feature_2", "feature_3"),
+        features=("synthetic_feature_0", "synthetic_feature_1", "synthetic_feature_2", "synthetic_feature_3"),
+    )
 
 
 def _set_user_classes(sdata: SpatialData, class_by_instance: dict[int, int], *, table_name: str = "table") -> None:
@@ -139,6 +150,7 @@ def test_classifier_controller_trains_on_labeled_rows_and_predicts_active_object
     qtbot, sdata_blobs: SpatialData
 ) -> None:
     _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(sdata_blobs)
     _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
     table_state_changes: list[str] = []
     prediction_state_changes: list[str] = []
@@ -307,24 +319,42 @@ def test_classifier_controller_refuses_export_after_feature_metadata_drift(
         controller.export_classifier(tmp_path / "drift.harpy-classifier.joblib")
 
 
-def test_classifier_controller_refuses_export_without_feature_metadata(
-    qtbot,
-    tmp_path,
-    sdata_blobs: SpatialData,
-) -> None:
+def test_classifier_controller_blocks_training_without_feature_metadata(sdata_blobs: SpatialData) -> None:
     _set_deterministic_features(sdata_blobs)
     _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
 
     controller = ClassifierController(debounce_interval_ms=0)
     controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
-    controller.retrain_now()
-
     table = sdata_blobs["table"]
-    qtbot.waitUntil(lambda: table.uns.get(CLASSIFIER_CONFIG_KEY, {}).get("trained") is True, timeout=5000)
+    table.obs[PRED_CLASS_COLUMN] = pd.Categorical(np.full(table.n_obs, 9, dtype=np.int64), categories=[0, 9])
+    table.obs[PRED_CONFIDENCE_COLUMN] = pd.Series(np.full(table.n_obs, 0.55), index=table.obs.index, dtype="float64")
+    summary = controller.describe_current_preparation()
 
+    assert summary is not None
+    assert summary.eligible is False
+    assert summary.training_blocker_kind == "metadata"
+    assert "Register feature metadata" in summary.reason
+    assert controller.can_retrain is False
+    assert controller.schedule_retrain(immediate=True) is False
+    assert CLASSIFIER_CONFIG_KEY not in table.uns
+    assert table.obs[PRED_CLASS_COLUMN].astype("string").eq("9").all()
+    assert table.obs[PRED_CONFIDENCE_COLUMN].eq(0.55).all()
     assert controller.can_export_classifier is False
-    with pytest.raises(ValueError, match="missing Harpy metadata"):
-        controller.export_classifier(tmp_path / "missing-metadata.harpy-classifier.joblib")
+    assert "Register feature metadata" in controller.status_message
+
+
+@pytest.mark.parametrize("status", ["missing_matrix", "invalid_matrix", "registered_mismatched"])
+def test_feature_matrix_metadata_training_blocker_reason_requires_state_error(status: str) -> None:
+    state = object.__new__(FeatureMatrixMetadataState)
+    object.__setattr__(state, "feature_key", "features_1")
+    object.__setattr__(state, "status", status)
+    object.__setattr__(state, "n_features", None)
+    object.__setattr__(state, "metadata_n_features", None)
+    object.__setattr__(state, "source_kind", None)
+    object.__setattr__(state, "error", None)
+
+    with pytest.raises(ValueError, match="must include an error message"):
+        classifier_module._feature_matrix_metadata_training_blocker_reason(state)
 
 
 def test_multi_region_classifier_fixture_duplicates_instance_ids_only_across_regions(
@@ -342,6 +372,7 @@ def test_multi_region_classifier_fixture_duplicates_instance_ids_only_across_reg
 def test_classifier_controller_selected_region_only_training_scope_ignores_labels_in_other_regions(
     sdata_blobs_multi_region: SpatialData,
 ) -> None:
+    _set_multi_region_feature_metadata(sdata_blobs_multi_region)
     _set_user_classes_by_region(
         sdata_blobs_multi_region,
         {
@@ -379,6 +410,7 @@ def test_classifier_controller_selected_region_only_training_scope_ignores_label
 def test_classifier_controller_defaults_training_scope_to_all_and_can_use_labels_from_other_regions(
     sdata_blobs_multi_region: SpatialData,
 ) -> None:
+    _set_multi_region_feature_metadata(sdata_blobs_multi_region)
     _set_user_classes_by_region(
         sdata_blobs_multi_region,
         {
@@ -417,6 +449,7 @@ def test_classifier_controller_defaults_training_scope_to_all_and_can_use_labels
 def test_classifier_controller_default_table_wide_training_excludes_invalid_rows_from_other_regions(
     sdata_blobs_multi_region: SpatialData,
 ) -> None:
+    _set_multi_region_feature_metadata(sdata_blobs_multi_region)
     _set_user_classes_by_region(
         sdata_blobs_multi_region,
         {
@@ -455,6 +488,7 @@ def test_classifier_controller_default_table_wide_training_excludes_invalid_rows
 def test_classifier_controller_prediction_scope_all_clears_invalid_rows_in_scope(
     qtbot, sdata_blobs_multi_region: SpatialData
 ) -> None:
+    _set_multi_region_feature_metadata(sdata_blobs_multi_region)
     _set_user_classes_by_region(
         sdata_blobs_multi_region,
         {
@@ -506,6 +540,7 @@ def test_classifier_controller_prediction_scope_all_clears_invalid_rows_in_scope
 def test_classifier_controller_default_prediction_scope_leaves_hidden_regions_unchanged(
     monkeypatch, sdata_blobs_multi_region: SpatialData
 ) -> None:
+    _set_multi_region_feature_metadata(sdata_blobs_multi_region)
     _set_user_classes_by_region(
         sdata_blobs_multi_region,
         {
@@ -561,6 +596,7 @@ def test_classifier_controller_default_prediction_scope_leaves_hidden_regions_un
 def test_classifier_controller_describes_current_preparation_without_building_worker_arrays(
     monkeypatch, sdata_blobs_multi_region: SpatialData
 ) -> None:
+    _set_multi_region_feature_metadata(sdata_blobs_multi_region)
     _set_user_classes_by_region(
         sdata_blobs_multi_region,
         {
@@ -571,14 +607,14 @@ def test_classifier_controller_describes_current_preparation_without_building_wo
         },
     )
 
-    original_normalize_feature_matrix = classifier_module._normalize_feature_matrix
+    original_normalize_feature_matrix = classifier_module.normalize_feature_matrix
 
     def fail_worker_feature_snapshot(feature_matrix, n_obs, *, copy):
         if copy:
             raise AssertionError("preparation summary should not construct worker feature arrays")
         return original_normalize_feature_matrix(feature_matrix, n_obs, copy=copy)
 
-    monkeypatch.setattr(classifier_module, "_normalize_feature_matrix", fail_worker_feature_snapshot)
+    monkeypatch.setattr(classifier_module, "normalize_feature_matrix", fail_worker_feature_snapshot)
 
     def fail_training_worker(*args, **kwargs):
         del args, kwargs
@@ -607,6 +643,7 @@ def test_classifier_controller_describes_current_preparation_without_building_wo
 
 def test_classifier_controller_can_retrain_requires_trainable_preparation(sdata_blobs: SpatialData) -> None:
     _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(sdata_blobs)
     controller = ClassifierController(debounce_interval_ms=0)
     controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
 
@@ -625,6 +662,7 @@ def test_classifier_controller_resets_predictions_when_only_one_class_is_labeled
     qtbot, sdata_blobs: SpatialData
 ) -> None:
     _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(sdata_blobs)
     _set_user_classes(sdata_blobs, {1: 1, 2: 1})
     table_state_changes: list[str] = []
     prediction_state_changes: list[str] = []
@@ -652,6 +690,7 @@ def test_classifier_controller_resets_predictions_when_only_one_class_is_labeled
 
 def test_classifier_controller_validates_feature_matrix_shape(qtbot, monkeypatch, sdata_blobs: SpatialData) -> None:
     _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(sdata_blobs)
     _set_user_classes(sdata_blobs, {1: 1, 24: 2})
     table = sdata_blobs["table"]
 
@@ -659,7 +698,7 @@ def test_classifier_controller_validates_feature_matrix_shape(qtbot, monkeypatch
         del feature_matrix, n_obs, copy
         raise ValueError("Feature matrix has 25 rows but the table has 26 observations.")
 
-    monkeypatch.setattr(classifier_module, "_normalize_feature_matrix", raise_shape_error)
+    monkeypatch.setattr(classifier_module, "normalize_feature_matrix", raise_shape_error)
 
     controller = ClassifierController(
         debounce_interval_ms=0,
@@ -677,6 +716,7 @@ def test_classifier_controller_validates_feature_matrix_shape(qtbot, monkeypatch
 
 def test_classifier_controller_drops_stale_results(qtbot, monkeypatch, sdata_blobs: SpatialData) -> None:
     _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(sdata_blobs)
     _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
 
     call_log: list[int] = []
@@ -722,6 +762,7 @@ def test_classifier_controller_drops_stale_results(qtbot, monkeypatch, sdata_blo
 
 def test_classifier_controller_bind_is_passive_until_marked_dirty(qtbot, monkeypatch, sdata_blobs: SpatialData) -> None:
     _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(sdata_blobs)
     _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
 
     call_log: list[int] = []
@@ -774,6 +815,7 @@ def test_classifier_controller_notifies_table_state_change_when_training_errors(
     qtbot, monkeypatch, sdata_blobs: SpatialData
 ) -> None:
     _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(sdata_blobs)
     _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
     table_state_changes: list[str] = []
     prediction_state_changes: list[str] = []
@@ -806,6 +848,7 @@ def test_classifier_controller_freeze_for_reload_cancels_pending_debounce(
     qtbot, monkeypatch, sdata_blobs: SpatialData
 ) -> None:
     _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(sdata_blobs)
     _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
     created_job_ids: list[int] = []
 
@@ -833,6 +876,7 @@ def test_classifier_controller_freeze_for_reload_cancels_pending_debounce(
 
 def test_classifier_controller_shutdown_cancels_pending_debounce(qtbot, monkeypatch, sdata_blobs: SpatialData) -> None:
     _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(sdata_blobs)
     _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
     created_job_ids: list[int] = []
     state_changes: list[str] = []
@@ -869,6 +913,7 @@ def test_classifier_controller_shutdown_quits_worker_and_ignores_late_signals(
     sdata_blobs: SpatialData,
 ) -> None:
     _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(sdata_blobs)
     _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
     state_changes: list[str] = []
     table_state_changes: list[str] = []
@@ -932,6 +977,7 @@ def test_classifier_controller_invalidates_pending_work_for_selected_feature_mat
     sdata_blobs: SpatialData,
 ) -> None:
     _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(sdata_blobs)
     _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
     result = classifier_module.ClassifierJobResult(
         job_id=1,
@@ -945,7 +991,6 @@ def test_classifier_controller_invalidates_pending_work_for_selected_feature_mat
         summary=classifier_module.ClassifierPreparationSummary(
             training_scope=_resolved_scope([0, 1]),
             prediction_scope=_resolved_scope([0, 1]),
-            eligible=True,
             reason="Ready to train.",
             labeled_count=2,
             class_labels=(1, 2),
@@ -974,6 +1019,7 @@ def test_classifier_controller_reset_after_reload_ignores_late_worker_results(
     monkeypatch, sdata_blobs: SpatialData
 ) -> None:
     _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(sdata_blobs)
     _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
     workers: dict[int, _DeferredWorker] = {}
     prediction_state_changes: list[str] = []
