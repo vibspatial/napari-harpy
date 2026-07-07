@@ -301,14 +301,102 @@ call. If repeated calls are still expensive after the fast constructor, add a
 separate cache/invalidation design rather than hiding it inside the constructor
 helper.
 
+### Slice 5: Investigate Compact Categorical Labels Colormap
+
+Investigate whether Harpy can support the more compact categorical model:
+
+```text
+label_id -> category_code
+category_code -> RGBA
+```
+
+This is a follow-up investigation/prototype after the safer fast
+`DirectLabelColormap` helper. It touches napari internals, so the product bar is
+higher: no production path should depend on a private napari contract unless it
+is version-gated, tested, benchmarked, and has a reliable fallback to the Slice
+1 helper.
+
+Current napari 0.7.1 findings:
+
+- `Labels.colormap` normalizes accepted colormaps through napari's labels
+  colormap machinery. A custom object must be a `DirectLabelColormap` or
+  `CyclicLabelColormap` instance, otherwise the public normalizer rejects it.
+- For high-bit labels, napari's direct rendering path already converts raw
+  label ids to compact texture ids, then uploads a separate texture-id-to-RGBA
+  table. For example, if the labels image contains object ids
+  `[1001, 1002, 1003]` and labels `1001` and `1003` share the same category
+  color, napari can render through a compact mapping like
+  `1001 -> 1`, `1002 -> 2`, `1003 -> 1`, plus a small color table like
+  `1 -> red`, `2 -> blue`.
+- The expensive part is that Harpy must currently first provide a repeated
+  `label_id -> RGBA` dictionary, and napari then groups identical RGBA values
+  back into the compact texture representation.
+- A Harpy compact colormap could avoid repeated RGBA storage and avoid napari's
+  grouping step by directly providing the already-compact
+  `label_id -> texture_code` and `texture_code -> RGBA` mappings.
+
+Prototype route:
+
+1. Build a Harpy-owned subclass of `DirectLabelColormap`, for example
+   `CompactCategoricalLabelColormap`.
+2. Store compact categorical state directly:
+   - positive label ids;
+   - a label-id-to-category-code mapping;
+   - category-code-to-RGBA colors;
+   - default color for unmapped labels;
+   - transparent background label `0`.
+3. Override only the narrow direct-colormap methods/properties that napari's
+   renderer consumes:
+   - `_values_mapping_to_minimum_values_set(...)`;
+   - `_label_mapping_and_color_dict`;
+   - `_num_unique_colors`;
+   - `map(...)`;
+   - `_clear_cache(...)`.
+4. Preserve enough `color_dict` behavior for `Labels._set_colormap(...)` and
+   `Labels.get_color(...)` to keep working. In particular, the colormap must
+   not look like a default-only direct colormap, otherwise napari switches the
+   layer back to auto color mode.
+5. Test both paths in napari's renderer:
+   - large integer labels, where the direct compact texture path is used;
+   - small integer labels, where napari may use the small-dtype lookup path
+     even for direct colormaps.
+
+Important constraints:
+
+- Do not rewrite the labels image to category codes. The image must keep
+  per-cell label identity.
+- Do not create a second labels layer just to display categorical colors.
+- Do not patch installed napari source code.
+- Do not monkeypatch napari globals at runtime.
+- Keep the Slice 1 fast `DirectLabelColormap` helper as the fallback for
+  unsupported napari versions, unsupported dtypes, or failed parity tests.
+
+Prototype acceptance criteria:
+
+- visual parity with the Slice 1 helper for categorical `.obs` colors;
+- `map(...)` parity for representative labels, missing labels, background, and
+  selection mode;
+- hover/status feature lookup remains label-id based;
+- no loss of per-cell label identity;
+- faster or materially lower-memory construction than the Slice 1 helper on the
+  `table_global_ROI1.obs["leiden"]` benchmark;
+- no regression for 2D, 3D, and multiscale Labels layers that Harpy supports;
+- explicit napari-version guard with a loud fallback when internals change.
+
+If the prototype is successful, decide whether to:
+
+- productionize the Harpy subclass behind a small adapter and fallback; or
+- open an upstream napari proposal/PR for a public compact categorical labels
+  colormap API.
+
 ## Non-Goals
 
 - Do not rewrite the labels image to category codes.
 - Do not lose per-cell label identity.
 - Do not change hover/status feature semantics.
 - Do not depend on direct `DirectLabelColormap.model_construct(...)`.
-- Do not patch napari source code in this slice.
-- Do not introduce a private napari vispy visual.
+- Do not patch installed napari source code.
+- Do not introduce a private napari vispy visual for Slices 1-4.
 
 ## Longer-Term Upstream Direction
 
@@ -323,9 +411,11 @@ category_code -> RGBA
 That would avoid storing repeated RGBA arrays for hundreds of thousands of
 labels when only a few categories are present.
 
-For now, Harpy should keep the public `DirectLabelColormap` contract and remove
-the avoidable pydantic/color-transformation overhead that dominates the current
-categorical `.obs` path.
+For Slices 1-4, Harpy should keep the public `DirectLabelColormap` contract and
+remove the avoidable pydantic/color-transformation overhead that dominates the
+current categorical `.obs` path. Slice 5 can then use benchmarked prototype
+evidence to decide whether a compact Harpy adapter is worth carrying locally or
+whether the right product move is an upstream napari API.
 
 ## Suggested Verification
 
