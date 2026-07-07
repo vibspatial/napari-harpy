@@ -735,7 +735,7 @@ Tests:
 
 ### Slice 8: Move Training Metadata Gate Into Classifier Controller
 
-Status: follow-up.
+Status: specified.
 
 The current widget blocks `Train Classifier` when the selected feature matrix
 metadata is not `registered_valid`. That works, but it makes classifier
@@ -769,36 +769,96 @@ Current behavior to preserve/clarify:
   registration schema means "do not start classifier training yet", not "clear
   predictions because the class labels are currently untrainable."
 
+Design:
+
+Add blocker kind information to `ClassifierPreparationSummary` instead of
+keeping feature-metadata blockers as a widget-side side channel.
+
+Suggested type/field:
+
+```python
+ClassifierTrainingBlockerKind = Literal["metadata", "data"]
+
+@dataclass(frozen=True)
+class ClassifierPreparationSummary:
+    ...
+    training_blocker_kind: ClassifierTrainingBlockerKind | None = None
+
+    def __post_init__(self) -> None:
+        if self.training_blocker_kind not in (None, "metadata", "data"):
+            raise ValueError(...)
+
+    @property
+    def eligible(self) -> bool:
+        return self.training_blocker_kind is None
+```
+
+Contract:
+
+- `eligible` should become a derived property, not a constructor field;
+- `training_blocker_kind is None` means there is no blocker and training is
+  allowed;
+- `__post_init__` should validate that `training_blocker_kind` is either `None`,
+  `"metadata"`, or `"data"`, so invalid summaries fail loudly;
+- `training_blocker_kind == "metadata"` means the selected feature matrix is not
+  safe to train against because its schema/registration metadata is missing,
+  invalid, or mismatched;
+- `training_blocker_kind == "data"` means the selected classifier context and
+  feature metadata are valid, but the current data/annotations are not trainable
+  (for example too few labeled samples, only one labeled class, no usable rows,
+  or no feature columns);
+- selection-level absence, such as no table or no selected feature key, may
+  continue to use the existing `None` summary or existing warning summary shape;
+  it does not need to be forced into `"metadata"` or `"data"`.
+
 Desired behavior:
 
 1. During classifier preparation, inspect the selected feature matrix metadata.
-2. Only allow training when metadata is `registered_valid`.
-3. If metadata is `unregistered`, return/emit a clear reason such as:
+2. If metadata is `unregistered`, return a summary with
+   `training_blocker_kind="metadata"` and a clear reason such as:
    `Register feature metadata for "features_1" before training the classifier.`
-4. If metadata is `registered_mismatched`, `invalid_matrix`, or `missing_matrix`,
-   return/emit the existing clear metadata problem.
-5. `can_retrain` should be `False` for non-`registered_valid` metadata.
-6. `schedule_retrain(...)` should return `False` for these metadata blockers and
-   set classifier status to the same warning reason.
-7. Do not treat missing/invalid registration metadata like ordinary ineligible
-   class labels. Ineligible class labels may clear stale predictions via the
-   existing ineligible-job path, but missing/invalid feature metadata should be a
-   hard training blocker: no worker launch, no prediction clearing, and no
-   ineligible classifier config write.
-8. After this move, `ObjectClassificationWidget._update_classifier_controls()`
+3. If metadata is `registered_mismatched`, `invalid_matrix`, or `missing_matrix`,
+   return a summary with `training_blocker_kind="metadata"` and the existing clear
+   metadata problem.
+4. Only continue into ordinary feature-value/class-label preparation when
+   metadata is `registered_valid`.
+5. Ordinary trainability failures after valid metadata should return
+   `training_blocker_kind="data"`.
+6. `can_retrain` should be `False` whenever the summary is missing or
+   `summary.training_blocker_kind is not None`.
+7. `schedule_retrain(...)` should inspect the summary before scheduling:
+   - for `training_blocker_kind == "metadata"`, set classifier status to the
+     summary warning reason and return `False`;
+   - for `training_blocker_kind == "data"`, preserve the existing behavior when
+     scheduling is invoked: launch/enter the ineligible-job path so stale
+     prediction values can be reset and a `trained=False` classifier config can
+     be written;
+   - for `training_blocker_kind is None`, schedule/train normally.
+8. Metadata blockers must be hard training blockers: no debounce, no worker
+   launch, no prediction clearing, no ineligible classifier config write, and no
+   dirtying solely from a failed schedule attempt.
+9. After this move, `ObjectClassificationWidget._update_classifier_controls()`
    should rely on controller preparation/`can_retrain` state instead of receiving
    or recomputing feature-metadata state.
-9. Keep `inspect_feature_matrix_metadata(...)` in the widget only for the
-   registration button and feature metadata warning/status card.
-10. Remove widget-side training gate helpers that become redundant, such as
+10. Keep `inspect_feature_matrix_metadata(...)` in the widget only for the
+    registration button and feature metadata warning/status card.
+11. Remove widget-side training gate helpers that become redundant, such as
     `_feature_matrix_metadata_training_unavailable_reason(...)`.
+12. Auto-train should no longer need a widget-side metadata guard. It can call
+    `schedule_retrain(...)`; the controller decides whether to train, enter the
+    data-ineligible path, or hard-block metadata problems.
 
 Tests:
 
 - controller `can_retrain` is `False` for unregistered metadata even when labels
   and the live `.obsm` matrix are otherwise trainable;
+- `describe_current_preparation()` returns `training_blocker_kind == "metadata"`
+  for unregistered, mismatched, invalid, and missing feature metadata;
+- ordinary label/data trainability failures return
+  `training_blocker_kind == "data"`;
 - controller `schedule_retrain(...)` returns `False` for unregistered metadata
-  and sets a clear warning status;
+  and sets a clear warning status without clearing predictions or writing a
+  `trained=False` classifier config;
 - controller blocks mismatched/invalid/missing metadata with the relevant reason;
 - controller still allows retraining for `registered_valid` custom metadata and
   `registered_valid` Harpy metadata;
