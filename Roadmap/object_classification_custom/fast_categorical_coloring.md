@@ -725,7 +725,7 @@ Recommendation:
 
 #### Slice 6.2: Compact Mapping Builder
 
-Status: proposed.
+Status: implemented.
 
 Build a Harpy-owned pure data helper for categorical labels, without touching
 napari internals yet.
@@ -1034,6 +1034,11 @@ label_id -> color_bin
 color_bin -> RGBA
 ```
 
+This should be a separate continuous compact builder, not a call to
+`compact_categorical_labels_mapping_from_values(...)`. The categorical helper
+maps discrete category values to texture codes; continuous coloring must map
+numeric values through normalization and quantization before assigning bins.
+
 Rationale:
 
 - Continuous `.obs` styling now has similar timings to categorical styling
@@ -1074,6 +1079,10 @@ Implementation direction:
    - `color_bin -> RGBA`;
    - missing/default color;
    - transparent background label `0`.
+   This helper should be continuous-specific, for example
+   `compact_continuous_labels_mapping_from_values(...)`, even if it reuses the
+   same lower-level compact state dataclass or compact colormap subclass shape
+   introduced for categorical labels.
 3. Compare the proposed bin count with the current number of unique RGBA values
    produced by `continuous_rgba_for_values(...)` on benchmark columns. For
    example, the Slice 5 `total_counts` column produced `182` unique RGBA colors
