@@ -1178,7 +1178,7 @@ Acceptance criteria:
 
 #### Slice 6.5: Styled Labels Integration
 
-Status: implemented; full-data Xenium benchmark pending before Slice 6.6.
+Status: implemented; full-data Xenium benchmark gate passed.
 
 Make `CompactCategoricalLabelColormap` the categorical styled-labels path in
 `src/napari_harpy/viewer/labels_styling.py`. We are working on a feature
@@ -1237,16 +1237,57 @@ Tests:
 
 Benchmark acceptance:
 
-- implementation note: the styled-labels integration is complete and covered by
-  focused tests, but the Xenium full-data benchmark has not yet been rerun in
-  this slice;
-- run the Xenium full-data `leiden` benchmark after integration;
-- the styled-labels categorical end-to-end path should no longer spend roughly
-  one second in direct-colormap grouping/typed-dict construction;
-- confirm `_values_mapping_to_minimum_values_set(...)` stays cheap and no full
-  `label_id -> RGBA` dictionary is built for categorical styled labels;
-- keep benchmark output in this roadmap before moving to object-classification
-  integration.
+- benchmark run date: 2026-07-08;
+- store:
+  `/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium_full_data_core.zarr`;
+- labels: `cell_labels_global_ROI1`;
+- table: `table_global_ROI1`;
+- coordinate system: `global_ROI1`;
+- rows: `406,611`;
+- repeats: `3`, reported as medians;
+- the benchmark was run through Harpy's real
+  `ViewerAdapter.ensure_styled_labels_loaded(...)` and
+  `apply_table_color_source_to_labels_layer(...)` paths, using a lightweight
+  non-GUI viewer object to avoid opening Qt/Vispy.
+
+```text
+instance_cell_ID:
+  apply_table_color_source_to_labels_layer: 0.1792 s
+  ensure_styled_labels_loaded cold:        0.1860 s
+  ensure_styled_labels_loaded restyle:     0.1860 s
+  colormap: CyclicLabelColormap
+
+categorical_leiden:
+  apply_table_color_source_to_labels_layer: 0.2259 s
+  ensure_styled_labels_loaded cold:        0.2234 s
+  ensure_styled_labels_loaded restyle:     0.2389 s
+  colormap: CompactCategoricalLabelColormap
+  color_dict entries: 3
+  label ids: 406,611
+  texture RGBA rows: 10
+  unique texture codes used by labels: 8
+  _values_mapping_to_minimum_values_set: ~0.000003 s
+
+continuous_total_counts:
+  apply_table_color_source_to_labels_layer: 1.2426 s
+  ensure_styled_labels_loaded cold:        1.2387 s
+  ensure_styled_labels_loaded restyle:     1.2695 s
+  colormap: DirectLabelColormap
+  color_dict entries: 406,613
+```
+
+Findings:
+
+- The Slice 6.5 styled categorical path no longer spends roughly one second in
+  direct-colormap grouping / typed-dict construction.
+- `categorical_leiden` is now close to instance coloring for this benchmark
+  (`~0.23 s` versus `~0.18 s`) and much faster than the earlier
+  post-Slice-1 direct-colormap baseline (`~1.15 s`).
+- The categorical colormap keeps only a tiny `color_dict` and uses compact
+  `label_id -> texture_code` / `texture_code -> RGBA` state instead of a full
+  `label_id -> RGBA` dictionary.
+- Continuous `.obs` coloring remains slow and still builds a full
+  `label_id -> RGBA` dictionary. That is expected before Slice 7.
 
 #### Slice 6.6: Object-Classification Categorical Integration
 
