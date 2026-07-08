@@ -47,8 +47,6 @@ src/napari_harpy/core/pixel_classification/
   normalization.py
   prediction.py
   reducer.py
-  spatialdata_io.py
-  types.py
 
 src/napari_harpy/widgets/pixel_classification/
   __init__.py
@@ -67,15 +65,35 @@ Register the new widget in:
 The core package should be importable without Qt and should contain the testable data/model/cache logic. The widget
 package should own napari layers, Qt controls, thread workers, and user-facing state.
 
-**Core Data Contracts**
-Define immutable request/result objects in `core/pixel_classification/types.py`:
+Do not add `spatialdata_io.py` or a central `types.py` by default. The repository already has shared SpatialData
+helpers in `src/napari_harpy/core/spatialdata.py`, plus validation helpers in `src/napari_harpy/core/validation.py`.
+Phase 1 should extend and reuse those shared modules for generic SpatialData concerns instead of introducing a
+parallel pixel-classification-specific I/O layer. Pixel-specific dataclasses should live beside the behavior that owns
+them, following existing patterns such as `core/histogram.py`, `core/classifier.py`, and
+`core/feature_extraction.py`.
 
-- `PixelClassificationSource`: SpatialData identity, image name, coordinate system, highest-resolution shape,
-  axes, channel names, selected channels, dtype, and source element location.
-- `PixelFeatureManifest`: canonical cache schema metadata used to compute a stable `cache_id`.
-- `PixelFeatureCache`: opened zarr feature array plus manifest metadata.
-- `PixelTrainingData`: sampled feature rows and nonzero class labels.
-- `PixelPredictionResult`: high-resolution predicted class map, optional confidence/probability maps, and metadata.
+**Core Data Contracts**
+Define immutable request/result objects where they are owned:
+
+- shared image/source resolution structures, if generic enough, should live in `core/spatialdata.py`;
+- `PixelFeatureManifest` should live in `core/pixel_classification/manifest.py`;
+- `PixelFeatureCache` should live in `core/pixel_classification/cache_store.py`;
+- classifier training inputs/results should live in `core/pixel_classification/classifier.py`;
+- `PixelPredictionResult` should live in `core/pixel_classification/prediction.py`;
+- widget worker jobs and UI binding snapshots should live in `widgets/pixel_classification/controller.py`.
+
+Reuse existing shared helpers where possible:
+
+- `get_coordinate_system_names_from_sdata(...)`;
+- `get_spatialdata_image_options_for_coordinate_system_from_sdata(...)`;
+- `get_image_channel_names_from_sdata(...)`;
+- `validate_new_spatialdata_element_name(...)`;
+- `normalize_spatialdata_name(...)`.
+
+If Phase 1 needs generic image helpers that do not yet exist, add them to `core/spatialdata.py` rather than hiding them
+inside the pixel-classification package. Good candidates are public versions of the existing image-scale logic used by
+histogram calculation: resolving `DataArray` versus `DataTree`, picking `scale0` for highest-resolution Phase 1
+execution, validating coordinate-system availability, and returning channel-aware image arrays.
 
 The Phase 1 resolution contract is simple:
 
@@ -115,9 +133,10 @@ Acceptance criteria:
 
 2. Source resolution and validation
 
-Implement `spatialdata_io.py` and source-selection controller logic. Resolve image elements, coordinate systems, axes,
-channel names, selected channels, and highest-resolution array shape. If the image is a multiscale `DataTree`, pick the
-highest-resolution scale in Phase 1 and expose that decision in status/metadata.
+Reuse and, where needed, extend `core/spatialdata.py` for source resolution. The pixel-classification controller should
+call shared helpers to resolve image elements, coordinate systems, axes, channel names, selected channels, and
+highest-resolution array shape. If the image is a multiscale `DataTree`, pick `scale0` / highest-resolution scale in
+Phase 1 and expose that decision in status/metadata.
 
 Acceptance criteria:
 
@@ -234,8 +253,9 @@ Acceptance criteria:
 
 8. Save to SpatialData
 
-Implement save logic in `spatialdata_io.py` or a small dedicated output module. The user-facing prediction result is a
-high-resolution labels element.
+Implement save logic by reusing shared SpatialData validation helpers first. The user-facing prediction result is a
+high-resolution labels element. If the save path grows beyond a thin call-site, add a narrowly named
+`core/pixel_classification/output.py`; do not create a broad duplicate `spatialdata_io.py`.
 
 Save behavior:
 

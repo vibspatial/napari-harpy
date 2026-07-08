@@ -780,8 +780,9 @@ napari-shaped compact state:
 positive label ids
 label_id -> texture_code
 texture_code -> RGBA
-texture code for unknown/unmapped labels
+texture code for unmapped labels / default color
 texture code for background label 0
+optional texture code for missing/unknown categorical values
 ```
 
 Use `texture_code` terminology here rather than generic `category_code`
@@ -791,12 +792,16 @@ prepare exactly the state the subclass will need later.
 
 Implementation details:
 
-- reserve texture code `0` for unknown/unmapped labels and the `None` default
-  color;
+- reserve texture code `0` for unmapped labels and the `None` default color;
 - assign an explicit texture code for background label `0`, even if it is
   transparent like the default color, to stay close to napari's current direct
   colormap semantics;
-- assign category texture codes after the unknown/background codes;
+- assign category texture codes after the default/background codes;
+- treat missing or palette-unknown categorical table values as mapped rows with
+  their own missing-category color, not as unmapped labels. In the current
+  Harpy semantics, a known table row with a missing/unknown categorical value
+  receives `MISSING_CATEGORICAL_COLOR`, while a label id with no table row
+  falls through to the transparent `None` default;
 - keep texture-code keys sequential from `0`, because napari's
   `build_textures_from_dict(...)` assumes sequential color-table keys;
 - store repeated category RGBA values once in `texture_code -> RGBA`;
@@ -836,8 +841,10 @@ Acceptance criteria:
 
 - repeated RGBA colors are stored once per texture code;
 - background label `0` remains transparent;
-- missing/unmapped labels resolve to the same default color as the current
-  direct RGBA helper;
+- unmapped labels resolve to the same transparent `None` default color as the
+  current direct RGBA helper;
+- known table rows with missing or palette-unknown categorical values resolve
+  to the missing-category color, not to the transparent unmapped-label color;
 - texture-code keys are sequential from `0`;
 - helper output can be used to build a numba typed
   `raw label_id -> texture_code` mapping without materializing
