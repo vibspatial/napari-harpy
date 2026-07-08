@@ -1303,12 +1303,20 @@ Scope:
   `CompactCategoricalLabelColormap`;
 - build a class-value series indexed by instance id and pass sorted class ids
   plus the matching RGBA palette to the compact helper;
+- extend the compact categorical helper with an optional `default_color`
+  argument:
+  - keep the default as transparent so styled-labels behavior from Slice 6.5
+    remains unchanged;
+  - pass `default_color=UNLABELED_COLOR` from object-classification
+    categorical coloring, matching the current direct-colormap behavior where
+    unmapped labels fall through to the unlabeled gray color;
+  - keep the background label `0` transparent via `background_value=0`;
 - preserve current missing/unlabeled behavior:
   - `pred_class` keeps explicit unlabeled/missing class coloring according to
     the existing class-color lookup;
   - `user_class` should preserve the current visual behavior where unlabeled
-    rows are not explicit per-label user-class colors if that is how the
-    current direct path behaves;
+    rows are not explicit per-label user-class colors and instead fall through
+    to the unlabeled/default color, not to transparent;
 - keep `COLOR_BY_PRED_CONFIDENCE` on the direct RGBA helper until Slice 7;
 - do not keep a second full categorical `label_id -> RGBA` implementation for
   full `user_class` / `pred_class` recoloring.
@@ -1335,6 +1343,11 @@ Tests:
 
 - verify object-classification `user_class` and `pred_class` full refresh use
   `CompactCategoricalLabelColormap`;
+- verify styled-labels categorical coloring still uses transparent default
+  unmapped labels when no `default_color` override is passed;
+- verify object-classification categorical coloring uses `UNLABELED_COLOR` as
+  the compact default/unmapped color while keeping background label `0`
+  transparent;
 - verify `pred_confidence` remains visually equivalent on the direct RGBA path;
 - verify row-scoped user-class updates do not mutate compact `color_dict` and
   are explicitly deferred to Slice 6.7 when compact user-class coloring is
