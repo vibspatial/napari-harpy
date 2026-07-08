@@ -339,9 +339,79 @@ Acceptance criteria:
 - full color refresh and row-scoped user-class color refresh do not call a
   second explicit `refresh()` after colormap assignment.
 
-### Slice 4: Benchmark And Decide On Further Caching
+### Slice 4: Make Styled Labels Restyle Semantics Explicit
 
-After Slices 1-3, re-measure:
+Status: proposed.
+
+Current behavior:
+
+- `ViewerAdapter.ensure_styled_labels_loaded(...)` correctly finds and reuses
+  an already-loaded styled labels layer when `sdata`, `labels_name`,
+  coordinate system, and `style_spec` match.
+- However, even for that already-loaded matching layer, it still calls
+  `apply_table_color_source_to_labels_layer(...)`.
+- That means repeated calls rebuild the table-aligned feature rows, rebuild the
+  `label_id -> RGBA` colormap, assign `layer.colormap`, and assign
+  `layer.features`.
+
+This should be isolated before benchmarking so we do not mix two different
+questions:
+
+- cold load: create the styled labels layer and apply the style for the first
+  time;
+- explicit update: reuse the existing styled labels layer object, but restyle
+  it from the current table state.
+
+Given the current UI label ("Add / Update in viewer"), the repeated-call
+restyle is not necessarily a bug. It is the update path. If the user changes a
+table column, palette, or `X` values and clicks the button again, Harpy should
+refresh the existing overlay instead of silently returning stale colors.
+
+Goal:
+
+- first load still creates and styles the overlay;
+- a repeated call for the same already-loaded styled labels layer should reuse
+  the layer object but intentionally restyle it from the current table state;
+- this behavior should be documented and covered by tests so benchmarking can
+  measure cold-load and explicit-update costs separately.
+
+Implementation direction:
+
+1. Do not introduce a styled-labels cache or invalidation mechanism in this
+   slice.
+2. Keep `ensure_styled_labels_loaded(...)` as the explicit "load or update"
+   API:
+   - if the styled overlay does not exist, create it and style it;
+   - if the styled overlay already exists, reuse the same layer object and
+     restyle it.
+3. Add or adjust tests to make the repeated-call behavior intentional:
+   - first call returns `created=True`;
+   - second call with the same style returns the same layer and
+     `created=False`;
+   - the second call updates the existing layer's colormap/features from the
+     current table state.
+4. Keep `get_loaded_styled_labels_layer(...)` as the read-only API for callers
+   that only want to know whether a matching styled overlay already exists.
+   That method must not style or restyle.
+5. Update comments/docstrings where helpful so future readers do not interpret
+   the repeated restyle as accidental.
+
+Acceptance criteria:
+
+- a repeated `ensure_styled_labels_loaded(...)` call for the same styled labels
+  overlay returns the same layer with `created=False`;
+- the repeated call restyles the existing layer rather than creating a second
+  layer;
+- if the backing table values or palette changed between calls, the second call
+  reflects those changes in `layer.colormap` and/or `layer.features`;
+- first load and distinct style specs still style normally;
+- status-card behavior remains unchanged from the user's point of view;
+- existing tests that assert no legacy style metadata keys are written to
+  `layer.metadata` keep passing.
+
+### Slice 5: Benchmark Cold Load And Explicit Restyle Costs
+
+After Slices 1-4, re-measure:
 
 ```text
 apply_table_color_source_to_labels_layer(...)
@@ -350,21 +420,25 @@ ensure_styled_labels_loaded(...)
 
 on the Xenium full-data categorical `.obs` case.
 
-If first-load categorical coloring is still too slow, investigate the remaining
-costs separately:
+Measure cold-load and explicit-restyle paths separately:
+
+- cold load: no styled labels layer exists yet;
+- explicit restyle: matching styled labels layer already exists, and
+  `ensure_styled_labels_loaded(...)` updates it in place.
+
+If either path is still too slow, investigate the remaining costs separately:
 
 - building the Python `label_id -> RGBA` dictionary;
 - napari's first internal label-id-to-texture mapping;
 - reslicing/redrawing the current labels view;
-- repeated restyling of an already-loaded styled labels layer.
+- explicit restyling of an already-loaded styled labels layer.
 
-`ensure_styled_labels_loaded(...)` already reuses an existing styled labels
-layer for the same style specification, but it still reapplies styling on every
-call. If repeated calls are still expensive after the fast constructor, add a
-separate cache/invalidation design rather than hiding it inside the constructor
-helper.
+Do not add a cache/invalidation mechanism here. If repeated explicit restyle is
+expensive, that is useful benchmark evidence for Slice 6 and/or a separate UX
+decision about whether the viewer needs a distinct "Show existing overlay"
+action versus an "Update overlay" action.
 
-### Slice 5: Investigate Compact Categorical Labels Colormap
+### Slice 6: Investigate Compact Categorical Labels Colormap
 
 Investigate whether Harpy can support the more compact categorical model:
 
@@ -459,7 +533,7 @@ If the prototype is successful, decide whether to:
 - Do not change hover/status feature semantics.
 - Do not depend on direct `DirectLabelColormap.model_construct(...)`.
 - Do not patch installed napari source code.
-- Do not introduce a private napari vispy visual for Slices 1-4.
+- Do not introduce a private napari vispy visual for Slices 1-5.
 
 ## Longer-Term Upstream Direction
 
@@ -474,9 +548,9 @@ category_code -> RGBA
 That would avoid storing repeated RGBA arrays for hundreds of thousands of
 labels when only a few categories are present.
 
-For Slices 1-4, Harpy should keep the public `DirectLabelColormap` contract and
+For Slices 1-5, Harpy should keep the public `DirectLabelColormap` contract and
 remove the avoidable pydantic/color-transformation overhead that dominates the
-current categorical `.obs` path. Slice 5 can then use benchmarked prototype
+current categorical `.obs` path. Slice 6 can then use benchmarked prototype
 evidence to decide whether a compact Harpy adapter is worth carrying locally or
 whether the right product move is an upstream napari API.
 
