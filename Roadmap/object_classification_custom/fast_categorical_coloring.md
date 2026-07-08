@@ -570,30 +570,154 @@ Important constraints:
 
 #### Slice 6.1: Napari Direct Colormap Contract Audit
 
-Status: proposed.
+Status: implemented.
 
-Before writing production code, inspect the installed napari version's labels
-colormap/rendering path and write down the exact private/public contract a
-compact colormap would need to satisfy.
+Audit target:
 
-Questions to answer:
+- napari version: `0.7.1`;
+- inspected paths:
+  - `napari.utils.colormaps.colormap.DirectLabelColormap`;
+  - `napari.layers.labels.labels.Labels`;
+  - `napari._vispy.layers.labels.VispyLabelsLayer`.
 
-- Which `DirectLabelColormap` methods/properties are consumed by
-  `Labels._set_colormap(...)`, `Labels.get_color(...)`, and the labels visual?
-- Which parts are public enough to rely on, and which are private internals?
-- Are these methods/properties the same for:
-  - high-bit labels, where napari builds a compact texture mapping;
-  - small integer labels, where napari may use a small lookup path;
-  - selected-label rendering / `show_selected_label`;
-  - multiscale labels?
-- What napari behavior does Harpy need to own explicitly in tests if it
-  subclasses `DirectLabelColormap`?
+Layer-side contract:
 
-Expected output:
+- `Labels.colormap = ...` calls `Labels._set_colormap(...)`, which first calls
+  napari's `_normalize_label_colormap(...)`.
+- `_normalize_label_colormap(...)` accepts an existing
+  `DirectLabelColormap`/`CyclicLabelColormap` instance, a sequence/array for
+  cyclic colors, or a mapping that it converts to `DirectLabelColormap`.
+- A Harpy compact object therefore needs to be a `DirectLabelColormap`
+  subclass, not an unrelated object.
+- `Labels._set_colormap(...)` stores direct colormaps on
+  `layer._direct_colormap`, but only uses direct color mode if
+  `layer._is_default_colors(colormap.color_dict)` is false.
+- A compact subclass must therefore expose a `color_dict` that does not look
+  like the default-only `{None, background}` mapping, otherwise napari will
+  switch back to auto color mode and ignore the direct colors.
+- `Labels._set_colormap(...)` also invalidates cached labels, sets
+  `layer._selected_color = layer.get_color(layer.selected_label)`, emits
+  `events.colormap` and `events.selected_label`, and calls
+  `refresh(extent=False)`.
+- `Labels.get_color(label)` calls `colormap.map(...)`, except for background
+  and selected-label edge cases.
+- `Labels._slice_dtype(...)`, `_raw_to_displayed(...)`, and partial label
+  updates call `colormap._data_to_texture(...)`.
 
-- an updated roadmap section listing the required contract;
-- a clear recommendation on whether Slice 6.2 is still worth pursuing;
-- no production behavior change.
+`DirectLabelColormap` contract:
+
+- `color_dict` is the public-looking mapping napari uses for direct-mode
+  detection, scalar `map(...)`, default color lookup, and small-label fallback
+  internals.
+- `default_color` reads `color_dict[None]`, falling back to transparent.
+- `_num_unique_colors` is a cached property currently computed by scanning
+  unique RGBA tuples in `color_dict`.
+- `_label_mapping_and_color_dict` is a cached property that groups labels with
+  identical RGBA tuples into compact texture ids:
+
+  ```text
+  raw label id -> compact texture id
+  compact texture id -> RGBA
+  ```
+
+- `_values_mapping_to_minimum_values_set(apply_selection=True)` returns either
+  the cached compact mapping above, or a special selected-label-only mapping
+  when `use_selection` is true.
+- `_data_to_texture(...)` delegates to napari's direct-label cast helper.
+  Higher-bit integer labels are mapped through `_label_mapping_and_color_dict`
+  / `_get_typed_dict_mapping(...)`; small integer labels are returned as raw
+  unsigned texture values.
+- `map(...)` supports scalar labels and integer arrays. Array mapping uses
+  `_get_mapping_from_cache(...)` for small integer dtypes when possible, and
+  the accelerated direct mapping otherwise.
+- `_clear_cache(...)` clears the base mapping caches and the cached direct
+  properties `_num_unique_colors`, `_label_mapping_and_color_dict`, and
+  `_array_map`.
+- `use_selection`, `selection`, and `background_value` are model fields that
+  napari mutates directly.
+
+Vispy/rendering contract:
+
+- `VispyLabelsLayer._on_colormap_change(...)` receives napari colormap events
+  and branches on `isinstance(colormap, CyclicLabelColormap)`.
+- For direct colormaps with high-bit raw labels (`raw_dtype.itemsize > 2`),
+  vispy calls `colormap._values_mapping_to_minimum_values_set()[1]`, uploads
+  that compact texture-id-to-RGBA table, and chooses a texture dtype from
+  `layer._direct_colormap._num_unique_colors + 2`.
+- For auto mode, or for direct colormaps with small raw labels
+  (`raw_dtype.itemsize <= 2`), vispy uses `_select_colormap_texture(...)`,
+  which calls `colormap._get_mapping_from_cache(...)` and uploads the resulting
+  lookup texture.
+- The small-label path means a compact subclass cannot only implement the
+  high-bit direct path. It must also keep `_get_mapping_from_cache(...)`,
+  `_map_without_cache(...)`, `_data_to_texture(...)`, and `map(...)` working
+  for `uint8`/`uint16` label data.
+- The current benchmark dataset likely exercises the high-bit path because
+  object ids exceed 16-bit range, but Harpy tests should cover both high-bit
+  and small integer labels.
+
+Selection and multiscale contract:
+
+- `Labels.selected_label` assigns `colormap.selection = selected_label`.
+- `Labels.show_selected_label` assigns `colormap.use_selection = show_selected`
+  and `colormap.selection = selected_label`.
+- The vispy layer listens to `selected_label` and `show_selected_label` events
+  and rebuilds the colormap texture/shader state.
+- A compact subclass must preserve selected-label behavior for both
+  `map(...)` and `_values_mapping_to_minimum_values_set(...)`.
+- Multiscale labels still route through the same layer colormap object and
+  current slice image. There is no separate multiscale colormap API, but tests
+  should include a multiscale Labels layer if feasible because slicing changes
+  the raw/view dtype path that vispy sees.
+
+Probe result:
+
+```text
+color_dict:
+  1001 -> red
+  1002 -> blue
+  1003 -> red
+
+napari compact mapping:
+  None -> 0
+  0 -> 1
+  1001 -> 2
+  1002 -> 3
+  1003 -> 2
+
+high-bit texture values for [0, 1001, 1002, 1003, 9999]:
+  [1, 2, 3, 2, 0]
+```
+
+This confirms that napari already compacts repeated RGBA colors after it has
+received the full `label_id -> RGBA` dictionary. The remaining Harpy
+opportunity is to build and expose that compact mapping directly, avoiding the
+large repeated RGBA mapping and napari's grouping scan.
+
+Harpy-owned test contract if subclassing:
+
+- assignment to a real `Labels` layer keeps `layer.color_mode` in direct mode;
+- `Labels.get_color(...)` matches the current Slice 1 helper for background,
+  mapped labels, repeated categories, and missing labels;
+- `map(...)` matches the current helper for scalar labels and integer arrays;
+- `_data_to_texture(...)` returns expected texture ids for high-bit labels;
+- small `uint8`/`uint16` labels render through the lookup-texture path;
+- selected-label rendering matches napari's current direct colormap behavior;
+- `_clear_cache(...)` invalidates all compact mappings owned by the subclass;
+- multiscale labels keep the same behavior where headless tests can exercise
+  it.
+
+Recommendation:
+
+- Slice 6.2 is still worth pursuing.
+- Start with a pure Harpy compact mapping builder that produces explicit
+  `label_id -> texture_code` and `texture_code -> RGBA` state.
+- Slice 6.3 should subclass `DirectLabelColormap` and override the narrow
+  compact-mapping hooks identified above, while still exposing enough
+  `color_dict` for napari's direct-mode detection and scalar/default behavior.
+- Because this relies on private napari internals, Harpy should own the
+  behavior through focused tests rather than adding runtime fallback/version
+  guards.
 
 #### Slice 6.2: Compact Mapping Builder
 
@@ -603,29 +727,49 @@ Build a Harpy-owned pure data helper for categorical labels, without touching
 napari internals yet.
 
 The helper should turn Harpy's existing table-aligned categorical colors into
-compact state:
+napari-shaped compact state:
 
 ```text
 positive label ids
-label_id -> category_code
-category_code -> RGBA
-default RGBA for unmapped labels
-transparent RGBA for background label 0
+label_id -> texture_code
+texture_code -> RGBA
+texture code for unknown/unmapped labels
+texture code for background label 0
 ```
+
+Use `texture_code` terminology here rather than generic `category_code`
+terminology. Slice 6.1 showed that napari's direct labels rendering already
+uses a compact texture-id-to-RGBA model internally. Harpy's builder should
+prepare exactly the state the subclass will need later.
+
+Implementation details:
+
+- reserve texture code `0` for unknown/unmapped labels and the `None` default
+  color;
+- assign an explicit texture code for background label `0`, even if it is
+  transparent like the default color, to stay close to napari's current direct
+  colormap semantics;
+- assign category texture codes after the unknown/background codes;
+- keep texture-code keys sequential from `0`, because napari's
+  `build_textures_from_dict(...)` assumes sequential color-table keys;
+- store repeated category RGBA values once in `texture_code -> RGBA`;
+- keep `label_id -> texture_code` as the per-object mapping;
+- never rewrite the labels image to texture codes.
 
 This helper should be independent of napari `DirectLabelColormap` subclassing.
 It should be easy to test with ordinary NumPy arrays and dictionaries.
 
 Acceptance criteria:
 
-- repeated RGBA colors are stored once per category code;
+- repeated RGBA colors are stored once per texture code;
 - background label `0` remains transparent;
 - missing/unmapped labels resolve to the same default color as the current
   direct RGBA helper;
+- texture-code keys are sequential from `0`;
 - helper output preserves per-cell label ids and never rewrites the labels
   image;
 - tests cover representative label ids, missing labels, repeated categories,
-  and non-contiguous category codes.
+  non-contiguous source categories, and sequential texture-code output.
 
 #### Slice 6.3: Prototype Compact DirectLabelColormap
 
@@ -637,18 +781,31 @@ Create an isolated prototype, for example
 
 The prototype should:
 
-- subclass or otherwise satisfy napari's accepted labels colormap type checks;
+- subclass `DirectLabelColormap` so napari's `_normalize_label_colormap(...)`
+  accepts it as a labels colormap instance;
 - store the compact state from Slice 6.2;
-- override only the narrow methods/properties identified in Slice 6.1, likely:
+- make the compact state, not `color_dict`, the source of truth for full
+  per-label coloring;
+- expose enough `color_dict` behavior for napari's direct-mode detection,
+  default color lookup, and scalar compatibility, without rebuilding the full
+  large `label_id -> RGBA` dictionary;
+- avoid looking like a default-only direct colormap, because napari may switch
+  the layer back to auto color mode in that case;
+- override/support the narrow methods/properties identified in Slice 6.1:
   - `_values_mapping_to_minimum_values_set(...)`;
   - `_label_mapping_and_color_dict`;
   - `_num_unique_colors`;
+  - `_data_to_texture(...)`;
   - `map(...)`;
+  - `_map_without_cache(...)` / `_get_mapping_from_cache(...)` behavior for
+    small `uint8`/`uint16` labels;
   - `_clear_cache(...)`;
-- preserve enough `color_dict` behavior for `Labels._set_colormap(...)` and
-  `Labels.get_color(...)` to keep working;
-- avoid looking like a default-only direct colormap, because napari may switch
-  the layer back to auto color mode in that case;
+- preserve `use_selection`, `selection`, and `background_value` behavior that
+  napari mutates directly;
+- keep `_values_mapping_to_minimum_values_set(apply_selection=True)` compatible
+  with napari's selected-label-only path;
+- keep `_values_mapping_to_minimum_values_set()[1]` compatible with vispy's
+  `build_textures_from_dict(...)`, including sequential texture-code keys;
 - be designed as the single Harpy-owned categorical styled-labels colormap path
   if the prototype is accepted.
 
@@ -668,10 +825,14 @@ Test parity for:
 - missing/unmapped labels;
 - background label `0`;
 - repeated colors/categories;
-- selected-label behavior if napari routes it through the colormap;
+- selected-label behavior with `use_selection=True`;
+- `_values_mapping_to_minimum_values_set(apply_selection=True/False)`;
+- `_data_to_texture(...)` for high-bit labels;
+- lookup-texture behavior for small `uint8`/`uint16` label ids;
 - `Labels.get_color(...)`;
-- small integer label ids;
-- large/high-bit label ids;
+- assignment to a real `Labels` layer, including direct color mode detection;
+- `Labels.show_selected_label` / `Labels.selected_label` mutation of the
+  colormap;
 - multiscale labels where feasible in headless tests.
 
 Acceptance criteria:
@@ -679,6 +840,10 @@ Acceptance criteria:
 - visual parity with the Slice 1 helper for categorical `.obs` colors;
 - `map(...)` parity for representative labels, missing labels, background, and
   selection mode;
+- `layer.colormap = compact_colormap` keeps the layer in direct color mode;
+- small integer labels and large/high-bit labels both map correctly;
+- compact texture-code keys are sequential and suitable for vispy texture
+  upload;
 - hover/status feature lookup remains label-id based;
 - no loss of per-cell label identity;
 - faster or materially lower-memory construction than the Slice 1 helper on the
@@ -697,6 +862,10 @@ Measure:
 - compact mapping construction;
 - compact colormap construction;
 - `layer.colormap` assignment;
+- first `_values_mapping_to_minimum_values_set(...)` call, because vispy uses
+  it to upload the high-bit direct color table;
+- `_data_to_texture(...)` on representative current-slice data, because labels
+  slicing uses it before rendering;
 - end-to-end `apply_table_color_source_to_labels_layer(...)` equivalent;
 - memory-ish size of the resulting Python-side mapping objects, if practical;
 - Slice 1 helper timings in the same run as a baseline only, not as a planned
@@ -707,6 +876,8 @@ Acceptance criteria:
 - materially faster construction and/or assignment than the Slice 1 helper on
   `table_global_ROI1.obs["leiden"]`;
 - or materially lower memory use with no performance regression;
+- no worse high-bit texture mapping behavior than the Slice 1 helper;
+- no worse small-label lookup behavior on a synthetic `uint16` labels case;
 - no slower path is allowed to replace the current helper.
 
 #### Slice 6.6: Integration Decision
@@ -726,6 +897,8 @@ Productionization requirements:
 - benchmark evidence from Slice 6.5 in the roadmap;
 - no product path depending silently on unverified napari internals;
 - remove the old categorical direct-RGBA styled-labels production path;
+- keep the Slice 1 helper only for direct RGBA use cases that still need it,
+  not as a second categorical styled-labels implementation;
 - no duplicate long-term categorical styled-labels colormap implementations.
 
 ### Slice 7: Compact Continuous Labels Colormap Via 256 Bins
