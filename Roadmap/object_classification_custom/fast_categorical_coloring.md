@@ -867,43 +867,73 @@ Create an isolated prototype, for example
 `CompactCategoricalLabelColormap`, that can be assigned where napari expects a
 `DirectLabelColormap`.
 
-The prototype should:
+Scope:
 
 - subclass `DirectLabelColormap` so napari's `_normalize_label_colormap(...)`
   accepts it as a labels colormap instance;
-- store the compact state from Slice 6.2;
+- accept one `CompactCategoricalLabelsMapping` from Slice 6.2;
+- stay isolated from production styled-labels routing in this slice;
+- include focused prototype tests, but do not replace the current categorical
+  direct-RGBA production path yet.
+
+Constructor / state:
+
+- use the compact mapping as the source of truth:
+
+  ```text
+  label_ids
+  texture_codes
+  texture_rgba
+  default_texture_code
+  background_texture_code
+  missing_texture_code
+  ```
+
+- initialize the base `DirectLabelColormap` with a small direct color mapping
+  that is sufficient for napari/pydantic event setup and direct-mode detection;
+- expose enough `color_dict` behavior for napari's direct-mode detection,
+  default color lookup, and scalar compatibility;
+- do not expose or lazily build a full `label_id -> RGBA` dictionary.
+
+Backend policy:
+
+- explicitly require/set napari's labels colormap backend to
+  `ColormapBackend.numba` for this prototype path;
+- fail loudly if the numba colormap backend is unavailable;
+- do not add fallback behavior for PartSegCore or pure-python backends in this
+  slice.
+
+Implementation details:
+
 - make the compact state, not `color_dict`, the source of truth for full
   per-label coloring;
-- expose enough `color_dict` behavior for napari's direct-mode detection,
-  default color lookup, and scalar compatibility, without rebuilding the full
-  large `label_id -> RGBA` dictionary;
 - never lazily materialize a full `label_id -> RGBA` dictionary from
   `color_dict`, `map(...)`, `_values_mapping_to_minimum_values_set(...)`,
   `_label_mapping_and_color_dict`, `_num_unique_colors`, `_data_to_texture(...)`,
   or cache rebuilding;
-- avoid making a large Python `label_id -> texture_code` dict the default
-  source of truth if an array-backed mapping can satisfy the hot paths more
-  cheaply;
-- if a dict or typed-dict representation is needed for a napari/numba path,
-  build it at most once per compact state and make repeated access use the
-  cache;
 - keep scalar/default compatibility small and explicit; if a method needs
   per-label information, it should use `label_id -> texture_code` plus
   `texture_code -> RGBA` directly;
 - avoid looking like a default-only direct colormap, because napari may switch
   the layer back to auto color mode in that case;
-- override/support the narrow methods/properties identified in Slice 6.1:
+- implement/support the narrow methods/properties identified in Slice 6.1:
   - `_values_mapping_to_minimum_values_set(...)`;
   - `_label_mapping_and_color_dict`;
   - `_num_unique_colors`;
   - `_data_to_texture(...)`;
   - `map(...)`;
-- `_map_without_cache(...)` / `_get_mapping_from_cache(...)` behavior for
+  - `_map_without_cache(...)` / `_get_mapping_from_cache(...)` behavior for
     small `uint8`/`uint16` labels;
+  - `_get_typed_dict_mapping(...)` behavior for the high-bit numba path;
   - `_clear_cache(...)`;
+- high-bit labels (`dtype.itemsize > 2`) should use a per-dtype numba typed
+  `raw label_id -> texture_code` mapping derived from compact arrays;
 - for small `uint8`/`uint16` labels, build bounded dense lookup arrays from
   compact state and cache them per dtype, preserving napari's small-label path
   without constructing a full Python `label_id -> RGBA` dictionary;
+- large derived representations should be computed at most once per relevant
+  dtype/compact state and reused on repeated access. This is local per-instance
+  reuse, not a separate invalidation system;
 - preserve `use_selection`, `selection`, and `background_value` behavior that
   napari mutates directly;
 - keep `_values_mapping_to_minimum_values_set(apply_selection=True)` compatible
@@ -912,6 +942,24 @@ The prototype should:
   `build_textures_from_dict(...)`, including sequential texture-code keys;
 - be designed as the single Harpy-owned categorical styled-labels colormap path
   if the prototype is accepted.
+
+Prototype acceptance criteria:
+
+- the class is a `DirectLabelColormap` subclass;
+- assigning it to a real `Labels` layer keeps the layer in direct color mode;
+- scalar `map(...)` returns the expected RGBA for mapped labels, background,
+  unmapped labels, and missing-category labels;
+- array `map(...)` matches current direct-RGBA behavior for representative
+  small and high-bit integer arrays;
+- `_data_to_texture(...)` returns expected raw values for small dtypes and
+  compact texture codes for high-bit dtypes;
+- high-bit mapping uses the numba typed-dict path and does not materialize
+  `label_id -> RGBA`;
+- small-label lookup arrays are bounded by dtype size and derived from compact
+  state;
+- selected-label mode matches current napari direct-colormap behavior;
+- `_clear_cache(...)` clears derived typed-dict / lookup-array state without
+  mutating the compact source state.
 
 This slice is still prototype-level. Do not route production styled labels
 coloring through the compact colormap yet.
