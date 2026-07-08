@@ -1124,110 +1124,170 @@ Prototype acceptance criteria:
 This slice is prototype-level. Production styled labels coloring is not routed
 through the compact colormap yet.
 
-#### Slice 6.4: Compact Colormap Parity Tests
+#### Slice 6.4: Shared Compact Categorical Colormap Helper
 
 Status: proposed.
 
-Prove that the compact prototype is behaviorally equivalent to the existing
-Slice 1 direct RGBA helper before benchmarking or integration.
+Add the public Harpy helper that turns table-aligned categorical values into a
+ready `CompactCategoricalLabelColormap`, without integrating it into viewer
+styling yet.
 
-Test parity for:
+Implementation shape:
 
-- `map(...)` on representative labels;
-- missing/unmapped labels;
-- background label `0`;
-- repeated colors/categories;
-- selected-label behavior with `use_selection=True`;
-- `_values_mapping_to_minimum_values_set(apply_selection=True/False)`;
-- `_data_to_texture(...)` for high-bit labels;
-- lookup-texture behavior for small `uint8`/`uint16` label ids;
-- `Labels.get_color(...)`;
-- assignment to a real `Labels` layer, including direct color mode detection;
-- `Labels.show_selected_label` / `Labels.selected_label` mutation of the
-  colormap;
-- multiscale labels where feasible in headless tests.
+- add a small helper in `src/napari_harpy/viewer/labels_colormap.py`, for
+  example:
+
+  ```python
+  def compact_categorical_label_colormap_from_values(
+      values: pd.Series,
+      *,
+      categories: Sequence[object],
+      palette: Sequence[Any],
+      missing_color: Any = MISSING_CATEGORICAL_COLOR,
+      background_value: int = 0,
+  ) -> CompactCategoricalLabelColormap:
+      mapping = compact_categorical_labels_mapping_from_values(...)
+      return CompactCategoricalLabelColormap(mapping)
+  ```
+
+- widen the existing compact builder palette typing from `Sequence[str]` to
+  `Sequence[Any]`, because object-classification palettes already use numeric
+  RGBA arrays in some paths;
+- preserve all existing `compact_categorical_labels_mapping_from_values(...)`
+  behavior, including missing/palette-unknown values and repeated RGBA
+  compaction;
+- keep `direct_label_colormap_from_rgba(...)` unchanged for direct RGBA use
+  cases that are not categorical yet.
+
+Tests:
+
+- verify the helper returns `CompactCategoricalLabelColormap`;
+- verify the helper preserves current compact mapping behavior for:
+  - mapped categories;
+  - missing/palette-unknown values;
+  - repeated category colors;
+  - numeric RGBA palette entries;
+- verify it remains visually equivalent to the expanded direct RGBA baseline
+  for representative labels.
 
 Acceptance criteria:
 
-- visual parity with the Slice 1 helper for categorical `.obs` colors;
-- `map(...)` parity for representative labels, missing labels, background, and
-  selection mode;
-- `layer.colormap = compact_colormap` keeps the layer in direct color mode;
-- small integer labels and large/high-bit labels both map correctly;
-- compact texture-code keys are sequential and suitable for vispy texture
-  upload;
-- none of the tested compact-colormap methods materialize a full
-  `label_id -> RGBA` dictionary as a side effect;
-- the compact implementation documents whether `label_id -> texture_code` is
-  stored as arrays, a dict, or both, and tests the repeated-access cache
-  behavior for whichever representation is used;
-- hover/status feature lookup remains label-id based;
-- no loss of per-cell label identity;
-- faster or materially lower-memory construction than the Slice 1 helper on the
-  `table_global_ROI1.obs["leiden"]` benchmark;
-- no regression for 2D, 3D, and multiscale Labels layers that Harpy supports.
+- no production viewer styling code is routed through the helper in this slice;
+- no new `label_id -> RGBA` categorical dictionary is built by the helper;
+- existing compact-colormap tests still pass.
 
-#### Slice 6.5: Compact Colormap Benchmark
+#### Slice 6.5: Styled Labels Integration
 
 Status: proposed.
 
-Benchmark the compact prototype against the Slice 1 direct RGBA helper on the
-same Xenium full-data `leiden` case used in Slice 5.
+Make `CompactCategoricalLabelColormap` the categorical styled-labels path in
+`src/napari_harpy/viewer/labels_styling.py`. We are working on a feature
+branch, so do not keep the compact colormap as a long-lived optional
+alternative next to the old categorical `label_id -> RGBA` route.
 
-Measure:
+Scope:
 
-- compact mapping construction;
-- compact colormap construction;
-- `layer.colormap` assignment;
-- first `_values_mapping_to_minimum_values_set(...)` call, because vispy uses
-  it to upload the high-bit direct color table;
-- `_data_to_texture(...)` on representative current-slice data, because labels
-  slicing uses it before rendering;
-- repeated access to `color_dict`, `map(...)`, `_num_unique_colors`,
-  `_label_mapping_and_color_dict`, and
-  `_values_mapping_to_minimum_values_set(...)`, to catch accidental lazy
-  full-dict materialization;
-- `_data_to_texture(...)` remapping cost for representative current-slice data,
-  because the `label_id -> texture_code` lookup can become the new bottleneck
-  if implemented with per-pixel Python work;
-- end-to-end `apply_table_color_source_to_labels_layer(...)` equivalent;
-- memory-ish size of the resulting Python-side mapping objects, if practical;
-- Slice 1 helper timings in the same run as a baseline only, not as a planned
-  production fallback.
+- change `_build_obs_column_colormap(...)` so categorical-like branches return
+  a concrete labels colormap object instead of a full categorical
+  `label_id -> RGBA` dictionary;
+- categorical-like branches include:
+  - pandas categorical dtype;
+  - bool dtype;
+  - exact binary `0/1` numeric categories;
+  - string-like columns coerced to categorical values;
+- replace `_build_categorical_color_dict(...)` usage with
+  `compact_categorical_label_colormap_from_values(...)`;
+- remove `_build_categorical_color_dict(...)` if no categorical caller remains;
+- keep `_build_continuous_color_dict(...)` and `_build_x_var_colormap(...)`
+  direct RGBA until Slice 7;
+- keep instance-id coloring on napari's procedural `label_colormap(...)`;
+- update `_apply_labels_colormap(...)` to assign a ready colormap object, or
+  split it into explicit direct/compact assignment helpers so categorical
+  branches do not rebuild a direct RGBA dictionary.
 
-Acceptance criteria:
+Tests:
 
-- materially faster construction and/or assignment than the Slice 1 helper on
-  `table_global_ROI1.obs["leiden"]`;
-- or materially lower memory use with no performance regression;
-- no worse high-bit texture mapping behavior than the Slice 1 helper;
-- no worse small-label lookup behavior on a synthetic `uint16` labels case;
-- repeated compact-colormap method access does not allocate or cache a full
-  large `label_id -> RGBA` mapping;
-- `label_id -> texture_code` lookup/remapping is not slower than napari's
-  current direct-label mapping on representative high-bit label slices;
-- no slower path is allowed to replace the current helper.
+- update styled-labels tests so categorical `.obs` styling assigns
+  `CompactCategoricalLabelColormap`;
+- verify categorical bool, binary numeric, pandas categorical, and string-like
+  coercion paths still color representative labels like the expanded direct
+  RGBA baseline;
+- verify continuous `.obs` / `.X` styling still uses the direct RGBA helper
+  until Slice 7;
+- keep tests proving hover/status features remain label-id based and
+  `layer.features` behavior is unchanged.
 
-#### Slice 6.6: Integration Decision
+Benchmark acceptance:
+
+- run the Xenium full-data `leiden` benchmark after integration;
+- the styled-labels categorical end-to-end path should no longer spend roughly
+  one second in direct-colormap grouping/typed-dict construction;
+- confirm `_values_mapping_to_minimum_values_set(...)` stays cheap and no full
+  `label_id -> RGBA` dictionary is built for categorical styled labels;
+- keep benchmark output in this roadmap before moving to object-classification
+  integration.
+
+#### Slice 6.6: Object-Classification Categorical Integration
 
 Status: proposed.
 
-If the prototype is successful, decide whether to:
+Use `CompactCategoricalLabelColormap` for categorical labels coloring in
+`src/napari_harpy/widgets/object_classification/viewer_styling.py`.
 
-- productionize the Harpy subclass as the categorical styled-labels colormap
-  implementation; or
-- open an upstream napari proposal/PR for a public compact categorical labels
-  colormap API.
+Scope:
 
-Productionization requirements:
+- in `ViewerStylingController.refresh_labels_colormap(...)`, route
+  `COLOR_BY_USER_CLASS` and `COLOR_BY_PRED_CLASS` through
+  `CompactCategoricalLabelColormap`;
+- build a class-value series indexed by instance id and pass sorted class ids
+  plus the matching RGBA palette to the compact helper;
+- preserve current missing/unlabeled behavior:
+  - `pred_class` keeps explicit unlabeled/missing class coloring according to
+    the existing class-color lookup;
+  - `user_class` should preserve the current visual behavior where unlabeled
+    rows are not explicit per-label user-class colors if that is how the
+    current direct path behaves;
+- keep `COLOR_BY_PRED_CONFIDENCE` on the direct RGBA helper until Slice 7;
+- do not keep a second full categorical `label_id -> RGBA` implementation for
+  full `user_class` / `pred_class` recoloring.
 
-- focused tests for the Harpy-owned subclass behavior;
-- benchmark evidence from Slice 6.5 in the roadmap;
-- no product path depending silently on unverified napari internals;
-- remove the old categorical direct-RGBA styled-labels production path;
-- keep the Slice 1 helper only for direct RGBA use cases that still need it,
-  not as a second categorical styled-labels implementation;
-- no duplicate long-term categorical styled-labels colormap implementations.
+Row-scoped annotation update:
+
+- `refresh_user_class_colormap_and_feature(...)` currently updates
+  `DirectLabelColormap.color_dict` sparsely. That is not compatible with
+  compact colormaps, where `color_dict` is intentionally tiny and not the
+  source of truth.
+- For this integration slice, prefer correctness and one categorical path over
+  preserving the sparse color-dict mutation:
+  - either rebuild the compact user-class colormap from current feature/table
+    state when `COLOR_BY_USER_CLASS` is active; or
+  - return `False` for compact categorical colormaps so the caller falls back
+    to the normal full refresh path.
+- Do not mutate `CompactCategoricalLabelColormap.color_dict` as if it were the
+  full label-color mapping.
+- The feature-only path for prediction color modes can remain unchanged,
+  because it does not repaint label colors.
+
+Tests:
+
+- verify object-classification `user_class` and `pred_class` full refresh use
+  `CompactCategoricalLabelColormap`;
+- verify `pred_confidence` remains visually equivalent on the direct RGBA path;
+- verify row-scoped user-class updates do not mutate compact `color_dict` and
+  either rebuild/fallback correctly;
+- keep tests proving hover/status features remain label-id based and
+  `layer.features` behavior is unchanged.
+
+Benchmark acceptance:
+
+- run a representative object-classification categorical labels-coloring
+  benchmark after integration;
+- the `user_class` / `pred_class` full refresh path should no longer build a
+  full `label_id -> RGBA` dictionary;
+- confirm `_values_mapping_to_minimum_values_set(...)` stays cheap and no
+  full `label_id -> RGBA` dictionary is built for categorical
+  object-classification labels coloring;
+- keep benchmark output in this roadmap before moving to Slice 7.
 
 ### Slice 7: Compact Continuous Labels Colormap Via 256 Bins
 
