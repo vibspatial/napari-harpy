@@ -125,6 +125,93 @@ Create the package structure, register `PixelClassificationWidget`, and add a mi
 `HarpyAppState`. The widget can initially show disabled controls and a status card, but it must be discoverable from
 napari and from `Interactive(..., widgets=...)`.
 
+Slice 1 is only the product shell and registration layer. It should not implement cache building, annotation handling,
+feature extraction, classifier training, prediction, or saving. The goal is to create a clean, importable, registered
+entry point that later slices can fill in without changing public names.
+
+Files to add:
+
+```text
+src/napari_harpy/core/pixel_classification/__init__.py
+src/napari_harpy/widgets/pixel_classification/__init__.py
+src/napari_harpy/widgets/pixel_classification/controller.py
+src/napari_harpy/widgets/pixel_classification/status_card.py
+src/napari_harpy/widgets/pixel_classification/widget.py
+tests/test_pixel_classification_widget.py
+```
+
+Files to update:
+
+```text
+src/napari_harpy/napari.yaml
+src/napari_harpy/widgets/__init__.py
+src/napari_harpy/_interactive.py
+tests/test_package.py
+tests/test_app_state.py
+```
+
+Core package requirements:
+
+- `napari_harpy.core.pixel_classification` exists and imports without importing Qt, napari, torch, or torchvision;
+- `__init__.py` should stay minimal, with no eager imports of heavy or optional dependencies;
+- no placeholder feature/cache/classifier modules should be added in Slice 1 unless they are needed by the widget shell.
+
+Widget package requirements:
+
+- expose `PixelClassificationWidget` from `widgets/pixel_classification/__init__.py`;
+- define `PixelClassificationWidget(QWidget)` in `widgets/pixel_classification/widget.py`;
+- accept `napari_viewer: napari.Viewer | None = None`, matching the existing widget constructors;
+- call `get_or_create_app_state(napari_viewer)` and keep the returned shared app state;
+- set a stable object name, `pixel_classification_widget`;
+- use the shared widget styling helpers already used by the other widgets;
+- show a minimal status/card area with an initial state such as “No SpatialData loaded” or “Choose an image to start”;
+- all action controls in this first slice should be disabled or absent until later slices implement real behavior;
+- destroying the widget should not leave timers/workers/callbacks running. Since Slice 1 should not start workers, this
+  is mostly a constraint on not introducing unnecessary asynchronous objects yet.
+
+Controller/status requirements:
+
+- `controller.py` should contain only light widget-facing state needed by the shell, for example selected `SpatialData`
+  presence and a status message;
+- `status_card.py` should contain the minimal status-card builder or helper used by the widget shell;
+- do not introduce source-resolution, annotation, cache, feature, or classifier state in Slice 1;
+- the controller should be easy to replace/extend when Slice 2 adds source resolution.
+
+Napari manifest registration:
+
+- add command id `napari-harpy.pixel_classification`;
+- command title should be `Open pixel classification widget`;
+- `python_name` should be `napari_harpy.widgets.pixel_classification.widget:PixelClassificationWidget`;
+- add a widget contribution with display name `Pixel Classification`;
+- keep existing widget display names unchanged.
+
+Lazy widget export:
+
+- add `PixelClassificationWidget` to the `TYPE_CHECKING` block in `widgets/__init__.py`;
+- add `"pixel_classification.widget": ["PixelClassificationWidget"]` to the lazy loader mapping;
+- add `"PixelClassificationWidget"` to `__all__`;
+- importing `napari_harpy.widgets` should not import the pixel widget module until the attribute is requested.
+
+Interactive launcher registration:
+
+- add `"pixel_classification"` to `HarpyWidgetId`;
+- add `"pixel_classification": "Pixel Classification"` to `_WIDGET_NAMES`;
+- add `"pixel_classification"` to `_ALL_WIDGET_IDS`;
+- update the `Interactive` docstring so the valid widget list includes `pixel_classification`;
+- `Interactive(..., widgets="pixel_classification")` should dock only `("napari-harpy", "Pixel Classification", True)`;
+- `Interactive(..., widgets="all")` should include the new widget exactly once.
+
+Slice 1 tests:
+
+- `tests/test_package.py`: assert the napari manifest contributes the `Pixel Classification` widget and command;
+- `tests/test_package.py`: assert lazy import exposes `PixelClassificationWidget` from `napari_harpy.widgets`;
+- `tests/test_app_state.py`: assert `Interactive(..., widgets="pixel_classification")` docks the new widget;
+- `tests/test_app_state.py`: update the `"all"` expected dock list to include `Pixel Classification`;
+- `tests/test_pixel_classification_widget.py`: instantiate `PixelClassificationWidget()` and with a viewer, assert object
+  name and shared app-state binding;
+- add or extend an import hygiene test so importing `napari_harpy.core.pixel_classification` does not import
+  `torch`, `torchvision`, `napari`, or Qt bindings.
+
 Acceptance criteria:
 
 - the widget appears in the napari manifest;
