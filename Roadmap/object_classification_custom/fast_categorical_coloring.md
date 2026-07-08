@@ -341,7 +341,7 @@ Acceptance criteria:
 
 ### Slice 4: Make Styled Labels Restyle Semantics Explicit
 
-Status: proposed.
+Status: implemented.
 
 Current behavior:
 

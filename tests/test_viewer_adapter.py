@@ -1658,6 +1658,48 @@ def test_viewer_adapter_ensure_styled_labels_loaded_reuses_matching_variant(sdat
     assert len(viewer.layers) == 1
 
 
+def test_viewer_adapter_ensure_styled_labels_loaded_updates_reused_variant_from_current_table(
+    sdata_blobs,
+) -> None:
+    table = sdata_blobs["table"]
+    region_rows = table.obs.loc[table.obs["region"] == "blobs_labels"]
+    odd_instance = int(region_rows.loc[region_rows["instance_id"] % 2 == 1, "instance_id"].iloc[0])
+    even_instance = int(region_rows.loc[region_rows["instance_id"] % 2 == 0, "instance_id"].iloc[0])
+    table.obs["cell_type"] = pd.Categorical(
+        np.where(table.obs["instance_id"].to_numpy() % 2 == 0, "even", "odd"),
+        categories=["odd", "even"],
+    )
+    table.uns["cell_type_colors"] = ["#ff0000", "#00ff00"]
+
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="obs_column",
+        value_key="cell_type",
+        value_kind="categorical",
+    )
+
+    first = adapter.ensure_styled_labels_loaded(sdata_blobs, "blobs_labels", "global", style_spec)
+
+    assert np.allclose(first.layer.colormap.color_dict[odd_instance], np.asarray(to_rgba("#ff0000"), dtype=np.float32))
+    # Change an instance that was originally "odd" to "even", then update
+    # the palette so the second "ensure" call should recolor the same layer.
+    table.obs.loc[table.obs["instance_id"] == odd_instance, "cell_type"] = "even"
+    table.uns["cell_type_colors"] = ["#0000ff", "#ffff00"]
+
+    second = adapter.ensure_styled_labels_loaded(sdata_blobs, "blobs_labels", "global", style_spec)
+
+    assert first.layer is second.layer
+    assert first.created is True
+    assert second.created is False
+    assert len(viewer.layers) == 1
+    assert np.allclose(second.layer.colormap.color_dict[odd_instance], np.asarray(to_rgba("#ffff00"), dtype=np.float32))
+    assert np.allclose(second.layer.colormap.color_dict[even_instance], np.asarray(to_rgba("#ffff00"), dtype=np.float32))
+    features = second.layer.features.set_index("index")
+    assert features.loc[odd_instance, "cell_type"] == "even"
+
+
 def test_viewer_adapter_ensure_styled_labels_loaded_creates_distinct_variants_for_different_style_specs(
     sdata_blobs,
 ) -> None:

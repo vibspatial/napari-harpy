@@ -1254,6 +1254,9 @@ class ViewerAdapter(QObject):
             layer = existing_layer
 
         layer.name = build_styled_labels_layer_name(labels_name, style_spec)
+        # This method backs the viewer's "Add / Update in viewer" action:
+        # existing styled overlays are intentionally restyled from the current
+        # table state rather than returned unchanged.
         style_result = apply_table_color_source_to_labels_layer(
             layer,
             sdata=sdata,
