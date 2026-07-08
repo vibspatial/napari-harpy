@@ -235,6 +235,8 @@ def _positive_label_ids_from_index(index: pd.Index) -> np.ndarray:
         raise ValueError("Compact labels mapping index must contain integer label ids.") from error
     if not np.array_equal(raw_label_ids, label_ids):
         raise ValueError("Compact labels mapping index must contain integer label ids.")
+    # This is the main validation cost for large tables. If upstream alignment
+    # guarantees uniqueness in the future, we can consider trusting that input.
     if len(label_ids) != len(np.unique(label_ids)):
         raise ValueError("Compact labels mapping index must contain unique label ids.")
     if np.any(label_ids <= 0):
