@@ -1400,6 +1400,112 @@ Acceptance criteria:
   materially reduces memory use without making assignment slower;
 - no duplicate long-term continuous styled-labels colormap implementations.
 
+### Slice 8: Async Slicing Labels Colormap Synchronization
+
+Status: proposed.
+
+When `Interactive(..., async_slicing=True)` is used, coloring labels by a
+categorical or continuous table column can briefly or persistently render with
+incorrect colors. The observed screenshots show patterns consistent with a
+labels texture-code image being interpreted by the wrong labels colormap table.
+This is not specific to the compact categorical colormap work: the same class
+of issue can happen with napari's normal `DirectLabelColormap` path.
+
+Investigation notes:
+
+- Harpy only toggles napari's global async slicing setting in
+  `Interactive(...)` through `get_settings().experimental.async_`.
+- Harpy builds styled labels layers the same way for async and sync:
+  `_build_labels_layer(...)` creates a `napari.layers.Labels` layer, and
+  `apply_table_color_source_to_labels_layer(...)` later assigns the direct
+  labels colormap.
+- Napari labels rendering is a two-stage process:
+  - `Labels._raw_to_displayed(...)` converts raw label ids to small texture
+    codes with `layer.colormap._data_to_texture(...)`;
+  - `VispyLabelsLayer._on_colormap_change(...)` uploads the texture-code-to-RGBA
+    table used by the shader.
+- With async slicing enabled, `Layer.refresh(data_displayed=True)` does not
+  immediately recode the displayed labels texture. It emits a reload event and
+  the recode happens when the async slice response is applied.
+- The colormap event still updates the vispy shader/color table immediately.
+  That means the viewer can temporarily display old texture codes from the
+  previous labels colormap against the new texture-code-to-RGBA table.
+- Headless `ViewerModel` checks for
+  `table_transcriptomics_preprocessed.obs["leiden"]` and
+  `table_transcriptomics_preprocessed.obs["total_counts"]` on
+  `nucleus_segmentation_mask` showed that the final layer-side
+  `layer._slice.image.raw` and `layer._slice.image.view` are identical for
+  async and sync once the async slice response is applied. That points away
+  from table alignment, label-id conversion, and compact colormap construction,
+  and toward the real Qt/vispy display window between colormap assignment and
+  async slice completion.
+- On large dask-backed labels, that window can be long enough to be visible in
+  normal use. If the user navigates while async slicing is pending, multiple
+  requests can also make the mismatch feel persistent.
+
+Recommended fix:
+
+- After Harpy assigns a direct labels colormap for table-driven labels coloring,
+  force the current labels slice to be recoded synchronously before returning
+  control to the user.
+- Implement this in the viewer-facing code path, not inside the pure colormap
+  builders:
+  - `ViewerAdapter.ensure_styled_labels_loaded(...)` has access to both the
+    viewer and the styled labels layer, so it can force-refresh the just-styled
+    layer after `apply_table_color_source_to_labels_layer(...)`.
+  - Object-classification labels coloring should use the same helper once
+    Slice 6.6 routes `user_class` / `pred_class` through compact categorical
+    colormaps and still uses direct labels colormaps for `pred_confidence`.
+- Prefer a small helper with a no-op fallback for test/dummy viewers:
+
+  ```python
+  def _force_sync_labels_slice_after_colormap_change(viewer: object, layer: Labels) -> None:
+      layer_slicer = getattr(viewer, "_layer_slicer", None)
+      dims = getattr(viewer, "dims", None)
+      if layer_slicer is None or dims is None:
+          return
+      with layer_slicer.force_sync():
+          layer_slicer.submit(layers=[layer], dims=dims, force=True)
+  ```
+
+- This deliberately blocks only after an explicit Harpy recoloring action. It
+  does not disable async slicing globally for normal navigation.
+- If forcing a sync slice is too expensive in practice, a more refined follow-up
+  is to recode the already-loaded current raw slice in place and emit
+  `layer.events.set_data()`. That avoids dask I/O for the current view, but it
+  touches more napari internals and should only be chosen if the simple
+  force-sync helper is too slow.
+
+Tests:
+
+- Add a `ViewerModel`-based unit test for the helper:
+  - create a `Labels` layer with a previous labels colormap and loaded raw
+    slice;
+  - assign a direct labels colormap;
+  - call the helper;
+  - assert the displayed texture-code view equals
+    `layer.colormap._data_to_texture(layer._slice.image.raw)`.
+- Add a test that the helper is a no-op for `DummyViewer` / non-napari viewer
+  objects so existing adapter tests stay lightweight.
+- Keep styled-label semantic tests focused on final mapped colors; do not assert
+  on transient async intermediate states.
+
+Manual QA:
+
+- Launch
+
+  ```python
+  Interactive(sdata, async_slicing=True)
+  ```
+
+  using `/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium_3_6_26.zarr`.
+- Color `nucleus_segmentation_mask` by
+  `table_transcriptomics_preprocessed.obs["leiden"]` and by a continuous column
+  such as `total_counts`.
+- Confirm the styled labels layer never shows the wrong full-field/speckled
+  color mismatch seen before the fix.
+- Repeat with `async_slicing=False` to confirm no behavior change.
+
 ## Non-Goals
 
 - Do not rewrite the labels image to category codes.
