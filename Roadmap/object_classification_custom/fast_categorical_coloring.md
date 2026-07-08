@@ -507,6 +507,9 @@ Findings:
 - Continuous `.obs` coloring is now in the same performance class as
   categorical `.obs` coloring because both use the direct RGBA helper and both
   still need one explicit label-id entry per object.
+- Continuous `.obs` coloring should use the same compact-colormap direction in
+  a follow-up slice, but it needs an explicit 256-bin quantization contract
+  rather than categorical category-code semantics.
 - Instance-key coloring remains much faster because it uses napari's procedural
   `label_colormap(...)` and does not need a `label_id -> RGBA` mapping.
 - These measurements support moving to Slice 6 if we want to reduce the
@@ -523,9 +526,9 @@ category_code -> RGBA
 
 This is a follow-up investigation/prototype after the safer fast
 `DirectLabelColormap` helper. It touches napari internals, so the product bar is
-higher: no production path should depend on a private napari contract unless it
-is version-gated, tested, benchmarked, and has a reliable fallback to the Slice
-1 helper.
+higher: if Harpy introduces a compact subclass, Harpy owns that implementation
+as the labels-coloring path. We should not maintain two production ways to build
+the same styled-labels colormap.
 
 Current napari 0.7.1 findings:
 
@@ -548,13 +551,22 @@ Current napari 0.7.1 findings:
 
 Important constraints:
 
+- Slice 6 is for categorical `.obs` coloring only.
+- Continuous `.obs` coloring is handled separately in Slice 7 via 256-bin
+  quantization.
 - Do not rewrite the labels image to category codes. The image must keep
   per-cell label identity.
 - Do not create a second labels layer just to display categorical colors.
 - Do not patch installed napari source code.
 - Do not monkeypatch napari globals at runtime.
-- Keep the Slice 1 fast `DirectLabelColormap` helper as the fallback for
-  unsupported napari versions, unsupported dtypes, or failed parity tests.
+- Do not implement fallback behavior that keeps both the Slice 1 direct RGBA
+  helper and a compact colormap implementation alive for the same categorical
+  styled-labels use case. If the compact colormap is productionized, it becomes
+  Harpy's owned implementation path.
+- During prototyping, the current Slice 1 helper may exist side-by-side with
+  the compact subclass as a parity/benchmark reference. After the compact
+  subclass is accepted, remove the old categorical styled-labels production
+  route instead of maintaining both.
 
 #### Slice 6.1: Napari Direct Colormap Contract Audit
 
@@ -574,7 +586,8 @@ Questions to answer:
   - small integer labels, where napari may use a small lookup path;
   - selected-label rendering / `show_selected_label`;
   - multiscale labels?
-- What version guard would be needed if Harpy carries a private adapter?
+- What napari behavior does Harpy need to own explicitly in tests if it
+  subclasses `DirectLabelColormap`?
 
 Expected output:
 
@@ -636,7 +649,8 @@ The prototype should:
   `Labels.get_color(...)` to keep working;
 - avoid looking like a default-only direct colormap, because napari may switch
   the layer back to auto color mode in that case;
-- keep a fallback to the Slice 1 `direct_label_colormap_from_rgba(...)` helper.
+- be designed as the single Harpy-owned categorical styled-labels colormap path
+  if the prototype is accepted.
 
 This slice is still prototype-level. Do not route production styled labels
 coloring through the compact colormap yet.
@@ -669,8 +683,7 @@ Acceptance criteria:
 - no loss of per-cell label identity;
 - faster or materially lower-memory construction than the Slice 1 helper on the
   `table_global_ROI1.obs["leiden"]` benchmark;
-- no regression for 2D, 3D, and multiscale Labels layers that Harpy supports;
-- explicit napari-version guard with a loud fallback when internals change.
+- no regression for 2D, 3D, and multiscale Labels layers that Harpy supports.
 
 #### Slice 6.5: Compact Colormap Benchmark
 
@@ -686,7 +699,8 @@ Measure:
 - `layer.colormap` assignment;
 - end-to-end `apply_table_color_source_to_labels_layer(...)` equivalent;
 - memory-ish size of the resulting Python-side mapping objects, if practical;
-- fallback helper timings in the same run for comparison.
+- Slice 1 helper timings in the same run as a baseline only, not as a planned
+  production fallback.
 
 Acceptance criteria:
 
@@ -701,17 +715,99 @@ Status: proposed.
 
 If the prototype is successful, decide whether to:
 
-- productionize the Harpy subclass behind a small adapter and fallback; or
+- productionize the Harpy subclass as the categorical styled-labels colormap
+  implementation; or
 - open an upstream napari proposal/PR for a public compact categorical labels
   colormap API.
 
 Productionization requirements:
 
-- explicit napari-version guard;
-- fallback to the Slice 1 helper when the private contract is unsupported;
-- focused tests for the guarded adapter;
+- focused tests for the Harpy-owned subclass behavior;
 - benchmark evidence from Slice 6.5 in the roadmap;
-- no product path depending silently on unverified napari internals.
+- no product path depending silently on unverified napari internals;
+- remove the old categorical direct-RGBA styled-labels production path;
+- no duplicate long-term categorical styled-labels colormap implementations.
+
+### Slice 7: Compact Continuous Labels Colormap Via 256 Bins
+
+Status: proposed.
+
+After Slice 6 settles the Harpy-owned compact colormap shape for categorical
+`.obs`, extend the same idea to continuous `.obs` values by quantizing colors
+into a fixed 256-bin color table:
+
+```text
+label_id -> color_bin
+color_bin -> RGBA
+```
+
+Rationale:
+
+- Continuous `.obs` styling now has similar timings to categorical styling
+  because it also builds one explicit `label_id -> RGBA` entry per object.
+- A 256-bin color table should be visually close to the current continuous
+  colormap while avoiding repeated RGBA storage for hundreds of thousands of
+  labels.
+- This is not what Harpy does today. The current path maps each normalized
+  continuous float value through the colormap and stores the resulting
+  per-label RGBA.
+- Napari does compact identical RGBA values after receiving a direct labels
+  colormap. In `DirectLabelColormap._label_mapping_and_color_dict`, labels that
+  share the exact same RGBA tuple are assigned the same compact texture id, and
+  the vispy labels layer uploads that compact texture-id-to-RGBA table.
+- However, Harpy currently still builds the full `label_id -> RGBA` dictionary
+  first, and napari then scans that dictionary to rediscover the compact
+  structure.
+- Napari does not choose or expose a Harpy-owned 256-bin continuous
+  source-value quantization before the direct colormap is built. Slice 7 is
+  about moving that compact bin mapping into Harpy's own construction path.
+- Therefore, 256-bin continuous coloring is an intentional approximation of the
+  current per-value RGBA behavior, even if the current matplotlib colormap
+  already emits repeated exact RGBA values for many datasets. It should be
+  specified and tested separately from categorical coloring, with an explicit
+  visual/parity tolerance.
+
+Implementation direction:
+
+1. Define the continuous binning contract:
+   - use 256 bins;
+   - normalize finite values over the same range currently used by
+     `continuous_rgba_for_values(...)`;
+   - map missing/non-finite values to the current missing/default color;
+   - clamp values outside the chosen range.
+2. Build a pure helper that produces compact state:
+   - positive label ids;
+   - `label_id -> color_bin`;
+   - `color_bin -> RGBA`;
+   - missing/default color;
+   - transparent background label `0`.
+3. Compare the proposed bin count with the current number of unique RGBA values
+   produced by `continuous_rgba_for_values(...)` on benchmark columns. For
+   example, the Slice 5 `total_counts` column produced `182` unique RGBA colors
+   for `406,611` rows with the current path, because matplotlib/napari already
+   yield repeated exact RGBA values.
+4. Reuse the Harpy-owned compact colormap implementation shape from Slice 6
+   where possible.
+5. Add visual/parity-tolerance tests against the current continuous direct RGBA
+   helper:
+   - representative values at min, midpoint, max;
+   - repeated values;
+   - missing values;
+   - out-of-range/clamped values if the helper exposes an explicit range;
+   - large label ids.
+6. Benchmark on the Slice 5 `continuous_total_counts` case.
+
+Acceptance criteria:
+
+- continuous labels coloring remains visually equivalent within an explicit
+  accepted 256-bin tolerance; it is not expected to be bit-for-bit identical to
+  the current per-value RGBA path;
+- missing values keep the current missing/default color;
+- background label `0` remains transparent;
+- hover/status feature lookup remains label-id based;
+- benchmark improves the `continuous_total_counts` direct colormap path or
+  materially reduces memory use without making assignment slower;
+- no duplicate long-term continuous styled-labels colormap implementations.
 
 ## Non-Goals
 
@@ -720,26 +816,34 @@ Productionization requirements:
 - Do not change hover/status feature semantics.
 - Do not depend on direct `DirectLabelColormap.model_construct(...)`.
 - Do not patch installed napari source code.
-- Do not introduce a private napari vispy visual for Slices 1-5.
+- Do not introduce a private napari vispy visual for this roadmap.
 
 ## Longer-Term Upstream Direction
 
-The real long-term solution would be native napari support for a compact
-categorical labels colormap:
+The real long-term solution would be native napari support for compact labels
+colormaps. For categorical values:
 
 ```text
 label_id -> category_code
 category_code -> RGBA
 ```
 
-That would avoid storing repeated RGBA arrays for hundreds of thousands of
-labels when only a few categories are present.
+For continuous values, the analogous model is a quantized color table:
+
+```text
+label_id -> color_bin
+color_bin -> RGBA
+```
+
+Both avoid storing repeated RGBA arrays for hundreds of thousands of labels.
 
 For Slices 1-5, Harpy should keep the public `DirectLabelColormap` contract and
 remove the avoidable pydantic/color-transformation overhead that dominates the
-current categorical `.obs` path. Slice 6 can then use benchmarked prototype
-evidence to decide whether a compact Harpy adapter is worth carrying locally or
-whether the right product move is an upstream napari API.
+current direct `.obs` path. Slice 6 can then use benchmarked prototype evidence
+to decide whether a compact Harpy categorical colormap is worth carrying
+locally or whether the right product move is an upstream napari API. Slice 7
+handles continuous `.obs` coloring separately through explicit 256-bin
+quantization.
 
 ## Suggested Verification
 

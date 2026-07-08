@@ -52,12 +52,38 @@ Add a new `PixelClassificationWidget` and controller.
 Pipeline:
 
 1. User selects SpatialData image, coordinate system, and channels.
-2. User paints scribble labels in a napari `Labels` layer: `0 = unlabeled`, `1..N = classes`.
+2. User paints scribble labels in a napari `Labels` layer at the highest-resolution image scale: `0 = unlabeled`, `1..N = classes`.
 3. Feature extractor produces tile-wise deep feature arrays, conceptually `(F_raw, y, x)`.
 4. Build a pixel feature cache by concatenating normalized marker intensities with reduced deep features.
 5. Train classifier from annotated pixel coordinates only.
 6. Predict labels/probabilities tile-wise from cached features.
-7. Write output as a new labels element, or initially as a viewer layer with optional “save to SpatialData”.
+7. Upsample predicted class labels to the highest-resolution image grid when the classifier ran at a coarser scale.
+8. Write the high-resolution predicted labels as a new labels element, or initially as a viewer layer with optional “save to SpatialData”.
+
+**Phased Resolution Contract**
+Phase 1 should run pixel classification on the highest-resolution image scale only. There should be no image-scale
+selector in the first production slice. User annotation, feature extraction, cache creation, training, prediction,
+display, and saved predicted labels all use the highest-resolution image grid.
+
+Phase 2 should add scale selection for multiscale image elements. If the selected image element is a multiscale
+`DataTree`, the pixel-classification UI should let the user choose which image scale is used for feature extraction,
+cache creation, training, and prediction. Annotation still happens on the highest-resolution scale. In the background,
+Harpy converts the high-resolution annotation labels to the selected compute scale before training.
+
+The primary user-facing predicted labels layer should always be on the highest-resolution image grid. If prediction
+was computed at a coarser scale, Harpy should upsample the predicted class map back to the highest-resolution shape
+before displaying or saving it. This upsampling must be label-preserving, for example nearest-neighbor resampling.
+The product should not expose a transformed low-resolution labels layer as the main prediction result. A low-resolution
+compute-scale prediction can exist as an internal/cache artifact if useful, but the output contract for predicted
+class labels is full-resolution.
+
+The Phase 2 scale contract should be recorded in the cache and prediction metadata:
+
+- annotation source scale: always highest resolution;
+- compute image scale: selected by the user for multiscale `DataTree` images;
+- annotation downsampling policy: label-preserving, with explicit behavior for conflicts and tiny scribbles;
+- prediction output scale: highest resolution;
+- prediction upsampling policy: label-preserving nearest-neighbor or another explicitly documented label-safe rule.
 
 **Pixel Feature Cache Schema**
 The cached pixel feature stack should make the marker-intensity and deep-feature parts explicit:
@@ -70,6 +96,10 @@ cached_features = concat(
 
 shape: (C + F_reduced, y, x)
 ```
+
+For Phase 1, `y, x` are the highest-resolution image dimensions. For Phase 2 multiscale execution, `y, x`
+are the selected compute-scale dimensions, while the final user-facing predicted labels are still upsampled
+back to the highest-resolution image grid.
 
 Here `C` is the number of selected image channels. These planes are the normalized per-pixel marker
 intensities from the source multiplex image, for example DAPI, CD3, CD20, PanCK, and so on. They are
@@ -126,7 +156,7 @@ sample.harpy-cache.zarr/
   pixel_classification/
     feature_caches/
       <cache_id>/
-        features              # zarr array, shape (C + F_reduced, y, x)
+        features              # zarr array, shape (C + F_reduced, y, x) at the selected compute scale
         reducer/
           components
           mean
@@ -148,8 +178,14 @@ layout such as `images/<image_name>`. The manifest should record:
 - source image element name
 - source image element zarr path resolved from SpatialData
 - coordinate system
+- source image scale / multiscale level used for compute
+- annotation source scale
+- annotation downsampling policy
+- prediction output scale
+- prediction upsampling policy
 - selected channels and channel names
-- source shape and dtype
+- highest-resolution source shape and dtype
+- compute-scale source shape and dtype
 - normalization settings
 - model name, weights, and relevant package versions
 - feature layers / scales
@@ -169,9 +205,11 @@ Initial production behavior:
   and manageable.
 
 Only user-facing prediction results should be written back into SpatialData by default, and only on
-explicit save. For example, save predicted class maps as `sdata.labels[...]` and optionally save
-probability maps as `sdata.images[...]`. Exporting the feature cache itself as a SpatialData image
-element can be a future explicit export action, but should not be the default cache path.
+explicit save. Predicted class maps should be saved as highest-resolution `sdata.labels[...]` elements,
+even when Phase 2 computes the prediction at a coarser selected scale and upsamples it afterward. Probability
+maps can be saved optionally as `sdata.images[...]`, but their resolution and resampling policy should be
+explicit metadata rather than an implicit side effect. Exporting the feature cache itself as a SpatialData
+image element can be a future explicit export action, but should not be the default cache path.
 
 **Back-of-the-envelope Cache Scaling**
 Pixel classification will usually run on a curated channel subset, not necessarily all multiplex
