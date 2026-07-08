@@ -1289,76 +1289,109 @@ Findings:
 - Continuous `.obs` coloring remains slow and still builds a full
   `label_id -> RGBA` dictionary. That is expected before Slice 7.
 
-#### Slice 6.6: Object-Classification Categorical Integration
+#### Slice 6.6a: Compact Default-Color Support
 
 Status: proposed.
 
-Use `CompactCategoricalLabelColormap` for categorical labels coloring in
-`src/napari_harpy/widgets/object_classification/viewer_styling.py`.
+Prepare the compact categorical helper for object-classification semantics
+without touching the object-classification widget/controller yet.
+
+Current compact styled-labels behavior:
+
+```text
+unmapped label id -> transparent default
+background label 0 -> transparent background
+```
+
+Current object-classification categorical behavior:
+
+```text
+unmapped label id -> UNLABELED_COLOR
+background label 0 -> transparent background
+```
+
+Implementation direction:
+
+1. Extend `compact_categorical_labels_mapping_from_values(...)` and
+   `compact_categorical_label_colormap_from_values(...)` with an optional
+   `default_color` argument.
+2. Keep the default `default_color` transparent, so Slice 6.5 styled-labels
+   behavior remains unchanged.
+3. Store `default_color` as texture code `0`, preserving the existing compact
+   convention that code `0` is the `None` / unmapped-label default.
+4. Keep `background_value=0` mapped to transparent background texture code `1`.
+5. Do not change object-classification coloring in this slice.
+
+Tests:
+
+- styled-labels categorical coloring still uses transparent default/unmapped
+  labels when no `default_color` override is passed;
+- passing `default_color=UNLABELED_COLOR` produces a compact colormap whose
+  unmapped labels map to the unlabeled gray color;
+- background label `0` remains transparent even when `default_color` is
+  non-transparent;
+- existing compact colormap tests still pass.
+
+#### Slice 6.6b: Object-Classification Full Categorical Repaint
+
+Status: proposed.
+
+Use `CompactCategoricalLabelColormap` for full object-classification
+categorical labels repainting, while keeping the row-scoped sparse update as a
+separate Slice 6.7.
 
 Scope:
 
-- in `ViewerStylingController.refresh_labels_colormap(...)`, route
+- in `ViewerStylingController.refresh_layer_colors(...)`, route
   `COLOR_BY_USER_CLASS` and `COLOR_BY_PRED_CLASS` through
   `CompactCategoricalLabelColormap`;
 - build a class-value series indexed by instance id and pass sorted class ids
   plus the matching RGBA palette to the compact helper;
-- extend the compact categorical helper with an optional `default_color`
-  argument:
-  - keep the default as transparent so styled-labels behavior from Slice 6.5
-    remains unchanged;
-  - pass `default_color=UNLABELED_COLOR` from object-classification
-    categorical coloring, matching the current direct-colormap behavior where
-    unmapped labels fall through to the unlabeled gray color;
-  - keep the background label `0` transparent via `background_value=0`;
+- pass `default_color=UNLABELED_COLOR` for object-classification categorical
+  coloring, matching the current direct-colormap behavior where unmapped labels
+  fall through to the unlabeled gray color;
+- keep background label `0` transparent via `background_value=0`;
 - preserve current missing/unlabeled behavior:
   - `pred_class` keeps explicit unlabeled/missing class coloring according to
     the existing class-color lookup;
-  - `user_class` should preserve the current visual behavior where unlabeled
-    rows are not explicit per-label user-class colors and instead fall through
-    to the unlabeled/default color, not to transparent;
+  - `user_class` keeps unlabeled rows non-explicit per-label entries and lets
+    them fall through to the unlabeled/default color, not to transparent;
 - keep `COLOR_BY_PRED_CONFIDENCE` on the direct RGBA helper until Slice 7;
 - do not keep a second full categorical `label_id -> RGBA` implementation for
   full `user_class` / `pred_class` recoloring.
 
-Row-scoped annotation update:
+Row-scoped annotation safety guard:
 
 - `refresh_user_class_colormap_and_feature(...)` currently updates
   `DirectLabelColormap.color_dict` sparsely. That is not compatible with
   compact colormaps, where `color_dict` is intentionally tiny and not the
   source of truth.
-- Do not mutate `CompactCategoricalLabelColormap.color_dict` as if it were the
-  full label-color mapping.
-- Do not treat a full `refresh_layer_styling()` fallback as the final design
-  for row-scoped user-class annotation. It is correct but known to be slower
-  than the current sparse update path.
-- The compact sparse update is split into Slice 6.7. Slice 6.6 should therefore
-  avoid claiming row-scoped user-class annotation is optimized until Slice 6.7
-  is implemented. If a temporary correctness fallback is needed while working
-  on the branch, it should be removed from the happy path in Slice 6.7.
+- Add only the minimal guard needed for correctness in this slice:
+  if the current labels colormap is `CompactCategoricalLabelColormap`, do not
+  mutate `color_dict`; return `False` so the existing caller can use the
+  correctness fallback.
+- This fallback is temporary and should not be treated as the final design.
+  Slice 6.7 replaces it with the real sparse compact update.
 - The feature-only path for prediction color modes can remain unchanged,
   because it does not repaint label colors.
 
 Tests:
 
-- verify object-classification `user_class` and `pred_class` full refresh use
+- object-classification `user_class` and `pred_class` full refresh use
   `CompactCategoricalLabelColormap`;
-- verify styled-labels categorical coloring still uses transparent default
-  unmapped labels when no `default_color` override is passed;
-- verify object-classification categorical coloring uses `UNLABELED_COLOR` as
-  the compact default/unmapped color while keeping background label `0`
+- object-classification categorical coloring uses `UNLABELED_COLOR` as the
+  compact default/unmapped color while keeping background label `0`
   transparent;
-- verify `pred_confidence` remains visually equivalent on the direct RGBA path;
-- verify row-scoped user-class updates do not mutate compact `color_dict` and
-  are explicitly deferred to Slice 6.7 when compact user-class coloring is
-  active;
-- keep tests proving hover/status features remain label-id based and
-  `layer.features` behavior is unchanged.
+- `pred_confidence` remains visually equivalent on the direct RGBA path;
+- row-scoped user-class updates do not mutate compact `color_dict` and return
+  `False` when compact user-class coloring is active;
+- hover/status features remain label-id based and `layer.features` behavior is
+  unchanged.
 
 Benchmark acceptance:
 
 - run a representative object-classification categorical labels-coloring
-  benchmark after integration;
+  benchmark after full repaint integration;
 - the `user_class` / `pred_class` full refresh path should no longer build a
   full `label_id -> RGBA` dictionary;
 - confirm `_values_mapping_to_minimum_values_set(...)` stays cheap and no
@@ -1370,8 +1403,8 @@ Benchmark acceptance:
 
 Status: proposed.
 
-Replace the temporary row-scoped user-class fallback from Slice 6.6 with a real
-compact sparse update.
+Replace the temporary row-scoped user-class fallback from Slice 6.6b with a
+real compact sparse update.
 
 Current direct-colormap sparse update:
 
@@ -1628,7 +1661,7 @@ Recommended fix:
     viewer and the styled labels layer, so it can force-refresh the just-styled
     layer after `apply_table_color_source_to_labels_layer(...)`.
   - Object-classification labels coloring should use the same helper once
-    Slice 6.6 routes `user_class` / `pred_class` through compact categorical
+    Slice 6.6b routes `user_class` / `pred_class` through compact categorical
     colormaps and still uses direct labels colormaps for `pred_confidence`.
 - Prefer a small helper with a no-op fallback for test/dummy viewers:
 
