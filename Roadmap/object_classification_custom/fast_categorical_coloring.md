@@ -303,6 +303,11 @@ Implementation details:
   - missing prediction-confidence color, currently represented as
     `MISSING_CONTINUOUS_COLOR`;
   - matplotlib `pred_confidence` colormap outputs;
+- build `pred_confidence` colors through one vectorized confidence-specific
+  path:
+  `confidence_array -> np.clip(..., 0, 1) -> viridis(...) -> label_id -> RGBA`;
+  this avoids scalar pandas lookups and scalar matplotlib colormap calls for
+  every label;
 - keep sparse `user_class` behavior unchanged: unlabeled/default rows should
   still be represented by the default/background colors, and only nonzero
   class labels should need explicit per-label entries;
@@ -323,6 +328,9 @@ Acceptance criteria:
   defaults for `None` and `0`;
 - `pred_confidence` color dictionaries use numeric RGBA arrays for missing and
   non-missing confidence colors;
+- `pred_confidence` applies the matplotlib colormap once to the full clipped
+  confidence array, while still assigning the missing-confidence color to
+  missing values;
 - existing sparse `user_class` behavior remains intact;
 - `pred_class` coloring remains visually equivalent;
 - `pred_confidence` coloring remains visually equivalent;

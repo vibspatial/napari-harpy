@@ -137,18 +137,13 @@ class ViewerStylingController:
         if feature_rows is None:
             feature_rows = self._get_region_feature_rows()
 
-        color_dict = _base_labels_color_dict(UNLABELED_COLOR)
         instance_ids = feature_rows.index.to_numpy(dtype=np.int64, copy=False)
 
         if self._color_by == COLOR_BY_PRED_CONFIDENCE:
-            cmap = colormaps[PRED_CONFIDENCE_COLORMAP]
-            missing_confidence_color = _rgba_array(MISSING_CONTINUOUS_COLOR)
-            for instance_id in instance_ids:
-                confidence = float(feature_rows.at[instance_id, PRED_CONFIDENCE_COLUMN])
-                if np.isnan(confidence):
-                    color_dict[int(instance_id)] = missing_confidence_color
-                else:
-                    color_dict[int(instance_id)] = _rgba_array(cmap(float(np.clip(confidence, 0.0, 1.0))))
+            color_dict = _build_pred_confidence_color_dict(
+                instance_ids=instance_ids,
+                confidence_values=feature_rows[PRED_CONFIDENCE_COLUMN],
+            )
         else:
             class_by_instance = feature_rows[self._color_by]
             category_column = USER_CLASS_COLUMN
@@ -569,6 +564,33 @@ def _read_class_values_without_normalizing(values: pd.Series, *, unlabeled_class
 
 def _base_labels_color_dict(default_color: Any) -> dict[int | None, np.ndarray]:
     return {None: _rgba_array(default_color), 0: _TRANSPARENT_RGBA.copy()}
+
+
+def _build_pred_confidence_color_dict(
+    *,
+    instance_ids: np.ndarray,
+    confidence_values: pd.Series,
+) -> dict[int | None, np.ndarray]:
+    """Build prediction-confidence colors with one vectorized colormap call.
+
+    Prediction confidence is a continuous score in the fixed ``[0, 1]`` range,
+    so this special path can map the values directly through the confidence
+    colormap instead of treating them like generic categorical label colors.
+    """
+    color_dict = _base_labels_color_dict(MISSING_CONTINUOUS_COLOR)
+    # Copy once because the clipped-confidence array is mutated in place below.
+    confidence_array = pd.to_numeric(confidence_values, errors="coerce").to_numpy(dtype=np.float64, copy=True)
+    missing_values = np.isnan(confidence_array)
+    clipped_confidence = np.clip(confidence_array, 0.0, 1.0, out=confidence_array)
+    if np.any(missing_values):
+        clipped_confidence[missing_values] = 0.0
+
+    rgba = np.asarray(colormaps[PRED_CONFIDENCE_COLORMAP](clipped_confidence), dtype=np.float32)
+    if np.any(missing_values):
+        rgba[missing_values] = _rgba_array(MISSING_CONTINUOUS_COLOR)
+    for instance_id, color in zip(instance_ids, rgba, strict=True):
+        color_dict[int(instance_id)] = color
+    return color_dict
 
 
 def _rgba_color_lookup(color_lookup: dict[int, Any]) -> dict[int, np.ndarray]:
