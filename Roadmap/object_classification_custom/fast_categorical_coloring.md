@@ -411,6 +411,8 @@ Acceptance criteria:
 
 ### Slice 5: Benchmark Cold Load And Explicit Restyle Costs
 
+Status: implemented.
+
 After Slices 1-4, re-measure:
 
 ```text
@@ -437,6 +439,78 @@ Do not add a cache/invalidation mechanism here. If repeated explicit restyle is
 expensive, that is useful benchmark evidence for Slice 6 and/or a separate UX
 decision about whether the viewer needs a distinct "Show existing overlay"
 action versus an "Update overlay" action.
+
+Benchmark run:
+
+- date: 2026-07-08;
+- store:
+  `/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium_full_data_core.zarr`;
+- labels: `cell_labels_global_ROI1`;
+- table: `table_global_ROI1`;
+- coordinate system: `global_ROI1`;
+- rows: `406,611`;
+- repeats: `3`, reported as medians.
+
+End-to-end timings:
+
+```text
+instance_cell_ID:
+  apply_table_color_source_to_labels_layer: 0.1750 s
+  ensure_styled_labels_loaded cold:        0.1794 s
+  ensure_styled_labels_loaded restyle:     0.1788 s
+
+categorical_leiden:
+  apply_table_color_source_to_labels_layer: 1.1544 s
+  ensure_styled_labels_loaded cold:        1.1560 s
+  ensure_styled_labels_loaded restyle:     1.1684 s
+
+continuous_total_counts:
+  apply_table_color_source_to_labels_layer: 1.2179 s
+  ensure_styled_labels_loaded cold:        1.2244 s
+  ensure_styled_labels_loaded restyle:     1.2416 s
+```
+
+Breakdown:
+
+```text
+instance_cell_ID:
+  region rows:    0.1097 s
+  build style:    0.0002 s
+  apply colormap: 0.0031 s
+  set features:   0.0265 s
+  total:          0.1415 s
+
+categorical_leiden:
+  region rows:    0.1099 s
+  build style:    0.0599 s
+  apply colormap: 0.9205 s
+  set features:   0.0270 s
+  total:          1.1230 s
+
+continuous_total_counts:
+  region rows:    0.1113 s
+  build style:    0.1309 s
+  apply colormap: 0.9369 s
+  set features:   0.0272 s
+  total:          1.2173 s
+```
+
+Findings:
+
+- The Slice 1 fast helper removed the old multi-second
+  `DirectLabelColormap(...)` constructor bottleneck, but large direct labels
+  colormaps still spend roughly `0.92-0.94 s` in colormap assignment /
+  napari's direct-label mapping path for `406k` explicit labels.
+- Cold load and explicit restyle have almost identical timings. The remaining
+  cost is not layer creation; it is applying the requested direct labels
+  colormap and rebuilding current table-derived features/colors.
+- Continuous `.obs` coloring is now in the same performance class as
+  categorical `.obs` coloring because both use the direct RGBA helper and both
+  still need one explicit label-id entry per object.
+- Instance-key coloring remains much faster because it uses napari's procedural
+  `label_colormap(...)` and does not need a `label_id -> RGBA` mapping.
+- These measurements support moving to Slice 6 if we want to reduce the
+  remaining `label_id -> RGBA` / napari direct-mapping cost.
 
 ### Slice 6: Investigate Compact Categorical Labels Colormap
 
