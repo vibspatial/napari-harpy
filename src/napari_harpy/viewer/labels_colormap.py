@@ -360,7 +360,7 @@ def compact_categorical_labels_mapping_from_values(
     values: pd.Series,
     *,
     categories: Sequence[object],
-    palette: Sequence[str],
+    palette: Sequence[Any],
     missing_color: Any = MISSING_CATEGORICAL_COLOR,
     background_value: int = 0,
 ) -> CompactCategoricalLabelsMapping:
@@ -438,6 +438,25 @@ def compact_categorical_labels_mapping_from_values(
         background_value=background_value,
         missing_texture_code=missing_texture_code,
     )
+
+
+def compact_categorical_label_colormap_from_values(
+    values: pd.Series,
+    *,
+    categories: Sequence[object],
+    palette: Sequence[Any],
+    missing_color: Any = MISSING_CATEGORICAL_COLOR,
+    background_value: int = 0,
+) -> CompactCategoricalLabelColormap:
+    """Return a compact direct labels colormap for categorical values."""
+    mapping = compact_categorical_labels_mapping_from_values(
+        values,
+        categories=categories,
+        palette=palette,
+        missing_color=missing_color,
+        background_value=background_value,
+    )
+    return CompactCategoricalLabelColormap(mapping)
 
 
 def direct_label_colormap_from_rgba(

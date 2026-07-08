@@ -1126,7 +1126,7 @@ through the compact colormap yet.
 
 #### Slice 6.4: Shared Compact Categorical Colormap Helper
 
-Status: proposed.
+Status: implemented.
 
 Add the public Harpy helper that turns table-aligned categorical values into a
 ready `CompactCategoricalLabelColormap`, without integrating it into viewer

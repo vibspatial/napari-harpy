@@ -14,6 +14,7 @@ from napari_harpy.viewer._styling import MISSING_CATEGORICAL_COLOR
 from napari_harpy.viewer.labels_colormap import (
     CompactCategoricalLabelColormap,
     CompactCategoricalLabelsMapping,
+    compact_categorical_label_colormap_from_values,
     compact_categorical_labels_mapping_from_values,
     direct_label_colormap_from_rgba,
 )
@@ -136,6 +137,45 @@ def test_compact_categorical_labels_mapping_rejects_invalid_label_ids(values: pd
             categories=["a"],
             palette=["#ff0000"],
         )
+
+
+def test_compact_categorical_label_colormap_from_values_returns_ready_colormap(
+    restore_colormap_backend: None,
+) -> None:
+    values = pd.Series(["a", "b", "a"], index=pd.Index([10, 20, 30], name="index"), dtype="object")
+
+    colormap = compact_categorical_label_colormap_from_values(
+        values,
+        categories=["a", "b"],
+        palette=["#ff0000", "#00ff00"],
+    )
+
+    assert isinstance(colormap, CompactCategoricalLabelColormap)
+    labels = np.asarray([0, 10, 20, 30, 99], dtype=np.int64)
+    mapping = compact_categorical_labels_mapping_from_values(
+        values,
+        categories=["a", "b"],
+        palette=["#ff0000", "#00ff00"],
+    )
+    expanded_colormap = direct_label_colormap_from_rgba(_expanded_color_dict(mapping))
+    np.testing.assert_allclose(colormap.map(labels), expanded_colormap.map(labels))
+
+
+def test_compact_categorical_label_colormap_from_values_accepts_numeric_rgba_palette(
+    restore_colormap_backend: None,
+) -> None:
+    values = pd.Series(["a", "b"], index=pd.Index([1, 2], name="index"), dtype="object")
+    red = np.asarray([1.0, 0.0, 0.0, 1.0], dtype=np.float32)
+    green = np.asarray([0.0, 1.0, 0.0, 1.0], dtype=np.float32)
+
+    colormap = compact_categorical_label_colormap_from_values(
+        values,
+        categories=["a", "b"],
+        palette=[red, green],
+    )
+
+    np.testing.assert_allclose(colormap.map(1), red)
+    np.testing.assert_allclose(colormap.map(2), green)
 
 
 def test_compact_categorical_label_colormap_maps_like_expanded_direct_colormap(
