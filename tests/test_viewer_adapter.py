@@ -32,6 +32,7 @@ from napari_harpy.viewer.adapter import (
     _prepare_napari_point_radius_shapes_layer_inputs,
     _prepare_napari_shapes_layer_inputs,
 )
+from napari_harpy.viewer.labels_colormap import CompactCategoricalLabelColormap
 from napari_harpy.viewer.points_styling import POINTS_SELECTION_SOLID_COLOR
 from napari_harpy.viewer.shapes_styling import (
     _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR,
@@ -1616,7 +1617,7 @@ def test_viewer_adapter_ensure_styled_labels_loaded_creates_registered_overlay_w
     assert result.coercion_applied is False
     assert result.layer in viewer.layers
     assert result.layer.name == "blobs_labels[obs:cell_type]"
-    assert isinstance(result.layer.colormap, DirectLabelColormap)
+    assert isinstance(result.layer.colormap, CompactCategoricalLabelColormap)
     binding = adapter.layer_bindings.get_binding(result.layer)
     assert isinstance(binding, LabelsLayerBinding)
     assert binding.labels_role == "styled"
@@ -1632,9 +1633,9 @@ def test_viewer_adapter_ensure_styled_labels_loaded_creates_registered_overlay_w
     odd_feature_row = result.layer.features.iloc[result.layer._label_index[odd_instance]]
     assert odd_feature_row["index"] == odd_instance
     assert odd_feature_row["instance_id"] == odd_instance
-    assert np.allclose(result.layer.colormap.color_dict[odd_instance], np.asarray(to_rgba("#ff0000"), dtype=np.float32))
+    assert np.allclose(result.layer.colormap.map(odd_instance), np.asarray(to_rgba("#ff0000"), dtype=np.float32))
     assert np.allclose(
-        result.layer.colormap.color_dict[even_instance], np.asarray(to_rgba("#00ff00"), dtype=np.float32)
+        result.layer.colormap.map(even_instance), np.asarray(to_rgba("#00ff00"), dtype=np.float32)
     )
 
 
@@ -1682,7 +1683,7 @@ def test_viewer_adapter_ensure_styled_labels_loaded_updates_reused_variant_from_
 
     first = adapter.ensure_styled_labels_loaded(sdata_blobs, "blobs_labels", "global", style_spec)
 
-    assert np.allclose(first.layer.colormap.color_dict[odd_instance], np.asarray(to_rgba("#ff0000"), dtype=np.float32))
+    assert np.allclose(first.layer.colormap.map(odd_instance), np.asarray(to_rgba("#ff0000"), dtype=np.float32))
     # Change an instance that was originally "odd" to "even", then update
     # the palette so the second "ensure" call should recolor the same layer.
     table.obs.loc[table.obs["instance_id"] == odd_instance, "cell_type"] = "even"
@@ -1694,8 +1695,8 @@ def test_viewer_adapter_ensure_styled_labels_loaded_updates_reused_variant_from_
     assert first.created is True
     assert second.created is False
     assert len(viewer.layers) == 1
-    assert np.allclose(second.layer.colormap.color_dict[odd_instance], np.asarray(to_rgba("#ffff00"), dtype=np.float32))
-    assert np.allclose(second.layer.colormap.color_dict[even_instance], np.asarray(to_rgba("#ffff00"), dtype=np.float32))
+    assert np.allclose(second.layer.colormap.map(odd_instance), np.asarray(to_rgba("#ffff00"), dtype=np.float32))
+    assert np.allclose(second.layer.colormap.map(even_instance), np.asarray(to_rgba("#ffff00"), dtype=np.float32))
     features = second.layer.features.set_index("index")
     assert features.loc[odd_instance, "cell_type"] == "even"
 
@@ -1777,9 +1778,9 @@ def test_viewer_adapter_ensure_styled_labels_loaded_colors_bool_obs_categoricall
     even_instance = int(table.obs.loc[table.obs["instance_id"] % 2 == 0, "instance_id"].iloc[0])
     assert features.loc[odd_instance, "is_even"] == np.False_
     assert features.loc[even_instance, "is_even"] == np.True_
-    assert np.allclose(result.layer.colormap.color_dict[odd_instance], np.asarray(to_rgba("#ff0000"), dtype=np.float32))
+    assert np.allclose(result.layer.colormap.map(odd_instance), np.asarray(to_rgba("#ff0000"), dtype=np.float32))
     assert np.allclose(
-        result.layer.colormap.color_dict[even_instance], np.asarray(to_rgba("#00ff00"), dtype=np.float32)
+        result.layer.colormap.map(even_instance), np.asarray(to_rgba("#00ff00"), dtype=np.float32)
     )
 
 
@@ -1811,10 +1812,8 @@ def test_viewer_adapter_ensure_styled_labels_loaded_colors_binary_int_obs_catego
     one_instance = int(table.obs.loc[table.obs["binary_state"] == 1, "instance_id"].iloc[0])
     assert int(features.loc[zero_instance, "binary_state"]) == 0
     assert int(features.loc[one_instance, "binary_state"]) == 1
-    assert np.allclose(
-        result.layer.colormap.color_dict[zero_instance], np.asarray(to_rgba("#ff0000"), dtype=np.float32)
-    )
-    assert np.allclose(result.layer.colormap.color_dict[one_instance], np.asarray(to_rgba("#00ff00"), dtype=np.float32))
+    assert np.allclose(result.layer.colormap.map(zero_instance), np.asarray(to_rgba("#ff0000"), dtype=np.float32))
+    assert np.allclose(result.layer.colormap.map(one_instance), np.asarray(to_rgba("#00ff00"), dtype=np.float32))
 
 
 def test_viewer_adapter_ensure_styled_labels_loaded_colors_non_binary_int_obs_continuously(sdata_blobs) -> None:
@@ -1938,7 +1937,7 @@ def test_viewer_adapter_ensure_styled_labels_loaded_coerces_string_obs_to_catego
     assert result.value_kind == "categorical"
     assert result.coercion_applied is True
     assert result.palette_source == "default_missing"
-    assert isinstance(result.layer.colormap, DirectLabelColormap)
+    assert isinstance(result.layer.colormap, CompactCategoricalLabelColormap)
 
 
 def test_viewer_adapter_ensure_styled_labels_loaded_warns_for_high_cardinality_string_obs(
@@ -1974,7 +1973,7 @@ def test_viewer_adapter_ensure_styled_labels_loaded_warns_for_high_cardinality_s
     assert result.value_kind == "categorical"
     assert result.coercion_applied is True
     assert result.palette_source == "default_missing"
-    assert isinstance(result.layer.colormap, DirectLabelColormap)
+    assert isinstance(result.layer.colormap, CompactCategoricalLabelColormap)
     assert len(warning_messages) == 1
     assert "exceeds the categorical viewer-coloring threshold" in warning_messages[0]
     assert "Harpy will render it with the default categorical palette anyway" in warning_messages[0]

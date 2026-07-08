@@ -1178,7 +1178,7 @@ Acceptance criteria:
 
 #### Slice 6.5: Styled Labels Integration
 
-Status: proposed.
+Status: implemented; full-data Xenium benchmark pending before Slice 6.6.
 
 Make `CompactCategoricalLabelColormap` the categorical styled-labels path in
 `src/napari_harpy/viewer/labels_styling.py`. We are working on a feature
@@ -1237,6 +1237,9 @@ Tests:
 
 Benchmark acceptance:
 
+- implementation note: the styled-labels integration is complete and covered by
+  focused tests, but the Xenium full-data benchmark has not yet been rerun in
+  this slice;
 - run the Xenium full-data `leiden` benchmark after integration;
 - the styled-labels categorical end-to-end path should no longer spend roughly
   one second in direct-colormap grouping/typed-dict construction;

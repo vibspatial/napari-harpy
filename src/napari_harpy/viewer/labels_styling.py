@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pandas as pd
 from napari.layers import Labels
-from napari.utils.colormaps import label_colormap
+from napari.utils.colormaps import DirectLabelColormap, label_colormap
 
 from napari_harpy.core._color_source import (
     TableColorSourceSpec,
@@ -17,7 +17,6 @@ from napari_harpy.core.spatialdata import get_table, validate_table_binding
 from napari_harpy.viewer._styling import (
     StyledPaletteSource,
     build_string_categorical_values,
-    categorical_rgba_for_values,
     continuous_rgba_for_values,
     default_categorical_palette_for_categories,
     is_string_like_series,
@@ -25,7 +24,11 @@ from napari_harpy.viewer._styling import (
     resolve_table_categorical_palette,
     validate_styled_palette_source,
 )
-from napari_harpy.viewer.labels_colormap import direct_label_colormap_from_rgba
+from napari_harpy.viewer.labels_colormap import (
+    CompactCategoricalLabelColormap,
+    compact_categorical_label_colormap_from_values,
+    direct_label_colormap_from_rgba,
+)
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -33,6 +36,7 @@ if TYPE_CHECKING:
 
 
 _TRANSPARENT_RGBA = np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+LabelsColormap = DirectLabelColormap | CompactCategoricalLabelColormap
 
 
 @dataclass(frozen=True)
@@ -80,20 +84,20 @@ def apply_table_color_source_to_labels_layer(
         style_result, features = _build_instance_key_colormap(region_rows, instance_key=table_metadata.instance_key)
         _apply_instance_labels_colormap(layer)
     elif style_spec.source_kind == "obs_column":
-        style_result, color_dict, features = _build_obs_column_colormap(
+        style_result, colormap, features = _build_obs_column_colormap(
             table=table,
             region_rows=region_rows,
             column_name=style_spec.value_key,
         )
-        _apply_labels_colormap(layer, color_dict)
+        _apply_labels_colormap(layer, colormap)
     else:
-        style_result, color_dict, features = _build_x_var_colormap(
+        style_result, colormap, features = _build_x_var_colormap(
             table=table,
             region_rows=region_rows,
             obs_index=obs_index,
             var_name=style_spec.value_key,
         )
-        _apply_labels_colormap(layer, color_dict)
+        _apply_labels_colormap(layer, colormap)
 
     layer.features = _build_labels_features(features, instance_key=table_metadata.instance_key)
     return style_result
@@ -111,7 +115,7 @@ def _build_obs_column_colormap(
     table: AnnData,
     region_rows: pd.DataFrame,
     column_name: str,
-) -> tuple[LabelsStyleResult, dict[int | None, np.ndarray], pd.DataFrame]:
+) -> tuple[LabelsStyleResult, LabelsColormap, pd.DataFrame]:
     if column_name not in table.obs:
         raise ValueError(f"Observation column `{column_name}` is not available in the selected table.")
 
@@ -125,13 +129,17 @@ def _build_obs_column_colormap(
             column_name=column_name,
             categories=categories,
         )
-        color_dict = _build_categorical_color_dict(region_series, categories=categories, palette=palette)
+        colormap = compact_categorical_label_colormap_from_values(
+            region_series,
+            categories=categories,
+            palette=palette,
+        )
         style_result = LabelsStyleResult(
             value_kind="categorical",
             palette_source=palette_source,
             coercion_applied=False,
         )
-        return style_result, color_dict, pd.DataFrame({column_name: region_series}, index=region_rows.index)
+        return style_result, colormap, pd.DataFrame({column_name: region_series}, index=region_rows.index)
 
     if pd.api.types.is_bool_dtype(full_series):
         categories = [value for value in (False, True) if value in set(full_series.dropna().tolist())]
@@ -140,13 +148,17 @@ def _build_obs_column_colormap(
             column_name=column_name,
             categories=categories,
         )
-        color_dict = _build_categorical_color_dict(region_series, categories=categories, palette=palette)
+        colormap = compact_categorical_label_colormap_from_values(
+            region_series,
+            categories=categories,
+            palette=palette,
+        )
         style_result = LabelsStyleResult(
             value_kind="categorical",
             palette_source=palette_source,
             coercion_applied=False,
         )
-        return style_result, color_dict, pd.DataFrame({column_name: region_series}, index=region_rows.index)
+        return style_result, colormap, pd.DataFrame({column_name: region_series}, index=region_rows.index)
 
     if pd.api.types.is_integer_dtype(full_series) and _has_exact_binary_zero_one_values(full_series.dropna().tolist()):
         categories = [
@@ -160,13 +172,17 @@ def _build_obs_column_colormap(
             column_name=column_name,
             categories=categories,
         )
-        color_dict = _build_categorical_color_dict(numeric_region_series, categories=categories, palette=palette)
+        colormap = compact_categorical_label_colormap_from_values(
+            numeric_region_series,
+            categories=categories,
+            palette=palette,
+        )
         style_result = LabelsStyleResult(
             value_kind="categorical",
             palette_source=palette_source,
             coercion_applied=False,
         )
-        return style_result, color_dict, pd.DataFrame({column_name: numeric_region_series}, index=region_rows.index)
+        return style_result, colormap, pd.DataFrame({column_name: numeric_region_series}, index=region_rows.index)
 
     if is_string_like_series(full_series):
         string_region_values, categories = build_string_categorical_values(
@@ -175,7 +191,7 @@ def _build_obs_column_colormap(
             column_name=column_name,
         )
         palette = default_categorical_palette_for_categories(categories)
-        color_dict = _build_categorical_color_dict(
+        colormap = compact_categorical_label_colormap_from_values(
             string_region_values,
             categories=categories,
             palette=palette,
@@ -188,16 +204,17 @@ def _build_obs_column_colormap(
             palette_source="default_missing",
             coercion_applied=True,
         )
-        return style_result, color_dict, pd.DataFrame({column_name: string_region_values}, index=region_rows.index)
+        return style_result, colormap, pd.DataFrame({column_name: string_region_values}, index=region_rows.index)
 
     numeric_region_series = pd.to_numeric(region_series, errors="coerce").astype("float64")
     color_dict = _build_continuous_color_dict(numeric_region_series)
+    colormap = direct_label_colormap_from_rgba(color_dict, background_value=0)
     style_result = LabelsStyleResult(
         value_kind="continuous",
         palette_source=None,
         coercion_applied=False,
     )
-    return style_result, color_dict, pd.DataFrame({column_name: numeric_region_series}, index=region_rows.index)
+    return style_result, colormap, pd.DataFrame({column_name: numeric_region_series}, index=region_rows.index)
 
 
 def _build_instance_key_colormap(
@@ -224,7 +241,7 @@ def _build_x_var_colormap(
     region_rows: pd.DataFrame,
     obs_index: pd.Index,
     var_name: str,
-) -> tuple[LabelsStyleResult, dict[int | None, np.ndarray], pd.DataFrame]:
+) -> tuple[LabelsStyleResult, LabelsColormap, pd.DataFrame]:
     if var_name not in table.var_names:
         raise ValueError(f"Var `{var_name}` is not available in the selected table.")
 
@@ -247,12 +264,13 @@ def _build_x_var_colormap(
         name=var_name,
     )
     color_dict = _build_continuous_color_dict(numeric_region_series)
+    colormap = direct_label_colormap_from_rgba(color_dict, background_value=0)
     style_result = LabelsStyleResult(
         value_kind="continuous",
         palette_source=None,
         coercion_applied=False,
     )
-    return style_result, color_dict, pd.DataFrame({var_name: numeric_region_series}, index=region_rows.index)
+    return style_result, colormap, pd.DataFrame({var_name: numeric_region_series}, index=region_rows.index)
 
 
 def _get_region_rows_by_instance(
@@ -299,19 +317,6 @@ def _format_instance_preview(instance_ids: list[Any]) -> str:
     return preview
 
 
-def _build_categorical_color_dict(
-    values: pd.Series,
-    *,
-    categories: list[object],
-    palette: list[str],
-) -> dict[int | None, np.ndarray]:
-    color_dict: dict[int | None, np.ndarray] = _transparent_default_color_dict()
-    colors = categorical_rgba_for_values(values, categories=categories, palette=palette)
-    for instance_id, color in zip(values.index, colors, strict=True):
-        color_dict[int(instance_id)] = color
-    return color_dict
-
-
 def _build_continuous_color_dict(values: pd.Series) -> dict[int | None, np.ndarray]:
     color_dict: dict[int | None, np.ndarray] = _transparent_default_color_dict()
     colors = continuous_rgba_for_values(values)
@@ -320,8 +325,8 @@ def _build_continuous_color_dict(values: pd.Series) -> dict[int | None, np.ndarr
     return color_dict
 
 
-def _apply_labels_colormap(layer: Labels, layer_color_dict: dict[int | None, np.ndarray]) -> None:
-    layer.colormap = direct_label_colormap_from_rgba(layer_color_dict, background_value=0)
+def _apply_labels_colormap(layer: Labels, colormap: LabelsColormap) -> None:
+    layer.colormap = colormap
 
 
 def _apply_instance_labels_colormap(layer: Labels) -> None:
