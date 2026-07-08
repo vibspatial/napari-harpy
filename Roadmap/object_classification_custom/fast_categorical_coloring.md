@@ -1187,6 +1187,14 @@ alternative next to the old categorical `label_id -> RGBA` route.
 
 Scope:
 
+- add an internal return type alias in `labels_styling.py`:
+
+  ```python
+  LabelsColormap = DirectLabelColormap | CompactCategoricalLabelColormap
+  ```
+
+  This is the shape returned by non-instance styling builders. It should refer
+  to ready napari colormap objects, not intermediate color dictionaries.
 - change `_build_obs_column_colormap(...)` so categorical-like branches return
   a concrete labels colormap object instead of a full categorical
   `label_id -> RGBA` dictionary;
@@ -1198,12 +1206,22 @@ Scope:
 - replace `_build_categorical_color_dict(...)` usage with
   `compact_categorical_label_colormap_from_values(...)`;
 - remove `_build_categorical_color_dict(...)` if no categorical caller remains;
-- keep `_build_continuous_color_dict(...)` and `_build_x_var_colormap(...)`
-  direct RGBA until Slice 7;
+- continuous branches should build a ready direct colormap with
+  `direct_label_colormap_from_rgba(...)` after creating the direct RGBA
+  dictionary;
+- `_build_x_var_colormap(...)` should also return a ready direct colormap until
+  Slice 7;
 - keep instance-id coloring on napari's procedural `label_colormap(...)`;
-- update `_apply_labels_colormap(...)` to assign a ready colormap object, or
-  split it into explicit direct/compact assignment helpers so categorical
-  branches do not rebuild a direct RGBA dictionary.
+- update `_apply_labels_colormap(...)` so it only assigns a ready colormap:
+
+  ```python
+  def _apply_labels_colormap(layer: Labels, colormap: LabelsColormap) -> None:
+      layer.colormap = colormap
+  ```
+
+  The helper should not build `DirectLabelColormap` itself anymore. Categorical
+  branches build `CompactCategoricalLabelColormap`; continuous branches build
+  `DirectLabelColormap`.
 
 Tests:
 
