@@ -1291,7 +1291,7 @@ Findings:
 
 #### Slice 6.6a: Compact Default-Color Support
 
-Status: proposed.
+Status: implemented.
 
 Prepare the compact categorical helper for object-classification semantics
 without touching the object-classification widget/controller yet.

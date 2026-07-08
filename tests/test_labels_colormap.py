@@ -10,6 +10,7 @@ from napari.layers import Labels
 from napari.utils.colormap_backend import get_backend, set_backend
 from napari.utils.colormaps import DirectLabelColormap
 
+from napari_harpy.core.annotation import UNLABELED_COLOR
 from napari_harpy.viewer._styling import MISSING_CATEGORICAL_COLOR
 from napari_harpy.viewer.labels_colormap import (
     CompactCategoricalLabelColormap,
@@ -68,6 +69,20 @@ def test_compact_categorical_labels_mapping_preserves_current_missing_semantics(
     assert code_by_label[3] == mapping.missing_texture_code
     assert code_by_label[7] == mapping.missing_texture_code
     np.testing.assert_allclose(mapping.texture_rgba[mapping.missing_texture_code], to_rgba(MISSING_CATEGORICAL_COLOR))
+
+
+def test_compact_categorical_labels_mapping_accepts_nontransparent_default_color() -> None:
+    values = pd.Series(["a"], index=pd.Index([5], name="index"), dtype="object")
+
+    mapping = compact_categorical_labels_mapping_from_values(
+        values,
+        categories=["a"],
+        palette=["#ff0000"],
+        default_color=UNLABELED_COLOR,
+    )
+
+    np.testing.assert_allclose(mapping.texture_rgba[mapping.default_texture_code], to_rgba(UNLABELED_COLOR))
+    np.testing.assert_allclose(mapping.texture_rgba[mapping.background_texture_code], np.zeros(4, dtype=np.float32))
 
 
 def test_compact_categorical_labels_mapping_reuses_repeated_rgba_texture_codes() -> None:
@@ -176,6 +191,22 @@ def test_compact_categorical_label_colormap_from_values_accepts_numeric_rgba_pal
 
     np.testing.assert_allclose(colormap.map(1), red)
     np.testing.assert_allclose(colormap.map(2), green)
+
+
+def test_compact_categorical_label_colormap_from_values_uses_configured_default_color(
+    restore_colormap_backend: None,
+) -> None:
+    values = pd.Series(["a"], index=pd.Index([5], name="index"), dtype="object")
+
+    colormap = compact_categorical_label_colormap_from_values(
+        values,
+        categories=["a"],
+        palette=["#ff0000"],
+        default_color=UNLABELED_COLOR,
+    )
+
+    np.testing.assert_allclose(colormap.map(99), to_rgba(UNLABELED_COLOR))
+    np.testing.assert_allclose(colormap.map(0), np.zeros(4, dtype=np.float32))
 
 
 def test_compact_categorical_label_colormap_maps_like_expanded_direct_colormap(

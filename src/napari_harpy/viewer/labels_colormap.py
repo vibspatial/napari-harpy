@@ -361,6 +361,7 @@ def compact_categorical_labels_mapping_from_values(
     *,
     categories: Sequence[object],
     palette: Sequence[Any],
+    default_color: Any = _TRANSPARENT_RGBA,
     missing_color: Any = MISSING_CATEGORICAL_COLOR,
     background_value: int = 0,
 ) -> CompactCategoricalLabelsMapping:
@@ -377,6 +378,11 @@ def compact_categorical_labels_mapping_from_values(
         Ordered categorical values that correspond to `palette`.
     palette
         Color values for `categories`.
+    default_color
+        Color for labels that are not present in `values`. The default is
+        transparent, matching styled-labels behavior. Object-classification
+        callers can pass the unlabeled class color while keeping the
+        background label transparent.
     missing_color
         Color for known table rows with missing or palette-unknown categorical
         values.
@@ -385,7 +391,7 @@ def compact_categorical_labels_mapping_from_values(
 
     Known table rows with missing or palette-unknown categorical values receive
     the missing categorical color. Label ids not present in `values` are not
-    stored here and should later fall through to the transparent default color.
+    stored here and later fall through to `default_color`.
     """
     if not isinstance(background_value, int) or isinstance(background_value, bool):
         raise ValueError("Compact labels mapping background value must be an integer label id.")
@@ -393,7 +399,8 @@ def compact_categorical_labels_mapping_from_values(
     label_ids = _positive_label_ids_from_index(values.index)
     normalized_categories = [normalize_category_value(category) for category in categories]
 
-    texture_rgba_rows: list[np.ndarray] = [_TRANSPARENT_RGBA.copy(), _TRANSPARENT_RGBA.copy()]
+    default_rgba = np.asarray(to_rgba(default_color), dtype=np.float32)
+    texture_rgba_rows: list[np.ndarray] = [default_rgba, _TRANSPARENT_RGBA.copy()]
     color_to_texture_code: dict[tuple[float, float, float, float], int] = {
         _rgba_key(texture_rgba_rows[1]): 1,
     }
@@ -445,6 +452,7 @@ def compact_categorical_label_colormap_from_values(
     *,
     categories: Sequence[object],
     palette: Sequence[Any],
+    default_color: Any = _TRANSPARENT_RGBA,
     missing_color: Any = MISSING_CATEGORICAL_COLOR,
     background_value: int = 0,
 ) -> CompactCategoricalLabelColormap:
@@ -453,6 +461,7 @@ def compact_categorical_label_colormap_from_values(
         values,
         categories=categories,
         palette=palette,
+        default_color=default_color,
         missing_color=missing_color,
         background_value=background_value,
     )
