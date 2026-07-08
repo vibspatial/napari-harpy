@@ -715,6 +715,10 @@ Recommendation:
 - Slice 6.3 should subclass `DirectLabelColormap` and override the narrow
   compact-mapping hooks identified above, while still exposing enough
   `color_dict` for napari's direct-mode detection and scalar/default behavior.
+- Harpy should explicitly set napari's labels colormap backend to
+  `ColormapBackend.numba` for this path. Do not rely on napari's
+  `Fastest available` setting, because that can choose different internal
+  mapping contracts depending on optional installed packages.
 - Because this relies on private napari internals, Harpy should own the
   behavior through focused tests rather than adding runtime fallback/version
   guards.
@@ -725,6 +729,49 @@ Status: proposed.
 
 Build a Harpy-owned pure data helper for categorical labels, without touching
 napari internals yet.
+
+Backend policy for the compact-labels work:
+
+- target napari's `ColormapBackend.numba` direct-label path explicitly;
+- do not let `Fastest available` decide between numba, PartSegCore, and pure
+  Python for Harpy's compact labels coloring;
+- the implementation should set the colormap backend to
+  `ColormapBackend.numba` before constructing/assigning Harpy direct labels
+  colormaps;
+- if napari no longer exposes the numba colormap backend, fail loudly rather
+  than silently falling back to a different rendering contract.
+
+This matters because the audited high-bit labels path with numba consumes
+`DirectLabelColormap._get_typed_dict_mapping(data.dtype)`, i.e. a per-dtype
+numba typed mapping from raw label ids to texture codes. The pure helper in
+Slice 6.2 should not build that typed dict yet, but it must produce compact
+state that Slice 6.3 can turn into that typed mapping without rebuilding a full
+`label_id -> RGBA` dictionary.
+
+Small label ids use a different napari path. For `uint8`/`uint16` labels,
+napari can keep raw label values as texture values and upload a dense lookup
+texture. Harpy should preserve that path, but derive the dense lookup from
+compact state:
+
+```text
+raw small label value -> RGBA
+```
+
+This bounded lookup is acceptable because it is at most `256` entries for
+`uint8` or `65,536` entries for `uint16`, and should be built/cached per dtype
+on the compact colormap instance. It should not require a full Python
+`label_id -> RGBA` dictionary.
+
+The path split should follow napari's dtype branch:
+
+```text
+raw labels dtype itemsize <= 2  -> small-label dense lookup path
+raw labels dtype itemsize > 2   -> high-bit numba typed remapping path
+```
+
+Signed small integer labels should first follow napari's existing unsigned-view
+conversion semantics (`int8 -> uint8`, `int16 -> uint16`) before using the
+dense lookup path.
 
 The helper should turn Harpy's existing table-aligned categorical colors into
 napari-shaped compact state:
@@ -754,10 +801,36 @@ Implementation details:
   `build_textures_from_dict(...)` assumes sequential color-table keys;
 - store repeated category RGBA values once in `texture_code -> RGBA`;
 - keep `label_id -> texture_code` as the per-object mapping;
+- keep the `label_id` and `texture_code` arrays suitable for later construction
+  of a per-dtype numba typed dict in the compact `DirectLabelColormap`
+  subclass;
+- keep enough compact state to later build bounded dense small-label lookup
+  textures for `uint8`/`uint16` labels;
+- derive the small-label versus high-bit path from the actual labels dtype
+  itemsize, matching napari's `raw_dtype.itemsize <= 2` branch;
 - never rewrite the labels image to texture codes.
 
 This helper should be independent of napari `DirectLabelColormap` subclassing.
 It should be easy to test with ordinary NumPy arrays and dictionaries.
+
+Performance contract:
+
+- the helper must never build a full `label_id -> RGBA` dictionary;
+- `label_id -> texture_code` is the logical mapping contract, not a requirement
+  to store the mapping as a large Python `dict`;
+- prefer compact array-backed state, for example positive `label_ids`,
+  matching `texture_codes`, and a small `texture_code -> RGBA` table, unless
+  benchmarking proves a different representation is better;
+- repeated category colors must stay represented as compact texture codes;
+- any conversion from categorical table values to compact state should be
+  linear in the number of labels plus the number of categories, without a
+  second per-label RGBA materialization step;
+- the pure helper should not construct napari's numba typed dict itself; that
+  belongs at the compact colormap/backend boundary, where it can be built once
+  per dtype and reused;
+- the pure helper should also not construct dense small-label lookup arrays
+  itself; those belong at the compact colormap/backend boundary and should be
+  built from compact state only for small dtypes that need them.
 
 Acceptance criteria:
 
@@ -766,6 +839,14 @@ Acceptance criteria:
 - missing/unmapped labels resolve to the same default color as the current
   direct RGBA helper;
 - texture-code keys are sequential from `0`;
+- helper output can be used to build a numba typed
+  `raw label_id -> texture_code` mapping without materializing
+  `label_id -> RGBA`;
+- helper output can be used to build bounded dense `uint8`/`uint16`
+  `raw label value -> RGBA` lookup textures without materializing a full
+  Python `label_id -> RGBA` dictionary;
+- tests cover the dtype split: small integer dtypes use the dense lookup path,
+  while `int32`/`uint32`/`int64`/`uint64` use the high-bit numba remapping path;
 - helper output preserves per-cell label ids and never rewrites the labels
   image;
 - tests cover representative label ids, missing labels, repeated categories,
@@ -789,6 +870,19 @@ The prototype should:
 - expose enough `color_dict` behavior for napari's direct-mode detection,
   default color lookup, and scalar compatibility, without rebuilding the full
   large `label_id -> RGBA` dictionary;
+- never lazily materialize a full `label_id -> RGBA` dictionary from
+  `color_dict`, `map(...)`, `_values_mapping_to_minimum_values_set(...)`,
+  `_label_mapping_and_color_dict`, `_num_unique_colors`, `_data_to_texture(...)`,
+  or cache rebuilding;
+- avoid making a large Python `label_id -> texture_code` dict the default
+  source of truth if an array-backed mapping can satisfy the hot paths more
+  cheaply;
+- if a dict or typed-dict representation is needed for a napari/numba path,
+  build it at most once per compact state and make repeated access use the
+  cache;
+- keep scalar/default compatibility small and explicit; if a method needs
+  per-label information, it should use `label_id -> texture_code` plus
+  `texture_code -> RGBA` directly;
 - avoid looking like a default-only direct colormap, because napari may switch
   the layer back to auto color mode in that case;
 - override/support the narrow methods/properties identified in Slice 6.1:
@@ -797,9 +891,12 @@ The prototype should:
   - `_num_unique_colors`;
   - `_data_to_texture(...)`;
   - `map(...)`;
-  - `_map_without_cache(...)` / `_get_mapping_from_cache(...)` behavior for
+- `_map_without_cache(...)` / `_get_mapping_from_cache(...)` behavior for
     small `uint8`/`uint16` labels;
   - `_clear_cache(...)`;
+- for small `uint8`/`uint16` labels, build bounded dense lookup arrays from
+  compact state and cache them per dtype, preserving napari's small-label path
+  without constructing a full Python `label_id -> RGBA` dictionary;
 - preserve `use_selection`, `selection`, and `background_value` behavior that
   napari mutates directly;
 - keep `_values_mapping_to_minimum_values_set(apply_selection=True)` compatible
@@ -844,6 +941,11 @@ Acceptance criteria:
 - small integer labels and large/high-bit labels both map correctly;
 - compact texture-code keys are sequential and suitable for vispy texture
   upload;
+- none of the tested compact-colormap methods materialize a full
+  `label_id -> RGBA` dictionary as a side effect;
+- the compact implementation documents whether `label_id -> texture_code` is
+  stored as arrays, a dict, or both, and tests the repeated-access cache
+  behavior for whichever representation is used;
 - hover/status feature lookup remains label-id based;
 - no loss of per-cell label identity;
 - faster or materially lower-memory construction than the Slice 1 helper on the
@@ -866,6 +968,13 @@ Measure:
   it to upload the high-bit direct color table;
 - `_data_to_texture(...)` on representative current-slice data, because labels
   slicing uses it before rendering;
+- repeated access to `color_dict`, `map(...)`, `_num_unique_colors`,
+  `_label_mapping_and_color_dict`, and
+  `_values_mapping_to_minimum_values_set(...)`, to catch accidental lazy
+  full-dict materialization;
+- `_data_to_texture(...)` remapping cost for representative current-slice data,
+  because the `label_id -> texture_code` lookup can become the new bottleneck
+  if implemented with per-pixel Python work;
 - end-to-end `apply_table_color_source_to_labels_layer(...)` equivalent;
 - memory-ish size of the resulting Python-side mapping objects, if practical;
 - Slice 1 helper timings in the same run as a baseline only, not as a planned
@@ -878,6 +987,10 @@ Acceptance criteria:
 - or materially lower memory use with no performance regression;
 - no worse high-bit texture mapping behavior than the Slice 1 helper;
 - no worse small-label lookup behavior on a synthetic `uint16` labels case;
+- repeated compact-colormap method access does not allocate or cache a full
+  large `label_id -> RGBA` mapping;
+- `label_id -> texture_code` lookup/remapping is not slower than napari's
+  current direct-label mapping on representative high-bit label slices;
 - no slower path is allowed to replace the current helper.
 
 #### Slice 6.6: Integration Decision
