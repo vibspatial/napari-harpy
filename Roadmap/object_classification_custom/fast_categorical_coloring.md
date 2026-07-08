@@ -1319,14 +1319,15 @@ Row-scoped annotation update:
   `DirectLabelColormap.color_dict` sparsely. That is not compatible with
   compact colormaps, where `color_dict` is intentionally tiny and not the
   source of truth.
-- For this integration slice, prefer correctness and one categorical path over
-  preserving the sparse color-dict mutation:
-  - either rebuild the compact user-class colormap from current feature/table
-    state when `COLOR_BY_USER_CLASS` is active; or
-  - return `False` for compact categorical colormaps so the caller falls back
-    to the normal full refresh path.
 - Do not mutate `CompactCategoricalLabelColormap.color_dict` as if it were the
   full label-color mapping.
+- Do not treat a full `refresh_layer_styling()` fallback as the final design
+  for row-scoped user-class annotation. It is correct but known to be slower
+  than the current sparse update path.
+- The compact sparse update is split into Slice 6.7. Slice 6.6 should therefore
+  avoid claiming row-scoped user-class annotation is optimized until Slice 6.7
+  is implemented. If a temporary correctness fallback is needed while working
+  on the branch, it should be removed from the happy path in Slice 6.7.
 - The feature-only path for prediction color modes can remain unchanged,
   because it does not repaint label colors.
 
@@ -1336,7 +1337,8 @@ Tests:
   `CompactCategoricalLabelColormap`;
 - verify `pred_confidence` remains visually equivalent on the direct RGBA path;
 - verify row-scoped user-class updates do not mutate compact `color_dict` and
-  either rebuild/fallback correctly;
+  are explicitly deferred to Slice 6.7 when compact user-class coloring is
+  active;
 - keep tests proving hover/status features remain label-id based and
   `layer.features` behavior is unchanged.
 
@@ -1350,6 +1352,124 @@ Benchmark acceptance:
   full `label_id -> RGBA` dictionary is built for categorical
   object-classification labels coloring;
 - keep benchmark output in this roadmap before moving to Slice 7.
+
+#### Slice 6.7: Compact Sparse User-Class Annotation Update
+
+Status: proposed.
+
+Replace the temporary row-scoped user-class fallback from Slice 6.6 with a real
+compact sparse update.
+
+Current direct-colormap sparse update:
+
+```text
+label_id -> RGBA
+```
+
+For `CompactCategoricalLabelColormap`, the source of truth is instead:
+
+```text
+label_id -> texture_code
+texture_code -> RGBA
+```
+
+That means a single user-class annotation should update one label's texture code
+and the currently displayed texture-code image, not rebuild the full colormap.
+
+Implementation direction:
+
+1. Add a Harpy-owned helper/API on the compact colormap or compact mapping that
+   updates one known label id to a new texture code:
+   - find `instance_id` in `compact_mapping.label_ids`;
+   - map the new user class to the correct class texture code;
+   - update only that entry in `compact_mapping.texture_codes`;
+   - invalidate any derived compact caches, including high-bit typed dicts and
+     small-label dense lookup arrays.
+2. Add enough class-to-texture-code state when building the object-classification
+   user-class colormap so the row-scoped update can resolve the new class
+   without rebuilding the full table-aligned mapping.
+3. For unlabeled class `0`, preserve the current visual behavior by mapping the
+   edited label back to the transparent/default unlabeled texture code.
+4. Patch only the currently displayed labels slice:
+   - read `raw_displayed = layer._slice.image.raw`;
+   - read `view_displayed = layer._slice.image.view`;
+   - build `mask = raw_displayed == instance_id`;
+   - set `view_displayed[mask] = new_texture_code`;
+   - emit `layer.events.labels_update(data=updated_view_data, offset=...)`
+     following napari's own partial labels-update pattern.
+5. Keep the existing row-scoped feature update:
+   `refresh_user_class_colormap_and_feature(...)` should still update only the
+   edited row in `layer.features`.
+6. Return `True` from `refresh_user_class_colormap_and_feature(...)` only when
+   both the compact color update and feature-row update were applied. Rare
+   inconsistent states may still return `False`, but the normal compact
+   user-class annotation path must not fall back to full restyling.
+
+Important detail:
+
+- Updating the compact `label_id -> texture_code` mapping handles future
+  slices and future redraws.
+- Patching `layer._slice.image.view` handles the pixels that are already visible
+  in the current slice. Without this second step, the displayed texture-code
+  image may keep the old class code until napari reslices the layer.
+- Concretely, if the raw visible pixels contain label `101` but the displayed
+  texture-code pixels were already computed as code `2`, changing the compact
+  mapping from `101 -> 2` to `101 -> 3` does not mutate those already-computed
+  visible pixels. The sparse update must also set
+  `view_displayed[raw_displayed == 101] = 3`.
+- Do not update `texture_code -> RGBA` for a class change. That would recolor
+  every label in the class. The sparse annotation operation changes one label's
+  class membership, so it must update that label's `texture_code`.
+- This should also work for multiscale labels, but the patch must happen at the
+  current displayed pyramid level. In napari, a multiscale labels slice stores
+  `layer._slice.image.raw` as raw label ids from the selected data level and
+  `layer._slice.image.view` as the corresponding texture-code image. For
+  example, a headless check with `uint32` multiscale labels produced:
+  `raw.shape == view.shape == (4, 4)`, `raw` values `[0, 101, 102]`, `view`
+  texture codes `[1, 2, 3]`, and `tile_to_data.scale == [2, 2]`.
+- For multiscale labels, do not index or patch the full-resolution
+  `layer.data[0]` for the visible update. Patch `layer._slice.image.view` using
+  the current-level `raw_displayed == instance_id` mask, then emit
+  `labels_update` for that displayed-resolution data. The updated compact
+  mapping covers future slices, level changes, and redraws.
+- If the edited label is not present in the current displayed pyramid level,
+  the visible mask can be empty. That is acceptable: there are no currently
+  visible pixels to patch, and the updated compact mapping will apply when the
+  label appears after napari performs the normal reslice/refresh for a later
+  view. Typical triggers are zooming enough to change multiscale data level,
+  panning/changing the viewport tile, changing a z/non-displayed slice, or an
+  explicit `layer.refresh(...)`. Updating the compact mapping alone does not
+  recompute the already-cached `layer._slice.image.view`; that is why the
+  current visible slice still needs the explicit patch above when the mask is
+  non-empty.
+
+Tests:
+
+- row-scoped user-class annotation with compact colormap updates exactly the
+  edited label's texture code;
+- changing one label from class A to class B does not change texture codes for
+  other labels in class A or class B;
+- changing one label to unlabeled class `0` restores the transparent/default
+  unlabeled behavior for that label;
+- the compact colormap `color_dict` remains tiny and is not treated as the
+  full `label_id -> RGBA` mapping;
+- `layer.features` is still updated row-scoped;
+- the labels layer emits a partial labels update for the current displayed
+  slice instead of assigning a new full colormap in the happy path;
+- a multiscale labels-layer regression test verifies the sparse update patches
+  `layer._slice.image.view` at the current data level and does not attempt to
+  patch full-resolution `layer.data[0]`;
+- rare inconsistent compact state still returns `False` so the caller can keep
+  the existing correctness fallback.
+
+Benchmark acceptance:
+
+- benchmark one user-class annotation update while `COLOR_BY_USER_CLASS` is
+  active on a large labels layer;
+- confirm the happy path avoids full feature-row rebuild, full compact colormap
+  rebuild, and `layer.colormap = ...`;
+- confirm the update cost scales with the current visible slice mask plus one
+  mapping lookup, not with the full number of table rows.
 
 ### Slice 7: Compact Continuous Labels Colormap Via 256 Bins
 
