@@ -861,7 +861,7 @@ Acceptance criteria:
 
 #### Slice 6.3: Prototype Compact DirectLabelColormap
 
-Status: proposed.
+Status: implemented.
 
 Create an isolated prototype, for example
 `CompactCategoricalLabelColormap`, that can be assigned where napari expects a
@@ -1121,8 +1121,8 @@ Prototype acceptance criteria:
 - `_clear_cache(...)` clears derived typed-dict / lookup-array state without
   mutating the compact source state.
 
-This slice is still prototype-level. Do not route production styled labels
-coloring through the compact colormap yet.
+This slice is prototype-level. Production styled labels coloring is not routed
+through the compact colormap yet.
 
 #### Slice 6.4: Compact Colormap Parity Tests
 

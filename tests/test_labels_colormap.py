@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import numpy as np
 import pandas as pd
 import pytest
 from matplotlib.colors import to_rgba
+from napari.layers import Labels
+from napari.utils.colormap_backend import get_backend, set_backend
 from napari.utils.colormaps import DirectLabelColormap
 
 from napari_harpy.viewer._styling import MISSING_CATEGORICAL_COLOR
 from napari_harpy.viewer.labels_colormap import (
+    CompactCategoricalLabelColormap,
+    CompactCategoricalLabelsMapping,
     compact_categorical_labels_mapping_from_values,
     direct_label_colormap_from_rgba,
 )
@@ -15,6 +21,25 @@ from napari_harpy.viewer.labels_colormap import (
 
 def _rgba(red: float, green: float, blue: float, alpha: float) -> np.ndarray:
     return np.asarray([red, green, blue, alpha], dtype=np.float64)
+
+
+@pytest.fixture
+def restore_colormap_backend() -> Iterator[None]:
+    previous_backend = get_backend()
+    try:
+        yield
+    finally:
+        set_backend(previous_backend)
+
+
+def _expanded_color_dict(mapping: CompactCategoricalLabelsMapping) -> dict[int | None, np.ndarray]:
+    color_dict: dict[int | None, np.ndarray] = {
+        None: mapping.texture_rgba[mapping.default_texture_code],
+        mapping.background_value: mapping.texture_rgba[mapping.background_texture_code],
+    }
+    for label_id, texture_code in zip(mapping.label_ids, mapping.texture_codes, strict=True):
+        color_dict[int(label_id)] = mapping.texture_rgba[int(texture_code)]
+    return color_dict
 
 
 def test_compact_categorical_labels_mapping_preserves_current_missing_semantics() -> None:
@@ -111,6 +136,141 @@ def test_compact_categorical_labels_mapping_rejects_invalid_label_ids(values: pd
             categories=["a"],
             palette=["#ff0000"],
         )
+
+
+def test_compact_categorical_label_colormap_maps_like_expanded_direct_colormap(
+    restore_colormap_backend: None,
+) -> None:
+    values = pd.Series(
+        pd.Categorical(["T", None, "unknown", "B"], categories=["T", "B", "unknown"]),
+        index=pd.Index([9, 3, 7, 5], name="index"),
+    )
+    compact_mapping = compact_categorical_labels_mapping_from_values(
+        values,
+        categories=["T", "B"],
+        palette=["#ff0000", "#00ff00"],
+    )
+
+    compact_colormap = CompactCategoricalLabelColormap(compact_mapping)
+    expanded_colormap = direct_label_colormap_from_rgba(_expanded_color_dict(compact_mapping))
+
+    assert isinstance(compact_colormap, DirectLabelColormap)
+    assert len(compact_colormap.color_dict) < len(_expanded_color_dict(compact_mapping))
+    labels = np.asarray([0, 3, 5, 7, 9, 123], dtype=np.int64)
+    np.testing.assert_allclose(compact_colormap.map(labels), expanded_colormap.map(labels))
+
+
+def test_compact_categorical_label_colormap_values_mapping_stays_compact(
+    restore_colormap_backend: None,
+) -> None:
+    values = pd.Series(["a", "b"], index=pd.Index([1001, 42], name="index"), dtype="object")
+    compact_mapping = compact_categorical_labels_mapping_from_values(
+        values,
+        categories=["a", "b"],
+        palette=["#ff0000", "#00ff00"],
+    )
+
+    colormap = CompactCategoricalLabelColormap(compact_mapping)
+    label_mapping, texture_color_dict = colormap._values_mapping_to_minimum_values_set()
+
+    assert not isinstance(label_mapping, dict)
+    assert len(label_mapping) == len(compact_mapping.label_ids) + 2
+    assert label_mapping[None] == compact_mapping.default_texture_code
+    assert label_mapping[compact_mapping.background_value] == compact_mapping.background_texture_code
+    assert label_mapping[42] == compact_mapping.texture_codes[0]
+    assert set(texture_color_dict) == set(range(len(compact_mapping.texture_rgba)))
+
+
+def test_compact_categorical_label_colormap_high_bit_texture_mapping_uses_jitted_typed_dict(
+    restore_colormap_backend: None,
+) -> None:
+    values = pd.Series(["a", "b"], index=pd.Index([1001, 42], name="index"), dtype="object")
+    compact_mapping = compact_categorical_labels_mapping_from_values(
+        values,
+        categories=["a", "b"],
+        palette=["#ff0000", "#00ff00"],
+    )
+    colormap = CompactCategoricalLabelColormap(compact_mapping)
+    code_by_label = dict(zip(compact_mapping.label_ids.tolist(), compact_mapping.texture_codes.tolist(), strict=True))
+
+    texture_values = colormap._data_to_texture(np.asarray([0, 42, 1001, 9999], dtype=np.int64))
+
+    np.testing.assert_array_equal(
+        texture_values,
+        np.asarray(
+            [
+                compact_mapping.background_texture_code,
+                code_by_label[42],
+                code_by_label[1001],
+                compact_mapping.default_texture_code,
+            ],
+            dtype=texture_values.dtype,
+        ),
+    )
+    assert "_compact_int64_typed_dict" in colormap._cache_other
+    assert not any(key == "_label_mapping_and_color_dict" for key in colormap.__dict__)
+
+
+def test_compact_categorical_label_colormap_small_labels_use_dense_lookup(
+    restore_colormap_backend: None,
+) -> None:
+    values = pd.Series(["a", "b"], index=pd.Index([3, 5], name="index"), dtype="object")
+    compact_mapping = compact_categorical_labels_mapping_from_values(
+        values,
+        categories=["a", "b"],
+        palette=["#ff0000", "#00ff00"],
+    )
+    compact_colormap = CompactCategoricalLabelColormap(compact_mapping)
+    expanded_colormap = direct_label_colormap_from_rgba(_expanded_color_dict(compact_mapping))
+
+    labels = np.asarray([0, 3, 5, 11], dtype=np.uint16)
+
+    np.testing.assert_array_equal(compact_colormap._data_to_texture(labels), labels)
+    np.testing.assert_allclose(compact_colormap.map(labels), expanded_colormap.map(labels))
+    assert compact_colormap._get_mapping_from_cache(np.dtype(np.uint16)).shape == (65536, 4)
+
+
+def test_compact_categorical_label_colormap_selection_mode_matches_direct_colormap(
+    restore_colormap_backend: None,
+) -> None:
+    values = pd.Series(["a", "b"], index=pd.Index([3, 5], name="index"), dtype="object")
+    compact_mapping = compact_categorical_labels_mapping_from_values(
+        values,
+        categories=["a", "b"],
+        palette=["#ff0000", "#00ff00"],
+    )
+    compact_colormap = CompactCategoricalLabelColormap(compact_mapping)
+    expanded_colormap = direct_label_colormap_from_rgba(_expanded_color_dict(compact_mapping))
+    compact_colormap.use_selection = True
+    expanded_colormap.use_selection = True
+    compact_colormap.selection = 5
+    expanded_colormap.selection = 5
+
+    labels = np.asarray([0, 3, 5, 11], dtype=np.int64)
+
+    np.testing.assert_allclose(compact_colormap.map(labels), expanded_colormap.map(labels))
+    label_mapping, color_dict = compact_colormap._values_mapping_to_minimum_values_set()
+    assert label_mapping == {5: 1, None: 0}
+    assert set(color_dict) == {0, 1}
+
+
+def test_compact_categorical_label_colormap_assigns_to_labels_layer_in_direct_mode(
+    restore_colormap_backend: None,
+) -> None:
+    values = pd.Series(["a", "b"], index=pd.Index([3, 5], name="index"), dtype="object")
+    compact_mapping = compact_categorical_labels_mapping_from_values(
+        values,
+        categories=["a", "b"],
+        palette=["#ff0000", "#00ff00"],
+    )
+    colormap = CompactCategoricalLabelColormap(compact_mapping)
+    layer = Labels(np.asarray([[0, 3], [5, 11]], dtype=np.int64))
+
+    layer.colormap = colormap
+
+    assert layer.colormap is colormap
+    assert str(layer._color_mode) == "direct"
+    np.testing.assert_allclose(layer.get_color(5), colormap.map(5))
 
 
 def test_direct_label_colormap_from_rgba_matches_normal_constructor() -> None:

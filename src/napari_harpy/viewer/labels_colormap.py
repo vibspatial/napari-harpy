@@ -1,17 +1,34 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 import pandas as pd
 from matplotlib.colors import to_rgba
+from napari.utils.colormap_backend import ColormapBackend, set_backend
 from napari.utils.colormaps import DirectLabelColormap
+from napari.utils.colormaps import _accelerated_cmap as _accel_cmap
+from numba import njit, typed, types
 
 from napari_harpy.viewer._styling import MISSING_CATEGORICAL_COLOR, normalize_category_value
 
 _TRANSPARENT_RGBA = np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+
+
+@njit(cache=True)
+def _fill_typed_label_texture_mapping(
+    typed_mapping,
+    label_ids: np.ndarray,
+    texture_codes: np.ndarray,
+    background_value,
+    background_texture_code,
+):
+    typed_mapping[background_value] = background_texture_code
+    for i in range(label_ids.shape[0]):
+        typed_mapping[label_ids[i]] = texture_codes[i]
+    return typed_mapping
 
 
 @dataclass(frozen=True)
@@ -92,6 +109,251 @@ class CompactCategoricalLabelsMapping:
             raise ValueError("Compact labels mapping missing texture code is out of range.")
         if len(self.texture_codes) and int(np.max(self.texture_codes)) >= len(self.texture_rgba):
             raise ValueError("Compact labels mapping contains a texture code without an RGBA row.")
+        if np.any(self.label_ids == self.background_value):
+            raise ValueError("Compact labels mapping label ids must not include the background value.")
+
+
+class _CompactLabelToTextureMapping(Mapping[int | None, int]):
+    """Array-backed `label_id -> texture_code` mapping view.
+
+    This wraps the `CompactCategoricalLabelsMapping` passed to `__init__` and
+    exposes its `label_ids` / `texture_codes` arrays through the mapping API.
+    Napari expects the first item of `_label_mapping_and_color_dict` to behave
+    like a mapping. In scalar high-bit conversion, napari does roughly:
+
+    ```python
+    mapper = colormap._label_mapping_and_color_dict[0]
+    texture_code = mapper.get(label_id, default)
+    ```
+
+    This view supports that without building a large Python dict. Full
+    high-bit label arrays use `_get_typed_dict_mapping(...)` instead, so this
+    scalar lookup path is not the hot per-pixel rendering path.
+    """
+
+    def __init__(self, compact_mapping: CompactCategoricalLabelsMapping) -> None:
+        self._compact_mapping = compact_mapping
+
+    def __getitem__(self, key: int | None) -> int:
+        compact = self._compact_mapping
+        if key is None:
+            return compact.default_texture_code
+        label_id = int(key)
+        if label_id == compact.background_value:
+            return compact.background_texture_code
+        position = np.searchsorted(compact.label_ids, label_id)
+        if position < len(compact.label_ids) and compact.label_ids[position] == label_id:
+            return int(compact.texture_codes[position])
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[int | None]:
+        yield None
+        yield self._compact_mapping.background_value
+        yield from (int(label_id) for label_id in self._compact_mapping.label_ids)
+
+    def __len__(self) -> int:
+        return len(self._compact_mapping.label_ids) + 2
+
+
+class CompactCategoricalLabelColormap(DirectLabelColormap):
+    """Prototype direct labels colormap backed by compact categorical state.
+
+    Methods that mirror names from `DirectLabelColormap` are napari-facing
+    private hooks. Methods prefixed with `_compact_` are Harpy-only helpers for
+    looking up RGBA values from `CompactCategoricalLabelsMapping`.
+
+    Napari and vispy still expect direct-label internals shaped like
+    `label_id -> texture_code` and `texture_code -> RGBA`. This subclass
+    satisfies that contract with `_label_to_texture_mapping`
+    (`label_id -> texture_code`) and `_texture_color_dict`
+    (`texture_code -> RGBA`), avoiding the huge `label_id -> RGBA` dictionary
+    used by ordinary `DirectLabelColormap` construction.
+    """
+
+    def __init__(self, compact_mapping: CompactCategoricalLabelsMapping) -> None:
+        set_backend(ColormapBackend.numba)
+
+        small_color_dict: dict[int | None, np.ndarray] = {
+            None: compact_mapping.texture_rgba[compact_mapping.default_texture_code],
+            compact_mapping.background_value: compact_mapping.texture_rgba[compact_mapping.background_texture_code],
+        }
+        if len(compact_mapping.label_ids):
+            # Initialize `DirectLabelColormap` with one real label color:
+            # passing the huge `label_id -> RGBA` mapping through
+            # napari/pydantic is known to be slow for large labels layers,
+            # while one real label still makes napari detect direct mode
+            # instead of treating the colormap as default/background only.
+            first_label_id = int(compact_mapping.label_ids[0])
+            small_color_dict[first_label_id] = compact_mapping.texture_rgba[
+                int(compact_mapping.texture_codes[0])
+            ]
+
+        super().__init__(
+            color_dict=small_color_dict,
+            background_value=compact_mapping.background_value,
+        )
+        object.__setattr__(self, "_compact_mapping", compact_mapping)
+        object.__setattr__(self, "_label_to_texture_mapping", _CompactLabelToTextureMapping(compact_mapping))
+        object.__setattr__(
+            self,
+            "_texture_color_dict",
+            dict(enumerate(compact_mapping.texture_rgba)),
+        )
+
+    @property
+    def _num_unique_colors(self) -> int:
+        """Napari hook: report non-default/background texture rows."""
+        return max(0, len(self._compact_mapping.texture_rgba) - 2)
+
+    @property
+    def _label_mapping_and_color_dict(self) -> tuple[Mapping[int | None, int], dict[int, np.ndarray]]:
+        """Napari hook: return the direct-label compact mapping attribute.
+
+        Napari reads `_label_mapping_and_color_dict` directly in scalar and
+        high-bit conversion paths, so this cannot be only inlined into
+        `_values_mapping_to_minimum_values_set(...)`. Keep it as a cheap view
+        over compact arrays rather than the inherited cached property, which
+        would rebuild mappings from `color_dict`.
+        """
+        return self._label_to_texture_mapping, self._texture_color_dict
+
+    def _values_mapping_to_minimum_values_set(
+        self,
+        apply_selection: bool = True,
+    ) -> tuple[Mapping[int | None, int], dict[int, np.ndarray]]:
+        """Napari hook: return raw-label-to-texture mapping and color table.
+
+        This mirrors `DirectLabelColormap` while keeping the label mapping
+        backed by compact arrays. Napari may read the first tuple item as a
+        `label_id -> texture_code` mapping, while vispy reads the second item
+        as the `texture_code -> RGBA` table. Returning a mapping view here is
+        what lets Harpy avoid building a huge `label_id -> RGBA` dictionary.
+        """
+        if self.use_selection and apply_selection:
+            # Mirror `DirectLabelColormap` selected-label rendering: only
+            # `selection` maps to a visible texture code, and all other labels
+            # fall through to transparent default color.
+            return {self.selection: 1, None: 0}, {
+                0: _TRANSPARENT_RGBA,
+                1: self._compact_rgba_for_label(self.selection, apply_selection=False),
+            }
+        # When `use_selection` is false, return the cheap compact mapping view
+        # plus the small texture-code-to-RGBA table.
+        return self._label_mapping_and_color_dict
+
+    def _get_typed_dict_mapping(self, data_dtype: np.dtype) -> typed.Dict:
+        """Napari hook: build the high-bit label-id-to-texture-code dict."""
+        data_dtype = np.dtype(data_dtype)
+        cache_key = f"_compact_{data_dtype.name}_typed_dict"
+        if cache_key in self._cache_other:
+            return self._cache_other[cache_key]
+
+        compact = self._compact_mapping
+        target_dtype = _accel_cmap.minimum_dtype_for_labels(len(compact.texture_rgba))
+        iinfo = np.iinfo(data_dtype)
+        representable = (compact.label_ids >= iinfo.min) & (compact.label_ids <= iinfo.max)
+        label_ids = compact.label_ids[representable].astype(data_dtype, copy=False)
+        texture_codes = compact.texture_codes[representable].astype(target_dtype, copy=False)
+
+        typed_mapping = typed.Dict.empty(
+            key_type=getattr(types, data_dtype.name),
+            value_type=getattr(types, target_dtype.name),
+        )
+        typed_mapping = _fill_typed_label_texture_mapping(
+            typed_mapping,
+            label_ids,
+            texture_codes,
+            data_dtype.type(compact.background_value),
+            target_dtype.type(compact.background_texture_code),
+        )
+
+        self._cache_other[cache_key] = typed_mapping
+        return typed_mapping
+
+    def map(self, values: np.ndarray | np.integer | int) -> np.ndarray:
+        """Napari hook: map scalar or array label ids to RGBA colors.
+
+        For high-bit label arrays, the call chain intentionally moves through
+        napari internals while calling back into this subclass:
+
+        ```text
+        napari _accel_cmap.labels_raw_to_texture_direct(values, self)
+          -> our _get_typed_dict_mapping(...)
+             -> label_id -> texture_code
+        inherited _map_precast(texture_codes)
+          -> our _values_mapping_to_minimum_values_set(...)[1]
+             -> texture_code -> RGBA
+        ```
+        """
+        if isinstance(values, np.integer):
+            values = int(values)
+        if isinstance(values, int):
+            return self._compact_rgba_for_label(values, apply_selection=True)
+        if isinstance(values, list | tuple):
+            values = np.asarray(values)
+        if not isinstance(values, np.ndarray) or values.dtype.kind in "fU":
+            raise TypeError("DirectLabelColormap can only be used with int")
+
+        if values.dtype.itemsize <= 2:
+            # Low-bit labels use napari's bounded dense lookup path.
+            mapper = self._get_mapping_from_cache(values.dtype)
+            mapped = mapper[values]
+        else:
+            values_cast = _accel_cmap.labels_raw_to_texture_direct(values, self)
+            mapped = self._map_precast(values_cast, apply_selection=True)
+
+        if self.use_selection:
+            mapped[(values != self.selection)] = 0
+        return mapped
+
+    def _map_without_cache(self, values: np.ndarray) -> np.ndarray:
+        """Napari hook: build small-label lookup textures without selection."""
+        return self._compact_rgba_for_values(values, apply_selection=False)
+
+    @property
+    def _array_map(self) -> np.ndarray:
+        """Napari fallback hook that should not be used by this prototype."""
+        raise RuntimeError("Compact categorical label colormaps require napari's numba colormap backend.")
+
+    def _clear_cache(self) -> None:
+        """Napari hook: clear derived lookup caches."""
+        super()._clear_cache()
+
+    def _compact_rgba_for_label(self, label_id: int, *, apply_selection: bool) -> np.ndarray:
+        """Harpy helper: resolve one label id through compact texture codes."""
+        if apply_selection and self.use_selection and label_id != self.selection:
+            return _TRANSPARENT_RGBA
+        compact = self._compact_mapping
+        texture_code = compact.default_texture_code
+        if label_id == compact.background_value:
+            texture_code = compact.background_texture_code
+        else:
+            position = np.searchsorted(compact.label_ids, label_id)
+            if position < len(compact.label_ids) and compact.label_ids[position] == label_id:
+                texture_code = int(compact.texture_codes[position])
+        return compact.texture_rgba[texture_code]
+
+    def _compact_rgba_for_values(self, values: np.ndarray, *, apply_selection: bool) -> np.ndarray:
+        """Harpy helper: resolve an array of label ids through compact state."""
+        compact = self._compact_mapping
+        flat_values = values.ravel()
+        texture_codes = np.full(flat_values.shape, compact.default_texture_code, dtype=np.int64)
+
+        background = flat_values == compact.background_value
+        texture_codes[background] = compact.background_texture_code
+
+        positions = np.searchsorted(compact.label_ids, flat_values)
+        in_bounds = positions < len(compact.label_ids)
+        matched = np.zeros(flat_values.shape, dtype=bool)
+        matched[in_bounds] = compact.label_ids[positions[in_bounds]] == flat_values[in_bounds]
+        if np.any(matched):
+            texture_codes[matched] = compact.texture_codes[positions[matched]]
+
+        mapped = compact.texture_rgba[texture_codes].reshape(values.shape + (4,))
+        if apply_selection and self.use_selection:
+            mapped = mapped.copy()
+            mapped[values != self.selection] = _TRANSPARENT_RGBA
+        return mapped
 
 
 def compact_categorical_labels_mapping_from_values(
