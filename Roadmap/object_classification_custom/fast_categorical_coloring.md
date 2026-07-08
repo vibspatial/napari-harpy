@@ -911,6 +911,151 @@ Implementation details:
   `color_dict`, `map(...)`, `_values_mapping_to_minimum_values_set(...)`,
   `_label_mapping_and_color_dict`, `_num_unique_colors`, `_data_to_texture(...)`,
   or cache rebuilding;
+- `_values_mapping_to_minimum_values_set(...)` must not build a real
+  `label_id -> texture_code` Python dictionary just because napari/vispy asks
+  for the compact color table at index `[1]`. Instead, it should return:
+
+  ```text
+  (
+      cheap label-id-to-texture-code Mapping view,
+      small texture-code-to-RGBA dictionary,
+  )
+  ```
+
+  The first item should be an array-backed `Mapping` view over
+  `CompactCategoricalLabelsMapping.label_ids` and `texture_codes`, not an
+  eager `dict`. Constructing or returning this mapping view must be `O(1)`.
+  Iterating `.items()` may still be `O(n)`, but only callers that truly need
+  all `label_id -> texture_code` pairs should pay that cost.
+- the small texture-code-to-RGBA dictionary returned as
+  `_values_mapping_to_minimum_values_set()[1]` should be derived from
+  `texture_rgba` and should contain only sequential texture-code keys:
+
+  ```text
+  0 -> transparent default
+  1 -> transparent background
+  2 -> first category/missing color
+  ...
+  ```
+
+  This is the object vispy needs for `build_textures_from_dict(...)`, so it
+  should stay proportional to the number of unique colors, not the number of
+  labels.
+- the label-id-to-texture-code mapping view should support the scalar lookup
+  behavior napari expects without materializing a large dict:
+
+  ```python
+  class _CompactLabelToTextureMapping(Mapping):
+      def __getitem__(self, key):
+          if key is None:
+              return compact.default_texture_code
+          if int(key) == compact.background_value:
+              return compact.background_texture_code
+          pos = np.searchsorted(compact.label_ids, int(key))
+          if pos < len(compact.label_ids) and compact.label_ids[pos] == key:
+              return int(compact.texture_codes[pos])
+          raise KeyError(key)
+  ```
+
+  The real implementation can add `__iter__`, `__len__`, and inherited
+  `.get(...)` support, but it should keep construction cheap.
+- `_label_mapping_and_color_dict` should return the same cheap mapping view and
+  small texture-code color dictionary, for compatibility with napari internals.
+  It should not be a cached property that first builds a full Python dict.
+- `_get_typed_dict_mapping(data_dtype)` is the only high-bit path that should
+  build a large mapping. It should build napari's numba typed
+  `raw label_id -> texture_code` dictionary directly from compact arrays,
+  cache it per dtype on the colormap instance, and reuse it on later calls.
+  This large representation is acceptable there because high-bit labels need
+  it for pixel remapping.
+- `_get_typed_dict_mapping(data_dtype)` must fill the numba typed dict through
+  a module-level jitted helper, not through a Python loop. The expensive line
+  in napari's current implementation is repeated Python-side typed-dict
+  insertion:
+
+  ```python
+  typed_mapping[data_dtype.type(label_id)] = target_dtype.type(texture_code)
+  ```
+
+  The compact subclass should avoid that bottleneck with this implementation
+  shape:
+
+  ```python
+  from numba import njit
+
+
+  @njit(cache=True)
+  def _fill_typed_label_texture_mapping(
+      typed_mapping,
+      label_ids,
+      texture_codes,
+      background_value,
+      background_texture_code,
+  ):
+      typed_mapping[background_value] = background_texture_code
+      for i in range(label_ids.shape[0]):
+          typed_mapping[label_ids[i]] = texture_codes[i]
+      return typed_mapping
+  ```
+
+- the intended `_get_typed_dict_mapping(data_dtype)` shape is then:
+
+  ```python
+  def _get_typed_dict_mapping(self, data_dtype):
+      data_dtype = np.dtype(data_dtype)
+      cache_key = f"_compact_{data_dtype.name}_typed_dict"
+      if cache_key in self._cache_other:
+          return self._cache_other[cache_key]
+
+      from numba import typed, types
+      from napari.utils.colormaps import _accelerated_cmap as _accel_cmap
+
+      compact = self._compact_mapping
+      target_dtype = _accel_cmap.minimum_dtype_for_labels(
+          len(compact.texture_rgba)
+      )
+
+      iinfo = np.iinfo(data_dtype)
+      representable = (
+          (compact.label_ids >= iinfo.min)
+          & (compact.label_ids <= iinfo.max)
+      )
+      label_ids = compact.label_ids[representable].astype(
+          data_dtype,
+          copy=False,
+      )
+      texture_codes = compact.texture_codes[representable].astype(
+          target_dtype,
+          copy=False,
+      )
+
+      typed_mapping = typed.Dict.empty(
+          key_type=getattr(types, data_dtype.name),
+          value_type=getattr(types, target_dtype.name),
+      )
+      typed_mapping = _fill_typed_label_texture_mapping(
+          typed_mapping,
+          label_ids,
+          texture_codes,
+          data_dtype.type(compact.background_value),
+          target_dtype.type(compact.background_texture_code),
+      )
+
+      self._cache_other[cache_key] = typed_mapping
+      return typed_mapping
+  ```
+
+  The typed mapping should not include the `None` default entry, because the
+  numba direct-label path maps integer label image values only. Unmapped labels
+  fall through to napari's unknown/default texture code because the output
+  texture array is initialized with that default before the typed mapping is
+  applied.
+- `_num_unique_colors` should stay consistent with this dtype choice. Because
+  napari's high-bit path asks for `minimum_dtype_for_labels(_num_unique_colors
+  + 2)`, the compact subclass should report the number of non-default,
+  non-background texture rows, for example `max(0, len(texture_rgba) - 2)`.
+  Then napari's existing `+ 2` lands back on `len(texture_rgba)`, the number of
+  texture codes the compact colormap can emit.
 - keep scalar/default compatibility small and explicit; if a method needs
   per-label information, it should use `label_id -> texture_code` plus
   `texture_code -> RGBA` directly;
@@ -926,8 +1071,18 @@ Implementation details:
     small `uint8`/`uint16` labels;
   - `_get_typed_dict_mapping(...)` behavior for the high-bit numba path;
   - `_clear_cache(...)`;
-- high-bit labels (`dtype.itemsize > 2`) should use a per-dtype numba typed
-  `raw label_id -> texture_code` mapping derived from compact arrays;
+- use this exact dtype split:
+
+  ```text
+  uint8 / uint16 labels
+    -> bounded dense lookup, because napari's small-label path uses that
+
+  int32 / uint32 / int64 / uint64 labels
+    -> numba typed dict, filled with the jitted helper above
+  ```
+
+  Signed `int8`/`int16` labels should follow napari's existing unsigned-view
+  conversion semantics before the small-label lookup path.
 - for small `uint8`/`uint16` labels, build bounded dense lookup arrays from
   compact state and cache them per dtype, preserving napari's small-label path
   without constructing a full Python `label_id -> RGBA` dictionary;
@@ -955,6 +1110,11 @@ Prototype acceptance criteria:
   compact texture codes for high-bit dtypes;
 - high-bit mapping uses the numba typed-dict path and does not materialize
   `label_id -> RGBA`;
+- `_values_mapping_to_minimum_values_set(...)` returns a cheap mapping view and
+  small texture-code color dictionary; it does not build a large
+  `label_id -> texture_code` dict as a side effect;
+- the large high-bit `label_id -> texture_code` representation is built only
+  by `_get_typed_dict_mapping(data_dtype)` and is cached per dtype;
 - small-label lookup arrays are bounded by dtype size and derived from compact
   state;
 - selected-label mode matches current napari direct-colormap behavior;
