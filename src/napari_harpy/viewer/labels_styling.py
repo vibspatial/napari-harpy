@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pandas as pd
 from napari.layers import Labels
-from napari.utils.colormaps import DirectLabelColormap, label_colormap
+from napari.utils.colormaps import label_colormap
 
 from napari_harpy.core._color_source import (
     TableColorSourceSpec,
@@ -25,10 +25,14 @@ from napari_harpy.viewer._styling import (
     resolve_table_categorical_palette,
     validate_styled_palette_source,
 )
+from napari_harpy.viewer.labels_colormap import direct_label_colormap_from_rgba
 
 if TYPE_CHECKING:
     from anndata import AnnData
     from spatialdata import SpatialData
+
+
+_TRANSPARENT_RGBA = np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
 
 
 @dataclass(frozen=True)
@@ -107,7 +111,7 @@ def _build_obs_column_colormap(
     table: AnnData,
     region_rows: pd.DataFrame,
     column_name: str,
-) -> tuple[LabelsStyleResult, dict[int, Any], pd.DataFrame]:
+) -> tuple[LabelsStyleResult, dict[int | None, np.ndarray], pd.DataFrame]:
     if column_name not in table.obs:
         raise ValueError(f"Observation column `{column_name}` is not available in the selected table.")
 
@@ -220,7 +224,7 @@ def _build_x_var_colormap(
     region_rows: pd.DataFrame,
     obs_index: pd.Index,
     var_name: str,
-) -> tuple[LabelsStyleResult, dict[int, Any], pd.DataFrame]:
+) -> tuple[LabelsStyleResult, dict[int | None, np.ndarray], pd.DataFrame]:
     if var_name not in table.var_names:
         raise ValueError(f"Var `{var_name}` is not available in the selected table.")
 
@@ -300,27 +304,24 @@ def _build_categorical_color_dict(
     *,
     categories: list[object],
     palette: list[str],
-) -> dict[int | None, Any]:
-    color_dict: dict[int | None, Any] = {None: "transparent", 0: "transparent"}
+) -> dict[int | None, np.ndarray]:
+    color_dict: dict[int | None, np.ndarray] = _transparent_default_color_dict()
     colors = categorical_rgba_for_values(values, categories=categories, palette=palette)
     for instance_id, color in zip(values.index, colors, strict=True):
         color_dict[int(instance_id)] = color
     return color_dict
 
 
-def _build_continuous_color_dict(values: pd.Series) -> dict[int | None, Any]:
-    color_dict: dict[int | None, Any] = {None: "transparent", 0: "transparent"}
+def _build_continuous_color_dict(values: pd.Series) -> dict[int | None, np.ndarray]:
+    color_dict: dict[int | None, np.ndarray] = _transparent_default_color_dict()
     colors = continuous_rgba_for_values(values)
     for instance_id, color in zip(values.index, colors, strict=True):
         color_dict[int(instance_id)] = color
     return color_dict
 
 
-def _apply_labels_colormap(layer: Labels, layer_color_dict: dict[int | None, Any]) -> None:
-    layer.colormap = DirectLabelColormap(color_dict=layer_color_dict, background_value=0)
-    refresh = getattr(layer, "refresh", None)
-    if callable(refresh):
-        refresh()
+def _apply_labels_colormap(layer: Labels, layer_color_dict: dict[int | None, np.ndarray]) -> None:
+    layer.colormap = direct_label_colormap_from_rgba(layer_color_dict, background_value=0)
 
 
 def _apply_instance_labels_colormap(layer: Labels) -> None:
@@ -328,6 +329,10 @@ def _apply_instance_labels_colormap(layer: Labels) -> None:
     refresh = getattr(layer, "refresh", None)
     if callable(refresh):
         refresh()
+
+
+def _transparent_default_color_dict() -> dict[int | None, np.ndarray]:
+    return {None: _TRANSPARENT_RGBA.copy(), 0: _TRANSPARENT_RGBA.copy()}
 
 
 def _is_categorical_dtype(values: pd.Series) -> bool:

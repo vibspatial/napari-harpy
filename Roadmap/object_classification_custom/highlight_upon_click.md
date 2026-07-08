@@ -1,6 +1,6 @@
 # Highlight Picked Object Before User-Class Annotation
 
-Status: specified.
+Status: investigation updated; chosen direction specified.
 
 ## Goal
 
@@ -11,11 +11,12 @@ highlighted before the user presses `Add (A)` or `Remove (R)`.
 The highlight should make the picked object easy to confirm without disturbing
 the existing annotation flow:
 
-- labels are still picked through the active labels layer;
+- labels are still picked through the active primary labels layer;
 - `Add (A)` and `Remove (R)` keep writing to the selected table row;
 - existing `Color by` modes continue to show `user_class`, `pred_class`, or
   `pred_confidence`;
-- multiscale labels still use the current custom mouse-pick fallback.
+- multiscale labels still use the current custom mouse-pick fallback;
+- no extra labels layer should be created just to render the highlight.
 
 ## Current Flow
 
@@ -44,11 +45,11 @@ state.
 
 Layer coloring is owned separately by `ViewerStylingController`. It builds a
 `DirectLabelColormap` for the active `Color by` mode and refreshes labels
-features. Annotation writes use row-scoped refresh paths where possible, so
-selected-label highlighting should avoid forcing unnecessary full restyles after
-every `Add`/`Remove`.
+features. Annotation writes use row-scoped refresh paths where possible, so the
+highlight should integrate with these existing color refresh paths instead of
+adding a separate viewer layer.
 
-## Napari Capabilities
+## Napari Capability Check
 
 The local environment uses napari `0.7.1`. `Labels` layers expose the relevant
 properties:
@@ -57,189 +58,153 @@ properties:
 - `show_selected_label`
 - `contour`
 
-`show_selected_label` is not quite the desired UX. It filters the layer so only
-the selected label remains visible. That is a very small implementation, but it
-hides context after the first click, making it harder to choose the next object.
+`show_selected_label` is not the desired UX. It filters the layer so only the
+selected label remains visible. That hides surrounding objects, which makes it
+harder to decide what to annotate next.
 
-`contour` is useful for a highlight overlay. A second `Labels` layer can share
-the primary layer's data object, use a transparent default colormap, and map only
-the selected instance id to a bright color. With `contour > 0`, only the selected
-object boundary is visible. This avoids copying the segmentation data and keeps
-the primary layer's class/prediction color visible underneath.
+`contour` is also not enough for the no-extra-layer requirement. Napari's
+`Labels.contour` is a layer-wide display mode: it renders contours for labels on
+that layer, not only for the currently selected label. A selected-only outline
+can be built with a second labels overlay, but we explicitly do not want to
+create an extra labels layer for this feature.
 
-One caveat: napari labels contours are a 2D display feature. For 3D rendering,
-the overlay should fall back to a semi-transparent filled highlight, or the first
-implementation can scope the contour behavior to 2D labels.
+The practical no-extra-layer route is therefore to highlight the selected
+instance through the primary layer's existing `DirectLabelColormap`. This keeps
+the object visible in context and avoids copying or sharing segmentation data in
+a helper layer. The tradeoff is that the selected object is filled with the
+highlight color while selected, rather than receiving an outline-only highlight.
 
-## Options
+## Chosen Direction: Primary-Layer Highlight
 
-### Option 1: Native `show_selected_label`
-
-Implementation would be tiny:
-
-- set `labels_layer.show_selected_label = True` after a positive pick;
-- set it back to `False` when selection clears or the widget unbinds.
-
-This is not recommended as the primary implementation. It isolates the selected
-label rather than highlighting it in context, so the user loses the surrounding
-segmentation view while deciding what to annotate next.
-
-### Option 2: Temporary Primary-Colormap Override
-
-This would keep a `highlighted_instance_id` inside `ViewerStylingController` and
-inject a bright color into the existing `DirectLabelColormap`.
-
-Pros:
-
-- no extra napari layer;
-- no new viewer-adapter lifecycle work;
-- works with all current `Color by` modes because they already use direct label
-  colormaps.
-
-Cons:
-
-- the selected object is filled with the highlight color, so its real class or
-  prediction color is hidden while selected;
-- restoring the previous color has to be coordinated with full refreshes,
-  row-scoped annotation refreshes, and color-mode changes.
-
-This is a reasonable MVP if we want the smallest code change, but it is not the
-best fit for annotation because it masks the semantic color exactly when the
-user is checking the object.
-
-### Option 3: Selected-Label Outline Overlay
-
-This is the recommended implementation.
-
-Create a small controller, for example `SelectedLabelHighlightController`, that
-owns a viewer-only labels overlay above the active primary labels layer.
+Implement the highlight inside `ViewerStylingController` by injecting one
+selected-instance color into the primary labels layer colormap.
 
 Behavior:
 
-- bind to the current primary labels layer;
-- create or update one highlight `Labels` layer that shares the primary layer's
-  `data`;
-- copy the primary layer transform/state needed for alignment, preferably from
-  `primary_layer.as_layer_data_tuple()` with metadata adjusted for the overlay;
-- set the overlay colormap to transparent for `None` and `0`, and bright for the
-  selected instance id;
-- set `overlay.contour = 2` for a boundary highlight;
-- keep `overlay.visible = False` while no positive instance is selected;
-- when a new instance is selected, update the overlay colormap and show it;
-- keep the primary labels layer active after creating the overlay so picking
-  continues to target the real labels layer.
+- add selected-highlight state to `ViewerStylingController`, for example
+  `set_highlighted_instance_id(instance_id: int | None)`;
+- keep `AnnotationController` as the source of truth for which object is picked;
+- have `ObjectClassificationWidget._on_selected_instance_changed(...)` forward
+  the picked instance id to `ViewerStylingController`;
+- when a positive instance id is selected, rebuild or update the primary labels
+  layer colormap so that instance id maps to a high-contrast highlight color;
+- when selection clears, rebinding happens, or the widget unbinds, restore the
+  normal semantic colormap by refreshing the primary layer colors;
+- do not create a highlight `Labels` layer;
+- do not add a new viewer-adapter `labels_role`;
+- do not write highlight state into the table.
 
 Suggested default presentation:
 
-- name: `<labels layer name> [selected object]`;
 - color: high-contrast yellow, for example `#ffff00ff`;
-- contour thickness: `2`;
-- blending: `additive` or `translucent`;
-- opacity: `1.0`;
-- editable: `False`.
+- no opacity/layer changes;
+- no `show_selected_label`;
+- no `contour` changes.
 
-The important part is that the overlay does not own annotation state. It only
-visualizes `AnnotationController.selected_instance_id`.
+The highlight is viewer-only state. It should not affect annotation table
+columns, classifier state, persistence state, or exported classifier bundles.
 
-## Viewer Adapter Lifecycle
+## Styling Integration
 
-The cleanest version should integrate with the existing viewer adapter instead
-of leaving the overlay as an unregistered layer.
+All color application should flow through `ViewerStylingController` so the
+highlight is consistently preserved across current styling paths.
 
-Current labels bindings support only:
+Full refresh path:
 
-- `labels_role="primary"`
-- `labels_role="styled"`
+- `refresh_layer_colors(...)` should build the normal color dictionary for the
+  active `Color by` mode;
+- just before assigning `DirectLabelColormap`, apply the selected-instance
+  highlight override if one is active.
 
-`styled` bindings require a table color `style_spec`, so they are not a natural
-fit for a selection highlight. Add a third labels role, for example
-`labels_role="highlight"`.
+Row-scoped user-class refresh path:
 
-Expected adapter behavior:
+- `refresh_user_class_colormap_and_feature(...)` should keep using the narrow
+  direct-annotation update when possible;
+- if the edited instance is highlighted, the candidate color dictionary should
+  first reflect the new semantic `user_class` value, then apply the highlight
+  override;
+- this keeps the highlighted object highlighted while selected, and the updated
+  semantic color becomes visible when the highlight clears.
 
-- primary labels lookups remain unchanged because they already request
-  `labels_role="primary"`;
-- `primary_labels_layers_changed` should only emit for primary labels bindings;
-- highlight labels should be removed by `remove_layers_for_sdata(...)` and
-  `remove_layers_outside_coordinate_system(...)` along with other bindings for
-  the same SpatialData/coordinate system;
-- removing the highlight layer should not produce the current warning for
-  unregistered layer removal;
-- if the user manually removes the highlight layer, the controller can recreate
-  it on the next selection.
+Prediction color modes:
 
-A quick prototype could keep the overlay unregistered, but that risks stale
-layers on SpatialData changes and warning logs during removal. A registered
-`highlight` role is a better long-term fit.
+- `refresh_user_class_feature(...)` can remain feature-only because prediction
+  color modes do not repaint on user-class edits;
+- the active highlight remains in the existing colormap until selection changes,
+  color mode changes, prediction colors refresh, or selection clears.
+
+Color mode changes:
+
+- changing `Color by` should call the normal full refresh path;
+- the selected highlight override should be applied on top of the newly selected
+  semantic color mode.
+
+This first implementation can choose correctness over micro-optimization by
+rebuilding the colormap on selection changes. That touches label color metadata,
+not the labels array itself. If selection repaint becomes noticeably expensive
+on very large tables, a later optimization can cache and restore only the
+previous highlighted colormap entry.
 
 ## Widget Wiring
 
-Add the highlight controller next to the existing annotation and styling
-controllers in `ObjectClassificationWidget.__init__(...)`.
-
-Bind it from `_bind_current_selection(...)` after the annotation controller has
-resolved the active labels layer:
-
-- pass the current primary labels layer;
-- pass the selected SpatialData, labels name, and coordinate system if the
-  adapter role needs them;
-- clear or remove the previous overlay when the bound primary labels layer
-  changes.
-
 Update `_on_selected_instance_changed(...)`:
 
-- call `highlight_controller.set_selected_instance_id(instance_id)`;
+- call `self._viewer_styling_controller.set_highlighted_instance_id(instance_id)`;
 - then keep the existing feedback/status/button updates.
 
-Do not clear the highlight after `Add (A)` or `Remove (R)` for the outline
-overlay. The selected object remains picked, and the primary layer underneath can
-still show the updated class color. If we choose the primary-colormap override
-instead, then clearing the highlight after an annotation write may be preferable
-so the user can see the new class color immediately.
+Bind/unbind behavior:
 
-On widget destruction or full unbind, call the controller shutdown/clear method
-so the helper layer is removed or hidden.
+- when `ViewerStylingController.bind(...)` moves to a different primary labels
+  layer, clear highlight state from the previous binding;
+- if there is no active labels layer, highlight state should be empty;
+- widget teardown or full unbind should clear the highlight by rebinding or
+  explicitly calling the clear path.
+
+Annotation writes:
+
+- do not clear the highlight after `Add (A)` or `Remove (R)`;
+- the object remains selected, so it should remain highlighted;
+- the updated class color is still stored in the normal colormap calculation and
+  becomes visible when the user selects a different object or clears selection.
 
 ## Tests
 
-Add focused tests around selection and lifecycle:
+Add focused tests around selection and styling:
 
-- selecting a label creates/shows a highlight layer and keeps the primary labels
-  layer active;
-- the highlight colormap maps `0` and unknown labels to transparent and maps the
-  selected id to the highlight color;
-- selecting a different label updates the same highlight layer rather than
-  creating duplicates;
-- clearing or rebinding the labels selection hides/removes the highlight;
-- multiscale mouse-pick fallback updates the highlight after calling the custom
-  mouse callback;
-- `Add (A)` and `Remove (R)` still update table state and primary labels styling
-  while the highlight remains viewer-only;
-- changing `Color by` refreshes the primary labels layer without removing the
-  highlight;
-- removing the primary labels layer cleans up or hides the highlight layer;
-- if a `labels_role="highlight"` binding is added, viewer-adapter tests should
-  confirm primary labels lookup ignores highlight layers and cleanup removes
-  them with the selected SpatialData/coordinate system.
+- selecting a label updates the primary labels layer colormap with the highlight
+  color for that instance;
+- no extra labels layer is created when a label is selected;
+- clearing selection restores the normal semantic colormap;
+- selecting a different label moves the highlight to the new id and restores the
+  previous id's normal color;
+- full `Color by` refreshes preserve the active selected-instance highlight;
+- row-scoped `user_class` annotation refresh preserves the highlight while
+  keeping the new semantic color available after highlight clear;
+- prediction color modes keep their existing feature-only annotation refresh
+  behavior;
+- the multiscale mouse-pick fallback still routes through
+  `_on_selected_instance_changed(...)`, so it updates the same highlight state.
 
 Useful verification commands:
 
-- `.venv/bin/pytest tests/test_widget.py tests/test_viewer_styling.py tests/test_viewer_adapter.py`
-- `.venv/bin/ruff check src/napari_harpy/widgets/object_classification src/napari_harpy/viewer/adapter.py tests/test_widget.py tests/test_viewer_adapter.py`
+- `.venv/bin/pytest tests/test_viewer_styling.py tests/test_widget.py`
+- `.venv/bin/ruff check src/napari_harpy/widgets/object_classification tests/test_viewer_styling.py tests/test_widget.py`
 
 ## Non-Goals
 
+- Do not create a second labels layer for selected-object highlighting.
 - Do not write highlight state into the annotation table.
 - Do not change the meaning of `user_class`, `pred_class`, or
   `pred_confidence` colors.
 - Do not copy or materialize large lazy labels arrays just to build the
   highlight.
 - Do not replace the existing `AnnotationController` selection model.
+- Do not implement selected-only outline rendering through private napari/vispy
+  internals in this slice.
 
 ## Open Decisions
 
-- Confirm the desired highlight style: outline-only is recommended, but filled
-  highlight is cheaper.
-- Confirm whether 3D labels should get a filled fallback in the first pass.
-- Decide whether the highlight layer should be visible in the napari layer list
-  or named in a way that makes it clearly temporary.
+- Confirm the exact highlight color after trying it against the dark napari
+  theme and the current class palettes.
+- Decide later whether the filled highlight is sufficient, or whether a future
+  custom visual is worth the added maintenance cost for outline-only rendering.

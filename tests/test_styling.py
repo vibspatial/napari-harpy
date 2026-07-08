@@ -10,7 +10,20 @@ from napari_harpy.viewer._styling import (
     continuous_colors_for_values,
     continuous_rgba_for_values,
 )
-from napari_harpy.viewer.labels_styling import _build_categorical_color_dict, _build_continuous_color_dict
+from napari_harpy.viewer.labels_styling import (
+    _apply_labels_colormap,
+    _build_categorical_color_dict,
+    _build_continuous_color_dict,
+)
+
+
+class _FakeLabelsLayer:
+    def __init__(self) -> None:
+        self.colormap = None
+        self.refresh_count = 0
+
+    def refresh(self) -> None:
+        self.refresh_count += 1
 
 
 def _colors_series_to_rgba(colors: pd.Series) -> np.ndarray:
@@ -93,8 +106,8 @@ def test_build_continuous_label_color_dict_uses_vectorized_rgba_and_preserves_ba
     color_dict = _build_continuous_color_dict(values)
     expected = continuous_rgba_for_values(values)
 
-    assert color_dict[None] == "transparent"
-    assert color_dict[0] == "transparent"
+    np.testing.assert_allclose(color_dict[None], np.zeros(4, dtype=np.float32))
+    np.testing.assert_allclose(color_dict[0], np.zeros(4, dtype=np.float32))
     np.testing.assert_allclose(color_dict[1], expected[0])
     np.testing.assert_allclose(color_dict[2], expected[1])
     np.testing.assert_allclose(color_dict[3], expected[2])
@@ -112,9 +125,23 @@ def test_build_categorical_label_color_dict_uses_vectorized_rgba_and_preserves_b
     color_dict = _build_categorical_color_dict(values, categories=categories, palette=palette)
     expected = categorical_rgba_for_values(values, categories=categories, palette=palette)
 
-    assert color_dict[None] == "transparent"
-    assert color_dict[0] == "transparent"
+    np.testing.assert_allclose(color_dict[None], np.zeros(4, dtype=np.float32))
+    np.testing.assert_allclose(color_dict[0], np.zeros(4, dtype=np.float32))
     np.testing.assert_allclose(color_dict[1], expected[0])
     np.testing.assert_allclose(color_dict[2], expected[1])
     np.testing.assert_allclose(color_dict[3], expected[2])
     np.testing.assert_allclose(color_dict[4], expected[3])
+
+
+def test_apply_labels_colormap_uses_fast_helper_without_explicit_refresh() -> None:
+    layer = _FakeLabelsLayer()
+    color_dict = {
+        None: np.zeros(4, dtype=np.float32),
+        0: np.zeros(4, dtype=np.float32),
+        1: np.asarray([1.0, 0.0, 0.0, 1.0], dtype=np.float32),
+    }
+
+    _apply_labels_colormap(layer, color_dict)  # type: ignore[arg-type]
+
+    np.testing.assert_allclose(layer.colormap.color_dict[1], color_dict[1])
+    assert layer.refresh_count == 0
