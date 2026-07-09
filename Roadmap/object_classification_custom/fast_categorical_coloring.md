@@ -2117,14 +2117,14 @@ Acceptance:
 - the helper returns compact state without building a full `label_id -> RGBA`
   dictionary.
 
-#### Slice 7.3: Continuous Labels Integration
+#### Slice 7.3a: Styled Labels Continuous Integration
 
 Status: proposed.
 
 Goal:
 
-- replace long-term direct RGBA continuous labels colormaps with the compact
-  continuous mapping helper where appropriate.
+- replace generic styled-labels direct RGBA continuous colormaps with the
+  compact continuous mapping helper.
 
 Implementation direction:
 
@@ -2135,24 +2135,57 @@ Implementation direction:
      `direct_label_colormap_from_rgba(...)`;
    - assign the compact continuous colormap instead;
    - keep label features unchanged so hover/status remains label-id based.
-3. Update object-classification `pred_confidence`:
-   - use the same compact colormap machinery;
-   - use an explicit fixed value range `(0.0, 1.0)` instead of table min/max;
-   - keep the existing missing confidence color.
-4. Keep categorical paths unchanged.
-5. Benchmark on the previous `continuous_total_counts` case and on
-   `pred_confidence` object-classification styling.
+3. Keep categorical and object-classification paths unchanged.
+4. Benchmark on the previous `continuous_total_counts` styled-labels case.
 
 Acceptance:
 
-- continuous labels coloring remains visually equivalent within the accepted
-  256-bin tolerance;
+- styled-labels continuous coloring remains visually equivalent within the
+  accepted 256-bin tolerance;
 - missing values keep the current missing/default color;
 - background label `0` remains transparent;
 - hover/status feature lookup remains label-id based;
 - benchmark improves the `continuous_total_counts` direct colormap path or
   materially reduces memory use without making assignment slower;
 - no duplicate long-term continuous styled-labels colormap implementations.
+
+#### Slice 7.3b: Object-Classification `pred_confidence` Integration
+
+Status: proposed.
+
+Goal:
+
+- replace the object-classification `pred_confidence` direct RGBA colormap path
+  with the compact continuous colormap machinery.
+
+Implementation direction:
+
+1. Update `ViewerStylingController.refresh_layer_colors(...)` for
+   `COLOR_BY_PRED_CONFIDENCE`:
+   - build a compact continuous colormap from
+     `feature_rows[PRED_CONFIDENCE_COLUMN]`;
+   - use `colormap_name=PRED_CONFIDENCE_COLORMAP`;
+   - use `value_range=(0.0, 1.0)` so prediction confidence is interpreted as a
+     fixed probability-like score instead of normalized over the visible table
+     values;
+   - use `missing_color=MISSING_CONTINUOUS_COLOR`;
+   - use `default_color=MISSING_CONTINUOUS_COLOR` to preserve the current
+     unmapped-label behavior from `_base_labels_color_dict(...)`.
+2. Remove `_build_pred_confidence_color_dict(...)` if it becomes unused.
+3. Keep user-class and pred-class categorical paths unchanged.
+4. Benchmark `pred_confidence` object-classification styling.
+
+Acceptance:
+
+- `pred_confidence` coloring remains visually equivalent within the accepted
+  256-bin tolerance for finite confidence values;
+- confidence values outside `[0.0, 1.0]` clamp to the end bins;
+- missing/non-finite confidence values keep the existing missing confidence
+  color;
+- background label `0` remains transparent;
+- unmapped positive labels keep the existing missing/default confidence color;
+- benchmark improves or materially reduces memory use without making
+  assignment slower.
 
 ### Slice 8: Async Slicing Labels Colormap Synchronization
 
