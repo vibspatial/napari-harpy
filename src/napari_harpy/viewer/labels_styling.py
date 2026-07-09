@@ -25,7 +25,7 @@ from napari_harpy.viewer._styling import (
     validate_styled_palette_source,
 )
 from napari_harpy.viewer.labels_colormap import (
-    CompactCategoricalLabelColormap,
+    CompactLabelColormap,
     compact_categorical_label_colormap_from_values,
     direct_label_colormap_from_rgba,
 )
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 
 
 _TRANSPARENT_RGBA = np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-LabelsColormap = DirectLabelColormap | CompactCategoricalLabelColormap
+LabelsColormap = DirectLabelColormap | CompactLabelColormap
 
 
 @dataclass(frozen=True)

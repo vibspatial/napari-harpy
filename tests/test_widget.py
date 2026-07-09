@@ -35,7 +35,7 @@ from napari_harpy.core.feature_matrix_metadata import (
     register_feature_matrix_metadata,
 )
 from napari_harpy.core.spatialdata import SpatialDataLabelsOption
-from napari_harpy.viewer.labels_colormap import CompactCategoricalLabelColormap
+from napari_harpy.viewer.labels_colormap import CompactLabelColormap
 from napari_harpy.widgets.object_classification.controller import (
     CLASSIFIER_CONFIG_KEY,
     PRED_CLASS_COLORS_KEY,
@@ -2045,7 +2045,7 @@ def test_widget_recolors_layer_from_user_class_annotations(qtbot, sdata_blobs: S
     widget.class_spinbox.setValue(4)
     widget.apply_class_button.click()
 
-    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert isinstance(layer.colormap, CompactLabelColormap)
     assert np.allclose(layer.colormap.map(0), np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32))
     assert len(layer.colormap.color_dict) <= 3
     assert layer.colormap.map(5)[3] > 0
@@ -2088,7 +2088,7 @@ def test_widget_user_class_annotation_uses_sparse_refresh_for_compact_user_class
 
     assert full_refresh_calls == []
     assert layer_refresh_calls == [{"extent": False}]
-    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert isinstance(layer.colormap, CompactLabelColormap)
     assert layer.colormap is original_colormap
     assert len(layer.colormap.color_dict) <= 3
     assert layer.colormap.map(5)[3] > 0
@@ -2990,12 +2990,12 @@ def test_widget_colors_predictions_using_pred_class_palette_in_pred_class_mode(q
     table.uns[USER_CLASS_COLORS_KEY] = ["#80808099", "#ff0000", "#00ff00"]
     table.uns[PRED_CLASS_COLORS_KEY] = ["#80808099", "#0000ff", "#ffff00"]
 
-    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert isinstance(layer.colormap, CompactLabelColormap)
     assert not np.allclose(layer.colormap.map(1), layer.colormap.map(5))
 
     widget.color_by_combo.setCurrentIndex(widget.color_by_combo.findData("pred_class"))
 
-    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert isinstance(layer.colormap, CompactLabelColormap)
     assert np.allclose(layer.colormap.map(1), layer.colormap.map(5))
     assert np.allclose(layer.colormap.map(24), layer.colormap.map(26))
     assert np.allclose(layer.colormap.map(1), np.asarray(to_rgba("#0000ff"), dtype=np.float32))

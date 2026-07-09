@@ -11,7 +11,7 @@ from napari_harpy.viewer._styling import (
     continuous_rgba_for_values,
 )
 from napari_harpy.viewer.labels_colormap import (
-    CompactCategoricalLabelColormap,
+    CompactLabelColormap,
     compact_categorical_label_colormap_from_values,
     direct_label_colormap_from_rgba,
 )
@@ -129,7 +129,7 @@ def test_build_categorical_label_colormap_uses_compact_mapping_and_preserves_col
     colormap = compact_categorical_label_colormap_from_values(values, categories=categories, palette=palette)
     expected = categorical_rgba_for_values(values, categories=categories, palette=palette)
 
-    assert isinstance(colormap, CompactCategoricalLabelColormap)
+    assert isinstance(colormap, CompactLabelColormap)
     np.testing.assert_allclose(colormap.map(0), np.zeros(4, dtype=np.float32))
     np.testing.assert_allclose(colormap.map(values.index.to_numpy(dtype=np.int64)), expected)
 

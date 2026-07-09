@@ -13,8 +13,8 @@ from napari.utils.colormaps import DirectLabelColormap
 from napari_harpy.core.annotation import UNLABELED_COLOR
 from napari_harpy.viewer._styling import MISSING_CATEGORICAL_COLOR
 from napari_harpy.viewer.labels_colormap import (
-    CompactCategoricalLabelColormap,
-    CompactCategoricalLabelsMapping,
+    CompactLabelColormap,
+    CompactLabelsMapping,
     compact_categorical_label_colormap_from_values,
     compact_categorical_labels_mapping_from_values,
     direct_label_colormap_from_rgba,
@@ -34,7 +34,7 @@ def restore_colormap_backend() -> Iterator[None]:
         set_backend(previous_backend)
 
 
-def _expanded_color_dict(mapping: CompactCategoricalLabelsMapping) -> dict[int | None, np.ndarray]:
+def _expanded_color_dict(mapping: CompactLabelsMapping) -> dict[int | None, np.ndarray]:
     color_dict: dict[int | None, np.ndarray] = {
         None: mapping.texture_rgba[mapping.default_texture_code],
         mapping.background_value: mapping.texture_rgba[mapping.background_texture_code],
@@ -165,7 +165,7 @@ def test_compact_categorical_label_colormap_from_values_returns_ready_colormap(
         palette=["#ff0000", "#00ff00"],
     )
 
-    assert isinstance(colormap, CompactCategoricalLabelColormap)
+    assert isinstance(colormap, CompactLabelColormap)
     labels = np.asarray([0, 10, 20, 30, 99], dtype=np.int64)
     mapping = compact_categorical_labels_mapping_from_values(
         values,
@@ -221,10 +221,10 @@ def test_compact_categorical_label_colormap_sparse_category_updates_existing_tex
     )
     original_texture_count = len(colormap._compact_mapping.texture_rgba)
 
-    result = colormap.set_label_category(6, 2)
+    result = colormap.set_label_value(6, 2)
 
     assert len(colormap._compact_mapping.texture_rgba) == original_texture_count
-    assert result.texture_code == colormap._compact_mapping.category_texture_codes[2]
+    assert result.texture_code == colormap._compact_mapping.value_texture_codes[2]
     assert result.texture_table_changed is False
     assert 6 in colormap._compact_mapping.label_ids
     np.testing.assert_allclose(colormap.map(6), to_rgba("#0000ff"))
@@ -261,12 +261,12 @@ def test_compact_categorical_label_colormap_sparse_new_category_appends_texture(
     )
     original_texture_count = len(colormap._compact_mapping.texture_rgba)
 
-    result = colormap.set_label_category(9, 7, category_color="#0000ff")
+    result = colormap.set_label_value(9, 7, value_color="#0000ff")
 
     assert len(colormap._compact_mapping.texture_rgba) == original_texture_count + 1
     assert result.texture_code == len(colormap._compact_mapping.texture_rgba) - 1
     assert result.texture_table_changed is True
-    assert colormap._compact_mapping.category_texture_codes[7] == result.texture_code
+    assert colormap._compact_mapping.value_texture_codes[7] == result.texture_code
     assert 9 in colormap._compact_mapping.label_ids
     assert bool(np.all(colormap._compact_mapping.label_ids[1:] > colormap._compact_mapping.label_ids[:-1]))
     np.testing.assert_allclose(colormap.map(9), to_rgba("#0000ff"))
@@ -289,7 +289,7 @@ def test_compact_categorical_label_colormap_sparse_update_widens_texture_code_dt
     )
     assert colormap._compact_mapping.texture_codes.dtype == np.uint8
 
-    result = colormap.set_label_category(5, 299)
+    result = colormap.set_label_value(5, 299)
 
     assert result.texture_code > np.iinfo(np.uint8).max
     assert result.texture_table_changed is False
@@ -311,7 +311,7 @@ def test_compact_categorical_label_colormap_maps_like_expanded_direct_colormap(
         palette=["#ff0000", "#00ff00"],
     )
 
-    compact_colormap = CompactCategoricalLabelColormap(compact_mapping)
+    compact_colormap = CompactLabelColormap(compact_mapping)
     expanded_colormap = direct_label_colormap_from_rgba(_expanded_color_dict(compact_mapping))
 
     assert isinstance(compact_colormap, DirectLabelColormap)
@@ -330,7 +330,7 @@ def test_compact_categorical_label_colormap_values_mapping_stays_compact(
         palette=["#ff0000", "#00ff00"],
     )
 
-    colormap = CompactCategoricalLabelColormap(compact_mapping)
+    colormap = CompactLabelColormap(compact_mapping)
     label_mapping, texture_color_dict = colormap._values_mapping_to_minimum_values_set()
 
     assert not isinstance(label_mapping, dict)
@@ -350,7 +350,7 @@ def test_compact_categorical_label_colormap_high_bit_texture_mapping_uses_jitted
         categories=["a", "b"],
         palette=["#ff0000", "#00ff00"],
     )
-    colormap = CompactCategoricalLabelColormap(compact_mapping)
+    colormap = CompactLabelColormap(compact_mapping)
     code_by_label = dict(zip(compact_mapping.label_ids.tolist(), compact_mapping.texture_codes.tolist(), strict=True))
 
     texture_values = colormap._data_to_texture(np.asarray([0, 42, 1001, 9999], dtype=np.int64))
@@ -380,7 +380,7 @@ def test_compact_categorical_label_colormap_small_labels_use_dense_lookup(
         categories=["a", "b"],
         palette=["#ff0000", "#00ff00"],
     )
-    compact_colormap = CompactCategoricalLabelColormap(compact_mapping)
+    compact_colormap = CompactLabelColormap(compact_mapping)
     expanded_colormap = direct_label_colormap_from_rgba(_expanded_color_dict(compact_mapping))
 
     labels = np.asarray([0, 3, 5, 11], dtype=np.uint16)
@@ -399,7 +399,7 @@ def test_compact_categorical_label_colormap_selection_mode_matches_direct_colorm
         categories=["a", "b"],
         palette=["#ff0000", "#00ff00"],
     )
-    compact_colormap = CompactCategoricalLabelColormap(compact_mapping)
+    compact_colormap = CompactLabelColormap(compact_mapping)
     expanded_colormap = direct_label_colormap_from_rgba(_expanded_color_dict(compact_mapping))
     compact_colormap.use_selection = True
     expanded_colormap.use_selection = True
@@ -423,7 +423,7 @@ def test_compact_categorical_label_colormap_assigns_to_labels_layer_in_direct_mo
         categories=["a", "b"],
         palette=["#ff0000", "#00ff00"],
     )
-    colormap = CompactCategoricalLabelColormap(compact_mapping)
+    colormap = CompactLabelColormap(compact_mapping)
     layer = Labels(np.asarray([[0, 3], [5, 11]], dtype=np.int64))
 
     layer.colormap = colormap

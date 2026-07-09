@@ -32,7 +32,7 @@ from napari_harpy.viewer.adapter import (
     _prepare_napari_point_radius_shapes_layer_inputs,
     _prepare_napari_shapes_layer_inputs,
 )
-from napari_harpy.viewer.labels_colormap import CompactCategoricalLabelColormap
+from napari_harpy.viewer.labels_colormap import CompactLabelColormap
 from napari_harpy.viewer.points_styling import POINTS_SELECTION_SOLID_COLOR
 from napari_harpy.viewer.shapes_styling import (
     _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR,
@@ -1617,7 +1617,7 @@ def test_viewer_adapter_ensure_styled_labels_loaded_creates_registered_overlay_w
     assert result.coercion_applied is False
     assert result.layer in viewer.layers
     assert result.layer.name == "blobs_labels[obs:cell_type]"
-    assert isinstance(result.layer.colormap, CompactCategoricalLabelColormap)
+    assert isinstance(result.layer.colormap, CompactLabelColormap)
     binding = adapter.layer_bindings.get_binding(result.layer)
     assert isinstance(binding, LabelsLayerBinding)
     assert binding.labels_role == "styled"
@@ -1937,7 +1937,7 @@ def test_viewer_adapter_ensure_styled_labels_loaded_coerces_string_obs_to_catego
     assert result.value_kind == "categorical"
     assert result.coercion_applied is True
     assert result.palette_source == "default_missing"
-    assert isinstance(result.layer.colormap, CompactCategoricalLabelColormap)
+    assert isinstance(result.layer.colormap, CompactLabelColormap)
 
 
 def test_viewer_adapter_ensure_styled_labels_loaded_warns_for_high_cardinality_string_obs(
@@ -1973,7 +1973,7 @@ def test_viewer_adapter_ensure_styled_labels_loaded_warns_for_high_cardinality_s
     assert result.value_kind == "categorical"
     assert result.coercion_applied is True
     assert result.palette_source == "default_missing"
-    assert isinstance(result.layer.colormap, CompactCategoricalLabelColormap)
+    assert isinstance(result.layer.colormap, CompactLabelColormap)
     assert len(warning_messages) == 1
     assert "exceeds the categorical viewer-coloring threshold" in warning_messages[0]
     assert "Harpy will render it with the default categorical palette anyway" in warning_messages[0]

@@ -29,7 +29,7 @@ from napari_harpy.core.spatialdata import (
 )
 from napari_harpy.viewer.adapter import ViewerAdapter
 from napari_harpy.viewer.labels_colormap import (
-    CompactCategoricalLabelColormap,
+    CompactLabelColormap,
     compact_categorical_label_colormap_from_values,
     direct_label_colormap_from_rgba,
 )
@@ -231,10 +231,10 @@ class ViewerStylingController:
         feature_rows: pd.DataFrame,
     ) -> bool:
         colormap = getattr(self._labels_layer, "colormap", None)
-        if not isinstance(colormap, CompactCategoricalLabelColormap):
+        if not isinstance(colormap, CompactLabelColormap):
             raise RuntimeError(
                 "Cannot update user-class annotation colors row-scoped: "
-                "the labels layer is not using CompactCategoricalLabelColormap."
+                "the labels layer is not using CompactLabelColormap."
             )
 
         refresh = self._labels_layer.refresh
@@ -250,7 +250,7 @@ class ViewerStylingController:
             class_color = class_color_lookup.get(class_id)
             if class_color is None:
                 raise RuntimeError(f"Cannot update compact user-class coloring: class `{class_id}` has no color.")
-            result = colormap.set_label_category(instance_id, class_id, category_color=class_color)
+            result = colormap.set_label_value(instance_id, class_id, value_color=class_color)
 
         self._labels_layer.features = feature_rows
         if result.texture_table_changed:

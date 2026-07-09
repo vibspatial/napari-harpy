@@ -15,7 +15,7 @@ from napari_harpy.core.annotation import (
     USER_CLASS_COLORS_KEY,
     USER_CLASS_COLUMN,
 )
-from napari_harpy.viewer.labels_colormap import CompactCategoricalLabelColormap
+from napari_harpy.viewer.labels_colormap import CompactLabelColormap
 from napari_harpy.widgets.object_classification.annotation_controller import UserClassAnnotationChange
 from napari_harpy.widgets.object_classification.controller import (
     PRED_CLASS_COLORS_KEY,
@@ -161,7 +161,7 @@ def test_refresh_reuses_one_region_feature_snapshot(monkeypatch: pytest.MonkeyPa
     controller.refresh()
 
     assert calls == 1
-    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert isinstance(layer.colormap, CompactLabelColormap)
     assert len(layer.colormap.color_dict) <= 3
     np.testing.assert_allclose(layer.colormap.map(0), np.zeros(4, dtype=np.float32))
     np.testing.assert_allclose(layer.colormap.map(5), _expected_rgba("#ff0000"))
@@ -187,7 +187,7 @@ def test_user_class_color_lookup_uses_valid_categorical_without_full_normalizati
 
     controller.refresh_layer_colors(feature_rows=feature_rows)
 
-    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert isinstance(layer.colormap, CompactLabelColormap)
     np.testing.assert_allclose(layer.colormap.map(5), _expected_rgba("#ff0000"))
     np.testing.assert_allclose(layer.colormap.map(6), _expected_rgba(UNLABELED_COLOR))
 
@@ -213,7 +213,7 @@ def test_pred_class_color_lookup_uses_valid_categorical_without_full_normalizati
 
     controller.refresh_layer_colors(feature_rows=feature_rows)
 
-    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert isinstance(layer.colormap, CompactLabelColormap)
     np.testing.assert_allclose(layer.colormap.map(1), _expected_rgba(UNLABELED_COLOR))
     np.testing.assert_allclose(layer.colormap.map(5), _expected_rgba("#00ff00"))
 
@@ -252,7 +252,7 @@ def test_user_class_color_lookup_falls_back_for_invalid_table_state(
     controller.refresh_layer_colors(feature_rows=feature_rows)
 
     assert USER_CLASS_COLUMN in normalized_columns
-    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert isinstance(layer.colormap, CompactLabelColormap)
     np.testing.assert_allclose(layer.colormap.map(1), _expected_rgba(UNLABELED_COLOR))
     assert not np.allclose(layer.colormap.map(5), layer.colormap.map(0))
 
@@ -278,7 +278,7 @@ def test_refresh_layer_methods_still_work_without_precomputed_feature_rows(
     controller.refresh_layer_features()
 
     assert calls == 2
-    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert isinstance(layer.colormap, CompactLabelColormap)
     assert USER_CLASS_COLUMN in layer.features.columns
 
 
@@ -294,7 +294,7 @@ def test_pred_class_coloring_keeps_explicit_entries_for_unlabeled_predictions(sd
 
     controller.refresh_layer_colors(feature_rows=feature_rows)
 
-    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert isinstance(layer.colormap, CompactLabelColormap)
     assert len(layer.colormap.color_dict) <= 3
     np.testing.assert_allclose(layer.colormap.map(0), np.zeros(4, dtype=np.float32))
     np.testing.assert_allclose(layer.colormap.map(1), _expected_rgba(UNLABELED_COLOR))
@@ -383,7 +383,7 @@ def test_row_scoped_user_class_annotation_inserts_compact_label_and_refreshes_la
     assert layer.refresh_kwargs == [{"extent": False}]
     assert layer.events.colormap.call_count == 0
     assert layer.features.set_index("index").loc[6, USER_CLASS_COLUMN] == 4
-    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert isinstance(layer.colormap, CompactLabelColormap)
     np.testing.assert_allclose(layer.colormap.map(6), _expected_rgba("#ff0000"))
     mapping = layer.colormap._compact_mapping
     assert 6 in mapping.label_ids
@@ -415,7 +415,7 @@ def test_row_scoped_user_class_annotation_clear_removes_compact_label_and_refres
     assert layer.refresh_kwargs == [{"extent": False}]
     assert layer.events.colormap.call_count == 0
     assert layer.features.set_index("index").loc[5, USER_CLASS_COLUMN] == 0
-    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert isinstance(layer.colormap, CompactLabelColormap)
     assert 5 not in layer.colormap._compact_mapping.label_ids
     np.testing.assert_allclose(layer.colormap.map(5), _expected_rgba(UNLABELED_COLOR))
 
@@ -439,7 +439,7 @@ def test_row_scoped_user_class_annotation_updates_existing_compact_label(
     assert layer.colormap is original_colormap
     assert layer.refresh_kwargs == [{"extent": False}]
     assert layer.events.colormap.call_count == 0
-    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert isinstance(layer.colormap, CompactLabelColormap)
     assert 5 in layer.colormap._compact_mapping.label_ids
     np.testing.assert_allclose(layer.colormap.map(5), _expected_rgba("#0000ff"))
 
@@ -455,7 +455,7 @@ def test_row_scoped_user_class_annotation_appends_new_class_texture(
     feature_rows = _feature_rows({5: 4, 6: 0})
     controller.refresh_layer_colors(feature_rows=feature_rows)
     controller.refresh_layer_features(feature_rows=feature_rows)
-    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert isinstance(layer.colormap, CompactLabelColormap)
     original_texture_count = len(layer.colormap._compact_mapping.texture_rgba)
     _set_user_classes(sdata_blobs, {5: 4, 6: 9}, categories=[0, 4, 9], colors=updated_colors)
 
@@ -464,11 +464,11 @@ def test_row_scoped_user_class_annotation_appends_new_class_texture(
     assert handled is True
     assert layer.refresh_kwargs == [{"extent": False}]
     assert layer.events.colormap.call_count == 1
-    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert isinstance(layer.colormap, CompactLabelColormap)
     mapping = layer.colormap._compact_mapping
     assert len(mapping.texture_rgba) == original_texture_count + 1
-    assert mapping.category_texture_codes is not None
-    assert mapping.category_texture_codes[9] == len(mapping.texture_rgba) - 1
+    assert mapping.value_texture_codes is not None
+    assert mapping.value_texture_codes[9] == len(mapping.texture_rgba) - 1
     assert 6 in mapping.label_ids
     np.testing.assert_allclose(layer.colormap.map(6), _expected_rgba("#0000ff"))
 
@@ -490,7 +490,7 @@ def test_row_scoped_user_class_annotation_requires_compact_colormap(
         background_value=0,
     )
 
-    with pytest.raises(RuntimeError, match="CompactCategoricalLabelColormap"):
+    with pytest.raises(RuntimeError, match="CompactLabelColormap"):
         controller.refresh_user_class_colormap_and_feature(UserClassAnnotationChange(instance_id=5, class_id=4))
 
     assert layer.refresh_count == 0

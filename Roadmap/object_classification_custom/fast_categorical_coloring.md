@@ -147,7 +147,7 @@ arrays.
 
 ### Slice 1: Shared Fast Colormap Helper
 
-Status: implemented.
+Status: proposed.
 
 Add a helper in a shared labels-viewer module, for example:
 
@@ -864,14 +864,14 @@ Acceptance criteria:
 Status: implemented.
 
 Create an isolated prototype, for example
-`CompactCategoricalLabelColormap`, that can be assigned where napari expects a
+`CompactLabelColormap`, that can be assigned where napari expects a
 `DirectLabelColormap`.
 
 Scope:
 
 - subclass `DirectLabelColormap` so napari's `_normalize_label_colormap(...)`
   accepts it as a labels colormap instance;
-- accept one `CompactCategoricalLabelsMapping` from Slice 6.2;
+- accept one `CompactLabelsMapping` from Slice 6.2;
 - stay isolated from production styled-labels routing in this slice;
 - include focused prototype tests, but do not replace the current categorical
   direct-RGBA production path yet.
@@ -923,7 +923,7 @@ Implementation details:
   ```
 
   The first item should be an array-backed `Mapping` view over
-  `CompactCategoricalLabelsMapping.label_ids` and `texture_codes`, not an
+  `CompactLabelsMapping.label_ids` and `texture_codes`, not an
   eager `dict`. Constructing or returning this mapping view must be `O(1)`.
   Iterating `.items()` may still be `O(n)`, but only callers that truly need
   all `label_id -> texture_code` pairs should pay that cost.
@@ -1129,7 +1129,7 @@ through the compact colormap yet.
 Status: implemented.
 
 Add the public Harpy helper that turns table-aligned categorical values into a
-ready `CompactCategoricalLabelColormap`, without integrating it into viewer
+ready `CompactLabelColormap`, without integrating it into viewer
 styling yet.
 
 Implementation shape:
@@ -1145,9 +1145,9 @@ Implementation shape:
       palette: Sequence[Any],
       missing_color: Any = MISSING_CATEGORICAL_COLOR,
       background_value: int = 0,
-  ) -> CompactCategoricalLabelColormap:
+  ) -> CompactLabelColormap:
       mapping = compact_categorical_labels_mapping_from_values(...)
-      return CompactCategoricalLabelColormap(mapping)
+      return CompactLabelColormap(mapping)
   ```
 
 - widen the existing compact builder palette typing from `Sequence[str]` to
@@ -1161,7 +1161,7 @@ Implementation shape:
 
 Tests:
 
-- verify the helper returns `CompactCategoricalLabelColormap`;
+- verify the helper returns `CompactLabelColormap`;
 - verify the helper preserves current compact mapping behavior for:
   - mapped categories;
   - missing/palette-unknown values;
@@ -1180,7 +1180,7 @@ Acceptance criteria:
 
 Status: implemented; full-data Xenium benchmark gate passed.
 
-Make `CompactCategoricalLabelColormap` the categorical styled-labels path in
+Make `CompactLabelColormap` the categorical styled-labels path in
 `src/napari_harpy/viewer/labels_styling.py`. We are working on a feature
 branch, so do not keep the compact colormap as a long-lived optional
 alternative next to the old categorical `label_id -> RGBA` route.
@@ -1190,7 +1190,7 @@ Scope:
 - add an internal return type alias in `labels_styling.py`:
 
   ```python
-  LabelsColormap = DirectLabelColormap | CompactCategoricalLabelColormap
+  LabelsColormap = DirectLabelColormap | CompactLabelColormap
   ```
 
   This is the shape returned by non-instance styling builders. It should refer
@@ -1220,13 +1220,13 @@ Scope:
   ```
 
   The helper should not build `DirectLabelColormap` itself anymore. Categorical
-  branches build `CompactCategoricalLabelColormap`; continuous branches build
+  branches build `CompactLabelColormap`; continuous branches build
   `DirectLabelColormap`.
 
 Tests:
 
 - update styled-labels tests so categorical `.obs` styling assigns
-  `CompactCategoricalLabelColormap`;
+  `CompactLabelColormap`;
 - verify categorical bool, binary numeric, pandas categorical, and string-like
   coercion paths still color representative labels like the expanded direct
   RGBA baseline;
@@ -1261,7 +1261,7 @@ categorical_leiden:
   apply_table_color_source_to_labels_layer: 0.2259 s
   ensure_styled_labels_loaded cold:        0.2234 s
   ensure_styled_labels_loaded restyle:     0.2389 s
-  colormap: CompactCategoricalLabelColormap
+  colormap: CompactLabelColormap
   color_dict entries: 3
   label ids: 406,611
   texture RGBA rows: 10
@@ -1336,7 +1336,7 @@ Tests:
 
 Status: implemented.
 
-Use `CompactCategoricalLabelColormap` for full object-classification
+Use `CompactLabelColormap` for full object-classification
 categorical labels repainting, while keeping the row-scoped sparse update as a
 separate Slice 6.7.
 
@@ -1344,7 +1344,7 @@ Scope:
 
 - in `ViewerStylingController.refresh_layer_colors(...)`, route
   `COLOR_BY_USER_CLASS` and `COLOR_BY_PRED_CLASS` through
-  `CompactCategoricalLabelColormap`;
+  `CompactLabelColormap`;
 - build a class-value series indexed by instance id and pass sorted class ids
   plus the matching RGBA palette to the compact helper;
 - pass `default_color=UNLABELED_COLOR` for object-classification categorical
@@ -1367,7 +1367,7 @@ Row-scoped annotation safety guard:
   compact colormaps, where `color_dict` is intentionally tiny and not the
   source of truth.
 - Add only the minimal guard needed for correctness in this slice:
-  if the current labels colormap is `CompactCategoricalLabelColormap`, do not
+  if the current labels colormap is `CompactLabelColormap`, do not
   mutate `color_dict`; return `False` so the existing caller can use the
   correctness fallback.
 - This fallback is temporary and should not be treated as the final design.
@@ -1378,7 +1378,7 @@ Row-scoped annotation safety guard:
 Tests:
 
 - object-classification `user_class` and `pred_class` full refresh use
-  `CompactCategoricalLabelColormap`;
+  `CompactLabelColormap`;
 - object-classification categorical coloring uses `UNLABELED_COLOR` as the
   compact default/unmapped color while keeping background label `0`
   transparent;
@@ -1409,7 +1409,7 @@ user_class: median=0.1492 s, min=0.1478 s, max=0.1539 s
 pred_class: median=0.1513 s, min=0.1511 s, max=0.1545 s
 ```
 
-Both paths produced `CompactCategoricalLabelColormap` with tiny bootstrap
+Both paths produced `CompactLabelColormap` with tiny bootstrap
 `color_dict` length `<= 3`.
 
 Follow-up cleanup in the same slice generalized the valid-categorical palette
@@ -1436,7 +1436,7 @@ Current direct-colormap sparse update:
 label_id -> RGBA
 ```
 
-For `CompactCategoricalLabelColormap`, the source of truth is instead:
+For `CompactLabelColormap`, the source of truth is instead:
 
 ```text
 label_id -> texture_code
@@ -1561,7 +1561,7 @@ Implementation direction:
    - return the target texture code when the label should be explicit, and the
      default/unlabeled texture code when the label was removed.
 2. Update `refresh_user_class_colormap_and_feature(...)` so that when the
-   current colormap is `CompactCategoricalLabelColormap` and
+   current colormap is `CompactLabelColormap` and
    `COLOR_BY_USER_CLASS` is active:
    - apply the compact sparse state mutation;
    - update only the edited row in `layer.features`;
@@ -1650,7 +1650,7 @@ Implementation direction:
    color table changed. One possible shape:
 
    ```python
-   texture_code, texture_table_changed = colormap.set_label_category(...)
+   texture_code, texture_table_changed = colormap.set_label_value(...)
    ```
 
    `texture_table_changed` should be `True` only when the update appended a new
@@ -1929,7 +1929,7 @@ Implementation direction:
    modes can still use `refresh_user_class_feature(...)` because the visible
    color source is not `user_class`.
 2. In the `COLOR_BY_USER_CLASS` row-scoped annotation path, require the current
-   labels colormap to be `CompactCategoricalLabelColormap`.
+   labels colormap to be `CompactLabelColormap`.
 3. Replace the boolean fallback around
    `_refresh_compact_user_class_colormap_and_feature(...)` with a loud failure
    if the compact sparse update returns `False`.
@@ -1969,8 +1969,7 @@ color_bin -> RGBA
 ```
 
 This work should be split into small implementation slices. The compact napari
-colormap subclass is currently named for categorical values, but the underlying
-viewer contract is more general:
+colormap subclass uses a general viewer contract:
 
 ```text
 label_id -> texture_code
@@ -2010,7 +2009,7 @@ Rationale:
 
 #### Slice 7.1: Neutral Compact Label Colormap Naming
 
-Status: proposed.
+Status: implemented.
 
 Goal:
 
@@ -2026,7 +2025,7 @@ Implementation direction:
    ```
 
    Keep categorical-specific fields only if they truly belong to categorical
-   sparse annotation. In particular, `category_texture_codes` is used for
+   sparse annotation. In particular, `value_texture_codes` is used for
    row-scoped user-class updates, so either keep it as an optional generic
    auxiliary mapping or rename it to something neutral such as
    `value_texture_codes`.
@@ -2317,7 +2316,7 @@ Implementation direction:
    - fall back to the current conservative path;
    - validate uniqueness with `np.unique(...)`;
    - sort label ids and texture codes before constructing
-     `CompactCategoricalLabelsMapping`.
+     `CompactLabelsMapping`.
 4. Keep this optimization local to compact label-coloring construction. It
    should not change table alignment, feature-row construction, hover features,
    or labels image data.
