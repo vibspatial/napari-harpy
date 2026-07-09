@@ -1995,7 +1995,7 @@ def test_widget_recolors_layer_from_user_class_annotations(qtbot, sdata_blobs: S
     assert layer.features.set_index("index").loc[5, USER_CLASS_COLUMN] == 4
 
 
-def test_widget_user_class_annotation_uses_full_refresh_for_compact_user_class_until_sparse_update(
+def test_widget_user_class_annotation_uses_sparse_refresh_for_compact_user_class(
     qtbot,
     monkeypatch,
     sdata_blobs: SpatialData,
@@ -2006,21 +2006,30 @@ def test_widget_user_class_annotation_uses_full_refresh_for_compact_user_class_u
     qtbot.addWidget(widget)
     select_segmentation(widget)
     full_refresh_calls = []
+    layer_refresh_calls = []
     original_refresh = widget._viewer_styling_controller.refresh
+    original_colormap = layer.colormap
 
     def record_full_refresh() -> None:
         full_refresh_calls.append("refresh")
         original_refresh()
 
+    def record_layer_refresh(**kwargs) -> None:
+        layer_refresh_calls.append(kwargs)
+
     monkeypatch.setattr(widget._viewer_styling_controller, "refresh", record_full_refresh)
+    monkeypatch.setattr(layer, "refresh", record_layer_refresh)
 
     layer.selected_label = 5
     widget.class_spinbox.setValue(4)
     widget.apply_class_button.click()
 
-    assert full_refresh_calls == ["refresh"]
+    assert full_refresh_calls == []
+    assert layer_refresh_calls == [{"extent": False}]
     assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert layer.colormap is original_colormap
     assert len(layer.colormap.color_dict) <= 3
+    assert layer.colormap.map(5)[3] > 0
     assert layer.features.set_index("index").loc[5, USER_CLASS_COLUMN] == 4
 
 

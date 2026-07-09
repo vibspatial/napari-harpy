@@ -221,17 +221,58 @@ class ViewerStylingController:
         if change.class_id < UNLABELED_CLASS:
             return False
 
+        feature_rows = self._build_user_class_annotation_features(change)
+        if feature_rows is None:
+            return False
+        if self._refresh_compact_user_class_colormap_and_feature(change, feature_rows):
+            return True
+
         # `set_user_class_for_rows(...)` has already added any new category and
         # synced `USER_CLASS_COLORS_KEY`, so newly introduced classes can use the
         # strict palette lookup below without full-column normalization.
         color_dict = self._build_user_class_annotation_color_dict(change)
-        feature_rows = self._build_user_class_annotation_features(change)
-        if color_dict is None or feature_rows is None:
+        if color_dict is None:
             return False
 
         self._labels_layer.colormap = direct_label_colormap_from_rgba(color_dict, background_value=0)
         self._labels_layer.features = feature_rows
 
+        return True
+
+    def _refresh_compact_user_class_colormap_and_feature(
+        self,
+        change: UserClassAnnotationChange,
+        feature_rows: pd.DataFrame,
+    ) -> bool:
+        colormap = getattr(self._labels_layer, "colormap", None)
+        if not isinstance(colormap, CompactCategoricalLabelColormap):
+            return False
+
+        refresh = self._labels_layer.refresh
+
+        instance_id = int(change.instance_id)
+        class_id = int(change.class_id)
+        if class_id == UNLABELED_CLASS:
+            result = colormap.remove_label(instance_id)
+        else:
+            class_color_lookup = self._get_valid_user_class_color_lookup()
+            if class_color_lookup is None:
+                raise RuntimeError("Cannot update compact user-class coloring without valid user-class colors.")
+            class_color = class_color_lookup.get(class_id)
+            if class_color is None:
+                raise RuntimeError(f"Cannot update compact user-class coloring: class `{class_id}` has no color.")
+            result = colormap.set_label_category(instance_id, class_id, category_color=class_color)
+
+        self._labels_layer.features = feature_rows
+        if result.texture_table_changed:
+            # Only brand-new classes append a new texture-code -> RGBA row.
+            # Notify vispy to upload the expanded lookup texture. Existing-
+            # class edits reuse an already uploaded texture row, so they only
+            # need the layer refresh below.
+            self._labels_layer.events.colormap()
+        # The compact mapping was mutated in place; repaint the layer without
+        # asking napari to recompute the layer extent.
+        refresh(extent=False)
         return True
 
     def refresh_user_class_feature(self, change: UserClassAnnotationChange) -> bool:
@@ -259,9 +300,8 @@ class ViewerStylingController:
     ) -> dict[int | None, np.ndarray] | None:
         colormap = getattr(self._labels_layer, "colormap", None)
         if isinstance(colormap, CompactCategoricalLabelColormap):
-            # Compact categorical colormaps keep the real color state in
-            # `label_id -> texture_code`, not in `color_dict`; fall back to
-            # full refresh until compact sparse updates are available.
+            # Compact categorical colormaps are handled before this legacy
+            # `color_dict` sparse path.
             return None
         if not isinstance(colormap, DirectLabelColormap):
             return None

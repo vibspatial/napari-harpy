@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
@@ -50,6 +50,10 @@ class CompactCategoricalLabelsMapping:
         Texture code for each entry in `label_ids`.
     texture_rgba
         RGBA lookup table where the row index is the texture code.
+    category_texture_codes
+        Optional categorical value to texture-code lookup. This is used by
+        sparse updates that need to change one label's category without
+        rebuilding the full compact mapping.
     default_texture_code
         Texture code used for labels that are not present in `label_ids`.
         This corresponds to the current `DirectLabelColormap` `None` default
@@ -79,12 +83,25 @@ class CompactCategoricalLabelsMapping:
       1 -> transparent background label
       2 -> red
       3 -> green
+
+    category_texture_codes:
+      "tumor"  -> 2
+      "stroma" -> 3
     ```
+
+    If a later sparse edit annotates label `109` as `"tumor"`, Harpy can add
+    `109 -> 2` to `label_ids` / `texture_codes` without rebuilding the full
+    colormap. If the edit introduces a brand-new category such as `"immune"`,
+    Harpy appends one new RGBA row, adds `"immune" -> 4` to
+    `category_texture_codes`, and maps the edited label to texture code `4`.
+    This is why category ownership of texture codes is stored explicitly
+    instead of rediscovering it from repeated RGBA values.
     """
 
     label_ids: np.ndarray
     texture_codes: np.ndarray
     texture_rgba: np.ndarray
+    category_texture_codes: dict[object, int] | None = None
     default_texture_code: int = 0
     background_texture_code: int = 1
     background_value: int = 0
@@ -109,8 +126,21 @@ class CompactCategoricalLabelsMapping:
             raise ValueError("Compact labels mapping missing texture code is out of range.")
         if len(self.texture_codes) and int(np.max(self.texture_codes)) >= len(self.texture_rgba):
             raise ValueError("Compact labels mapping contains a texture code without an RGBA row.")
+        if self.category_texture_codes is not None and any(
+            not 0 <= int(texture_code) < len(self.texture_rgba)
+            for texture_code in self.category_texture_codes.values()
+        ):
+            raise ValueError("Compact labels mapping contains a category texture code without an RGBA row.")
         if np.any(self.label_ids == self.background_value):
             raise ValueError("Compact labels mapping label ids must not include the background value.")
+
+
+@dataclass(frozen=True)
+class _CompactSparseLabelUpdateResult:
+    """Result of one Harpy sparse annotation update on compact label colors."""
+
+    texture_code: int
+    texture_table_changed: bool
 
 
 class _CompactLabelToTextureMapping(Mapping[int | None, int]):
@@ -199,6 +229,106 @@ class CompactCategoricalLabelColormap(DirectLabelColormap):
             "_texture_color_dict",
             dict(enumerate(compact_mapping.texture_rgba)),
         )
+
+    def set_label_category(
+        self,
+        label_id: int,
+        category: object,
+        *,
+        category_color: Any | None = None,
+    ) -> _CompactSparseLabelUpdateResult:
+        """Harpy helper for sparse annotation: set one label's category.
+
+        If the category was not present when the compact colormap was built,
+        `category_color` is required and is appended as a new texture row.
+        """
+        label_id = self._validate_sparse_label_id(label_id)
+        original_texture_count = len(self._compact_mapping.texture_rgba)
+        texture_code = self._texture_code_for_category(category, category_color=category_color)
+        texture_table_changed = len(self._compact_mapping.texture_rgba) != original_texture_count
+        compact_mapping = _compact_mapping_with_label_texture_code(
+            self._compact_mapping,
+            label_id=label_id,
+            texture_code=texture_code,
+        )
+        self._install_compact_mapping(compact_mapping)
+        return _CompactSparseLabelUpdateResult(
+            texture_code=texture_code,
+            texture_table_changed=texture_table_changed,
+        )
+
+    def remove_label(self, label_id: int) -> _CompactSparseLabelUpdateResult:
+        """Harpy helper for sparse annotation: remove one explicit label.
+
+        Removed labels fall through to the default/unmapped texture code, which
+        is how compact user-class coloring represents unlabeled class `0`.
+        """
+        label_id = self._validate_sparse_label_id(label_id)
+        compact_mapping = _compact_mapping_without_label(
+            self._compact_mapping,
+            label_id=label_id,
+        )
+        self._install_compact_mapping(compact_mapping)
+        return _CompactSparseLabelUpdateResult(
+            texture_code=self._compact_mapping.default_texture_code,
+            # Removing a label does not shrink `texture_rgba`; unused category
+            # rows are kept so future sparse annotations can reuse them.
+            texture_table_changed=False,
+        )
+
+    def _texture_code_for_category(
+        self,
+        category: object,
+        *,
+        category_color: Any | None,
+    ) -> int:
+        """Harpy helper for sparse annotation: resolve a category texture code.
+
+        Sparse annotation updates receive a category/class id, but the compact
+        labels colormap stores per-label colors as texture codes. This helper
+        preserves the missing `category -> texture_code` relationship so Harpy
+        can update one label without rebuilding the full colormap. If the
+        category is new, `category_color` is used to append one RGBA row and
+        remember the new category-to-texture-code mapping for future edits.
+        """
+        compact = self._compact_mapping
+        normalized_category = normalize_category_value(category)
+        category_texture_codes = dict(compact.category_texture_codes or {})
+        texture_code = category_texture_codes.get(normalized_category)
+        if texture_code is not None:
+            return int(texture_code)
+        if category_color is None:
+            raise ValueError(f"Compact labels colormap does not know category `{category}`.")
+
+        rgba = np.asarray(to_rgba(category_color), dtype=np.float32)
+        texture_code = len(compact.texture_rgba)
+        category_texture_codes[normalized_category] = texture_code
+        # Install the expanded compact mapping so napari-facing texture-code
+        # lookup views and derived caches stay synchronized with Harpy state.
+        self._install_compact_mapping(
+            replace(
+                compact,
+                # A brand-new category needs one new texture-code -> RGBA row;
+                # existing labels/classes keep using their current rows.
+                texture_rgba=np.vstack([compact.texture_rgba, rgba.reshape(1, 4)]),
+                category_texture_codes=category_texture_codes,
+            )
+        )
+        return texture_code
+
+    def _install_compact_mapping(self, compact_mapping: CompactCategoricalLabelsMapping) -> None:
+        """Harpy helper for sparse annotation: install updated compact state."""
+        object.__setattr__(self, "_compact_mapping", compact_mapping)
+        object.__setattr__(self, "_label_to_texture_mapping", _CompactLabelToTextureMapping(compact_mapping))
+        object.__setattr__(self, "_texture_color_dict", dict(enumerate(compact_mapping.texture_rgba)))
+        self._clear_cache()
+
+    def _validate_sparse_label_id(self, label_id: int) -> int:
+        """Harpy helper for sparse annotation: validate an edited label id."""
+        label_id = int(label_id)
+        if label_id <= 0 or label_id == self._compact_mapping.background_value:
+            raise ValueError("Compact sparse label updates require a positive non-background label id.")
+        return label_id
 
     @property
     def _num_unique_colors(self) -> int:
@@ -356,6 +486,73 @@ class CompactCategoricalLabelColormap(DirectLabelColormap):
         return mapped
 
 
+def _compact_mapping_with_label_texture_code(
+    compact: CompactCategoricalLabelsMapping,
+    *,
+    label_id: int,
+    texture_code: int,
+) -> CompactCategoricalLabelsMapping:
+    """Harpy helper for sparse annotation: set one label texture code.
+
+    This intentionally returns a replaced `CompactCategoricalLabelsMapping`
+    instead of mutating the existing arrays in place, so the caller can install
+    one coherent compact state and clear all napari-derived caches together.
+    We benchmarked this full-replace path on large synthetic mappings; the
+    array copy/insert cost was small enough for row-scoped annotation compared
+    with napari refresh/rendering work.
+    """
+    if not 0 <= int(texture_code) < len(compact.texture_rgba):
+        raise ValueError("Compact sparse label update received an unknown texture code.")
+
+    label_ids = compact.label_ids
+    texture_codes = compact.texture_codes
+    texture_code = int(texture_code)
+    target_dtype = _minimum_unsigned_dtype(max(int(np.max(texture_codes, initial=0)), texture_code))
+    position = int(np.searchsorted(label_ids, label_id))
+    if position < len(label_ids) and int(label_ids[position]) == label_id:
+        # Existing explicit label: update only its texture code.
+        updated_texture_codes = texture_codes.astype(target_dtype, copy=True)
+        updated_texture_codes[position] = texture_code
+        return replace(
+            compact,
+            texture_codes=_minimum_texture_code_dtype(updated_texture_codes),
+        )
+
+    updated_label_ids = np.insert(label_ids, position, label_id).astype(np.int64, copy=False)
+    updated_texture_codes = np.insert(texture_codes.astype(target_dtype, copy=False), position, texture_code)
+    # Previously unmapped/default label: keep `label_ids` sorted and insert
+    # the texture code at the same index, because `texture_codes[i]` belongs
+    # to `label_ids[i]`.
+    return replace(
+        compact,
+        label_ids=updated_label_ids,
+        texture_codes=_minimum_texture_code_dtype(updated_texture_codes),
+    )
+
+
+def _compact_mapping_without_label(
+    compact: CompactCategoricalLabelsMapping,
+    *,
+    label_id: int,
+) -> CompactCategoricalLabelsMapping:
+    """Harpy helper for sparse annotation: remove one explicit label mapping."""
+    label_ids = compact.label_ids
+    position = int(np.searchsorted(label_ids, label_id))
+    if position >= len(label_ids) or int(label_ids[position]) != label_id:
+        return compact
+
+    return replace(
+        compact,
+        label_ids=np.delete(label_ids, position).astype(np.int64, copy=False),
+        texture_codes=_minimum_texture_code_dtype(np.delete(compact.texture_codes, position)),
+    )
+
+
+def _minimum_texture_code_dtype(texture_codes: np.ndarray) -> np.ndarray:
+    max_value = int(np.max(texture_codes, initial=0))
+    return texture_codes.astype(_minimum_unsigned_dtype(max_value), copy=False)
+
+
 def compact_categorical_labels_mapping_from_values(
     values: pd.Series,
     *,
@@ -442,6 +639,7 @@ def compact_categorical_labels_mapping_from_values(
         label_ids=label_ids,
         texture_codes=texture_codes,
         texture_rgba=texture_rgba,
+        category_texture_codes=dict(category_texture_code_by_value),
         default_texture_code=0,
         background_texture_code=1,
         background_value=background_value,

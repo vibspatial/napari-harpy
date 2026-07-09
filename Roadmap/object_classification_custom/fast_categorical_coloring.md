@@ -1425,7 +1425,7 @@ pred_class lookup median: 0.0631 s; full repaint median: 0.0922 s
 
 #### Slice 6.7: Compact Sparse User-Class Annotation Update
 
-Status: proposed; split into two implementation phases.
+Status: proposed; phased implementation.
 
 Replace the temporary row-scoped user-class fallback from Slice 6.6b with a
 real compact sparse update.
@@ -1444,13 +1444,21 @@ texture_code -> RGBA
 ```
 
 That means a single user-class annotation should update one label's texture code
-without rebuilding the full colormap. We should implement this in two phases:
+without rebuilding the full colormap. We should implement this in phases:
 
 1. First implement sparse compact state mutation plus an explicit
    `layer.refresh(extent=False)`. This avoids direct `layer._slice` mutation
    while proving the compact update semantics are correct.
-2. Then replace the explicit refresh with a direct patch of the currently
+2. Notify napari/vispy when a sparse update appends a new
+   `texture_code -> RGBA` row, so the GPU lookup texture is rebuilt for
+   brand-new classes.
+3. Fix the registered-feature-matrix responsiveness regression so row-scoped
+   visual annotation updates are not delayed by classifier preparation/status
+   bookkeeping.
+4. Then replace the explicit refresh with a direct patch of the currently
    displayed labels slice.
+5. Finally remove the legacy direct-colormap sparse fallback and fail loudly if
+   the compact sparse contract is broken.
 
 Shared compact-state contract:
 
@@ -1528,7 +1536,7 @@ Shared compact-state contract:
 
 ##### Phase 6.7a: Sparse State Update With Layer Refresh
 
-Status: proposed.
+Status: implemented.
 
 Goal:
 
@@ -1611,7 +1619,205 @@ Phase 6.7a benchmark acceptance:
 - confirm the remaining cost is dominated by napari's layer refresh rather than
   table/colormap reconstruction.
 
-##### Phase 6.7b: Patch Current Displayed Slice Without Refresh
+##### Phase 6.7b: Notify Colormap Texture Changes For New Classes
+
+Status: implemented.
+
+Goal:
+
+- keep the Phase 6.7a sparse state update and explicit
+  `layer.refresh(extent=False)`;
+- fix brand-new user classes whose sparse update appends a new
+  `texture_code -> RGBA` row;
+- notify napari/vispy to rebuild the colormap lookup texture when that texture
+  table grows.
+
+Observed bug:
+
+When coloring by `user_class`, annotating with a class that already existed in
+the compact colormap works because the visible label can reuse an already
+uploaded texture code. Annotating with a brand-new class, for example class
+`21`, appends a new `texture_code -> RGBA` row. The Python compact colormap and
+table palette are correct, but vispy may still hold the previous
+texture-code-to-RGBA lookup texture. The object can therefore display with the
+wrong color until a full colormap rebuild happens, for example after switching
+to `pred_class` and back.
+
+Implementation direction:
+
+1. Change the compact sparse mutation API so it reports whether the texture
+   color table changed. One possible shape:
+
+   ```python
+   texture_code, texture_table_changed = colormap.set_label_category(...)
+   ```
+
+   `texture_table_changed` should be `True` only when the update appended a new
+   `texture_code -> RGBA` row. Reusing an existing class texture code or
+   removing a label should not report a texture-table change.
+2. In `_refresh_compact_user_class_colormap_and_feature(...)`, after a
+   successful sparse state mutation:
+   - if `texture_table_changed` is `True`, emit the labels-layer colormap event
+     before repainting the layer;
+   - keep the Phase 6.7a `layer.features` row-scoped update;
+   - keep `layer.refresh(extent=False)` for now.
+3. Prefer the public layer event if available:
+
+   ```python
+   layer.events.colormap()
+   ```
+
+   This is the event napari's vispy labels layer listens to when it rebuilds
+   the `texture_code -> RGBA` lookup texture.
+4. Do not assign a new colormap object and do not rebuild the full compact
+   colormap in this phase.
+
+Why this works:
+
+- `layer.refresh(extent=False)` asks napari to recode the visible label image
+  from raw label ids to texture codes.
+- `layer.events.colormap()` asks vispy to rebuild/upload the lookup texture
+  that maps those texture codes to RGBA.
+- Existing-class sparse updates usually need only the first step. Brand-new
+  classes need both because they introduce a new texture code and a new RGBA
+  row.
+- This phase is not replaced by Phase 6.7d. Phase 6.7d can remove the explicit
+  layer refresh by patching the visible texture-code image, but it still does
+  not update the separate `texture_code -> RGBA` lookup texture. Brand-new
+  classes continue to need the colormap event after Phase 6.7d.
+
+Phase 6.7b tests:
+
+- annotating with an already-known class mutates compact state and refreshes the
+  layer without emitting the colormap event;
+- annotating with a brand-new class appends one texture RGBA row and emits the
+  colormap event exactly once;
+- the appended texture row matches the table-synced user-class palette color;
+- the labels layer still receives the Phase 6.7a `refresh(extent=False)` call;
+- switching color modes is no longer required for the newly annotated class to
+  have a matching compact texture row and colormap event.
+
+Acceptance:
+
+- sparse annotation with a brand-new user class shows the correct class color
+  immediately in manual napari QA;
+- no full compact colormap rebuild is needed for this fix;
+- existing-class sparse annotations do not pay the extra colormap-event cost.
+
+##### Phase 6.7c: Registered Feature-Matrix Annotation Responsiveness
+
+Status: proposed.
+
+Observed behavior:
+
+- annotating objects in the object-classification widget is visually snappy
+  when the selected feature matrix is unregistered;
+- the same row-scoped annotation can feel noticeably slower after the feature
+  matrix is registered;
+- the compact sparse labels recoloring path itself does not depend on feature
+  metadata, so this difference points to classifier/status work around the
+  visual update rather than to the colormap mutation.
+
+Investigation findings:
+
+- `_on_annotation_changed(...)` currently calls
+  `self._classifier_controller.mark_dirty(...)` before
+  `_refresh_after_user_class_annotation(change)`.
+- `mark_dirty(...)` updates classifier status, which emits the controller
+  state-changed callback. The widget then rebuilds classifier controls and
+  calls `describe_current_preparation()`.
+- `_on_annotation_changed(...)` later calls `_update_selection_status()`, which
+  can call `describe_current_preparation()` again through
+  `_update_classifier_controls()`.
+- For an unregistered feature matrix, `_prepare_classifier_summary(...)`
+  exits early with a metadata blocker after metadata inspection.
+- For a registered-valid feature matrix, `_prepare_classifier_summary(...)`
+  continues into feature-validity checks, scope resolution, and user-class
+  summary calculation before returning.
+- The largest measured registered-only cost in a 400k-row synthetic table was
+  `_get_user_class_values(...)`, because it always converts the whole
+  `user_class` column through:
+
+  ```python
+  obs[USER_CLASS_COLUMN].astype("string")
+  pd.to_numeric(...)
+  ```
+
+  This is especially wasteful for the normal widget state where `user_class` is
+  already categorical with integer categories.
+- Synthetic timing from the investigation:
+
+  ```text
+  unregistered per-click controller/status sequence: ~0.042 s
+  registered per-click controller/status sequence:   ~0.320 s
+  registered preparation summary:                    ~0.160 s
+  _get_user_class_values(...) on 400k categorical:   ~0.113 s
+  ```
+
+- A prototype integer/categorical fast path for `_get_user_class_values(...)`
+  reduced the full-column read to under 1 ms and reduced one registered
+  preparation summary from ~160 ms to ~48 ms on the same synthetic table.
+- Auto-train can amplify the effect because registered matrices can proceed to
+  `schedule_retrain(...)`, while unregistered matrices stop at the metadata
+  blocker. Auto-train is not required to reproduce the basic lag, because the
+  status/control preparation path already explains it.
+
+Implementation direction:
+
+1. Reorder `_on_annotation_changed(...)` so the row-scoped visual update runs
+   before classifier dirty/status bookkeeping:
+
+   ```python
+   self._refresh_after_user_class_annotation(change)
+   self._classifier_controller.mark_dirty(reason="the annotations changed")
+   ```
+
+   Persistence dirty marking and the first-time `user_class` color-source event
+   can stay before the visual update unless manual QA shows they also delay the
+   visible edit.
+2. Add a fast path to `_get_user_class_values(...)`:
+   - if `user_class` is an integer dtype, return/convert it with NumPy without
+     string conversion;
+   - if `user_class` is categorical with integer categories, map
+     `cat.codes -> cat.categories`, treating code `-1` as unlabeled class `0`;
+   - keep the current `astype("string")` / `pd.to_numeric(...)` fallback for
+     non-normalized legacy states.
+3. Keep the classifier controller as the owner of training eligibility. This
+   slice should not move metadata gates back into the widget.
+4. Consider reducing duplicate preparation-summary work after the fast path is
+   in place:
+   - `mark_dirty(...)` currently triggers a state callback that can recompute
+     preparation;
+   - `_update_selection_status()` can recompute it again in the same
+     annotation flow.
+   This can be a separate cleanup if the reorder and fast path are sufficient.
+
+Tests:
+
+- unit-test `_get_user_class_values(...)` for:
+  - missing `user_class` column;
+  - plain integer series;
+  - categorical integer series;
+  - categorical integer series with missing codes;
+  - legacy string/object values that still require the fallback.
+- widget/controller test that an annotation in `COLOR_BY_USER_CLASS` refreshes
+  the row-scoped viewer update before classifier dirty/status callbacks block
+  the UI path.
+- regression test or benchmark-style test showing registered categorical
+  `user_class` does not call the slow string-normalization path in the normal
+  widget state.
+
+Acceptance:
+
+- annotation while coloring by `user_class` remains visually immediate for both
+  unregistered and registered feature matrices;
+- registered feature matrices still correctly enable/disable classifier
+  training based on the controller preparation summary;
+- auto-train behavior is unchanged apart from the visual annotation update
+  happening before scheduled training/status work;
+- no full labels colormap rebuild is introduced.
+
+##### Phase 6.7d: Patch Current Displayed Slice Without Refresh
 
 Status: proposed.
 
@@ -1620,6 +1826,8 @@ Goal:
 - keep the compact state mutation from Phase 6.7a;
 - remove the explicit `layer.refresh(extent=False)` from the happy path;
 - patch only the currently displayed labels slice using napari internals.
+- keep Phase 6.7b's colormap-event behavior for sparse updates that appended a
+  new `texture_code -> RGBA` row.
 
 Implementation direction:
 
@@ -1633,9 +1841,12 @@ Implementation direction:
      following napari's own partial labels-update pattern.
 2. For `class_id -> 0`, patch visible pixels to the default/unlabeled texture
    code returned by the compact state update.
-3. Do not call `layer.refresh(...)` in the compact sparse happy path.
-4. If current-slice internals are unavailable or inconsistent, return `False`
-   so the caller can fall back to Phase 6.7a/full refresh behavior.
+3. If the sparse mutation appended a new texture color row, still emit
+   `layer.events.colormap()` as specified in Phase 6.7b before or alongside the
+   partial labels update.
+4. Do not call `layer.refresh(...)` in the compact sparse happy path.
+5. If current-slice internals are unavailable or inconsistent, return `False`
+   so the caller can fall back to Phase 6.7a/6.7b refresh behavior.
 
 Important detail:
 
@@ -1643,6 +1854,17 @@ Important detail:
   visible in the current slice. Without this second step, the displayed
   texture-code image may keep the old class code until napari reslices the
   layer.
+- This visible-slice patch and the Phase 6.7b colormap event update different
+  viewer state:
+
+  ```text
+  layer._slice.image.view  : pixel -> texture_code
+  vispy colormap texture   : texture_code -> RGBA
+  ```
+
+  Existing-class edits usually need only the visible-slice patch. Brand-new
+  classes need both the visible-slice patch and the colormap event because they
+  introduce a texture code that vispy has not uploaded yet.
 - Concretely, if the raw visible pixels contain label `101` but the displayed
   texture-code pixels were already computed as code `2`, changing the compact
   mapping from `101 -> 2` to `101 -> 3` does not mutate those
@@ -1668,7 +1890,7 @@ Important detail:
   panning/changing the viewport tile, changing a z/non-displayed slice, or an
   explicit `layer.refresh(...)`.
 
-Phase 6.7b tests:
+Phase 6.7d tests:
 
 - the labels layer emits a partial labels update for the current displayed
   slice instead of assigning a new full colormap in the happy path;
@@ -1679,12 +1901,73 @@ Phase 6.7b tests:
 - if current-slice internals are unavailable, the method returns `False` and
   the caller can use the existing correctness fallback.
 
-Phase 6.7b benchmark acceptance:
+Phase 6.7d benchmark acceptance:
 
 - benchmark one user-class annotation update while `COLOR_BY_USER_CLASS` is
   active on a large labels layer;
 - confirm the update cost scales with the current visible slice mask plus one
   mapping lookup, not with the full number of table rows.
+
+##### Phase 6.7e: Remove Legacy Direct-Colormap Fallback
+
+Status: proposed.
+
+Goal:
+
+- make compact user-class sparse updates the only supported happy path for
+  row-scoped user-class annotation while `COLOR_BY_USER_CLASS` is active;
+- remove the legacy `label_id -> RGBA` sparse fallback from
+  `refresh_user_class_colormap_and_feature(...)`;
+- fail loudly if compact sparse state mutation unexpectedly cannot be applied.
+
+Current transitional flow:
+
+```python
+if self._refresh_compact_user_class_colormap_and_feature(change, feature_rows):
+    return True
+
+color_dict = self._build_user_class_annotation_color_dict(change)
+if color_dict is None:
+    return False
+```
+
+After Phase 6.7e, the compact colormap path should no longer silently fall
+through to `_build_user_class_annotation_color_dict(...)` for user-class
+annotation. If the current layer is expected to be compact user-class colored,
+then failure of `_refresh_compact_user_class_colormap_and_feature(...)` should
+raise a clear error that identifies the broken contract.
+
+Implementation direction:
+
+1. Keep non-user-class color modes unchanged. For example, prediction color
+   modes can still use `refresh_user_class_feature(...)` because the visible
+   color source is not `user_class`.
+2. In the `COLOR_BY_USER_CLASS` row-scoped annotation path, require the current
+   labels colormap to be `CompactCategoricalLabelColormap`.
+3. Replace the boolean fallback around
+   `_refresh_compact_user_class_colormap_and_feature(...)` with a loud failure
+   if the compact sparse update returns `False`.
+4. Remove `_build_user_class_annotation_color_dict(...)` if it becomes unused,
+   together with tests that only exist to cover the legacy direct-colormap
+   sparse fallback.
+5. Keep tests that verify the compact sparse happy path:
+   - no full feature-row rebuild;
+   - no new full colormap assignment;
+   - layer features are updated row-scoped;
+   - `layer.refresh(extent=False)` is called in Phase 6.7a/6.7b behavior, or no
+     refresh is called after Phase 6.7d behavior.
+6. Add a test that simulates a broken compact sparse contract and asserts that
+   the code raises a clear exception instead of silently rebuilding a legacy
+   direct colormap.
+
+Acceptance:
+
+- `refresh_user_class_colormap_and_feature(...)` has one clear compact
+  user-class sparse path;
+- `_build_user_class_annotation_color_dict(...)` is removed if unused;
+- unexpected compact sparse failures are visible during development and QA;
+- no behavior changes for annotation while coloring by `pred_class` or
+  `pred_confidence`, where only `layer.features` should be updated.
 
 ### Slice 7: Compact Continuous Labels Colormap Via 256 Bins
 

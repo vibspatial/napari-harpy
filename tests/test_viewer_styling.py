@@ -29,13 +29,29 @@ from napari_harpy.widgets.object_classification.viewer_styling import (
 )
 
 
+class _FakeEventEmitter:
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    def __call__(self) -> None:
+        self.call_count += 1
+
+
+class _FakeLabelsEvents:
+    def __init__(self) -> None:
+        self.colormap = _FakeEventEmitter()
+
+
 class _FakeLabelsLayer:
     def __init__(self) -> None:
         self.colormap: DirectLabelColormap | None = None
         self.features = pd.DataFrame()
         self.refresh_count = 0
+        self.refresh_kwargs: list[dict[str, Any]] = []
+        self.events = _FakeLabelsEvents()
 
-    def refresh(self) -> None:
+    def refresh(self, **kwargs: Any) -> None:
+        self.refresh_kwargs.append(kwargs)
         self.refresh_count += 1
 
 
@@ -337,7 +353,8 @@ def test_pred_confidence_coloring_uses_vectorized_numeric_rgba_without_explicit_
     assert layer.refresh_count == 0
 
 
-def test_row_scoped_user_class_annotation_defers_compact_colormap_to_full_refresh(
+def test_row_scoped_user_class_annotation_inserts_compact_label_and_refreshes_layer(
+    monkeypatch: pytest.MonkeyPatch,
     sdata_blobs: SpatialData,
 ) -> None:
     _set_user_classes(sdata_blobs, {5: 4}, categories=[0, 4])
@@ -347,16 +364,29 @@ def test_row_scoped_user_class_annotation_defers_compact_colormap_to_full_refres
     controller.refresh_layer_colors(feature_rows=feature_rows)
     controller.refresh_layer_features(feature_rows=feature_rows)
     original_colormap = layer.colormap
-    original_features = layer.features.copy()
+
+    def fail_full_feature_rows() -> pd.DataFrame:
+        raise AssertionError("compact sparse annotation refresh must not rebuild all feature rows")
+
+    monkeypatch.setattr(controller, "_get_region_feature_rows", fail_full_feature_rows)
 
     handled = controller.refresh_user_class_colormap_and_feature(UserClassAnnotationChange(instance_id=6, class_id=4))
 
-    assert handled is False
+    assert handled is True
     assert layer.colormap is original_colormap
-    pd.testing.assert_frame_equal(layer.features, original_features)
+    assert layer.refresh_count == 1
+    assert layer.refresh_kwargs == [{"extent": False}]
+    assert layer.events.colormap.call_count == 0
+    assert layer.features.set_index("index").loc[6, USER_CLASS_COLUMN] == 4
+    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    np.testing.assert_allclose(layer.colormap.map(6), _expected_rgba("#ff0000"))
+    mapping = layer.colormap._compact_mapping
+    assert 6 in mapping.label_ids
+    assert bool(np.all(mapping.label_ids[1:] > mapping.label_ids[:-1]))
 
 
-def test_row_scoped_user_class_annotation_clear_defers_compact_colormap_to_full_refresh(
+def test_row_scoped_user_class_annotation_clear_removes_compact_label_and_refreshes_layer(
+    monkeypatch: pytest.MonkeyPatch,
     sdata_blobs: SpatialData,
 ) -> None:
     _set_user_classes(sdata_blobs, {5: 4}, categories=[0, 4])
@@ -366,13 +396,76 @@ def test_row_scoped_user_class_annotation_clear_defers_compact_colormap_to_full_
     controller.refresh_layer_colors(feature_rows=feature_rows)
     controller.refresh_layer_features(feature_rows=feature_rows)
     original_colormap = layer.colormap
-    original_features = layer.features.copy()
+
+    def fail_full_feature_rows() -> pd.DataFrame:
+        raise AssertionError("compact sparse annotation refresh must not rebuild all feature rows")
+
+    monkeypatch.setattr(controller, "_get_region_feature_rows", fail_full_feature_rows)
 
     handled = controller.refresh_user_class_colormap_and_feature(UserClassAnnotationChange(instance_id=5, class_id=0))
 
-    assert handled is False
+    assert handled is True
     assert layer.colormap is original_colormap
-    pd.testing.assert_frame_equal(layer.features, original_features)
+    assert layer.refresh_count == 1
+    assert layer.refresh_kwargs == [{"extent": False}]
+    assert layer.events.colormap.call_count == 0
+    assert layer.features.set_index("index").loc[5, USER_CLASS_COLUMN] == 0
+    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert 5 not in layer.colormap._compact_mapping.label_ids
+    np.testing.assert_allclose(layer.colormap.map(5), _expected_rgba(UNLABELED_COLOR))
+
+
+def test_row_scoped_user_class_annotation_updates_existing_compact_label(
+    sdata_blobs: SpatialData,
+) -> None:
+    colors = [UNLABELED_COLOR, "#ff0000", "#0000ff"]
+    _set_user_classes(sdata_blobs, {5: 4}, categories=[0, 4, 7], colors=colors)
+    layer = _FakeLabelsLayer()
+    controller = _make_controller(sdata_blobs, layer)
+    feature_rows = _feature_rows({5: 4})
+    controller.refresh_layer_colors(feature_rows=feature_rows)
+    controller.refresh_layer_features(feature_rows=feature_rows)
+    original_colormap = layer.colormap
+    _set_user_classes(sdata_blobs, {5: 7}, categories=[0, 4, 7], colors=colors)
+
+    handled = controller.refresh_user_class_colormap_and_feature(UserClassAnnotationChange(instance_id=5, class_id=7))
+
+    assert handled is True
+    assert layer.colormap is original_colormap
+    assert layer.refresh_kwargs == [{"extent": False}]
+    assert layer.events.colormap.call_count == 0
+    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert 5 in layer.colormap._compact_mapping.label_ids
+    np.testing.assert_allclose(layer.colormap.map(5), _expected_rgba("#0000ff"))
+
+
+def test_row_scoped_user_class_annotation_appends_new_class_texture(
+    sdata_blobs: SpatialData,
+) -> None:
+    initial_colors = [UNLABELED_COLOR, "#ff0000"]
+    updated_colors = [UNLABELED_COLOR, "#ff0000", "#0000ff"]
+    _set_user_classes(sdata_blobs, {5: 4}, categories=[0, 4], colors=initial_colors)
+    layer = _FakeLabelsLayer()
+    controller = _make_controller(sdata_blobs, layer)
+    feature_rows = _feature_rows({5: 4, 6: 0})
+    controller.refresh_layer_colors(feature_rows=feature_rows)
+    controller.refresh_layer_features(feature_rows=feature_rows)
+    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    original_texture_count = len(layer.colormap._compact_mapping.texture_rgba)
+    _set_user_classes(sdata_blobs, {5: 4, 6: 9}, categories=[0, 4, 9], colors=updated_colors)
+
+    handled = controller.refresh_user_class_colormap_and_feature(UserClassAnnotationChange(instance_id=6, class_id=9))
+
+    assert handled is True
+    assert layer.refresh_kwargs == [{"extent": False}]
+    assert layer.events.colormap.call_count == 1
+    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    mapping = layer.colormap._compact_mapping
+    assert len(mapping.texture_rgba) == original_texture_count + 1
+    assert mapping.category_texture_codes is not None
+    assert mapping.category_texture_codes[9] == len(mapping.texture_rgba) - 1
+    assert 6 in mapping.label_ids
+    np.testing.assert_allclose(layer.colormap.map(6), _expected_rgba("#0000ff"))
 
 
 def test_row_scoped_user_class_feature_refresh_keeps_prediction_colormap(

@@ -209,6 +209,95 @@ def test_compact_categorical_label_colormap_from_values_uses_configured_default_
     np.testing.assert_allclose(colormap.map(0), np.zeros(4, dtype=np.float32))
 
 
+def test_compact_categorical_label_colormap_sparse_category_updates_existing_texture(
+    restore_colormap_backend: None,
+) -> None:
+    values = pd.Series([1], index=pd.Index([5], name="index"), dtype="int64")
+    colormap = compact_categorical_label_colormap_from_values(
+        values,
+        categories=[0, 1, 2],
+        palette=[UNLABELED_COLOR, "#ff0000", "#0000ff"],
+        default_color=UNLABELED_COLOR,
+    )
+    original_texture_count = len(colormap._compact_mapping.texture_rgba)
+
+    result = colormap.set_label_category(6, 2)
+
+    assert len(colormap._compact_mapping.texture_rgba) == original_texture_count
+    assert result.texture_code == colormap._compact_mapping.category_texture_codes[2]
+    assert result.texture_table_changed is False
+    assert 6 in colormap._compact_mapping.label_ids
+    np.testing.assert_allclose(colormap.map(6), to_rgba("#0000ff"))
+
+
+def test_compact_categorical_label_colormap_sparse_remove_uses_default_texture(
+    restore_colormap_backend: None,
+) -> None:
+    values = pd.Series([1, 2], index=pd.Index([5, 6], name="index"), dtype="int64")
+    colormap = compact_categorical_label_colormap_from_values(
+        values,
+        categories=[0, 1, 2],
+        palette=[UNLABELED_COLOR, "#ff0000", "#0000ff"],
+        default_color=UNLABELED_COLOR,
+    )
+
+    result = colormap.remove_label(5)
+
+    assert result.texture_code == colormap._compact_mapping.default_texture_code
+    assert result.texture_table_changed is False
+    assert 5 not in colormap._compact_mapping.label_ids
+    np.testing.assert_allclose(colormap.map(5), to_rgba(UNLABELED_COLOR))
+
+
+def test_compact_categorical_label_colormap_sparse_new_category_appends_texture(
+    restore_colormap_backend: None,
+) -> None:
+    values = pd.Series([1], index=pd.Index([5], name="index"), dtype="int64")
+    colormap = compact_categorical_label_colormap_from_values(
+        values,
+        categories=[0, 1],
+        palette=[UNLABELED_COLOR, "#ff0000"],
+        default_color=UNLABELED_COLOR,
+    )
+    original_texture_count = len(colormap._compact_mapping.texture_rgba)
+
+    result = colormap.set_label_category(9, 7, category_color="#0000ff")
+
+    assert len(colormap._compact_mapping.texture_rgba) == original_texture_count + 1
+    assert result.texture_code == len(colormap._compact_mapping.texture_rgba) - 1
+    assert result.texture_table_changed is True
+    assert colormap._compact_mapping.category_texture_codes[7] == result.texture_code
+    assert 9 in colormap._compact_mapping.label_ids
+    assert bool(np.all(colormap._compact_mapping.label_ids[1:] > colormap._compact_mapping.label_ids[:-1]))
+    np.testing.assert_allclose(colormap.map(9), to_rgba("#0000ff"))
+
+
+def test_compact_categorical_label_colormap_sparse_update_widens_texture_code_dtype(
+    restore_colormap_backend: None,
+) -> None:
+    values = pd.Series([1], index=pd.Index([5], name="index"), dtype="int64")
+    categories = list(range(300))
+    palette = [UNLABELED_COLOR] + [
+        np.asarray([i / 300.0, 1.0 - (i / 300.0), (i % 11) / 10.0, 1.0])
+        for i in range(1, 300)
+    ]
+    colormap = compact_categorical_label_colormap_from_values(
+        values,
+        categories=categories,
+        palette=palette,
+        default_color=UNLABELED_COLOR,
+    )
+    assert colormap._compact_mapping.texture_codes.dtype == np.uint8
+
+    result = colormap.set_label_category(5, 299)
+
+    assert result.texture_code > np.iinfo(np.uint8).max
+    assert result.texture_table_changed is False
+    assert colormap._compact_mapping.texture_codes.dtype == np.uint16
+    assert int(colormap._compact_mapping.texture_codes[0]) == result.texture_code
+    np.testing.assert_allclose(colormap.map(5), palette[299])
+
+
 def test_compact_categorical_label_colormap_maps_like_expanded_direct_colormap(
     restore_colormap_backend: None,
 ) -> None:
