@@ -1455,10 +1455,11 @@ without rebuilding the full colormap. We should implement this in phases:
 3. Fix the registered-feature-matrix responsiveness regression so row-scoped
    visual annotation updates are not delayed by classifier preparation/status
    bookkeeping.
-4. Then replace the explicit refresh with a direct patch of the currently
-   displayed labels slice.
-5. Finally remove the legacy direct-colormap sparse fallback and fail loudly if
+4. Finally remove the legacy direct-colormap sparse fallback and fail loudly if
    the compact sparse contract is broken.
+5. Keep the explicit `layer.refresh(extent=False)` in the sparse happy path for
+   now. Local benchmarks and manual QA show that it is responsive enough, and it
+   avoids mutating private napari slice internals.
 
 Shared compact-state contract:
 
@@ -1681,10 +1682,10 @@ Why this works:
 - Existing-class sparse updates usually need only the first step. Brand-new
   classes need both because they introduce a new texture code and a new RGBA
   row.
-- This phase is not replaced by Phase 6.7e. Phase 6.7e can remove the explicit
-  layer refresh by patching the visible texture-code image, but it still does
-  not update the separate `texture_code -> RGBA` lookup texture. Brand-new
-  classes continue to need the colormap event after Phase 6.7e.
+- Keep the explicit layer refresh for now. It updates the visible texture-code
+  image without mutating private napari slice internals. Brand-new classes
+  still need the colormap event because that updates the separate
+  `texture_code -> RGBA` lookup texture.
 
 Phase 6.7b tests:
 
@@ -1939,8 +1940,8 @@ Implementation direction:
    - no full feature-row rebuild;
    - no new full colormap assignment;
    - layer features are updated row-scoped;
-   - `layer.refresh(extent=False)` is still called in the current
-     Phase 6.7a/6.7b behavior. Removing that refresh belongs to Phase 6.7e.
+   - `layer.refresh(extent=False)` is still called in the compact sparse happy
+     path.
 6. Add a test that simulates a broken compact sparse contract and asserts that
    the code raises a clear exception instead of silently rebuilding a legacy
    direct colormap.
@@ -1953,106 +1954,6 @@ Acceptance:
 - unexpected compact sparse failures are visible during development and QA;
 - no behavior changes for annotation while coloring by `pred_class` or
   `pred_confidence`, where only `layer.features` should be updated.
-
-##### Phase 6.7e: Patch Current Displayed Slice Without Refresh
-
-Status: proposed.
-
-Goal:
-
-- keep the compact state mutation from Phase 6.7a;
-- remove the explicit `layer.refresh(extent=False)` from the happy path;
-- patch only the currently displayed labels slice using napari internals.
-- keep Phase 6.7b's colormap-event behavior for sparse updates that appended a
-  new `texture_code -> RGBA` row.
-
-Implementation direction:
-
-1. After the compact state mutation succeeds, patch the currently displayed
-   labels texture-code image:
-   - read `raw_displayed = layer._slice.image.raw`;
-   - read `view_displayed = layer._slice.image.view`;
-   - build `mask = raw_displayed == instance_id`;
-   - set `view_displayed[mask] = new_texture_code`;
-   - emit `layer.events.labels_update(data=updated_view_data, offset=...)`
-     following napari's own partial labels-update pattern.
-2. For `class_id -> 0`, patch visible pixels to the default/unlabeled texture
-   code returned by the compact state update.
-3. If the sparse mutation appended a new texture color row, still emit
-   `layer.events.colormap()` as specified in Phase 6.7b before or alongside the
-   partial labels update.
-4. Do not call `layer.refresh(...)` in the compact sparse happy path.
-5. If current-slice internals are unavailable or inconsistent, fail loudly or
-   use a deliberately chosen fallback defined during implementation. Do not
-   silently resurrect the legacy direct-colormap fallback removed in Phase 6.7d.
-
-Important detail:
-
-- Patching `layer._slice.image.view` handles the pixels that are already
-  visible in the current slice. Without this second step, the displayed
-  texture-code image may keep the old class code until napari reslices the
-  layer.
-- This visible-slice patch and the Phase 6.7b colormap event update different
-  viewer state:
-
-  ```text
-  layer._slice.image.view  : pixel -> texture_code
-  vispy colormap texture   : texture_code -> RGBA
-  ```
-
-  Existing-class edits usually need only the visible-slice patch. Brand-new
-  classes need both the visible-slice patch and the colormap event because they
-  introduce a texture code that vispy has not uploaded yet.
-- Concretely, if the raw visible pixels contain label `101` but the displayed
-  texture-code pixels were already computed as code `2`, changing the compact
-  mapping from `101 -> 2` to `101 -> 3` does not mutate those
-  already-computed visible pixels. The sparse update must also set
-  `view_displayed[raw_displayed == 101] = 3`.
-- This should also work for multiscale labels, but the patch must happen at the
-  current displayed pyramid level. In napari, a multiscale labels slice stores
-  `layer._slice.image.raw` as raw label ids from the selected data level and
-  `layer._slice.image.view` as the corresponding texture-code image. For
-  example, a headless check with `uint32` multiscale labels produced:
-  `raw.shape == view.shape == (4, 4)`, `raw` values `[0, 101, 102]`, `view`
-  texture codes `[1, 2, 3]`, and `tile_to_data.scale == [2, 2]`.
-- For multiscale labels, do not index or patch the full-resolution
-  `layer.data[0]` for the visible update. Patch `layer._slice.image.view` using
-  the current-level `raw_displayed == instance_id` mask, then emit
-  `labels_update` for that displayed-resolution data. The updated compact
-  mapping covers future slices, level changes, and redraws.
-- If the edited label is not present in the current displayed pyramid level,
-  the visible mask can be empty. That is acceptable: there are no currently
-  visible pixels to patch, and the updated compact mapping will apply when the
-  label appears after napari performs the normal reslice/refresh for a later
-  view. Typical triggers are zooming enough to change multiscale data level,
-  panning/changing the viewport tile, changing a z/non-displayed slice, or an
-  explicit `layer.refresh(...)`.
-
-Phase 6.7e tests:
-
-- the labels layer emits a partial labels update for the current displayed
-  slice instead of assigning a new full colormap in the happy path;
-- the compact sparse happy path does not call `layer.refresh(...)`;
-- a multiscale labels-layer regression test verifies the sparse update patches
-  `layer._slice.image.view` at the current data level and does not attempt to
-  patch full-resolution `layer.data[0]`;
-- unavailable current-slice internals fail loudly or use the deliberately
-  chosen fallback, without restoring the old direct-colormap sparse fallback.
-
-Phase 6.7e benchmark acceptance:
-
-- benchmark one user-class annotation update while `COLOR_BY_USER_CLASS` is
-  active on a large labels layer;
-- confirm the update cost scales with the current visible slice mask plus one
-  mapping lookup, not with the full number of table rows.
-
-Acceptance:
-
-- compact sparse user-class annotations no longer need
-  `layer.refresh(extent=False)` in the happy path;
-- brand-new classes still emit the colormap event from Phase 6.7b;
-- multiscale labels are patched at the displayed pyramid level;
-- no legacy direct-colormap sparse fallback is reintroduced.
 
 ### Slice 7: Compact Continuous Labels Colormap Via 256 Bins
 
