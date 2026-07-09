@@ -5,6 +5,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import pytest
+from matplotlib import colormaps
 from matplotlib.colors import to_rgba
 from napari.utils.colormaps import DirectLabelColormap
 from spatialdata import SpatialData
@@ -303,21 +304,9 @@ def test_pred_class_coloring_keeps_explicit_entries_for_unlabeled_predictions(sd
     assert not np.allclose(layer.colormap.map(1), layer.colormap.map(0))
 
 
-def test_pred_confidence_coloring_uses_vectorized_numeric_rgba_without_explicit_refresh(
-    monkeypatch: pytest.MonkeyPatch,
+def test_pred_confidence_coloring_uses_compact_continuous_colormap_without_explicit_refresh(
     sdata_blobs: SpatialData,
 ) -> None:
-    """Verify pred_confidence uses one vectorized real-colormap call and no explicit refresh."""
-    class _RecordingColormap:
-        def __init__(self, colormap: Any) -> None:
-            self._colormap = colormap
-            self.calls: list[np.ndarray] = []
-
-        def __call__(self, values: np.ndarray) -> np.ndarray:
-            values = np.asarray(values, dtype=np.float64)
-            self.calls.append(values.copy())
-            return self._colormap(values)
-
     _set_user_classes(sdata_blobs, {}, categories=[0])
     layer = _FakeLabelsLayer()
     controller = _make_controller(sdata_blobs, layer)
@@ -326,35 +315,19 @@ def test_pred_confidence_coloring_uses_vectorized_numeric_rgba_without_explicit_
         {1: 0, 5: 0, 6: 0},
         pred_confidence_by_instance={1: 0.0, 5: 1.0},
     )
-    real_colormap = viewer_styling_module.colormaps[viewer_styling_module.PRED_CONFIDENCE_COLORMAP]
-    recording_colormap = _RecordingColormap(real_colormap)
-    monkeypatch.setattr(
-        viewer_styling_module,
-        "colormaps",
-        {viewer_styling_module.PRED_CONFIDENCE_COLORMAP: recording_colormap},
-    )
 
     controller.refresh_layer_colors(feature_rows=feature_rows)
 
-    assert isinstance(layer.colormap, DirectLabelColormap)
-    assert set(layer.colormap.color_dict) == {None, 0, 1, 5, 6}
-    assert isinstance(layer.colormap.color_dict[None], np.ndarray)
-    assert isinstance(layer.colormap.color_dict[0], np.ndarray)
-    assert isinstance(layer.colormap.color_dict[1], np.ndarray)
-    assert isinstance(layer.colormap.color_dict[6], np.ndarray)
-    assert len(recording_colormap.calls) == 1
-    np.testing.assert_allclose(recording_colormap.calls[0], np.asarray([0.0, 1.0, 0.0]))
-    expected_colors = np.asarray(real_colormap(np.asarray([0.0, 1.0])), dtype=np.float32)
-    np.testing.assert_allclose(
-        layer.colormap.color_dict[1],
-        expected_colors[0],
+    assert isinstance(layer.colormap, CompactLabelColormap)
+    expected_colors = np.asarray(
+        colormaps[viewer_styling_module.PRED_CONFIDENCE_COLORMAP](np.asarray([0.0, 1.0])),
+        dtype=np.float32,
     )
-    np.testing.assert_allclose(
-        layer.colormap.color_dict[5],
-        expected_colors[1],
-    )
-    assert layer.colormap.color_dict[6].shape == (4,)
-    assert not np.allclose(layer.colormap.color_dict[6], layer.colormap.color_dict[1])
+    np.testing.assert_allclose(layer.colormap.map(1), expected_colors[0])
+    np.testing.assert_allclose(layer.colormap.map(5), expected_colors[1])
+    np.testing.assert_allclose(layer.colormap.map(6), _expected_rgba(viewer_styling_module.MISSING_CONTINUOUS_COLOR))
+    np.testing.assert_allclose(layer.colormap.map(0), np.zeros(4, dtype=np.float32))
+    np.testing.assert_allclose(layer.colormap.map(99), _expected_rgba(viewer_styling_module.MISSING_CONTINUOUS_COLOR))
     assert layer.refresh_count == 0
 
 

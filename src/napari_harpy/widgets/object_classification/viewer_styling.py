@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
-from matplotlib import colormaps
 from matplotlib.colors import to_rgba
 
 from napari_harpy.core.annotation import (
@@ -31,7 +30,7 @@ from napari_harpy.viewer.adapter import ViewerAdapter
 from napari_harpy.viewer.labels_colormap import (
     CompactLabelColormap,
     compact_categorical_label_colormap_from_values,
-    direct_label_colormap_from_rgba,
+    compact_continuous_label_colormap_from_values,
 )
 from napari_harpy.viewer.labels_styling import _build_labels_features, _get_region_rows_by_instance
 from napari_harpy.widgets.object_classification.controller import (
@@ -57,7 +56,6 @@ COLOR_BY_OPTIONS = (
 
 MISSING_CONTINUOUS_COLOR = "#80808099"
 PRED_CONFIDENCE_COLORMAP = "viridis"
-_TRANSPARENT_RGBA = np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
 
 
 class ViewerStylingController:
@@ -141,12 +139,13 @@ class ViewerStylingController:
             feature_rows = self._get_region_feature_rows()
 
         if self._color_by == COLOR_BY_PRED_CONFIDENCE:
-            instance_ids = feature_rows.index.to_numpy(dtype=np.int64, copy=False)
-            color_dict = _build_pred_confidence_color_dict(
-                instance_ids=instance_ids,
-                confidence_values=feature_rows[PRED_CONFIDENCE_COLUMN],
+            self._labels_layer.colormap = compact_continuous_label_colormap_from_values(
+                feature_rows[PRED_CONFIDENCE_COLUMN],
+                colormap_name=PRED_CONFIDENCE_COLORMAP,
+                missing_color=MISSING_CONTINUOUS_COLOR,
+                default_color=MISSING_CONTINUOUS_COLOR,
+                value_range=(0.0, 1.0),
             )
-            self._labels_layer.colormap = direct_label_colormap_from_rgba(color_dict, background_value=0)
         else:
             class_values_by_instance = feature_rows[self._color_by]
             category_column = USER_CLASS_COLUMN
@@ -591,37 +590,6 @@ def _read_class_values_without_normalizing(values: pd.Series, *, unlabeled_class
         categories.add(class_id)
 
     return categories
-
-
-def _base_labels_color_dict(default_color: Any) -> dict[int | None, np.ndarray]:
-    return {None: _rgba_array(default_color), 0: _TRANSPARENT_RGBA.copy()}
-
-
-def _build_pred_confidence_color_dict(
-    *,
-    instance_ids: np.ndarray,
-    confidence_values: pd.Series,
-) -> dict[int | None, np.ndarray]:
-    """Build prediction-confidence colors with one vectorized colormap call.
-
-    Prediction confidence is a continuous score in the fixed ``[0, 1]`` range,
-    so this special path can map the values directly through the confidence
-    colormap instead of treating them like generic categorical label colors.
-    """
-    color_dict = _base_labels_color_dict(MISSING_CONTINUOUS_COLOR)
-    # Copy once because the clipped-confidence array is mutated in place below.
-    confidence_array = pd.to_numeric(confidence_values, errors="coerce").to_numpy(dtype=np.float64, copy=True)
-    missing_values = np.isnan(confidence_array)
-    clipped_confidence = np.clip(confidence_array, 0.0, 1.0, out=confidence_array)
-    if np.any(missing_values):
-        clipped_confidence[missing_values] = 0.0
-
-    rgba = np.asarray(colormaps[PRED_CONFIDENCE_COLORMAP](clipped_confidence), dtype=np.float32)
-    if np.any(missing_values):
-        rgba[missing_values] = _rgba_array(MISSING_CONTINUOUS_COLOR)
-    for instance_id, color in zip(instance_ids, rgba, strict=True):
-        color_dict[int(instance_id)] = color
-    return color_dict
 
 
 def _rgba_color_lookup(color_lookup: dict[int, Any]) -> dict[int, np.ndarray]:

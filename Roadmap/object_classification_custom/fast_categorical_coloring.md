@@ -147,7 +147,7 @@ arrays.
 
 ### Slice 1: Shared Fast Colormap Helper
 
-Status: proposed.
+Status: implemented.
 
 Add a helper in a shared labels-viewer module, for example:
 
@@ -2189,8 +2189,8 @@ Implementation direction:
      values;
    - use `missing_color=MISSING_CONTINUOUS_COLOR`;
    - use `default_color=MISSING_CONTINUOUS_COLOR` to preserve the current
-     unmapped-label behavior from `_base_labels_color_dict(...)`.
-2. Remove `_build_pred_confidence_color_dict(...)` if it becomes unused.
+     unmapped-positive-label behavior from the previous direct RGBA path.
+2. Remove the old direct `pred_confidence` `label_id -> RGBA` helper.
 3. Keep user-class and pred-class categorical paths unchanged.
 4. Benchmark `pred_confidence` object-classification styling.
 
@@ -2205,6 +2205,25 @@ Acceptance:
 - unmapped positive labels keep the existing missing/default confidence color;
 - benchmark improves or materially reduces memory use without making
   assignment slower.
+
+Implementation notes:
+
+- `ViewerStylingController.refresh_layer_colors(...)` now builds
+  `pred_confidence` colors with `compact_continuous_label_colormap_from_values(...)`
+  using `value_range=(0.0, 1.0)`, `PRED_CONFIDENCE_COLORMAP`, and the existing
+  missing-confidence color as both missing and unmapped-label default.
+- The old `_build_pred_confidence_color_dict(...)` full `label_id -> RGBA`
+  builder was removed.
+- Focused synthetic benchmark at 406,611 labels:
+
+```text
+old direct pred_confidence colormap: median 0.0577 s
+new compact pred_confidence colormap: median 0.0038 s
+old direct entries: 406,613
+new color_dict entries: 3
+new texture RGBA rows: 259
+new compact arrays: ~4.07 MB
+```
 
 ### Slice 8: Async Slicing Labels Colormap Synchronization
 
