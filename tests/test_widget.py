@@ -2203,17 +2203,21 @@ def test_widget_auto_train_toggle_controls_annotation_retraining(
     mark_dirty_reasons: list[str | None] = []
     refresh_calls: list[str] = []
     row_scoped_refresh_calls = []
+    call_order: list[str] = []
 
     def record_schedule_retrain(*args, **kwargs) -> bool:
         del args, kwargs
         schedule_calls.append("schedule")
+        call_order.append("schedule")
         return False
 
     def record_mark_dirty(*, reason: str | None = None) -> None:
         mark_dirty_reasons.append(reason)
+        call_order.append("mark_dirty")
 
     def record_row_scoped_refresh(change) -> bool:
         row_scoped_refresh_calls.append(change)
+        call_order.append("row_scoped_refresh")
         return True
 
     monkeypatch.setattr(widget._classifier_controller, "schedule_retrain", record_schedule_retrain)
@@ -2242,6 +2246,7 @@ def test_widget_auto_train_toggle_controls_annotation_retraining(
     assert schedule_calls == []
     assert mark_dirty_reasons == ["the annotations changed"]
     assert [(call.instance_id, call.class_id) for call in row_scoped_refresh_calls] == [(5, 3)]
+    assert call_order == ["row_scoped_refresh", "mark_dirty"]
     assert refresh_calls == []
     assert widget._persistence_controller.is_dirty is True
 
@@ -2253,6 +2258,13 @@ def test_widget_auto_train_toggle_controls_annotation_retraining(
     assert schedule_calls == ["schedule"]
     assert mark_dirty_reasons == ["the annotations changed", "the annotations changed"]
     assert [(call.instance_id, call.class_id) for call in row_scoped_refresh_calls] == [(5, 3), (6, 4)]
+    assert call_order == [
+        "row_scoped_refresh",
+        "mark_dirty",
+        "row_scoped_refresh",
+        "mark_dirty",
+        "schedule",
+    ]
     assert refresh_calls == []
 
 

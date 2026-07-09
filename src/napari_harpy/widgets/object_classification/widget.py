@@ -1634,8 +1634,8 @@ class ObjectClassificationWidget(QWidget):
         # without rebuilding Viewer labels cards for each add/remove edit.
         if not change.user_class_was_available_as_color_source:
             self._emit_classification_table_written(columns=(USER_CLASS_COLUMN,))
-        self._classifier_controller.mark_dirty(reason="the annotations changed")
         self._refresh_after_user_class_annotation(change)
+        self._classifier_controller.mark_dirty(reason="the annotations changed")
         if self._auto_train_enabled:
             self._classifier_controller.schedule_retrain()
         self._update_selection_status()
