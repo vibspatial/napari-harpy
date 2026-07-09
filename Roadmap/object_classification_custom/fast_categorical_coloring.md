@@ -305,7 +305,7 @@ Implementation details:
   - matplotlib `pred_confidence` colormap outputs;
 - build `pred_confidence` colors through one vectorized confidence-specific
   path:
-  `confidence_array -> np.clip(..., 0, 1) -> viridis(...) -> label_id -> RGBA`;
+  `confidence_array -> np.clip(..., 0, 1) -> confidence colormap -> label_id -> RGBA`;
   this avoids scalar pandas lookups and scalar matplotlib colormap calls for
   every label;
 - keep sparse `user_class` behavior unchanged: unlabeled/default rows should

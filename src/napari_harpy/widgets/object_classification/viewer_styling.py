@@ -55,7 +55,7 @@ COLOR_BY_OPTIONS = (
 )
 
 MISSING_CONTINUOUS_COLOR = "#80808099"
-PRED_CONFIDENCE_COLORMAP = "viridis"
+PRED_CONFIDENCE_COLORMAP = "plasma"
 
 
 class ViewerStylingController:
