@@ -207,6 +207,68 @@ def _set_feature_metadata(
     }
 
 
+def test_get_user_class_values_returns_unlabeled_for_missing_column() -> None:
+    obs = pd.DataFrame(index=range(3))
+
+    values = classifier_module._get_user_class_values(obs, n_obs=3)
+
+    assert np.array_equal(values, np.array([0, 0, 0], dtype=np.int64))
+
+
+def test_get_user_class_values_uses_integer_dtype_fast_path() -> None:
+    obs = pd.DataFrame({USER_CLASS_COLUMN: pd.Series([0, 2, 5], dtype=np.int64)})
+
+    values = classifier_module._get_user_class_values(obs, n_obs=len(obs))
+
+    assert np.array_equal(values, np.array([0, 2, 5], dtype=np.int64))
+
+
+def test_get_user_class_values_uses_nullable_integer_dtype_fast_path() -> None:
+    obs = pd.DataFrame({USER_CLASS_COLUMN: pd.Series([1, pd.NA, 3], dtype="Int64")})
+
+    values = classifier_module._get_user_class_values(obs, n_obs=len(obs))
+
+    assert np.array_equal(values, np.array([1, 0, 3], dtype=np.int64))
+
+
+def test_get_user_class_values_uses_categorical_integer_fast_path() -> None:
+    obs = pd.DataFrame(
+        {
+            USER_CLASS_COLUMN: pd.Categorical(
+                [0, 2, 1],
+                categories=[0, 1, 2],
+            )
+        }
+    )
+
+    values = classifier_module._get_user_class_values(obs, n_obs=len(obs))
+
+    assert np.array_equal(values, np.array([0, 2, 1], dtype=np.int64))
+
+
+def test_get_user_class_values_maps_missing_categorical_codes_to_unlabeled() -> None:
+    obs = pd.DataFrame(
+        {
+            USER_CLASS_COLUMN: pd.Categorical(
+                [1, None, 2],
+                categories=[0, 1, 2],
+            )
+        }
+    )
+
+    values = classifier_module._get_user_class_values(obs, n_obs=len(obs))
+
+    assert np.array_equal(values, np.array([1, 0, 2], dtype=np.int64))
+
+
+def test_get_user_class_values_keeps_legacy_string_fallback() -> None:
+    obs = pd.DataFrame({USER_CLASS_COLUMN: pd.Series(["1", "bad", None, "3"], dtype="object")})
+
+    values = classifier_module._get_user_class_values(obs, n_obs=len(obs))
+
+    assert np.array_equal(values, np.array([1, 0, 0, 3], dtype=np.int64))
+
+
 def _patch_coordinate_system_names(monkeypatch, coordinate_systems: list[str]) -> None:
     monkeypatch.setattr(
         widget_module,

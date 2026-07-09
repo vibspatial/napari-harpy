@@ -1266,5 +1266,23 @@ def _get_user_class_values(obs: pd.DataFrame, n_obs: int) -> np.ndarray:
     if USER_CLASS_COLUMN not in obs:
         return np.full(n_obs, UNLABELED_CLASS, dtype=np.int64)
 
-    values = pd.to_numeric(obs[USER_CLASS_COLUMN].astype("string"), errors="coerce").fillna(UNLABELED_CLASS)
+    values = obs[USER_CLASS_COLUMN]
+    if pd.api.types.is_integer_dtype(values.dtype) and not pd.api.types.is_bool_dtype(values.dtype):
+        # Preferred fast path: normalized user_class values are already integer
+        # class ids, so avoid string conversion and full-column parsing.
+        return values.to_numpy(dtype=np.int64, na_value=UNLABELED_CLASS, copy=False)
+
+    if isinstance(values.dtype, pd.CategoricalDtype):
+        categories = values.cat.categories
+        if pd.api.types.is_integer_dtype(categories.dtype) and not pd.api.types.is_bool_dtype(categories.dtype):
+            # Categorical rows store integer class ids as category labels plus
+            # per-row codes; missing rows have code -1 and stay unlabeled.
+            category_values = categories.to_numpy(dtype=np.int64, copy=False)
+            codes = values.cat.codes.to_numpy(copy=False)
+            user_class_values = np.full(len(values), UNLABELED_CLASS, dtype=np.int64)
+            valid_codes = codes >= 0
+            user_class_values[valid_codes] = category_values[codes[valid_codes]]
+            return user_class_values
+
+    values = pd.to_numeric(values.astype("string"), errors="coerce").fillna(UNLABELED_CLASS)
     return np.asarray(values, dtype=np.int64)
