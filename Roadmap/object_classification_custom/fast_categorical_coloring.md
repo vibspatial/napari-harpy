@@ -2119,7 +2119,7 @@ Acceptance:
 
 #### Slice 7.3a: Styled Labels Continuous Integration
 
-Status: proposed.
+Status: implemented.
 
 Goal:
 
@@ -2148,6 +2148,25 @@ Acceptance:
 - benchmark improves the `continuous_total_counts` direct colormap path or
   materially reduces memory use without making assignment slower;
 - no duplicate long-term continuous styled-labels colormap implementations.
+
+Benchmark note:
+
+On `/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium_full_data_core.zarr`,
+using table `table_global_ROI1`, labels `cell_labels_global_ROI1`, and
+continuous obs column `transcript_counts` (`406,611` rows):
+
+```text
+old direct continuous colormap: median 0.0733 s
+new compact continuous colormap: median 0.0024 s
+old color_dict entries: 406,613
+new color_dict entries: 3
+new texture RGBA rows: 259
+new compact arrays: ~4.07 MB
+```
+
+The compact timing includes the sorted-positive-label-id fast path, which skips
+the expensive `np.unique(...)` validation and follow-up `np.argsort(...)` when
+the viewer-aligned label index is already strictly increasing.
 
 #### Slice 7.3b: Object-Classification `pred_confidence` Integration
 

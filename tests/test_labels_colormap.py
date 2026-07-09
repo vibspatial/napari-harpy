@@ -10,6 +10,7 @@ from napari.layers import Labels
 from napari.utils.colormap_backend import get_backend, set_backend
 from napari.utils.colormaps import DirectLabelColormap
 
+import napari_harpy.viewer.labels_colormap as labels_colormap_module
 from napari_harpy.core.annotation import UNLABELED_COLOR
 from napari_harpy.viewer._styling import (
     MISSING_CATEGORICAL_COLOR,
@@ -165,6 +166,21 @@ def test_compact_continuous_labels_mapping_accepts_large_label_ids() -> None:
     np.testing.assert_array_equal(mapping.label_ids, np.asarray([5, large_label_id], dtype=np.int64))
     assert code_by_label[5] == 2
     assert code_by_label[large_label_id] == 257
+
+
+def test_compact_continuous_labels_mapping_skips_unique_check_for_sorted_label_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = pd.Series([0.0, 0.5, 1.0], index=pd.Index([5, 6, 7], name="index"))
+
+    def fail_unique(_values: object) -> object:
+        raise AssertionError("strictly increasing label ids should not call np.unique")
+
+    monkeypatch.setattr(labels_colormap_module.np, "unique", fail_unique)
+
+    mapping = compact_continuous_labels_mapping_from_values(values)
+
+    np.testing.assert_array_equal(mapping.label_ids, np.asarray([5, 6, 7], dtype=np.int64))
 
 
 @pytest.mark.parametrize(

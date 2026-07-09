@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 from matplotlib.colors import to_rgba
 from napari.layers import Image, Labels, Points, Shapes
-from napari.utils.colormaps import CyclicLabelColormap, DirectLabelColormap
+from napari.utils.colormaps import CyclicLabelColormap
 from shapely.geometry import LineString, Point, Polygon
 from spatialdata.models import PointsModel, ShapesModel, TableModel
 from spatialdata.transformations import Affine, Identity
@@ -1843,8 +1843,9 @@ def test_viewer_adapter_ensure_styled_labels_loaded_colors_non_binary_int_obs_co
     max_instance = int(table.obs["instance_id"].max())
     assert float(features.loc[min_instance, "object_score"]) == float(min_instance)
     assert float(features.loc[max_instance, "object_score"]) == float(max_instance)
+    assert isinstance(result.layer.colormap, CompactLabelColormap)
     assert not np.allclose(
-        result.layer.colormap.color_dict[min_instance], result.layer.colormap.color_dict[max_instance]
+        result.layer.colormap.map(min_instance), result.layer.colormap.map(max_instance)
     )
 
 
@@ -1994,7 +1995,7 @@ def test_viewer_adapter_ensure_styled_labels_loaded_x_var_is_continuous(sdata_bl
     assert result.value_kind == "continuous"
     assert result.palette_source is None
     assert result.coercion_applied is False
-    assert isinstance(result.layer.colormap, DirectLabelColormap)
+    assert isinstance(result.layer.colormap, CompactLabelColormap)
 
 
 def test_viewer_adapter_ensure_labels_loaded_reuses_matching_existing_layer(sdata_blobs) -> None:

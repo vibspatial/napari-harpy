@@ -13,21 +13,8 @@ from napari_harpy.viewer._styling import (
 from napari_harpy.viewer.labels_colormap import (
     CompactLabelColormap,
     compact_categorical_label_colormap_from_values,
-    direct_label_colormap_from_rgba,
+    compact_continuous_label_colormap_from_values,
 )
-from napari_harpy.viewer.labels_styling import (
-    _apply_labels_colormap,
-    _build_continuous_color_dict,
-)
-
-
-class _FakeLabelsLayer:
-    def __init__(self) -> None:
-        self.colormap = None
-        self.refresh_count = 0
-
-    def refresh(self) -> None:
-        self.refresh_count += 1
 
 
 def _colors_series_to_rgba(colors: pd.Series) -> np.ndarray:
@@ -104,17 +91,15 @@ def test_categorical_rgba_for_values_matches_existing_numpy_scalar_normalization
     np.testing.assert_allclose(actual, expected)
 
 
-def test_build_continuous_label_color_dict_uses_vectorized_rgba_and_preserves_background() -> None:
+def test_build_continuous_label_colormap_uses_compact_mapping_and_preserves_background() -> None:
     values = pd.Series([0.0, 10.0, np.nan], index=pd.Index([1, 2, 3], name="index"))
 
-    color_dict = _build_continuous_color_dict(values)
+    colormap = compact_continuous_label_colormap_from_values(values)
     expected = continuous_rgba_for_values(values)
 
-    np.testing.assert_allclose(color_dict[None], np.zeros(4, dtype=np.float32))
-    np.testing.assert_allclose(color_dict[0], np.zeros(4, dtype=np.float32))
-    np.testing.assert_allclose(color_dict[1], expected[0])
-    np.testing.assert_allclose(color_dict[2], expected[1])
-    np.testing.assert_allclose(color_dict[3], expected[2])
+    assert isinstance(colormap, CompactLabelColormap)
+    np.testing.assert_allclose(colormap.map(0), np.zeros(4, dtype=np.float32))
+    np.testing.assert_allclose(colormap.map(values.index.to_numpy(dtype=np.int64)), expected)
 
 
 def test_build_categorical_label_colormap_uses_compact_mapping_and_preserves_colors() -> None:
@@ -132,19 +117,3 @@ def test_build_categorical_label_colormap_uses_compact_mapping_and_preserves_col
     assert isinstance(colormap, CompactLabelColormap)
     np.testing.assert_allclose(colormap.map(0), np.zeros(4, dtype=np.float32))
     np.testing.assert_allclose(colormap.map(values.index.to_numpy(dtype=np.int64)), expected)
-
-
-def test_apply_labels_colormap_uses_fast_helper_without_explicit_refresh() -> None:
-    layer = _FakeLabelsLayer()
-    color_dict = {
-        None: np.zeros(4, dtype=np.float32),
-        0: np.zeros(4, dtype=np.float32),
-        1: np.asarray([1.0, 0.0, 0.0, 1.0], dtype=np.float32),
-    }
-    colormap = direct_label_colormap_from_rgba(color_dict, background_value=0)
-
-    _apply_labels_colormap(layer, colormap)  # type: ignore[arg-type]
-
-    assert layer.colormap is colormap
-    np.testing.assert_allclose(layer.colormap.color_dict[1], color_dict[1])
-    assert layer.refresh_count == 0

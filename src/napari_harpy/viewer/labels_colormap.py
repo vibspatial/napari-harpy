@@ -600,9 +600,7 @@ def compact_categorical_labels_mapping_from_values(
     if not isinstance(background_value, int) or isinstance(background_value, bool):
         raise ValueError("Compact labels mapping background value must be an integer label id.")
 
-    # Potential hot path: this validates uniqueness with `np.unique(...)`.
-    # A strictly increasing positive index could skip that check and sorting.
-    label_ids = _positive_label_ids_from_index(values.index)
+    label_ids, label_ids_sorted = _positive_label_ids_from_index(values.index)
     normalized_categories = [normalize_category_value(category) for category in categories]
 
     default_rgba = np.asarray(to_rgba(default_color), dtype=np.float32)
@@ -635,9 +633,10 @@ def compact_categorical_labels_mapping_from_values(
     if np.any(missing_values):
         missing_texture_code = texture_code_for_rgba(missing_color)
         texture_codes[missing_values] = missing_texture_code
-    order = np.argsort(label_ids)
-    label_ids = label_ids[order]
-    texture_codes = texture_codes[order]
+    if not label_ids_sorted:
+        order = np.argsort(label_ids)
+        label_ids = label_ids[order]
+        texture_codes = texture_codes[order]
 
     texture_codes = texture_codes.astype(_minimum_unsigned_dtype(int(np.max(texture_codes, initial=0))), copy=False)
     texture_rgba = np.asarray(texture_rgba_rows, dtype=np.float32)
@@ -730,7 +729,7 @@ def compact_continuous_labels_mapping_from_values(
             raise ValueError("Compact continuous labels mapping `value_range` must satisfy min < max.")
         value_range = (min_value, max_value)
 
-    label_ids = _positive_label_ids_from_index(values.index)
+    label_ids, label_ids_sorted = _positive_label_ids_from_index(values.index)
     value_array = pd.to_numeric(values, errors="coerce").to_numpy(dtype=np.float64, copy=False)
     finite_values = np.isfinite(value_array)
 
@@ -765,9 +764,10 @@ def compact_continuous_labels_mapping_from_values(
         color_bins = np.clip(color_bins, 0, bins - 1)
         texture_codes[finite_values] = color_bins + 2
 
-    order = np.argsort(label_ids)
-    label_ids = label_ids[order]
-    texture_codes = texture_codes[order]
+    if not label_ids_sorted:
+        order = np.argsort(label_ids)
+        label_ids = label_ids[order]
+        texture_codes = texture_codes[order]
     return CompactLabelsMapping(
         label_ids=label_ids,
         texture_codes=_minimum_texture_code_dtype(texture_codes),
@@ -777,6 +777,29 @@ def compact_continuous_labels_mapping_from_values(
         background_value=background_value,
         missing_texture_code=missing_texture_code,
     )
+
+
+def compact_continuous_label_colormap_from_values(
+    values: pd.Series,
+    *,
+    bins: int = 256,
+    colormap_name: str = OVERLAY_CONTINUOUS_COLORMAP,
+    missing_color: Any = MISSING_CONTINUOUS_COLOR,
+    default_color: Any = _TRANSPARENT_RGBA,
+    background_value: int = 0,
+    value_range: tuple[float, float] | None = None,
+) -> CompactLabelColormap:
+    """Return a compact direct labels colormap for continuous values."""
+    mapping = compact_continuous_labels_mapping_from_values(
+        values,
+        bins=bins,
+        colormap_name=colormap_name,
+        missing_color=missing_color,
+        default_color=default_color,
+        background_value=background_value,
+        value_range=value_range,
+    )
+    return CompactLabelColormap(mapping)
 
 
 def direct_label_colormap_from_rgba(
@@ -852,7 +875,7 @@ def _validate_default_color(color: np.ndarray, *, label_id: int | None) -> None:
         raise ValueError(f"Direct labels RGBA default/background color for label `{label_id}` must have shape `(4,)`.")
 
 
-def _positive_label_ids_from_index(index: pd.Index) -> np.ndarray:
+def _positive_label_ids_from_index(index: pd.Index) -> tuple[np.ndarray, bool]:
     raw_label_ids = index.to_numpy()
     try:
         label_ids = raw_label_ids.astype(np.int64, copy=False)
@@ -860,13 +883,19 @@ def _positive_label_ids_from_index(index: pd.Index) -> np.ndarray:
         raise ValueError("Compact labels mapping index must contain integer label ids.") from error
     if not np.array_equal(raw_label_ids, label_ids):
         raise ValueError("Compact labels mapping index must contain integer label ids.")
-    # This is the main validation cost for large tables. If upstream alignment
-    # guarantees uniqueness in the future, we can consider trusting that input.
+    if len(label_ids) == 0:
+        return label_ids, True
+    # Fast path for the common viewer-aligned case: strictly increasing positive
+    # labels prove positivity, uniqueness, and sorted order without `np.unique`.
+    if label_ids[0] > 0 and np.all(label_ids[1:] > label_ids[:-1]):
+        return label_ids, True
+    # Fallback for unsorted or malformed public inputs; this remains the main
+    # validation cost for large tables that do not satisfy the sorted fast path.
     if len(label_ids) != len(np.unique(label_ids)):
         raise ValueError("Compact labels mapping index must contain unique label ids.")
     if np.any(label_ids <= 0):
         raise ValueError("Compact labels mapping index must contain positive label ids.")
-    return label_ids
+    return label_ids, False
 
 
 def _categorical_texture_codes(
