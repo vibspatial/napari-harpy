@@ -1706,7 +1706,7 @@ Acceptance:
 
 ##### Phase 6.7c: Registered Feature-Matrix Annotation Responsiveness
 
-Status: proposed.
+Status: implemented.
 
 Observed behavior:
 
@@ -1761,6 +1761,21 @@ Investigation findings:
   `schedule_retrain(...)`, while unregistered matrices stop at the metadata
   blocker. Auto-train is not required to reproduce the basic lag, because the
   status/control preparation path already explains it.
+- After reordering the visual refresh first and adding the
+  `_get_user_class_values(...)` fast path, annotation is snappy again for both
+  registered and unregistered feature matrices in manual QA.
+- After the visual-refresh reorder and fast user-class conversion, before the
+  deferral cleanup, duplicate preparation-summary work was still measurable:
+
+  ```text
+  auto-train off: 2 preparation summaries per annotation
+  auto-train on:  4 preparation summaries per annotation
+  ```
+
+  With the fast path in place, a 400k-row synthetic registered summary measured
+  about `0.047 s`. This duplicate work no longer blocked the immediate visual
+  update, but it was still worth batching with the widget-level deferral
+  implemented in this phase.
 
 Implementation direction:
 
@@ -1784,13 +1799,61 @@ Implementation direction:
      non-normalized legacy states.
 3. Keep the classifier controller as the owner of training eligibility. This
    slice should not move metadata gates back into the widget.
-4. Consider reducing duplicate preparation-summary work after the fast path is
-   in place:
-   - `mark_dirty(...)` currently triggers a state callback that can recompute
-     preparation;
-   - `_update_selection_status()` can recompute it again in the same
-     annotation flow.
-   This can be a separate cleanup if the reorder and fast path are sufficient.
+4. Reduce duplicate preparation-summary work with widget-level deferral rather
+   than a controller-level cache:
+   - keep `_on_classifier_state_changed(...)` updating classifier feedback
+     immediately from the controller's cached `status_message` / `status_kind`;
+   - allow `_on_annotation_changed(...)` to temporarily defer the expensive
+     `_update_classifier_controls()` call while it runs classifier dirtying and
+     auto-train scheduling:
+
+     ```python
+     with self._defer_classifier_control_updates():
+         self._classifier_controller.mark_dirty(reason="the annotations changed")
+         if self._auto_train_enabled:
+             self._classifier_controller.schedule_retrain()
+     ```
+
+     The helper should follow the existing widget guard style used elsewhere in
+     napari-harpy: store the previous boolean guard state, set deferral to
+     `True`, then restore the previous value in `finally`.
+
+     ```python
+     @contextmanager
+     def _defer_classifier_control_updates(self) -> Iterator[None]:
+         previous = self._is_deferring_classifier_control_updates
+         self._is_deferring_classifier_control_updates = True
+         try:
+             yield
+         finally:
+             self._is_deferring_classifier_control_updates = previous
+     ```
+
+   - let the final `_update_selection_status()` rebuild classifier controls and
+     preparation status once for the completed annotation flow;
+   - do not cache `ClassifierPreparationSummary` in the controller yet, because
+     invalidating it correctly across table edits, feature-matrix changes,
+     scope changes, async training, and reloads is riskier than batching one UI
+     refresh.
+
+Expected call-count improvement for the deferral cleanup:
+
+```text
+auto-train off: 2 preparation summaries -> 1 preparation summary
+auto-train on:  4 preparation summaries -> about 2 preparation summaries
+```
+
+Completed substeps:
+
+- `_on_annotation_changed(...)` now refreshes the row-scoped visual state
+  before marking the classifier dirty.
+- `_get_user_class_values(...)` now has fast paths for integer and
+  categorical-integer `user_class` columns, with the legacy string/object
+  fallback retained.
+- `_on_annotation_changed(...)` now defers classifier-control refreshes while
+  classifier dirtying and auto-train scheduling emit status callbacks, then
+  lets the final `_update_selection_status()` rebuild controls once for that
+  annotation callback.
 
 Tests:
 
@@ -1806,6 +1869,17 @@ Tests:
 - regression test or benchmark-style test showing registered categorical
   `user_class` does not call the slow string-normalization path in the normal
   widget state.
+- deferral cleanup tests:
+  - `mark_dirty(...)` during annotation still updates classifier feedback;
+  - one annotation with auto-train disabled calls
+    `describe_current_preparation()` only once from the final
+    `_update_selection_status()` path;
+  - one annotation with auto-train enabled does not run the extra
+    state-callback classifier-controls rebuilds while still scheduling
+    training;
+  - selection changes, training-scope changes, prediction-scope changes, manual
+    train clicks, worker completion, and reload paths still update classifier
+    controls immediately outside the deferred annotation block.
 
 Acceptance:
 
@@ -1815,6 +1889,8 @@ Acceptance:
   training based on the controller preparation summary;
 - auto-train behavior is unchanged apart from the visual annotation update
   happening before scheduled training/status work;
+- duplicate preparation-summary work is batched during annotation without
+  hiding classifier feedback/status changes;
 - no full labels colormap rebuild is introduced.
 
 ##### Phase 6.7d: Patch Current Displayed Slice Without Refresh

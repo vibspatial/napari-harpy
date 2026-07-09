@@ -2252,6 +2252,53 @@ def test_widget_auto_train_prediction_color_mode_keeps_immediate_refresh_feature
     assert full_refresh_calls == []
 
 
+def test_widget_annotation_defers_classifier_controls_until_selection_status(qtbot, monkeypatch) -> None:
+    widget = HarpyWidget(DummyViewer())
+    qtbot.addWidget(widget)
+    calls: list[str] = []
+
+    def record_selection_status() -> None:
+        calls.append("selection_status")
+        widget._update_classifier_controls()
+
+    def record_schedule_retrain() -> bool:
+        calls.append("schedule_retrain")
+        widget._classifier_controller._set_status(
+            "Classifier: model is stale. Classifier training is scheduled.",
+            kind="info",
+        )
+        return True
+
+    monkeypatch.setattr(widget, "_refresh_after_user_class_annotation", lambda change: calls.append("visual_refresh"))
+    monkeypatch.setattr(widget, "_update_classifier_feedback", lambda: calls.append("feedback"))
+    monkeypatch.setattr(widget, "_update_classifier_controls", lambda: calls.append("controls"))
+    monkeypatch.setattr(widget, "_update_selection_status", record_selection_status)
+    monkeypatch.setattr(widget._classifier_controller, "schedule_retrain", record_schedule_retrain)
+
+    widget._auto_train_enabled = True
+    widget._on_annotation_changed(
+        annotation_module.UserClassAnnotationChange(
+            instance_id=5,
+            class_id=4,
+            user_class_was_available_as_color_source=True,
+        )
+    )
+
+    assert calls == [
+        "visual_refresh",
+        "feedback",
+        "schedule_retrain",
+        "feedback",
+        "selection_status",
+        "controls",
+    ]
+
+    calls.clear()
+    widget._on_classifier_state_changed()
+
+    assert calls == ["feedback", "controls"]
+
+
 def test_widget_auto_train_toggle_controls_annotation_retraining(
     qtbot, monkeypatch, backed_sdata_blobs: SpatialData
 ) -> None:
