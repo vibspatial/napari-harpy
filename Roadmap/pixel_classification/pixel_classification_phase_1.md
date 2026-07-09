@@ -235,8 +235,17 @@ The manifest should record enough information to reject incompatible caches:
 - final feature schema id;
 - feature cache dtype, shape, chunks, and schema version.
 
-`cache_id` should be a hash of the canonical manifest excluding runtime fields such as creation time, last-used time,
-and UI-only labels.
+All ids should use a versioned canonical hash contract:
+
+- hash algorithm: `sha256`;
+- id format: `<kind>:<schema_version>:sha256:<hex_digest>`, for example
+  `final_feature_schema:v1:sha256:...`;
+- structured payload: canonical JSON with sorted keys, no whitespace dependence, and normalized scalar types;
+- array payloads: hash numeric arrays separately using canonical dtype, shape, memory order, and raw bytes, then include
+  those array hashes in the JSON payload;
+- excluded runtime fields: creation time, last-used time, writer hostname, progress state, local cache-store path,
+  napari layer names, UI labels, and other fields that do not change feature values or compatibility;
+- included version fields: cache schema version and package/model/library versions that can change feature values.
 
 **Shared Reducer and Cache Compatibility**
 Feature caches should be physically separate per target card / sample / coordinate system, but pooled classifier
@@ -258,15 +267,69 @@ Use three levels of identity:
 - `final_feature_schema_id`: hash of `raw_feature_schema_id`, `reducer_id`, final feature plane order, final dtype
   policy, and cache schema version.
 
+Exact `raw_feature_schema_id` inputs:
+
+- hash kind and hash schema version;
+- pixel-classification cache schema version;
+- phase/resolution mode, for Phase 1 `highest_resolution`;
+- axes convention and feature array layout, for example `(features, y, x)`;
+- selected channel names and order;
+- channel identity policy, for example match by channel name;
+- marker normalization policy, parameters, and whether fitted normalization state is per-target or shared;
+- raw marker plane order;
+- feature extractor backend name, implementation version, model name, weights name or digest, selected layers, scale
+  pyramid settings, input channel handling, padding policy, tile size/overlap, preprocessing, and output raw feature
+  plane order;
+- raw deep-feature dimension before reduction;
+- reducer input dtype/precision policy;
+- relevant package versions for feature generation.
+
+Exact `reducer_id` inputs for PCA/IncrementalPCA:
+
+- hash kind and reducer hash schema version;
+- `raw_feature_schema_id`;
+- reducer implementation, reducer type, and package version;
+- reducer parameters, including `n_components`, whitening, batch size, random state, centering policy, and dtype policy;
+- reducer-fit cohort target ids, sorted canonically;
+- raw-feature sampling policy, including pixels per target, balancing policy, sampling seed, mask policy, and tile/batch
+  ordering;
+- fitted reducer attributes needed for transformation and audit, including `components`, `mean`, number of raw
+  features, number of samples seen, explained variance, explained variance ratio, and singular values when available;
+- array hashes for every fitted numeric array used by the reducer.
+
+Exact `reducer_id` inputs for a fixed random projection:
+
+- hash kind and reducer hash schema version;
+- `raw_feature_schema_id`;
+- projection implementation and package version;
+- projection parameters, including output dimension, random state, distribution, density, dtype policy, and input
+  dimension;
+- projection matrix array hash.
+
+Exact `final_feature_schema_id` inputs:
+
+- hash kind and final schema hash version;
+- `raw_feature_schema_id`;
+- `reducer_id`;
+- final feature plane order: selected marker planes first, then reduced deep-feature planes;
+- final feature names or deterministic plane labels;
+- final feature count;
+- final feature dtype policy;
+- cache schema version.
+
 Target-specific `cache_id` should still include source identity:
 
-- source SpatialData URI/path;
-- source image element;
-- coordinate system;
-- highest-resolution shape and axes;
-- selected channels;
+- hash kind and target-cache hash schema version;
 - `final_feature_schema_id`;
-- feature array shape/chunks/dtype.
+- source SpatialData URI/path;
+- source image element name;
+- source element zarr path resolved through SpatialData metadata;
+- coordinate system;
+- compute scale, for Phase 1 `scale0` / highest resolution;
+- highest-resolution shape and axes;
+- selected channel names and order as resolved in this target;
+- target-specific fitted normalization state, if the selected normalization policy is per-target;
+- feature array shape, chunks, dtype, compressor/store policy, and cache schema version.
 
 Recommended sidecar layout:
 
