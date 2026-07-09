@@ -2242,6 +2242,9 @@ Scope:
 - it should cover styled labels overlays created through the viewer widget;
 - it should cover object-classification full color repaints for `user_class`,
   `pred_class`, and `pred_confidence`;
+- it should explicitly cover the object-classification initial primary-labels
+  load/restyle path, where the widget loads or activates a primary labels layer
+  and immediately applies `color_by == user_class`;
 - it should not change sparse user-class annotation updates, because those
   mutate the existing compact colormap and already call `refresh(extent=False)`;
 - it should not disable napari async slicing globally.
@@ -2284,6 +2287,17 @@ Investigation notes:
 - On large dask-backed labels, that window can be long enough to be visible in
   normal use. If the user navigates while async slicing is pending, multiple
   requests can also make the mismatch feel persistent.
+- The same failure is visible when opening a labels element through the
+  object-classification widget with async slicing enabled. In the initial
+  `user_class` state, all table rows may be unlabeled (`class 0`). Harpy's
+  intended compact mapping is:
+  - background label `0` -> transparent;
+  - positive labels not explicitly mapped -> unlabeled/default gray.
+  The observed screenshot instead shows positive cell regions as black/dark and
+  background regions as the unlabeled gray. That is consistent with the current
+  displayed texture-code image still being encoded under the previous/raw label
+  mapping while the newly assigned all-unlabeled compact colormap table has
+  already reached vispy.
 
 Recommended fix:
 
@@ -2337,6 +2351,9 @@ Implementation steps:
    narrow `ViewerAdapter` method/property or by placing the helper behind the
    adapter. Then call it in `refresh_layer_colors(...)` after assigning the
    full colormap for `pred_confidence`, `user_class`, or `pred_class`.
+   This is required not only after classifier prediction repainting, but also
+   after the first object-classification `user_class` repaint that follows
+   primary labels-layer load/activation.
 4. Do not call it from
    `refresh_user_class_colormap_and_feature(...)` or
    `refresh_user_class_feature_only(...)`.
@@ -2359,6 +2376,10 @@ Tests:
 - Add an object-classification styling test that `refresh_layer_colors(...)`
   calls the helper after full color repaint for `pred_confidence` and one
   categorical class mode.
+- Include an object-classification categorical test where all rows are
+  unlabeled (`user_class == 0`), to cover the initial primary-labels load case
+  that can otherwise show background/default colors swapped under async
+  slicing.
 - Add a test that sparse
   `refresh_user_class_colormap_and_feature(...)` does not call the helper.
 - Optional, if practical in headless napari:
