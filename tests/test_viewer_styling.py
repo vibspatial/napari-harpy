@@ -5,6 +5,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import pytest
+from matplotlib.colors import to_rgba
 from napari.utils.colormaps import DirectLabelColormap
 from spatialdata import SpatialData
 
@@ -14,8 +15,10 @@ from napari_harpy.core.annotation import (
     USER_CLASS_COLORS_KEY,
     USER_CLASS_COLUMN,
 )
+from napari_harpy.viewer.labels_colormap import CompactCategoricalLabelColormap
 from napari_harpy.widgets.object_classification.annotation_controller import UserClassAnnotationChange
 from napari_harpy.widgets.object_classification.controller import (
+    PRED_CLASS_COLORS_KEY,
     PRED_CLASS_COLUMN,
     PRED_CONFIDENCE_COLUMN,
 )
@@ -94,6 +97,32 @@ def _set_user_classes(
     table.uns[USER_CLASS_COLORS_KEY] = colors or [UNLABELED_COLOR, "#ff0000"][: len(categories)]
 
 
+def _set_pred_classes(
+    sdata: SpatialData,
+    class_by_instance: dict[int, int],
+    *,
+    categories: list[int],
+    colors: list[str] | None = None,
+) -> None:
+    table = sdata["table"]
+    values = [
+        class_by_instance.get(int(instance_id), 0)
+        if str(region) == "blobs_labels"
+        else 0
+        for region, instance_id in zip(table.obs["region"], table.obs["instance_id"], strict=True)
+    ]
+    table.obs[PRED_CLASS_COLUMN] = pd.Series(
+        pd.Categorical(values, categories=categories),
+        index=table.obs.index,
+        name=PRED_CLASS_COLUMN,
+    )
+    table.uns[PRED_CLASS_COLORS_KEY] = colors or [UNLABELED_COLOR, "#00ff00"][: len(categories)]
+
+
+def _expected_rgba(color: str) -> np.ndarray:
+    return np.asarray(to_rgba(color), dtype=np.float32)
+
+
 def test_refresh_reuses_one_region_feature_snapshot(monkeypatch: pytest.MonkeyPatch, sdata_blobs: SpatialData) -> None:
     _set_user_classes(sdata_blobs, {5: 4}, categories=[0, 4])
     layer = _FakeLabelsLayer()
@@ -111,11 +140,11 @@ def test_refresh_reuses_one_region_feature_snapshot(monkeypatch: pytest.MonkeyPa
     controller.refresh()
 
     assert calls == 1
-    assert isinstance(layer.colormap, DirectLabelColormap)
-    assert set(layer.colormap.color_dict) == {None, 0, 5}
-    assert isinstance(layer.colormap.color_dict[None], np.ndarray)
-    assert isinstance(layer.colormap.color_dict[0], np.ndarray)
-    assert isinstance(layer.colormap.color_dict[5], np.ndarray)
+    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert len(layer.colormap.color_dict) <= 3
+    np.testing.assert_allclose(layer.colormap.map(0), np.zeros(4, dtype=np.float32))
+    np.testing.assert_allclose(layer.colormap.map(5), _expected_rgba("#ff0000"))
+    np.testing.assert_allclose(layer.colormap.map(6), _expected_rgba(UNLABELED_COLOR))
     assert layer.refresh_count == 0
     assert USER_CLASS_COLUMN in layer.features.columns
 
@@ -137,8 +166,47 @@ def test_user_class_color_lookup_uses_valid_categorical_without_full_normalizati
 
     controller.refresh_layer_colors(feature_rows=feature_rows)
 
-    assert isinstance(layer.colormap, DirectLabelColormap)
-    assert set(layer.colormap.color_dict) == {None, 0, 5}
+    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    np.testing.assert_allclose(layer.colormap.map(5), _expected_rgba("#ff0000"))
+    np.testing.assert_allclose(layer.colormap.map(6), _expected_rgba(UNLABELED_COLOR))
+
+
+def test_pred_class_color_lookup_uses_valid_categorical_without_full_normalization(
+    monkeypatch: pytest.MonkeyPatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_pred_classes(sdata_blobs, {5: 2, 6: 2}, categories=[0, 2], colors=[UNLABELED_COLOR, "#00ff00"])
+    layer = _FakeLabelsLayer()
+    controller = _make_controller(sdata_blobs, layer)
+    controller.set_color_by(COLOR_BY_PRED_CLASS)
+    feature_rows = _feature_rows(
+        {1: 0, 5: 0, 6: 0},
+        pred_class_by_instance={1: 0, 5: 2, 6: 2},
+    )
+
+    def fail_normalization(*args: Any, **kwargs: Any) -> pd.Series:
+        del args, kwargs
+        raise AssertionError("valid categorical pred_class should not be normalized")
+
+    monkeypatch.setattr(viewer_styling_module, "normalize_class_values", fail_normalization)
+
+    controller.refresh_layer_colors(feature_rows=feature_rows)
+
+    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    np.testing.assert_allclose(layer.colormap.map(1), _expected_rgba(UNLABELED_COLOR))
+    np.testing.assert_allclose(layer.colormap.map(5), _expected_rgba("#00ff00"))
+
+
+def test_class_value_reader_uses_vectorized_integer_fast_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    values = pd.Series(np.asarray([0, 4, 4, 2], dtype=np.int64))
+
+    def fail_scalar_missing_check(*args: Any, **kwargs: Any) -> bool:
+        del args, kwargs
+        raise AssertionError("integer class ids should use the vectorized path")
+
+    monkeypatch.setattr(viewer_styling_module.pd, "isna", fail_scalar_missing_check)
+
+    assert viewer_styling_module._read_class_values_without_normalizing(values, unlabeled_class=0) == {0, 2, 4}
 
 
 def test_user_class_color_lookup_falls_back_for_invalid_table_state(
@@ -163,8 +231,9 @@ def test_user_class_color_lookup_falls_back_for_invalid_table_state(
     controller.refresh_layer_colors(feature_rows=feature_rows)
 
     assert USER_CLASS_COLUMN in normalized_columns
-    assert isinstance(layer.colormap, DirectLabelColormap)
-    assert set(layer.colormap.color_dict) == {None, 0, 5}
+    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    np.testing.assert_allclose(layer.colormap.map(1), _expected_rgba(UNLABELED_COLOR))
+    assert not np.allclose(layer.colormap.map(5), layer.colormap.map(0))
 
 
 def test_refresh_layer_methods_still_work_without_precomputed_feature_rows(
@@ -188,7 +257,7 @@ def test_refresh_layer_methods_still_work_without_precomputed_feature_rows(
     controller.refresh_layer_features()
 
     assert calls == 2
-    assert isinstance(layer.colormap, DirectLabelColormap)
+    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
     assert USER_CLASS_COLUMN in layer.features.columns
 
 
@@ -204,13 +273,13 @@ def test_pred_class_coloring_keeps_explicit_entries_for_unlabeled_predictions(sd
 
     controller.refresh_layer_colors(feature_rows=feature_rows)
 
-    assert isinstance(layer.colormap, DirectLabelColormap)
-    assert set(layer.colormap.color_dict) == {None, 0, 1, 5, 6}
-    assert isinstance(layer.colormap.color_dict[None], np.ndarray)
-    assert isinstance(layer.colormap.color_dict[0], np.ndarray)
-    assert isinstance(layer.colormap.color_dict[1], np.ndarray)
+    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert len(layer.colormap.color_dict) <= 3
+    np.testing.assert_allclose(layer.colormap.map(0), np.zeros(4, dtype=np.float32))
+    np.testing.assert_allclose(layer.colormap.map(1), _expected_rgba(UNLABELED_COLOR))
+    np.testing.assert_allclose(layer.colormap.map(5), layer.colormap.map(6))
     assert layer.refresh_count == 0
-    assert not np.allclose(layer.colormap.color_dict[1], layer.colormap.color_dict[0])
+    assert not np.allclose(layer.colormap.map(1), layer.colormap.map(0))
 
 
 def test_pred_confidence_coloring_uses_vectorized_numeric_rgba_without_explicit_refresh(
@@ -268,8 +337,7 @@ def test_pred_confidence_coloring_uses_vectorized_numeric_rgba_without_explicit_
     assert layer.refresh_count == 0
 
 
-def test_row_scoped_user_class_annotation_updates_colormap_and_features(
-    monkeypatch: pytest.MonkeyPatch,
+def test_row_scoped_user_class_annotation_defers_compact_colormap_to_full_refresh(
     sdata_blobs: SpatialData,
 ) -> None:
     _set_user_classes(sdata_blobs, {5: 4}, categories=[0, 4])
@@ -278,26 +346,17 @@ def test_row_scoped_user_class_annotation_updates_colormap_and_features(
     feature_rows = _feature_rows({1: 0, 5: 4, 6: 0})
     controller.refresh_layer_colors(feature_rows=feature_rows)
     controller.refresh_layer_features(feature_rows=feature_rows)
-    original_refresh_count = layer.refresh_count
-
-    def fail_full_feature_rows() -> pd.DataFrame:
-        raise AssertionError("row-scoped annotation refresh must not rebuild all feature rows")
-
-    monkeypatch.setattr(controller, "_get_region_feature_rows", fail_full_feature_rows)
+    original_colormap = layer.colormap
+    original_features = layer.features.copy()
 
     handled = controller.refresh_user_class_colormap_and_feature(UserClassAnnotationChange(instance_id=6, class_id=4))
 
-    assert handled is True
-    assert isinstance(layer.colormap, DirectLabelColormap)
-    assert set(layer.colormap.color_dict) == {None, 0, 5, 6}
-    assert isinstance(layer.colormap.color_dict[6], np.ndarray)
-    assert layer.refresh_count == original_refresh_count
-    assert layer.features.set_index("index").loc[6, USER_CLASS_COLUMN] == 4
-    assert layer.features.set_index("index").loc[1, USER_CLASS_COLUMN] == 0
+    assert handled is False
+    assert layer.colormap is original_colormap
+    pd.testing.assert_frame_equal(layer.features, original_features)
 
 
-def test_row_scoped_user_class_annotation_clear_removes_sparse_color_entry(
-    monkeypatch: pytest.MonkeyPatch,
+def test_row_scoped_user_class_annotation_clear_defers_compact_colormap_to_full_refresh(
     sdata_blobs: SpatialData,
 ) -> None:
     _set_user_classes(sdata_blobs, {5: 4}, categories=[0, 4])
@@ -306,20 +365,14 @@ def test_row_scoped_user_class_annotation_clear_removes_sparse_color_entry(
     feature_rows = _feature_rows({1: 0, 5: 4, 6: 0})
     controller.refresh_layer_colors(feature_rows=feature_rows)
     controller.refresh_layer_features(feature_rows=feature_rows)
-    original_refresh_count = layer.refresh_count
-
-    def fail_full_feature_rows() -> pd.DataFrame:
-        raise AssertionError("row-scoped annotation refresh must not rebuild all feature rows")
-
-    monkeypatch.setattr(controller, "_get_region_feature_rows", fail_full_feature_rows)
+    original_colormap = layer.colormap
+    original_features = layer.features.copy()
 
     handled = controller.refresh_user_class_colormap_and_feature(UserClassAnnotationChange(instance_id=5, class_id=0))
 
-    assert handled is True
-    assert isinstance(layer.colormap, DirectLabelColormap)
-    assert set(layer.colormap.color_dict) == {None, 0}
-    assert layer.refresh_count == original_refresh_count
-    assert layer.features.set_index("index").loc[5, USER_CLASS_COLUMN] == 0
+    assert handled is False
+    assert layer.colormap is original_colormap
+    pd.testing.assert_frame_equal(layer.features, original_features)
 
 
 def test_row_scoped_user_class_feature_refresh_keeps_prediction_colormap(

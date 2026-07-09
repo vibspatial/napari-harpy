@@ -1334,7 +1334,7 @@ Tests:
 
 #### Slice 6.6b: Object-Classification Full Categorical Repaint
 
-Status: proposed.
+Status: implemented.
 
 Use `CompactCategoricalLabelColormap` for full object-classification
 categorical labels repainting, while keeping the row-scoped sparse update as a
@@ -1398,6 +1398,30 @@ Benchmark acceptance:
   full `label_id -> RGBA` dictionary is built for categorical
   object-classification labels coloring;
 - keep benchmark output in this roadmap before moving to Slice 7.
+
+Benchmark check after implementation:
+
+Synthetic object-classification repaint benchmark with 406,611 instance rows,
+8 integer classes, and precomputed `feature_rows`:
+
+```text
+user_class: median=0.1492 s, min=0.1478 s, max=0.1539 s
+pred_class: median=0.1513 s, min=0.1511 s, max=0.1545 s
+```
+
+Both paths produced `CompactCategoricalLabelColormap` with tiny bootstrap
+`color_dict` length `<= 3`.
+
+Follow-up cleanup in the same slice generalized the valid-categorical palette
+lookup from only `user_class` to any valid class column, including
+`pred_class`. With a bound table containing categorical `user_class` and
+`pred_class` columns plus matching stored palettes, the same 406,611-row
+synthetic check produced:
+
+```text
+user_class lookup median: 0.0623 s; full repaint median: 0.0910 s
+pred_class lookup median: 0.0631 s; full repaint median: 0.0922 s
+```
 
 #### Slice 6.7: Compact Sparse User-Class Annotation Update
 
@@ -1712,6 +1736,170 @@ Manual QA:
 - Confirm the styled labels layer never shows the wrong full-field/speckled
   color mismatch seen before the fix.
 - Repeat with `async_slicing=False` to confirm no behavior change.
+
+### Slice 9: Optional Sorted-Index Fast Path For Compact Mapping
+
+Status: proposed.
+
+The remaining compact categorical construction cost after Slice 6.6b is mostly
+defensive index validation and sorting in
+`compact_categorical_labels_mapping_from_values(...)`.
+
+Observed on a synthetic `406,611`-row object-classification repaint:
+
+```text
+_read_class_values_without_normalizing(...) before vectorized fast path: ~0.064 s
+_read_class_values_without_normalizing(...) after vectorized fast path:  ~0.001 s
+
+compact_categorical_labels_mapping_from_values(...):                 ~0.028 s
+  _positive_label_ids_from_index(...):                               ~0.023 s
+  _categorical_texture_codes(...):                                   ~0.001 s
+  sort/apply already-sorted label ids:                               ~0.005-0.008 s
+```
+
+The expensive part is not the categorical value mapping anymore. It is mostly
+`np.unique(...)`-based uniqueness validation and unconditional sorting of the
+label-id index.
+
+Important safety decision:
+
+- do not assume the table/index is sorted;
+- do not remove validation globally;
+- only take the faster path when the index itself proves it is already
+  strictly increasing positive integer label ids.
+
+Implementation direction:
+
+1. Add an internal helper that detects and returns a trusted sorted-positive
+   label-id array only when all of these are true:
+   - the index converts losslessly to integer label ids;
+   - every label id is positive;
+   - label ids are strictly increasing:
+
+     ```python
+     len(label_ids) == 0 or (
+         label_ids[0] > 0
+         and np.all(label_ids[1:] > label_ids[:-1])
+     )
+     ```
+
+   This single monotonic check proves both sortedness and uniqueness for the
+   fast path.
+2. If the monotonic check succeeds:
+   - skip the `np.unique(...)` uniqueness check;
+   - skip `np.argsort(...)`;
+   - keep `label_ids` and `texture_codes` in their existing order.
+3. If the monotonic check fails:
+   - fall back to the current conservative path;
+   - validate uniqueness with `np.unique(...)`;
+   - sort label ids and texture codes before constructing
+     `CompactCategoricalLabelsMapping`.
+4. Keep this optimization local to compact label-coloring construction. It
+   should not change table alignment, feature-row construction, hover features,
+   or labels image data.
+5. Benchmark both paths:
+   - sorted positive integer index, expected common Harpy path;
+   - unsorted positive integer index, fallback path;
+   - duplicate index, still rejected;
+   - non-integer index, still rejected;
+   - non-positive index, still rejected.
+
+Acceptance criteria:
+
+- sorted positive integer indexes produce the same colors as the current
+  implementation;
+- unsorted valid indexes still work and are sorted internally as before;
+- duplicate, non-integer, and non-positive indexes still fail loudly;
+- no caller relies on sortedness unless the helper has explicitly detected it;
+- the compact categorical construction benchmark shows the expected reduction
+  in `_positive_label_ids_from_index(...)` and sorting overhead;
+- object-classification `user_class` and `pred_class` full repaint tests keep
+  passing.
+
+### Slice 10: Strict Object-Classification Class Palette Contract
+
+Status: proposed.
+
+`ViewerStylingController._get_class_color_lookup(...)` currently mixes two
+responsibilities:
+
+- read the table-backed class palette for `user_class` / `pred_class`;
+- recover from invalid or incomplete class-column state by re-normalizing
+  values and backfilling palettes.
+
+That makes the styling path harder to reason about and keeps fallback branches
+alive in a performance-sensitive color-repaint path.
+
+Preferred direction:
+
+- make object-classification styling a strict reader;
+- keep mutation/repair at mutation boundaries:
+  - `set_user_class_for_rows(...)`;
+  - `_ensure_prediction_columns(...)`;
+  - `set_class_annotation_state(...)`.
+
+Current guarantees and nuance:
+
+- For `pred_class`, the normal widget flow is strict already:
+  `ClassifierController.bind(...)` calls `_ensure_prediction_columns(...)`,
+  which calls `set_class_annotation_state(...)`. Therefore `pred_class` should
+  exist, be categorical, have integer categories, and have a synced
+  `pred_class_colors` palette before styling.
+- For `user_class`, the initial no-annotation state is intentionally lazier:
+  `user_class` may be absent until the first call to
+  `set_user_class_for_rows(...)`. In that state,
+  `_get_region_feature_rows(...)` exposes all observed class values as `0`,
+  and the viewer should render everything with the unlabeled/default color.
+
+Implementation direction:
+
+1. Replace `_get_class_color_lookup_from_normalized_values(...)` with strict
+   validation helpers.
+2. Treat an existing table-backed class column as a contract:
+   - the column must be pandas categorical;
+   - categories must be integer class ids;
+   - categories must be sorted, unique, and include `0`;
+   - categorical codes must not contain missing values;
+   - `table.uns[colors_key]` must exist;
+   - stored palette length must match the category count.
+3. Treat `observed_class_values` as already prepared by
+   `feature_rows[self._color_by]`:
+   - values must be integer dtype;
+   - values must be non-negative;
+   - missing/float/object values should fail loudly instead of triggering a
+     hidden normalization fallback.
+4. Preserve one explicit special case:
+   - if `category_column == USER_CLASS_COLUMN` and `user_class` is absent,
+     allow styling only when observed class values are all `0`;
+   - return a lookup containing only the unlabeled class color;
+   - if observed values contain nonzero classes while `user_class` is absent,
+     raise a clear `ValueError`.
+5. For `pred_class`, absence of the table-backed column should fail loudly in
+   widget-backed styling, because the classifier controller should have called
+   `set_class_annotation_state(...)` via `_ensure_prediction_columns(...)`
+   before styling.
+6. Keep deterministic color backfilling only for class ids that are observed
+   but not present in the stored palette categories, if that situation remains
+   a deliberate product behavior. Otherwise fail loudly there too and require
+   palette sync at the mutation boundary.
+
+Acceptance criteria:
+
+- valid `user_class` and `pred_class` categorical columns still produce the
+  same compact categorical colors;
+- `pred_class` missing from a bound widget table raises a clear error instead
+  of silently backfilling;
+- missing pre-annotation `user_class` with all observed values equal to `0`
+  still renders as unlabeled/default gray;
+- missing `user_class` with observed nonzero class values raises a clear error;
+- invalid categorical contracts fail loudly with actionable messages:
+  non-categorical column, non-integer categories, missing category codes,
+  missing palette, palette-length mismatch;
+- tests that currently expect fallback normalization for invalid table state
+  are updated to expect strict failure or are removed if they only covered the
+  old recovery behavior;
+- `_get_class_color_lookup(...)` is shorter and has no hidden
+  `normalize_class_values(...)` recovery branch.
 
 ## Non-Goals
 

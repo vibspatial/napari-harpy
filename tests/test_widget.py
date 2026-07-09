@@ -35,6 +35,7 @@ from napari_harpy.core.feature_matrix_metadata import (
     register_feature_matrix_metadata,
 )
 from napari_harpy.core.spatialdata import SpatialDataLabelsOption
+from napari_harpy.viewer.labels_colormap import CompactCategoricalLabelColormap
 from napari_harpy.widgets.object_classification.controller import (
     CLASSIFIER_CONFIG_KEY,
     PRED_CLASS_COLORS_KEY,
@@ -1982,19 +1983,19 @@ def test_widget_recolors_layer_from_user_class_annotations(qtbot, sdata_blobs: S
     widget.class_spinbox.setValue(4)
     widget.apply_class_button.click()
 
-    assert isinstance(layer.colormap, DirectLabelColormap)
-    assert np.allclose(layer.colormap.color_dict[0], np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32))
-    assert set(layer.colormap.color_dict) == {None, 0, 5}
-    assert layer.colormap.color_dict[5][3] > 0
+    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert np.allclose(layer.colormap.map(0), np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32))
+    assert len(layer.colormap.color_dict) <= 3
+    assert layer.colormap.map(5)[3] > 0
     assert layer.colormap.map(6)[3] > 0
-    assert not np.allclose(layer.colormap.color_dict[5], layer.colormap.map(6))
+    assert not np.allclose(layer.colormap.map(5), layer.colormap.map(6))
     assert "instance_id" in layer.features.columns
     assert USER_CLASS_COLUMN in layer.features.columns
     assert layer.features.set_index("index").loc[5, "instance_id"] == 5
     assert layer.features.set_index("index").loc[5, USER_CLASS_COLUMN] == 4
 
 
-def test_widget_user_class_annotation_uses_row_scoped_viewer_refresh(
+def test_widget_user_class_annotation_uses_full_refresh_for_compact_user_class_until_sparse_update(
     qtbot,
     monkeypatch,
     sdata_blobs: SpatialData,
@@ -2004,18 +2005,22 @@ def test_widget_user_class_annotation_uses_row_scoped_viewer_refresh(
     widget = HarpyWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
+    full_refresh_calls = []
+    original_refresh = widget._viewer_styling_controller.refresh
 
-    def fail_full_feature_rows() -> pd.DataFrame:
-        raise AssertionError("user_class annotation should not rebuild all feature rows")
+    def record_full_refresh() -> None:
+        full_refresh_calls.append("refresh")
+        original_refresh()
 
-    monkeypatch.setattr(widget._viewer_styling_controller, "_get_region_feature_rows", fail_full_feature_rows)
+    monkeypatch.setattr(widget._viewer_styling_controller, "refresh", record_full_refresh)
 
     layer.selected_label = 5
     widget.class_spinbox.setValue(4)
     widget.apply_class_button.click()
 
-    assert isinstance(layer.colormap, DirectLabelColormap)
-    assert set(layer.colormap.color_dict) == {None, 0, 5}
+    assert full_refresh_calls == ["refresh"]
+    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert len(layer.colormap.color_dict) <= 3
     assert layer.features.set_index("index").loc[5, USER_CLASS_COLUMN] == 4
 
 
@@ -2855,14 +2860,16 @@ def test_widget_colors_predictions_using_pred_class_palette_in_pred_class_mode(q
     table.uns[USER_CLASS_COLORS_KEY] = ["#80808099", "#ff0000", "#00ff00"]
     table.uns[PRED_CLASS_COLORS_KEY] = ["#80808099", "#0000ff", "#ffff00"]
 
-    assert not np.allclose(layer.colormap.color_dict[1], layer.colormap.map(5))
+    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert not np.allclose(layer.colormap.map(1), layer.colormap.map(5))
 
     widget.color_by_combo.setCurrentIndex(widget.color_by_combo.findData("pred_class"))
 
-    assert np.allclose(layer.colormap.color_dict[1], layer.colormap.color_dict[5])
-    assert np.allclose(layer.colormap.color_dict[24], layer.colormap.color_dict[26])
-    assert np.allclose(layer.colormap.color_dict[1], np.asarray(to_rgba("#0000ff"), dtype=np.float32))
-    assert np.allclose(layer.colormap.color_dict[24], np.asarray(to_rgba("#ffff00"), dtype=np.float32))
+    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert np.allclose(layer.colormap.map(1), layer.colormap.map(5))
+    assert np.allclose(layer.colormap.map(24), layer.colormap.map(26))
+    assert np.allclose(layer.colormap.map(1), np.asarray(to_rgba("#0000ff"), dtype=np.float32))
+    assert np.allclose(layer.colormap.map(24), np.asarray(to_rgba("#ffff00"), dtype=np.float32))
     assert PRED_CLASS_COLUMN in layer.features.columns
 
 

@@ -396,6 +396,8 @@ def compact_categorical_labels_mapping_from_values(
     if not isinstance(background_value, int) or isinstance(background_value, bool):
         raise ValueError("Compact labels mapping background value must be an integer label id.")
 
+    # Potential hot path: this validates uniqueness with `np.unique(...)`.
+    # A strictly increasing positive index could skip that check and sorting.
     label_ids = _positive_label_ids_from_index(values.index)
     normalized_categories = [normalize_category_value(category) for category in categories]
 
