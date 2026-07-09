@@ -1745,11 +1745,15 @@ class ObjectClassificationWidget(QWidget):
         if color_by == COLOR_BY_USER_CLASS:
             if self._viewer_styling_controller.refresh_user_class_colormap_and_feature(change):
                 return
+            # Full refresh recovery for stale/missing feature state where the
+            # edited label cannot be matched reliably for a row-scoped update.
             self._refresh_layer_styling()
             return
 
         if color_by in (COLOR_BY_PRED_CLASS, COLOR_BY_PRED_CONFIDENCE):
-            if self._viewer_styling_controller.refresh_user_class_feature(change):
+            # Prediction color modes do not color by `user_class`; keep the
+            # edited `user_class` value current in layer features only.
+            if self._viewer_styling_controller.refresh_user_class_feature_only(change):
                 return
             self._refresh_layer_styling()
             return

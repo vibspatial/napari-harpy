@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 from matplotlib import colormaps
 from matplotlib.colors import to_rgba
-from napari.utils.colormaps import DirectLabelColormap
 
 from napari_harpy.core.annotation import (
     UNLABELED_CLASS,
@@ -218,25 +217,12 @@ class ViewerStylingController:
         """
         if self._labels_layer is None or self._color_by != COLOR_BY_USER_CLASS:
             return False
-        if change.class_id < UNLABELED_CLASS:
-            return False
 
         feature_rows = self._build_user_class_annotation_features(change)
         if feature_rows is None:
             return False
-        if self._refresh_compact_user_class_colormap_and_feature(change, feature_rows):
-            return True
 
-        # `set_user_class_for_rows(...)` has already added any new category and
-        # synced `USER_CLASS_COLORS_KEY`, so newly introduced classes can use the
-        # strict palette lookup below without full-column normalization.
-        color_dict = self._build_user_class_annotation_color_dict(change)
-        if color_dict is None:
-            return False
-
-        self._labels_layer.colormap = direct_label_colormap_from_rgba(color_dict, background_value=0)
-        self._labels_layer.features = feature_rows
-
+        self._refresh_compact_user_class_colormap_and_feature(change, feature_rows)
         return True
 
     def _refresh_compact_user_class_colormap_and_feature(
@@ -246,7 +232,10 @@ class ViewerStylingController:
     ) -> bool:
         colormap = getattr(self._labels_layer, "colormap", None)
         if not isinstance(colormap, CompactCategoricalLabelColormap):
-            return False
+            raise RuntimeError(
+                "Cannot update user-class annotation colors row-scoped: "
+                "the labels layer is not using CompactCategoricalLabelColormap."
+            )
 
         refresh = self._labels_layer.refresh
 
@@ -275,7 +264,7 @@ class ViewerStylingController:
         refresh(extent=False)
         return True
 
-    def refresh_user_class_feature(self, change: UserClassAnnotationChange) -> bool:
+    def refresh_user_class_feature_only(self, change: UserClassAnnotationChange) -> bool:
         """Refresh one user-class feature value without repainting label colors.
 
         This is the direct-annotation fast path for prediction color modes:
@@ -284,8 +273,6 @@ class ViewerStylingController:
         """
         if self._labels_layer is None:
             return False
-        if change.class_id < UNLABELED_CLASS:
-            return False
 
         feature_rows = self._build_user_class_annotation_features(change)
         if feature_rows is None:
@@ -293,36 +280,6 @@ class ViewerStylingController:
 
         self._labels_layer.features = feature_rows
         return True
-
-    def _build_user_class_annotation_color_dict(
-        self,
-        change: UserClassAnnotationChange,
-    ) -> dict[int | None, np.ndarray] | None:
-        colormap = getattr(self._labels_layer, "colormap", None)
-        if isinstance(colormap, CompactCategoricalLabelColormap):
-            # Compact categorical colormaps are handled before this legacy
-            # `color_dict` sparse path.
-            return None
-        if not isinstance(colormap, DirectLabelColormap):
-            return None
-
-        class_color_lookup = self._get_valid_user_class_color_lookup()
-        if class_color_lookup is None:
-            return None
-
-        color_dict = dict(colormap.color_dict)
-        instance_id = int(change.instance_id)
-        class_id = int(change.class_id)
-        if class_id == UNLABELED_CLASS:
-            color_dict.pop(instance_id, None)
-            return color_dict
-
-        class_color = class_color_lookup.get(class_id)
-        if class_color is None:
-            return None
-
-        color_dict[instance_id] = class_color
-        return color_dict
 
     def _build_user_class_annotation_features(
         self,

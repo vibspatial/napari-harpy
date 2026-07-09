@@ -1895,7 +1895,7 @@ Acceptance:
 
 ##### Phase 6.7d: Remove Legacy Direct-Colormap Fallback
 
-Status: proposed.
+Status: implemented.
 
 Goal:
 

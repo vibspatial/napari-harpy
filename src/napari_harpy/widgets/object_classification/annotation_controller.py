@@ -34,6 +34,10 @@ class UserClassAnnotationChange:
     class_id: int
     user_class_was_available_as_color_source: bool = True
 
+    def __post_init__(self) -> None:
+        if self.class_id < 0:
+            raise ValueError("Class ids must be zero or positive integers.")
+
 
 @dataclass(frozen=True)
 class _SelectionTableState:
@@ -297,7 +301,7 @@ class AnnotationController:
         logged and the user-facing warning message is returned so the widget can
         display it in the UI.
         """
-        if class_id < UNLABELED_CLASS:
+        if class_id < 0:
             raise ValueError("Class ids must be zero or positive integers.")
 
         state = self._get_selection_table_state()

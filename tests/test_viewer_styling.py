@@ -139,6 +139,11 @@ def _expected_rgba(color: str) -> np.ndarray:
     return np.asarray(to_rgba(color), dtype=np.float32)
 
 
+def test_user_class_annotation_change_rejects_negative_class_id() -> None:
+    with pytest.raises(ValueError, match="zero or positive"):
+        UserClassAnnotationChange(instance_id=5, class_id=-1)
+
+
 def test_refresh_reuses_one_region_feature_snapshot(monkeypatch: pytest.MonkeyPatch, sdata_blobs: SpatialData) -> None:
     _set_user_classes(sdata_blobs, {5: 4}, categories=[0, 4])
     layer = _FakeLabelsLayer()
@@ -468,7 +473,32 @@ def test_row_scoped_user_class_annotation_appends_new_class_texture(
     np.testing.assert_allclose(layer.colormap.map(6), _expected_rgba("#0000ff"))
 
 
-def test_row_scoped_user_class_feature_refresh_keeps_prediction_colormap(
+def test_row_scoped_user_class_annotation_requires_compact_colormap(
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_user_classes(sdata_blobs, {5: 4}, categories=[0, 4])
+    layer = _FakeLabelsLayer()
+    controller = _make_controller(sdata_blobs, layer)
+    feature_rows = _feature_rows({5: 4})
+    controller.refresh_layer_features(feature_rows=feature_rows)
+    layer.colormap = DirectLabelColormap(
+        color_dict={
+            None: np.zeros(4, dtype=np.float32),
+            0: np.zeros(4, dtype=np.float32),
+            5: _expected_rgba("#ff0000"),
+        },
+        background_value=0,
+    )
+
+    with pytest.raises(RuntimeError, match="CompactCategoricalLabelColormap"):
+        controller.refresh_user_class_colormap_and_feature(UserClassAnnotationChange(instance_id=5, class_id=4))
+
+    assert layer.refresh_count == 0
+    assert layer.events.colormap.call_count == 0
+    assert isinstance(layer.colormap, DirectLabelColormap)
+
+
+def test_row_scoped_user_class_feature_only_refresh_keeps_prediction_colormap(
     monkeypatch: pytest.MonkeyPatch,
     sdata_blobs: SpatialData,
 ) -> None:
@@ -490,7 +520,7 @@ def test_row_scoped_user_class_feature_refresh_keeps_prediction_colormap(
 
     monkeypatch.setattr(controller, "_get_region_feature_rows", fail_full_feature_rows)
 
-    handled = controller.refresh_user_class_feature(UserClassAnnotationChange(instance_id=6, class_id=4))
+    handled = controller.refresh_user_class_feature_only(UserClassAnnotationChange(instance_id=6, class_id=4))
 
     assert handled is True
     assert layer.colormap is original_colormap
