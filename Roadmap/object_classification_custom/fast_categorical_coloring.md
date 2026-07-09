@@ -2229,6 +2229,23 @@ new compact arrays: ~4.07 MB
 
 Status: proposed.
 
+Goal:
+
+- prevent async-sliced labels layers from temporarily or persistently rendering
+  a stale texture-code image through a newly assigned direct/compact labels
+  colormap.
+
+Scope:
+
+- this applies to explicit Harpy recoloring actions that assign a table-driven
+  labels colormap;
+- it should cover styled labels overlays created through the viewer widget;
+- it should cover object-classification full color repaints for `user_class`,
+  `pred_class`, and `pred_confidence`;
+- it should not change sparse user-class annotation updates, because those
+  mutate the existing compact colormap and already call `refresh(extent=False)`;
+- it should not disable napari async slicing globally.
+
 When `Interactive(..., async_slicing=True)` is used, coloring labels by a
 categorical or continuous table column can briefly or persistently render with
 incorrect colors. The observed screenshots show patterns consistent with a
@@ -2242,7 +2259,7 @@ Investigation notes:
   `Interactive(...)` through `get_settings().experimental.async_`.
 - Harpy builds styled labels layers the same way for async and sync:
   `_build_labels_layer(...)` creates a `napari.layers.Labels` layer, and
-  `apply_table_color_source_to_labels_layer(...)` later assigns the direct
+  `apply_table_color_source_to_labels_layer(...)` later assigns the table-driven
   labels colormap.
 - Napari labels rendering is a two-stage process:
   - `Labels._raw_to_displayed(...)` converts raw label ids to small texture
@@ -2270,21 +2287,23 @@ Investigation notes:
 
 Recommended fix:
 
-- After Harpy assigns a direct labels colormap for table-driven labels coloring,
-  force the current labels slice to be recoded synchronously before returning
-  control to the user.
+- After Harpy assigns a table-driven direct/compact labels colormap, force the
+  current labels slice to be recoded synchronously before returning control to
+  the user.
 - Implement this in the viewer-facing code path, not inside the pure colormap
   builders:
-  - `ViewerAdapter.ensure_styled_labels_loaded(...)` has access to both the
-    viewer and the styled labels layer, so it can force-refresh the just-styled
-    layer after `apply_table_color_source_to_labels_layer(...)`.
-  - Object-classification labels coloring should use the same helper once
-    Slice 6.6b routes `user_class` / `pred_class` through compact categorical
-    colormaps and still uses direct labels colormaps for `pred_confidence`.
-- Prefer a small helper with a no-op fallback for test/dummy viewers:
+  - `ViewerAdapter.ensure_styled_labels_loaded(...)` has access to the viewer
+    and the styled labels layer, so it can force-refresh the just-styled layer
+    after `apply_table_color_source_to_labels_layer(...)`;
+  - `ViewerStylingController.refresh_layer_colors(...)` has access to the
+    object-classification labels layer after assigning `user_class`,
+    `pred_class`, or `pred_confidence` colormaps.
+- Prefer a small helper with a no-op fallback for test/dummy viewers. The helper
+  should live in a dedicated `viewer.labels_async` module, because it touches
+  napari internals and should stay isolated from adapter and colormap logic:
 
   ```python
-  def _force_sync_labels_slice_after_colormap_change(viewer: object, layer: Labels) -> None:
+  def force_sync_labels_slice_after_colormap_change(viewer: object, layer: Labels) -> None:
       layer_slicer = getattr(viewer, "_layer_slicer", None)
       dims = getattr(viewer, "dims", None)
       if layer_slicer is None or dims is None:
@@ -2295,23 +2314,61 @@ Recommended fix:
 
 - This deliberately blocks only after an explicit Harpy recoloring action. It
   does not disable async slicing globally for normal navigation.
+- The helper should use napari's layer slicer only when available. Dummy test
+  viewers and headless objects without `_layer_slicer`/`dims` should no-op.
+- Do not call a bare `layer.refresh()`: `layer.colormap = ...` already calls
+  `refresh(extent=False)`, but with async slicing that refresh schedules async
+  work. The problem is not missing refresh; it is that the displayed slice can
+  remain encoded with the previous colormap until async slicing completes.
+- Keep the helper explicitly named around "after colormap change" so future
+  readers do not use it as a generic repaint helper.
 - If forcing a sync slice is too expensive in practice, a more refined follow-up
   is to recode the already-loaded current raw slice in place and emit
   `layer.events.set_data()`. That avoids dask I/O for the current view, but it
   touches more napari internals and should only be chosen if the simple
   force-sync helper is too slow.
 
+Implementation steps:
+
+1. Add `viewer.labels_async.force_sync_labels_slice_after_colormap_change(viewer, layer)`.
+2. Call it in `ViewerAdapter.ensure_styled_labels_loaded(...)` immediately
+   after `apply_table_color_source_to_labels_layer(...)`.
+3. Give `ViewerStylingController` access to the viewer object, either through a
+   narrow `ViewerAdapter` method/property or by placing the helper behind the
+   adapter. Then call it in `refresh_layer_colors(...)` after assigning the
+   full colormap for `pred_confidence`, `user_class`, or `pred_class`.
+4. Do not call it from
+   `refresh_user_class_colormap_and_feature(...)` or
+   `refresh_user_class_feature_only(...)`.
+5. Keep `async_slicing=False` behavior unchanged; the helper may still be safe
+   to call, but it should be cheap/no-op when no napari layer slicer is present.
+
 Tests:
 
-- Add a `ViewerModel`-based unit test for the helper:
+- Add a unit test for the helper using a fake napari-like viewer object:
+  - fake `viewer._layer_slicer.force_sync()` is a context manager recording
+    entry/exit;
+  - fake `viewer._layer_slicer.submit(layers=[layer], dims=dims, force=True)`
+    records its call;
+  - assert the helper calls `submit(...)` with exactly the styled labels layer,
+    the viewer dims object, and `force=True`.
+- Add a no-op helper test for `DummyViewer` / non-napari viewer objects so
+  existing adapter tests stay lightweight.
+- Add an adapter test that `ensure_styled_labels_loaded(...)` calls the helper
+  after styling both newly created and reused styled labels overlays.
+- Add an object-classification styling test that `refresh_layer_colors(...)`
+  calls the helper after full color repaint for `pred_confidence` and one
+  categorical class mode.
+- Add a test that sparse
+  `refresh_user_class_colormap_and_feature(...)` does not call the helper.
+- Optional, if practical in headless napari:
+  add a `ViewerModel`-based test for final slice synchronization:
   - create a `Labels` layer with a previous labels colormap and loaded raw
     slice;
   - assign a direct labels colormap;
   - call the helper;
   - assert the displayed texture-code view equals
     `layer.colormap._data_to_texture(layer._slice.image.raw)`.
-- Add a test that the helper is a no-op for `DummyViewer` / non-napari viewer
-  objects so existing adapter tests stay lightweight.
 - Keep styled-label semantic tests focused on final mapped colors; do not assert
   on transient async intermediate states.
 
