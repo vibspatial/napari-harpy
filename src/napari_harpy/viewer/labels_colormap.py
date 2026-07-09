@@ -2,17 +2,24 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from typing import Any
 
 import numpy as np
 import pandas as pd
+from matplotlib import colormaps
 from matplotlib.colors import to_rgba
 from napari.utils.colormap_backend import ColormapBackend, set_backend
 from napari.utils.colormaps import DirectLabelColormap
 from napari.utils.colormaps import _accelerated_cmap as _accel_cmap
 from numba import njit, typed, types
 
-from napari_harpy.viewer._styling import MISSING_CATEGORICAL_COLOR, normalize_category_value
+from napari_harpy.viewer._styling import (
+    MISSING_CATEGORICAL_COLOR,
+    MISSING_CONTINUOUS_COLOR,
+    OVERLAY_CONTINUOUS_COLORMAP,
+    normalize_category_value,
+)
 
 _TRANSPARENT_RGBA = np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
 
@@ -668,6 +675,110 @@ def compact_categorical_label_colormap_from_values(
     return CompactLabelColormap(mapping)
 
 
+def compact_continuous_labels_mapping_from_values(
+    values: pd.Series,
+    *,
+    bins: int = 256,
+    colormap_name: str = OVERLAY_CONTINUOUS_COLORMAP,
+    missing_color: Any = MISSING_CONTINUOUS_COLOR,
+    default_color: Any = _TRANSPARENT_RGBA,
+    background_value: int = 0,
+    value_range: tuple[float, float] | None = None,
+) -> CompactLabelsMapping:
+    """Return compact labels coloring state for continuous table values.
+
+    Parameters
+    ----------
+    values
+        Table-aligned continuous column for one labels element. The index
+        contains positive label ids / instance ids, and each row value is the
+        continuous value used to color that label. This is not the labels image
+        data itself.
+    bins
+        Number of color bins sampled from `colormap_name`. Finite source values
+        map to these bins, while missing/non-finite values map to
+        `missing_color`.
+    colormap_name
+        Matplotlib colormap used for finite values.
+    missing_color
+        Color for known table rows with missing or non-finite values.
+    default_color
+        Color for labels that are not present in `values`.
+    background_value
+        Background label id.
+    value_range
+        Optional `(min, max)` range used for normalization. If omitted, the
+        range is derived from finite values. Values outside the range are
+        clamped before binning.
+
+    Source values such as `0.0` are table values attached to positive label
+    ids. `background_value=0` is reserved for the labels image background.
+    Constant finite values map to the midpoint bin, matching the current
+    continuous RGBA helper's `0.5` normalization behavior.
+    """
+    if not isinstance(background_value, int) or isinstance(background_value, bool):
+        raise ValueError("Compact labels mapping background value must be an integer label id.")
+    if not isinstance(bins, int) or isinstance(bins, bool) or bins < 2:
+        raise ValueError("Compact continuous labels mapping `bins` must be an integer >= 2.")
+    if value_range is not None:
+        min_value, max_value = value_range
+        min_value = float(min_value)
+        max_value = float(max_value)
+        if not np.isfinite(min_value) or not np.isfinite(max_value):
+            raise ValueError("Compact continuous labels mapping `value_range` must contain finite values.")
+        if max_value <= min_value:
+            raise ValueError("Compact continuous labels mapping `value_range` must satisfy min < max.")
+        value_range = (min_value, max_value)
+
+    label_ids = _positive_label_ids_from_index(values.index)
+    value_array = pd.to_numeric(values, errors="coerce").to_numpy(dtype=np.float64, copy=False)
+    finite_values = np.isfinite(value_array)
+
+    # Cached as a small allocation polish; the hot path is label-id validation
+    # and per-label texture-code construction, not this 256-bin RGBA table.
+    texture_rgba = _continuous_texture_rgba(
+        bins=bins,
+        colormap_name=colormap_name,
+        default_rgba=_rgba_cache_key(default_color),
+        missing_rgba=_rgba_cache_key(missing_color),
+    )
+    missing_texture_code = bins + 2
+    texture_codes = np.full(len(value_array), missing_texture_code, dtype=np.int64)
+
+    if np.any(finite_values):
+        finite_numeric_values = value_array[finite_values]
+        if value_range is None:
+            min_value = float(np.min(finite_numeric_values))
+            max_value = float(np.max(finite_numeric_values))
+        else:
+            min_value, max_value = value_range
+
+        if max_value == min_value:
+            normalized_values = np.full(len(finite_numeric_values), 0.5, dtype=np.float64)
+        else:
+            normalized_values = np.clip(
+                (finite_numeric_values - min_value) / (max_value - min_value),
+                0.0,
+                1.0,
+            )
+        color_bins = np.floor(normalized_values * bins).astype(np.int64)
+        color_bins = np.clip(color_bins, 0, bins - 1)
+        texture_codes[finite_values] = color_bins + 2
+
+    order = np.argsort(label_ids)
+    label_ids = label_ids[order]
+    texture_codes = texture_codes[order]
+    return CompactLabelsMapping(
+        label_ids=label_ids,
+        texture_codes=_minimum_texture_code_dtype(texture_codes),
+        texture_rgba=texture_rgba,
+        default_texture_code=0,
+        background_texture_code=1,
+        background_value=background_value,
+        missing_texture_code=missing_texture_code,
+    )
+
+
 def direct_label_colormap_from_rgba(
     color_dict: dict[int | None, np.ndarray],
     *,
@@ -708,6 +819,30 @@ def direct_label_colormap_from_rgba(
     object.__setattr__(colormap, "color_dict", color_dict)
     colormap._clear_cache()
     return colormap
+
+
+@lru_cache(maxsize=32)
+def _continuous_texture_rgba(
+    bins: int,
+    colormap_name: str,
+    default_rgba: tuple[float, float, float, float],
+    missing_rgba: tuple[float, float, float, float],
+) -> np.ndarray:
+    finite_colors = colormaps[colormap_name](np.linspace(0.0, 1.0, bins))
+    texture_rgba = np.vstack(
+        [
+            np.asarray(default_rgba, dtype=np.float32).reshape(1, 4),
+            _TRANSPARENT_RGBA.reshape(1, 4),
+            np.asarray(finite_colors, dtype=np.float32),
+            np.asarray(missing_rgba, dtype=np.float32).reshape(1, 4),
+        ]
+    )
+    texture_rgba.setflags(write=False)
+    return texture_rgba
+
+
+def _rgba_cache_key(color: Any) -> tuple[float, float, float, float]:
+    return tuple(float(channel) for channel in to_rgba(color))
 
 
 def _validate_default_color(color: np.ndarray, *, label_id: int | None) -> None:

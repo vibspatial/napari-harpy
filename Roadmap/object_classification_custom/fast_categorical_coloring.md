@@ -2059,7 +2059,7 @@ Acceptance:
 
 #### Slice 7.2: Continuous Compact Mapping Helper
 
-Status: proposed.
+Status: implemented.
 
 Goal:
 
