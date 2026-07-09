@@ -1968,10 +1968,19 @@ label_id -> color_bin
 color_bin -> RGBA
 ```
 
-This should be a separate continuous compact builder, not a call to
-`compact_categorical_labels_mapping_from_values(...)`. The categorical helper
-maps discrete category values to texture codes; continuous coloring must map
-numeric values through normalization and quantization before assigning bins.
+This work should be split into small implementation slices. The compact napari
+colormap subclass is currently named for categorical values, but the underlying
+viewer contract is more general:
+
+```text
+label_id -> texture_code
+texture_code -> RGBA
+```
+
+Continuous coloring can reuse that same compact colormap shape after it maps
+numeric values to fixed color bins. It should not reuse
+`compact_categorical_labels_mapping_from_values(...)`, because categorical
+values and continuous values have different normalization/binning semantics.
 
 Rationale:
 
@@ -1999,6 +2008,65 @@ Rationale:
   specified and tested separately from categorical coloring, with an explicit
   visual/parity tolerance.
 
+#### Slice 7.1: Neutral Compact Label Colormap Naming
+
+Status: proposed.
+
+Goal:
+
+- rename the reusable compact state and colormap classes so they are not
+  categorically tied to categorical data before continuous code reuses them.
+
+Implementation direction:
+
+1. Rename the reusable dataclass:
+
+   ```text
+   CompactCategoricalLabelsMapping -> CompactLabelsMapping
+   ```
+
+   Keep categorical-specific fields only if they truly belong to categorical
+   sparse annotation. In particular, `category_texture_codes` is used for
+   row-scoped user-class updates, so either keep it as an optional generic
+   auxiliary mapping or rename it to something neutral such as
+   `value_texture_codes`.
+2. Rename the napari subclass:
+
+   ```text
+   CompactCategoricalLabelColormap -> CompactLabelColormap
+   ```
+
+   This class represents napari's direct-label compact mapping contract, not a
+   categorical algorithm.
+3. Keep categorical builder names explicit:
+
+   ```text
+   compact_categorical_labels_mapping_from_values(...)
+   compact_categorical_label_colormap_from_values(...)
+   ```
+
+   These builders still perform categorical normalization and palette mapping.
+4. Update imports, type aliases, tests, and roadmap wording where the generic
+   colormap class name is asserted.
+5. Do not add continuous binning behavior in this slice.
+
+Acceptance:
+
+- existing categorical behavior and benchmarks are unchanged;
+- row-scoped user-class sparse annotation still works;
+- tests assert the renamed compact class where needed;
+- do not keep compatibility aliases for the old class names; update all
+  internal call sites to the neutral names.
+
+#### Slice 7.2: Continuous Compact Mapping Helper
+
+Status: proposed.
+
+Goal:
+
+- add pure helpers that convert continuous label-aligned values into
+  `CompactLabelsMapping` using fixed 256-bin quantization.
+
 Implementation direction:
 
 1. Define the continuous binning contract:
@@ -2006,38 +2074,80 @@ Implementation direction:
    - normalize finite values over the same range currently used by
      `continuous_rgba_for_values(...)`;
    - map missing/non-finite values to the current missing/default color;
-   - clamp values outside the chosen range.
-2. Build a pure helper that produces compact state:
-   - positive label ids;
-   - `label_id -> color_bin`;
-   - `color_bin -> RGBA`;
-   - missing/default color;
-   - transparent background label `0`.
-   This helper should be continuous-specific, for example
-   `compact_continuous_labels_mapping_from_values(...)`, even if it reuses the
-   same lower-level compact state dataclass or compact colormap subclass shape
-   introduced for categorical labels.
-3. Compare the proposed bin count with the current number of unique RGBA values
-   produced by `continuous_rgba_for_values(...)` on benchmark columns. For
-   example, the Slice 5 `total_counts` column produced `182` unique RGBA colors
-   for `406,611` rows with the current path, because matplotlib/napari already
-   yield repeated exact RGBA values.
-4. Reuse the Harpy-owned compact colormap implementation shape from Slice 6
-   where possible.
-5. Add visual/parity-tolerance tests against the current continuous direct RGBA
-   helper:
+   - clamp values outside the chosen range;
+   - constant finite values map to the midpoint bin, matching the current
+     continuous color behavior that normalizes constants to `0.5`.
+2. Add a continuous-specific pure helper, for example:
+
+   ```python
+   compact_continuous_labels_mapping_from_values(
+       values: pd.Series,
+       *,
+       bins: int = 256,
+       colormap_name: str = OVERLAY_CONTINUOUS_COLORMAP,
+       missing_color: Any = MISSING_CONTINUOUS_COLOR,
+       default_color: Any = _TRANSPARENT_RGBA,
+       background_value: int = 0,
+       value_range: tuple[float, float] | None = None,
+   ) -> CompactLabelsMapping
+   ```
+
+3. The helper should produce:
+   - positive label ids from `values.index`;
+   - `label_id -> color_bin` texture codes;
+   - `color_bin -> RGBA` rows sampled from the configured matplotlib colormap;
+   - a missing-value texture row;
+   - transparent background label `0`;
+   - transparent default/unmapped label color unless the caller overrides it.
+4. Do not integrate this helper into styled labels or object classification yet.
+5. Add tests against the current continuous direct RGBA helper:
    - representative values at min, midpoint, max;
    - repeated values;
    - missing values;
-   - out-of-range/clamped values if the helper exposes an explicit range;
+   - all-missing values;
+   - constant finite values;
+   - explicit value range and clamping;
    - large label ids.
-6. Benchmark on the Slice 5 `continuous_total_counts` case.
 
-Acceptance criteria:
+Acceptance:
 
 - continuous labels coloring remains visually equivalent within an explicit
-  accepted 256-bin tolerance; it is not expected to be bit-for-bit identical to
-  the current per-value RGBA path;
+  accepted 256-bin tolerance in helper-level tests;
+- missing values keep the current missing/default color;
+- background label `0` remains transparent;
+- the helper returns compact state without building a full `label_id -> RGBA`
+  dictionary.
+
+#### Slice 7.3: Continuous Labels Integration
+
+Status: proposed.
+
+Goal:
+
+- replace long-term direct RGBA continuous labels colormaps with the compact
+  continuous mapping helper where appropriate.
+
+Implementation direction:
+
+1. Add a `compact_continuous_label_colormap_from_values(...)` helper that wraps
+   the Slice 7.2 mapping helper in `CompactLabelColormap`.
+2. Update `viewer/labels_styling.py` continuous `.obs` and `.X` branches:
+   - replace `_build_continuous_color_dict(...)` plus
+     `direct_label_colormap_from_rgba(...)`;
+   - assign the compact continuous colormap instead;
+   - keep label features unchanged so hover/status remains label-id based.
+3. Update object-classification `pred_confidence`:
+   - use the same compact colormap machinery;
+   - use an explicit fixed value range `(0.0, 1.0)` instead of table min/max;
+   - keep the existing missing confidence color.
+4. Keep categorical paths unchanged.
+5. Benchmark on the previous `continuous_total_counts` case and on
+   `pred_confidence` object-classification styling.
+
+Acceptance:
+
+- continuous labels coloring remains visually equivalent within the accepted
+  256-bin tolerance;
 - missing values keep the current missing/default color;
 - background label `0` remains transparent;
 - hover/status feature lookup remains label-id based;
