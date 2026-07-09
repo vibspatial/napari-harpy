@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 from matplotlib import colormaps
 from matplotlib.colors import to_rgba
-from napari.utils.colormaps import DirectLabelColormap
 
 from napari_harpy.core.annotation import (
     UNLABELED_CLASS,
@@ -29,7 +28,11 @@ from napari_harpy.core.spatialdata import (
     get_table_metadata,
 )
 from napari_harpy.viewer.adapter import ViewerAdapter
-from napari_harpy.viewer.labels_colormap import direct_label_colormap_from_rgba
+from napari_harpy.viewer.labels_colormap import (
+    CompactCategoricalLabelColormap,
+    compact_categorical_label_colormap_from_values,
+    direct_label_colormap_from_rgba,
+)
 from napari_harpy.viewer.labels_styling import _build_labels_features, _get_region_rows_by_instance
 from napari_harpy.widgets.object_classification.controller import (
     PRED_CLASS_COLORS_KEY,
@@ -137,25 +140,28 @@ class ViewerStylingController:
         if feature_rows is None:
             feature_rows = self._get_region_feature_rows()
 
-        instance_ids = feature_rows.index.to_numpy(dtype=np.int64, copy=False)
-
         if self._color_by == COLOR_BY_PRED_CONFIDENCE:
+            instance_ids = feature_rows.index.to_numpy(dtype=np.int64, copy=False)
             color_dict = _build_pred_confidence_color_dict(
                 instance_ids=instance_ids,
                 confidence_values=feature_rows[PRED_CONFIDENCE_COLUMN],
             )
+            self._labels_layer.colormap = direct_label_colormap_from_rgba(color_dict, background_value=0)
         else:
-            class_by_instance = feature_rows[self._color_by]
+            class_values_by_instance = feature_rows[self._color_by]
             category_column = USER_CLASS_COLUMN
             colors_key = USER_CLASS_COLORS_KEY
             if self._color_by == COLOR_BY_PRED_CLASS:
                 category_column = PRED_CLASS_COLUMN
                 colors_key = PRED_CLASS_COLORS_KEY
 
+            # Object-classification values are class ids, not colors. Resolve
+            # them through the class palette stored in table `.uns`; generic
+            # styled-labels coloring intentionally uses a separate color path.
             class_color_lookup = self._get_class_color_lookup(
                 category_column=category_column,
                 colors_key=colors_key,
-                extra_class_values=class_by_instance,
+                observed_class_values=class_values_by_instance,
                 unlabeled_class=UNLABELED_CLASS,
                 unlabeled_color=UNLABELED_COLOR,
             )
@@ -164,17 +170,28 @@ class ViewerStylingController:
                 # Defensive fallback for an unexpectedly incomplete lookup;
                 # the normal path already returns an RGBA array for class 0.
                 unlabeled_color = _rgba_array(UNLABELED_COLOR)
-            color_dict = _base_labels_color_dict(unlabeled_color)
             if self._color_by == COLOR_BY_USER_CLASS:
-                class_by_instance = class_by_instance[class_by_instance != UNLABELED_CLASS]
+                # User-class `0` means "unlabeled": leave those labels out of
+                # the compact mapping so they fall through to the default
+                # unlabeled color. Prediction class `0` stays explicit.
+                class_values_by_instance = class_values_by_instance[class_values_by_instance != UNLABELED_CLASS]
 
-            for instance_id, class_id_value in class_by_instance.items():
-                class_id = int(class_id_value)
-                if self._color_by == COLOR_BY_USER_CLASS and class_id == UNLABELED_CLASS:
-                    continue
-                color_dict[int(instance_id)] = class_color_lookup.get(class_id, unlabeled_color)
-
-        self._labels_layer.colormap = direct_label_colormap_from_rgba(color_dict, background_value=0)
+            categories = sorted(class_color_lookup)
+            class_values = pd.Series(
+                pd.Categorical(
+                    class_values_by_instance.to_numpy(dtype=np.int64, copy=False),
+                    categories=categories,
+                ),
+                index=class_values_by_instance.index,
+                name=class_values_by_instance.name,
+            )
+            self._labels_layer.colormap = compact_categorical_label_colormap_from_values(
+                class_values,
+                categories=categories,
+                palette=[class_color_lookup[class_id] for class_id in categories],
+                default_color=unlabeled_color,
+                background_value=0,
+            )
 
     def refresh_layer_features(self, *, feature_rows: pd.DataFrame | None = None) -> None:
         """Expose current label and prediction values as napari layer features."""
@@ -200,23 +217,54 @@ class ViewerStylingController:
         """
         if self._labels_layer is None or self._color_by != COLOR_BY_USER_CLASS:
             return False
-        if change.class_id < UNLABELED_CLASS:
-            return False
 
-        # `set_user_class_for_rows(...)` has already added any new category and
-        # synced `USER_CLASS_COLORS_KEY`, so newly introduced classes can use the
-        # strict palette lookup below without full-column normalization.
-        color_dict = self._build_user_class_annotation_color_dict(change)
         feature_rows = self._build_user_class_annotation_features(change)
-        if color_dict is None or feature_rows is None:
+        if feature_rows is None:
             return False
 
-        self._labels_layer.colormap = direct_label_colormap_from_rgba(color_dict, background_value=0)
-        self._labels_layer.features = feature_rows
-
+        self._refresh_compact_user_class_colormap_and_feature(change, feature_rows)
         return True
 
-    def refresh_user_class_feature(self, change: UserClassAnnotationChange) -> bool:
+    def _refresh_compact_user_class_colormap_and_feature(
+        self,
+        change: UserClassAnnotationChange,
+        feature_rows: pd.DataFrame,
+    ) -> bool:
+        colormap = getattr(self._labels_layer, "colormap", None)
+        if not isinstance(colormap, CompactCategoricalLabelColormap):
+            raise RuntimeError(
+                "Cannot update user-class annotation colors row-scoped: "
+                "the labels layer is not using CompactCategoricalLabelColormap."
+            )
+
+        refresh = self._labels_layer.refresh
+
+        instance_id = int(change.instance_id)
+        class_id = int(change.class_id)
+        if class_id == UNLABELED_CLASS:
+            result = colormap.remove_label(instance_id)
+        else:
+            class_color_lookup = self._get_valid_user_class_color_lookup()
+            if class_color_lookup is None:
+                raise RuntimeError("Cannot update compact user-class coloring without valid user-class colors.")
+            class_color = class_color_lookup.get(class_id)
+            if class_color is None:
+                raise RuntimeError(f"Cannot update compact user-class coloring: class `{class_id}` has no color.")
+            result = colormap.set_label_category(instance_id, class_id, category_color=class_color)
+
+        self._labels_layer.features = feature_rows
+        if result.texture_table_changed:
+            # Only brand-new classes append a new texture-code -> RGBA row.
+            # Notify vispy to upload the expanded lookup texture. Existing-
+            # class edits reuse an already uploaded texture row, so they only
+            # need the layer refresh below.
+            self._labels_layer.events.colormap()
+        # The compact mapping was mutated in place; repaint the layer without
+        # asking napari to recompute the layer extent.
+        refresh(extent=False)
+        return True
+
+    def refresh_user_class_feature_only(self, change: UserClassAnnotationChange) -> bool:
         """Refresh one user-class feature value without repainting label colors.
 
         This is the direct-annotation fast path for prediction color modes:
@@ -225,8 +273,6 @@ class ViewerStylingController:
         """
         if self._labels_layer is None:
             return False
-        if change.class_id < UNLABELED_CLASS:
-            return False
 
         feature_rows = self._build_user_class_annotation_features(change)
         if feature_rows is None:
@@ -234,32 +280,6 @@ class ViewerStylingController:
 
         self._labels_layer.features = feature_rows
         return True
-
-    def _build_user_class_annotation_color_dict(
-        self,
-        change: UserClassAnnotationChange,
-    ) -> dict[int | None, np.ndarray] | None:
-        colormap = getattr(self._labels_layer, "colormap", None)
-        if not isinstance(colormap, DirectLabelColormap):
-            return None
-
-        class_color_lookup = self._get_valid_user_class_color_lookup()
-        if class_color_lookup is None:
-            return None
-
-        color_dict = dict(colormap.color_dict)
-        instance_id = int(change.instance_id)
-        class_id = int(change.class_id)
-        if class_id == UNLABELED_CLASS:
-            color_dict.pop(instance_id, None)
-            return color_dict
-
-        class_color = class_color_lookup.get(class_id)
-        if class_color is None:
-            return None
-
-        color_dict[instance_id] = class_color
-        return color_dict
 
     def _build_user_class_annotation_features(
         self,
@@ -368,7 +388,7 @@ class ViewerStylingController:
         colors_key: str,
         unlabeled_class: int = UNLABELED_CLASS,
         unlabeled_color: str = UNLABELED_COLOR,
-        extra_class_values: pd.Series | None = None,
+        observed_class_values: pd.Series | None = None,
     ) -> dict[int, np.ndarray]:
         """Build a class-id -> color lookup for a discrete table column.
 
@@ -379,7 +399,7 @@ class ViewerStylingController:
         """
         table = self._get_bound_table()
 
-        if table is not None and category_column == USER_CLASS_COLUMN and category_column in table.obs:
+        if table is not None and category_column in table.obs:
             fast_lookup = _valid_categorical_class_color_lookup(
                 table.obs[category_column],
                 table.uns.get(colors_key),
@@ -388,15 +408,15 @@ class ViewerStylingController:
             )
             if fast_lookup is not None:
                 categories = set(fast_lookup)
-                if extra_class_values is not None:
-                    # Happy path: `feature_rows` already contains clean integer class ids,
-                    # so we can include them without the expensive `normalize_class_values(...)`
-                    # scan over the full table column again.
-                    extra_class_ids = _read_class_values_without_normalizing(
-                        extra_class_values,
+                if observed_class_values is not None:
+                    # `feature_rows[self._color_by]` has already been prepared
+                    # as integer class ids for the labels element being
+                    # colored, so collect the observed classes directly.
+                    observed_class_ids = _read_class_values_without_normalizing(
+                        observed_class_values,
                         unlabeled_class=unlabeled_class,
                     )
-                    if extra_class_ids is None:
+                    if observed_class_ids is None:
                         # Defensive fallback for unexpected dirty feature values. This preserves
                         # robust class-value normalization instead of trusting a corrupt fast path.
                         return _rgba_color_lookup(
@@ -405,10 +425,10 @@ class ViewerStylingController:
                                 colors_key=colors_key,
                                 unlabeled_class=unlabeled_class,
                                 unlabeled_color=unlabeled_color,
-                                extra_class_values=extra_class_values,
+                                observed_class_values=observed_class_values,
                             )
                         )
-                    categories.update(extra_class_ids)
+                    categories.update(observed_class_ids)
 
                 return _rgba_color_lookup(
                     backfill_missing_class_colors(
@@ -425,7 +445,7 @@ class ViewerStylingController:
                 colors_key=colors_key,
                 unlabeled_class=unlabeled_class,
                 unlabeled_color=unlabeled_color,
-                extra_class_values=extra_class_values,
+                observed_class_values=observed_class_values,
             )
         )
 
@@ -436,7 +456,7 @@ class ViewerStylingController:
         colors_key: str,
         unlabeled_class: int = UNLABELED_CLASS,
         unlabeled_color: str = UNLABELED_COLOR,
-        extra_class_values: pd.Series | None = None,
+        observed_class_values: pd.Series | None = None,
     ) -> dict[int, str]:
         table = self._get_bound_table()
 
@@ -450,20 +470,21 @@ class ViewerStylingController:
                     unlabeled_class=unlabeled_class,
                 ).tolist()
             )
-        if extra_class_values is not None:
+        if observed_class_values is not None:
             categories.update(
                 normalize_class_values(
-                    extra_class_values,
-                    column_name=extra_class_values.name or category_column,
+                    observed_class_values,
+                    column_name=observed_class_values.name or category_column,
                     unlabeled_class=unlabeled_class,
                 ).tolist()
             )
 
         sorted_categories = sorted(int(class_id) for class_id in categories)
-        # Fall back to deterministic class-id colors when no table-backed palette is available.
-        # This branch is just a safety net, and typically does not happen.
         if table is None or category_column not in table.obs:
-            # In the happy path, `set_class_annotation_state(...)` has already kept the stored palette complete.
+            # Safety fallback for incomplete/non-widget states where the
+            # table-backed class column is unavailable. In the normal widget
+            # flow, the classifier controller calls `set_class_annotation_state(...)`
+            # to ensure prediction columns and palettes before styling.
             return backfill_missing_class_colors(
                 {unlabeled_class: unlabeled_color},
                 sorted_categories,
@@ -547,8 +568,18 @@ def _read_valid_categorical_class_categories(values: pd.Series, *, unlabeled_cla
 
 
 def _read_class_values_without_normalizing(values: pd.Series, *, unlabeled_class: int) -> set[int] | None:
+    raw_values = values.to_numpy(copy=False)
+    if np.issubdtype(raw_values.dtype, np.integer) and not np.issubdtype(raw_values.dtype, np.bool_):
+        # Happy path for normalized user/prediction classes: use NumPy instead
+        # of scanning hundreds of thousands of class ids in Python.
+        if len(raw_values) == 0:
+            return set()
+        if int(np.min(raw_values)) < unlabeled_class:
+            return None
+        return {int(value) for value in np.unique(raw_values)}
+
     categories: set[int] = set()
-    for value in values.to_numpy(copy=False):
+    for value in raw_values:
         if pd.isna(value):
             return None
         try:

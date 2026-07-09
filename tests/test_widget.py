@@ -35,6 +35,7 @@ from napari_harpy.core.feature_matrix_metadata import (
     register_feature_matrix_metadata,
 )
 from napari_harpy.core.spatialdata import SpatialDataLabelsOption
+from napari_harpy.viewer.labels_colormap import CompactCategoricalLabelColormap
 from napari_harpy.widgets.object_classification.controller import (
     CLASSIFIER_CONFIG_KEY,
     PRED_CLASS_COLORS_KEY,
@@ -204,6 +205,68 @@ def _set_feature_metadata(
         "features": [f"feature_{index}" for index in range(n_features)],
         "source_kind": HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND,
     }
+
+
+def test_get_user_class_values_returns_unlabeled_for_missing_column() -> None:
+    obs = pd.DataFrame(index=range(3))
+
+    values = classifier_module._get_user_class_values(obs, n_obs=3)
+
+    assert np.array_equal(values, np.array([0, 0, 0], dtype=np.int64))
+
+
+def test_get_user_class_values_uses_integer_dtype_fast_path() -> None:
+    obs = pd.DataFrame({USER_CLASS_COLUMN: pd.Series([0, 2, 5], dtype=np.int64)})
+
+    values = classifier_module._get_user_class_values(obs, n_obs=len(obs))
+
+    assert np.array_equal(values, np.array([0, 2, 5], dtype=np.int64))
+
+
+def test_get_user_class_values_uses_nullable_integer_dtype_fast_path() -> None:
+    obs = pd.DataFrame({USER_CLASS_COLUMN: pd.Series([1, pd.NA, 3], dtype="Int64")})
+
+    values = classifier_module._get_user_class_values(obs, n_obs=len(obs))
+
+    assert np.array_equal(values, np.array([1, 0, 3], dtype=np.int64))
+
+
+def test_get_user_class_values_uses_categorical_integer_fast_path() -> None:
+    obs = pd.DataFrame(
+        {
+            USER_CLASS_COLUMN: pd.Categorical(
+                [0, 2, 1],
+                categories=[0, 1, 2],
+            )
+        }
+    )
+
+    values = classifier_module._get_user_class_values(obs, n_obs=len(obs))
+
+    assert np.array_equal(values, np.array([0, 2, 1], dtype=np.int64))
+
+
+def test_get_user_class_values_maps_missing_categorical_codes_to_unlabeled() -> None:
+    obs = pd.DataFrame(
+        {
+            USER_CLASS_COLUMN: pd.Categorical(
+                [1, None, 2],
+                categories=[0, 1, 2],
+            )
+        }
+    )
+
+    values = classifier_module._get_user_class_values(obs, n_obs=len(obs))
+
+    assert np.array_equal(values, np.array([1, 0, 2], dtype=np.int64))
+
+
+def test_get_user_class_values_keeps_legacy_string_fallback() -> None:
+    obs = pd.DataFrame({USER_CLASS_COLUMN: pd.Series(["1", "bad", None, "3"], dtype="object")})
+
+    values = classifier_module._get_user_class_values(obs, n_obs=len(obs))
+
+    assert np.array_equal(values, np.array([1, 0, 0, 3], dtype=np.int64))
 
 
 def _patch_coordinate_system_names(monkeypatch, coordinate_systems: list[str]) -> None:
@@ -1982,19 +2045,19 @@ def test_widget_recolors_layer_from_user_class_annotations(qtbot, sdata_blobs: S
     widget.class_spinbox.setValue(4)
     widget.apply_class_button.click()
 
-    assert isinstance(layer.colormap, DirectLabelColormap)
-    assert np.allclose(layer.colormap.color_dict[0], np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32))
-    assert set(layer.colormap.color_dict) == {None, 0, 5}
-    assert layer.colormap.color_dict[5][3] > 0
+    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert np.allclose(layer.colormap.map(0), np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32))
+    assert len(layer.colormap.color_dict) <= 3
+    assert layer.colormap.map(5)[3] > 0
     assert layer.colormap.map(6)[3] > 0
-    assert not np.allclose(layer.colormap.color_dict[5], layer.colormap.map(6))
+    assert not np.allclose(layer.colormap.map(5), layer.colormap.map(6))
     assert "instance_id" in layer.features.columns
     assert USER_CLASS_COLUMN in layer.features.columns
     assert layer.features.set_index("index").loc[5, "instance_id"] == 5
     assert layer.features.set_index("index").loc[5, USER_CLASS_COLUMN] == 4
 
 
-def test_widget_user_class_annotation_uses_row_scoped_viewer_refresh(
+def test_widget_user_class_annotation_uses_sparse_refresh_for_compact_user_class(
     qtbot,
     monkeypatch,
     sdata_blobs: SpatialData,
@@ -2004,18 +2067,31 @@ def test_widget_user_class_annotation_uses_row_scoped_viewer_refresh(
     widget = HarpyWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
+    full_refresh_calls = []
+    layer_refresh_calls = []
+    original_refresh = widget._viewer_styling_controller.refresh
+    original_colormap = layer.colormap
 
-    def fail_full_feature_rows() -> pd.DataFrame:
-        raise AssertionError("user_class annotation should not rebuild all feature rows")
+    def record_full_refresh() -> None:
+        full_refresh_calls.append("refresh")
+        original_refresh()
 
-    monkeypatch.setattr(widget._viewer_styling_controller, "_get_region_feature_rows", fail_full_feature_rows)
+    def record_layer_refresh(**kwargs) -> None:
+        layer_refresh_calls.append(kwargs)
+
+    monkeypatch.setattr(widget._viewer_styling_controller, "refresh", record_full_refresh)
+    monkeypatch.setattr(layer, "refresh", record_layer_refresh)
 
     layer.selected_label = 5
     widget.class_spinbox.setValue(4)
     widget.apply_class_button.click()
 
-    assert isinstance(layer.colormap, DirectLabelColormap)
-    assert set(layer.colormap.color_dict) == {None, 0, 5}
+    assert full_refresh_calls == []
+    assert layer_refresh_calls == [{"extent": False}]
+    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert layer.colormap is original_colormap
+    assert len(layer.colormap.color_dict) <= 3
+    assert layer.colormap.map(5)[3] > 0
     assert layer.features.set_index("index").loc[5, USER_CLASS_COLUMN] == 4
 
 
@@ -2088,7 +2164,7 @@ def test_widget_user_class_annotation_updates_feature_only_in_prediction_color_m
             "refresh_user_class_colormap_and_feature",
             record_color_refresh,
         )
-        monkeypatch.setattr(widget._viewer_styling_controller, "refresh_user_class_feature", record_feature_refresh)
+        monkeypatch.setattr(widget._viewer_styling_controller, "refresh_user_class_feature_only", record_feature_refresh)
         monkeypatch.setattr(widget._viewer_styling_controller, "refresh", record_full_refresh)
 
         layer.selected_label = 5
@@ -2124,7 +2200,7 @@ def test_widget_user_class_annotation_falls_back_to_full_refresh_when_prediction
     def record_full_refresh() -> None:
         full_refresh_calls.append("refresh")
 
-    monkeypatch.setattr(widget._viewer_styling_controller, "refresh_user_class_feature", record_feature_refresh)
+    monkeypatch.setattr(widget._viewer_styling_controller, "refresh_user_class_feature_only", record_feature_refresh)
     monkeypatch.setattr(widget._viewer_styling_controller, "refresh", record_full_refresh)
 
     layer.selected_label = 5
@@ -2163,7 +2239,7 @@ def test_widget_auto_train_prediction_color_mode_keeps_immediate_refresh_feature
         return True
 
     monkeypatch.setattr(widget._classifier_controller, "schedule_retrain", record_schedule_retrain)
-    monkeypatch.setattr(widget._viewer_styling_controller, "refresh_user_class_feature", record_feature_refresh)
+    monkeypatch.setattr(widget._viewer_styling_controller, "refresh_user_class_feature_only", record_feature_refresh)
     monkeypatch.setattr(widget._viewer_styling_controller, "refresh", lambda: full_refresh_calls.append("refresh"))
 
     widget.auto_train_checkbox.setChecked(True)
@@ -2174,6 +2250,53 @@ def test_widget_auto_train_prediction_color_mode_keeps_immediate_refresh_feature
     assert schedule_calls == ["schedule"]
     assert [(call.instance_id, call.class_id) for call in feature_refresh_calls] == [(5, 4)]
     assert full_refresh_calls == []
+
+
+def test_widget_annotation_defers_classifier_controls_until_selection_status(qtbot, monkeypatch) -> None:
+    widget = HarpyWidget(DummyViewer())
+    qtbot.addWidget(widget)
+    calls: list[str] = []
+
+    def record_selection_status() -> None:
+        calls.append("selection_status")
+        widget._update_classifier_controls()
+
+    def record_schedule_retrain() -> bool:
+        calls.append("schedule_retrain")
+        widget._classifier_controller._set_status(
+            "Classifier: model is stale. Classifier training is scheduled.",
+            kind="info",
+        )
+        return True
+
+    monkeypatch.setattr(widget, "_refresh_after_user_class_annotation", lambda change: calls.append("visual_refresh"))
+    monkeypatch.setattr(widget, "_update_classifier_feedback", lambda: calls.append("feedback"))
+    monkeypatch.setattr(widget, "_update_classifier_controls", lambda: calls.append("controls"))
+    monkeypatch.setattr(widget, "_update_selection_status", record_selection_status)
+    monkeypatch.setattr(widget._classifier_controller, "schedule_retrain", record_schedule_retrain)
+
+    widget._auto_train_enabled = True
+    widget._on_annotation_changed(
+        annotation_module.UserClassAnnotationChange(
+            instance_id=5,
+            class_id=4,
+            user_class_was_available_as_color_source=True,
+        )
+    )
+
+    assert calls == [
+        "visual_refresh",
+        "feedback",
+        "schedule_retrain",
+        "feedback",
+        "selection_status",
+        "controls",
+    ]
+
+    calls.clear()
+    widget._on_classifier_state_changed()
+
+    assert calls == ["feedback", "controls"]
 
 
 def test_widget_auto_train_toggle_controls_annotation_retraining(
@@ -2189,17 +2312,21 @@ def test_widget_auto_train_toggle_controls_annotation_retraining(
     mark_dirty_reasons: list[str | None] = []
     refresh_calls: list[str] = []
     row_scoped_refresh_calls = []
+    call_order: list[str] = []
 
     def record_schedule_retrain(*args, **kwargs) -> bool:
         del args, kwargs
         schedule_calls.append("schedule")
+        call_order.append("schedule")
         return False
 
     def record_mark_dirty(*, reason: str | None = None) -> None:
         mark_dirty_reasons.append(reason)
+        call_order.append("mark_dirty")
 
     def record_row_scoped_refresh(change) -> bool:
         row_scoped_refresh_calls.append(change)
+        call_order.append("row_scoped_refresh")
         return True
 
     monkeypatch.setattr(widget._classifier_controller, "schedule_retrain", record_schedule_retrain)
@@ -2228,6 +2355,7 @@ def test_widget_auto_train_toggle_controls_annotation_retraining(
     assert schedule_calls == []
     assert mark_dirty_reasons == ["the annotations changed"]
     assert [(call.instance_id, call.class_id) for call in row_scoped_refresh_calls] == [(5, 3)]
+    assert call_order == ["row_scoped_refresh", "mark_dirty"]
     assert refresh_calls == []
     assert widget._persistence_controller.is_dirty is True
 
@@ -2239,6 +2367,13 @@ def test_widget_auto_train_toggle_controls_annotation_retraining(
     assert schedule_calls == ["schedule"]
     assert mark_dirty_reasons == ["the annotations changed", "the annotations changed"]
     assert [(call.instance_id, call.class_id) for call in row_scoped_refresh_calls] == [(5, 3), (6, 4)]
+    assert call_order == [
+        "row_scoped_refresh",
+        "mark_dirty",
+        "row_scoped_refresh",
+        "mark_dirty",
+        "schedule",
+    ]
     assert refresh_calls == []
 
 
@@ -2855,14 +2990,16 @@ def test_widget_colors_predictions_using_pred_class_palette_in_pred_class_mode(q
     table.uns[USER_CLASS_COLORS_KEY] = ["#80808099", "#ff0000", "#00ff00"]
     table.uns[PRED_CLASS_COLORS_KEY] = ["#80808099", "#0000ff", "#ffff00"]
 
-    assert not np.allclose(layer.colormap.color_dict[1], layer.colormap.map(5))
+    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert not np.allclose(layer.colormap.map(1), layer.colormap.map(5))
 
     widget.color_by_combo.setCurrentIndex(widget.color_by_combo.findData("pred_class"))
 
-    assert np.allclose(layer.colormap.color_dict[1], layer.colormap.color_dict[5])
-    assert np.allclose(layer.colormap.color_dict[24], layer.colormap.color_dict[26])
-    assert np.allclose(layer.colormap.color_dict[1], np.asarray(to_rgba("#0000ff"), dtype=np.float32))
-    assert np.allclose(layer.colormap.color_dict[24], np.asarray(to_rgba("#ffff00"), dtype=np.float32))
+    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert np.allclose(layer.colormap.map(1), layer.colormap.map(5))
+    assert np.allclose(layer.colormap.map(24), layer.colormap.map(26))
+    assert np.allclose(layer.colormap.map(1), np.asarray(to_rgba("#0000ff"), dtype=np.float32))
+    assert np.allclose(layer.colormap.map(24), np.asarray(to_rgba("#ffff00"), dtype=np.float32))
     assert PRED_CLASS_COLUMN in layer.features.columns
 
 

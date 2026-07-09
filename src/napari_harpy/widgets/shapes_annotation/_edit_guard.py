@@ -335,9 +335,8 @@ class _AnnotationLayerEditGuard:
             and self._can_space_pan_draw_mode(layer)
             and self._can_use_custom_space_pan(layer)
         ):
-            # Custom resumable drawing path: once Slice 4 enables callback
-            # suppression, active supported drawings use Space to toggle
-            # mouse-pan without leaving the current drawing mode.
+            # Custom resumable drawing path: active supported drawings use
+            # Space to toggle mouse-pan without leaving the drawing mode.
             self._begin_space_pan_key_hold(layer)
             try:
                 yield

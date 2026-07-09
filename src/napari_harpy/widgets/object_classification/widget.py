@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -195,6 +197,7 @@ class ObjectClassificationWidget(QWidget):
         self._selected_training_scope: ClassifierScopeMode = DEFAULT_TRAINING_SCOPE
         self._selected_prediction_scope: ClassifierScopeMode = DEFAULT_PREDICTION_SCOPE
         self._auto_train_enabled = False
+        self._is_deferring_classifier_control_updates = False
         self._logo_path = get_logo_path()
 
         layout = QVBoxLayout(self)
@@ -1634,10 +1637,14 @@ class ObjectClassificationWidget(QWidget):
         # without rebuilding Viewer labels cards for each add/remove edit.
         if not change.user_class_was_available_as_color_source:
             self._emit_classification_table_written(columns=(USER_CLASS_COLUMN,))
-        self._classifier_controller.mark_dirty(reason="the annotations changed")
         self._refresh_after_user_class_annotation(change)
-        if self._auto_train_enabled:
-            self._classifier_controller.schedule_retrain()
+        # `mark_dirty(...)` and auto-train scheduling emit classifier status
+        # callbacks. Let feedback update immediately, but avoid multiple
+        # `_update_classifier_controls()` calls until `_update_selection_status()`.
+        with self._defer_classifier_control_updates():
+            self._classifier_controller.mark_dirty(reason="the annotations changed")
+            if self._auto_train_enabled:
+                self._classifier_controller.schedule_retrain()
         self._update_selection_status()
 
     def _on_classifier_table_state_changed(self) -> None:
@@ -1655,7 +1662,19 @@ class ObjectClassificationWidget(QWidget):
 
     def _on_classifier_state_changed(self) -> None:
         self._update_classifier_feedback()
+        if self._is_deferring_classifier_control_updates:
+            return
         self._update_classifier_controls()
+
+    @contextmanager
+    def _defer_classifier_control_updates(self) -> Iterator[None]:
+        """Defer expensive classifier-control refreshes during annotation updates."""
+        previous = self._is_deferring_classifier_control_updates
+        self._is_deferring_classifier_control_updates = True
+        try:
+            yield
+        finally:
+            self._is_deferring_classifier_control_updates = previous
 
     def _retrain_classifier(self) -> None:
         if not self._classifier_controller.can_retrain:
@@ -1726,11 +1745,15 @@ class ObjectClassificationWidget(QWidget):
         if color_by == COLOR_BY_USER_CLASS:
             if self._viewer_styling_controller.refresh_user_class_colormap_and_feature(change):
                 return
+            # Full refresh recovery for stale/missing feature state where the
+            # edited label cannot be matched reliably for a row-scoped update.
             self._refresh_layer_styling()
             return
 
         if color_by in (COLOR_BY_PRED_CLASS, COLOR_BY_PRED_CONFIDENCE):
-            if self._viewer_styling_controller.refresh_user_class_feature(change):
+            # Prediction color modes do not color by `user_class`; keep the
+            # edited `user_class` value current in layer features only.
+            if self._viewer_styling_controller.refresh_user_class_feature_only(change):
                 return
             self._refresh_layer_styling()
             return

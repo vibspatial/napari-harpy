@@ -563,8 +563,8 @@ def _write_level_dataset(
     `_assign_tile_shards` later numbers those shards deterministically across
     the collected metadata.
 
-    The returned dataframe contains manifest candidate rows. Slice 9 adds
-    `schema_version` before writing the final manifest.
+    The returned dataframe contains manifest candidate rows; `schema_version`
+    is added before writing the final manifest.
     """
     level_record = _get_transcript_tile_level(cache, level)
     max_rows_per_row_group = _validate_positive_integer(max_rows_per_row_group, "max_rows_per_row_group")
