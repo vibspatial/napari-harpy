@@ -1425,7 +1425,7 @@ pred_class lookup median: 0.0631 s; full repaint median: 0.0922 s
 
 #### Slice 6.7: Compact Sparse User-Class Annotation Update
 
-Status: proposed.
+Status: proposed; split into two implementation phases.
 
 Replace the temporary row-scoped user-class fallback from Slice 6.6b with a
 real compact sparse update.
@@ -1444,20 +1444,19 @@ texture_code -> RGBA
 ```
 
 That means a single user-class annotation should update one label's texture code
-and the currently displayed texture-code image, not rebuild the full colormap.
+without rebuilding the full colormap. We should implement this in two phases:
 
-Implementation direction:
+1. First implement sparse compact state mutation plus an explicit
+   `layer.refresh(extent=False)`. This avoids direct `layer._slice` mutation
+   while proving the compact update semantics are correct.
+2. Then replace the explicit refresh with a direct patch of the currently
+   displayed labels slice.
 
-1. Add a Harpy-owned helper/API on the compact colormap or compact mapping that
-   updates one known label id to a new texture code:
-   - map the new user class to the correct class texture code;
-   - insert, update, or remove the label entry according to the class
-     transition described below;
-   - invalidate any derived compact caches, including high-bit typed dicts and
-     small-label dense lookup arrays.
-2. Add enough class-to-texture-code state when building the object-classification
-   user-class colormap so the row-scoped update can resolve the new class
-   without rebuilding the full table-aligned mapping:
+Shared compact-state contract:
+
+1. Add enough class-to-texture-code state when building the object-classification
+   user-class colormap so row-scoped updates can resolve class ids without
+   rebuilding the full table-aligned mapping:
 
    ```text
    class_id -> texture_code
@@ -1466,7 +1465,7 @@ Implementation direction:
    This lookup should live on the compact colormap or compact mapping used for
    object-classification user-class coloring. It is separate from
    `label_id -> texture_code`: many labels can share one class texture code.
-3. When a user annotation introduces a brand-new class,
+2. When a user annotation introduces a brand-new class,
    `set_user_class_for_rows(...)` has already synced the table palette, but
    the currently assigned compact colormap was built before that class existed.
    The sparse update must therefore be able to append a new
@@ -1495,11 +1494,11 @@ Implementation direction:
      class for later annotations. The important distinction is that the table
      palette is consulted only to create a missing class mapping, not to
      rediscover every existing class mapping from RGBA on each annotation.
-4. Preserve the current compact user-class semantics for unlabeled class `0`.
+3. Preserve the current compact user-class semantics for unlabeled class `0`.
    In full repaint, `user_class == 0` rows are excluded from
    `label_id -> texture_code` and fall through to the default/unlabeled color.
    Sparse updates should keep the same representation.
-5. Implement the three user-class transition cases explicitly:
+4. Implement the three user-class transition cases explicitly:
 
    ```text
    0 -> class_id
@@ -1517,43 +1516,138 @@ Implementation direction:
    For the removal case, prefer removing the label entry rather than keeping an
    explicit default texture code. Removal matches the full-repaint compact
    state and keeps the mapping smaller.
-6. Maintain `compact_mapping.label_ids` in sorted order after insertion or
+5. Maintain `compact_mapping.label_ids` in sorted order after insertion or
    removal, because scalar lookup and array mapping use `np.searchsorted(...)`.
-7. Patch only the currently displayed labels slice:
+6. Do not update an existing `texture_code -> RGBA` row for a class change.
+   That would recolor every label in the class. The sparse annotation operation
+   changes one label's class membership, so it must update that label's
+   `label_id -> texture_code` entry.
+7. Appending a new `texture_code -> RGBA` row is different from updating an
+   existing texture code. Appending is required only when the user introduces a
+   class that the current compact colormap did not know about yet.
+
+##### Phase 6.7a: Sparse State Update With Layer Refresh
+
+Status: proposed.
+
+Goal:
+
+- mutate the compact colormap state sparsely;
+- keep the existing row-scoped `layer.features` update;
+- call `layer.refresh(extent=False)` so napari recomputes the displayed
+  texture-code image from the updated compact mapping;
+- avoid full feature-row rebuild, full compact colormap rebuild, and
+  `layer.colormap = ...`.
+
+Implementation direction:
+
+1. Add a Harpy-owned helper/API on the compact colormap or compact mapping that
+   applies one user-class annotation:
+   - resolve or create the target class texture code through
+     `class_id -> texture_code`;
+   - insert, update, or remove the edited `label_id -> texture_code` entry;
+   - keep `label_ids` sorted;
+   - invalidate derived compact caches, including high-bit typed dicts and
+     small-label dense lookup arrays;
+   - return the target texture code when the label should be explicit, and the
+     default/unlabeled texture code when the label was removed.
+2. Update `refresh_user_class_colormap_and_feature(...)` so that when the
+   current colormap is `CompactCategoricalLabelColormap` and
+   `COLOR_BY_USER_CLASS` is active:
+   - apply the compact sparse state mutation;
+   - update only the edited row in `layer.features`;
+   - call `layer.refresh(extent=False)`;
+   - return `True`.
+3. If the compact state, palette, features, or layer refresh hook is
+   inconsistent, return `False` so the caller can keep the existing correctness
+   fallback.
+4. Do not access `layer._slice`, `layer._slice.image.raw`, or
+   `layer._slice.image.view` in this phase.
+5. Do not emit `layer.events.labels_update(...)` in this phase. Let napari's
+   normal refresh path recode the displayed labels texture.
+
+Why this works:
+
+- Updating the compact `label_id -> texture_code` mapping handles future
+  slices and future redraws.
+- `Labels._raw_to_displayed(...)` maps raw label ids through
+  `self.colormap._data_to_texture(...)`.
+- `layer.refresh(data_displayed=True, extent=False)` asks napari to recode the
+  current displayed labels data from the updated compact colormap state.
+- This is less surgical than patching the current slice, but it avoids private
+  slice mutation while we prove the compact state transition logic.
+
+Phase 6.7a tests:
+
+- row-scoped user-class annotation with compact colormap updates exactly the
+  edited label's texture code;
+- annotating an unlabeled/default label as a nonzero class inserts that label
+  into `label_ids` / `texture_codes`;
+- changing one label from class A to class B does not change texture codes for
+  other labels in class A or class B;
+- changing one label to unlabeled class `0` removes that label from
+  `label_ids` / `texture_codes` and restores default/unlabeled behavior;
+- annotating a label with a newly introduced class appends a new texture RGBA
+  row, records the corresponding `class_id -> texture_code`, and then updates
+  only the edited label;
+- `label_ids` remains sorted after insertions and removals;
+- the compact colormap `color_dict` remains tiny and is not treated as the
+  full `label_id -> RGBA` mapping;
+- `layer.features` is still updated row-scoped;
+- the labels layer is refreshed with `extent=False` in the compact sparse happy
+  path;
+- the happy path does not assign a new full colormap object;
+- the happy path does not call `_get_region_feature_rows(...)` or rebuild all
+  features;
+- rare inconsistent compact state still returns `False` so the caller can keep
+  the existing correctness fallback.
+
+Phase 6.7a benchmark acceptance:
+
+- benchmark one user-class annotation update while `COLOR_BY_USER_CLASS` is
+  active on a large labels layer;
+- confirm the happy path avoids full feature-row rebuild, full compact colormap
+  rebuild, and `layer.colormap = ...`;
+- confirm the remaining cost is dominated by napari's layer refresh rather than
+  table/colormap reconstruction.
+
+##### Phase 6.7b: Patch Current Displayed Slice Without Refresh
+
+Status: proposed.
+
+Goal:
+
+- keep the compact state mutation from Phase 6.7a;
+- remove the explicit `layer.refresh(extent=False)` from the happy path;
+- patch only the currently displayed labels slice using napari internals.
+
+Implementation direction:
+
+1. After the compact state mutation succeeds, patch the currently displayed
+   labels texture-code image:
    - read `raw_displayed = layer._slice.image.raw`;
    - read `view_displayed = layer._slice.image.view`;
    - build `mask = raw_displayed == instance_id`;
    - set `view_displayed[mask] = new_texture_code`;
    - emit `layer.events.labels_update(data=updated_view_data, offset=...)`
      following napari's own partial labels-update pattern.
-8. Keep the existing row-scoped feature update:
-   `refresh_user_class_colormap_and_feature(...)` should still update only the
-   edited row in `layer.features`.
-9. Return `True` from `refresh_user_class_colormap_and_feature(...)` only when
-   both the compact color update and feature-row update were applied. Rare
-   inconsistent states may still return `False`, but the normal compact
-   user-class annotation path must not fall back to full restyling.
+2. For `class_id -> 0`, patch visible pixels to the default/unlabeled texture
+   code returned by the compact state update.
+3. Do not call `layer.refresh(...)` in the compact sparse happy path.
+4. If current-slice internals are unavailable or inconsistent, return `False`
+   so the caller can fall back to Phase 6.7a/full refresh behavior.
 
 Important detail:
 
-- Updating the compact `label_id -> texture_code` mapping handles future
-  slices and future redraws.
-- Patching `layer._slice.image.view` handles the pixels that are already visible
-  in the current slice. Without this second step, the displayed texture-code
-  image may keep the old class code until napari reslices the layer.
+- Patching `layer._slice.image.view` handles the pixels that are already
+  visible in the current slice. Without this second step, the displayed
+  texture-code image may keep the old class code until napari reslices the
+  layer.
 - Concretely, if the raw visible pixels contain label `101` but the displayed
   texture-code pixels were already computed as code `2`, changing the compact
-  mapping from `101 -> 2` to `101 -> 3` does not mutate those already-computed
-  visible pixels. The sparse update must also set
+  mapping from `101 -> 2` to `101 -> 3` does not mutate those
+  already-computed visible pixels. The sparse update must also set
   `view_displayed[raw_displayed == 101] = 3`.
-- Do not update `texture_code -> RGBA` for a class change. That would recolor
-  every label in the class. The sparse annotation operation changes one label's
-  class membership, so it must update that label's `texture_code`.
-- Appending a new `texture_code -> RGBA` row is different from updating an
-  existing texture code. Appending is required only when the user introduces a
-  class that the current compact colormap did not know about yet. Updating an
-  existing texture row would recolor every label already assigned to that
-  class, which is not the row-scoped annotation operation.
 - This should also work for multiscale labels, but the patch must happen at the
   current displayed pyramid level. In napari, a multiscale labels slice stores
   `layer._slice.image.raw` as raw label ids from the selected data level and
@@ -1572,42 +1666,23 @@ Important detail:
   label appears after napari performs the normal reslice/refresh for a later
   view. Typical triggers are zooming enough to change multiscale data level,
   panning/changing the viewport tile, changing a z/non-displayed slice, or an
-  explicit `layer.refresh(...)`. Updating the compact mapping alone does not
-  recompute the already-cached `layer._slice.image.view`; that is why the
-  current visible slice still needs the explicit patch above when the mask is
-  non-empty.
+  explicit `layer.refresh(...)`.
 
-Tests:
+Phase 6.7b tests:
 
-- row-scoped user-class annotation with compact colormap updates exactly the
-  edited label's texture code;
-- annotating an unlabeled/default label as a nonzero class inserts that label
-  into `label_ids` / `texture_codes`;
-- changing one label from class A to class B does not change texture codes for
-  other labels in class A or class B;
-- changing one label to unlabeled class `0` removes that label from
-  `label_ids` / `texture_codes` and restores default/unlabeled behavior;
-- annotating a label with a newly introduced class appends a new texture RGBA
-  row, records the corresponding `class_id -> texture_code`, and then updates
-  only the edited label;
-- `label_ids` remains sorted after insertions and removals;
-- the compact colormap `color_dict` remains tiny and is not treated as the
-  full `label_id -> RGBA` mapping;
-- `layer.features` is still updated row-scoped;
 - the labels layer emits a partial labels update for the current displayed
   slice instead of assigning a new full colormap in the happy path;
+- the compact sparse happy path does not call `layer.refresh(...)`;
 - a multiscale labels-layer regression test verifies the sparse update patches
   `layer._slice.image.view` at the current data level and does not attempt to
   patch full-resolution `layer.data[0]`;
-- rare inconsistent compact state still returns `False` so the caller can keep
-  the existing correctness fallback.
+- if current-slice internals are unavailable, the method returns `False` and
+  the caller can use the existing correctness fallback.
 
-Benchmark acceptance:
+Phase 6.7b benchmark acceptance:
 
 - benchmark one user-class annotation update while `COLOR_BY_USER_CLASS` is
   active on a large labels layer;
-- confirm the happy path avoids full feature-row rebuild, full compact colormap
-  rebuild, and `layer.colormap = ...`;
 - confirm the update cost scales with the current visible slice mask plus one
   mapping lookup, not with the full number of table rows.
 
