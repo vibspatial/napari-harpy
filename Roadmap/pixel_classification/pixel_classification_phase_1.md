@@ -19,7 +19,7 @@ Included:
 - extract tile-wise pixel features from selected channels as an internal cache-building step;
 - append normalized marker intensities to reduced deep features;
 - write/reuse/delete a manifest-keyed sidecar zarr feature cache;
-- train a classifier and predict class labels over each configured target image;
+- train one pooled classifier and predict class labels for the active viewer target;
 - display predicted labels as a high-resolution napari labels layer;
 - explicitly save predicted labels to SpatialData as `sdata.labels[...]`;
 - report progress, errors, stale state, and cache reuse clearly in the UI.
@@ -33,6 +33,7 @@ Excluded from Phase 1:
 - no DINOv2/JAFAR backend;
 - no classifier export/reuse across different source images;
 - no separate feature-extraction widget or feature-key workflow for pixel classification;
+- no interactive UI action that predicts across all selected coordinate systems at once;
 - no hidden feature cache inside the SpatialData zarr store.
 
 If the selected image element is multiscale, Phase 1 should resolve and use the highest-resolution scale only.
@@ -57,15 +58,21 @@ Top-level flow:
 7. If a cache exists, the card clearly reports that it can be reused.
 8. If no compatible cache exists, the card prompts the user to build the feature cache.
 9. The user can explicitly run or rerun feature extraction/cache building.
-10. Once a compatible cache exists, annotation and classifier controls become available.
-11. The user creates/opens the annotation labels layer, paints classes, trains, predicts, reviews, and saves.
+10. Once a compatible cache exists for a target card, annotation controls become available for that card.
+11. The user creates/opens annotation labels layers and paints classes on one or more eligible target cards.
+12. A shared classifier-training panel lets the user train one pixel classifier from all eligible annotated cards, or
+    from a selected subset of eligible cards.
+13. Interactive prediction is viewer-bound: the UI predicts only for the coordinate system/sample currently loaded or
+    active in the viewer.
+14. The user reviews the active prediction and explicitly saves it.
 
 Coordinate-system selection:
 
 - mirror the feature-extraction widget pattern: the coordinate-system selector controls which target cards are visible;
 - preserve card state when users temporarily uncheck and recheck a coordinate system where possible;
 - if a coordinate system has no eligible images, show a disabled target card or status entry that explains why;
-- target cards should be independent. Phase 1 does not need cross-card classifier training or cross-card prediction.
+- target cards are independently configured and cached, but they are not independent classifier workflows. Eligible
+  target cards can contribute annotated pixels to one shared classifier training run.
 
 Target card layout:
 
@@ -76,8 +83,10 @@ Target card layout:
 - per-channel `Load overlay` action so users can inspect channels in napari before committing to cache generation;
 - cache status block;
 - feature-cache actions;
-- annotation/classifier block, disabled until cache readiness;
-- prediction/save block, disabled until a prediction exists.
+- annotation block, disabled until cache readiness;
+- training eligibility summary, for example cache ready, annotated classes, annotated pixel count, and whether this card
+  is included in the current training scope;
+- prediction status for this target, if it is the current viewer-bound prediction target.
 
 Channel overlay behavior:
 
@@ -92,7 +101,7 @@ Cache UX states:
 - `No compatible cache`: valid image/channel selection exists, but no matching cache was found;
 - `Cache found`: compatible cache exists and can be reused;
 - `Cache building`: feature extraction/cache writing is running;
-- `Cache ready`: cache is available for annotation and classifier training;
+- `Cache ready`: cache is available for annotation and can contribute to classifier training;
 - `Cache stale`: current image/channel/settings selection differs from the cache used by the current annotation or
   classifier state;
 - `Cache invalid/partial`: a matching cache path exists but failed validation and should not be reused.
@@ -108,20 +117,39 @@ Cache actions:
 Annotation/classifier gating:
 
 - annotation controls are disabled until the target card has a compatible feature cache;
-- classifier training is disabled until a compatible cache exists and the annotation layer has enough nonzero labels
-  from at least two classes;
+- classifier training is controlled by a shared training panel, not by individual target cards;
+- a target card is eligible for training only when it has a compatible feature cache and enough annotation to contribute
+  useful class examples;
+- classifier training is disabled until the selected training scope contains eligible cached/annotated target cards with
+  enough nonzero labels from at least two classes overall;
 - changing image, channels, normalization settings, feature extractor settings, or cache id marks existing annotation
-  and classifier state as needing review;
+  and classifier state as needing review for the affected target card;
 - changing annotations marks classifier predictions stale;
 - the annotation layer is always highest-resolution in Phase 1.
 
-Classifier/prediction UX:
+Classifier training UX:
 
-- training and prediction live in the same target card as source and cache selection;
-- status messaging should mirror object classification: insufficient labels, training running, prediction ready,
-  prediction stale, and errors should be explicit;
-- predicted labels are displayed as a high-resolution labels layer;
-- saving predicted labels to SpatialData is explicit and disabled until a prediction exists.
+- classifier training lives in a shared panel below or beside the target cards;
+- the training-scope control should mirror the object-classification idea of training on all eligible samples or on a
+  selected subset;
+- `All eligible selected samples` should include every selected coordinate-system target card that has a compatible
+  cache and enough annotation;
+- `Selected samples` should let the user choose a subset of eligible target cards;
+- the classifier is trained from annotated pixels pooled across the selected training scope;
+- status messaging should mirror object classification: insufficient labels, training running, trained classifier ready,
+  stale classifier, and errors should be explicit.
+
+Prediction and save UX:
+
+- interactive prediction should not mirror object classification's multi-region prediction scope;
+- the UI should allow prediction only for the coordinate system/sample currently loaded or active in the viewer;
+- if several target cards are selected, the user should still run interactive prediction one active viewer target at a
+  time;
+- predicted labels are displayed as a high-resolution labels layer for the active target;
+- saving predicted labels to SpatialData is explicit and disabled until a prediction exists for the active target;
+- prediction status should report whether the active target has no compatible cache, no trained classifier, a ready
+  prediction, or a stale prediction;
+- multi-sample/batch inference should be a headless workflow, not a Phase 1 interactive UI action.
 
 **Target Package Layout**
 Add a separate pixel-classification package instead of mixing this into object classification.
@@ -202,10 +230,95 @@ The manifest should record enough information to reject incompatible caches:
 - normalization settings;
 - feature extractor name, weights, package versions, layers, and tile settings;
 - reducer type, parameters, fitted state identity, and output dimension;
+- raw feature schema id;
+- reducer id;
+- final feature schema id;
 - feature cache dtype, shape, chunks, and schema version.
 
 `cache_id` should be a hash of the canonical manifest excluding runtime fields such as creation time, last-used time,
 and UI-only labels.
+
+**Shared Reducer and Cache Compatibility**
+Feature caches should be physically separate per target card / sample / coordinate system, but pooled classifier
+training requires a shared final feature schema.
+
+This is especially important for PCA. Two PCA reducers fitted independently on two samples are not compatible, even if
+both output the same number of components. Component `pca_0` in one cache may represent a different axis than `pca_0`
+in another cache. For pooled training, PCA must be fitted once across the selected training samples and then reused to
+transform every target cache that participates in that classifier.
+
+Use three levels of identity:
+
+- `raw_feature_schema_id`: hash of fields that define the unreduced deep-feature stream and normalized marker planes,
+  excluding target-specific source identity. This includes selected channel names and order, normalization settings,
+  feature extractor name/weights/layers, tile settings, raw deep-feature plane order, and raw deep-feature dimension.
+- `reducer_id`: hash of the fitted reducer artifact. For PCA/IncrementalPCA, this must include reducer type and params,
+  `components`, `mean`, explained variance/ratio when available, number of components, number of raw features, fit
+  sample policy, fit target ids, package versions, and array hashes for the fitted state.
+- `final_feature_schema_id`: hash of `raw_feature_schema_id`, `reducer_id`, final feature plane order, final dtype
+  policy, and cache schema version.
+
+Target-specific `cache_id` should still include source identity:
+
+- source SpatialData URI/path;
+- source image element;
+- coordinate system;
+- highest-resolution shape and axes;
+- selected channels;
+- `final_feature_schema_id`;
+- feature array shape/chunks/dtype.
+
+Recommended sidecar layout:
+
+```text
+sample.harpy-cache.zarr/
+  pixel_classification/
+    feature_schemas/
+      <final_feature_schema_id>/
+        raw_feature_manifest
+        reducer/
+          <reducer_id>/
+            manifest
+            components
+            mean
+            explained_variance
+            explained_variance_ratio
+    feature_caches/
+      <target_cache_id>/
+        features
+        manifest              # points to raw_feature_schema_id, reducer_id, final_feature_schema_id
+```
+
+For a PCA-backed schema, cache building should be a two-stage operation:
+
+1. Fit the shared reducer.
+   - Gather raw deep-feature samples from all target cards in the intended reducer-fit cohort.
+   - Use deterministic sampling per target card, with the sampling policy recorded in the reducer manifest.
+   - Prefer balanced sampling by target card so a very large image does not dominate the PCA fit by default.
+   - Fit one reducer from the combined sampled raw features. For large data, stream batches through `IncrementalPCA`
+     rather than materializing all sampled features at once.
+2. Write per-target caches.
+   - Stream raw deep features tile-wise for each target card.
+   - Transform deep features with the shared reducer.
+   - Append normalized marker-intensity planes.
+   - Write a separate feature cache folder per target card, each pointing to the same `reducer_id` and
+     `final_feature_schema_id`.
+
+Training-scope validation:
+
+- all selected training target caches must have the same `final_feature_schema_id`;
+- all selected training target caches must point to the same `reducer_id`;
+- the reducer-fit cohort should contain every target used for classifier training when the reducer type is PCA;
+- same reducer type, same number of components, or same feature count is not sufficient;
+- per-target source fields may differ, but schema fields must match exactly;
+- if a new target card is added to a PCA-backed training scope after the reducer was fitted, Harpy should require a
+  shared reducer refit and rebuild the affected final caches before that target can contribute to pooled training.
+
+Prediction validation:
+
+- an active prediction target must use the same `final_feature_schema_id` as the trained classifier;
+- if the active target cache has a different reducer, even with the same number of components, prediction must be
+  blocked with a clear rebuild/reuse action.
 
 **Implementation Slices**
 1. Package skeleton and widget registration
@@ -344,7 +457,7 @@ Acceptance criteria:
 - annotation layer shape always matches the highest-resolution image shape;
 - annotation layers are associated with the target card image/channel cache context;
 - nonzero label counts per class are tracked;
-- training is disabled until at least two classes have enough annotated pixels;
+- target-card training eligibility is tracked separately from global classifier readiness;
 - changing annotations marks classifier predictions stale.
 
 4. Normalization and feature schema
@@ -358,13 +471,16 @@ Recommended Phase 1 defaults:
 - selected channels: user-selected subset, with a product warning for very large selections;
 - marker normalization: deterministic channel-wise clipping/scaling recorded in the manifest;
 - deep feature backend: ConvNeXt-Tiny early-layer features behind the optional `torch` dependency group;
-- reducer: deterministic fixed random projection or fitted incremental reducer, recorded in the manifest;
+- reducer: shared fitted PCA/IncrementalPCA across the intended training targets, or a deterministic fixed projection,
+  recorded as a reusable reducer artifact;
 - persistent feature dtype: `float16` unless validation shows it harms classifier quality.
 
 Acceptance criteria:
 
 - feature cache planes are ordered as selected normalized marker planes followed by reduced deep feature planes;
 - raw high-dimensional deep features are streamed tile-wise and are not persisted blindly;
+- PCA-backed caches are written only after fitting one shared reducer for the selected reducer-fit cohort;
+- per-target caches reference the shared reducer id and final feature schema id;
 - tests can run with a fake feature extractor so CI does not require downloading model weights;
 - missing optional torch dependencies produce a clear install/action message.
 
@@ -375,10 +491,17 @@ Implement `cache_store.py` and `manifest.py`. Store feature caches in an explici
 ```text
 sample.harpy-cache.zarr/
   pixel_classification/
+    feature_schemas/
+      <final_feature_schema_id>/
+        raw_feature_manifest
+        reducer/
+          <reducer_id>/
+            manifest
+            components
+            mean
     feature_caches/
       <cache_id>/
         features
-        reducer/
         manifest
 ```
 
@@ -388,39 +511,62 @@ Default cache-location behavior:
 - in-memory, remote, or read-only SpatialData: user must choose a writable cache location;
 - cache discovery, reuse, and deletion must be visible in the widget;
 - compatible cache discovery runs automatically after image/channel/cache-setting changes;
-- annotation and classifier controls unlock only when the target card has a compatible cache.
+- annotation controls unlock only when the target card has a compatible cache;
+- global classifier training can use only target cards with compatible caches.
 
 Acceptance criteria:
 
 - identical compatible requests resolve to the same `cache_id`;
 - incompatible requests cannot silently reuse a cache;
 - cache status is reported per target card as missing, found, building, ready, stale, or invalid/partial;
+- pooled-training cache compatibility is validated through `final_feature_schema_id`, not through target-specific
+  `cache_id`;
+- caches with independently fitted PCA reducers are rejected even when component counts match;
 - cache creation is atomic enough that interrupted writes do not look valid;
 - stale/partial caches are reported and can be deleted from the UI.
 
-6. Classifier training and prediction
+6. Shared classifier training and viewer-bound prediction
 
-Implement `classifier.py` and `prediction.py`. Train from annotated pixels only, using rows read from the feature cache.
-Predict over the full high-resolution feature cache tile-wise and return a high-resolution predicted label map.
+Implement `classifier.py` and `prediction.py`. Train from annotated pixels only, using rows read from the feature caches
+belonging to the selected training scope. Predict over the active viewer target's high-resolution feature cache tile-wise
+and return a high-resolution predicted label map for that target.
 
 Recommended Phase 1 classifier:
 
 - `RandomForestClassifier` with deterministic `random_state`;
 - class labels are integer label IDs from the annotation layer;
+- one fitted classifier is trained from pooled annotated pixels across the selected training scope;
 - confidence is max predicted probability;
 - prediction writes should not modify the annotation layer.
 
+Training scope:
+
+- default scope: all eligible selected samples / coordinate-system target cards;
+- optional scope: user-selected subset of eligible target cards;
+- eligible means cache-ready and sufficiently annotated;
+- training status should report which target cards contributed training pixels and how many pixels/classes each
+  contributed.
+
+Prediction scope:
+
+- interactive UI prediction is limited to the active viewer target;
+- no Phase 1 UI control should run prediction across all selected target cards;
+- multi-sample inference belongs to a headless workflow.
+
 Acceptance criteria:
 
-- training rejects empty/unbalanced/one-class annotation states with clear messages;
+- training rejects empty/unbalanced/one-class selected training scopes with clear messages;
+- the fitted classifier records the target cards and cache ids used for training;
+- training rejects target-cache selections whose `final_feature_schema_id` or `reducer_id` differ;
 - prediction is tile-wise and does not require flattening the whole image into memory at once;
-- predicted class labels have the highest-resolution image shape;
-- classifier metadata records feature cache id, training class counts, training time, and classifier parameters.
+- predicted class labels have the active target's highest-resolution image shape;
+- classifier metadata records training cache ids, training scope, training class counts, training time, and classifier
+  parameters.
 
 7. Widget workflow and background jobs
 
 Implement `controller.py`, `status_card.py`, and `widget.py`. The UI should guide the user through source selection,
-annotation, cache generation/reuse, training, prediction, and save.
+annotation, cache generation/reuse, shared classifier training, viewer-bound prediction, and save.
 
 Required states:
 
@@ -435,7 +581,10 @@ Required states:
 - cache stale;
 - cache invalid/partial;
 - annotations insufficient;
+- training scope incomplete;
 - training;
+- trained classifier ready;
+- no active prediction target;
 - prediction ready;
 - prediction stale;
 - save succeeded;
@@ -447,7 +596,9 @@ prediction, and save should not freeze napari.
 Acceptance criteria:
 
 - controls are enabled only when the current state is valid;
-- annotation and classifier controls stay disabled until cache readiness;
+- annotation controls stay disabled until target-card cache readiness;
+- global classifier training stays disabled until the selected training scope is eligible;
+- prediction stays disabled until a classifier is trained and an active viewer target has a compatible cache;
 - cancel/shutdown prevents orphan callbacks from updating destroyed widgets;
 - errors leave the widget in a recoverable state;
 - feature cache reuse is explicit rather than surprising.
@@ -464,7 +615,7 @@ Save behavior:
 - existing labels element names require explicit overwrite or a new name;
 - saved labels include coordinate-system metadata compatible with the source image;
 - prediction metadata records cache id, selected channels, normalization, feature extractor, reducer, classifier
-  parameters, class labels, and created timestamp.
+  parameters, training scope, active prediction target, class labels, and created timestamp.
 
 Acceptance criteria:
 
@@ -479,14 +630,19 @@ Add focused tests before broadening UI behavior:
 
 - manifest canonicalization and `cache_id` stability;
 - cache compatibility/rejection;
+- shared reducer id and final feature schema id validation;
+- independently fitted PCA reducers with the same component count are rejected for pooled training;
+- PCA reducer refit is required when a new target is added to the PCA-backed training scope;
 - coordinate-system selection creates target-card state;
 - image/channel target-card selection validates against coordinate-system availability;
 - per-channel overlay load reuses existing layers;
 - highest-resolution selection for single-scale and multiscale image elements;
 - annotation validation and class-count tracking;
+- training-scope selection pools eligible annotated target cards;
 - normalization and feature-plane ordering;
 - fake extractor plus reducer writes expected feature-cache shape;
 - classifier training/prediction on small synthetic data;
+- interactive prediction rejects non-active/batch target scopes;
 - tile-wise prediction shape/dtype;
 - widget state transitions with mocked workers;
 - save-to-SpatialData labels alignment and overwrite policy.
@@ -508,7 +664,7 @@ are available. Core behavior should be testable without network access.
 4. Manifest/cache-id model and sidecar cache store.
 5. Fake feature extractor path with cache writing and reuse.
 6. Real ConvNeXt feature extractor behind optional dependencies.
-7. Classifier training and tile-wise prediction.
+7. Shared classifier training and viewer-bound tile-wise prediction.
 8. Viewer display and stale-state handling.
 9. Save predicted labels to SpatialData.
 10. Cache management UI, progress/cancel polish, and final test hardening.
