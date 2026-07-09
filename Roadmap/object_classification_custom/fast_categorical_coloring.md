@@ -1450,27 +1450,86 @@ Implementation direction:
 
 1. Add a Harpy-owned helper/API on the compact colormap or compact mapping that
    updates one known label id to a new texture code:
-   - find `instance_id` in `compact_mapping.label_ids`;
    - map the new user class to the correct class texture code;
-   - update only that entry in `compact_mapping.texture_codes`;
+   - insert, update, or remove the label entry according to the class
+     transition described below;
    - invalidate any derived compact caches, including high-bit typed dicts and
      small-label dense lookup arrays.
 2. Add enough class-to-texture-code state when building the object-classification
    user-class colormap so the row-scoped update can resolve the new class
-   without rebuilding the full table-aligned mapping.
-3. For unlabeled class `0`, preserve the current visual behavior by mapping the
-   edited label back to the transparent/default unlabeled texture code.
-4. Patch only the currently displayed labels slice:
+   without rebuilding the full table-aligned mapping:
+
+   ```text
+   class_id -> texture_code
+   ```
+
+   This lookup should live on the compact colormap or compact mapping used for
+   object-classification user-class coloring. It is separate from
+   `label_id -> texture_code`: many labels can share one class texture code.
+3. When a user annotation introduces a brand-new class,
+   `set_user_class_for_rows(...)` has already synced the table palette, but
+   the currently assigned compact colormap was built before that class existed.
+   The sparse update must therefore be able to append a new
+   `texture_code -> RGBA` row and record the new `class_id -> texture_code`
+   entry before updating any label ids.
+   - If the class was already present in the table categories/palette when the
+     compact colormap was built, the colormap can already remember its
+     `class_id -> texture_code` entry, even if no currently visible label uses
+     that class.
+   - If the class truly did not exist when the colormap was built, the sparse
+     update cannot know it in advance. The annotation flow is:
+
+     ```text
+     set_user_class_for_rows(...)
+       -> table.obs["user_class"] categories now include the new class
+       -> table.uns["user_class_colors"] now includes its color
+
+     sparse viewer update
+       -> read the newly synced class color from the table palette
+       -> append one `texture_code -> RGBA` row
+       -> record `class_id -> texture_code`
+       -> update the edited `label_id -> texture_code` entry
+     ```
+
+     After that first sparse update, the compact colormap remembers the new
+     class for later annotations. The important distinction is that the table
+     palette is consulted only to create a missing class mapping, not to
+     rediscover every existing class mapping from RGBA on each annotation.
+4. Preserve the current compact user-class semantics for unlabeled class `0`.
+   In full repaint, `user_class == 0` rows are excluded from
+   `label_id -> texture_code` and fall through to the default/unlabeled color.
+   Sparse updates should keep the same representation.
+5. Implement the three user-class transition cases explicitly:
+
+   ```text
+   0 -> class_id
+     The label was previously absent from `label_ids`; insert it with the
+     class texture code.
+
+   class_id A -> class_id B
+     The label already exists; update only its texture code.
+
+   class_id -> 0
+     The label should return to default/unlabeled behavior; remove it from
+     `label_ids` and `texture_codes`.
+   ```
+
+   For the removal case, prefer removing the label entry rather than keeping an
+   explicit default texture code. Removal matches the full-repaint compact
+   state and keeps the mapping smaller.
+6. Maintain `compact_mapping.label_ids` in sorted order after insertion or
+   removal, because scalar lookup and array mapping use `np.searchsorted(...)`.
+7. Patch only the currently displayed labels slice:
    - read `raw_displayed = layer._slice.image.raw`;
    - read `view_displayed = layer._slice.image.view`;
    - build `mask = raw_displayed == instance_id`;
    - set `view_displayed[mask] = new_texture_code`;
    - emit `layer.events.labels_update(data=updated_view_data, offset=...)`
      following napari's own partial labels-update pattern.
-5. Keep the existing row-scoped feature update:
+8. Keep the existing row-scoped feature update:
    `refresh_user_class_colormap_and_feature(...)` should still update only the
    edited row in `layer.features`.
-6. Return `True` from `refresh_user_class_colormap_and_feature(...)` only when
+9. Return `True` from `refresh_user_class_colormap_and_feature(...)` only when
    both the compact color update and feature-row update were applied. Rare
    inconsistent states may still return `False`, but the normal compact
    user-class annotation path must not fall back to full restyling.
@@ -1490,6 +1549,11 @@ Important detail:
 - Do not update `texture_code -> RGBA` for a class change. That would recolor
   every label in the class. The sparse annotation operation changes one label's
   class membership, so it must update that label's `texture_code`.
+- Appending a new `texture_code -> RGBA` row is different from updating an
+  existing texture code. Appending is required only when the user introduces a
+  class that the current compact colormap did not know about yet. Updating an
+  existing texture row would recolor every label already assigned to that
+  class, which is not the row-scoped annotation operation.
 - This should also work for multiscale labels, but the patch must happen at the
   current displayed pyramid level. In napari, a multiscale labels slice stores
   `layer._slice.image.raw` as raw label ids from the selected data level and
@@ -1517,10 +1581,16 @@ Tests:
 
 - row-scoped user-class annotation with compact colormap updates exactly the
   edited label's texture code;
+- annotating an unlabeled/default label as a nonzero class inserts that label
+  into `label_ids` / `texture_codes`;
 - changing one label from class A to class B does not change texture codes for
   other labels in class A or class B;
-- changing one label to unlabeled class `0` restores the transparent/default
-  unlabeled behavior for that label;
+- changing one label to unlabeled class `0` removes that label from
+  `label_ids` / `texture_codes` and restores default/unlabeled behavior;
+- annotating a label with a newly introduced class appends a new texture RGBA
+  row, records the corresponding `class_id -> texture_code`, and then updates
+  only the edited label;
+- `label_ids` remains sorted after insertions and removals;
 - the compact colormap `color_dict` remains tiny and is not treated as the
   full `label_id -> RGBA` mapping;
 - `layer.features` is still updated row-scoped;
