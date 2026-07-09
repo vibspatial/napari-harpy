@@ -1681,10 +1681,10 @@ Why this works:
 - Existing-class sparse updates usually need only the first step. Brand-new
   classes need both because they introduce a new texture code and a new RGBA
   row.
-- This phase is not replaced by Phase 6.7d. Phase 6.7d can remove the explicit
+- This phase is not replaced by Phase 6.7e. Phase 6.7e can remove the explicit
   layer refresh by patching the visible texture-code image, but it still does
   not update the separate `texture_code -> RGBA` lookup texture. Brand-new
-  classes continue to need the colormap event after Phase 6.7d.
+  classes continue to need the colormap event after Phase 6.7e.
 
 Phase 6.7b tests:
 
@@ -1893,7 +1893,68 @@ Acceptance:
   hiding classifier feedback/status changes;
 - no full labels colormap rebuild is introduced.
 
-##### Phase 6.7d: Patch Current Displayed Slice Without Refresh
+##### Phase 6.7d: Remove Legacy Direct-Colormap Fallback
+
+Status: proposed.
+
+Goal:
+
+- make compact user-class sparse updates the only supported happy path for
+  row-scoped user-class annotation while `COLOR_BY_USER_CLASS` is active;
+- remove the legacy `label_id -> RGBA` sparse fallback from
+  `refresh_user_class_colormap_and_feature(...)`;
+- fail loudly if compact sparse state mutation unexpectedly cannot be applied.
+
+Current transitional flow:
+
+```python
+if self._refresh_compact_user_class_colormap_and_feature(change, feature_rows):
+    return True
+
+color_dict = self._build_user_class_annotation_color_dict(change)
+if color_dict is None:
+    return False
+```
+
+After Phase 6.7d, the compact colormap path should no longer silently fall
+through to `_build_user_class_annotation_color_dict(...)` for user-class
+annotation. If the current layer is expected to be compact user-class colored,
+then failure of `_refresh_compact_user_class_colormap_and_feature(...)` should
+raise a clear error that identifies the broken contract.
+
+Implementation direction:
+
+1. Keep non-user-class color modes unchanged. For example, prediction color
+   modes can still use `refresh_user_class_feature(...)` because the visible
+   color source is not `user_class`.
+2. In the `COLOR_BY_USER_CLASS` row-scoped annotation path, require the current
+   labels colormap to be `CompactCategoricalLabelColormap`.
+3. Replace the boolean fallback around
+   `_refresh_compact_user_class_colormap_and_feature(...)` with a loud failure
+   if the compact sparse update returns `False`.
+4. Remove `_build_user_class_annotation_color_dict(...)` if it becomes unused,
+   together with tests that only exist to cover the legacy direct-colormap
+   sparse fallback.
+5. Keep tests that verify the compact sparse happy path:
+   - no full feature-row rebuild;
+   - no new full colormap assignment;
+   - layer features are updated row-scoped;
+   - `layer.refresh(extent=False)` is still called in the current
+     Phase 6.7a/6.7b behavior. Removing that refresh belongs to Phase 6.7e.
+6. Add a test that simulates a broken compact sparse contract and asserts that
+   the code raises a clear exception instead of silently rebuilding a legacy
+   direct colormap.
+
+Acceptance:
+
+- `refresh_user_class_colormap_and_feature(...)` has one clear compact
+  user-class sparse path;
+- `_build_user_class_annotation_color_dict(...)` is removed if unused;
+- unexpected compact sparse failures are visible during development and QA;
+- no behavior changes for annotation while coloring by `pred_class` or
+  `pred_confidence`, where only `layer.features` should be updated.
+
+##### Phase 6.7e: Patch Current Displayed Slice Without Refresh
 
 Status: proposed.
 
@@ -1921,8 +1982,9 @@ Implementation direction:
    `layer.events.colormap()` as specified in Phase 6.7b before or alongside the
    partial labels update.
 4. Do not call `layer.refresh(...)` in the compact sparse happy path.
-5. If current-slice internals are unavailable or inconsistent, return `False`
-   so the caller can fall back to Phase 6.7a/6.7b refresh behavior.
+5. If current-slice internals are unavailable or inconsistent, fail loudly or
+   use a deliberately chosen fallback defined during implementation. Do not
+   silently resurrect the legacy direct-colormap fallback removed in Phase 6.7d.
 
 Important detail:
 
@@ -1966,7 +2028,7 @@ Important detail:
   panning/changing the viewport tile, changing a z/non-displayed slice, or an
   explicit `layer.refresh(...)`.
 
-Phase 6.7d tests:
+Phase 6.7e tests:
 
 - the labels layer emits a partial labels update for the current displayed
   slice instead of assigning a new full colormap in the happy path;
@@ -1974,76 +2036,23 @@ Phase 6.7d tests:
 - a multiscale labels-layer regression test verifies the sparse update patches
   `layer._slice.image.view` at the current data level and does not attempt to
   patch full-resolution `layer.data[0]`;
-- if current-slice internals are unavailable, the method returns `False` and
-  the caller can use the existing correctness fallback.
+- unavailable current-slice internals fail loudly or use the deliberately
+  chosen fallback, without restoring the old direct-colormap sparse fallback.
 
-Phase 6.7d benchmark acceptance:
+Phase 6.7e benchmark acceptance:
 
 - benchmark one user-class annotation update while `COLOR_BY_USER_CLASS` is
   active on a large labels layer;
 - confirm the update cost scales with the current visible slice mask plus one
   mapping lookup, not with the full number of table rows.
 
-##### Phase 6.7e: Remove Legacy Direct-Colormap Fallback
-
-Status: proposed.
-
-Goal:
-
-- make compact user-class sparse updates the only supported happy path for
-  row-scoped user-class annotation while `COLOR_BY_USER_CLASS` is active;
-- remove the legacy `label_id -> RGBA` sparse fallback from
-  `refresh_user_class_colormap_and_feature(...)`;
-- fail loudly if compact sparse state mutation unexpectedly cannot be applied.
-
-Current transitional flow:
-
-```python
-if self._refresh_compact_user_class_colormap_and_feature(change, feature_rows):
-    return True
-
-color_dict = self._build_user_class_annotation_color_dict(change)
-if color_dict is None:
-    return False
-```
-
-After Phase 6.7e, the compact colormap path should no longer silently fall
-through to `_build_user_class_annotation_color_dict(...)` for user-class
-annotation. If the current layer is expected to be compact user-class colored,
-then failure of `_refresh_compact_user_class_colormap_and_feature(...)` should
-raise a clear error that identifies the broken contract.
-
-Implementation direction:
-
-1. Keep non-user-class color modes unchanged. For example, prediction color
-   modes can still use `refresh_user_class_feature(...)` because the visible
-   color source is not `user_class`.
-2. In the `COLOR_BY_USER_CLASS` row-scoped annotation path, require the current
-   labels colormap to be `CompactCategoricalLabelColormap`.
-3. Replace the boolean fallback around
-   `_refresh_compact_user_class_colormap_and_feature(...)` with a loud failure
-   if the compact sparse update returns `False`.
-4. Remove `_build_user_class_annotation_color_dict(...)` if it becomes unused,
-   together with tests that only exist to cover the legacy direct-colormap
-   sparse fallback.
-5. Keep tests that verify the compact sparse happy path:
-   - no full feature-row rebuild;
-   - no new full colormap assignment;
-   - layer features are updated row-scoped;
-   - `layer.refresh(extent=False)` is called in Phase 6.7a/6.7b behavior, or no
-     refresh is called after Phase 6.7d behavior.
-6. Add a test that simulates a broken compact sparse contract and asserts that
-   the code raises a clear exception instead of silently rebuilding a legacy
-   direct colormap.
-
 Acceptance:
 
-- `refresh_user_class_colormap_and_feature(...)` has one clear compact
-  user-class sparse path;
-- `_build_user_class_annotation_color_dict(...)` is removed if unused;
-- unexpected compact sparse failures are visible during development and QA;
-- no behavior changes for annotation while coloring by `pred_class` or
-  `pred_confidence`, where only `layer.features` should be updated.
+- compact sparse user-class annotations no longer need
+  `layer.refresh(extent=False)` in the happy path;
+- brand-new classes still emit the colormap event from Phase 6.7b;
+- multiscale labels are patched at the displayed pyramid level;
+- no legacy direct-colormap sparse fallback is reintroduced.
 
 ### Slice 7: Compact Continuous Labels Colormap Via 256 Bins
 
