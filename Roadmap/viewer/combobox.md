@@ -254,24 +254,24 @@ Out of scope:
 Required behavior:
 
 - Labels `Color source` options should be rebuilt from the selected linked table:
-  - always include `None`;
+  - always include `No color source` backed by internal source-kind data `None`;
   - include `Observations` only when the selected linked table has `obs_column` sources;
   - include `Vars` only when the selected linked table has `x_var` sources.
 - If a labels card has no linked table, or the selected linked table has no colorable obs/vars sources:
-  - `Color source` must be set to `None`.
-  - `Color source` should be disabled so the user cannot open a dropdown containing only `None`.
+  - `Color source` must be set to `No color source`.
+  - `Color source` should be disabled so the user cannot open a dropdown containing only `No color source`.
   - The value input must be disabled, cleared, and have an empty completer model.
   - `selected_source_kind` must return `None`.
   - `selected_color_source` must return `None`.
   - The action hint should stay on the primary-layer action.
 - Shapes `Color source` options should be rebuilt from both direct shapes columns and the selected linked table:
-  - always include `None`;
+  - always include `No color source` backed by internal source-kind data `None`;
   - include `Shapes column` only when direct colorable shapes columns exist;
   - include `Observations` only when the selected linked table has `obs_column` sources;
   - include `Vars` only when the selected linked table has `x_var` sources.
 - If a shapes card has direct colorable shapes columns but no linked table:
   - `Color source` should be enabled.
-  - The dropdown should contain `None` and `Shapes column`.
+  - The dropdown should contain `No color source` and `Shapes column`.
   - The user should be able to select `Shapes column`.
   - The value input should then show the browseable shape-column popup from Slice 1.
   - `Observations` and `Vars` should not be present.
@@ -279,8 +279,8 @@ Required behavior:
   - `Shapes column` should not be present.
   - `Observations` and/or `Vars` should be present only when the selected linked table has those sources.
 - If a shapes card has neither direct shape-column sources nor table-backed sources:
-  - `Color source` must be set to `None`.
-  - `Color source` should be disabled so the user cannot open a dropdown containing only `None`.
+  - `Color source` must be set to `No color source`.
+  - `Color source` should be disabled so the user cannot open a dropdown containing only `No color source`.
   - The value input must be disabled, cleared, and have an empty completer model.
   - The Fill toggle must be disabled and unchecked.
   - `selected_source_kind` must return `None`.
@@ -290,12 +290,12 @@ Required behavior:
 - If a linked table later becomes available:
   - rebuild the `Color source` options;
   - re-enable the dropdown only when at least one non-`None` source kind is available;
-  - keep the current source kind on `None` when the previous state was `None`;
+  - keep the current source kind on internal `None` / visible `No color source` when the previous state was `None`;
   - The user can then choose a color-source kind manually.
 - If linked tables disappear after a valid table-backed source was selected:
   - clear the selected value,
   - remove `Observations` and `Vars` from the dropdown,
-  - force `Color source` back to `None` unless a direct `Shapes column` selection is still valid for shapes,
+  - force `Color source` back to visible `No color source` / internal `None` unless a direct `Shapes column` selection is still valid for shapes,
   - return to the primary-layer action hint when no non-`None` source kind remains.
 - If linked tables change but at least one linked table remains, keep the existing valid preservation behavior where possible:
   - preserve an explicit selected kind/source if it is still present and valid;
@@ -309,28 +309,28 @@ Suggested implementation shape:
 - For shapes, compute available source kinds from:
   - `bool(self._shape_column_color_sources)` for `shape_column`;
   - the selected table's `TableColorSourceSpec.source_kind` values for `obs_column` and `x_var`.
-- Keep `None` as the first item.
+- Keep `No color source` as the first visible item, with combo data `None`.
 - Enable `color_source_kind_combo` only when it has at least one non-`None` item.
 - Preserve the previous source kind only when that kind is still present in the rebuilt combo.
-- Prefer selecting `None` after an unavailable state becomes available; do not auto-select the first non-`None` kind.
+- Prefer selecting visible `No color source` / internal `None` after an unavailable state becomes available; do not auto-select the first non-`None` kind.
 - In `selected_source_kind`, return `None` whenever the current data is not present in the active source-kind options.
 - In `_refresh_color_source_controls`, compute `available_sources` only for the active source kind.
 - Tests should prefer `findData(...)` over hard-coded combo indices once source-kind options become dynamic.
 
 Test expectations:
 
-- A labels card with `No linked tables` has disabled `Linked table` and disabled `Color source` combos, with `Color source` on `None`.
+- A labels card with `No linked tables` has disabled `Linked table` and disabled `Color source` combos, with `Color source` on `No color source`.
 - A labels card with `No linked tables` reports `selected_source_kind is None` and `selected_color_source is None`.
 - Programmatically setting labels `Color source` to `Observations` or `Vars` while disabled still leaves `selected_source_kind is None`.
-- A labels card whose selected table has only obs sources shows `None` and `Observations`, not `Vars`.
-- A labels card whose selected table has only var sources shows `None` and `Vars`, not `Observations`.
-- A shapes card with colorable shape columns but no linked table has disabled `Linked table`, enabled `Color source`, and `Color source` options `None` and `Shapes column`.
-- A shapes card with no colorable shape columns and no linked table has disabled `Linked table`, disabled `Color source`, and `Color source` on `None`.
-- A shapes card with colorable shape columns and linked-table obs/vars sources shows the union of available kinds: `None`, `Shapes column`, plus the available table-backed kinds.
+- A labels card whose selected table has only obs sources shows `No color source` and `Observations`, not `Vars`.
+- A labels card whose selected table has only var sources shows `No color source` and `Vars`, not `Observations`.
+- A shapes card with colorable shape columns but no linked table has disabled `Linked table`, enabled `Color source`, and `Color source` options `No color source` and `Shapes column`.
+- A shapes card with no colorable shape columns and no linked table has disabled `Linked table`, disabled `Color source`, and `Color source` on `No color source`.
+- A shapes card with colorable shape columns and linked-table obs/vars sources shows the union of available kinds: `No color source`, `Shapes column`, plus the available table-backed kinds.
 - A shapes card whose selected linked table has only obs sources shows `Observations` but not `Vars`.
 - A shapes card whose selected linked table has only var sources shows `Vars` but not `Observations`.
-- When a linked table is created after an initial no-table state, the affected card rebuilds `Color source` options but keeps the current source kind on `None`.
-- When linked tables disappear after a table-backed source was selected, the card clears the value input, removes table-backed source kinds, and either falls back to `None` or keeps only valid direct `Shapes column` behavior.
+- When a linked table is created after an initial no-table state, the affected card rebuilds `Color source` options but keeps the visible choice on `No color source`.
+- When linked tables disappear after a table-backed source was selected, the card clears the value input, removes table-backed source kinds, and either falls back to `No color source` or keeps only valid direct `Shapes column` behavior.
 
 Verification:
 

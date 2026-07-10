@@ -723,7 +723,7 @@ def test_viewer_widget_labels_cards_expose_table_driven_coloring_controls(qtbot,
 
     assert first_card.color_source_kind_combo.count() == 3
     assert [first_card.color_source_kind_combo.itemText(index) for index in range(3)] == [
-        "None",
+        "No color source",
         "Observations",
         "Vars",
     ]
@@ -761,7 +761,7 @@ def test_viewer_widget_labels_cards_expose_table_driven_coloring_controls(qtbot,
     first_card.color_source_value_input.setText("channel_1_sum")
     assert first_card.action_hint_label.text() == 'Action: add/update colored overlay for X[:, "channel_1_sum"]'
 
-    assert _combo_texts(second_card.color_source_kind_combo) == ["None"]
+    assert _combo_texts(second_card.color_source_kind_combo) == ["No color source"]
     assert not second_card.color_source_kind_combo.isEnabled()
     assert second_card.color_source_kind_combo.findData("x_var") == -1
     assert second_card.selected_source_kind is None
@@ -807,7 +807,7 @@ def test_viewer_widget_labels_card_repopulates_color_sources_when_linked_table_c
 
     card = widget.labels_cards[0]
 
-    assert _combo_texts(card.color_source_kind_combo) == ["None", "Observations"]
+    assert _combo_texts(card.color_source_kind_combo) == ["No color source", "Observations"]
     assert card.color_source_kind_combo.findData("x_var") == -1
 
     _select_color_source_kind(card, "obs_column")
@@ -819,7 +819,7 @@ def test_viewer_widget_labels_card_repopulates_color_sources_when_linked_table_c
     assert card.action_hint_label.text() == "Action: select an observation column for a colored overlay"
 
     card.linked_table_combo.setCurrentIndex(1)
-    assert _combo_texts(card.color_source_kind_combo) == ["None", "Vars"]
+    assert _combo_texts(card.color_source_kind_combo) == ["No color source", "Vars"]
     assert card.color_source_kind_combo.findData("obs_column") == -1
     assert card.selected_source_kind is None
     assert not card.color_source_value_input.isEnabled()
@@ -961,7 +961,7 @@ def test_viewer_widget_selects_first_linked_table_when_event_creates_first_table
     assert _combo_texts(card.linked_table_combo) == ["No linked tables"]
     assert card.selected_table_name is None
     assert not card.linked_table_combo.isEnabled()
-    assert _combo_texts(card.color_source_kind_combo) == ["None"]
+    assert _combo_texts(card.color_source_kind_combo) == ["No color source"]
     assert not card.color_source_kind_combo.isEnabled()
     assert card.selected_source_kind is None
 
@@ -986,7 +986,7 @@ def test_viewer_widget_selects_first_linked_table_when_event_creates_first_table
     assert _combo_texts(card.linked_table_combo) == ["new_table"]
     assert card.linked_table_combo.isEnabled()
     assert card.selected_table_name == "new_table"
-    assert _combo_texts(card.color_source_kind_combo) == ["None", "Observations"]
+    assert _combo_texts(card.color_source_kind_combo) == ["No color source", "Observations"]
     assert card.color_source_kind_combo.isEnabled()
     assert card.selected_source_kind is None
     assert len(viewer.layers) == 0
@@ -2010,7 +2010,7 @@ def test_viewer_widget_shapes_card_exposes_shape_column_controls(qtbot) -> None:
     card = widget.shape_cards[0]
 
     assert [card.color_source_kind_combo.itemText(index) for index in range(card.color_source_kind_combo.count())] == [
-        "None",
+        "No color source",
         "Shapes column",
     ]
     assert card.color_source_kind_combo.isEnabled()
@@ -2073,7 +2073,7 @@ def test_viewer_widget_shapes_card_disables_color_source_when_no_sources(qtbot) 
 
     assert _combo_texts(card.linked_table_combo) == ["No linked tables"]
     assert not card.linked_table_combo.isEnabled()
-    assert _combo_texts(card.color_source_kind_combo) == ["None"]
+    assert _combo_texts(card.color_source_kind_combo) == ["No color source"]
     assert not card.color_source_kind_combo.isEnabled()
     assert card.selected_source_kind is None
     assert card.selected_color_source is None
@@ -2118,7 +2118,7 @@ def test_viewer_widget_shapes_card_omits_shape_column_when_only_table_sources(qt
 
     card = widget.shape_cards[0]
 
-    assert _combo_texts(card.color_source_kind_combo) == ["None", "Observations"]
+    assert _combo_texts(card.color_source_kind_combo) == ["No color source", "Observations"]
     assert card.color_source_kind_combo.findData("shape_column") == -1
     assert card.color_source_kind_combo.isEnabled()
 
@@ -2188,7 +2188,7 @@ def test_viewer_widget_shapes_card_exposes_linked_table_sources(qtbot, monkeypat
 
     assert _combo_texts(card.linked_table_combo) == ["table_a", "table_b"]
     assert card.selected_table_name == "table_a"
-    assert _combo_texts(card.color_source_kind_combo) == ["None", "Shapes column", "Observations"]
+    assert _combo_texts(card.color_source_kind_combo) == ["No color source", "Shapes column", "Observations"]
     assert card.color_source_kind_combo.findData("x_var") == -1
 
     _select_color_source_kind(card, "obs_column")
@@ -2207,7 +2207,7 @@ def test_viewer_widget_shapes_card_exposes_linked_table_sources(qtbot, monkeypat
     assert card.action_hint_label.text() == 'Action: add/update styled shapes layer for obs["cell_type"]'
 
     card.linked_table_combo.setCurrentIndex(1)
-    assert _combo_texts(card.color_source_kind_combo) == ["None", "Shapes column", "Vars"]
+    assert _combo_texts(card.color_source_kind_combo) == ["No color source", "Shapes column", "Vars"]
     assert card.color_source_kind_combo.findData("obs_column") == -1
     assert card.selected_source_kind is None
     assert not card.color_source_value_input.isEnabled()

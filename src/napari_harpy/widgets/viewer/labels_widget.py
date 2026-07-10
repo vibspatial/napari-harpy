@@ -32,6 +32,7 @@ from napari_harpy.widgets.viewer.styles import (
 
 _OBS_SOURCE_PLACEHOLDER = "Select obs column"
 _VAR_SOURCE_PLACEHOLDER = "Select var"
+_NO_COLOR_SOURCE_LABEL = "No color source"
 _TABLE_SOURCE_KIND_ITEMS: tuple[tuple[str, TableColorSourceKind], ...] = (
     ("Observations", "obs_column"),
     ("Vars", "x_var"),
@@ -95,7 +96,7 @@ class _LabelsCardWidget(QFrame):
         self.color_source_kind_combo = CompactComboBox(minimum_contents_length=8)
         self.color_source_kind_combo.setObjectName(f"viewer_widget_color_source_kind_combo_{labels_name}")
         self.color_source_kind_combo.setStyleSheet(INPUT_CONTROL_STYLESHEET)
-        self.color_source_kind_combo.addItem("None", None)
+        self.color_source_kind_combo.addItem(_NO_COLOR_SOURCE_LABEL, None)
 
         self.color_source_value_label = create_form_label("Value source")
         self.color_source_value_input = CompleterPopupLineEdit()
@@ -281,7 +282,7 @@ class _LabelsCardWidget(QFrame):
 
         with QSignalBlocker(self.color_source_kind_combo):
             self.color_source_kind_combo.clear()
-            self.color_source_kind_combo.addItem("None", None)
+            self.color_source_kind_combo.addItem(_NO_COLOR_SOURCE_LABEL, None)
             for label, source_kind in _TABLE_SOURCE_KIND_ITEMS:
                 if source_kind in available_source_kinds:
                     self.color_source_kind_combo.addItem(label, source_kind)
