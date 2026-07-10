@@ -2610,85 +2610,170 @@ Implementation notes:
 - Unit tests now assert the fast path avoids `np.unique(...)` for both
   categorical and continuous compact mappings.
 
-### Slice 10: Strict Object-Classification Class Palette Contract
+### Slice 10: Canonical Class State Before Styling
 
 Status: proposed.
 
-`ViewerStylingController._get_class_color_lookup(...)` currently mixes two
+`ViewerStylingController._get_class_color_lookup(...)` currently mixes several
 responsibilities:
 
 - read the table-backed class palette for `user_class` / `pred_class`;
-- recover from invalid or incomplete class-column state by re-normalizing
-  values and backfilling palettes.
+- accept class columns that may have been generated outside napari-harpy;
+- recover from invalid or incomplete class-column state by normalizing values
+  and backfilling palettes during color repainting.
 
 That makes the styling path harder to reason about and keeps fallback branches
-alive in a performance-sensitive color-repaint path.
+alive in a performance-sensitive color-repaint path. The desired product
+contract is not "reject external class columns". External `user_class` and
+`pred_class` columns are legitimate inputs. The contract is:
+
+> External class columns are accepted as input, but once Harpy uses them for
+> object-classification styling/training, Harpy owns the canonical categorical
+> column and the corresponding Harpy-default palette.
 
 Preferred direction:
 
-- make object-classification styling a strict reader;
-- keep mutation/repair at mutation boundaries:
+- make object-classification styling a strict reader of already-canonical
+  class state;
+- make the preparation boundary explicit at table binding/adoption time, before
+  the widget reaches normal label styling; do not normalize during every
+  `refresh_layer_colors(...)` repaint;
+- move external-state compatibility and normalization to explicit preparation
+  boundaries:
+  - object-classification widget/table binding;
+  - prediction-column preparation;
   - `set_user_class_for_rows(...)`;
-  - `_ensure_prediction_columns(...)`;
   - `set_class_annotation_state(...)`.
+
+Canonical class-state contract:
+
+- Class values must be coercible to non-negative integer class ids.
+- Missing or non-numeric class values are converted to the unlabeled class `0`
+  only at canonicalization boundaries, not during hot styling. Negative class
+  ids should fail because class ids are required to be non-negative.
+- Canonical class columns are stored as pandas categorical columns with sorted
+  integer categories that include `0`.
+- `table.uns["user_class_colors"]` and `table.uns["pred_class_colors"]` are
+  Harpy-owned once the widget prepares the table. They should be written as
+  Harpy default palettes aligned to the canonical category order.
+- Existing external palettes may be read before preparation, but they are not
+  preserved as product state. If they differ from Harpy defaults, they are
+  intentionally overwritten when the column is canonicalized.
+- Invalid external palettes should not block canonicalization. If `user_class`
+  or `pred_class` exists but the corresponding palette in `.uns` is missing,
+  malformed, too short/long, or contains invalid colors, the preparation
+  boundary should overwrite it with the Harpy default palette for the
+  canonical categories.
 
 Current guarantees and nuance:
 
-- For `pred_class`, the normal widget flow is strict already:
-  `ClassifierController.bind(...)` calls `_ensure_prediction_columns(...)`,
-  which calls `set_class_annotation_state(...)`. Therefore `pred_class` should
-  exist, be categorical, have integer categories, and have a synced
-  `pred_class_colors` palette before styling.
+- `pred_class` is already close to the target behavior:
+  `_ensure_prediction_columns(...)` accepts existing external `pred_class`
+  values, coerces them through `_get_pred_class_values(...)`, writes the
+  canonical categorical column, and writes Harpy `pred_class_colors`.
 - For `user_class`, the initial no-annotation state is intentionally lazier:
   `user_class` may be absent until the first call to
   `set_user_class_for_rows(...)`. In that state,
-  `_get_region_feature_rows(...)` exposes all observed class values as `0`,
-  and the viewer should render everything with the unlabeled/default color.
+  `_get_region_feature_rows(...)` exposes all class values as `0`, and the
+  viewer should render everything with the unlabeled/default color.
+- If `user_class` already exists in the table before the widget runs, that is
+  not an error. The widget should explicitly canonicalize it before styling or
+  annotation fast paths rely on it.
 
 Implementation direction:
 
-1. Replace `_get_class_color_lookup_from_normalized_values(...)` with strict
-   validation helpers.
-2. Treat an existing table-backed class column as a contract:
+1. Reuse or rename the existing bind-time user-class preparation hook
+   (`AnnotationController._normalize_existing_annotation_state()` /
+   `ensure_annotation_column(...)`) so its purpose is explicit. It should:
+   - do nothing when `user_class` is absent;
+   - when `user_class` exists, coerces values to non-negative integer classes
+     using the existing user-class normalization rules;
+   - writes the canonical categorical `user_class` column;
+   - writes Harpy default `user_class_colors`, intentionally replacing any
+     existing external palette, including malformed palettes.
+2. Call that preparation helper during table binding/adoption before full label
+   styling runs. In the current widget flow this is the right boundary:
+   - `AnnotationController.bind(...)` already calls
+     `_normalize_existing_annotation_state()` for existing `user_class`;
+   - `ClassifierController.bind(...)` already calls
+     `_ensure_prediction_columns(...)` for `pred_class`;
+   - `ObjectClassificationWidget._refresh_layer_styling()` runs after those
+     controller bindings.
+   - Do not create `user_class` just because the widget opens; preserving the
+     current lazy all-unlabeled state is still useful.
+   - Do canonicalize `user_class` before using an existing external column for
+     styling or annotation.
+   - Do not normalize an already-prepared `user_class` or `pred_class` column
+     during normal repainting in `refresh_layer_colors(...)`.
+3. Keep `_ensure_prediction_columns(...)` as the preparation boundary for
+   `pred_class`, but make the intent explicit in comments/tests:
+   - external `pred_class` values are accepted;
+   - the stored `pred_class` column and `pred_class_colors` become
+     Harpy-canonical after this call;
+   - invalid existing `pred_class_colors` are overwritten with Harpy defaults
+     rather than treated as styling errors.
+4. Replace `_get_class_color_lookup_from_normalized_values(...)` with strict
+   read-time validation helpers.
+5. Treat an existing table-backed class column at styling time as a contract:
    - the column must be pandas categorical;
    - categories must be integer class ids;
    - categories must be sorted, unique, and include `0`;
    - categorical codes must not contain missing values;
    - `table.uns[colors_key]` must exist;
-   - stored palette length must match the category count.
-3. Treat `observed_class_values` as already prepared by
+   - stored palette length must match the category count;
+   - stored palette entries must be valid color values.
+   These checks are for post-preparation state. "Post-preparation" means after
+   the widget/controller bind step has adopted the table and run the
+   canonicalization hooks for existing class columns. If state is broken by the
+   time `refresh_layer_colors(...)` reads it, strict styling should fail loudly
+   rather than normalize again.
+6. Treat `observed_class_values` as already prepared by
    `feature_rows[self._color_by]`:
    - values must be integer dtype;
    - values must be non-negative;
    - missing/float/object values should fail loudly instead of triggering a
      hidden normalization fallback.
-4. Preserve one explicit special case:
+   If `_get_region_feature_rows(...)` still performs light coercion while
+   assembling features, `_get_class_color_lookup(...)` should not repeat that
+   recovery. The strict palette reader should only validate the prepared
+   `feature_rows` values it receives.
+7. Preserve one explicit special case:
    - if `category_column == USER_CLASS_COLUMN` and `user_class` is absent,
      allow styling only when observed class values are all `0`;
    - return a lookup containing only the unlabeled class color;
    - if observed values contain nonzero classes while `user_class` is absent,
      raise a clear `ValueError`.
-5. For `pred_class`, absence of the table-backed column should fail loudly in
+8. For `pred_class`, absence of the table-backed column should fail loudly in
    widget-backed styling, because the classifier controller should have called
    `set_class_annotation_state(...)` via `_ensure_prediction_columns(...)`
    before styling.
-6. Keep deterministic color backfilling only for class ids that are observed
-   but not present in the stored palette categories, if that situation remains
-   a deliberate product behavior. Otherwise fail loudly there too and require
-   palette sync at the mutation boundary.
+9. Do not backfill class ids in `_get_class_color_lookup(...)` during styling.
+   If observed class ids are not covered by the canonical table categories and
+   palette, the preparation boundary failed and styling should raise a clear
+   error.
 
 Acceptance criteria:
 
-- valid `user_class` and `pred_class` categorical columns still produce the
-  same compact categorical colors;
-- `pred_class` missing from a bound widget table raises a clear error instead
-  of silently backfilling;
+- valid externally generated `user_class` values are accepted, canonicalized to
+  Harpy categorical state, and styled with Harpy default colors;
+- valid externally generated `pred_class` values are accepted by
+  `_ensure_prediction_columns(...)`, canonicalized, and styled with Harpy
+  default colors;
+- existing external `user_class_colors` / `pred_class_colors` that differ from
+  Harpy defaults are intentionally overwritten at canonicalization boundaries;
+- missing or invalid external `user_class_colors` / `pred_class_colors` are
+  overwritten at canonicalization boundaries rather than surfaced as user
+  errors;
+- after canonicalization, `user_class` and `pred_class` categorical columns
+  still produce compact categorical colors;
 - missing pre-annotation `user_class` with all observed values equal to `0`
   still renders as unlabeled/default gray;
 - missing `user_class` with observed nonzero class values raises a clear error;
-- invalid categorical contracts fail loudly with actionable messages:
-  non-categorical column, non-integer categories, missing category codes,
-  missing palette, palette-length mismatch;
+- `pred_class` missing from a bound widget table raises a clear error in the
+  styling path instead of silently backfilling;
+- invalid post-preparation categorical contracts fail loudly with actionable
+  messages: non-categorical column, non-integer categories, missing category
+  codes, missing palette, palette-length mismatch, or invalid colors;
 - tests that currently expect fallback normalization for invalid table state
   are updated to expect strict failure or are removed if they only covered the
   old recovery behavior;
