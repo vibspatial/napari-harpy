@@ -2519,7 +2519,7 @@ Implementation notes:
 
 #### Slice 8.1: Defer Labels Sync Until Async Slice Completion
 
-Status: proposed.
+Status: implemented; manual Qt train-plus-zoom stress test still recommended.
 
 The Slice 8 helper fixed stale async labels colors by forcing
 `layer.set_view_slice()` immediately after Harpy assigns a table-driven labels
@@ -2679,6 +2679,22 @@ Suggested tests:
 - keep a manual Qt stress test for
   `Interactive(sdata, async_slicing=True)`, object-classification
   `Train Classifier`, and repeated zoom in/out while Dask cache is enabled.
+
+Implementation notes:
+
+- `viewer.labels_async.sync_labels_display_after_colormap_change(...)` now
+  keeps the Slice 8 immediate sync path when `layer.loaded` is true.
+- If the labels layer is unloaded, the helper records one pending sync in a
+  weak-key mapping and returns without calling `layer.set_view_slice()`.
+- The helper connects once per layer to `layer._slicing_state.loaded_data` and
+  queues a single `QTimer.singleShot(0, ...)` callback after napari marks the
+  layer loaded again.
+- The queued callback rechecks `layer.loaded` before forcing the sync. If the
+  layer became unloaded again, the pending sync remains deferred until the next
+  loaded-data signal.
+- Focused tests cover immediate sync, unloaded deferral, repeated-request
+  coalescing, rechecking loaded state before the queued sync, and avoiding a
+  duplicate sync when a loaded request supersedes a pending queued sync.
 
 ### Slice 9: Optional Sorted-Index Fast Path For Compact Mapping
 
