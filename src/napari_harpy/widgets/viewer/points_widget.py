@@ -27,6 +27,7 @@ from napari_harpy.widgets.shared_styles import (
     WIDGET_TEXT_COLOR,
     WIDGET_TEXT_MUTED_COLOR,
     CompactComboBox,
+    CompleterPopupLineEdit,
     StatusCardKind,
     build_input_control_stylesheet,
     create_form_label,
@@ -103,15 +104,17 @@ class PointsValueWidget(QFrame):
         self.index_column_combo.setObjectName("viewer_widget_points_index_column_combo")
         self.index_column_combo.setStyleSheet(build_input_control_stylesheet("QComboBox"))
 
-        self.value_input = QLineEdit()
+        self.value_input = CompleterPopupLineEdit()
         self.value_input.setObjectName("viewer_widget_points_value_input")
         self.value_input.setStyleSheet(build_input_control_stylesheet("QLineEdit"))
-        self.value_input.setPlaceholderText("Search values")
+        self.value_input.setPlaceholderText("Select value")
 
         self._value_completer_model = QStringListModel(self.value_input)
         self._value_completer = QCompleter(self._value_completer_model, self.value_input)
+        self._value_completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
         self._value_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self._value_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self._value_completer.setMaxVisibleItems(10)
         self._value_completer.popup().setStyleSheet(COMPLETER_POPUP_STYLESHEET)
         self.value_input.setCompleter(self._value_completer)
 
@@ -413,6 +416,7 @@ class PointsValueWidget(QFrame):
             and not self.all_values_checkbox.isChecked()
         )
         self.value_input.setEnabled(value_selection_enabled)
+        self.value_input.set_completion_popup_on_entry_enabled(value_selection_enabled)
         self.add_value_button.setEnabled(
             value_selection_enabled and self._resolve_available_value(self.value_input.text()) is not None
         )
