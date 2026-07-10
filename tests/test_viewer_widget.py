@@ -1994,10 +1994,20 @@ def test_viewer_widget_shapes_card_exposes_shape_column_controls(qtbot) -> None:
     card.color_source_kind_combo.setCurrentIndex(1)
 
     assert card.color_source_value_input.isEnabled()
-    assert card.color_source_value_input.placeholderText() == "Search shapes columns"
-    assert card.fill_toggle.isEnabled()
+    assert card.color_source_value_input.text() == ""
+    assert card.color_source_value_input.placeholderText() == "Select column"
+    assert not card.fill_toggle.isEnabled()
     assert not card.fill_toggle.isChecked()
     assert card._color_source_completer_model.stringList() == ["cell_type", "score", "free_text"]
+    assert card.color_source_value_input.completer().maxVisibleItems() == 10
+    card.color_source_value_input.show_completion_popup()
+    assert card.color_source_value_input.completer().completionPrefix() == ""
+    assert card.color_source_value_input.completer().completionModel().rowCount() == 3
+    card.color_source_value_input.completer().popup().hide()
+    assert card.action_hint_label.text() == "Action: select a shapes column for a styled shapes layer"
+
+    card.color_source_value_input.setText("cell_type")
+    assert card.fill_toggle.isEnabled()
     assert card.action_hint_label.text() == 'Action: add/update styled shapes layer for column "cell_type"'
 
     card.color_source_kind_combo.setCurrentIndex(2)

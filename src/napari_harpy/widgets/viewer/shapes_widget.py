@@ -9,7 +9,6 @@ from qtpy.QtWidgets import (
     QFormLayout,
     QFrame,
     QLabel,
-    QLineEdit,
     QPushButton,
     QSizePolicy,
     QVBoxLayout,
@@ -26,6 +25,7 @@ from napari_harpy.widgets.shared_styles import (
     CHECKBOX_STYLESHEET,
     COMPLETER_POPUP_STYLESHEET,
     CompactComboBox,
+    CompleterPopupLineEdit,
     build_input_control_stylesheet,
     create_form_label,
 )
@@ -36,6 +36,10 @@ from napari_harpy.widgets.viewer.styles import (
     INPUT_CONTROL_STYLESHEET,
     SUMMARY_LABEL_STYLESHEET,
 )
+
+_SHAPE_COLUMN_PLACEHOLDER = "Select column"
+_OBS_SOURCE_PLACEHOLDER = "Select obs column"
+_VAR_SOURCE_PLACEHOLDER = "Select var"
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,7 @@ class _ShapesCardWidget(QFrame):
         self._shape_column_color_sources = shape_column_color_sources
         self._table_color_sources_by_table = table_color_sources_by_table
         self._filtered_color_sources: list[ShapeColumnColorSourceSpec | TableColorSourceSpec] = []
+        self._active_source_kind: ShapeColorSourceKind | TableColorSourceKind | None = None
         self.setObjectName(f"viewer_widget_shapes_card_{shapes_name}")
         self.setProperty("harpyViewerDetailPanel", True)
         self.setStyleSheet(DETAIL_PANEL_STYLESHEET)
@@ -103,7 +108,7 @@ class _ShapesCardWidget(QFrame):
         self.color_source_kind_combo.addItem("Vars", "x_var")
 
         self.color_source_value_label = create_form_label("Shapes column")
-        self.color_source_value_input = QLineEdit()
+        self.color_source_value_input = CompleterPopupLineEdit()
         self.color_source_value_input.setObjectName(f"viewer_widget_shapes_color_source_value_input_{shapes_name}")
         self.color_source_value_input.setStyleSheet(build_input_control_stylesheet("QLineEdit"))
         self.color_source_value_input.setMinimumWidth(0)
@@ -117,8 +122,10 @@ class _ShapesCardWidget(QFrame):
 
         self._color_source_completer_model = QStringListModel(self.color_source_value_input)
         self._color_source_completer = QCompleter(self._color_source_completer_model, self.color_source_value_input)
+        self._color_source_completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
         self._color_source_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self._color_source_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self._color_source_completer.setMaxVisibleItems(10)
         self._color_source_completer.popup().setStyleSheet(COMPLETER_POPUP_STYLESHEET)
         self.color_source_value_input.setCompleter(self._color_source_completer)
 
@@ -209,32 +216,33 @@ class _ShapesCardWidget(QFrame):
     ) -> None:
         if preferred_source_identity is not None:
             selected_source_identity = preferred_source_identity
-        else:
+        elif self._active_source_kind == self.selected_source_kind:
             selected_source_identity = (
                 self.selected_color_source.identity if self.selected_color_source is not None else None
             )
+        else:
+            selected_source_identity = None
         source_kind = self.selected_source_kind
+        table_name = self.selected_table_name
 
         if source_kind == "shape_column":
             self.color_source_value_label.setText("Shapes column")
             available_sources: list[ShapeColumnColorSourceSpec | TableColorSourceSpec] = list(
                 self._shape_column_color_sources
             )
-            placeholder_text = "Search shapes columns"
+            placeholder_text = _SHAPE_COLUMN_PLACEHOLDER
         elif source_kind == "obs_column":
             self.color_source_value_label.setText("Observation")
-            table_name = self.selected_table_name
             available_sources = (
                 list(self._table_color_sources_by_table.get(table_name, ())) if table_name is not None else []
             )
-            placeholder_text = "Search observations"
+            placeholder_text = _OBS_SOURCE_PLACEHOLDER
         elif source_kind == "x_var":
             self.color_source_value_label.setText("Var")
-            table_name = self.selected_table_name
             available_sources = (
                 list(self._table_color_sources_by_table.get(table_name, ())) if table_name is not None else []
             )
-            placeholder_text = "Search vars"
+            placeholder_text = _VAR_SOURCE_PLACEHOLDER
         else:
             self.color_source_value_label.setText("Value source")
             available_sources = []
@@ -262,12 +270,8 @@ class _ShapesCardWidget(QFrame):
                     )
                     if matching_source is not None:
                         self.color_source_value_input.setText(matching_source.display_name)
-                    elif self._filtered_color_sources:
-                        self.color_source_value_input.setText(self._filtered_color_sources[0].display_name)
                     else:
                         self.color_source_value_input.clear()
-                elif self._filtered_color_sources:
-                    self.color_source_value_input.setText(self._filtered_color_sources[0].display_name)
                 else:
                     self.color_source_value_input.clear()
 
@@ -277,6 +281,8 @@ class _ShapesCardWidget(QFrame):
                 [source.display_name for source in self._filtered_color_sources]
             )
 
+        self.color_source_value_input.set_completion_popup_on_entry_enabled(source_kind is not None)
+        self._active_source_kind = source_kind
         self._update_action_status()
 
     def _sync_current_source_selection(self) -> None:
