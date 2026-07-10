@@ -2517,6 +2517,169 @@ Implementation notes:
 - Sparse user-class annotation updates still use their existing
   `refresh(extent=False)` path and should not use this helper.
 
+#### Slice 8.1: Defer Labels Sync Until Async Slice Completion
+
+Status: proposed.
+
+The Slice 8 helper fixed stale async labels colors by forcing
+`layer.set_view_slice()` immediately after Harpy assigns a table-driven labels
+colormap. That synchronous call can itself race with napari async slicing when
+the user is navigating, for example zooming while object-classification
+training finishes and calls `_refresh_layer_styling()`.
+
+Observed failure:
+
+- With `Interactive(..., async_slicing=True)`, clicking `Train Classifier`
+  while zooming can crash inside Dask's cache:
+
+  ```text
+  KeyError in dask.cache.Cache._posttask:
+  duration = default_timer() - self.starttimes[key]
+  ```
+
+- The object-classification repaint path reaches
+  `viewer.labels_async.sync_labels_display_after_colormap_change(...)`, whose
+  current implementation calls `layer.set_view_slice()` immediately.
+- If napari already has an async labels slice in flight, the immediate
+  synchronous slice recomputation can enter napari's global Dask cache while
+  the async worker is also using it.
+- The same stress test failed with plain Dask arrays, so the xarray
+  `DataArray` wrapper is incidental.
+- `Labels(..., cache=False)` avoids this specific Dask-cache crash, but that
+  gives up napari's Dask cache and is not the preferred product direction.
+- Setting Dask's scheduler to synchronous did not remove the failure.
+- Waiting until napari's async slice finished and then running the existing
+  sync produced `0` failures in `30` stress-test attempts, which points to
+  ordering rather than colormap construction as the issue.
+
+Goal:
+
+- keep napari async slicing enabled;
+- keep the Dask cache enabled;
+- preserve the Slice 8 display guarantee that Harpy's latest labels colormap is
+  synchronized with the current labels slice;
+- avoid re-entering Dask cache-backed slice computation while napari already has
+  a slice request in flight;
+- avoid blocking the Qt UI thread while waiting for slicing to finish.
+
+Preferred direction:
+
+- Replace the immediate sync with a deferred and coalesced sync when the labels
+  layer is not loaded.
+- If `layer.loaded` is `True`, the helper can keep the current direct behavior:
+
+  ```python
+  layer.set_view_slice()
+  layer.events.colormap()
+  layer.events.set_data()
+  ```
+
+- If `layer.loaded` is `False`, do not call `set_view_slice()` immediately.
+  Instead, mark a "colormap sync pending" flag for that labels layer.
+- When napari applies the async slice and marks the layer loaded again, run one
+  delayed sync for the latest colormap state.
+- Coalesce repeated styling requests while unloaded. Training, color-by
+  changes, and navigation can request multiple syncs, but only the final
+  post-load sync should run.
+- Schedule the deferred sync with a Qt queued callback, for example
+  `QTimer.singleShot(0, ...)`, so Harpy does not re-enter napari while napari's
+  `_on_slice_ready(...)` handler is still applying the slice.
+
+Napari hook points:
+
+- `Layer.loaded` reflects napari's layer slicing state and becomes `False`
+  while an async slice is pending.
+- In napari 0.7.1, the Qt path updates the layer slice and loaded state in
+  `_on_slice_ready(...)`:
+
+  ```text
+  .venv/lib/python3.13/site-packages/napari/_qt/qt_viewer.py:571
+  ```
+
+- A Harpy implementation can listen to the layer slicing state's loaded-data
+  event, or to the viewer layer-slicer's ready event, then queue the pending
+  sync after napari has finished applying the async response.
+- Prefer keeping this logic isolated in `viewer.labels_async` so adapter and
+  object-classification styling code still only request "sync labels display
+  after colormap change".
+
+Implementation direction:
+
+1. Change `sync_labels_display_after_colormap_change(...)` into a small
+   coordinator rather than an always-immediate recomputation.
+2. Track pending sync state per real napari `Labels` layer. A weak-key mapping
+   is enough and avoids extending layer lifetime accidentally.
+3. When a sync is requested:
+   - if the layer is unsupported, keep the existing loud failure behavior;
+   - if the layer is loaded, run the Slice 8 immediate sync;
+   - if the layer is unloaded, record a pending sync and return immediately.
+4. Connect once per layer to the relevant napari loaded/ready signal. When the
+   layer becomes loaded again, queue a single post-load callback.
+5. In the queued callback, clear the pending flag and run the normal Slice 8
+   sync only if the layer is still present and loaded. If it is unloaded again,
+   leave or re-mark the sync pending.
+6. Keep sparse user-class annotation updates on their current
+   `refresh(extent=False)` path.
+7. Do not disable napari's Dask cache, do not disable async slicing globally,
+   and do not block the UI by spinning or waiting on the async future.
+
+Open design question:
+
+- `Layer.loaded` is layer-local, while napari's Dask cache is global. The stress
+  test indicates deferring on the target labels layer is enough for the observed
+  object-classification crash. If future testing shows concurrent slicing on
+  another layer can still overlap with Harpy's forced sync, the next refinement
+  should gate the deferred sync on the viewer layer-slicer being idle rather
+  than only on the target layer being loaded.
+
+Rejected or lower-priority alternatives:
+
+- Set `cache=False` on Harpy labels layers. This avoids the crash but gives up
+  the Dask cache the viewer should keep using.
+- Disable async slicing globally around object-classification styling. This is
+  too broad and changes normal navigation behavior.
+- Block until the async future is done, then run the existing sync. This passed
+  the stress test but would freeze the UI at exactly the moment the user is
+  navigating.
+- Wrap napari/Dask cache use in a global lock or replace the cache with a
+  thread-local/locked wrapper. This also passed local stress testing but is more
+  invasive and closer to an upstream napari/Dask workaround than a Harpy display
+  synchronization fix.
+- Emit only `layer.events.colormap()` and `layer.events.set_data()` without
+  `set_view_slice()`. That avoided the crash in stress testing but does not
+  preserve the Slice 8 guarantee that the displayed texture-code image is
+  recomputed for the latest labels colormap.
+
+Acceptance criteria:
+
+- reproducer that previously hit the Dask cache `KeyError` during
+  `Train Classifier` plus zooming runs repeatedly with no failures while Dask
+  cache remains enabled;
+- Harpy still fixes the Slice 8 stale-labels-color bug after the deferred sync
+  runs;
+- multiple colormap sync requests while `layer.loaded == False` collapse into
+  one post-load sync using the latest colormap;
+- no busy-waiting or blocking wait is introduced on the Qt thread;
+- `async_slicing=False` behavior remains unchanged;
+- sparse annotation update paths do not start forcing full slice recomputation.
+
+Suggested tests:
+
+- unit-test the helper with a fake labels layer whose `loaded` property is
+  `True`, asserting the existing immediate call order:
+  `set_view_slice()`, `events.colormap()`, `events.set_data()`;
+- unit-test the unloaded path, asserting no immediate `set_view_slice()` call
+  and exactly one pending sync after repeated requests;
+- unit-test the loaded/ready callback path, asserting the queued callback runs
+  the sync once and clears pending state;
+- add a test where the layer becomes unloaded again before the queued callback,
+  asserting the sync is deferred again rather than forced;
+- keep existing adapter and object-classification styling tests asserting that
+  callers request labels-display synchronization after full colormap repaint;
+- keep a manual Qt stress test for
+  `Interactive(sdata, async_slicing=True)`, object-classification
+  `Train Classifier`, and repeated zoom in/out while Dask cache is enabled.
+
 ### Slice 9: Optional Sorted-Index Fast Path For Compact Mapping
 
 Status: implemented.
