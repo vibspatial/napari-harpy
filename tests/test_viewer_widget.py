@@ -13,7 +13,7 @@ from matplotlib.colors import to_rgba
 from napari.layers import Image, Shapes
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor
-from qtpy.QtWidgets import QComboBox
+from qtpy.QtWidgets import QComboBox, QCompleter
 from shapely.geometry import LineString, Polygon
 from spatialdata.models import ShapesModel
 from spatialdata.transformations import Identity
@@ -727,17 +727,32 @@ def test_viewer_widget_labels_cards_expose_table_driven_coloring_controls(qtbot,
 
     first_card.color_source_kind_combo.setCurrentIndex(1)
     assert first_card.color_source_value_input.isEnabled()
+    assert first_card.color_source_value_input.text() == ""
+    assert first_card.color_source_value_input.placeholderText() == "Select obs column"
     assert first_card.color_source_value_input.completer().model().stringList() == ["instance_id"]
-    assert first_card.action_hint_label.text() == 'Action: add/update colored overlay for obs["instance_id"]'
+    assert first_card.color_source_value_input.completer().completionMode() == QCompleter.CompletionMode.PopupCompletion
+    assert first_card.color_source_value_input.completer().maxVisibleItems() == 10
+    assert first_card.selected_color_source is None
+    assert first_card.action_hint_label.text() == "Action: select an observation column for a colored overlay"
 
     first_card.color_source_kind_combo.setCurrentIndex(2)
     assert first_card.color_source_value_input.isEnabled()
+    assert first_card.color_source_value_input.text() == ""
+    assert first_card.color_source_value_input.placeholderText() == "Select var"
     assert first_card.color_source_value_input.completer().model().stringList() == [
         "channel_0_sum",
         "channel_1_sum",
         "channel_2_sum",
     ]
-    assert first_card.action_hint_label.text() == 'Action: add/update colored overlay for X[:, "channel_0_sum"]'
+    first_card.color_source_value_input.show_completion_popup()
+    assert first_card.color_source_value_input.completer().completionPrefix() == ""
+    assert first_card.color_source_value_input.completer().completionModel().rowCount() == 3
+    first_card.color_source_value_input.completer().popup().hide()
+    assert first_card.selected_color_source is None
+    assert first_card.action_hint_label.text() == "Action: select a var for a colored overlay"
+
+    first_card.color_source_value_input.setText("channel_1_sum")
+    assert first_card.action_hint_label.text() == 'Action: add/update colored overlay for X[:, "channel_1_sum"]'
 
     second_card.color_source_kind_combo.setCurrentIndex(2)
     assert second_card.action_hint_label.text() == "Action: colored overlays require a linked table"
@@ -784,7 +799,10 @@ def test_viewer_widget_labels_card_repopulates_color_sources_when_linked_table_c
     card.color_source_kind_combo.setCurrentIndex(1)
     assert card.color_source_value_input.isEnabled()
     assert card.color_source_value_input.completer().model().stringList() == ["cell_type"]
-    assert card.action_hint_label.text() == 'Action: add/update colored overlay for obs["cell_type"]'
+    assert card.color_source_value_input.text() == ""
+    assert card.color_source_value_input.placeholderText() == "Select obs column"
+    assert card.selected_color_source is None
+    assert card.action_hint_label.text() == "Action: select an observation column for a colored overlay"
 
     card.linked_table_combo.setCurrentIndex(1)
     assert not card.color_source_value_input.isEnabled()
@@ -793,6 +811,12 @@ def test_viewer_widget_labels_card_repopulates_color_sources_when_linked_table_c
     card.color_source_kind_combo.setCurrentIndex(2)
     assert card.color_source_value_input.isEnabled()
     assert card.color_source_value_input.completer().model().stringList() == ["GeneA"]
+    assert card.color_source_value_input.text() == ""
+    assert card.color_source_value_input.placeholderText() == "Select var"
+    assert card.selected_color_source is None
+    assert card.action_hint_label.text() == "Action: select a var for a colored overlay"
+
+    card.color_source_value_input.setText("GeneA")
     assert card.action_hint_label.text() == 'Action: add/update colored overlay for X[:, "GeneA"]'
 
 
@@ -966,6 +990,7 @@ def test_viewer_widget_preserves_labels_card_color_source_selection_after_event(
 
     card = widget.labels_cards[0]
     card.color_source_kind_combo.setCurrentIndex(1)
+    card.color_source_value_input.setText("cell_type")
     assert card.selected_color_source == color_sources_by_table["table"][0]
 
     table_names_by_label["labels"] = ["new_table", "table"]
@@ -1653,6 +1678,7 @@ def test_viewer_widget_styled_overlay_instance_key_uses_success_card(qtbot, sdat
 
     first_card = widget.labels_cards[0]
     first_card.color_source_kind_combo.setCurrentIndex(1)
+    first_card.color_source_value_input.setText("instance_id")
 
     first_card.add_update_button.click()
 
@@ -2051,7 +2077,15 @@ def test_viewer_widget_shapes_card_exposes_linked_table_sources(qtbot, monkeypat
     card.color_source_kind_combo.setCurrentIndex(2)
     assert card.color_source_value_label.text() == "Observation"
     assert card.color_source_value_input.isEnabled()
+    assert card.color_source_value_input.text() == ""
+    assert card.color_source_value_input.placeholderText() == "Select obs column"
     assert card._color_source_completer_model.stringList() == ["cell_type"]
+    assert card.color_source_value_input.completer().completionMode() == QCompleter.CompletionMode.PopupCompletion
+    assert card.color_source_value_input.completer().maxVisibleItems() == 10
+    assert card.selected_color_source is None
+    assert card.action_hint_label.text() == "Action: select an observation column for a styled shapes layer"
+
+    card.color_source_value_input.setText("cell_type")
     assert card.selected_color_source == color_sources_by_table["table_a"][0]
     assert card.action_hint_label.text() == 'Action: add/update styled shapes layer for obs["cell_type"]'
 
@@ -2062,7 +2096,17 @@ def test_viewer_widget_shapes_card_exposes_linked_table_sources(qtbot, monkeypat
     card.color_source_kind_combo.setCurrentIndex(3)
     assert card.color_source_value_label.text() == "Var"
     assert card.color_source_value_input.isEnabled()
+    assert card.color_source_value_input.text() == ""
+    assert card.color_source_value_input.placeholderText() == "Select var"
     assert card._color_source_completer_model.stringList() == ["GeneA"]
+    assert card.selected_color_source is None
+    assert card.action_hint_label.text() == "Action: select a var for a styled shapes layer"
+
+    card.color_source_value_input.show_completion_popup()
+    assert card.color_source_value_input.completer().completionPrefix() == ""
+    assert card.color_source_value_input.completer().completionModel().rowCount() == 1
+    card.color_source_value_input.completer().popup().hide()
+    card.color_source_value_input.setText("GeneA")
     assert card.selected_color_source == color_sources_by_table["table_b"][0]
     assert card.action_hint_label.text() == 'Action: add/update styled shapes layer for X[:, "GeneA"]'
 
@@ -2120,6 +2164,7 @@ def test_viewer_widget_add_update_shapes_with_table_source_dispatches_to_styled_
 
     card = widget.shape_cards[0]
     card.color_source_kind_combo.setCurrentIndex(2)
+    card.color_source_value_input.setText("cell_type")
     card.fill_toggle.setChecked(True)
     card.add_update_button.click()
 

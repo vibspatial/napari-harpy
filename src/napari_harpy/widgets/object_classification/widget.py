@@ -6,6 +6,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from loguru import logger
 from qtpy.QtCore import QSignalBlocker, Qt
 from qtpy.QtGui import QKeySequence, QPixmap, QShortcut
 from qtpy.QtWidgets import (
@@ -72,12 +73,14 @@ from napari_harpy.widgets.object_classification.status_card import (
     build_object_classification_classifier_feedback_card_spec,
     build_object_classification_classifier_preparation_card_spec,
     build_object_classification_selection_status_card_spec,
+    build_object_classification_warning_status_card_spec,
 )
 from napari_harpy.widgets.object_classification.viewer_styling import (
     COLOR_BY_OPTIONS,
     COLOR_BY_PRED_CLASS,
     COLOR_BY_PRED_CONFIDENCE,
     COLOR_BY_USER_CLASS,
+    ClassStateError,
     ViewerStylingController,
 )
 from napari_harpy.widgets.shared_styles import (
@@ -198,6 +201,7 @@ class ObjectClassificationWidget(QWidget):
         self._selected_prediction_scope: ClassifierScopeMode = DEFAULT_PREDICTION_SCOPE
         self._auto_train_enabled = False
         self._is_deferring_classifier_control_updates = False
+        self._layer_styling_error: str | None = None
         self._logo_path = get_logo_path()
 
         layout = QVBoxLayout(self)
@@ -357,10 +361,10 @@ class ObjectClassificationWidget(QWidget):
         self.reload_button.setMinimumHeight(28)
         self.reload_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
 
-        self.validation_status = QLabel()
-        self.validation_status.setObjectName("validation_status")
-        self.validation_status.setWordWrap(True)
-        self.validation_status.hide()
+        self.warning_status = QLabel()
+        self.warning_status.setObjectName("warning_status")
+        self.warning_status.setWordWrap(True)
+        self.warning_status.hide()
 
         self.selection_status = QLabel()
         self.selection_status.setObjectName("selection_status")
@@ -433,7 +437,7 @@ class ObjectClassificationWidget(QWidget):
         content_layout.addWidget(self.annotation_feedback)
         content_layout.addWidget(self.classifier_feedback)
         content_layout.addWidget(self.persistence_feedback)
-        content_layout.addWidget(self.validation_status)
+        content_layout.addWidget(self.warning_status)
         content_layout.addStretch(1)
 
         self._app_state.sdata_changed.connect(self._on_sdata_changed)
@@ -1015,9 +1019,18 @@ class ObjectClassificationWidget(QWidget):
         - validates whether the selected table can annotate the selected labels layer
         - propagates that effective binding to annotation, classifier, styling,
           and persistence controllers
+        - lets annotation/classifier controllers canonicalize existing class
+          state: existing ``user_class`` is adopted without creating it when
+          absent, while prediction columns are prepared for ``pred_class``
         - marks classifier outputs dirty when the classifier selection context
           changed in a way that invalidates them
         - re-applies layer styling and refreshes the user-facing status cards
+
+        Downstream styling deliberately does not repair class columns or
+        palettes. If ``user_class``/``pred_class`` or their stored palettes
+        drift after this binding/adoption step, styling raises a
+        ``ClassStateError`` and the widget surfaces that message in the shared
+        warning status card.
         """
         self._table_binding_error = self._validate_selected_table_binding()
         effective_table_name = None if self._table_binding_error is not None else self.selected_table_name
@@ -1059,7 +1072,7 @@ class ObjectClassificationWidget(QWidget):
         # The widget inspects feature metadata only to drive registration UI
         # state. Classifier training eligibility is owned by the controller.
         feature_matrix_metadata_state = self._selected_feature_matrix_metadata_state()
-        self._update_validation_status(feature_matrix_metadata_state)
+        self._update_warning_status_card()
         self._update_selection_status_card()
         self._update_feature_matrix_metadata_controls(feature_matrix_metadata_state)
         self._update_annotation_controls()
@@ -1109,7 +1122,7 @@ class ObjectClassificationWidget(QWidget):
             self._update_classifier_controls()
             self._update_persistence_controls()
             set_status_card(
-                self.validation_status,
+                self.warning_status,
                 title="Feature Metadata Warning",
                 lines=[str(error)],
                 kind="warning",
@@ -1120,29 +1133,22 @@ class ObjectClassificationWidget(QWidget):
         self._classifier_controller.mark_dirty(reason="feature matrix metadata registered")
         self._update_selection_status()
 
-    def _update_validation_status(self, feature_matrix_metadata_state: FeatureMatrixMetadataState | None) -> None:
-        message = None
+    def _update_warning_status_card(self) -> None:
+        """Refresh the shared warning slot used by object-classification setup."""
+        feature_metadata_warning_message = None
+        if self._layer_styling_error is None:
+            feature_matrix_metadata_state = self._selected_feature_matrix_metadata_state()
+            feature_metadata_warning_message = _build_feature_matrix_registration_button_state(
+                feature_matrix_metadata_state
+            ).warning_message
 
-        if self.selected_table_name is not None and self.feature_matrix_combo.count() == 0:
-            message = (
-                'Warning: the selected table does not contain any feature matrices in ".obsm". '
-                "Add one before continuing."
-            )
-        else:
-            message = _build_feature_matrix_registration_button_state(feature_matrix_metadata_state).warning_message
-
-        if message is None:
-            self.validation_status.setText("")
-            self.validation_status.setToolTip("")
-            self.validation_status.setVisible(False)
-            return
-
-        set_status_card(
-            self.validation_status,
-            title="Feature Metadata Warning",
-            lines=[message],
-            kind="warning",
+        spec = build_object_classification_warning_status_card_spec(
+            layer_styling_error=self._layer_styling_error,
+            selected_table_name=self.selected_table_name,
+            feature_matrix_count=self.feature_matrix_combo.count(),
+            feature_metadata_warning_message=feature_metadata_warning_message,
         )
+        self._apply_status_card_spec(self.warning_status, spec)
 
     def _update_feature_matrix_metadata_controls(
         self,
@@ -1729,7 +1735,15 @@ class ObjectClassificationWidget(QWidget):
         )
 
     def _refresh_layer_styling(self) -> None:
-        self._viewer_styling_controller.refresh()
+        try:
+            self._viewer_styling_controller.refresh()
+        except ClassStateError as error:
+            self._layer_styling_error = str(error)
+            self._update_warning_status_card()
+            return
+
+        self._layer_styling_error = None
+        self._update_warning_status_card()
 
     def _refresh_after_user_class_annotation(self, change: UserClassAnnotationChange) -> None:
         """Refresh labels after one annotation, preferring row-scoped updates.
@@ -1743,18 +1757,37 @@ class ObjectClassificationWidget(QWidget):
         """
         color_by = self._viewer_styling_controller.color_by
         if color_by == COLOR_BY_USER_CLASS:
-            if self._viewer_styling_controller.refresh_user_class_colormap_and_feature(change):
+            try:
+                row_scoped_refresh_applied = self._viewer_styling_controller.refresh_user_class_colormap_and_feature(
+                    change
+                )
+            except ClassStateError as error:
+                self._layer_styling_error = str(error)
+                self._update_warning_status_card()
+                return
+            if row_scoped_refresh_applied:
+                self._layer_styling_error = None
+                self._update_warning_status_card()
                 return
             # Full refresh recovery for stale/missing feature state where the
             # edited label cannot be matched reliably for a row-scoped update.
+            logger.warning(
+                "Row-scoped user-class annotation refresh was unavailable for instance "
+                f"`{change.instance_id}`; falling back to full labels-layer styling refresh."
+            )
             self._refresh_layer_styling()
             return
 
         if color_by in (COLOR_BY_PRED_CLASS, COLOR_BY_PRED_CONFIDENCE):
             # Prediction color modes do not color by `user_class`; keep the
             # edited `user_class` value current in layer features only.
-            if self._viewer_styling_controller.refresh_user_class_feature_only(change):
+            feature_refresh_applied = self._viewer_styling_controller.refresh_user_class_feature_only(change)
+            if feature_refresh_applied:
                 return
+            logger.warning(
+                "Row-scoped user-class feature refresh was unavailable for instance "
+                f"`{change.instance_id}`; falling back to full labels-layer styling refresh."
+            )
             self._refresh_layer_styling()
             return
 

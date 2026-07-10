@@ -15,11 +15,9 @@ from napari_harpy.core.annotation import (
     USER_CLASS_COLUMN,
 )
 from napari_harpy.core.class_palette import (
-    backfill_missing_class_colors,
+    default_class_colors,
     normalize_class_values,
     normalize_color_sequence,
-    read_series_class_categories,
-    stored_palette_to_lookup,
 )
 from napari_harpy.core.spatialdata import (
     SpatialDataTableMetadata,
@@ -56,6 +54,10 @@ COLOR_BY_OPTIONS = (
 
 MISSING_CONTINUOUS_COLOR = "#80808099"
 PRED_CONFIDENCE_COLORMAP = "plasma"
+
+
+class ClassStateError(ValueError):
+    """Raised when object-classification class state is not canonical for styling."""
 
 
 class ViewerStylingController:
@@ -166,9 +168,10 @@ class ViewerStylingController:
             )
             unlabeled_color = class_color_lookup.get(UNLABELED_CLASS)
             if unlabeled_color is None:
-                # Defensive fallback for an unexpectedly incomplete lookup;
-                # the normal path already returns an RGBA array for class 0.
-                unlabeled_color = _rgba_array(UNLABELED_COLOR)
+                raise ClassStateError(
+                    f"Class palette `{colors_key}` is missing the unlabeled class `{UNLABELED_CLASS}`. "
+                    "Rebind or reload the table in the Object Classification widget to regenerate Harpy class state."
+                )
             if self._color_by == COLOR_BY_USER_CLASS:
                 # User-class `0` means "unlabeled": leave those labels out of
                 # the compact mapping so they fall through to the default
@@ -305,15 +308,12 @@ class ViewerStylingController:
         if table is None or USER_CLASS_COLUMN not in table.obs:
             return None
 
-        lookup = _valid_categorical_class_color_lookup(
-            table.obs[USER_CLASS_COLUMN],
-            table.uns.get(USER_CLASS_COLORS_KEY),
+        return self._get_class_color_lookup(
+            category_column=USER_CLASS_COLUMN,
+            colors_key=USER_CLASS_COLORS_KEY,
             unlabeled_class=UNLABELED_CLASS,
             unlabeled_color=UNLABELED_COLOR,
         )
-        if lookup is None:
-            return None
-        return _rgba_color_lookup(lookup)
 
     def _get_bound_table(self) -> AnnData | None:
         if self._selected_spatialdata is None or self._selected_table_name is None:
@@ -390,181 +390,153 @@ class ViewerStylingController:
         unlabeled_color: str = UNLABELED_COLOR,
         observed_class_values: pd.Series | None = None,
     ) -> dict[int, np.ndarray]:
-        """Build a class-id -> color lookup for a discrete table column.
+        """Read the canonical class-id -> RGBA lookup for a prepared class column.
 
-        Stored palettes in ``table.uns[colors_key]`` are interpreted in category order
-        and used first. Any missing class ids are then backfilled with the deterministic
-        default class palette so labels coloring stays stable when palette state is
-        missing or incomplete.
+        Object-classification binding/adoption owns normalization of external
+        class columns and palettes. Once styling runs, this path is intentionally
+        strict: it validates that the bound table still contains Harpy's
+        canonical categorical column and default palette, and raises an
+        actionable ``ClassStateError`` instead of silently repairing drift.
+        This keeps styling read-only with respect to class metadata and makes
+        post-bind table edits visible to the widget warning status card.
         """
         table = self._get_bound_table()
-
-        if table is not None and category_column in table.obs:
-            fast_lookup = _valid_categorical_class_color_lookup(
-                table.obs[category_column],
-                table.uns.get(colors_key),
+        observed_class_ids: set[int] = set()
+        if observed_class_values is not None:
+            observed_class_ids = _read_class_values_without_normalizing(
+                observed_class_values,
                 unlabeled_class=unlabeled_class,
-                unlabeled_color=unlabeled_color,
             )
-            if fast_lookup is not None:
-                categories = set(fast_lookup)
-                if observed_class_values is not None:
-                    # `feature_rows[self._color_by]` has already been prepared
-                    # as integer class ids for the labels element being
-                    # colored, so collect the observed classes directly.
-                    observed_class_ids = _read_class_values_without_normalizing(
-                        observed_class_values,
-                        unlabeled_class=unlabeled_class,
-                    )
-                    if observed_class_ids is None:
-                        # Defensive fallback for unexpected dirty feature values. This preserves
-                        # robust class-value normalization instead of trusting a corrupt fast path.
-                        return _rgba_color_lookup(
-                            self._get_class_color_lookup_from_normalized_values(
-                                category_column=category_column,
-                                colors_key=colors_key,
-                                unlabeled_class=unlabeled_class,
-                                unlabeled_color=unlabeled_color,
-                                observed_class_values=observed_class_values,
-                            )
-                        )
-                    categories.update(observed_class_ids)
-
-                return _rgba_color_lookup(
-                    backfill_missing_class_colors(
-                        fast_lookup,
-                        sorted(categories),
-                        unlabeled_class=unlabeled_class,
-                        unlabeled_color=unlabeled_color,
-                    )
+            if observed_class_ids is None:
+                raise ClassStateError(
+                    f"Cannot style labels by `{category_column}` because the current feature rows contain "
+                    "non-canonical class values. Rebind or reload the table in the Object Classification widget "
+                    "before styling."
                 )
 
-        return _rgba_color_lookup(
-            self._get_class_color_lookup_from_normalized_values(
-                category_column=category_column,
-                colors_key=colors_key,
-                unlabeled_class=unlabeled_class,
-                unlabeled_color=unlabeled_color,
-                observed_class_values=observed_class_values,
-            )
-        )
-
-    def _get_class_color_lookup_from_normalized_values(
-        self,
-        *,
-        category_column: str,
-        colors_key: str,
-        unlabeled_class: int = UNLABELED_CLASS,
-        unlabeled_color: str = UNLABELED_COLOR,
-        observed_class_values: pd.Series | None = None,
-    ) -> dict[int, str]:
-        table = self._get_bound_table()
-
-        categories = {unlabeled_class}
-        # Include every class id currently present in the bound table column, not just the active region.
-        if table is not None and category_column in table.obs:
-            categories.update(
-                normalize_class_values(
-                    table.obs[category_column],
-                    column_name=category_column,
-                    unlabeled_class=unlabeled_class,
-                ).tolist()
-            )
-        if observed_class_values is not None:
-            categories.update(
-                normalize_class_values(
-                    observed_class_values,
-                    column_name=observed_class_values.name or category_column,
-                    unlabeled_class=unlabeled_class,
-                ).tolist()
-            )
-
-        sorted_categories = sorted(int(class_id) for class_id in categories)
         if table is None or category_column not in table.obs:
-            # Safety fallback for incomplete/non-widget states where the
-            # table-backed class column is unavailable. In the normal widget
-            # flow, the classifier controller calls `set_class_annotation_state(...)`
-            # to ensure prediction columns and palettes before styling.
-            return backfill_missing_class_colors(
-                {unlabeled_class: unlabeled_color},
-                sorted_categories,
-                unlabeled_class=unlabeled_class,
-                unlabeled_color=unlabeled_color,
+            only_unlabeled_classes_observed = observed_class_ids.issubset({unlabeled_class})
+            if category_column == USER_CLASS_COLUMN and only_unlabeled_classes_observed:
+                return {unlabeled_class: _rgba_array(unlabeled_color)}
+            raise ClassStateError(
+                f"Cannot style labels by `{category_column}` because the bound table is not prepared. "
+                "Rebind or reload the table in the Object Classification widget to canonicalize class state."
             )
 
-        column_categories = read_series_class_categories(
+        categories = _read_canonical_class_categories(
             table.obs[category_column],
             column_name=category_column,
             unlabeled_class=unlabeled_class,
         )
-        existing_colors = normalize_color_sequence(table.uns.get(colors_key))
-        # Convert the stored ordered palette into an explicit class-id -> color lookup.
-        lookup = stored_palette_to_lookup(
-            column_categories,
-            existing_colors,
+        unknown_observed_classes = sorted(observed_class_ids - set(categories))
+        if unknown_observed_classes:
+            raise ClassStateError(
+                f"Cannot style labels by `{category_column}` because observed class ids "
+                f"{unknown_observed_classes} are not present in the prepared categorical column. "
+                "Rebind or reload the table in the Object Classification widget to canonicalize class state."
+            )
+
+        return _read_canonical_class_color_lookup(
+            categories,
+            table.uns.get(colors_key),
+            colors_key=colors_key,
+            column_name=category_column,
             unlabeled_class=unlabeled_class,
             unlabeled_color=unlabeled_color,
         )
 
-        # Backfill any missing class ids with the deterministic default class palette.
-        # In the happy path, `sync_class_palette_state(...)` has already covered every stored category.
-        return backfill_missing_class_colors(
-            lookup,
-            sorted_categories,
-            unlabeled_class=unlabeled_class,
-            unlabeled_color=unlabeled_color,
+
+def _read_canonical_class_categories(
+    values: pd.Series,
+    *,
+    column_name: str,
+    unlabeled_class: int,
+) -> list[int]:
+    if not isinstance(values.dtype, pd.CategoricalDtype):
+        raise ClassStateError(
+            f"`{column_name}` must be a categorical integer column before labels can be styled. "
+            "Rebind or reload the table in the Object Classification widget to canonicalize class state."
         )
+
+    categories: list[int] = []
+    for category in values.cat.categories:
+        if isinstance(category, (bool, np.bool_)) or not isinstance(category, (int, np.integer)):
+            raise ClassStateError(
+                f"`{column_name}` has non-integer categories. Rebind or reload the table in the Object "
+                "Classification widget to canonicalize class state."
+            )
+        class_id = int(category)
+        if class_id < unlabeled_class or category != class_id:
+            raise ClassStateError(
+                f"`{column_name}` categories must be zero or positive integer class ids. Rebind or reload "
+                "the table in the Object Classification widget to canonicalize class state."
+            )
+        categories.append(class_id)
+
+    if categories != sorted(categories) or len(categories) != len(set(categories)):
+        raise ClassStateError(
+            f"`{column_name}` categories are not in canonical sorted order. Rebind or reload the table in the "
+            "Object Classification widget to canonicalize class state."
+        )
+    if unlabeled_class not in categories:
+        raise ClassStateError(
+            f"`{column_name}` is missing the unlabeled class `{unlabeled_class}`. Rebind or reload the table in "
+            "the Object Classification widget to canonicalize class state."
+        )
+    if bool((values.cat.codes.to_numpy(copy=False) < 0).any()):
+        raise ClassStateError(
+            f"`{column_name}` contains missing categorical values. Rebind or reload the table in the Object "
+            "Classification widget to canonicalize class state."
+        )
+
+    return categories
+
+
+def _read_canonical_class_color_lookup(
+    categories: list[int],
+    stored_colors: Any,
+    *,
+    column_name: str,
+    colors_key: str,
+    unlabeled_class: int,
+    unlabeled_color: str,
+) -> dict[int, np.ndarray]:
+    stored_color_list = normalize_color_sequence(stored_colors)
+    expected_colors = default_class_colors(
+        categories,
+        unlabeled_class=unlabeled_class,
+        unlabeled_color=unlabeled_color,
+    )
+    if stored_color_list is None:
+        raise ClassStateError(
+            f"Missing class palette `{colors_key}` for `{column_name}`. Rebind or reload the table in the Object "
+            "Classification widget to regenerate Harpy class state."
+        )
+    if len(stored_color_list) != len(categories):
+        raise ClassStateError(
+            f"Class palette `{colors_key}` has {len(stored_color_list)} colors, but `{column_name}` has "
+            f"{len(categories)} categories. Rebind or reload the table in the Object Classification widget to "
+            "regenerate Harpy class state."
+        )
+    if stored_color_list != expected_colors:
+        raise ClassStateError(
+            f"Class palette `{colors_key}` no longer matches Harpy default colors for `{column_name}`. "
+            "Rebind or reload the table in the Object Classification widget to regenerate Harpy class state."
+        )
+
+    try:
+        return {class_id: _rgba_array(color) for class_id, color in zip(categories, expected_colors, strict=True)}
+    except ValueError as error:
+        raise ClassStateError(
+            f"Class palette `{colors_key}` contains an invalid color. Rebind or reload the table in the Object "
+            "Classification widget to regenerate Harpy class state."
+        ) from error
 
 
 def _to_numeric_values(values: pd.Series, column_name: str) -> pd.Series:
     numeric_values = pd.to_numeric(values, errors="coerce").astype("float64")
     numeric_values.name = column_name
     return numeric_values
-
-
-def _valid_categorical_class_color_lookup(
-    values: pd.Series,
-    stored_colors: Any,
-    *,
-    unlabeled_class: int,
-    unlabeled_color: str,
-) -> dict[int, str] | None:
-    categories = _read_valid_categorical_class_categories(values, unlabeled_class=unlabeled_class)
-    existing_colors = normalize_color_sequence(stored_colors)
-    if categories is None or existing_colors is None or len(existing_colors) != len(categories):
-        return None
-
-    return stored_palette_to_lookup(
-        categories,
-        existing_colors,
-        unlabeled_class=unlabeled_class,
-        unlabeled_color=unlabeled_color,
-    )
-
-
-def _read_valid_categorical_class_categories(values: pd.Series, *, unlabeled_class: int) -> list[int] | None:
-    if not isinstance(values.dtype, pd.CategoricalDtype):
-        return None
-
-    categories: list[int] = []
-    for category in values.cat.categories:
-        if isinstance(category, (bool, np.bool_)) or not isinstance(category, (int, np.integer)):
-            return None
-        class_id = int(category)
-        if class_id < unlabeled_class or category != class_id:
-            return None
-        categories.append(class_id)
-
-    if categories != sorted(categories):
-        return None
-    if len(categories) != len(set(categories)):
-        return None
-    if unlabeled_class not in categories:
-        return None
-    if bool((values.cat.codes.to_numpy(copy=False) < 0).any()):
-        return None
-
-    return categories
 
 
 def _read_class_values_without_normalizing(values: pd.Series, *, unlabeled_class: int) -> set[int] | None:

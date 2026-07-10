@@ -351,7 +351,13 @@ class ClassifierController:
         training_scope: ClassifierScopeMode = DEFAULT_TRAINING_SCOPE,
         prediction_scope: ClassifierScopeMode = DEFAULT_PREDICTION_SCOPE,
     ) -> bool:
-        """Bind the controller to the currently selected SpatialData inputs."""
+        """Bind the controller to the currently selected SpatialData inputs.
+
+        When a table is bound, prediction columns are prepared immediately:
+        existing ``pred_class`` values are normalized to Harpy's canonical
+        categorical integer state and palette, or all-unlabeled prediction
+        state is created when predictions are absent.
+        """
         if self._is_shutdown:
             return False
 

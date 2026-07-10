@@ -159,7 +159,14 @@ class AnnotationController:
         table_name: str | None = None,
         coordinate_system: str | None = None,
     ) -> None:
-        """Bind the controller to the selected labels layer and annotation table."""
+        """Bind the controller to the selected labels layer and annotation table.
+
+        Binding adopts an existing ``user_class`` column by normalizing it to
+        Harpy's canonical categorical integer state and synchronized palette.
+        If ``user_class`` is absent, binding leaves it absent so merely
+        selecting a table does not dirty it; the first annotation creates the
+        column through the normal write path.
+        """
         next_layer = None
         if sdata is not None and labels_name is not None:
             next_layer = self._viewer_adapter.get_loaded_primary_labels_layer(sdata, labels_name, coordinate_system)
