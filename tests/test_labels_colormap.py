@@ -280,6 +280,28 @@ def test_compact_categorical_labels_mapping_uses_array_backed_texture_codes() ->
     assert mapping.texture_rgba.dtype == np.dtype(np.float32)
 
 
+def test_compact_categorical_labels_mapping_skips_unique_check_for_sorted_label_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = pd.Series(
+        pd.Categorical(["a", "b", "a"], categories=["a", "b"]),
+        index=pd.Index([5, 6, 7], name="index"),
+    )
+
+    def fail_unique(_values: object) -> object:
+        raise AssertionError("strictly increasing label ids should not call np.unique")
+
+    monkeypatch.setattr(labels_colormap_module.np, "unique", fail_unique)
+
+    mapping = compact_categorical_labels_mapping_from_values(
+        values,
+        categories=["a", "b"],
+        palette=["#ff0000", "#00ff00"],
+    )
+
+    np.testing.assert_array_equal(mapping.label_ids, np.asarray([5, 6, 7], dtype=np.int64))
+
+
 @pytest.mark.parametrize(
     ("values", "match"),
     [

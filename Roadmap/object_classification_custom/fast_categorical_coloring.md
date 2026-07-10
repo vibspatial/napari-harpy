@@ -2519,7 +2519,7 @@ Implementation notes:
 
 ### Slice 9: Optional Sorted-Index Fast Path For Compact Mapping
 
-Status: proposed.
+Status: implemented.
 
 The remaining compact categorical construction cost after Slice 6.6b is mostly
 defensive index validation and sorting in
@@ -2595,6 +2595,20 @@ Acceptance criteria:
   in `_positive_label_ids_from_index(...)` and sorting overhead;
 - object-classification `user_class` and `pred_class` full repaint tests keep
   passing.
+
+Implementation notes:
+
+- `_positive_label_ids_from_index(...)` now returns
+  `(label_ids, label_ids_sorted)`.
+- The strictly increasing positive-label fast path skips `np.unique(...)` and
+  lets compact mapping builders keep the incoming label/value order.
+- The fallback path still validates uniqueness with `np.unique(...)`, rejects
+  non-positive and non-integer label ids, and lets callers sort internally.
+- Both `compact_categorical_labels_mapping_from_values(...)` and
+  `compact_continuous_labels_mapping_from_values(...)` use the shared helper
+  and only call `np.argsort(...)` when `label_ids_sorted` is false.
+- Unit tests now assert the fast path avoids `np.unique(...)` for both
+  categorical and continuous compact mappings.
 
 ### Slice 10: Strict Object-Classification Class Palette Contract
 
