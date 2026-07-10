@@ -120,13 +120,104 @@ Test expectations:
 - Existing no-options states still disable the field and report the existing no-options action hint.
 - Existing explicit valid selections are preserved across refreshes where possible.
 
+## Slice 2: Points Values Popup
+
+Status: implemented on 2026-07-10.
+
+Goal: make the points `Values` field use the same browseable searchable popup behavior as labels/shapes, while preserving the points multi-select workflow.
+
+Target files:
+
+- `src/napari_harpy/widgets/viewer/points_widget.py`
+- shared helper already available in `src/napari_harpy/widgets/shared_styles.py`
+- tests in `tests/test_points_widget.py`
+- viewer integration tests in `tests/test_viewer_widget.py` if needed
+
+In scope:
+
+- `PointsValueWidget.value_input`
+- Existing `QLineEdit` + `QCompleter` value search behavior
+- Existing Add button / Return key value-adding workflow
+- Existing selected-values summary behavior
+
+Out of scope:
+
+- Changing how points values are loaded.
+- Changing the selected-values storage model.
+- Adding values immediately on completer activation, unless this is already existing behavior.
+- Changing `All values` semantics.
+
+Required behavior:
+
+- Use `CompleterPopupLineEdit` for the points `Values` input.
+- The field should stay empty until the user types or chooses a value.
+- Clicking or focusing the empty field should open the completer popup with an empty prefix.
+- The popup should show at most 10 visible rows.
+- The popup should be scrollable when there are more than 10 available values.
+- Typing in the field should filter the popup using the current text.
+- Filtering should remain case-insensitive.
+- Matching should remain substring-based with `Qt.MatchContains`.
+- The visible order should preserve the loaded value source order.
+- Adding a value through the Add button or Return key should keep clearing the input afterward.
+- After the input clears, clicking/focusing it again should show the first available values from an empty prefix.
+- Enabling `All values` should continue to disable the input, Add button, and completer popup behavior.
+
+Placeholder text:
+
+- Points values: `Select value`
+
+Reasoning:
+
+- The row label already says `Values`, so the placeholder can stay short.
+- `Select value` matches the shape/obs/var placeholder style from Slice 1.
+- The Add button and selected-values summary make it clear that this is a multi-select workflow.
+
+Expected Qt configuration:
+
+- `QCompleter.PopupCompletion`
+- `QCompleter.setMaxVisibleItems(10)`
+- `Qt.CaseInsensitive`
+- `Qt.MatchContains`
+
+Implementation notes:
+
+- `PointsValueWidget.value_input` uses `CompleterPopupLineEdit`.
+- The completer opens on click/focus when value selection is enabled.
+- The input remains disabled, including popup-on-entry behavior, when `All values` is enabled or no values are loaded.
+- The Add button and Return key remain the only value-add paths; selecting or typing in the completer does not by itself add a value.
+
+Verification:
+
+- `tests/test_points_widget.py` covers the empty-prefix popup, 10-row cap, substring filtering, short placeholder, and existing Add / All values flows.
+- `tests/test_viewer_widget.py` passes with the points popup change in place.
+
+Suggested implementation shape:
+
+- Replace the points value `QLineEdit` with `CompleterPopupLineEdit`.
+- Enable completion popup on entry only while the value input is enabled.
+- Keep the existing `QStringListModel` value completer model.
+- Keep existing `_resolve_available_value`, `_add_value_from_input`, and selected-values rendering behavior.
+- On focus/click, set the completion prefix to the current text and call `complete()`.
+- Because the field is normally empty after adding a value, the next click should browse from the first available values again.
+
+Test expectations:
+
+- Points value input uses the `Select value` placeholder.
+- Points value completer has max 10 visible rows.
+- Empty enabled value input opens completion with an empty prefix.
+- Typing filters the completion model.
+- Adding a valid value still clears the input and updates the selected-values summary.
+- Duplicate values are still ignored.
+- Unknown values are still rejected.
+- `All values` still disables the value input and Add button.
+
 ## Current Implementation
 
 The relevant viewer controls already use `QLineEdit` plus `QCompleter`.
 
 - Labels color source field: `src/napari_harpy/widgets/viewer/labels_widget.py`
 - Shapes color source field: `src/napari_harpy/widgets/viewer/shapes_widget.py`
-- Points value field uses the same pattern, but is deferred to a follow-up slice: `src/napari_harpy/widgets/viewer/points_widget.py`
+- Points value field now uses the shared popup-on-entry pattern from Slice 2: `src/napari_harpy/widgets/viewer/points_widget.py`
 
 Current completer behavior:
 
