@@ -2612,7 +2612,7 @@ Implementation notes:
 
 ### Slice 10: Canonical Class State Before Styling
 
-Status: proposed.
+Status: implemented.
 
 `ViewerStylingController._get_class_color_lookup(...)` currently mixes several
 responsibilities:
