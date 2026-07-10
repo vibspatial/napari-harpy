@@ -213,19 +213,19 @@ Test expectations:
 
 ## Slice 3: Dynamic Color Source Choices
 
-Status: planned.
+Status: implemented on 2026-07-10.
 
 Goal: populate each `Color source` selector from the color-source kinds that are actually available for that element, instead of letting users choose impossible table-backed sources.
 
-Current findings:
+Pre-implementation findings:
 
-- Labels cards already disable the `Linked table` dropdown when no table annotates the labels element.
-- Labels cards still leave the `Color source` dropdown enabled with `None`, `Observations`, and `Vars`.
-- Because the labels color-source dropdown stays enabled, the user can choose `Observations` or `Vars` even though no table-backed source can be resolved.
-- In that state, the value input stays disabled and the action hint says `Action: colored overlays require a linked table`.
-- Shapes cards have the same table-backed issue for `Observations` and `Vars`.
-- Shapes cards also have an independent direct `Shapes column` source kind. This source kind does not require a linked table and should remain available when colorable columns exist on the shapes GeoDataFrame.
-- The current shapes card already receives shape-column sources separately from linked-table sources:
+- Labels cards already disabled the `Linked table` dropdown when no table annotated the labels element.
+- Labels cards still left the `Color source` dropdown enabled with `None`, `Observations`, and `Vars`.
+- Because the labels color-source dropdown stayed enabled, the user could choose `Observations` or `Vars` even though no table-backed source could be resolved.
+- In that state, the value input stayed disabled and the action hint said `Action: colored overlays require a linked table`.
+- Shapes cards had the same table-backed issue for `Observations` and `Vars`.
+- Shapes cards also had an independent direct `Shapes column` source kind. This source kind does not require a linked table and should remain available when colorable columns exist on the shapes GeoDataFrame.
+- The shapes card already received shape-column sources separately from linked-table sources:
   - direct shape columns come from `get_shape_column_color_source_options(...)`;
   - table-backed `Observations` and `Vars` come from `get_table_color_source_options(...)` for the selected linked table.
 - Therefore the correct rule is not "no linked table disables the whole shapes color-source dropdown".
@@ -331,6 +331,11 @@ Test expectations:
 - A shapes card whose selected linked table has only var sources shows `Vars` but not `Observations`.
 - When a linked table is created after an initial no-table state, the affected card rebuilds `Color source` options but keeps the current source kind on `None`.
 - When linked tables disappear after a table-backed source was selected, the card clears the value input, removes table-backed source kinds, and either falls back to `None` or keeps only valid direct `Shapes column` behavior.
+
+Verification:
+
+- `.venv/bin/ruff check src/napari_harpy/widgets/viewer/labels_widget.py src/napari_harpy/widgets/viewer/shapes_widget.py tests/test_viewer_widget.py`
+- `.venv/bin/pytest tests/test_viewer_widget.py -q`
 
 ## Current Implementation
 

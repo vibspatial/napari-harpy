@@ -40,6 +40,14 @@ from napari_harpy.widgets.viewer.styles import (
 _SHAPE_COLUMN_PLACEHOLDER = "Select column"
 _OBS_SOURCE_PLACEHOLDER = "Select obs column"
 _VAR_SOURCE_PLACEHOLDER = "Select var"
+_SHAPE_SOURCE_KIND_ITEMS: tuple[
+    tuple[str, ShapeColorSourceKind | TableColorSourceKind],
+    ...,
+] = (
+    ("Shapes column", "shape_column"),
+    ("Observations", "obs_column"),
+    ("Vars", "x_var"),
+)
 
 
 @dataclass(frozen=True)
@@ -103,9 +111,6 @@ class _ShapesCardWidget(QFrame):
         self.color_source_kind_combo.setObjectName(f"viewer_widget_shapes_color_source_kind_combo_{shapes_name}")
         self.color_source_kind_combo.setStyleSheet(INPUT_CONTROL_STYLESHEET)
         self.color_source_kind_combo.addItem("None", None)
-        self.color_source_kind_combo.addItem("Shapes column", "shape_column")
-        self.color_source_kind_combo.addItem("Observations", "obs_column")
-        self.color_source_kind_combo.addItem("Vars", "x_var")
 
         self.color_source_value_label = create_form_label("Shapes column")
         self.color_source_value_input = CompleterPopupLineEdit()
@@ -169,7 +174,7 @@ class _ShapesCardWidget(QFrame):
     @property
     def selected_source_kind(self) -> ShapeColorSourceKind | TableColorSourceKind | None:
         value = self.color_source_kind_combo.currentData()
-        return value if value in {"shape_column", "obs_column", "x_var"} else None
+        return value if value in self._available_source_kinds() else None
 
     @property
     def selected_color_source(self) -> ShapeColumnColorSourceSpec | TableColorSourceSpec | None:
@@ -188,6 +193,7 @@ class _ShapesCardWidget(QFrame):
         table_color_sources_by_table: dict[str, list[TableColorSourceSpec]],
     ) -> None:
         previous_table_name = self.selected_table_name
+        previous_source_kind = self.selected_source_kind
         previous_source_identity = (
             self.selected_color_source.identity if self.selected_color_source is not None else None
         )
@@ -206,22 +212,29 @@ class _ShapesCardWidget(QFrame):
                 self.linked_table_combo.setEnabled(False)
                 self.linked_table_combo.setCurrentIndex(0)
 
-        self._refresh_color_source_controls(preferred_source_identity=previous_source_identity)
+        self._refresh_color_source_controls(
+            preferred_source_kind=previous_source_kind,
+            preferred_source_identity=previous_source_identity,
+        )
 
     def _refresh_color_source_controls(
         self,
         _index: int | None = None,
         *,
+        preferred_source_kind: ShapeColorSourceKind | TableColorSourceKind | None = None,
         preferred_source_identity: tuple[object, ...] | None = None,
     ) -> None:
+        current_source_kind = preferred_source_kind or self.selected_source_kind
         if preferred_source_identity is not None:
             selected_source_identity = preferred_source_identity
-        elif self._active_source_kind == self.selected_source_kind:
+        elif self._active_source_kind == current_source_kind:
             selected_source_identity = (
                 self.selected_color_source.identity if self.selected_color_source is not None else None
             )
         else:
             selected_source_identity = None
+
+        self._rebuild_color_source_kind_combo(preferred_source_kind=current_source_kind)
         source_kind = self.selected_source_kind
         table_name = self.selected_table_name
 
@@ -248,9 +261,9 @@ class _ShapesCardWidget(QFrame):
             available_sources = []
             placeholder_text = "Select a color source kind first"
 
-        self._filtered_color_sources = [
-            source for source in available_sources if source_kind is None or source.source_kind == source_kind
-        ]
+        self._filtered_color_sources = (
+            [] if source_kind is None else [source for source in available_sources if source.source_kind == source_kind]
+        )
 
         with QSignalBlocker(self.color_source_value_input):
             if source_kind is None:
@@ -284,6 +297,38 @@ class _ShapesCardWidget(QFrame):
         self.color_source_value_input.set_completion_popup_on_entry_enabled(source_kind is not None)
         self._active_source_kind = source_kind
         self._update_action_status()
+
+    def _available_source_kinds(self) -> tuple[ShapeColorSourceKind | TableColorSourceKind, ...]:
+        source_kinds: set[ShapeColorSourceKind | TableColorSourceKind] = set()
+        if self._shape_column_color_sources:
+            source_kinds.add("shape_column")
+
+        table_name = self.selected_table_name
+        if table_name is not None:
+            source_kinds.update(
+                source.source_kind for source in self._table_color_sources_by_table.get(table_name, ())
+            )
+
+        return tuple(source_kind for _, source_kind in _SHAPE_SOURCE_KIND_ITEMS if source_kind in source_kinds)
+
+    def _rebuild_color_source_kind_combo(
+        self,
+        *,
+        preferred_source_kind: ShapeColorSourceKind | TableColorSourceKind | None = None,
+    ) -> None:
+        available_source_kinds = self._available_source_kinds()
+        selected_source_kind = preferred_source_kind if preferred_source_kind in available_source_kinds else None
+
+        with QSignalBlocker(self.color_source_kind_combo):
+            self.color_source_kind_combo.clear()
+            self.color_source_kind_combo.addItem("None", None)
+            for label, source_kind in _SHAPE_SOURCE_KIND_ITEMS:
+                if source_kind in available_source_kinds:
+                    self.color_source_kind_combo.addItem(label, source_kind)
+
+            next_index = self.color_source_kind_combo.findData(selected_source_kind)
+            self.color_source_kind_combo.setCurrentIndex(next_index if next_index >= 0 else 0)
+            self.color_source_kind_combo.setEnabled(bool(available_source_kinds))
 
     def _sync_current_source_selection(self) -> None:
         if not self.color_source_value_input.isEnabled():
