@@ -132,7 +132,7 @@ class PointsValueWidget(QFrame):
         value_search_layout.addWidget(self.value_input, 1)
         value_search_layout.addWidget(self.add_value_button)
 
-        self.selected_values_summary_label = QLabel("Selected: none")
+        self.selected_values_summary_label = QLabel("None")
         self.selected_values_summary_label.setObjectName("viewer_widget_points_selected_values_summary")
         self.selected_values_summary_label.setWordWrap(True)
         self.selected_values_summary_label.setStyleSheet(_SELECTED_VALUES_EMPTY_STYLESHEET)
@@ -387,10 +387,10 @@ class PointsValueWidget(QFrame):
 
     def _render_selected_values_summary(self) -> None:
         if self._selected_values:
-            self.selected_values_summary_label.setText(f"Selected: {', '.join(self._selected_values)}")
+            self.selected_values_summary_label.setText("\n".join(self._selected_values))
             self.selected_values_summary_label.setStyleSheet(_SELECTED_VALUES_SUMMARY_STYLESHEET)
         else:
-            self.selected_values_summary_label.setText("Selected: none")
+            self.selected_values_summary_label.setText("None")
             self.selected_values_summary_label.setStyleSheet(_SELECTED_VALUES_EMPTY_STYLESHEET)
         self.clear_selection_button.setEnabled(bool(self._selected_values))
 

@@ -54,7 +54,7 @@ def test_points_value_widget_adds_selected_values_in_order(qtbot) -> None:
 
     assert widget.add_update_button.text() == "Add / Update in viewer"
     assert widget.selected_values() == ("AAMP", "AXL")
-    assert widget.selected_values_summary_label.text() == "Selected: AAMP, AXL"
+    assert widget.selected_values_summary_label.text() == "AAMP\nAXL"
 
     qtbot.mouseClick(widget.add_update_button, Qt.MouseButton.LeftButton)
 
@@ -137,7 +137,7 @@ def test_points_value_widget_clear_removes_selected_values(qtbot) -> None:
     qtbot.mouseClick(widget.clear_selection_button, Qt.MouseButton.LeftButton)
 
     assert widget.selected_values() == ()
-    assert widget.selected_values_summary_label.text() == "Selected: none"
+    assert widget.selected_values_summary_label.text() == "None"
 
 
 def test_points_value_widget_reloading_values_preserves_valid_and_drops_invalid(qtbot) -> None:
@@ -157,7 +157,7 @@ def test_points_value_widget_reloading_values_preserves_valid_and_drops_invalid(
     widget.set_value_source(_fake_value_source(["AXL", "MALAT1"]))
 
     assert widget.selected_values() == ("AXL",)
-    assert widget.selected_values_summary_label.text() == "Selected: AXL"
+    assert widget.selected_values_summary_label.text() == "AXL"
     assert "Dropped 1 selected value" in widget.status_label.text()
 
 
