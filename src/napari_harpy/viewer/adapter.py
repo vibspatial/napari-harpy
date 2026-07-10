@@ -26,6 +26,7 @@ from napari_harpy.core._color_source import (
 )
 from napari_harpy.core.shapes_geometry import shapely_polygon_to_napari_polygon_vertices
 from napari_harpy.viewer.image_styling import DEFAULT_OVERLAY_COLORS, ImageDisplayMode, ImageLoadResult
+from napari_harpy.viewer.labels_async import sync_labels_display_after_colormap_change
 from napari_harpy.viewer.labels_styling import (
     LabelsLoadResult,
     apply_table_color_source_to_labels_layer,
@@ -713,6 +714,12 @@ class ViewerAdapter(QObject):
         """Return the shared layer-binding registry."""
         return self._layer_bindings
 
+    def sync_labels_display_after_colormap_change(self, layer: Labels) -> None:
+        """Synchronize labels display after a table-driven colormap change."""
+        # Work around napari async labels colormap rendering race:
+        # https://github.com/napari/napari/issues/9188
+        sync_labels_display_after_colormap_change(layer)
+
     def register_labels_layer(
         self,
         layer: Labels,
@@ -1263,6 +1270,7 @@ class ViewerAdapter(QObject):
             labels_name=labels_name,
             style_spec=style_spec,
         )
+        self.sync_labels_display_after_colormap_change(layer)
         return LabelsLoadResult(
             layer=layer,
             created=created,

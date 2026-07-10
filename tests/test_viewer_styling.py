@@ -59,16 +59,30 @@ class _FakeLabelsLayer:
 class _FakeViewerAdapter:
     def __init__(self, layer: _FakeLabelsLayer) -> None:
         self._layer = layer
+        self.sync_display_layers: list[_FakeLabelsLayer] = []
 
     def get_loaded_primary_labels_layer(self, *args: Any, **kwargs: Any) -> _FakeLabelsLayer:
         del args, kwargs
         return self._layer
+
+    def sync_labels_display_after_colormap_change(self, layer: _FakeLabelsLayer) -> None:
+        self.sync_display_layers.append(layer)
 
 
 def _make_controller(sdata: SpatialData, layer: _FakeLabelsLayer) -> ViewerStylingController:
     controller = ViewerStylingController(_FakeViewerAdapter(layer))
     controller.bind(sdata, "blobs_labels", "table")
     return controller
+
+
+def _make_controller_with_adapter(
+    sdata: SpatialData,
+    layer: _FakeLabelsLayer,
+) -> tuple[ViewerStylingController, _FakeViewerAdapter]:
+    adapter = _FakeViewerAdapter(layer)
+    controller = ViewerStylingController(adapter)
+    controller.bind(sdata, "blobs_labels", "table")
+    return controller, adapter
 
 
 def _feature_rows(
@@ -193,6 +207,20 @@ def test_user_class_color_lookup_uses_valid_categorical_without_full_normalizati
     np.testing.assert_allclose(layer.colormap.map(6), _expected_rgba(UNLABELED_COLOR))
 
 
+def test_all_unlabeled_user_class_coloring_force_syncs_after_full_repaint(sdata_blobs: SpatialData) -> None:
+    _set_user_classes(sdata_blobs, {}, categories=[0])
+    layer = _FakeLabelsLayer()
+    controller, adapter = _make_controller_with_adapter(sdata_blobs, layer)
+    feature_rows = _feature_rows({1: 0, 5: 0, 6: 0})
+
+    controller.refresh_layer_colors(feature_rows=feature_rows)
+
+    assert adapter.sync_display_layers == [layer]
+    assert isinstance(layer.colormap, CompactLabelColormap)
+    np.testing.assert_allclose(layer.colormap.map(0), np.zeros(4, dtype=np.float32))
+    np.testing.assert_allclose(layer.colormap.map(1), _expected_rgba(UNLABELED_COLOR))
+
+
 def test_pred_class_color_lookup_uses_valid_categorical_without_full_normalization(
     monkeypatch: pytest.MonkeyPatch,
     sdata_blobs: SpatialData,
@@ -309,7 +337,7 @@ def test_pred_confidence_coloring_uses_compact_continuous_colormap_without_expli
 ) -> None:
     _set_user_classes(sdata_blobs, {}, categories=[0])
     layer = _FakeLabelsLayer()
-    controller = _make_controller(sdata_blobs, layer)
+    controller, adapter = _make_controller_with_adapter(sdata_blobs, layer)
     controller.set_color_by(COLOR_BY_PRED_CONFIDENCE)
     feature_rows = _feature_rows(
         {1: 0, 5: 0, 6: 0},
@@ -329,6 +357,7 @@ def test_pred_confidence_coloring_uses_compact_continuous_colormap_without_expli
     np.testing.assert_allclose(layer.colormap.map(0), np.zeros(4, dtype=np.float32))
     np.testing.assert_allclose(layer.colormap.map(99), _expected_rgba(viewer_styling_module.MISSING_CONTINUOUS_COLOR))
     assert layer.refresh_count == 0
+    assert adapter.sync_display_layers == [layer]
 
 
 def test_row_scoped_user_class_annotation_inserts_compact_label_and_refreshes_layer(
@@ -337,11 +366,12 @@ def test_row_scoped_user_class_annotation_inserts_compact_label_and_refreshes_la
 ) -> None:
     _set_user_classes(sdata_blobs, {5: 4}, categories=[0, 4])
     layer = _FakeLabelsLayer()
-    controller = _make_controller(sdata_blobs, layer)
+    controller, adapter = _make_controller_with_adapter(sdata_blobs, layer)
     feature_rows = _feature_rows({1: 0, 5: 4, 6: 0})
     controller.refresh_layer_colors(feature_rows=feature_rows)
     controller.refresh_layer_features(feature_rows=feature_rows)
     original_colormap = layer.colormap
+    adapter.sync_display_layers.clear()
 
     def fail_full_feature_rows() -> pd.DataFrame:
         raise AssertionError("compact sparse annotation refresh must not rebuild all feature rows")
@@ -355,6 +385,7 @@ def test_row_scoped_user_class_annotation_inserts_compact_label_and_refreshes_la
     assert layer.refresh_count == 1
     assert layer.refresh_kwargs == [{"extent": False}]
     assert layer.events.colormap.call_count == 0
+    assert adapter.sync_display_layers == []
     assert layer.features.set_index("index").loc[6, USER_CLASS_COLUMN] == 4
     assert isinstance(layer.colormap, CompactLabelColormap)
     np.testing.assert_allclose(layer.colormap.map(6), _expected_rgba("#ff0000"))

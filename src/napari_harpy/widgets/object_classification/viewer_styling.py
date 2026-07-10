@@ -191,6 +191,7 @@ class ViewerStylingController:
                 default_color=unlabeled_color,
                 background_value=0,
             )
+        self._viewer_adapter.sync_labels_display_after_colormap_change(self._labels_layer)
 
     def refresh_layer_features(self, *, feature_rows: pd.DataFrame | None = None) -> None:
         """Expose current label and prediction values as napari layer features."""
