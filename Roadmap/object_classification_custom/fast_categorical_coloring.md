@@ -2170,7 +2170,7 @@ the viewer-aligned label index is already strictly increasing.
 
 #### Slice 7.3b: Object-Classification `pred_confidence` Integration
 
-Status: proposed.
+Status: implemented.
 
 Goal:
 
@@ -2795,6 +2795,19 @@ Acceptance criteria:
   old recovery behavior;
 - `_get_class_color_lookup(...)` is shorter and has no hidden
   `normalize_class_values(...)` recovery branch.
+
+Implementation notes:
+
+- `ViewerStylingController._get_class_color_lookup(...)` is now a strict reader
+  of canonical categorical class state. It validates categorical integer
+  columns, observed feature-row class ids, and Harpy-default palette alignment.
+- Bind-time preparation remains the adoption boundary:
+  `AnnotationController.bind(...)` canonicalizes existing `user_class`, and
+  `ClassifierController.bind(...)` canonicalizes/creates `pred_class`.
+- Post-bind styling failures raise `ClassStateError`. The object
+  classification widget catches this around layer-styling refresh and shows a
+  `Layer Styling Warning` status card until a successful styling refresh clears
+  it.
 
 ## Non-Goals
 
