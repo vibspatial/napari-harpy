@@ -305,7 +305,7 @@ Implementation details:
   - matplotlib `pred_confidence` colormap outputs;
 - build `pred_confidence` colors through one vectorized confidence-specific
   path:
-  `confidence_array -> np.clip(..., 0, 1) -> viridis(...) -> label_id -> RGBA`;
+  `confidence_array -> np.clip(..., 0, 1) -> confidence colormap -> label_id -> RGBA`;
   this avoids scalar pandas lookups and scalar matplotlib colormap calls for
   every label;
 - keep sparse `user_class` behavior unchanged: unlabeled/default rows should
@@ -864,14 +864,14 @@ Acceptance criteria:
 Status: implemented.
 
 Create an isolated prototype, for example
-`CompactCategoricalLabelColormap`, that can be assigned where napari expects a
+`CompactLabelColormap`, that can be assigned where napari expects a
 `DirectLabelColormap`.
 
 Scope:
 
 - subclass `DirectLabelColormap` so napari's `_normalize_label_colormap(...)`
   accepts it as a labels colormap instance;
-- accept one `CompactCategoricalLabelsMapping` from Slice 6.2;
+- accept one `CompactLabelsMapping` from Slice 6.2;
 - stay isolated from production styled-labels routing in this slice;
 - include focused prototype tests, but do not replace the current categorical
   direct-RGBA production path yet.
@@ -923,7 +923,7 @@ Implementation details:
   ```
 
   The first item should be an array-backed `Mapping` view over
-  `CompactCategoricalLabelsMapping.label_ids` and `texture_codes`, not an
+  `CompactLabelsMapping.label_ids` and `texture_codes`, not an
   eager `dict`. Constructing or returning this mapping view must be `O(1)`.
   Iterating `.items()` may still be `O(n)`, but only callers that truly need
   all `label_id -> texture_code` pairs should pay that cost.
@@ -1129,7 +1129,7 @@ through the compact colormap yet.
 Status: implemented.
 
 Add the public Harpy helper that turns table-aligned categorical values into a
-ready `CompactCategoricalLabelColormap`, without integrating it into viewer
+ready `CompactLabelColormap`, without integrating it into viewer
 styling yet.
 
 Implementation shape:
@@ -1145,9 +1145,9 @@ Implementation shape:
       palette: Sequence[Any],
       missing_color: Any = MISSING_CATEGORICAL_COLOR,
       background_value: int = 0,
-  ) -> CompactCategoricalLabelColormap:
+  ) -> CompactLabelColormap:
       mapping = compact_categorical_labels_mapping_from_values(...)
-      return CompactCategoricalLabelColormap(mapping)
+      return CompactLabelColormap(mapping)
   ```
 
 - widen the existing compact builder palette typing from `Sequence[str]` to
@@ -1161,7 +1161,7 @@ Implementation shape:
 
 Tests:
 
-- verify the helper returns `CompactCategoricalLabelColormap`;
+- verify the helper returns `CompactLabelColormap`;
 - verify the helper preserves current compact mapping behavior for:
   - mapped categories;
   - missing/palette-unknown values;
@@ -1180,7 +1180,7 @@ Acceptance criteria:
 
 Status: implemented; full-data Xenium benchmark gate passed.
 
-Make `CompactCategoricalLabelColormap` the categorical styled-labels path in
+Make `CompactLabelColormap` the categorical styled-labels path in
 `src/napari_harpy/viewer/labels_styling.py`. We are working on a feature
 branch, so do not keep the compact colormap as a long-lived optional
 alternative next to the old categorical `label_id -> RGBA` route.
@@ -1190,7 +1190,7 @@ Scope:
 - add an internal return type alias in `labels_styling.py`:
 
   ```python
-  LabelsColormap = DirectLabelColormap | CompactCategoricalLabelColormap
+  LabelsColormap = DirectLabelColormap | CompactLabelColormap
   ```
 
   This is the shape returned by non-instance styling builders. It should refer
@@ -1220,13 +1220,13 @@ Scope:
   ```
 
   The helper should not build `DirectLabelColormap` itself anymore. Categorical
-  branches build `CompactCategoricalLabelColormap`; continuous branches build
+  branches build `CompactLabelColormap`; continuous branches build
   `DirectLabelColormap`.
 
 Tests:
 
 - update styled-labels tests so categorical `.obs` styling assigns
-  `CompactCategoricalLabelColormap`;
+  `CompactLabelColormap`;
 - verify categorical bool, binary numeric, pandas categorical, and string-like
   coercion paths still color representative labels like the expanded direct
   RGBA baseline;
@@ -1261,7 +1261,7 @@ categorical_leiden:
   apply_table_color_source_to_labels_layer: 0.2259 s
   ensure_styled_labels_loaded cold:        0.2234 s
   ensure_styled_labels_loaded restyle:     0.2389 s
-  colormap: CompactCategoricalLabelColormap
+  colormap: CompactLabelColormap
   color_dict entries: 3
   label ids: 406,611
   texture RGBA rows: 10
@@ -1336,7 +1336,7 @@ Tests:
 
 Status: implemented.
 
-Use `CompactCategoricalLabelColormap` for full object-classification
+Use `CompactLabelColormap` for full object-classification
 categorical labels repainting, while keeping the row-scoped sparse update as a
 separate Slice 6.7.
 
@@ -1344,7 +1344,7 @@ Scope:
 
 - in `ViewerStylingController.refresh_layer_colors(...)`, route
   `COLOR_BY_USER_CLASS` and `COLOR_BY_PRED_CLASS` through
-  `CompactCategoricalLabelColormap`;
+  `CompactLabelColormap`;
 - build a class-value series indexed by instance id and pass sorted class ids
   plus the matching RGBA palette to the compact helper;
 - pass `default_color=UNLABELED_COLOR` for object-classification categorical
@@ -1367,7 +1367,7 @@ Row-scoped annotation safety guard:
   compact colormaps, where `color_dict` is intentionally tiny and not the
   source of truth.
 - Add only the minimal guard needed for correctness in this slice:
-  if the current labels colormap is `CompactCategoricalLabelColormap`, do not
+  if the current labels colormap is `CompactLabelColormap`, do not
   mutate `color_dict`; return `False` so the existing caller can use the
   correctness fallback.
 - This fallback is temporary and should not be treated as the final design.
@@ -1378,7 +1378,7 @@ Row-scoped annotation safety guard:
 Tests:
 
 - object-classification `user_class` and `pred_class` full refresh use
-  `CompactCategoricalLabelColormap`;
+  `CompactLabelColormap`;
 - object-classification categorical coloring uses `UNLABELED_COLOR` as the
   compact default/unmapped color while keeping background label `0`
   transparent;
@@ -1409,7 +1409,7 @@ user_class: median=0.1492 s, min=0.1478 s, max=0.1539 s
 pred_class: median=0.1513 s, min=0.1511 s, max=0.1545 s
 ```
 
-Both paths produced `CompactCategoricalLabelColormap` with tiny bootstrap
+Both paths produced `CompactLabelColormap` with tiny bootstrap
 `color_dict` length `<= 3`.
 
 Follow-up cleanup in the same slice generalized the valid-categorical palette
@@ -1436,7 +1436,7 @@ Current direct-colormap sparse update:
 label_id -> RGBA
 ```
 
-For `CompactCategoricalLabelColormap`, the source of truth is instead:
+For `CompactLabelColormap`, the source of truth is instead:
 
 ```text
 label_id -> texture_code
@@ -1561,7 +1561,7 @@ Implementation direction:
    - return the target texture code when the label should be explicit, and the
      default/unlabeled texture code when the label was removed.
 2. Update `refresh_user_class_colormap_and_feature(...)` so that when the
-   current colormap is `CompactCategoricalLabelColormap` and
+   current colormap is `CompactLabelColormap` and
    `COLOR_BY_USER_CLASS` is active:
    - apply the compact sparse state mutation;
    - update only the edited row in `layer.features`;
@@ -1650,7 +1650,7 @@ Implementation direction:
    color table changed. One possible shape:
 
    ```python
-   texture_code, texture_table_changed = colormap.set_label_category(...)
+   texture_code, texture_table_changed = colormap.set_label_value(...)
    ```
 
    `texture_table_changed` should be `True` only when the update appended a new
@@ -1929,7 +1929,7 @@ Implementation direction:
    modes can still use `refresh_user_class_feature(...)` because the visible
    color source is not `user_class`.
 2. In the `COLOR_BY_USER_CLASS` row-scoped annotation path, require the current
-   labels colormap to be `CompactCategoricalLabelColormap`.
+   labels colormap to be `CompactLabelColormap`.
 3. Replace the boolean fallback around
    `_refresh_compact_user_class_colormap_and_feature(...)` with a loud failure
    if the compact sparse update returns `False`.
@@ -1957,7 +1957,7 @@ Acceptance:
 
 ### Slice 7: Compact Continuous Labels Colormap Via 256 Bins
 
-Status: proposed.
+Status: implemented.
 
 After Slice 6 settles the Harpy-owned compact colormap shape for categorical
 `.obs`, extend the same idea to continuous `.obs` values by quantizing colors
@@ -1968,10 +1968,18 @@ label_id -> color_bin
 color_bin -> RGBA
 ```
 
-This should be a separate continuous compact builder, not a call to
-`compact_categorical_labels_mapping_from_values(...)`. The categorical helper
-maps discrete category values to texture codes; continuous coloring must map
-numeric values through normalization and quantization before assigning bins.
+This work should be split into small implementation slices. The compact napari
+colormap subclass uses a general viewer contract:
+
+```text
+label_id -> texture_code
+texture_code -> RGBA
+```
+
+Continuous coloring can reuse that same compact colormap shape after it maps
+numeric values to fixed color bins. It should not reuse
+`compact_categorical_labels_mapping_from_values(...)`, because categorical
+values and continuous values have different normalization/binning semantics.
 
 Rationale:
 
@@ -1999,6 +2007,65 @@ Rationale:
   specified and tested separately from categorical coloring, with an explicit
   visual/parity tolerance.
 
+#### Slice 7.1: Neutral Compact Label Colormap Naming
+
+Status: implemented.
+
+Goal:
+
+- rename the reusable compact state and colormap classes so they are not
+  categorically tied to categorical data before continuous code reuses them.
+
+Implementation direction:
+
+1. Rename the reusable dataclass:
+
+   ```text
+   CompactCategoricalLabelsMapping -> CompactLabelsMapping
+   ```
+
+   Keep categorical-specific fields only if they truly belong to categorical
+   sparse annotation. In particular, `value_texture_codes` is used for
+   row-scoped user-class updates, so either keep it as an optional generic
+   auxiliary mapping or rename it to something neutral such as
+   `value_texture_codes`.
+2. Rename the napari subclass:
+
+   ```text
+   CompactCategoricalLabelColormap -> CompactLabelColormap
+   ```
+
+   This class represents napari's direct-label compact mapping contract, not a
+   categorical algorithm.
+3. Keep categorical builder names explicit:
+
+   ```text
+   compact_categorical_labels_mapping_from_values(...)
+   compact_categorical_label_colormap_from_values(...)
+   ```
+
+   These builders still perform categorical normalization and palette mapping.
+4. Update imports, type aliases, tests, and roadmap wording where the generic
+   colormap class name is asserted.
+5. Do not add continuous binning behavior in this slice.
+
+Acceptance:
+
+- existing categorical behavior and benchmarks are unchanged;
+- row-scoped user-class sparse annotation still works;
+- tests assert the renamed compact class where needed;
+- do not keep compatibility aliases for the old class names; update all
+  internal call sites to the neutral names.
+
+#### Slice 7.2: Continuous Compact Mapping Helper
+
+Status: implemented.
+
+Goal:
+
+- add pure helpers that convert continuous label-aligned values into
+  `CompactLabelsMapping` using fixed 256-bin quantization.
+
 Implementation direction:
 
 1. Define the continuous binning contract:
@@ -2006,38 +2073,75 @@ Implementation direction:
    - normalize finite values over the same range currently used by
      `continuous_rgba_for_values(...)`;
    - map missing/non-finite values to the current missing/default color;
-   - clamp values outside the chosen range.
-2. Build a pure helper that produces compact state:
-   - positive label ids;
-   - `label_id -> color_bin`;
-   - `color_bin -> RGBA`;
-   - missing/default color;
-   - transparent background label `0`.
-   This helper should be continuous-specific, for example
-   `compact_continuous_labels_mapping_from_values(...)`, even if it reuses the
-   same lower-level compact state dataclass or compact colormap subclass shape
-   introduced for categorical labels.
-3. Compare the proposed bin count with the current number of unique RGBA values
-   produced by `continuous_rgba_for_values(...)` on benchmark columns. For
-   example, the Slice 5 `total_counts` column produced `182` unique RGBA colors
-   for `406,611` rows with the current path, because matplotlib/napari already
-   yield repeated exact RGBA values.
-4. Reuse the Harpy-owned compact colormap implementation shape from Slice 6
-   where possible.
-5. Add visual/parity-tolerance tests against the current continuous direct RGBA
-   helper:
+   - clamp values outside the chosen range;
+   - constant finite values map to the midpoint bin, matching the current
+     continuous color behavior that normalizes constants to `0.5`.
+2. Add a continuous-specific pure helper, for example:
+
+   ```python
+   compact_continuous_labels_mapping_from_values(
+       values: pd.Series,
+       *,
+       bins: int = 256,
+       colormap_name: str = OVERLAY_CONTINUOUS_COLORMAP,
+       missing_color: Any = MISSING_CONTINUOUS_COLOR,
+       default_color: Any = _TRANSPARENT_RGBA,
+       background_value: int = 0,
+       value_range: tuple[float, float] | None = None,
+   ) -> CompactLabelsMapping
+   ```
+
+3. The helper should produce:
+   - positive label ids from `values.index`;
+   - `label_id -> color_bin` texture codes;
+   - `color_bin -> RGBA` rows sampled from the configured matplotlib colormap;
+   - a missing-value texture row;
+   - transparent background label `0`;
+   - transparent default/unmapped label color unless the caller overrides it.
+4. Do not integrate this helper into styled labels or object classification yet.
+5. Add tests against the current continuous direct RGBA helper:
    - representative values at min, midpoint, max;
    - repeated values;
    - missing values;
-   - out-of-range/clamped values if the helper exposes an explicit range;
+   - all-missing values;
+   - constant finite values;
+   - explicit value range and clamping;
    - large label ids.
-6. Benchmark on the Slice 5 `continuous_total_counts` case.
 
-Acceptance criteria:
+Acceptance:
 
 - continuous labels coloring remains visually equivalent within an explicit
-  accepted 256-bin tolerance; it is not expected to be bit-for-bit identical to
-  the current per-value RGBA path;
+  accepted 256-bin tolerance in helper-level tests;
+- missing values keep the current missing/default color;
+- background label `0` remains transparent;
+- the helper returns compact state without building a full `label_id -> RGBA`
+  dictionary.
+
+#### Slice 7.3a: Styled Labels Continuous Integration
+
+Status: implemented.
+
+Goal:
+
+- replace generic styled-labels direct RGBA continuous colormaps with the
+  compact continuous mapping helper.
+
+Implementation direction:
+
+1. Add a `compact_continuous_label_colormap_from_values(...)` helper that wraps
+   the Slice 7.2 mapping helper in `CompactLabelColormap`.
+2. Update `viewer/labels_styling.py` continuous `.obs` and `.X` branches:
+   - replace `_build_continuous_color_dict(...)` plus
+     `direct_label_colormap_from_rgba(...)`;
+   - assign the compact continuous colormap instead;
+   - keep label features unchanged so hover/status remains label-id based.
+3. Keep categorical and object-classification paths unchanged.
+4. Benchmark on the previous `continuous_total_counts` styled-labels case.
+
+Acceptance:
+
+- styled-labels continuous coloring remains visually equivalent within the
+  accepted 256-bin tolerance;
 - missing values keep the current missing/default color;
 - background label `0` remains transparent;
 - hover/status feature lookup remains label-id based;
@@ -2045,9 +2149,105 @@ Acceptance criteria:
   materially reduces memory use without making assignment slower;
 - no duplicate long-term continuous styled-labels colormap implementations.
 
+Benchmark note:
+
+On `/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium_full_data_core.zarr`,
+using table `table_global_ROI1`, labels `cell_labels_global_ROI1`, and
+continuous obs column `transcript_counts` (`406,611` rows):
+
+```text
+old direct continuous colormap: median 0.0733 s
+new compact continuous colormap: median 0.0024 s
+old color_dict entries: 406,613
+new color_dict entries: 3
+new texture RGBA rows: 259
+new compact arrays: ~4.07 MB
+```
+
+The compact timing includes the sorted-positive-label-id fast path, which skips
+the expensive `np.unique(...)` validation and follow-up `np.argsort(...)` when
+the viewer-aligned label index is already strictly increasing.
+
+#### Slice 7.3b: Object-Classification `pred_confidence` Integration
+
+Status: implemented.
+
+Goal:
+
+- replace the object-classification `pred_confidence` direct RGBA colormap path
+  with the compact continuous colormap machinery.
+
+Implementation direction:
+
+1. Update `ViewerStylingController.refresh_layer_colors(...)` for
+   `COLOR_BY_PRED_CONFIDENCE`:
+   - build a compact continuous colormap from
+     `feature_rows[PRED_CONFIDENCE_COLUMN]`;
+   - use `colormap_name=PRED_CONFIDENCE_COLORMAP`;
+   - use `value_range=(0.0, 1.0)` so prediction confidence is interpreted as a
+     fixed probability-like score instead of normalized over the visible table
+     values;
+   - use `missing_color=MISSING_CONTINUOUS_COLOR`;
+   - use `default_color=MISSING_CONTINUOUS_COLOR` to preserve the current
+     unmapped-positive-label behavior from the previous direct RGBA path.
+2. Remove the old direct `pred_confidence` `label_id -> RGBA` helper.
+3. Keep user-class and pred-class categorical paths unchanged.
+4. Benchmark `pred_confidence` object-classification styling.
+
+Acceptance:
+
+- `pred_confidence` coloring remains visually equivalent within the accepted
+  256-bin tolerance for finite confidence values;
+- confidence values outside `[0.0, 1.0]` clamp to the end bins;
+- missing/non-finite confidence values keep the existing missing confidence
+  color;
+- background label `0` remains transparent;
+- unmapped positive labels keep the existing missing/default confidence color;
+- benchmark improves or materially reduces memory use without making
+  assignment slower.
+
+Implementation notes:
+
+- `ViewerStylingController.refresh_layer_colors(...)` now builds
+  `pred_confidence` colors with `compact_continuous_label_colormap_from_values(...)`
+  using `value_range=(0.0, 1.0)`, `PRED_CONFIDENCE_COLORMAP`, and the existing
+  missing-confidence color as both missing and unmapped-label default.
+- The old `_build_pred_confidence_color_dict(...)` full `label_id -> RGBA`
+  builder was removed.
+- Focused synthetic benchmark at 406,611 labels:
+
+```text
+old direct pred_confidence colormap: median 0.0577 s
+new compact pred_confidence colormap: median 0.0038 s
+old direct entries: 406,613
+new color_dict entries: 3
+new texture RGBA rows: 259
+new compact arrays: ~4.07 MB
+```
+
 ### Slice 8: Async Slicing Labels Colormap Synchronization
 
-Status: proposed.
+Status: implemented after Vispy colormap-event fix; manual Qt/Vispy QA still recommended.
+
+Goal:
+
+- prevent async-sliced labels layers from temporarily or persistently rendering
+  a stale texture-code image through a newly assigned direct/compact labels
+  colormap.
+
+Scope:
+
+- this applies to explicit Harpy recoloring actions that assign a table-driven
+  labels colormap;
+- it should cover styled labels overlays created through the viewer widget;
+- it should cover object-classification full color repaints for `user_class`,
+  `pred_class`, and `pred_confidence`;
+- it should explicitly cover the object-classification initial primary-labels
+  load/restyle path, where the widget loads or activates a primary labels layer
+  and immediately applies `color_by == user_class`;
+- it should not change sparse user-class annotation updates, because those
+  mutate the existing compact colormap and already call `refresh(extent=False)`;
+- it should not disable napari async slicing globally.
 
 When `Interactive(..., async_slicing=True)` is used, coloring labels by a
 categorical or continuous table column can briefly or persistently render with
@@ -2062,7 +2262,7 @@ Investigation notes:
   `Interactive(...)` through `get_settings().experimental.async_`.
 - Harpy builds styled labels layers the same way for async and sync:
   `_build_labels_layer(...)` creates a `napari.layers.Labels` layer, and
-  `apply_table_color_source_to_labels_layer(...)` later assigns the direct
+  `apply_table_color_source_to_labels_layer(...)` later assigns the table-driven
   labels colormap.
 - Napari labels rendering is a two-stage process:
   - `Labels._raw_to_displayed(...)` converts raw label ids to small texture
@@ -2087,51 +2287,194 @@ Investigation notes:
 - On large dask-backed labels, that window can be long enough to be visible in
   normal use. If the user navigates while async slicing is pending, multiple
   requests can also make the mismatch feel persistent.
+- The same failure is visible when opening a labels element through the
+  object-classification widget with async slicing enabled. In the initial
+  `user_class` state, all table rows may be unlabeled (`class 0`). Harpy's
+  intended compact mapping is:
+  - background label `0` -> transparent;
+  - positive labels not explicitly mapped -> unlabeled/default gray.
+  The observed screenshot instead shows positive cell regions as black/dark and
+  background regions as the unlabeled gray. That is consistent with the current
+  displayed texture-code image still being encoded under the previous/raw label
+  mapping while the newly assigned all-unlabeled compact colormap table has
+  already reached vispy.
+- Follow-up investigation after manual QA showed that the compact colormap
+  itself is not the failing part:
+  - an in-memory `uint32` labels layer with the all-unlabeled compact colormap
+    produces the expected texture-code image immediately;
+  - `layer._slice.image.view` matches
+    `layer.colormap._data_to_texture(layer._slice.image.raw)`;
+  - `PublicOnlyProxy` access to `viewer._layer_slicer` works in a controlled
+    test, so proxy wrapping is not the main failure mode.
+- The failing case was reproduced headlessly on the real zarr-backed layer:
+  `/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium_full_data_core.zarr`,
+  labels `cell_labels_global_ROI1`, table `table_global_ROI1`, color by
+  `user_class`, with napari async slicing enabled.
+- After the first helper ran, the labels layer could still be on napari's empty
+  placeholder slice:
+
+  ```text
+  layer._slice.empty: True
+  layer.loaded: False
+  layer._slice.image.raw.shape: (1, 1)
+  layer._slice.image.raw.dtype: uint8
+  layer._slice.image.view.dtype: uint8
+  ```
+
+- Calling napari's synchronous slice recomputation directly fixed the layer-side
+  state in the same headless check:
+
+  ```python
+  layer.set_view_slice()
+  layer.events.colormap()
+  layer.events.set_data()
+  ```
+
+  After that call, the layer held a real current labels slice:
+
+  ```text
+  layer._slice.empty: False
+  data_level: 6
+  layer._slice.image.raw.shape: (587, 845)
+  layer._slice.image.raw.dtype: uint32
+  layer._slice.image.view.dtype: uint8
+  np.array_equal(
+      layer._slice.image.view,
+      layer.colormap._data_to_texture(layer._slice.image.raw),
+  ): True
+  ```
+
+- Deeper follow-up investigation on the styled-labels `leiden` overlay showed
+  that the layer model could be correct while the Qt/Vispy display still
+  rendered with swapped/default colors:
+  - after `set_view_slice()`, the zarr-backed layer held the real `uint32` raw
+    slice and a `uint8` texture-code view;
+  - `layer._slice.image.view` matched
+    `layer.colormap._data_to_texture(layer._slice.image.raw)`;
+  - background label `0` mapped to texture code `1`, and texture code `1`
+    mapped to transparent in the compact/direct colormap;
+  - Vispy still rendered texture code `1` as if it were raw label `1`, which
+    explains the blue full-field background in the async screenshot.
+- Root cause of that remaining UI mismatch: `Labels.colormap = ...` emits
+  `layer.events.colormap()` before the async labels layer has necessarily
+  recomputed away from the placeholder/small-dtype slice. `VispyLabelsLayer`
+  chooses its shader/color-table path from the current raw/view dtypes during
+  that colormap event. Emitting `layer.events.set_data()` uploads the recomputed
+  texture-code image, but it does not make Vispy rerun
+  `_on_colormap_change(...)`. Therefore the fix must emit
+  `layer.events.colormap()` again **after** `set_view_slice()` has installed the
+  real current labels slice, then emit `layer.events.set_data()` for the upload.
+- Root cause: the first helper used
+  `viewer._layer_slicer.submit(layers=[layer], dims=dims, force=True)` inside
+  `layer_slicer.force_sync()`. In napari 0.7.1, that reaches
+  `Layer._slice_dims(..., force=True)`. Because `force=True` is passed to
+  `_slicing_state.set_slice_input_from_dims(...)`, napari does **not** call
+  `set_view_slice()` there; it then emits refresh events around the existing
+  slice. So the helper could repaint an empty/stale/raw texture-code image
+  instead of recomputing and recoding the current labels slice.
+- This explains why the first implementation passed toy/in-memory tests but did
+  not fix the real async zarr-backed UI: it synchronized the refresh event, not
+  the actual labels slice recomputation.
 
 Recommended fix:
 
-- After Harpy assigns a direct labels colormap for table-driven labels coloring,
-  force the current labels slice to be recoded synchronously before returning
-  control to the user.
+- After Harpy assigns a table-driven direct/compact labels colormap, force the
+  current labels slice to be recomputed and recoded synchronously before
+  returning control to the user.
 - Implement this in the viewer-facing code path, not inside the pure colormap
   builders:
-  - `ViewerAdapter.ensure_styled_labels_loaded(...)` has access to both the
-    viewer and the styled labels layer, so it can force-refresh the just-styled
-    layer after `apply_table_color_source_to_labels_layer(...)`.
-  - Object-classification labels coloring should use the same helper once
-    Slice 6.6b routes `user_class` / `pred_class` through compact categorical
-    colormaps and still uses direct labels colormaps for `pred_confidence`.
-- Prefer a small helper with a no-op fallback for test/dummy viewers:
+  - `ViewerAdapter.ensure_styled_labels_loaded(...)` has access to the viewer
+    and the styled labels layer, so it can force-refresh the just-styled layer
+    after `apply_table_color_source_to_labels_layer(...)`;
+  - `ViewerStylingController.refresh_layer_colors(...)` has access to the
+    object-classification labels layer after assigning `user_class`,
+    `pred_class`, or `pred_confidence` colormaps.
+- Use a small helper dedicated to real napari `Labels` layers. The helper
+  should live in a dedicated `viewer.labels_async` module, because it touches
+  napari internals and should stay isolated from adapter and colormap logic.
+  The helper should use napari's direct synchronous layer recomputation path,
+  then emit the colormap event after that recomputation so Vispy rebuilds the
+  labels colormap shader/table for the now-current slice dtype:
 
   ```python
-  def _force_sync_labels_slice_after_colormap_change(viewer: object, layer: Labels) -> None:
-      layer_slicer = getattr(viewer, "_layer_slicer", None)
-      dims = getattr(viewer, "dims", None)
-      if layer_slicer is None or dims is None:
+  def sync_labels_display_after_colormap_change(layer: Labels) -> None:
+      if not _is_supported_napari_labels_layer(layer):
           return
-      with layer_slicer.force_sync():
-          layer_slicer.submit(layers=[layer], dims=dims, force=True)
+
+      layer.set_view_slice()
+      layer.events.colormap()
+      layer.events.set_data()
   ```
 
 - This deliberately blocks only after an explicit Harpy recoloring action. It
   does not disable async slicing globally for normal navigation.
-- If forcing a sync slice is too expensive in practice, a more refined follow-up
-  is to recode the already-loaded current raw slice in place and emit
-  `layer.events.set_data()`. That avoids dask I/O for the current view, but it
-  touches more napari internals and should only be chosen if the simple
-  force-sync helper is too slow.
+- The helper can keep the `viewer` argument for adapter API stability, but the
+  corrected implementation should not depend on `viewer._layer_slicer` for the
+  actual recomputation.
+- Do not silently support unsupported non-napari layers; if the layer no longer
+  exposes the napari `Labels` methods/events this helper relies on, fail loudly
+  so the contract change is visible.
+- Do not call a bare `layer.refresh()`: `layer.colormap = ...` already calls
+  `refresh(extent=False)`, but with async slicing that refresh schedules async
+  work. The problem is not missing refresh; it is that the displayed slice can
+  remain encoded with the previous colormap until async slicing completes.
+- Do not use `layer_slicer.submit(..., force=True)` as the main fix. In napari
+  0.7.1 that can refresh the current slice state without recomputing it.
+- Keep the helper explicitly named around "after colormap change" so future
+  readers do not use it as a generic repaint helper.
+- If direct synchronous `set_view_slice()` is too expensive in practice, a more
+  refined follow-up is to recode the already-loaded current raw slice in place
+  and emit `layer.events.set_data()`. That avoids dask I/O for the current view,
+  but it touches more napari internals and should only be chosen if the direct
+  synchronous slice recomputation is too slow.
+
+Implementation steps:
+
+1. Update `viewer.labels_async.sync_labels_display_after_colormap_change(layer)`
+   to call `layer.set_view_slice()`, then `layer.events.colormap()`, then
+   `layer.events.set_data()`, rather than
+   `viewer._layer_slicer.submit(..., force=True)` or a broader layer refresh.
+2. Call it in `ViewerAdapter.ensure_styled_labels_loaded(...)` immediately
+   after `apply_table_color_source_to_labels_layer(...)`.
+3. Give `ViewerStylingController` access to the viewer object, either through a
+   narrow `ViewerAdapter` method/property or by placing the helper behind the
+   adapter. Then call it in `refresh_layer_colors(...)` after assigning the
+   full colormap for `pred_confidence`, `user_class`, or `pred_class`.
+   This is required not only after classifier prediction repainting, but also
+   after the first object-classification `user_class` repaint that follows
+   primary labels-layer load/activation.
+4. Do not call it from
+   `refresh_user_class_colormap_and_feature(...)` or
+   `refresh_user_class_feature_only(...)`.
+5. Keep `async_slicing=False` behavior unchanged; the helper may still be safe
+   to call, but it should remain scoped to real napari `Labels` layers.
 
 Tests:
 
-- Add a `ViewerModel`-based unit test for the helper:
-  - create a `Labels` layer with a previous labels colormap and loaded raw
-    slice;
+- Update the helper tests so they assert `layer.set_view_slice()`,
+  `layer.events.colormap()`, and
+  `layer.events.set_data()` are called in that order for a supported labels
+  layer.
+- Add a helper test showing unsupported layer objects fail loudly.
+- Add an adapter test that `ensure_styled_labels_loaded(...)` calls the helper
+  after styling both newly created and reused styled labels overlays.
+- Add an object-classification styling test that `refresh_layer_colors(...)`
+  calls the helper after full color repaint for `pred_confidence` and one
+  categorical class mode.
+- Include an object-classification categorical test where all rows are
+  unlabeled (`user_class == 0`), to cover the initial primary-labels load case
+  that can otherwise show background/default colors swapped under async
+  slicing.
+- Add a test that sparse
+  `refresh_user_class_colormap_and_feature(...)` does not call the helper.
+- Optional, if practical in headless napari:
+  add a `ViewerModel`-based test for final slice synchronization:
+  - create a zarr/dask-backed or synthetic lazy `Labels` layer that starts from
+    an empty/stale async placeholder slice;
   - assign a direct labels colormap;
   - call the helper;
   - assert the displayed texture-code view equals
     `layer.colormap._data_to_texture(layer._slice.image.raw)`.
-- Add a test that the helper is a no-op for `DummyViewer` / non-napari viewer
-  objects so existing adapter tests stay lightweight.
 - Keep styled-label semantic tests focused on final mapped colors; do not assert
   on transient async intermediate states.
 
@@ -2149,11 +2492,34 @@ Manual QA:
   such as `total_counts`.
 - Confirm the styled labels layer never shows the wrong full-field/speckled
   color mismatch seen before the fix.
+- Repeat the exact large-layer repro with
+  `/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium_full_data_core.zarr`:
+  color `cell_labels_global_ROI1` by
+  `table_global_ROI1.obs["leiden"]` with `async_slicing=True`, and confirm the
+  background remains transparent instead of rendering as label/color `1`.
 - Repeat with `async_slicing=False` to confirm no behavior change.
+
+Implementation notes:
+
+- The isolated helper, adapter call site, and object-classification call site
+  already exist.
+- `viewer.labels_async.sync_labels_display_after_colormap_change(...)` now
+  ignores `viewer._layer_slicer` for the actual recomputation and calls
+  `layer.set_view_slice()`, then emits `layer.events.colormap()`, followed by
+  `layer.events.set_data()`. It does not refresh thumbnail/highlight state,
+  because those are unrelated to the async labels colormap synchronization bug.
+- Headless verification on
+  `/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium_full_data_core.zarr`
+  confirmed that the object-classification `user_class` repaint under async
+  slicing leaves `layer._slice.empty == False`, a real `uint32` raw slice, a
+  `uint8` texture-code view, and
+  `layer._slice.image.view == layer.colormap._data_to_texture(layer._slice.image.raw)`.
+- Sparse user-class annotation updates still use their existing
+  `refresh(extent=False)` path and should not use this helper.
 
 ### Slice 9: Optional Sorted-Index Fast Path For Compact Mapping
 
-Status: proposed.
+Status: implemented.
 
 The remaining compact categorical construction cost after Slice 6.6b is mostly
 defensive index validation and sorting in
@@ -2207,7 +2573,7 @@ Implementation direction:
    - fall back to the current conservative path;
    - validate uniqueness with `np.unique(...)`;
    - sort label ids and texture codes before constructing
-     `CompactCategoricalLabelsMapping`.
+     `CompactLabelsMapping`.
 4. Keep this optimization local to compact label-coloring construction. It
    should not change table alignment, feature-row construction, hover features,
    or labels image data.
@@ -2230,90 +2596,218 @@ Acceptance criteria:
 - object-classification `user_class` and `pred_class` full repaint tests keep
   passing.
 
-### Slice 10: Strict Object-Classification Class Palette Contract
+Implementation notes:
 
-Status: proposed.
+- `_positive_label_ids_from_index(...)` now returns
+  `(label_ids, label_ids_sorted)`.
+- The strictly increasing positive-label fast path skips `np.unique(...)` and
+  lets compact mapping builders keep the incoming label/value order.
+- The fallback path still validates uniqueness with `np.unique(...)`, rejects
+  non-positive and non-integer label ids, and lets callers sort internally.
+- Both `compact_categorical_labels_mapping_from_values(...)` and
+  `compact_continuous_labels_mapping_from_values(...)` use the shared helper
+  and only call `np.argsort(...)` when `label_ids_sorted` is false.
+- Unit tests now assert the fast path avoids `np.unique(...)` for both
+  categorical and continuous compact mappings.
 
-`ViewerStylingController._get_class_color_lookup(...)` currently mixes two
+### Slice 10: Canonical Class State Before Styling
+
+Status: implemented.
+
+`ViewerStylingController._get_class_color_lookup(...)` currently mixes several
 responsibilities:
 
 - read the table-backed class palette for `user_class` / `pred_class`;
-- recover from invalid or incomplete class-column state by re-normalizing
-  values and backfilling palettes.
+- accept class columns that may have been generated outside napari-harpy;
+- recover from invalid or incomplete class-column state by normalizing values
+  and backfilling palettes during color repainting.
 
 That makes the styling path harder to reason about and keeps fallback branches
-alive in a performance-sensitive color-repaint path.
+alive in a performance-sensitive color-repaint path. The desired product
+contract is not "reject external class columns". External `user_class` and
+`pred_class` columns are legitimate inputs. The contract is:
+
+> External class columns are accepted as input, but once Harpy uses them for
+> object-classification styling/training, Harpy owns the canonical categorical
+> column and the corresponding Harpy-default palette.
 
 Preferred direction:
 
-- make object-classification styling a strict reader;
-- keep mutation/repair at mutation boundaries:
+- make object-classification styling a strict reader of already-canonical
+  class state;
+- make the preparation boundary explicit at table binding/adoption time, before
+  the widget reaches normal label styling; do not normalize during every
+  `refresh_layer_colors(...)` repaint;
+- move external-state compatibility and normalization to explicit preparation
+  boundaries:
+  - object-classification widget/table binding;
+  - prediction-column preparation;
   - `set_user_class_for_rows(...)`;
-  - `_ensure_prediction_columns(...)`;
   - `set_class_annotation_state(...)`.
+
+Canonical class-state contract:
+
+- Class values must be coercible to non-negative integer class ids.
+- Missing or non-numeric class values are converted to the unlabeled class `0`
+  only at canonicalization boundaries, not during hot styling. Negative class
+  ids should fail because class ids are required to be non-negative.
+- Canonical class columns are stored as pandas categorical columns with sorted
+  integer categories that include `0`.
+- `table.uns["user_class_colors"]` and `table.uns["pred_class_colors"]` are
+  Harpy-owned once the widget prepares the table. They should be written as
+  Harpy default palettes aligned to the canonical category order.
+- Existing external palettes may be read before preparation, but they are not
+  preserved as product state. If they differ from Harpy defaults, they are
+  intentionally overwritten when the column is canonicalized.
+- Invalid external palettes should not block canonicalization. If `user_class`
+  or `pred_class` exists but the corresponding palette in `.uns` is missing,
+  malformed, too short/long, or contains invalid colors, the preparation
+  boundary should overwrite it with the Harpy default palette for the
+  canonical categories.
 
 Current guarantees and nuance:
 
-- For `pred_class`, the normal widget flow is strict already:
-  `ClassifierController.bind(...)` calls `_ensure_prediction_columns(...)`,
-  which calls `set_class_annotation_state(...)`. Therefore `pred_class` should
-  exist, be categorical, have integer categories, and have a synced
-  `pred_class_colors` palette before styling.
+- `pred_class` is already close to the target behavior:
+  `_ensure_prediction_columns(...)` accepts existing external `pred_class`
+  values, coerces them through `_get_pred_class_values(...)`, writes the
+  canonical categorical column, and writes Harpy `pred_class_colors`.
 - For `user_class`, the initial no-annotation state is intentionally lazier:
   `user_class` may be absent until the first call to
   `set_user_class_for_rows(...)`. In that state,
-  `_get_region_feature_rows(...)` exposes all observed class values as `0`,
-  and the viewer should render everything with the unlabeled/default color.
+  `_get_region_feature_rows(...)` exposes all class values as `0`, and the
+  viewer should render everything with the unlabeled/default color.
+- If `user_class` already exists in the table before the widget runs, that is
+  not an error. The widget should explicitly canonicalize it before styling or
+  annotation fast paths rely on it.
 
 Implementation direction:
 
-1. Replace `_get_class_color_lookup_from_normalized_values(...)` with strict
-   validation helpers.
-2. Treat an existing table-backed class column as a contract:
+1. Reuse or rename the existing bind-time user-class preparation hook
+   (`AnnotationController._normalize_existing_annotation_state()` /
+   `ensure_annotation_column(...)`) so its purpose is explicit. It should:
+   - do nothing when `user_class` is absent;
+   - when `user_class` exists, coerces values to non-negative integer classes
+     using the existing user-class normalization rules;
+   - writes the canonical categorical `user_class` column;
+   - writes Harpy default `user_class_colors`, intentionally replacing any
+     existing external palette, including malformed palettes.
+2. Call that preparation helper during table binding/adoption before full label
+   styling runs. In the current widget flow this is the right boundary:
+   - `AnnotationController.bind(...)` already calls
+     `_normalize_existing_annotation_state()` for existing `user_class`;
+   - `ClassifierController.bind(...)` already calls
+     `_ensure_prediction_columns(...)` for `pred_class`;
+   - `ObjectClassificationWidget._refresh_layer_styling()` runs after those
+     controller bindings.
+   - Do not create `user_class` just because the widget opens; preserving the
+     current lazy all-unlabeled state is still useful.
+   - Do canonicalize `user_class` before using an existing external column for
+     styling or annotation.
+   - Do not normalize an already-prepared `user_class` or `pred_class` column
+     during normal repainting in `refresh_layer_colors(...)`.
+3. Keep `_ensure_prediction_columns(...)` as the preparation boundary for
+   `pred_class`, but make the intent explicit in comments/tests:
+   - external `pred_class` values are accepted;
+   - the stored `pred_class` column and `pred_class_colors` become
+     Harpy-canonical after this call;
+   - invalid existing `pred_class_colors` are overwritten with Harpy defaults
+     rather than treated as styling errors.
+4. Replace `_get_class_color_lookup_from_normalized_values(...)` with strict
+   read-time validation helpers.
+5. Treat an existing table-backed class column at styling time as a contract:
    - the column must be pandas categorical;
    - categories must be integer class ids;
    - categories must be sorted, unique, and include `0`;
    - categorical codes must not contain missing values;
    - `table.uns[colors_key]` must exist;
-   - stored palette length must match the category count.
-3. Treat `observed_class_values` as already prepared by
+   - stored palette length must match the category count;
+   - stored palette entries must be valid color values.
+   These checks are for post-preparation state. "Post-preparation" means after
+   the widget/controller bind step has adopted the table and run the
+   canonicalization hooks for existing class columns. If state is broken by the
+   time `refresh_layer_colors(...)` reads it, strict styling should fail loudly
+   rather than normalize again.
+6. Treat `observed_class_values` as already prepared by
    `feature_rows[self._color_by]`:
    - values must be integer dtype;
    - values must be non-negative;
    - missing/float/object values should fail loudly instead of triggering a
      hidden normalization fallback.
-4. Preserve one explicit special case:
+   If `_get_region_feature_rows(...)` still performs light coercion while
+   assembling features, `_get_class_color_lookup(...)` should not repeat that
+   recovery. The strict palette reader should only validate the prepared
+   `feature_rows` values it receives.
+7. Preserve one explicit special case:
    - if `category_column == USER_CLASS_COLUMN` and `user_class` is absent,
      allow styling only when observed class values are all `0`;
    - return a lookup containing only the unlabeled class color;
    - if observed values contain nonzero classes while `user_class` is absent,
      raise a clear `ValueError`.
-5. For `pred_class`, absence of the table-backed column should fail loudly in
+8. For `pred_class`, absence of the table-backed column should fail loudly in
    widget-backed styling, because the classifier controller should have called
    `set_class_annotation_state(...)` via `_ensure_prediction_columns(...)`
    before styling.
-6. Keep deterministic color backfilling only for class ids that are observed
-   but not present in the stored palette categories, if that situation remains
-   a deliberate product behavior. Otherwise fail loudly there too and require
-   palette sync at the mutation boundary.
+9. Do not backfill class ids in `_get_class_color_lookup(...)` during styling.
+   If observed class ids are not covered by the canonical table categories and
+   palette, the preparation boundary failed and styling should raise a clear
+   error.
+10. Surface strict styling failures in the widget status card. If an already
+    bound table is mutated out-of-band after binding, for example by an
+    external Python script changing `user_class`, `pred_class`, or their
+    palettes, `refresh_layer_colors(...)` should not silently repair it. The
+    strict reader should raise an actionable error, and the widget should catch
+    that error around layer-styling refresh and show it in the status card.
+    Example message shape:
+
+    ```text
+    Object-classification class state changed after binding: `user_class_colors`
+    no longer matches `user_class` categories. Rebind/reload the table or
+    canonicalize class state before styling.
+    ```
 
 Acceptance criteria:
 
-- valid `user_class` and `pred_class` categorical columns still produce the
-  same compact categorical colors;
-- `pred_class` missing from a bound widget table raises a clear error instead
-  of silently backfilling;
+- valid externally generated `user_class` values are accepted, canonicalized to
+  Harpy categorical state, and styled with Harpy default colors;
+- valid externally generated `pred_class` values are accepted by
+  `_ensure_prediction_columns(...)`, canonicalized, and styled with Harpy
+  default colors;
+- existing external `user_class_colors` / `pred_class_colors` that differ from
+  Harpy defaults are intentionally overwritten at canonicalization boundaries;
+- missing or invalid external `user_class_colors` / `pred_class_colors` are
+  overwritten at canonicalization boundaries rather than surfaced as user
+  errors;
+- after canonicalization, `user_class` and `pred_class` categorical columns
+  still produce compact categorical colors;
 - missing pre-annotation `user_class` with all observed values equal to `0`
   still renders as unlabeled/default gray;
 - missing `user_class` with observed nonzero class values raises a clear error;
-- invalid categorical contracts fail loudly with actionable messages:
-  non-categorical column, non-integer categories, missing category codes,
-  missing palette, palette-length mismatch;
+- `pred_class` missing from a bound widget table raises a clear error in the
+  styling path instead of silently backfilling;
+- invalid post-preparation categorical contracts fail loudly with actionable
+  messages: non-categorical column, non-integer categories, missing category
+  codes, missing palette, palette-length mismatch, or invalid colors;
+- out-of-band mutation of an already-bound table is reported through the widget
+  status card with an actionable message rather than silently repaired during
+  styling;
 - tests that currently expect fallback normalization for invalid table state
   are updated to expect strict failure or are removed if they only covered the
   old recovery behavior;
 - `_get_class_color_lookup(...)` is shorter and has no hidden
   `normalize_class_values(...)` recovery branch.
+
+Implementation notes:
+
+- `ViewerStylingController._get_class_color_lookup(...)` is now a strict reader
+  of canonical categorical class state. It validates categorical integer
+  columns, observed feature-row class ids, and Harpy-default palette alignment.
+- Bind-time preparation remains the adoption boundary:
+  `AnnotationController.bind(...)` canonicalizes existing `user_class`, and
+  `ClassifierController.bind(...)` canonicalizes/creates `pred_class`.
+- Post-bind styling failures raise `ClassStateError`. The object
+  classification widget catches this around layer-styling refresh and shows a
+  `Layer Styling Warning` status card until a successful styling refresh clears
+  it.
 
 ## Non-Goals
 

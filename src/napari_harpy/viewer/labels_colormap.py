@@ -2,17 +2,24 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from typing import Any
 
 import numpy as np
 import pandas as pd
+from matplotlib import colormaps
 from matplotlib.colors import to_rgba
 from napari.utils.colormap_backend import ColormapBackend, set_backend
 from napari.utils.colormaps import DirectLabelColormap
 from napari.utils.colormaps import _accelerated_cmap as _accel_cmap
 from numba import njit, typed, types
 
-from napari_harpy.viewer._styling import MISSING_CATEGORICAL_COLOR, normalize_category_value
+from napari_harpy.viewer._styling import (
+    MISSING_CATEGORICAL_COLOR,
+    MISSING_CONTINUOUS_COLOR,
+    OVERLAY_CONTINUOUS_COLORMAP,
+    normalize_category_value,
+)
 
 _TRANSPARENT_RGBA = np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
 
@@ -32,15 +39,15 @@ def _fill_typed_label_texture_mapping(
 
 
 @dataclass(frozen=True)
-class CompactCategoricalLabelsMapping:
-    """Compact categorical labels color state.
+class CompactLabelsMapping:
+    """Compact labels color state.
 
     `label_ids -> texture_codes` is the logical per-object mapping. RGBA values
     live once in `texture_rgba`, where each row index is the texture code. The
     color for `label_ids[i]` is therefore `texture_rgba[texture_codes[i]]`. The
-    state is intentionally independent of napari colormap internals; later
-    slices can derive numba typed mappings or bounded small-label lookup arrays
-    from these arrays.
+    state is intentionally independent of napari colormap internals; numba
+    typed mappings and bounded small-label lookup arrays are derived from these
+    arrays when napari asks for them.
 
     Parameters
     ----------
@@ -50,9 +57,9 @@ class CompactCategoricalLabelsMapping:
         Texture code for each entry in `label_ids`.
     texture_rgba
         RGBA lookup table where the row index is the texture code.
-    category_texture_codes
-        Optional categorical value to texture-code lookup. This is used by
-        sparse updates that need to change one label's category without
+    value_texture_codes
+        Optional source value to texture-code lookup. This is used by
+        sparse updates that need to change one label's value without
         rebuilding the full compact mapping.
     default_texture_code
         Texture code used for labels that are not present in `label_ids`.
@@ -64,9 +71,9 @@ class CompactCategoricalLabelsMapping:
     background_value
         Background label id.
     missing_texture_code
-        Texture code used for known table rows whose categorical value is
-        missing or palette-unknown. This is `None` when all known table rows
-        map to explicit categories and no missing-category color row is needed.
+        Texture code used for known table rows whose source value is missing or
+        palette-unknown. This is `None` when all known table rows map to
+        explicit values and no missing-value color row is needed.
 
     Examples
     --------
@@ -84,24 +91,24 @@ class CompactCategoricalLabelsMapping:
       2 -> red
       3 -> green
 
-    category_texture_codes:
+    value_texture_codes:
       "tumor"  -> 2
       "stroma" -> 3
     ```
 
     If a later sparse edit annotates label `109` as `"tumor"`, Harpy can add
     `109 -> 2` to `label_ids` / `texture_codes` without rebuilding the full
-    colormap. If the edit introduces a brand-new category such as `"immune"`,
+    colormap. If the edit introduces a brand-new value such as `"immune"`,
     Harpy appends one new RGBA row, adds `"immune" -> 4` to
-    `category_texture_codes`, and maps the edited label to texture code `4`.
-    This is why category ownership of texture codes is stored explicitly
+    `value_texture_codes`, and maps the edited label to texture code `4`.
+    This is why value ownership of texture codes is stored explicitly
     instead of rediscovering it from repeated RGBA values.
     """
 
     label_ids: np.ndarray
     texture_codes: np.ndarray
     texture_rgba: np.ndarray
-    category_texture_codes: dict[object, int] | None = None
+    value_texture_codes: dict[object, int] | None = None
     default_texture_code: int = 0
     background_texture_code: int = 1
     background_value: int = 0
@@ -126,11 +133,11 @@ class CompactCategoricalLabelsMapping:
             raise ValueError("Compact labels mapping missing texture code is out of range.")
         if len(self.texture_codes) and int(np.max(self.texture_codes)) >= len(self.texture_rgba):
             raise ValueError("Compact labels mapping contains a texture code without an RGBA row.")
-        if self.category_texture_codes is not None and any(
+        if self.value_texture_codes is not None and any(
             not 0 <= int(texture_code) < len(self.texture_rgba)
-            for texture_code in self.category_texture_codes.values()
+            for texture_code in self.value_texture_codes.values()
         ):
-            raise ValueError("Compact labels mapping contains a category texture code without an RGBA row.")
+            raise ValueError("Compact labels mapping contains a value texture code without an RGBA row.")
         if np.any(self.label_ids == self.background_value):
             raise ValueError("Compact labels mapping label ids must not include the background value.")
 
@@ -146,7 +153,7 @@ class _CompactSparseLabelUpdateResult:
 class _CompactLabelToTextureMapping(Mapping[int | None, int]):
     """Array-backed `label_id -> texture_code` mapping view.
 
-    This wraps the `CompactCategoricalLabelsMapping` passed to `__init__` and
+    This wraps the `CompactLabelsMapping` passed to `__init__` and
     exposes its `label_ids` / `texture_codes` arrays through the mapping API.
     Napari expects the first item of `_label_mapping_and_color_dict` to behave
     like a mapping. In scalar high-bit conversion, napari does roughly:
@@ -161,7 +168,7 @@ class _CompactLabelToTextureMapping(Mapping[int | None, int]):
     scalar lookup path is not the hot per-pixel rendering path.
     """
 
-    def __init__(self, compact_mapping: CompactCategoricalLabelsMapping) -> None:
+    def __init__(self, compact_mapping: CompactLabelsMapping) -> None:
         self._compact_mapping = compact_mapping
 
     def __getitem__(self, key: int | None) -> int:
@@ -185,12 +192,12 @@ class _CompactLabelToTextureMapping(Mapping[int | None, int]):
         return len(self._compact_mapping.label_ids) + 2
 
 
-class CompactCategoricalLabelColormap(DirectLabelColormap):
-    """Prototype direct labels colormap backed by compact categorical state.
+class CompactLabelColormap(DirectLabelColormap):
+    """Direct labels colormap backed by compact label-to-texture state.
 
     Methods that mirror names from `DirectLabelColormap` are napari-facing
     private hooks. Methods prefixed with `_compact_` are Harpy-only helpers for
-    looking up RGBA values from `CompactCategoricalLabelsMapping`.
+    looking up RGBA values from `CompactLabelsMapping`.
 
     Napari and vispy still expect direct-label internals shaped like
     `label_id -> texture_code` and `texture_code -> RGBA`. This subclass
@@ -200,7 +207,7 @@ class CompactCategoricalLabelColormap(DirectLabelColormap):
     used by ordinary `DirectLabelColormap` construction.
     """
 
-    def __init__(self, compact_mapping: CompactCategoricalLabelsMapping) -> None:
+    def __init__(self, compact_mapping: CompactLabelsMapping) -> None:
         set_backend(ColormapBackend.numba)
 
         small_color_dict: dict[int | None, np.ndarray] = {
@@ -230,21 +237,21 @@ class CompactCategoricalLabelColormap(DirectLabelColormap):
             dict(enumerate(compact_mapping.texture_rgba)),
         )
 
-    def set_label_category(
+    def set_label_value(
         self,
         label_id: int,
-        category: object,
+        value: object,
         *,
-        category_color: Any | None = None,
+        value_color: Any | None = None,
     ) -> _CompactSparseLabelUpdateResult:
-        """Harpy helper for sparse annotation: set one label's category.
+        """Harpy helper for sparse annotation: set one label's value.
 
-        If the category was not present when the compact colormap was built,
-        `category_color` is required and is appended as a new texture row.
+        If the value was not present when the compact colormap was built,
+        `value_color` is required and is appended as a new texture row.
         """
         label_id = self._validate_sparse_label_id(label_id)
         original_texture_count = len(self._compact_mapping.texture_rgba)
-        texture_code = self._texture_code_for_category(category, category_color=category_color)
+        texture_code = self._texture_code_for_value(value, value_color=value_color)
         texture_table_changed = len(self._compact_mapping.texture_rgba) != original_texture_count
         compact_mapping = _compact_mapping_with_label_texture_code(
             self._compact_mapping,
@@ -271,52 +278,52 @@ class CompactCategoricalLabelColormap(DirectLabelColormap):
         self._install_compact_mapping(compact_mapping)
         return _CompactSparseLabelUpdateResult(
             texture_code=self._compact_mapping.default_texture_code,
-            # Removing a label does not shrink `texture_rgba`; unused category
+            # Removing a label does not shrink `texture_rgba`; unused value
             # rows are kept so future sparse annotations can reuse them.
             texture_table_changed=False,
         )
 
-    def _texture_code_for_category(
+    def _texture_code_for_value(
         self,
-        category: object,
+        value: object,
         *,
-        category_color: Any | None,
+        value_color: Any | None,
     ) -> int:
-        """Harpy helper for sparse annotation: resolve a category texture code.
+        """Harpy helper for sparse annotation: resolve a value texture code.
 
-        Sparse annotation updates receive a category/class id, but the compact
+        Sparse annotation updates receive a value/class id, but the compact
         labels colormap stores per-label colors as texture codes. This helper
-        preserves the missing `category -> texture_code` relationship so Harpy
+        preserves the missing `value -> texture_code` relationship so Harpy
         can update one label without rebuilding the full colormap. If the
-        category is new, `category_color` is used to append one RGBA row and
-        remember the new category-to-texture-code mapping for future edits.
+        value is new, `value_color` is used to append one RGBA row and
+        remember the new value-to-texture-code mapping for future edits.
         """
         compact = self._compact_mapping
-        normalized_category = normalize_category_value(category)
-        category_texture_codes = dict(compact.category_texture_codes or {})
-        texture_code = category_texture_codes.get(normalized_category)
+        normalized_value = normalize_category_value(value)
+        value_texture_codes = dict(compact.value_texture_codes or {})
+        texture_code = value_texture_codes.get(normalized_value)
         if texture_code is not None:
             return int(texture_code)
-        if category_color is None:
-            raise ValueError(f"Compact labels colormap does not know category `{category}`.")
+        if value_color is None:
+            raise ValueError(f"Compact labels colormap does not know value `{value}`.")
 
-        rgba = np.asarray(to_rgba(category_color), dtype=np.float32)
+        rgba = np.asarray(to_rgba(value_color), dtype=np.float32)
         texture_code = len(compact.texture_rgba)
-        category_texture_codes[normalized_category] = texture_code
+        value_texture_codes[normalized_value] = texture_code
         # Install the expanded compact mapping so napari-facing texture-code
         # lookup views and derived caches stay synchronized with Harpy state.
         self._install_compact_mapping(
             replace(
                 compact,
-                # A brand-new category needs one new texture-code -> RGBA row;
+                # A brand-new value needs one new texture-code -> RGBA row;
                 # existing labels/classes keep using their current rows.
                 texture_rgba=np.vstack([compact.texture_rgba, rgba.reshape(1, 4)]),
-                category_texture_codes=category_texture_codes,
+                value_texture_codes=value_texture_codes,
             )
         )
         return texture_code
 
-    def _install_compact_mapping(self, compact_mapping: CompactCategoricalLabelsMapping) -> None:
+    def _install_compact_mapping(self, compact_mapping: CompactLabelsMapping) -> None:
         """Harpy helper for sparse annotation: install updated compact state."""
         object.__setattr__(self, "_compact_mapping", compact_mapping)
         object.__setattr__(self, "_label_to_texture_mapping", _CompactLabelToTextureMapping(compact_mapping))
@@ -442,8 +449,8 @@ class CompactCategoricalLabelColormap(DirectLabelColormap):
 
     @property
     def _array_map(self) -> np.ndarray:
-        """Napari fallback hook that should not be used by this prototype."""
-        raise RuntimeError("Compact categorical label colormaps require napari's numba colormap backend.")
+        """Napari fallback hook that should not be used by this colormap."""
+        raise RuntimeError("Compact label colormaps require napari's numba colormap backend.")
 
     def _clear_cache(self) -> None:
         """Napari hook: clear derived lookup caches."""
@@ -487,14 +494,14 @@ class CompactCategoricalLabelColormap(DirectLabelColormap):
 
 
 def _compact_mapping_with_label_texture_code(
-    compact: CompactCategoricalLabelsMapping,
+    compact: CompactLabelsMapping,
     *,
     label_id: int,
     texture_code: int,
-) -> CompactCategoricalLabelsMapping:
+) -> CompactLabelsMapping:
     """Harpy helper for sparse annotation: set one label texture code.
 
-    This intentionally returns a replaced `CompactCategoricalLabelsMapping`
+    This intentionally returns a replaced `CompactLabelsMapping`
     instead of mutating the existing arrays in place, so the caller can install
     one coherent compact state and clear all napari-derived caches together.
     We benchmarked this full-replace path on large synthetic mappings; the
@@ -531,10 +538,10 @@ def _compact_mapping_with_label_texture_code(
 
 
 def _compact_mapping_without_label(
-    compact: CompactCategoricalLabelsMapping,
+    compact: CompactLabelsMapping,
     *,
     label_id: int,
-) -> CompactCategoricalLabelsMapping:
+) -> CompactLabelsMapping:
     """Harpy helper for sparse annotation: remove one explicit label mapping."""
     label_ids = compact.label_ids
     position = int(np.searchsorted(label_ids, label_id))
@@ -561,7 +568,7 @@ def compact_categorical_labels_mapping_from_values(
     default_color: Any = _TRANSPARENT_RGBA,
     missing_color: Any = MISSING_CATEGORICAL_COLOR,
     background_value: int = 0,
-) -> CompactCategoricalLabelsMapping:
+) -> CompactLabelsMapping:
     """Return compact labels coloring state for categorical table values.
 
     Parameters
@@ -593,9 +600,7 @@ def compact_categorical_labels_mapping_from_values(
     if not isinstance(background_value, int) or isinstance(background_value, bool):
         raise ValueError("Compact labels mapping background value must be an integer label id.")
 
-    # Potential hot path: this validates uniqueness with `np.unique(...)`.
-    # A strictly increasing positive index could skip that check and sorting.
-    label_ids = _positive_label_ids_from_index(values.index)
+    label_ids, label_ids_sorted = _positive_label_ids_from_index(values.index)
     normalized_categories = [normalize_category_value(category) for category in categories]
 
     default_rgba = np.asarray(to_rgba(default_color), dtype=np.float32)
@@ -628,18 +633,19 @@ def compact_categorical_labels_mapping_from_values(
     if np.any(missing_values):
         missing_texture_code = texture_code_for_rgba(missing_color)
         texture_codes[missing_values] = missing_texture_code
-    order = np.argsort(label_ids)
-    label_ids = label_ids[order]
-    texture_codes = texture_codes[order]
+    if not label_ids_sorted:
+        order = np.argsort(label_ids)
+        label_ids = label_ids[order]
+        texture_codes = texture_codes[order]
 
     texture_codes = texture_codes.astype(_minimum_unsigned_dtype(int(np.max(texture_codes, initial=0))), copy=False)
     texture_rgba = np.asarray(texture_rgba_rows, dtype=np.float32)
 
-    return CompactCategoricalLabelsMapping(
+    return CompactLabelsMapping(
         label_ids=label_ids,
         texture_codes=texture_codes,
         texture_rgba=texture_rgba,
-        category_texture_codes=dict(category_texture_code_by_value),
+        value_texture_codes=dict(category_texture_code_by_value),
         default_texture_code=0,
         background_texture_code=1,
         background_value=background_value,
@@ -655,7 +661,7 @@ def compact_categorical_label_colormap_from_values(
     default_color: Any = _TRANSPARENT_RGBA,
     missing_color: Any = MISSING_CATEGORICAL_COLOR,
     background_value: int = 0,
-) -> CompactCategoricalLabelColormap:
+) -> CompactLabelColormap:
     """Return a compact direct labels colormap for categorical values."""
     mapping = compact_categorical_labels_mapping_from_values(
         values,
@@ -665,7 +671,135 @@ def compact_categorical_label_colormap_from_values(
         missing_color=missing_color,
         background_value=background_value,
     )
-    return CompactCategoricalLabelColormap(mapping)
+    return CompactLabelColormap(mapping)
+
+
+def compact_continuous_labels_mapping_from_values(
+    values: pd.Series,
+    *,
+    bins: int = 256,
+    colormap_name: str = OVERLAY_CONTINUOUS_COLORMAP,
+    missing_color: Any = MISSING_CONTINUOUS_COLOR,
+    default_color: Any = _TRANSPARENT_RGBA,
+    background_value: int = 0,
+    value_range: tuple[float, float] | None = None,
+) -> CompactLabelsMapping:
+    """Return compact labels coloring state for continuous table values.
+
+    Parameters
+    ----------
+    values
+        Table-aligned continuous column for one labels element. The index
+        contains positive label ids / instance ids, and each row value is the
+        continuous value used to color that label. This is not the labels image
+        data itself.
+    bins
+        Number of color bins sampled from `colormap_name`. Finite source values
+        map to these bins, while missing/non-finite values map to
+        `missing_color`.
+    colormap_name
+        Matplotlib colormap used for finite values.
+    missing_color
+        Color for known table rows with missing or non-finite values.
+    default_color
+        Color for labels that are not present in `values`.
+    background_value
+        Background label id.
+    value_range
+        Optional `(min, max)` range used for normalization. If omitted, the
+        range is derived from finite values. Values outside the range are
+        clamped before binning.
+
+    Source values such as `0.0` are table values attached to positive label
+    ids. `background_value=0` is reserved for the labels image background.
+    Constant finite values map to the midpoint bin, matching the current
+    continuous RGBA helper's `0.5` normalization behavior.
+    """
+    if not isinstance(background_value, int) or isinstance(background_value, bool):
+        raise ValueError("Compact labels mapping background value must be an integer label id.")
+    if not isinstance(bins, int) or isinstance(bins, bool) or bins < 2:
+        raise ValueError("Compact continuous labels mapping `bins` must be an integer >= 2.")
+    if value_range is not None:
+        min_value, max_value = value_range
+        min_value = float(min_value)
+        max_value = float(max_value)
+        if not np.isfinite(min_value) or not np.isfinite(max_value):
+            raise ValueError("Compact continuous labels mapping `value_range` must contain finite values.")
+        if max_value <= min_value:
+            raise ValueError("Compact continuous labels mapping `value_range` must satisfy min < max.")
+        value_range = (min_value, max_value)
+
+    label_ids, label_ids_sorted = _positive_label_ids_from_index(values.index)
+    value_array = pd.to_numeric(values, errors="coerce").to_numpy(dtype=np.float64, copy=False)
+    finite_values = np.isfinite(value_array)
+
+    # Cached as a small allocation polish; the hot path is label-id validation
+    # and per-label texture-code construction, not this 256-bin RGBA table.
+    texture_rgba = _continuous_texture_rgba(
+        bins=bins,
+        colormap_name=colormap_name,
+        default_rgba=_rgba_cache_key(default_color),
+        missing_rgba=_rgba_cache_key(missing_color),
+    )
+    missing_texture_code = bins + 2
+    texture_codes = np.full(len(value_array), missing_texture_code, dtype=np.int64)
+
+    if np.any(finite_values):
+        finite_numeric_values = value_array[finite_values]
+        if value_range is None:
+            min_value = float(np.min(finite_numeric_values))
+            max_value = float(np.max(finite_numeric_values))
+        else:
+            min_value, max_value = value_range
+
+        if max_value == min_value:
+            normalized_values = np.full(len(finite_numeric_values), 0.5, dtype=np.float64)
+        else:
+            normalized_values = np.clip(
+                (finite_numeric_values - min_value) / (max_value - min_value),
+                0.0,
+                1.0,
+            )
+        color_bins = np.floor(normalized_values * bins).astype(np.int64)
+        color_bins = np.clip(color_bins, 0, bins - 1)
+        texture_codes[finite_values] = color_bins + 2
+
+    if not label_ids_sorted:
+        order = np.argsort(label_ids)
+        label_ids = label_ids[order]
+        texture_codes = texture_codes[order]
+    return CompactLabelsMapping(
+        label_ids=label_ids,
+        texture_codes=_minimum_texture_code_dtype(texture_codes),
+        texture_rgba=texture_rgba,
+        default_texture_code=0,
+        background_texture_code=1,
+        background_value=background_value,
+        missing_texture_code=missing_texture_code,
+    )
+
+
+def compact_continuous_label_colormap_from_values(
+    values: pd.Series,
+    *,
+    bins: int = 256,
+    colormap_name: str = OVERLAY_CONTINUOUS_COLORMAP,
+    missing_color: Any = MISSING_CONTINUOUS_COLOR,
+    default_color: Any = _TRANSPARENT_RGBA,
+    background_value: int = 0,
+    value_range: tuple[float, float] | None = None,
+) -> CompactLabelColormap:
+    """Return a compact direct labels colormap for continuous values."""
+    mapping = compact_continuous_labels_mapping_from_values(
+        values,
+        bins=bins,
+        colormap_name=colormap_name,
+        missing_color=missing_color,
+        default_color=default_color,
+        background_value=background_value,
+        value_range=value_range,
+    )
+    return CompactLabelColormap(mapping)
 
 
 def direct_label_colormap_from_rgba(
@@ -710,6 +844,30 @@ def direct_label_colormap_from_rgba(
     return colormap
 
 
+@lru_cache(maxsize=32)
+def _continuous_texture_rgba(
+    bins: int,
+    colormap_name: str,
+    default_rgba: tuple[float, float, float, float],
+    missing_rgba: tuple[float, float, float, float],
+) -> np.ndarray:
+    finite_colors = colormaps[colormap_name](np.linspace(0.0, 1.0, bins))
+    texture_rgba = np.vstack(
+        [
+            np.asarray(default_rgba, dtype=np.float32).reshape(1, 4),
+            _TRANSPARENT_RGBA.reshape(1, 4),
+            np.asarray(finite_colors, dtype=np.float32),
+            np.asarray(missing_rgba, dtype=np.float32).reshape(1, 4),
+        ]
+    )
+    texture_rgba.setflags(write=False)
+    return texture_rgba
+
+
+def _rgba_cache_key(color: Any) -> tuple[float, float, float, float]:
+    return tuple(float(channel) for channel in to_rgba(color))
+
+
 def _validate_default_color(color: np.ndarray, *, label_id: int | None) -> None:
     if not isinstance(color, np.ndarray):
         raise ValueError(f"Direct labels RGBA default/background color for label `{label_id}` must be a numpy array.")
@@ -717,7 +875,7 @@ def _validate_default_color(color: np.ndarray, *, label_id: int | None) -> None:
         raise ValueError(f"Direct labels RGBA default/background color for label `{label_id}` must have shape `(4,)`.")
 
 
-def _positive_label_ids_from_index(index: pd.Index) -> np.ndarray:
+def _positive_label_ids_from_index(index: pd.Index) -> tuple[np.ndarray, bool]:
     raw_label_ids = index.to_numpy()
     try:
         label_ids = raw_label_ids.astype(np.int64, copy=False)
@@ -725,13 +883,19 @@ def _positive_label_ids_from_index(index: pd.Index) -> np.ndarray:
         raise ValueError("Compact labels mapping index must contain integer label ids.") from error
     if not np.array_equal(raw_label_ids, label_ids):
         raise ValueError("Compact labels mapping index must contain integer label ids.")
-    # This is the main validation cost for large tables. If upstream alignment
-    # guarantees uniqueness in the future, we can consider trusting that input.
+    if len(label_ids) == 0:
+        return label_ids, True
+    # Fast path for the common viewer-aligned case: strictly increasing positive
+    # labels prove positivity, uniqueness, and sorted order without `np.unique`.
+    if label_ids[0] > 0 and np.all(label_ids[1:] > label_ids[:-1]):
+        return label_ids, True
+    # Fallback for unsorted or malformed public inputs; this remains the main
+    # validation cost for large tables that do not satisfy the sorted fast path.
     if len(label_ids) != len(np.unique(label_ids)):
         raise ValueError("Compact labels mapping index must contain unique label ids.")
     if np.any(label_ids <= 0):
         raise ValueError("Compact labels mapping index must contain positive label ids.")
-    return label_ids
+    return label_ids, False
 
 
 def _categorical_texture_codes(

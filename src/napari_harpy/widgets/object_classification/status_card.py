@@ -29,6 +29,41 @@ class _ObjectClassificationStatusCardSpec:
         validate_status_card_kind(self.kind)
 
 
+def build_object_classification_warning_status_card_spec(
+    *,
+    layer_styling_error: str | None,
+    selected_table_name: str | None,
+    feature_matrix_count: int,
+    feature_metadata_warning_message: str | None,
+) -> _ObjectClassificationStatusCardSpec | None:
+    """Return the highest-priority warning for the shared warning slot."""
+    if layer_styling_error is not None:
+        return _ObjectClassificationStatusCardSpec(
+            title="Layer Styling Warning",
+            lines=(layer_styling_error,),
+            kind="warning",
+        )
+
+    if selected_table_name is not None and feature_matrix_count == 0:
+        return _ObjectClassificationStatusCardSpec(
+            title="Feature Metadata Warning",
+            lines=(
+                'Warning: the selected table does not contain any feature matrices in ".obsm". '
+                "Add one before continuing.",
+            ),
+            kind="warning",
+        )
+
+    if feature_metadata_warning_message is None:
+        return None
+
+    return _ObjectClassificationStatusCardSpec(
+        title="Feature Metadata Warning",
+        lines=(feature_metadata_warning_message,),
+        kind="warning",
+    )
+
+
 def build_object_classification_selection_status_card_spec(
     *,
     has_spatialdata: bool,

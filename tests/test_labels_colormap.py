@@ -10,13 +10,19 @@ from napari.layers import Labels
 from napari.utils.colormap_backend import get_backend, set_backend
 from napari.utils.colormaps import DirectLabelColormap
 
+import napari_harpy.viewer.labels_colormap as labels_colormap_module
 from napari_harpy.core.annotation import UNLABELED_COLOR
-from napari_harpy.viewer._styling import MISSING_CATEGORICAL_COLOR
+from napari_harpy.viewer._styling import (
+    MISSING_CATEGORICAL_COLOR,
+    MISSING_CONTINUOUS_COLOR,
+    continuous_rgba_for_values,
+)
 from napari_harpy.viewer.labels_colormap import (
-    CompactCategoricalLabelColormap,
-    CompactCategoricalLabelsMapping,
+    CompactLabelColormap,
+    CompactLabelsMapping,
     compact_categorical_label_colormap_from_values,
     compact_categorical_labels_mapping_from_values,
+    compact_continuous_labels_mapping_from_values,
     direct_label_colormap_from_rgba,
 )
 
@@ -34,7 +40,7 @@ def restore_colormap_backend() -> Iterator[None]:
         set_backend(previous_backend)
 
 
-def _expanded_color_dict(mapping: CompactCategoricalLabelsMapping) -> dict[int | None, np.ndarray]:
+def _expanded_color_dict(mapping: CompactLabelsMapping) -> dict[int | None, np.ndarray]:
     color_dict: dict[int | None, np.ndarray] = {
         None: mapping.texture_rgba[mapping.default_texture_code],
         mapping.background_value: mapping.texture_rgba[mapping.background_texture_code],
@@ -42,6 +48,14 @@ def _expanded_color_dict(mapping: CompactCategoricalLabelsMapping) -> dict[int |
     for label_id, texture_code in zip(mapping.label_ids, mapping.texture_codes, strict=True):
         color_dict[int(label_id)] = mapping.texture_rgba[int(texture_code)]
     return color_dict
+
+
+def _mapped_rgba(mapping: CompactLabelsMapping, label_ids: pd.Index | list[int]) -> np.ndarray:
+    texture_code_by_label = dict(zip(mapping.label_ids.tolist(), mapping.texture_codes.tolist(), strict=True))
+    return np.asarray(
+        [mapping.texture_rgba[int(texture_code_by_label[int(label_id)])] for label_id in label_ids],
+        dtype=np.float64,
+    )
 
 
 def test_compact_categorical_labels_mapping_preserves_current_missing_semantics() -> None:
@@ -69,6 +83,135 @@ def test_compact_categorical_labels_mapping_preserves_current_missing_semantics(
     assert code_by_label[3] == mapping.missing_texture_code
     assert code_by_label[7] == mapping.missing_texture_code
     np.testing.assert_allclose(mapping.texture_rgba[mapping.missing_texture_code], to_rgba(MISSING_CATEGORICAL_COLOR))
+
+
+def test_compact_continuous_labels_mapping_matches_current_rgba_for_representative_values() -> None:
+    values = pd.Series(
+        [1.0, 0.0, np.nan, 0.5],
+        index=pd.Index([30, 10, 40, 20], name="index"),
+    )
+
+    mapping = compact_continuous_labels_mapping_from_values(values)
+
+    np.testing.assert_array_equal(mapping.label_ids, np.asarray([10, 20, 30, 40], dtype=np.int64))
+    assert len(mapping.texture_rgba) == 259  # default, background, 256 bins, missing
+    assert mapping.default_texture_code == 0
+    assert mapping.background_texture_code == 1
+    assert mapping.missing_texture_code == 258
+    np.testing.assert_allclose(mapping.texture_rgba[mapping.background_texture_code], np.zeros(4, dtype=np.float32))
+    np.testing.assert_allclose(_mapped_rgba(mapping, values.index), continuous_rgba_for_values(values), atol=1e-6)
+
+
+def test_compact_continuous_labels_mapping_reuses_bins_for_repeated_values() -> None:
+    values = pd.Series([0.25, 0.25, 1.0], index=pd.Index([5, 6, 7], name="index"))
+
+    mapping = compact_continuous_labels_mapping_from_values(values)
+    code_by_label = dict(zip(mapping.label_ids.tolist(), mapping.texture_codes.tolist(), strict=True))
+
+    assert code_by_label[5] == code_by_label[6]
+    assert code_by_label[7] != code_by_label[5]
+
+
+def test_compact_continuous_labels_mapping_maps_all_missing_values_to_missing_color() -> None:
+    values = pd.Series(
+        [np.nan, pd.NA, None, np.inf, -np.inf],
+        index=pd.Index([11, 12, 13, 14, 15], name="index"),
+        dtype="object",
+    )
+
+    mapping = compact_continuous_labels_mapping_from_values(values)
+
+    assert mapping.missing_texture_code is not None
+    assert set(mapping.texture_codes.tolist()) == {mapping.missing_texture_code}
+    expected = np.repeat(
+        np.asarray(to_rgba(MISSING_CONTINUOUS_COLOR), dtype=np.float64).reshape(1, 4),
+        len(values),
+        axis=0,
+    )
+    np.testing.assert_allclose(_mapped_rgba(mapping, values.index), expected)
+
+
+def test_compact_continuous_labels_mapping_matches_current_rgba_for_constant_values() -> None:
+    values = pd.Series([2.0, 2.0, np.nan], index=pd.Index([10, 11, 12], name="index"))
+
+    mapping = compact_continuous_labels_mapping_from_values(values)
+
+    np.testing.assert_allclose(_mapped_rgba(mapping, values.index), continuous_rgba_for_values(values), atol=1e-6)
+
+
+def test_compact_continuous_labels_mapping_uses_explicit_range_and_clamps_values() -> None:
+    values = pd.Series(
+        [-1.0, 0.0, 0.5, 1.0, 2.0, np.nan],
+        index=pd.Index([5, 6, 7, 8, 9, 10], name="index"),
+    )
+
+    mapping = compact_continuous_labels_mapping_from_values(values, value_range=(0.0, 1.0))
+    code_by_label = dict(zip(mapping.label_ids.tolist(), mapping.texture_codes.tolist(), strict=True))
+
+    assert code_by_label[5] == 2
+    assert code_by_label[6] == 2
+    assert code_by_label[7] == 130
+    assert code_by_label[8] == 257
+    assert code_by_label[9] == 257
+    assert code_by_label[10] == mapping.missing_texture_code
+
+
+def test_compact_continuous_labels_mapping_accepts_large_label_ids() -> None:
+    large_label_id = 2**40
+    values = pd.Series([1.0, 0.0], index=pd.Index([large_label_id, 5], name="index"))
+
+    mapping = compact_continuous_labels_mapping_from_values(values)
+    code_by_label = dict(zip(mapping.label_ids.tolist(), mapping.texture_codes.tolist(), strict=True))
+
+    np.testing.assert_array_equal(mapping.label_ids, np.asarray([5, large_label_id], dtype=np.int64))
+    assert code_by_label[5] == 2
+    assert code_by_label[large_label_id] == 257
+
+
+def test_compact_continuous_labels_mapping_skips_unique_check_for_sorted_label_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = pd.Series([0.0, 0.5, 1.0], index=pd.Index([5, 6, 7], name="index"))
+
+    def fail_unique(_values: object) -> object:
+        raise AssertionError("strictly increasing label ids should not call np.unique")
+
+    monkeypatch.setattr(labels_colormap_module.np, "unique", fail_unique)
+
+    mapping = compact_continuous_labels_mapping_from_values(values)
+
+    np.testing.assert_array_equal(mapping.label_ids, np.asarray([5, 6, 7], dtype=np.int64))
+
+
+@pytest.mark.parametrize(
+    ("values", "match"),
+    [
+        (pd.Series([1.0], index=pd.Index([0], name="index")), "positive label ids"),
+        (pd.Series([1.0, 2.0], index=pd.Index([1, 1], name="index")), "unique label ids"),
+        (pd.Series([1.0], index=pd.Index(["cell-1"], name="index")), "integer label ids"),
+    ],
+)
+def test_compact_continuous_labels_mapping_rejects_invalid_label_ids(values: pd.Series, match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        compact_continuous_labels_mapping_from_values(values)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"bins": 1}, "bins"),
+        ({"value_range": (1.0, 1.0)}, "min < max"),
+        ({"value_range": (0.0, np.inf)}, "finite"),
+    ],
+)
+def test_compact_continuous_labels_mapping_rejects_invalid_binning_contract(
+    kwargs: dict[str, object],
+    match: str,
+) -> None:
+    values = pd.Series([1.0], index=pd.Index([5], name="index"))
+
+    with pytest.raises(ValueError, match=match):
+        compact_continuous_labels_mapping_from_values(values, **kwargs)
 
 
 def test_compact_categorical_labels_mapping_accepts_nontransparent_default_color() -> None:
@@ -137,6 +280,28 @@ def test_compact_categorical_labels_mapping_uses_array_backed_texture_codes() ->
     assert mapping.texture_rgba.dtype == np.dtype(np.float32)
 
 
+def test_compact_categorical_labels_mapping_skips_unique_check_for_sorted_label_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = pd.Series(
+        pd.Categorical(["a", "b", "a"], categories=["a", "b"]),
+        index=pd.Index([5, 6, 7], name="index"),
+    )
+
+    def fail_unique(_values: object) -> object:
+        raise AssertionError("strictly increasing label ids should not call np.unique")
+
+    monkeypatch.setattr(labels_colormap_module.np, "unique", fail_unique)
+
+    mapping = compact_categorical_labels_mapping_from_values(
+        values,
+        categories=["a", "b"],
+        palette=["#ff0000", "#00ff00"],
+    )
+
+    np.testing.assert_array_equal(mapping.label_ids, np.asarray([5, 6, 7], dtype=np.int64))
+
+
 @pytest.mark.parametrize(
     ("values", "match"),
     [
@@ -165,7 +330,7 @@ def test_compact_categorical_label_colormap_from_values_returns_ready_colormap(
         palette=["#ff0000", "#00ff00"],
     )
 
-    assert isinstance(colormap, CompactCategoricalLabelColormap)
+    assert isinstance(colormap, CompactLabelColormap)
     labels = np.asarray([0, 10, 20, 30, 99], dtype=np.int64)
     mapping = compact_categorical_labels_mapping_from_values(
         values,
@@ -221,10 +386,10 @@ def test_compact_categorical_label_colormap_sparse_category_updates_existing_tex
     )
     original_texture_count = len(colormap._compact_mapping.texture_rgba)
 
-    result = colormap.set_label_category(6, 2)
+    result = colormap.set_label_value(6, 2)
 
     assert len(colormap._compact_mapping.texture_rgba) == original_texture_count
-    assert result.texture_code == colormap._compact_mapping.category_texture_codes[2]
+    assert result.texture_code == colormap._compact_mapping.value_texture_codes[2]
     assert result.texture_table_changed is False
     assert 6 in colormap._compact_mapping.label_ids
     np.testing.assert_allclose(colormap.map(6), to_rgba("#0000ff"))
@@ -261,12 +426,12 @@ def test_compact_categorical_label_colormap_sparse_new_category_appends_texture(
     )
     original_texture_count = len(colormap._compact_mapping.texture_rgba)
 
-    result = colormap.set_label_category(9, 7, category_color="#0000ff")
+    result = colormap.set_label_value(9, 7, value_color="#0000ff")
 
     assert len(colormap._compact_mapping.texture_rgba) == original_texture_count + 1
     assert result.texture_code == len(colormap._compact_mapping.texture_rgba) - 1
     assert result.texture_table_changed is True
-    assert colormap._compact_mapping.category_texture_codes[7] == result.texture_code
+    assert colormap._compact_mapping.value_texture_codes[7] == result.texture_code
     assert 9 in colormap._compact_mapping.label_ids
     assert bool(np.all(colormap._compact_mapping.label_ids[1:] > colormap._compact_mapping.label_ids[:-1]))
     np.testing.assert_allclose(colormap.map(9), to_rgba("#0000ff"))
@@ -289,7 +454,7 @@ def test_compact_categorical_label_colormap_sparse_update_widens_texture_code_dt
     )
     assert colormap._compact_mapping.texture_codes.dtype == np.uint8
 
-    result = colormap.set_label_category(5, 299)
+    result = colormap.set_label_value(5, 299)
 
     assert result.texture_code > np.iinfo(np.uint8).max
     assert result.texture_table_changed is False
@@ -311,7 +476,7 @@ def test_compact_categorical_label_colormap_maps_like_expanded_direct_colormap(
         palette=["#ff0000", "#00ff00"],
     )
 
-    compact_colormap = CompactCategoricalLabelColormap(compact_mapping)
+    compact_colormap = CompactLabelColormap(compact_mapping)
     expanded_colormap = direct_label_colormap_from_rgba(_expanded_color_dict(compact_mapping))
 
     assert isinstance(compact_colormap, DirectLabelColormap)
@@ -330,7 +495,7 @@ def test_compact_categorical_label_colormap_values_mapping_stays_compact(
         palette=["#ff0000", "#00ff00"],
     )
 
-    colormap = CompactCategoricalLabelColormap(compact_mapping)
+    colormap = CompactLabelColormap(compact_mapping)
     label_mapping, texture_color_dict = colormap._values_mapping_to_minimum_values_set()
 
     assert not isinstance(label_mapping, dict)
@@ -350,7 +515,7 @@ def test_compact_categorical_label_colormap_high_bit_texture_mapping_uses_jitted
         categories=["a", "b"],
         palette=["#ff0000", "#00ff00"],
     )
-    colormap = CompactCategoricalLabelColormap(compact_mapping)
+    colormap = CompactLabelColormap(compact_mapping)
     code_by_label = dict(zip(compact_mapping.label_ids.tolist(), compact_mapping.texture_codes.tolist(), strict=True))
 
     texture_values = colormap._data_to_texture(np.asarray([0, 42, 1001, 9999], dtype=np.int64))
@@ -380,7 +545,7 @@ def test_compact_categorical_label_colormap_small_labels_use_dense_lookup(
         categories=["a", "b"],
         palette=["#ff0000", "#00ff00"],
     )
-    compact_colormap = CompactCategoricalLabelColormap(compact_mapping)
+    compact_colormap = CompactLabelColormap(compact_mapping)
     expanded_colormap = direct_label_colormap_from_rgba(_expanded_color_dict(compact_mapping))
 
     labels = np.asarray([0, 3, 5, 11], dtype=np.uint16)
@@ -399,7 +564,7 @@ def test_compact_categorical_label_colormap_selection_mode_matches_direct_colorm
         categories=["a", "b"],
         palette=["#ff0000", "#00ff00"],
     )
-    compact_colormap = CompactCategoricalLabelColormap(compact_mapping)
+    compact_colormap = CompactLabelColormap(compact_mapping)
     expanded_colormap = direct_label_colormap_from_rgba(_expanded_color_dict(compact_mapping))
     compact_colormap.use_selection = True
     expanded_colormap.use_selection = True
@@ -423,7 +588,7 @@ def test_compact_categorical_label_colormap_assigns_to_labels_layer_in_direct_mo
         categories=["a", "b"],
         palette=["#ff0000", "#00ff00"],
     )
-    colormap = CompactCategoricalLabelColormap(compact_mapping)
+    colormap = CompactLabelColormap(compact_mapping)
     layer = Labels(np.asarray([[0, 3], [5, 11]], dtype=np.int64))
 
     layer.colormap = colormap

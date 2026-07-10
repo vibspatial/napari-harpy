@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pandas as pd
 from napari.layers import Labels
-from napari.utils.colormaps import DirectLabelColormap, label_colormap
+from napari.utils.colormaps import label_colormap
 
 from napari_harpy.core._color_source import (
     TableColorSourceSpec,
@@ -17,7 +17,6 @@ from napari_harpy.core.spatialdata import get_table, validate_table_binding
 from napari_harpy.viewer._styling import (
     StyledPaletteSource,
     build_string_categorical_values,
-    continuous_rgba_for_values,
     default_categorical_palette_for_categories,
     is_string_like_series,
     normalize_category_value,
@@ -25,18 +24,14 @@ from napari_harpy.viewer._styling import (
     validate_styled_palette_source,
 )
 from napari_harpy.viewer.labels_colormap import (
-    CompactCategoricalLabelColormap,
+    CompactLabelColormap,
     compact_categorical_label_colormap_from_values,
-    direct_label_colormap_from_rgba,
+    compact_continuous_label_colormap_from_values,
 )
 
 if TYPE_CHECKING:
     from anndata import AnnData
     from spatialdata import SpatialData
-
-
-_TRANSPARENT_RGBA = np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-LabelsColormap = DirectLabelColormap | CompactCategoricalLabelColormap
 
 
 @dataclass(frozen=True)
@@ -82,14 +77,14 @@ def apply_table_color_source_to_labels_layer(
                 f"`{table_metadata.instance_key}` as an observation source."
             )
         style_result, features = _build_instance_key_colormap(region_rows, instance_key=table_metadata.instance_key)
-        _apply_instance_labels_colormap(layer)
+        layer.colormap = label_colormap(background_value=0)
     elif style_spec.source_kind == "obs_column":
         style_result, colormap, features = _build_obs_column_colormap(
             table=table,
             region_rows=region_rows,
             column_name=style_spec.value_key,
         )
-        _apply_labels_colormap(layer, colormap)
+        layer.colormap = colormap
     else:
         style_result, colormap, features = _build_x_var_colormap(
             table=table,
@@ -97,7 +92,7 @@ def apply_table_color_source_to_labels_layer(
             obs_index=obs_index,
             var_name=style_spec.value_key,
         )
-        _apply_labels_colormap(layer, colormap)
+        layer.colormap = colormap
 
     layer.features = _build_labels_features(features, instance_key=table_metadata.instance_key)
     return style_result
@@ -115,7 +110,7 @@ def _build_obs_column_colormap(
     table: AnnData,
     region_rows: pd.DataFrame,
     column_name: str,
-) -> tuple[LabelsStyleResult, LabelsColormap, pd.DataFrame]:
+) -> tuple[LabelsStyleResult, CompactLabelColormap, pd.DataFrame]:
     if column_name not in table.obs:
         raise ValueError(f"Observation column `{column_name}` is not available in the selected table.")
 
@@ -207,8 +202,7 @@ def _build_obs_column_colormap(
         return style_result, colormap, pd.DataFrame({column_name: string_region_values}, index=region_rows.index)
 
     numeric_region_series = pd.to_numeric(region_series, errors="coerce").astype("float64")
-    color_dict = _build_continuous_color_dict(numeric_region_series)
-    colormap = direct_label_colormap_from_rgba(color_dict, background_value=0)
+    colormap = compact_continuous_label_colormap_from_values(numeric_region_series)
     style_result = LabelsStyleResult(
         value_kind="continuous",
         palette_source=None,
@@ -241,7 +235,7 @@ def _build_x_var_colormap(
     region_rows: pd.DataFrame,
     obs_index: pd.Index,
     var_name: str,
-) -> tuple[LabelsStyleResult, LabelsColormap, pd.DataFrame]:
+) -> tuple[LabelsStyleResult, CompactLabelColormap, pd.DataFrame]:
     if var_name not in table.var_names:
         raise ValueError(f"Var `{var_name}` is not available in the selected table.")
 
@@ -263,8 +257,7 @@ def _build_x_var_colormap(
         index=region_rows.index,
         name=var_name,
     )
-    color_dict = _build_continuous_color_dict(numeric_region_series)
-    colormap = direct_label_colormap_from_rgba(color_dict, background_value=0)
+    colormap = compact_continuous_label_colormap_from_values(numeric_region_series)
     style_result = LabelsStyleResult(
         value_kind="continuous",
         palette_source=None,
@@ -315,29 +308,6 @@ def _format_instance_preview(instance_ids: list[Any]) -> str:
     if len(instance_ids) > 5:
         preview += ", ..."
     return preview
-
-
-def _build_continuous_color_dict(values: pd.Series) -> dict[int | None, np.ndarray]:
-    color_dict: dict[int | None, np.ndarray] = _transparent_default_color_dict()
-    colors = continuous_rgba_for_values(values)
-    for instance_id, color in zip(values.index, colors, strict=True):
-        color_dict[int(instance_id)] = color
-    return color_dict
-
-
-def _apply_labels_colormap(layer: Labels, colormap: LabelsColormap) -> None:
-    layer.colormap = colormap
-
-
-def _apply_instance_labels_colormap(layer: Labels) -> None:
-    layer.colormap = label_colormap(background_value=0)
-    refresh = getattr(layer, "refresh", None)
-    if callable(refresh):
-        refresh()
-
-
-def _transparent_default_color_dict() -> dict[int | None, np.ndarray]:
-    return {None: _TRANSPARENT_RGBA.copy(), 0: _TRANSPARENT_RGBA.copy()}
 
 
 def _is_categorical_dtype(values: pd.Series) -> bool:

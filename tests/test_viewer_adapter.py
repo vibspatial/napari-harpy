@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 from matplotlib.colors import to_rgba
 from napari.layers import Image, Labels, Points, Shapes
-from napari.utils.colormaps import CyclicLabelColormap, DirectLabelColormap
+from napari.utils.colormaps import CyclicLabelColormap
 from shapely.geometry import LineString, Point, Polygon
 from spatialdata.models import PointsModel, ShapesModel, TableModel
 from spatialdata.transformations import Affine, Identity
@@ -32,7 +32,7 @@ from napari_harpy.viewer.adapter import (
     _prepare_napari_point_radius_shapes_layer_inputs,
     _prepare_napari_shapes_layer_inputs,
 )
-from napari_harpy.viewer.labels_colormap import CompactCategoricalLabelColormap
+from napari_harpy.viewer.labels_colormap import CompactLabelColormap
 from napari_harpy.viewer.points_styling import POINTS_SELECTION_SOLID_COLOR
 from napari_harpy.viewer.shapes_styling import (
     _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR,
@@ -1617,7 +1617,7 @@ def test_viewer_adapter_ensure_styled_labels_loaded_creates_registered_overlay_w
     assert result.coercion_applied is False
     assert result.layer in viewer.layers
     assert result.layer.name == "blobs_labels[obs:cell_type]"
-    assert isinstance(result.layer.colormap, CompactCategoricalLabelColormap)
+    assert isinstance(result.layer.colormap, CompactLabelColormap)
     binding = adapter.layer_bindings.get_binding(result.layer)
     assert isinstance(binding, LabelsLayerBinding)
     assert binding.labels_role == "styled"
@@ -1657,6 +1657,29 @@ def test_viewer_adapter_ensure_styled_labels_loaded_reuses_matching_variant(sdat
     assert second.created is False
     assert second.value_kind == "continuous"
     assert len(viewer.layers) == 1
+
+
+def test_viewer_adapter_ensure_styled_labels_loaded_force_syncs_after_recolor(
+    monkeypatch: pytest.MonkeyPatch,
+    sdata_blobs,
+) -> None:
+    viewer = DummyViewer()
+    adapter = ViewerAdapter(viewer)
+    sync_calls: list[Labels] = []
+    style_spec = TableColorSourceSpec(
+        table_name="table",
+        source_kind="x_var",
+        value_key="channel_0_sum",
+        value_kind="continuous",
+    )
+
+    monkeypatch.setattr(adapter, "sync_labels_display_after_colormap_change", sync_calls.append)
+
+    first = adapter.ensure_styled_labels_loaded(sdata_blobs, "blobs_labels", "global", style_spec)
+    second = adapter.ensure_styled_labels_loaded(sdata_blobs, "blobs_labels", "global", style_spec)
+
+    assert first.layer is second.layer
+    assert sync_calls == [first.layer, first.layer]
 
 
 def test_viewer_adapter_ensure_styled_labels_loaded_updates_reused_variant_from_current_table(
@@ -1843,8 +1866,9 @@ def test_viewer_adapter_ensure_styled_labels_loaded_colors_non_binary_int_obs_co
     max_instance = int(table.obs["instance_id"].max())
     assert float(features.loc[min_instance, "object_score"]) == float(min_instance)
     assert float(features.loc[max_instance, "object_score"]) == float(max_instance)
+    assert isinstance(result.layer.colormap, CompactLabelColormap)
     assert not np.allclose(
-        result.layer.colormap.color_dict[min_instance], result.layer.colormap.color_dict[max_instance]
+        result.layer.colormap.map(min_instance), result.layer.colormap.map(max_instance)
     )
 
 
@@ -1937,7 +1961,7 @@ def test_viewer_adapter_ensure_styled_labels_loaded_coerces_string_obs_to_catego
     assert result.value_kind == "categorical"
     assert result.coercion_applied is True
     assert result.palette_source == "default_missing"
-    assert isinstance(result.layer.colormap, CompactCategoricalLabelColormap)
+    assert isinstance(result.layer.colormap, CompactLabelColormap)
 
 
 def test_viewer_adapter_ensure_styled_labels_loaded_warns_for_high_cardinality_string_obs(
@@ -1973,7 +1997,7 @@ def test_viewer_adapter_ensure_styled_labels_loaded_warns_for_high_cardinality_s
     assert result.value_kind == "categorical"
     assert result.coercion_applied is True
     assert result.palette_source == "default_missing"
-    assert isinstance(result.layer.colormap, CompactCategoricalLabelColormap)
+    assert isinstance(result.layer.colormap, CompactLabelColormap)
     assert len(warning_messages) == 1
     assert "exceeds the categorical viewer-coloring threshold" in warning_messages[0]
     assert "Harpy will render it with the default categorical palette anyway" in warning_messages[0]
@@ -1994,7 +2018,7 @@ def test_viewer_adapter_ensure_styled_labels_loaded_x_var_is_continuous(sdata_bl
     assert result.value_kind == "continuous"
     assert result.palette_source is None
     assert result.coercion_applied is False
-    assert isinstance(result.layer.colormap, DirectLabelColormap)
+    assert isinstance(result.layer.colormap, CompactLabelColormap)
 
 
 def test_viewer_adapter_ensure_labels_loaded_reuses_matching_existing_layer(sdata_blobs) -> None:

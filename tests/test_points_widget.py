@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 from qtpy.QtCore import Qt
+from qtpy.QtWidgets import QCompleter
 
 from napari_harpy.widgets.viewer.points_widget import PointsValueWidget
 
@@ -53,11 +54,45 @@ def test_points_value_widget_adds_selected_values_in_order(qtbot) -> None:
 
     assert widget.add_update_button.text() == "Add / Update in viewer"
     assert widget.selected_values() == ("AAMP", "AXL")
-    assert widget.selected_values_summary_label.text() == "Selected: AAMP, AXL"
+    assert widget.selected_values_summary_label.text() == "AAMP\nAXL"
 
     qtbot.mouseClick(widget.add_update_button, Qt.MouseButton.LeftButton)
 
     assert recorded_requests == [(("AAMP", "AXL"), 25_000)]
+
+
+def test_points_value_widget_value_input_browses_and_filters_values(qtbot) -> None:
+    widget = PointsValueWidget()
+    values = [f"GENE{index:02d}" for index in range(20)]
+
+    qtbot.addWidget(widget)
+
+    widget.set_points_names(["transcripts"])
+    widget.set_index_columns(["gene"])
+    widget.set_value_source(_fake_value_source(values))
+    widget.render_controller_state(_fake_controller())
+
+    completer = widget.value_input.completer()
+
+    assert widget.value_input.isEnabled()
+    assert widget.value_input.text() == ""
+    assert widget.value_input.placeholderText() == "Select value"
+    assert completer is not None
+    assert completer.completionMode() == QCompleter.CompletionMode.PopupCompletion
+    assert completer.maxVisibleItems() == 10
+
+    widget.value_input.show_completion_popup()
+
+    assert completer.completionPrefix() == ""
+    assert completer.completionModel().rowCount() == len(values)
+
+    widget.value_input.setText("GENE1")
+    widget.value_input.show_completion_popup()
+
+    assert completer.completionPrefix() == "GENE1"
+    assert completer.completionModel().rowCount() == 10
+
+    completer.popup().hide()
 
 
 def test_points_value_widget_all_values_disables_value_input(qtbot) -> None:
@@ -102,7 +137,7 @@ def test_points_value_widget_clear_removes_selected_values(qtbot) -> None:
     qtbot.mouseClick(widget.clear_selection_button, Qt.MouseButton.LeftButton)
 
     assert widget.selected_values() == ()
-    assert widget.selected_values_summary_label.text() == "Selected: none"
+    assert widget.selected_values_summary_label.text() == "None"
 
 
 def test_points_value_widget_reloading_values_preserves_valid_and_drops_invalid(qtbot) -> None:
@@ -122,7 +157,7 @@ def test_points_value_widget_reloading_values_preserves_valid_and_drops_invalid(
     widget.set_value_source(_fake_value_source(["AXL", "MALAT1"]))
 
     assert widget.selected_values() == ("AXL",)
-    assert widget.selected_values_summary_label.text() == "Selected: AXL"
+    assert widget.selected_values_summary_label.text() == "AXL"
     assert "Dropped 1 selected value" in widget.status_label.text()
 
 

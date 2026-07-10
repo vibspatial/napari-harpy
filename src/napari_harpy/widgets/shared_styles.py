@@ -9,6 +9,7 @@ from qtpy.QtGui import QColor, QIcon, QPainter, QPalette, QPen, QPixmap
 from qtpy.QtWidgets import (
     QComboBox,
     QLabel,
+    QLineEdit,
     QSizePolicy,
     QStyle,
     QStyleOptionComboBox,
@@ -282,6 +283,40 @@ class CompactComboBox(QComboBox):
 
         elided_text = self._elided_current_text()
         self.setToolTip(format_tooltip(current_text) if elided_text != current_text else "")
+
+
+class CompleterPopupLineEdit(QLineEdit):
+    """Line edit that can open its completer popup when entered."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._show_completion_popup_on_entry = False
+
+    def set_completion_popup_on_entry_enabled(self, enabled: bool) -> None:
+        self._show_completion_popup_on_entry = enabled
+
+    def focusInEvent(self, event) -> None:
+        super().focusInEvent(event)
+        self.show_completion_popup()
+
+    def mousePressEvent(self, event) -> None:
+        super().mousePressEvent(event)
+        self.show_completion_popup()
+
+    def show_completion_popup(self) -> None:
+        if not self._show_completion_popup_on_entry or not self.isEnabled():
+            return
+
+        completer = self.completer()
+        if completer is None:
+            return
+
+        model = completer.model()
+        if model is None or model.rowCount() == 0:
+            return
+
+        completer.setCompletionPrefix(self.text())
+        completer.complete()
 
 
 def apply_widget_surface(widget: QWidget) -> None:

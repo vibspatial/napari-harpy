@@ -26,7 +26,7 @@ import napari_harpy.widgets.object_classification.controller as classifier_modul
 import napari_harpy.widgets.object_classification.widget as widget_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
 from napari_harpy._app_state import ClassificationTableWrittenEvent, FeatureMatrixWrittenEvent, get_or_create_app_state
-from napari_harpy.core.annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
+from napari_harpy.core.annotation import UNLABELED_COLOR, USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
 from napari_harpy.core.class_palette import default_class_colors
 from napari_harpy.core.classifier_export import DEFAULT_CLASSIFIER_EXPORT_SUFFIX, read_classifier_export_bundle
 from napari_harpy.core.feature_matrix_metadata import (
@@ -35,7 +35,7 @@ from napari_harpy.core.feature_matrix_metadata import (
     register_feature_matrix_metadata,
 )
 from napari_harpy.core.spatialdata import SpatialDataLabelsOption
-from napari_harpy.viewer.labels_colormap import CompactCategoricalLabelColormap
+from napari_harpy.viewer.labels_colormap import CompactLabelColormap
 from napari_harpy.widgets.object_classification.controller import (
     CLASSIFIER_CONFIG_KEY,
     PRED_CLASS_COLORS_KEY,
@@ -177,9 +177,9 @@ def _assert_persistence_success_feedback(widget: HarpyWidget, expected_message: 
 
 
 def _assert_feature_metadata_warning_card(widget: HarpyWidget) -> None:
-    assert "Feature Metadata Warning" in widget.validation_status.text()
+    assert "Feature Metadata Warning" in widget.warning_status.text()
 
-    stylesheet = widget.validation_status.styleSheet()
+    stylesheet = widget.warning_status.styleSheet()
     warning_style = STATUS_CARD_PALETTE["warning"]
     assert f"color: {warning_style['text']}" in stylesheet
     assert f"background-color: {warning_style['background']}" in stylesheet
@@ -502,8 +502,8 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_bl
     assert len(viewer.layers) == 1
     assert viewer.layers.selection.active is None
     assert "Choose a labels element" in widget.selection_status.text()
-    assert widget.validation_status.isHidden()
-    assert widget.validation_status.text() == ""
+    assert widget.warning_status.isHidden()
+    assert widget.warning_status.text() == ""
     assert widget.classifier_feedback.isHidden()
     assert widget.classifier_preparation_status.isHidden()
     assert widget.classifier_preparation_status.objectName() == "classifier_preparation_status"
@@ -839,8 +839,8 @@ def test_widget_surfaces_invalid_table_binding_for_duplicate_instance_ids(qtbot,
     select_segmentation(widget)
 
     assert widget.selected_table_name == "table"
-    assert widget.validation_status.isHidden()
-    assert widget.validation_status.text() == ""
+    assert widget.warning_status.isHidden()
+    assert widget.warning_status.text() == ""
     assert "contains duplicate values within that region" in widget.selection_status.text()
     assert not widget.color_by_combo.isEnabled()
     assert not widget.class_spinbox.isEnabled()
@@ -965,7 +965,40 @@ def test_widget_feature_matrix_registration_button_enables_for_unregistered_matr
     assert widget.register_feature_matrix_button.objectName() == "register_feature_matrix_button"
     assert widget.register_feature_matrix_button.isEnabled()
     assert "Register feature-column metadata" in _tooltip_text(widget.register_feature_matrix_button)
-    assert widget.validation_status.isHidden()
+    assert widget.warning_status.isHidden()
+
+
+def test_widget_reports_post_bind_class_palette_drift_as_layer_styling_warning(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs["table"]
+    instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(
+        [1 if int(instance_id) == 1 else 0 for instance_id in instance_ids],
+        categories=[0, 1],
+    )
+    table.uns[USER_CLASS_COLORS_KEY] = [UNLABELED_COLOR, "#123456"]
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    assert table.uns[USER_CLASS_COLORS_KEY] == default_class_colors([0, 1])
+    assert widget.warning_status.isHidden()
+
+    table.uns[USER_CLASS_COLORS_KEY] = [UNLABELED_COLOR, "#123456"]
+    widget._refresh_layer_styling()
+
+    assert "Layer Styling Warning" in widget.warning_status.text()
+    assert "no longer matches Harpy default colors" in widget.warning_status.text()
+
+    table.uns[USER_CLASS_COLORS_KEY] = default_class_colors([0, 1])
+    widget._refresh_layer_styling()
+
+    assert widget.warning_status.isHidden()
 
 
 def test_widget_disables_retrain_button_for_unregistered_feature_matrix_metadata(
@@ -1037,7 +1070,7 @@ def test_widget_register_feature_matrix_button_registers_metadata_and_recovers_t
     assert metadata["source_kind"] == CUSTOM_OBSM_SOURCE_KIND
     assert widget.register_feature_matrix_button.isEnabled() is False
     assert widget.retrain_button.isEnabled()
-    assert widget.validation_status.isHidden()
+    assert widget.warning_status.isHidden()
     assert widget._persistence_controller.is_dirty is True
     assert widget.sync_button.isEnabled()
     assert mark_dirty_reasons == ["feature matrix metadata registered"]
@@ -1073,7 +1106,7 @@ def test_widget_register_feature_matrix_button_shows_error_without_dirty_side_ef
 
     assert _FEATURE_MATRICES_KEY not in table.uns
     _assert_feature_metadata_warning_card(widget)
-    assert "registration failed" in widget.validation_status.text()
+    assert "registration failed" in widget.warning_status.text()
     assert widget.register_feature_matrix_button.isEnabled()
     assert widget._persistence_controller.is_dirty is False
     assert mark_dirty_reasons == []
@@ -1134,7 +1167,7 @@ def test_widget_feature_matrix_registration_button_disables_for_valid_custom_met
         widget.register_feature_matrix_button
     )
     assert table.uns[_FEATURE_MATRICES_KEY]["features_1"]["source_kind"] == CUSTOM_OBSM_SOURCE_KIND
-    assert widget.validation_status.isHidden()
+    assert widget.warning_status.isHidden()
 
 
 def test_widget_feature_matrix_registration_button_disables_for_valid_harpy_metadata(
@@ -1151,7 +1184,7 @@ def test_widget_feature_matrix_registration_button_disables_for_valid_harpy_meta
 
     assert widget.register_feature_matrix_button.isEnabled() is False
     assert "already registered from Harpy feature extraction" in _tooltip_text(widget.register_feature_matrix_button)
-    assert widget.validation_status.isHidden()
+    assert widget.warning_status.isHidden()
 
 
 def test_widget_feature_matrix_registration_button_warns_for_invalid_matrix(
@@ -1171,8 +1204,8 @@ def test_widget_feature_matrix_registration_button_warns_for_invalid_matrix(
     assert widget.selected_feature_key == "bad_features"
     assert widget.register_feature_matrix_button.isEnabled() is False
     _assert_feature_metadata_warning_card(widget)
-    assert "cannot be registered" in widget.validation_status.text()
-    assert "2-dimensional" in widget.validation_status.text()
+    assert "cannot be registered" in widget.warning_status.text()
+    assert "2-dimensional" in widget.warning_status.text()
     assert "cannot be registered" in _tooltip_text(widget.register_feature_matrix_button)
 
 
@@ -1196,8 +1229,8 @@ def test_widget_feature_matrix_registration_button_warns_for_missing_source_kind
 
     assert widget.register_feature_matrix_button.isEnabled() is False
     _assert_feature_metadata_warning_card(widget)
-    assert "mismatched metadata" in widget.validation_status.text()
-    assert "source_kind" in widget.validation_status.text()
+    assert "mismatched metadata" in widget.warning_status.text()
+    assert "source_kind" in widget.warning_status.text()
     assert "avoid overwriting existing metadata" in _tooltip_text(widget.register_feature_matrix_button)
 
 
@@ -1222,8 +1255,8 @@ def test_widget_feature_matrix_registration_button_warns_for_mismatched_metadata
 
     assert widget.register_feature_matrix_button.isEnabled() is False
     _assert_feature_metadata_warning_card(widget)
-    assert "mismatched metadata" in widget.validation_status.text()
-    assert "metadata describes 1 feature column" in widget.validation_status.text()
+    assert "mismatched metadata" in widget.warning_status.text()
+    assert "metadata describes 1 feature column" in widget.warning_status.text()
     assert "avoid overwriting existing metadata" in _tooltip_text(widget.register_feature_matrix_button)
 
 
@@ -1841,8 +1874,8 @@ def test_widget_handles_tables_without_obsm_entries(qtbot, sdata_blobs: SpatialD
     assert not widget.feature_matrix_combo.isEnabled()
     assert widget.selected_table_name == "table"
     assert widget.selected_feature_key is None
-    assert not widget.validation_status.isHidden()
-    assert 'does not contain any feature matrices in ".obsm"' in widget.validation_status.text()
+    assert not widget.warning_status.isHidden()
+    assert 'does not contain any feature matrices in ".obsm"' in widget.warning_status.text()
 
 
 def test_widget_applies_user_class_to_picked_instance(qtbot, sdata_blobs: SpatialData) -> None:
@@ -2045,7 +2078,7 @@ def test_widget_recolors_layer_from_user_class_annotations(qtbot, sdata_blobs: S
     widget.class_spinbox.setValue(4)
     widget.apply_class_button.click()
 
-    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert isinstance(layer.colormap, CompactLabelColormap)
     assert np.allclose(layer.colormap.map(0), np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32))
     assert len(layer.colormap.color_dict) <= 3
     assert layer.colormap.map(5)[3] > 0
@@ -2088,7 +2121,7 @@ def test_widget_user_class_annotation_uses_sparse_refresh_for_compact_user_class
 
     assert full_refresh_calls == []
     assert layer_refresh_calls == [{"extent": False}]
-    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert isinstance(layer.colormap, CompactLabelColormap)
     assert layer.colormap is original_colormap
     assert len(layer.colormap.color_dict) <= 3
     assert layer.colormap.map(5)[3] > 0
@@ -2987,19 +3020,17 @@ def test_widget_colors_predictions_using_pred_class_palette_in_pred_class_mode(q
 
     qtbot.waitUntil(lambda: table.obs[PRED_CLASS_COLUMN].astype("string").ne("0").any(), timeout=5000)
 
-    table.uns[USER_CLASS_COLORS_KEY] = ["#80808099", "#ff0000", "#00ff00"]
-    table.uns[PRED_CLASS_COLORS_KEY] = ["#80808099", "#0000ff", "#ffff00"]
-
-    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert isinstance(layer.colormap, CompactLabelColormap)
     assert not np.allclose(layer.colormap.map(1), layer.colormap.map(5))
 
     widget.color_by_combo.setCurrentIndex(widget.color_by_combo.findData("pred_class"))
 
-    assert isinstance(layer.colormap, CompactCategoricalLabelColormap)
+    assert isinstance(layer.colormap, CompactLabelColormap)
     assert np.allclose(layer.colormap.map(1), layer.colormap.map(5))
     assert np.allclose(layer.colormap.map(24), layer.colormap.map(26))
-    assert np.allclose(layer.colormap.map(1), np.asarray(to_rgba("#0000ff"), dtype=np.float32))
-    assert np.allclose(layer.colormap.map(24), np.asarray(to_rgba("#ffff00"), dtype=np.float32))
+    assert table.uns[PRED_CLASS_COLORS_KEY] == default_class_colors([0, 1, 2])
+    assert np.allclose(layer.colormap.map(1), np.asarray(to_rgba(default_class_colors([1])[0]), dtype=np.float32))
+    assert np.allclose(layer.colormap.map(24), np.asarray(to_rgba(default_class_colors([2])[0]), dtype=np.float32))
     assert PRED_CLASS_COLUMN in layer.features.columns
 
 
