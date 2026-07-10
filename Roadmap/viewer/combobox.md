@@ -73,8 +73,8 @@ Required behavior:
 
 Placeholder text:
 
-- Obs: `Click or type to choose an obs column`
-- Vars: `Click or type to search vars`
+- Obs: `Select obs column`
+- Vars: `Select var`
 
 Action hint behavior:
 
@@ -151,15 +151,16 @@ Selection preservation:
 
 Recommended placeholder text:
 
-- Obs: `Click or type to choose an obs column`
-- Vars: `Click or type to search vars`
+- Obs: `Select obs column`
+- Vars: `Select var`
 
 Reasoning:
 
-- `Click or type` communicates both browse and search.
-- `choose an obs column` fits the smaller, column-like `obs` list.
-- `search vars` fits the potentially large `vars` list.
-- Avoid placeholder text like `Search observations` alone because it hides the click-to-browse affordance.
+- The text must fit inside the compact viewer card.
+- `Select` keeps the obs and vars placeholders visually consistent.
+- `Select obs column` fits the smaller, column-like `obs` list without wrapping or clipping.
+- `Select var` fits the potentially large `vars` list and keeps the field visually clean.
+- The click-to-browse affordance should come from the field behavior and tests, not from long placeholder text.
 - Avoid pre-filling a real value as instructional text; the field content should always mean an actual selected or typed value.
 
 ## Qt Findings
