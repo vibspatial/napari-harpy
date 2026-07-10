@@ -2751,6 +2751,19 @@ Implementation direction:
    If observed class ids are not covered by the canonical table categories and
    palette, the preparation boundary failed and styling should raise a clear
    error.
+10. Surface strict styling failures in the widget status card. If an already
+    bound table is mutated out-of-band after binding, for example by an
+    external Python script changing `user_class`, `pred_class`, or their
+    palettes, `refresh_layer_colors(...)` should not silently repair it. The
+    strict reader should raise an actionable error, and the widget should catch
+    that error around layer-styling refresh and show it in the status card.
+    Example message shape:
+
+    ```text
+    Object-classification class state changed after binding: `user_class_colors`
+    no longer matches `user_class` categories. Rebind/reload the table or
+    canonicalize class state before styling.
+    ```
 
 Acceptance criteria:
 
@@ -2774,6 +2787,9 @@ Acceptance criteria:
 - invalid post-preparation categorical contracts fail loudly with actionable
   messages: non-categorical column, non-integer categories, missing category
   codes, missing palette, palette-length mismatch, or invalid colors;
+- out-of-band mutation of an already-bound table is reported through the widget
+  status card with an actionable message rather than silently repaired during
+  styling;
 - tests that currently expect fallback normalization for invalid table state
   are updated to expect strict failure or are removed if they only covered the
   old recovery behavior;
