@@ -1957,7 +1957,7 @@ Acceptance:
 
 ### Slice 7: Compact Continuous Labels Colormap Via 256 Bins
 
-Status: proposed.
+Status: implemented.
 
 After Slice 6 settles the Harpy-owned compact colormap shape for categorical
 `.obs`, extend the same idea to continuous `.obs` values by quantizing colors
@@ -2227,7 +2227,7 @@ new compact arrays: ~4.07 MB
 
 ### Slice 8: Async Slicing Labels Colormap Synchronization
 
-Status: proposed.
+Status: implemented after Vispy colormap-event fix; manual Qt/Vispy QA still recommended.
 
 Goal:
 
@@ -2298,12 +2298,89 @@ Investigation notes:
   displayed texture-code image still being encoded under the previous/raw label
   mapping while the newly assigned all-unlabeled compact colormap table has
   already reached vispy.
+- Follow-up investigation after manual QA showed that the compact colormap
+  itself is not the failing part:
+  - an in-memory `uint32` labels layer with the all-unlabeled compact colormap
+    produces the expected texture-code image immediately;
+  - `layer._slice.image.view` matches
+    `layer.colormap._data_to_texture(layer._slice.image.raw)`;
+  - `PublicOnlyProxy` access to `viewer._layer_slicer` works in a controlled
+    test, so proxy wrapping is not the main failure mode.
+- The failing case was reproduced headlessly on the real zarr-backed layer:
+  `/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium_full_data_core.zarr`,
+  labels `cell_labels_global_ROI1`, table `table_global_ROI1`, color by
+  `user_class`, with napari async slicing enabled.
+- After the first helper ran, the labels layer could still be on napari's empty
+  placeholder slice:
+
+  ```text
+  layer._slice.empty: True
+  layer.loaded: False
+  layer._slice.image.raw.shape: (1, 1)
+  layer._slice.image.raw.dtype: uint8
+  layer._slice.image.view.dtype: uint8
+  ```
+
+- Calling napari's synchronous slice recomputation directly fixed the layer-side
+  state in the same headless check:
+
+  ```python
+  layer.set_view_slice()
+  layer.events.colormap()
+  layer.events.set_data()
+  ```
+
+  After that call, the layer held a real current labels slice:
+
+  ```text
+  layer._slice.empty: False
+  data_level: 6
+  layer._slice.image.raw.shape: (587, 845)
+  layer._slice.image.raw.dtype: uint32
+  layer._slice.image.view.dtype: uint8
+  np.array_equal(
+      layer._slice.image.view,
+      layer.colormap._data_to_texture(layer._slice.image.raw),
+  ): True
+  ```
+
+- Deeper follow-up investigation on the styled-labels `leiden` overlay showed
+  that the layer model could be correct while the Qt/Vispy display still
+  rendered with swapped/default colors:
+  - after `set_view_slice()`, the zarr-backed layer held the real `uint32` raw
+    slice and a `uint8` texture-code view;
+  - `layer._slice.image.view` matched
+    `layer.colormap._data_to_texture(layer._slice.image.raw)`;
+  - background label `0` mapped to texture code `1`, and texture code `1`
+    mapped to transparent in the compact/direct colormap;
+  - Vispy still rendered texture code `1` as if it were raw label `1`, which
+    explains the blue full-field background in the async screenshot.
+- Root cause of that remaining UI mismatch: `Labels.colormap = ...` emits
+  `layer.events.colormap()` before the async labels layer has necessarily
+  recomputed away from the placeholder/small-dtype slice. `VispyLabelsLayer`
+  chooses its shader/color-table path from the current raw/view dtypes during
+  that colormap event. Emitting `layer.events.set_data()` uploads the recomputed
+  texture-code image, but it does not make Vispy rerun
+  `_on_colormap_change(...)`. Therefore the fix must emit
+  `layer.events.colormap()` again **after** `set_view_slice()` has installed the
+  real current labels slice, then emit `layer.events.set_data()` for the upload.
+- Root cause: the first helper used
+  `viewer._layer_slicer.submit(layers=[layer], dims=dims, force=True)` inside
+  `layer_slicer.force_sync()`. In napari 0.7.1, that reaches
+  `Layer._slice_dims(..., force=True)`. Because `force=True` is passed to
+  `_slicing_state.set_slice_input_from_dims(...)`, napari does **not** call
+  `set_view_slice()` there; it then emits refresh events around the existing
+  slice. So the helper could repaint an empty/stale/raw texture-code image
+  instead of recomputing and recoding the current labels slice.
+- This explains why the first implementation passed toy/in-memory tests but did
+  not fix the real async zarr-backed UI: it synchronized the refresh event, not
+  the actual labels slice recomputation.
 
 Recommended fix:
 
 - After Harpy assigns a table-driven direct/compact labels colormap, force the
-  current labels slice to be recoded synchronously before returning control to
-  the user.
+  current labels slice to be recomputed and recoded synchronously before
+  returning control to the user.
 - Implement this in the viewer-facing code path, not inside the pure colormap
   builders:
   - `ViewerAdapter.ensure_styled_labels_loaded(...)` has access to the viewer
@@ -2312,39 +2389,51 @@ Recommended fix:
   - `ViewerStylingController.refresh_layer_colors(...)` has access to the
     object-classification labels layer after assigning `user_class`,
     `pred_class`, or `pred_confidence` colormaps.
-- Prefer a small helper with a no-op fallback for test/dummy viewers. The helper
+- Use a small helper dedicated to real napari `Labels` layers. The helper
   should live in a dedicated `viewer.labels_async` module, because it touches
-  napari internals and should stay isolated from adapter and colormap logic:
+  napari internals and should stay isolated from adapter and colormap logic.
+  The helper should use napari's direct synchronous layer recomputation path,
+  then emit the colormap event after that recomputation so Vispy rebuilds the
+  labels colormap shader/table for the now-current slice dtype:
 
   ```python
-  def force_sync_labels_slice_after_colormap_change(viewer: object, layer: Labels) -> None:
-      layer_slicer = getattr(viewer, "_layer_slicer", None)
-      dims = getattr(viewer, "dims", None)
-      if layer_slicer is None or dims is None:
+  def sync_labels_display_after_colormap_change(layer: Labels) -> None:
+      if not _is_supported_napari_labels_layer(layer):
           return
-      with layer_slicer.force_sync():
-          layer_slicer.submit(layers=[layer], dims=dims, force=True)
+
+      layer.set_view_slice()
+      layer.events.colormap()
+      layer.events.set_data()
   ```
 
 - This deliberately blocks only after an explicit Harpy recoloring action. It
   does not disable async slicing globally for normal navigation.
-- The helper should use napari's layer slicer only when available. Dummy test
-  viewers and headless objects without `_layer_slicer`/`dims` should no-op.
+- The helper can keep the `viewer` argument for adapter API stability, but the
+  corrected implementation should not depend on `viewer._layer_slicer` for the
+  actual recomputation.
+- Do not silently support unsupported non-napari layers; if the layer no longer
+  exposes the napari `Labels` methods/events this helper relies on, fail loudly
+  so the contract change is visible.
 - Do not call a bare `layer.refresh()`: `layer.colormap = ...` already calls
   `refresh(extent=False)`, but with async slicing that refresh schedules async
   work. The problem is not missing refresh; it is that the displayed slice can
   remain encoded with the previous colormap until async slicing completes.
+- Do not use `layer_slicer.submit(..., force=True)` as the main fix. In napari
+  0.7.1 that can refresh the current slice state without recomputing it.
 - Keep the helper explicitly named around "after colormap change" so future
   readers do not use it as a generic repaint helper.
-- If forcing a sync slice is too expensive in practice, a more refined follow-up
-  is to recode the already-loaded current raw slice in place and emit
-  `layer.events.set_data()`. That avoids dask I/O for the current view, but it
-  touches more napari internals and should only be chosen if the simple
-  force-sync helper is too slow.
+- If direct synchronous `set_view_slice()` is too expensive in practice, a more
+  refined follow-up is to recode the already-loaded current raw slice in place
+  and emit `layer.events.set_data()`. That avoids dask I/O for the current view,
+  but it touches more napari internals and should only be chosen if the direct
+  synchronous slice recomputation is too slow.
 
 Implementation steps:
 
-1. Add `viewer.labels_async.force_sync_labels_slice_after_colormap_change(viewer, layer)`.
+1. Update `viewer.labels_async.sync_labels_display_after_colormap_change(layer)`
+   to call `layer.set_view_slice()`, then `layer.events.colormap()`, then
+   `layer.events.set_data()`, rather than
+   `viewer._layer_slicer.submit(..., force=True)` or a broader layer refresh.
 2. Call it in `ViewerAdapter.ensure_styled_labels_loaded(...)` immediately
    after `apply_table_color_source_to_labels_layer(...)`.
 3. Give `ViewerStylingController` access to the viewer object, either through a
@@ -2358,19 +2447,15 @@ Implementation steps:
    `refresh_user_class_colormap_and_feature(...)` or
    `refresh_user_class_feature_only(...)`.
 5. Keep `async_slicing=False` behavior unchanged; the helper may still be safe
-   to call, but it should be cheap/no-op when no napari layer slicer is present.
+   to call, but it should remain scoped to real napari `Labels` layers.
 
 Tests:
 
-- Add a unit test for the helper using a fake napari-like viewer object:
-  - fake `viewer._layer_slicer.force_sync()` is a context manager recording
-    entry/exit;
-  - fake `viewer._layer_slicer.submit(layers=[layer], dims=dims, force=True)`
-    records its call;
-  - assert the helper calls `submit(...)` with exactly the styled labels layer,
-    the viewer dims object, and `force=True`.
-- Add a no-op helper test for `DummyViewer` / non-napari viewer objects so
-  existing adapter tests stay lightweight.
+- Update the helper tests so they assert `layer.set_view_slice()`,
+  `layer.events.colormap()`, and
+  `layer.events.set_data()` are called in that order for a supported labels
+  layer.
+- Add a helper test showing unsupported layer objects fail loudly.
 - Add an adapter test that `ensure_styled_labels_loaded(...)` calls the helper
   after styling both newly created and reused styled labels overlays.
 - Add an object-classification styling test that `refresh_layer_colors(...)`
@@ -2384,8 +2469,8 @@ Tests:
   `refresh_user_class_colormap_and_feature(...)` does not call the helper.
 - Optional, if practical in headless napari:
   add a `ViewerModel`-based test for final slice synchronization:
-  - create a `Labels` layer with a previous labels colormap and loaded raw
-    slice;
+  - create a zarr/dask-backed or synthetic lazy `Labels` layer that starts from
+    an empty/stale async placeholder slice;
   - assign a direct labels colormap;
   - call the helper;
   - assert the displayed texture-code view equals
@@ -2407,7 +2492,30 @@ Manual QA:
   such as `total_counts`.
 - Confirm the styled labels layer never shows the wrong full-field/speckled
   color mismatch seen before the fix.
+- Repeat the exact large-layer repro with
+  `/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium_full_data_core.zarr`:
+  color `cell_labels_global_ROI1` by
+  `table_global_ROI1.obs["leiden"]` with `async_slicing=True`, and confirm the
+  background remains transparent instead of rendering as label/color `1`.
 - Repeat with `async_slicing=False` to confirm no behavior change.
+
+Implementation notes:
+
+- The isolated helper, adapter call site, and object-classification call site
+  already exist.
+- `viewer.labels_async.sync_labels_display_after_colormap_change(...)` now
+  ignores `viewer._layer_slicer` for the actual recomputation and calls
+  `layer.set_view_slice()`, then emits `layer.events.colormap()`, followed by
+  `layer.events.set_data()`. It does not refresh thumbnail/highlight state,
+  because those are unrelated to the async labels colormap synchronization bug.
+- Headless verification on
+  `/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium_full_data_core.zarr`
+  confirmed that the object-classification `user_class` repaint under async
+  slicing leaves `layer._slice.empty == False`, a real `uint32` raw slice, a
+  `uint8` texture-code view, and
+  `layer._slice.image.view == layer.colormap._data_to_texture(layer._slice.image.raw)`.
+- Sparse user-class annotation updates still use their existing
+  `refresh(extent=False)` path and should not use this helper.
 
 ### Slice 9: Optional Sorted-Index Fast Path For Compact Mapping
 
