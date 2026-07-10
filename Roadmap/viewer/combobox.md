@@ -24,17 +24,25 @@ First implementation slice:
 
 - Labels color source field for table-backed `obs` and `vars` coloring.
 - Shapes color source field for table-backed `obs` and `vars` coloring.
+- Shapes color source field for direct shapes-column coloring.
 
 Explicitly out of scope for the first slice:
 
 - Points `Values` field.
-- Shapes-column coloring behavior, unless it is naturally affected by a shared helper.
 
 The points `Values` field has the same UX problem, but it should be handled in a follow-up slice after the obs/vars coloring behavior is settled.
 
-## Slice 1: Labels/Shapes Table-Backed Obs/Vars
+## Slice 1: Labels/Shapes Color Source Popup
 
-Goal: make the labels and shapes table-backed `obs` / `vars` color-source fields behave like browseable searchable popups, without preselecting the first available source.
+Status: implemented on 2026-07-10.
+
+Verification:
+
+- `.venv/bin/pytest tests/test_viewer_widget.py`
+- `.venv/bin/pytest tests/test_shared_styles.py`
+- `.venv/bin/ruff check src/napari_harpy/widgets/shared_styles.py src/napari_harpy/widgets/viewer/labels_widget.py src/napari_harpy/widgets/viewer/shapes_widget.py tests/test_viewer_widget.py`
+
+Goal: make the labels and shapes color-source fields behave like browseable searchable popups, without preselecting the first available source.
 
 Target files:
 
@@ -47,6 +55,7 @@ In scope:
 
 - labels `Observations`
 - labels `Vars`
+- shapes `Shapes column`
 - shapes `Observations`
 - shapes `Vars`
 
@@ -54,11 +63,10 @@ Out of scope:
 
 - points `Values`
 - primary labels/shapes loading with no color source
-- direct shapes-column coloring, except where a shared helper affects the same input widget without changing its source-selection semantics
 
 Required behavior:
 
-- Selecting `Observations` or `Vars` must not automatically put the first available value into the line edit.
+- Selecting `Shapes column`, `Observations`, or `Vars` must not automatically put the first available value into the line edit.
 - With no explicit selected source, the value line edit must remain empty and show a placeholder.
 - Clicking or focusing the empty line edit must open the completer popup with an empty prefix.
 - The popup must show at most 10 visible rows.
@@ -73,6 +81,7 @@ Required behavior:
 
 Placeholder text:
 
+- Shapes column: `Select column`
 - Obs: `Select obs column`
 - Vars: `Select var`
 
@@ -80,6 +89,7 @@ Action hint behavior:
 
 - Empty obs field with available options: prompt the user to select an observation column.
 - Empty vars field with available options: prompt the user to select a var.
+- Empty shapes-column field with available options: prompt the user to select a shapes column.
 - Empty obs/vars field with no available options: keep the existing no-options messages.
 - The action hint must not claim that an overlay/styled layer will be created for the first source until the user has actually selected or typed a valid source.
 
@@ -141,23 +151,25 @@ Desired behavior:
 - On focus/click with an empty field, open the completer with an empty prefix.
 - The popup should then show the first available names, capped to 10 visible rows and scrollable.
 - Typing should replace the empty state with a normal filtered search.
-- The action hint should treat an empty field as "no source selected" and ask the user to select an observation column or var.
+- The action hint should treat an empty field as "no source selected" and ask the user to select a shapes column, observation column, or var.
 
 Selection preservation:
 
 - If the user explicitly selected a source and the widget refreshes, preserve that source when it is still valid.
 - If the preserved source is no longer valid, clear the field and return to the placeholder empty state.
-- If the source kind changes between `Observations` and `Vars`, clear the field unless there is a valid explicit selection for the new kind.
+- If the source kind changes between `Shapes column`, `Observations`, and `Vars`, clear the field unless there is a valid explicit selection for the new kind.
 
 Recommended placeholder text:
 
+- Shapes column: `Select column`
 - Obs: `Select obs column`
 - Vars: `Select var`
 
 Reasoning:
 
 - The text must fit inside the compact viewer card.
-- `Select` keeps the obs and vars placeholders visually consistent.
+- `Select` keeps the shape, obs, and vars placeholders visually consistent.
+- `Select column` fits the direct shapes-column list while the adjacent label supplies the shapes context.
 - `Select obs column` fits the smaller, column-like `obs` list without wrapping or clipping.
 - `Select var` fits the potentially large `vars` list and keeps the field visually clean.
 - The click-to-browse affordance should come from the field behavior and tests, not from long placeholder text.
