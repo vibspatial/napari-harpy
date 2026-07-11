@@ -191,6 +191,73 @@ The comment above the validation states that immediate rejection keeps
 triangulation. In practice, the native generator has already written and
 triangulated that intermediate state before the validation runs.
 
+## Required New Execution Order
+
+The primary fix is to reverse that ordering for guarded polygon vertex moves.
+This is a design requirement, not an optional optimization:
+
+> Napari's native polygon vertex-write step must not execute before Harpy has
+> constructed, synchronized, and validated the complete candidate row.
+
+The current order is:
+
+```text
+napari moves only the selected raw vertex
+    -> napari writes the temporarily unsynchronized row
+    -> napari triangulates the row
+    -> Harpy synchronizes anchor aliases
+    -> Harpy validates the synchronized candidate
+```
+
+The required order is:
+
+```text
+Harpy reads the cursor coordinate
+    -> Harpy copies the latest accepted row
+    -> Harpy moves the selected vertex and every synchronized alias in memory
+    -> Harpy validates the complete candidate
+        -> invalid: do not write anything; keep the latest accepted row
+        -> valid: attempt to apply the complete row once with
+           `_data_view.edit(...)`
+            -> napari triangulation succeeds:
+                accept the candidate as the new `last_valid_vertices`
+            -> napari triangulation fails:
+                restore the previous `last_valid_vertices`
+                restore napari interaction state
+                warn that the mouse move was rejected
+                keep the annotation session editable
+                -> restoring the previous row also fails:
+                    preserve and report both failures
+                    mark the annotation session as unsafe
+                    block saving and further editing
+                    require the user to discard and reload the session
+```
+
+For the reproduced drag, vertices 34 and 39 must therefore both receive the
+new coordinate in the in-memory candidate before the first
+`_data_view.edit(...)` call. Harpy then detects that the synchronized hole is
+not contained by the shell and rejects the move without changing `layer.data`.
+VisPy never receives the transient open-ring row.
+
+The current `next(direct_drag)` wrapper cannot provide this ordering because
+napari calculates, writes, and triangulates the mouse-move candidate entirely
+inside that call. The guarded polygon mouse-move path must therefore prevent or
+replace that native write step. Harpy may still reproduce the relevant napari
+press, release, selection, highlight, thumbnail, and data-event behavior, but
+it must own candidate construction and the decision to write.
+
+`_data_view.edit(...)` is not internally atomic: napari stores the candidate
+before it triangulates, and it does not restore the previous row if
+triangulation raises. Harpy must therefore make the overall attempted write
+transactional by retaining the previous accepted row until the write and
+triangulation both succeed.
+
+Exception-safe rollback remains mandatory, but it is a secondary safety net.
+It protects against a rendering backend raising while applying a candidate that
+Harpy already considers valid. Catching the current exception and restoring the
+row without changing the write-before-validation ordering would improve
+recovery, but would not remove the root transient-invalid-state bug.
+
 ## Why Napari Retains the Invalid Row
 
 Napari's polygon data setter performs these operations in this order:
@@ -348,11 +415,14 @@ Missing coverage includes:
 ## Recommended Repair Direction
 
 The repair should have both a preventative path and an exception-safety path.
+The preventative path defines the required normal execution order and is the
+primary correctness fix. Exception recovery supplements it; exception recovery
+alone is not the completed fix.
 
-### 1. Validate Before Native Triangulation
+### 1. Prevalidate and Apply Polygon Moves Transactionally
 
-For guarded polygon vertex moves, derive the candidate coordinate from the
-mouse event before delegating the write to napari.
+For guarded polygon vertex moves, Harpy must derive the candidate coordinate
+from the mouse event before napari performs any vertex write or triangulation.
 
 For a synchronized anchor group:
 
@@ -360,7 +430,11 @@ For a synchronized anchor group:
 2. write the new coordinate to every alias in the group;
 3. convert and validate the synchronized candidate through Harpy;
 4. reject invalid geometry without applying it;
-5. apply the valid candidate atomically with one `_data_view.edit(...)` call.
+5. attempt to apply the valid candidate with one `_data_view.edit(...)` call,
+   retaining the previous accepted row until editing and triangulation finish;
+6. accept it as the new `last_valid_vertices` only after that call succeeds;
+7. if the call raises, restore the previous row and interaction state instead
+   of accepting the candidate.
 
 This prevents the triangulator from ever seeing an open hole ring.
 
@@ -369,15 +443,18 @@ Even without duplicated anchors, a self-intersecting or nearly degenerate
 candidate may cause a rendering backend to raise before a post-edit validator
 can roll it back.
 
-Implementing this may require a Harpy-owned direct vertex-move path rather than
-wrapping napari's native generator after the fact. The current wrapper cannot
-pre-validate a candidate that napari computes and writes entirely inside
-`next(direct_drag)`.
+Implementing this requires preventing or replacing napari's native polygon
+mouse-move write. A post-edit wrapper is insufficient: the current wrapper
+cannot prevalidate a candidate that napari computes, writes, and triangulates
+entirely inside `next(direct_drag)`.
 
 ### 2. Add Exception-Safe Rollback
 
-Calls that advance the native direct-drag generator should treat rendering
-errors as recoverable edit failures when a valid cached baseline exists.
+The single attempted `_data_view.edit(...)` that applies an accepted candidate
+must be wrapped as a Harpy-managed transaction. Rendering errors should be
+treated as recoverable edit failures when a valid cached baseline exists. Any
+native direct-drag calls retained for non-polygon paths need equivalent
+exception safety.
 
 On failure, the guard should:
 
@@ -389,12 +466,22 @@ On failure, the guard should:
 6. leave the annotation layer editable;
 7. avoid reporting the invalid candidate as a completed data change.
 
-This fallback remains necessary even after pre-validation because rendering
-backends can fail on input that is geometrically valid according to Shapely.
+This fallback remains necessary because rendering backends can fail on input
+that is geometrically valid according to Shapely. It must not be used as a
+substitute for prevalidation: invalid polygon candidates should normally be
+rejected without calling `_data_view.edit(...)` at all.
 
-The rollback itself can also theoretically raise. Recovery code should avoid
-masking the original exception and should define a final fallback, such as
-rebuilding the affected row or layer from the cached valid data.
+The rollback itself can also theoretically raise. Harpy should not attempt a
+speculative automatic row or layer rebuild in that situation: rebuilding may
+invoke the same failing triangulation again and risks disturbing features,
+styles, selection, and other layer state.
+
+If restoration fails, Harpy can no longer guarantee that `layer.data` is safe.
+It should fail loudly by preserving and reporting both the original candidate
+write failure and the restoration failure, marking the annotation session as
+unsafe, blocking saving and further editing, and requiring the user to discard
+and reload the session. It must not emit a successful completed-edit event or
+allow the possibly malformed candidate to be saved.
 
 ### 3. Consider Edge-Only Rendering for Editable Polygons
 
@@ -419,7 +506,10 @@ Add a focused test derived from the saved artifact:
 - start from the reconstructed valid pre-drag row;
 - move only vertex 39 to `Q'` through the guarded drag path;
 - demonstrate that the native Numba/VisPy operation raises without the fix;
-- assert that the fixed guard restores the original valid row;
+- assert that the fixed guard synchronizes vertices 34 and 39 in memory before
+  validation;
+- assert that the invalid synchronized candidate is rejected without calling
+  `_data_view.edit(...)` and without mutating the layer row;
 - assert synchronized aliases and reset interaction state;
 - assert that a second drag can start and finish normally.
 
@@ -427,30 +517,40 @@ The fixture should be hardcoded or derived from the existing
 `POLYGON_WITH_HOLES_TRIANGULATION_FIXTURE_1`; it should not depend on the
 temporary failure file or the full Zarr store.
 
-### Slice 2: Exception Recovery
-
-Make the current wrapper transactional around native generator advancement:
-
-- retain the captured baseline until the gesture is completely cleaned up;
-- catch native edit/rendering exceptions;
-- restore the baseline and napari interaction state;
-- warn once for the failed gesture;
-- test both recovery and continued editability.
-
-This is the smallest change that directly addresses the current unrecoverable
-state.
-
-### Slice 3: Prevalidated Atomic Moves
+### Slice 2: Prevalidated Transactional Polygon Moves
 
 Move guarded polygon candidate construction ahead of napari's data write:
 
+- prevent the native polygon mouse-move branch from writing first;
+- derive the candidate coordinate from the mouse event;
 - synchronize all anchor aliases in memory;
 - validate the complete intended candidate;
 - write only accepted candidates;
-- preserve napari's expected data-event contract.
+- preserve napari's expected press, release, selection, highlight, thumbnail,
+  and data-event contract.
 
-This removes the root transient-invalid-state window rather than relying only
-on catching triangulation errors.
+This is the primary correctness fix. It removes the root
+transient-invalid-state window rather than relying on catching triangulation
+errors after napari has already stored malformed data.
+
+### Slice 3: Exception Recovery Safety Net
+
+Complete the transactional application of an accepted polygon candidate:
+
+- retain the last accepted baseline until the gesture is completely cleaned
+  up;
+- catch edit or rendering exceptions from the attempted write;
+- restore the baseline and napari interaction state;
+- warn once for the failed gesture;
+- test both recovery and continued editability;
+- use a separate test in which a candidate passes Harpy validation but the
+  rendering write is forced to raise;
+- use a separate restoration-failure test that asserts both errors are
+  retained, saving and editing are blocked, and discard/reload is required.
+
+This slice handles unexpected backend failures. It is mandatory defense in
+depth, but it does not replace Slice 2 and must not reintroduce native
+write-before-validation behavior.
 
 ### Slice 4: Integrate With Rendering Strategy
 
@@ -470,11 +570,14 @@ The issue can be considered fixed when:
 - the last valid vertices are restored when rendering raises;
 - duplicated shell and hole anchors remain synchronized after every accepted
   move;
-- invalid candidates are rejected before they reach face triangulation where
-  practical;
+- every guarded polygon direct-vertex candidate is synchronized and validated
+  before it can reach face triangulation;
 - `_moving_value`, `_is_moving`, drag coordinates, selection, and highlight
   state are usable after rejection;
-- the user can continue editing without discarding the annotation session;
+- after a successful baseline restoration, the user can continue editing
+  without discarding the annotation session;
+- if baseline restoration itself fails, both errors are reported, the unsafe
+  session cannot be saved or edited further, and discard/reload is required;
 - no invalid candidate is saved or emitted as a completed edit;
 - Numba remains the required safe Harpy Shapes backend;
 - existing Bermuda mesh-correctness regression coverage remains intact;
@@ -484,5 +587,7 @@ The issue can be considered fixed when:
 
 No source code, tests, or SpatialData elements were modified as part of the
 investigation. This report does not select the final private napari integration
-mechanism, because the choice depends on whether exception recovery is shipped
-alone or together with the broader edge-only editable-polygon work.
+mechanism. That choice may depend on whether the prevalidated transactional
+move path is implemented on the existing filled model or together with the
+broader edge-only editable-polygon work. Exception recovery alone is explicitly
+not the completed fix.
