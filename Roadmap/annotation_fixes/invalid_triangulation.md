@@ -258,6 +258,71 @@ Harpy already considers valid. Catching the current exception and restoring the
 row without changing the write-before-validation ordering would improve
 recovery, but would not remove the root transient-invalid-state bug.
 
+## Existing `last_valid_vertices` and Its New Role
+
+The proposed fix does not introduce a second last-valid-row mechanism. Harpy
+already stores the complete most recently valid polygon row in
+`_PolygonVertexDragState.last_valid_vertices`. This field was introduced with
+the current direct-drag validation guard.
+
+The existing lifecycle is:
+
+1. On mouse press, Harpy copies the current polygon row.
+2. Harpy verifies that the copied row converts to a valid Shapely polygon.
+3. The copy becomes the initial `last_valid_vertices` for this drag gesture.
+4. Napari applies and triangulates each mouse-move candidate first.
+5. If control returns to Harpy, Harpy synchronizes aliases and validates the
+   resulting candidate.
+6. If validation fails, Harpy rewrites `last_valid_vertices` to the layer.
+7. If validation succeeds, the candidate replaces `last_valid_vertices` as the
+   latest valid rollback point.
+8. The per-drag state is discarded when the gesture finishes.
+
+This already supports rollback to the latest valid position rather than only
+to the position at mouse press. For example, if one mouse move is valid and the
+next is invalid, the current guard restores the first move.
+
+The limitation is not the absence of a valid baseline. The limitation is that
+napari writes and triangulates inside `next(direct_drag)` before Harpy can use
+that baseline. If triangulation raises, control never reaches the current
+validation or restoration code even though `last_valid_vertices` is available.
+
+The new lifecycle should reuse the same field as follows:
+
+1. On mouse press, capture and validate the initial row as today.
+2. For each mouse move, construct the candidate from
+   `last_valid_vertices`, not from a row that napari has already mutated.
+3. Change the selected vertex and all synchronized aliases only in that
+   in-memory candidate.
+4. Validate the complete candidate before any layer write.
+5. If it is invalid, leave both `layer.data` and `last_valid_vertices`
+   unchanged.
+6. If it is valid, retain `last_valid_vertices` unchanged while attempting the
+   single `_data_view.edit(...)` and its triangulation.
+7. Only after that attempted write succeeds, replace `last_valid_vertices`
+   with a defensive copy of the accepted candidate.
+8. If the attempted write raises, use the still-unchanged
+   `last_valid_vertices` as the restoration baseline.
+
+The distinction is therefore:
+
+```text
+Current:
+napari writes and triangulates first
+    -> Harpy may later use `last_valid_vertices` to roll back
+
+Required:
+Harpy starts from `last_valid_vertices`
+    -> constructs, synchronizes, and validates before any write
+    -> retains the baseline throughout the attempted write and triangulation
+    -> advances the baseline only after complete success
+```
+
+The name remains accurate because it contains the complete latest valid row,
+not one individual vertex. A future rename to `last_accepted_vertices` could
+emphasize that the planned baseline has passed both Harpy validation and napari
+triangulation, but such a rename is optional and is not required for the fix.
+
 ## Why Napari Retains the Invalid Row
 
 Napari's polygon data setter performs these operations in this order:
