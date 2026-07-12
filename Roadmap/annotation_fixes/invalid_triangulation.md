@@ -246,12 +246,11 @@ new coordinate in the in-memory candidate before the first
 not contained by the shell and rejects the move without changing `layer.data`.
 VisPy never receives the transient open-ring row.
 
-The current `next(direct_drag)` wrapper cannot provide this ordering because
-napari calculates, writes, and triangulates the mouse-move candidate entirely
-inside that call. The guarded polygon mouse-move path must therefore prevent or
-replace that native write step. Harpy may still reproduce the relevant napari
-press, release, selection, highlight, thumbnail, and data-event behavior, but
-it must own candidate construction and the decision to write.
+The current wrapper can safely advance `direct_drag` once for native press
+setup, because napari yields before its mouse-move mutation. It must not advance
+that native generator a second time for a guarded polygon gesture: napari would
+then calculate, write, and triangulate the candidate inside that call. The
+chosen integration boundary is specified below.
 
 `_data_view.edit(...)` is not internally atomic: napari stores the candidate
 before it triangulates, and it does not restore the previous row if
@@ -264,6 +263,113 @@ It protects against a rendering backend raising while applying a candidate that
 Harpy already considers valid. Catching the current exception and restoring the
 row without changing the write-before-validation ordering would improve
 recovery, but would not remove the root transient-invalid-state bug.
+
+## Chosen Direct-Drag Integration: Native Press, Harpy Move and Release
+
+The movement implementation uses the existing wrapper as a hybrid generator.
+Harpy advances napari's native direct generator exactly once:
+
+```text
+call native generator once
+    -> napari performs hit testing and press setup
+    -> napari populates `_moving_value`
+    -> napari initializes selection, highlight, and `_drag_start`
+    -> napari yields before moving or triangulating any vertex
+```
+
+Harpy then classifies the gesture:
+
+```text
+DELEGATE
+    non-polygon, non-vertex, or other native interaction
+    -> continue forwarding move and release events to the native generator
+
+GUARD
+    valid widget-owned polygon vertex
+    -> keep the native generator suspended after its press yield
+    -> Harpy owns all moves, writes, recovery, events, and release cleanup
+
+REJECT
+    widget-owned polygon vertex whose starting row is malformed or invalid
+    -> do not delegate to napari's unvalidated move path
+    -> consume the gesture without geometry mutation
+    -> warn and perform Harpy-owned release cleanup
+```
+
+The current `state | None` capture result is too ambiguous for this routing,
+because `None` can mean either "delegate this interaction" or "this polygon is
+unsafe to edit." The implementation needs an equally small but explicit
+three-way result. This distinction is required safety behavior, not a general
+gesture framework.
+
+For `GUARD`, the native generator remains suspended for the rest of the
+gesture. On each mouse move, Harpy constructs and validates the candidate and
+performs the transactional write described above. Harpy must never call
+`next(native_drag)` for a guarded move.
+
+On release, Harpy owns only the behavior required for a polygon-vertex gesture:
+
+- emit one completed `ActionType.CHANGED` event if the gesture has an accepted
+  state to report;
+- emit no completed event if every candidate was rejected;
+- reset `_is_moving`, `_drag_start`, `_drag_box`, `_fixed_vertex`, and
+  `_moving_value`;
+- restore highlight state;
+- update the thumbnail only if a mutation was committed;
+- call the annotation drag-finished callback.
+
+The suspended native generator should be closed in `finally` before Harpy's
+final state normalization. If a future napari generator adds cleanup on close,
+Harpy's normalization remains the final authority.
+
+If earlier moves succeeded and a later candidate fails but the last accepted
+row is restored successfully, the gesture still has a completed change to
+report. The event rule is:
+
+```text
+no accepted move
+    -> no `CHANGED`
+
+one or more accepted moves, followed only by rejected geometry
+    -> `CHANGED` on release for the surviving last accepted row
+
+one or more accepted moves, followed by a rendering failure and successful
+restoration
+    -> `CHANGED` when the gesture finishes for the restored last accepted row
+
+restoration failure and unsafe session
+    -> no successful `CHANGED`
+```
+
+### Required Napari Compatibility Contract
+
+The hybrid design depends on one precise private napari contract:
+
+> The first `next(select_generator)` performs press setup and yields before
+> mutating polygon coordinates, calling `_data_view.edit(...)`, triangulating,
+> or emitting a data-change event.
+
+Slice 1 must verify this against napari's actual `Mode.DIRECT` callback, not a
+Harpy fake. If a future napari version violates the contract, the compatibility
+test must fail clearly rather than silently reintroducing
+write-before-validation behavior.
+
+### Deliberate Minimal Scope
+
+This movement work should not introduce:
+
+- a copied or forked implementation of napari's complete `select(...)`
+  generator;
+- a generic mouse-gesture framework;
+- a broad napari-version abstraction layer;
+- speculative automatic layer rebuilding after restoration failure;
+- insertion-specific routing before the insertion slices;
+- edge-only rendering changes as part of the movement fix.
+
+The justified additions are limited to explicit gesture routing, the existing
+per-drag state extended with accepted-move state, one guarded candidate/apply
+path, one guarded release/cleanup path, and the shared transaction recovery
+needed by the roadmap.
 
 ## Existing `last_valid_vertices` and Its New Role
 
@@ -664,6 +770,8 @@ is no annotation-widget insertion routing or widget-level insertion test.
 
 Missing movement and deletion coverage for Slices 1–4 includes:
 
+- the real-napari first-`next(...)` press-before-mutation compatibility
+  contract;
 - the exact near-coincident duplicated-hole-anchor regression;
 - a native triangulation exception before post-edit movement validation;
 - simple-polygon deletion that would create invalid geometry;
@@ -709,10 +817,12 @@ Even without duplicated anchors, a self-intersecting or nearly degenerate
 candidate may cause a rendering backend to raise before a post-edit validator
 can roll it back.
 
-Implementing this requires preventing or replacing napari's native polygon
-mouse-move write. A post-edit wrapper is insufficient: the current wrapper
-cannot prevalidate a candidate that napari computes, writes, and triangulates
-entirely inside `next(direct_drag)`.
+Implement this through the chosen hybrid generator boundary: advance napari's
+native direct generator once for press setup, then keep it suspended and let
+Harpy own move and release for `GUARD` and `REJECT`. A post-edit forwarding
+wrapper is insufficient because advancing the native generator a second time
+would compute, write, and triangulate the candidate before Harpy can validate
+it. `DELEGATE` interactions continue through the native generator unchanged.
 
 ### 2. Prevalidate All Polygon Vertex Deletions
 
@@ -818,6 +928,14 @@ Add focused failing regressions before changing the interaction code.
 
 For direct movement:
 
+- add a compatibility test against napari's actual `Mode.DIRECT` callback;
+- construct its real `select(...)` generator and advance it exactly once for a
+  polygon-vertex press;
+- assert that this first advancement populates the expected `_moving_value`,
+  initializes `_drag_start`, establishes selection/highlight state, and yields;
+- assert that `layer.data` remains byte-for-byte unchanged, `_is_moving` remains
+  false, `_data_view.edit(...)` is not called, no triangulation occurs, and no
+  data-change event is emitted before that first yield;
 - start from the reconstructed valid pre-drag row;
 - move only vertex 39 to `Q'` through the guarded drag path;
 - demonstrate that the native Numba/VisPy operation raises without the fix;
@@ -846,9 +964,16 @@ For deletion:
 
 ### Slice 2: Prevalidated Transactional Polygon Moves
 
-Move guarded polygon candidate construction ahead of napari's native write:
+Implement the chosen native-press/Harpy-move hybrid without copying napari's
+complete `select(...)` generator:
 
-- prevent the native polygon mouse-move branch from writing first;
+- call the native generator exactly once and let it yield after press setup;
+- classify the resulting press state as `DELEGATE`, `GUARD`, or `REJECT`;
+- continue forwarding the suspended generator normally only for `DELEGATE`;
+- never advance the native generator into its move section for `GUARD` or
+  `REJECT`;
+- consume `REJECT` moves without mutation and perform Harpy-owned cleanup;
+- for `GUARD`, move polygon candidate construction ahead of every live write;
 - derive the candidate coordinate from the mouse event;
 - construct it from `last_valid_vertices`;
 - synchronize all anchor aliases in memory;
@@ -856,11 +981,20 @@ Move guarded polygon candidate construction ahead of napari's native write:
 - leave the live row unchanged for rejected candidates;
 - attempt one write only for accepted candidates;
 - advance `last_valid_vertices` only after editing and triangulation succeed;
-- preserve napari's press, release, selection, highlight, thumbnail, and
-  data-event contract.
+- on release, emit `ActionType.CHANGED` only when an accepted state survives;
+- emit a completed event for earlier accepted moves when a later candidate
+  fails but restoration to the last accepted row succeeds;
+- emit no successful completed event when restoration fails and the session is
+  unsafe;
+- close the suspended native generator in `finally`, then normalize Harpy-owned
+  interaction state;
+- preserve napari's selection, highlight, thumbnail, and data-event contract
+  for the guarded polygon-vertex gesture.
 
 This removes the original transient-open-ring window. It applies to ordinary
-and anchor vertices in both simple and hole-bearing polygons.
+and anchor vertices in both simple and hole-bearing polygons. It deliberately
+does not introduce a copied native generator, a generic gesture framework, or
+insertion/edge-only behavior ahead of their later slices.
 
 ### Slice 3: Guard Every Polygon Vertex Deletion
 
@@ -984,6 +1118,11 @@ shared polygon mutation safety invariant.
 
 The first delivery phase is complete when:
 
+- a real-napari compatibility test proves that the first advancement of the
+  native direct generator yields after press setup and before mutation,
+  `_data_view.edit(...)`, triangulation, or data-change emission;
+- `DELEGATE`, `GUARD`, and `REJECT` take the specified native or Harpy-owned
+  gesture paths without a copied full `select(...)` implementation;
 - reproducing the exact vertex-39 movement does not leave an invalid row;
 - duplicated shell and hole anchors remain synchronized after every accepted
   move;
