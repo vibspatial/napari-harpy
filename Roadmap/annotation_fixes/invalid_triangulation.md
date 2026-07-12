@@ -922,45 +922,72 @@ hit-testing invariants.
 Slices 1–4 form the first delivery phase and cover direct movement plus vertex
 deletion. Insertion is deliberately handled afterward in Slices 5–7.
 
-### Slice 1: Movement and Deletion Regression Coverage
+### Slice 1: Passing Characterizations and Reusable Regression Fixtures
 
-Add focused failing regressions before changing the interaction code.
+Slice 1 changes tests and test data only. It introduces no production-code
+changes, no `xfail` tests, and no assertions that describe behavior which only
+exists after Slices 2–4. The focused suite must remain green at the end of the
+slice.
 
-For direct movement:
+Build the smallest useful set of reusable, hardcoded fixtures:
 
-- add a compatibility test against napari's actual `Mode.DIRECT` callback;
-- construct its real `select(...)` generator and advance it exactly once for a
-  polygon-vertex press;
+- retain `POLYGON_WITH_HOLES_TRIANGULATION_FIXTURE_1` as the source for the
+  movement regression, or extract a clearly named shared fixture from it;
+- store the valid pre-drag encoded row, the duplicated-anchor indices 34 and
+  39, their accepted coordinate, and the failing target coordinate `Q'`
+  explicitly enough that later tests do not reconstruct them from the
+  temporary failure file or the full Zarr store;
+- add one clearly named valid concave simple-polygon row for which native
+  deletion of a specified vertex produces a Shapely-invalid shortened row;
+- use a controlled vertex hit in the deletion characterization so the result
+  does not depend on napari's display-scale-dependent vertex hit radius;
+- run the movement characterization explicitly with the Numba backend and
+  restore both the settings and runtime backend afterward; reuse existing
+  backend-restoration support instead of adding another local variant;
+- reuse the existing hole-bearing deletion fixtures where they already express
+  the needed topology and state; move a fixture into shared test infrastructure
+  only when more than one test module actually needs it;
+- add only narrow event, generator-cleanup, or state-capture helpers needed by
+  these tests. Do not introduce a generic gesture-testing framework.
+
+Add a passing native press-contract test against napari's actual
+`Mode.DIRECT` callback:
+
+- construct its real `select(...)` generator for a polygon-vertex press and
+  advance it exactly once;
 - assert that this first advancement populates the expected `_moving_value`,
   initializes `_drag_start`, establishes selection/highlight state, and yields;
 - assert that `layer.data` remains byte-for-byte unchanged, `_is_moving` remains
   false, `_data_view.edit(...)` is not called, no triangulation occurs, and no
   data-change event is emitted before that first yield;
-- start from the reconstructed valid pre-drag row;
-- move only vertex 39 to `Q'` through the guarded drag path;
-- demonstrate that the native Numba/VisPy operation raises without the fix;
-- require the fixed path to synchronize vertices 34 and 39 in memory before
-  validation;
-- require the invalid synchronized candidate to be rejected without calling
-  `_data_view.edit(...)` or mutating the live row;
-- verify reset interaction state and a subsequent successful drag.
+- close the generator and dispose of the test layer without leaking native
+  interaction state.
 
-The movement fixture should be hardcoded or derived from
-`POLYGON_WITH_HOLES_TRIANGULATION_FIXTURE_1`; it must not depend on the
-temporary failure file or the full Zarr store.
+Add passing characterizations of the two broken native behaviors which justify
+the later guards:
 
-For deletion:
+- exercise the original napari direct callback with the hardcoded
+  near-coincident anchor regression, move only raw vertex 39 to `Q'`, and
+  assert the currently observed native Numba/VisPy triangulation exception and
+  its transient unsynchronized row state;
+- exercise native simple-polygon deletion with the hardcoded concave fixture,
+  assert that napari reports no error, and assert that Harpy/Shapely rejects
+  the shortened row which napari accepted;
+- call the original native callbacks directly in these characterizations so
+  the tests continue to document napari's behavior after Harpy's wrappers are
+  fixed.
 
-- add a valid concave simple polygon where native deletion produces an invalid
-  result, and require rejection without mutation or data events;
-- retain the current successful hole-bearing ordinary, shell-anchor,
-  hole-anchor, and minimal-hole deletion cases;
-- add an invalid hole-bearing deletion candidate and verify that helper failure
-  leaves data, features, styles, selection, mode, and events unchanged;
-- add a forced rendering failure during a valid deletion rebuild and capture
-  the expected pre-fix partial-state problem;
-- define explicit coverage for deliberate whole-shape removal when too few
-  polygon vertices remain.
+Do not duplicate existing tests merely to collect them under this slice. Keep
+the current successful hole-bearing deletion and helper-rejection tests where
+they are, and add a new test only for a contract or regression that is not
+already covered. Widget-level fixed-behavior assertions belong to Slices 2–4:
+
+- synchronized prevalidation, rejection without a live write, interaction
+  cleanup, and a subsequent successful drag belong to Slice 2;
+- rejection of an invalid simple-polygon deletion and precise whole-shape or
+  minimal-hole semantics belong to Slice 3;
+- forced rendering failures, complete restoration, continued editing after
+  recovery, and restoration-failure handling belong to Slice 4.
 
 ### Slice 2: Prevalidated Transactional Polygon Moves
 
@@ -991,6 +1018,16 @@ complete `select(...)` generator:
 - preserve napari's selection, highlight, thumbnail, and data-event contract
   for the guarded polygon-vertex gesture.
 
+Use the Slice 1 movement fixture to verify the completed widget path:
+
+- moving raw vertex 39 constructs a candidate in which indices 34 and 39 are
+  synchronized before validation;
+- the invalid synchronized candidate is rejected without calling
+  `_data_view.edit(...)`, triangulating, mutating the live row, or emitting a
+  completed change;
+- Harpy resets its interaction state, closes the suspended native generator,
+  and permits a subsequent valid drag.
+
 This removes the original transient-open-ring window. It applies to ordinary
 and anchor vertices in both simple and hole-bearing polygons. It deliberately
 does not introduce a copied native generator, a generic gesture framework, or
@@ -1015,6 +1052,13 @@ all polygon rows.
 - never fall back to napari's raw polygon deletion for a valid widget-owned
   polygon row.
 
+Use the Slice 1 concave fixture to require that the same deletion rejected by
+Harpy/Shapely is rejected by the completed widget path without mutation or data
+events. Retain the existing hole-bearing cases, and make the intended boundary
+semantics explicit in tests: removing a vertex from a minimal hole removes the
+hole rather than the polygon row, while deleting from a polygon at napari's
+minimum vertex threshold preserves the deliberate whole-shape removal path.
+
 This slice completes normal-path prevalidation for deletion. Rendering-failure
 recovery is completed in Slice 4.
 
@@ -1034,6 +1078,12 @@ deletion candidates.
 - force a restoration failure and assert that both errors are retained, the
   session is marked unsafe, saving and editing are blocked, and discard/reload
   is required.
+
+Force failures during both an accepted movement write and a valid
+row-length-changing deletion rebuild. Verify complete baseline restoration,
+including data, topology, features, styles, selection, mode, highlight, and
+private vertex-cache boundaries, followed by a successful later edit. These
+are recovery tests, not Slice 1 characterizations of the pre-fix partial state.
 
 Coordinate this transaction path with any future edge-only primary polygon
 model:
