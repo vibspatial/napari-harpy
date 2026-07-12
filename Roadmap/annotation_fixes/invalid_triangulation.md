@@ -1,4 +1,4 @@
-# Invalid Polygon Triangulation During Vertex Drag
+# Invalid Polygon State During Vertex Editing
 
 ## Status
 
@@ -59,6 +59,13 @@ explains both the triangulation traceback and the widget's inability to recover.
 The cached pre-drag row can be restored successfully with a low-level edit.
 Discard is therefore not intrinsically required; the current interaction path
 simply has no exception-safe rollback.
+
+Follow-up investigation found related gaps in vertex deletion and insertion.
+The first implementation phase in this roadmap therefore covers the already
+partially guarded direct-move and vertex-delete paths together. Vertex
+insertion follows in a separate phase because the annotation widget does not
+currently guard that mode at all, even though a topology-aware insertion helper
+already exists.
 
 ## Polygon Hole Encoding
 
@@ -446,16 +453,195 @@ corruption. The failed `.npz` artifact represents the transient in-memory row
 that napari attempted to triangulate. The overwrite warning in the original log
 does not by itself establish that this malformed candidate was persisted.
 
+## Related Vertex Mutation Findings
+
+The annotation widget exposes three relevant polygon vertex mutations:
+
+- direct movement through `Mode.DIRECT`;
+- deletion through `Mode.VERTEX_REMOVE`;
+- insertion through `Mode.VERTEX_INSERT`.
+
+They currently have different levels of protection.
+
+### Hole-Bearing Vertex Deletion Is Prevalidated but Not Transactional
+
+The edit guard already wraps `Mode.VERTEX_REMOVE` for hole-bearing polygons.
+It copies the source row and topology, calls
+`delete_napari_polygon_vertex(...)`, and applies the result only if that helper
+returns successfully.
+
+The helper already handles:
+
+- ordinary shell and hole vertices;
+- synchronized shell-anchor aliases;
+- synchronized hole-anchor aliases;
+- removal of a minimal hole;
+- topology index shifts after row shortening;
+- Shapely validation of the complete candidate;
+- comparison of parsed topology with expected topology.
+
+Invalid deletion candidates therefore fail before the live row is mutated.
+This part of the desired design already exists.
+
+The remaining risk is the commit. Deletion shortens the row, and the current
+widget rebuilds `layer.data` to refresh napari's private vertex cache. Napari's
+bulk data setter replaces its existing `_data_view` before it constructs and
+triangulates all replacement shapes. If triangulation raises during that
+rebuild, the old data view has already been discarded and Harpy has no
+transactional restoration path.
+
+### Simple-Polygon Vertex Deletion Is Unguarded
+
+The current delete router deliberately delegates simple polygons to napari
+when no encoded hole topology is present. Napari removes the selected raw
+vertex and writes the shortened row without Shapely validation.
+
+A controlled reproduction started from a valid concave simple polygon,
+deleted one vertex, and observed:
+
+```text
+napari error: none
+resulting row: invalid according to Harpy/Shapely
+```
+
+The first implementation phase must therefore route all polygon deletions
+through Harpy, not only hole-bearing polygons. Simple deletion can construct a
+candidate with `np.delete(...)`, but it must validate that complete candidate
+before committing it. Napari's existing behavior for removing an entire shape
+when too few vertices remain should be preserved deliberately and tested as a
+separate valid operation rather than treated as an invalid polygon candidate.
+
+### Vertex Insertion Is Currently Unguarded
+
+The edit guard does not wrap `Mode.VERTEX_INSERT`. Napari builds its list of
+candidate edges from every consecutive pair in the raw encoded row. For a
+hole-bearing Harpy polygon, that list includes artificial shell-to-hole and
+hole-to-shell bridge edges used only by the flat hole encoding.
+
+A controlled reproduction inserted a vertex at the midpoint of one such
+bridge in a valid one-hole polygon. Napari accepted and rendered the edit
+without raising, but Harpy could no longer decode the resulting row:
+
+```text
+before: 11 encoded vertices and a valid polygon
+after:  12 encoded vertices
+napari error: none
+Harpy error: each hole ring must be closed before the next separator
+```
+
+#### Why Visible Boundary Insertion Currently Appears to Work
+
+Insertion on a genuine shell or hole boundary usually succeeds despite the
+missing widget guard. This does not happen because Harpy updates a persistent
+topology table during insertion. No such persistent table exists on the layer.
+
+Napari inserts the coordinate with `np.insert(...)`. Every raw vertex at or
+after the insertion index therefore moves one array position forward
+automatically. If the selected edge is a real ring edge and the cursor
+coordinate keeps the geometry valid, the repeated shell and hole anchor
+coordinates remain correctly paired; only their integer positions change.
+
+Harpy's `NapariPolygonTopology` is gesture-local. When a later guarded direct
+drag starts, `_capture_polygon_vertex_drag_state(...)` reads the current row and
+calls `napari_polygon_vertices_to_topology(...)` again. The parser finds the
+repeated anchor coordinates in the updated array and reconstructs the new
+synchronization groups from scratch. Later anchor movement therefore uses the
+shifted groups even though insertion itself performed no Harpy topology update.
+
+A one-hole reproduction demonstrated this behavior:
+
+```text
+Before insertion:
+shell anchors = (0, 4, 10)
+hole anchors  = (5, 9)
+
+After insertion on a real shell edge:
+shell anchors = (0, 5, 11)
+hole anchors  = (6, 10)
+
+After insertion on a real hole edge:
+shell anchors = (0, 4, 11)
+hole anchors  = (5, 10)
+```
+
+Both inserted rows were valid, geometrically equal to the source polygon, and
+the next direct-drag capture found exactly the shifted groups shown above.
+Moving a hole anchor after either insertion synchronized the new pair
+successfully.
+
+The current behavior is therefore:
+
+```text
+napari inserts into the raw array
+    -> later raw positions shift implicitly
+    -> no topology is validated during insertion
+    -> a future guarded operation reparses and rediscovers topology
+```
+
+This explains why ordinary visible-edge insertion can appear reliable, but it
+does not make insertion safe. A bridge insertion, ambiguous anchor insertion,
+off-edge cursor coordinate, invalid candidate, or triangulation failure can
+still corrupt the live row before any future reparse occurs.
+
+The planned guarded behavior is deliberately stronger:
+
+```text
+construct the insertion candidate in memory
+    -> calculate the expected shifted topology
+    -> reparse the candidate topology immediately
+    -> require parsed topology to equal expected topology
+    -> validate the complete Shapely polygon
+    -> commit only after all checks succeed
+```
+
+The important change is not merely that indices shift. They already shift
+today. The change is that Harpy verifies the shift, topology grammar, and
+geometry inside the insertion transaction instead of relying on a later
+operation to rediscover whatever napari committed.
+
+Harpy already provides `insert_napari_polygon_vertex(...)`. For hole-bearing
+rows it rejects bridge/separator insertion indices, shifts topology indices,
+validates the resulting Shapely polygon, and verifies the parsed topology.
+However, the annotation widget does not currently call this helper. The helper
+also intentionally rejects simple-polygon topology, so the widget still needs
+a separate candidate-construction and validation path for simple polygons.
+
+Insertion increases row length and therefore has the same private vertex-cache
+and transactional rebuild concerns as deletion. It is specified as a follow-up
+phase after movement and deletion are complete.
+
+## Polygon Mutation Safety Invariant
+
+The shared target invariant for all widget-owned polygon mutations is:
+
+> Starting from a valid polygon, Harpy constructs and validates the complete
+> candidate before mutating the live layer. Applying an accepted candidate is
+> transactional. The mutation either commits a valid, successfully rendered
+> polygon state or leaves the previous accepted state unchanged.
+
+For a failure to restore the previous accepted state, the existing fail-loud
+policy applies: preserve both failures, mark the session unsafe, block saving
+and further editing, and require discard/reload.
+
+Slices 1–4 apply this invariant to direct movement and deletion. The subsequent
+insertion slices extend the same invariant to `Mode.VERTEX_INSERT`.
+
 ## Existing Test Coverage and Gap
 
-The existing direct-drag and triangulation-backend tests pass. The focused run
-completed with:
+The existing direct-drag and triangulation-backend focused run completed with:
 
 ```text
 13 passed
 ```
 
-Current edit-guard tests cover:
+A second focused run covering the standalone insertion/deletion helpers and
+the widget's current vertex-remove route completed with:
+
+```text
+36 passed
+```
+
+Current direct-move tests cover:
 
 - synchronizing shell anchors;
 - synchronizing hole anchors;
@@ -468,14 +654,29 @@ Those rollback tests use invalid candidates that napari happens to triangulate
 successfully. Control returns to Harpy, so the post-edit validator can reject
 and restore them.
 
-Missing coverage includes:
+Current deletion tests cover topology-aware hole-bearing deletion, minimal-hole
+removal, anchor rebuilding, cache rebuilding, style preservation, and helper
+rejection without mutation. They intentionally delegate simple-polygon
+deletion to napari and do not cover a rendering failure during the live commit.
 
-- a native triangulation exception before post-edit validation;
-- restoration of `last_valid_vertices` after that exception;
-- cleanup of napari's private interaction state after an aborted generator;
-- a near-coincident duplicated hole anchor matching the saved regression;
-- continued editing after recovery;
-- ensuring a rejected drag does not emit a successful changed/save state.
+Current insertion tests cover the standalone hole-aware geometry helper. There
+is no annotation-widget insertion routing or widget-level insertion test.
+
+Missing movement and deletion coverage for Slices 1–4 includes:
+
+- the exact near-coincident duplicated-hole-anchor regression;
+- a native triangulation exception before post-edit movement validation;
+- simple-polygon deletion that would create invalid geometry;
+- transactional failure during the row-length-changing deletion rebuild;
+- restoration of row data, topology, features, styles, selection, mode, and
+  private vertex-cache consistency after a failed deletion commit;
+- cleanup of napari's private movement state after an aborted generator;
+- continued editing after successful recovery;
+- fail-loud behavior when baseline restoration itself fails;
+- ensuring a rejected move or deletion emits no successful changed/save state.
+
+Missing insertion coverage is specified separately in the follow-up insertion
+slices below.
 
 ## Recommended Repair Direction
 
@@ -513,23 +714,65 @@ mouse-move write. A post-edit wrapper is insufficient: the current wrapper
 cannot prevalidate a candidate that napari computes, writes, and triangulates
 entirely inside `next(direct_drag)`.
 
-### 2. Add Exception-Safe Rollback
+### 2. Prevalidate All Polygon Vertex Deletions
 
-The single attempted `_data_view.edit(...)` that applies an accepted candidate
+The annotation edit guard must own deletion for every polygon row, rather than
+only for rows with encoded holes.
+
+For a hole-bearing polygon:
+
+1. copy the current row and parse its topology;
+2. construct the candidate with `delete_napari_polygon_vertex(...)`;
+3. rely on the helper to rebuild anchors or remove a minimal hole as needed;
+4. reject helper or Shapely validation errors without mutating the layer;
+5. retain the original row and relevant layer state through the commit.
+
+For a simple polygon:
+
+1. copy the current row;
+2. construct the shortened candidate in memory;
+3. validate the complete candidate through
+   `napari_polygon_vertices_to_shapely_polygon(...)`;
+4. reject invalid geometry without mutating the layer;
+5. preserve napari's deliberate whole-shape removal behavior when too few
+   vertices remain, with explicit tests for that separate operation.
+
+Deletion changes row length. Harpy currently rebuilds `layer.data` to avoid a
+stale private vertex cache, so its transactional baseline must cover more than
+the polygon coordinates. Before committing, retain everything required to
+restore a usable layer:
+
+- all shape rows and shape types;
+- features and row identity;
+- edge and face colors, edge widths, z-indices, and opacity;
+- current draw style;
+- selected rows and active mode;
+- the affected row's topology and expected vertex-cache boundaries.
+
+Candidate validation must finish before emitting `ActionType.CHANGING` or
+replacing live layer data. Emit `ActionType.CHANGED` and the delete-finished
+callback only after the rebuild and triangulation succeed. A rejected or failed
+deletion must not be reported as a completed edit.
+
+### 3. Add Shared Exception-Safe Transaction Handling
+
+The attempted write that applies an accepted movement or deletion candidate
 must be wrapped as a Harpy-managed transaction. Rendering errors should be
 treated as recoverable edit failures when a valid cached baseline exists. Any
-native direct-drag calls retained for non-polygon paths need equivalent
-exception safety.
+native calls retained for non-polygon paths need equivalent exception safety.
 
 On failure, the guard should:
 
-1. restore `last_valid_vertices`;
-2. refresh the row and mesh;
-3. reset napari's drag state consistently;
-4. restore selection/highlight state as needed;
-5. show a user-facing rejected-edit warning;
-6. leave the annotation layer editable;
-7. avoid reporting the invalid candidate as a completed data change.
+1. restore `last_valid_vertices` for movement, or the complete captured layer
+   baseline for a row-length-changing deletion;
+2. refresh the row or rebuilt layer and mesh;
+3. reset napari's interaction state consistently;
+4. restore features, styles, selection, mode, and highlight state as needed;
+5. verify polygon validity, anchor topology, and private vertex-cache
+   boundaries after restoration;
+6. show a user-facing rejected-edit warning;
+7. leave the annotation layer editable;
+8. avoid reporting the candidate as a completed data change.
 
 This fallback remains necessary because rendering backends can fail on input
 that is geometrically valid according to Shapely. It must not be used as a
@@ -548,7 +791,7 @@ unsafe, blocking saving and further editing, and requiring the user to discard
 and reload the session. It must not emit a successful completed-edit event or
 allow the possibly malformed candidate to be saved.
 
-### 3. Consider Edge-Only Rendering for Editable Polygons
+### 4. Consider Edge-Only Rendering for Editable Polygons
 
 The broader proposal in `Roadmap/annotation_fixes/slow_annotation.md` is to use
 hole-aware edge-only rendering for primary editable polygon layers while
@@ -560,89 +803,235 @@ addresses the separate large-polygon performance problem at the same time.
 
 It is, however, a broader architectural change with hit-testing and edge-mesh
 requirements. Exception-safe edit rollback is still valuable even if edge-only
-rendering is adopted.
+rendering is adopted. Row-length-changing deletion rebuilds must also construct
+the same hole-aware edge-only polygon model and preserve its vertex-cache and
+hit-testing invariants.
 
 ## Suggested Implementation Slices
 
-### Slice 1: Exact Regression Test
+Slices 1–4 form the first delivery phase and cover direct movement plus vertex
+deletion. Insertion is deliberately handled afterward in Slices 5–7.
 
-Add a focused test derived from the saved artifact:
+### Slice 1: Movement and Deletion Regression Coverage
+
+Add focused failing regressions before changing the interaction code.
+
+For direct movement:
 
 - start from the reconstructed valid pre-drag row;
 - move only vertex 39 to `Q'` through the guarded drag path;
 - demonstrate that the native Numba/VisPy operation raises without the fix;
-- assert that the fixed guard synchronizes vertices 34 and 39 in memory before
+- require the fixed path to synchronize vertices 34 and 39 in memory before
   validation;
-- assert that the invalid synchronized candidate is rejected without calling
-  `_data_view.edit(...)` and without mutating the layer row;
-- assert synchronized aliases and reset interaction state;
-- assert that a second drag can start and finish normally.
+- require the invalid synchronized candidate to be rejected without calling
+  `_data_view.edit(...)` or mutating the live row;
+- verify reset interaction state and a subsequent successful drag.
 
-The fixture should be hardcoded or derived from the existing
-`POLYGON_WITH_HOLES_TRIANGULATION_FIXTURE_1`; it should not depend on the
+The movement fixture should be hardcoded or derived from
+`POLYGON_WITH_HOLES_TRIANGULATION_FIXTURE_1`; it must not depend on the
 temporary failure file or the full Zarr store.
+
+For deletion:
+
+- add a valid concave simple polygon where native deletion produces an invalid
+  result, and require rejection without mutation or data events;
+- retain the current successful hole-bearing ordinary, shell-anchor,
+  hole-anchor, and minimal-hole deletion cases;
+- add an invalid hole-bearing deletion candidate and verify that helper failure
+  leaves data, features, styles, selection, mode, and events unchanged;
+- add a forced rendering failure during a valid deletion rebuild and capture
+  the expected pre-fix partial-state problem;
+- define explicit coverage for deliberate whole-shape removal when too few
+  polygon vertices remain.
 
 ### Slice 2: Prevalidated Transactional Polygon Moves
 
-Move guarded polygon candidate construction ahead of napari's data write:
+Move guarded polygon candidate construction ahead of napari's native write:
 
 - prevent the native polygon mouse-move branch from writing first;
 - derive the candidate coordinate from the mouse event;
+- construct it from `last_valid_vertices`;
 - synchronize all anchor aliases in memory;
 - validate the complete intended candidate;
-- write only accepted candidates;
-- preserve napari's expected press, release, selection, highlight, thumbnail,
-  and data-event contract.
+- leave the live row unchanged for rejected candidates;
+- attempt one write only for accepted candidates;
+- advance `last_valid_vertices` only after editing and triangulation succeed;
+- preserve napari's press, release, selection, highlight, thumbnail, and
+  data-event contract.
 
-This is the primary correctness fix. It removes the root
-transient-invalid-state window rather than relying on catching triangulation
-errors after napari has already stored malformed data.
+This removes the original transient-open-ring window. It applies to ordinary
+and anchor vertices in both simple and hole-bearing polygons.
 
-### Slice 3: Exception Recovery Safety Net
+### Slice 3: Guard Every Polygon Vertex Deletion
 
-Complete the transactional application of an accepted polygon candidate:
+Extend the existing `Mode.VERTEX_REMOVE` wrapper from hole-bearing polygons to
+all polygon rows.
 
-- retain the last accepted baseline until the gesture is completely cleaned
-  up;
-- catch edit or rendering exceptions from the attempted write;
-- restore the baseline and napari interaction state;
-- warn once for the failed gesture;
-- test both recovery and continued editability;
-- use a separate test in which a candidate passes Harpy validation but the
-  rendering write is forced to raise;
-- use a separate restoration-failure test that asserts both errors are
-  retained, saving and editing are blocked, and discard/reload is required.
+- capture the source row and the complete restorable layer state before
+  mutation;
+- use `delete_napari_polygon_vertex(...)` for hole-bearing rows;
+- construct and Shapely-validate simple-polygon deletion candidates in memory;
+- preserve intentional whole-shape removal at the minimum vertex count;
+- reject invalid candidates before emitting `ActionType.CHANGING`;
+- rebuild row-length-changing accepted candidates while preserving features,
+  identity, styles, opacity, selection, mode, and current draw defaults;
+- verify the rebuilt private vertex cache and hit-test indices;
+- emit `ActionType.CHANGED` and the delete-finished callback only after the
+  complete commit succeeds;
+- never fall back to napari's raw polygon deletion for a valid widget-owned
+  polygon row.
 
-This slice handles unexpected backend failures. It is mandatory defense in
-depth, but it does not replace Slice 2 and must not reintroduce native
-write-before-validation behavior.
+This slice completes normal-path prevalidation for deletion. Rendering-failure
+recovery is completed in Slice 4.
 
-### Slice 4: Integrate With Rendering Strategy
+### Slice 4: Shared Transaction Recovery and Rendering Integration
 
-Coordinate the edit fix with any future edge-only primary polygon model:
+Complete exception-safe transaction handling for accepted movement and
+deletion candidates.
 
-- avoid duplicate implementations of hole topology handling;
+- retain the movement row baseline or deletion layer snapshot until editing,
+  rebuilding, and triangulation all succeed;
+- catch edit, rebuild, and rendering exceptions;
+- restore coordinates plus features, styles, selection, mode, highlight, and
+  private vertex-cache consistency as appropriate;
+- do not emit a completed change for a failed transaction;
+- warn once and keep the session editable after successful restoration;
+- test continued movement and deletion after recovery;
+- force a restoration failure and assert that both errors are retained, the
+  session is marked unsafe, saving and editing are blocked, and discard/reload
+  is required.
+
+Coordinate this transaction path with any future edge-only primary polygon
+model:
+
+- avoid duplicate topology implementations;
+- ensure row rebuilds construct the same editable polygon model;
 - keep save conversion unchanged;
-- verify filled read-only layers and edge-only editable layers consistently
-  reject invalid geometry;
-- retain exception recovery around any remaining mesh updates.
+- verify both filled and edge-only configurations where applicable;
+- retain recovery around all remaining mesh updates.
+
+At the end of Slice 4, direct movement and vertex deletion satisfy the polygon
+mutation safety invariant. Vertex insertion remains explicitly pending.
+
+### Slice 5: Vertex Insertion Regression Coverage and Widget Routing
+
+Add widget-level insertion regressions and install a `Mode.VERTEX_INSERT`
+wrapper in the annotation edit guard.
+
+- reproduce insertion on an artificial shell-to-hole bridge and require
+  rejection without mutation or completed data events;
+- cover successful insertion on real shell and hole ring edges;
+- cover a simple-polygon insertion whose cursor coordinate would make the
+  candidate invalid;
+- verify insertion with multiple holes and topology-index shifts;
+- verify that no-eligible-edge and non-polygon interactions continue to follow
+  napari behavior;
+- ensure attach, repeated attach, layer switching, and disconnect restore the
+  original insertion callback exactly as they do for the existing guarded
+  modes.
+
+This slice establishes routing and failing integration tests. It must not rely
+only on the existing standalone helper tests.
+
+### Slice 6: Prevalidate Simple and Hole-Bearing Insertions
+
+Construct every polygon insertion candidate before mutating the live layer.
+
+For hole-bearing rows:
+
+- parse the current topology;
+- map the chosen raw edge to the proposed insertion index;
+- call `insert_napari_polygon_vertex(...)`;
+- reject artificial bridge or separator edges;
+- validate the returned topology against the expected shifted topology.
+
+For simple polygons:
+
+- insert the cursor coordinate into an in-memory row copy;
+- validate the complete candidate through Shapely;
+- reject invalid geometry without mutation.
+
+For both forms:
+
+- use the actual cursor coordinate rather than assuming it lies on the nearest
+  edge;
+- finish validation before emitting `ActionType.CHANGING`;
+- attempt a live write only for an accepted candidate;
+- never delegate a valid widget-owned polygon row to napari's unvalidated raw
+  insertion path.
+
+### Slice 7: Transactional Insertion Commit and Recovery
+
+Apply accepted insertion candidates with the same row-length-changing
+transaction contract as deletion.
+
+- capture the complete restorable layer state;
+- rebuild the affected row while preserving features, identity, styles,
+  opacity, selection, mode, and current draw defaults;
+- verify topology, private vertex-cache boundaries, and hit testing;
+- emit `ActionType.CHANGED` only after rebuilding and triangulation succeed;
+- restore the complete baseline after an edit, rebuild, or rendering failure;
+- verify continued insertion, movement, and deletion after successful
+  recovery;
+- apply the same fail-loud unsafe-session policy if restoration fails.
+
+At the end of Slice 7, direct movement, deletion, and insertion all satisfy the
+shared polygon mutation safety invariant.
 
 ## Acceptance Criteria
 
-The issue can be considered fixed when:
+### Phase 1: Movement and Deletion, Slices 1–4
+
+The first delivery phase is complete when:
 
 - reproducing the exact vertex-39 movement does not leave an invalid row;
-- the last valid vertices are restored when rendering raises;
 - duplicated shell and hole anchors remain synchronized after every accepted
   move;
 - every guarded polygon direct-vertex candidate is synchronized and validated
   before it can reach face triangulation;
+- invalid simple and hole-bearing deletion candidates leave the live layer and
+  data-event stream unchanged;
+- valid ordinary, anchor, minimal-hole, and whole-shape deletions preserve their
+  intended semantics;
+- every widget-owned polygon deletion is validated before a live write and is
+  never delegated to napari's raw unvalidated deletion path;
+- successful row-length-changing deletion rebuilds preserve features, identity,
+  styles, opacity, selection, mode, current draw defaults, topology, and private
+  vertex-cache consistency;
+- the last accepted movement row or deletion layer snapshot is restored when an
+  accepted mutation fails during editing, rebuilding, or rendering;
 - `_moving_value`, `_is_moving`, drag coordinates, selection, and highlight
   state are usable after rejection;
 - after a successful baseline restoration, the user can continue editing
-  without discarding the annotation session;
+  through both movement and deletion without discarding the session;
 - if baseline restoration itself fails, both errors are reported, the unsafe
   session cannot be saved or edited further, and discard/reload is required;
+- no rejected or failed movement/deletion candidate is saved or emitted as a
+  completed edit.
+
+Vertex insertion remains explicitly out of the Phase 1 guarantee.
+
+### Full Vertex Mutation Guard: Slices 5–7
+
+The insertion follow-up is complete when:
+
+- `Mode.VERTEX_INSERT` is installed and restored with the same lifecycle
+  guarantees as the existing edit-guard callbacks;
+- insertion on artificial shell/hole bridge or separator edges is rejected
+  without mutation;
+- valid insertion on real shell and hole edges preserves expected topology;
+- simple-polygon insertion candidates are Shapely-validated before writing;
+- successful insertion rebuilds preserve the same layer and vertex-cache state
+  required for deletion;
+- insertion commit failures restore the complete prior layer state;
+- continued insertion, movement, and deletion work after successful recovery;
+- failed insertion restoration applies the same unsafe-session policy;
+- no valid widget-owned polygon insertion uses napari's raw unvalidated path.
+
+### Shared Requirements
+
+Across both phases:
+
 - no invalid candidate is saved or emitted as a completed edit;
 - Numba remains the required safe Harpy Shapes backend;
 - existing Bermuda mesh-correctness regression coverage remains intact;
@@ -653,6 +1042,6 @@ The issue can be considered fixed when:
 No source code, tests, or SpatialData elements were modified as part of the
 investigation. This report does not select the final private napari integration
 mechanism. That choice may depend on whether the prevalidated transactional
-move path is implemented on the existing filled model or together with the
-broader edge-only editable-polygon work. Exception recovery alone is explicitly
-not the completed fix.
+mutation paths are implemented on the existing filled model or together with
+the broader edge-only editable-polygon work. Exception recovery alone is
+explicitly not the completed fix.
