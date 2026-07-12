@@ -33,10 +33,11 @@ region:
 10. explicitly write or reload the shared table state when working with a
     backed zarr store.
 
-The workflow must be safe for large, lazy, and multiscale labels elements. It
-must not freeze the napari UI, silently overwrite table values, lose edits when
-a background result becomes stale, or confuse in-memory table state with
-persisted state.
+The workflow targets zarr-backed SpatialData whose highest-resolution labels
+level, `scale0`, is exposed as a lazy Dask array. It must be safe for large
+labels elements and must not freeze the napari UI, silently overwrite table
+values, lose edits when a background result becomes stale, or confuse in-memory
+table state with persisted state.
 
 ## Product Principles
 
@@ -48,8 +49,9 @@ persisted state.
   and leaving a dirty dataset are explicit user decisions.
 - **One shared table state:** all Harpy widgets see the same in-memory `AnnData`
   and the same per-table dirty marker.
-- **Out-of-core by design:** query only the label chunks intersecting the
-  annotation bounding box; do not eagerly materialize the full labels array.
+- **Out-of-core by design:** build one lazy query graph over only relevant
+  `scale0` chunks; never materialize the complete labels array or a complete
+  boolean ROI raster.
 - **Deterministic:** identical geometry, labels data, coordinate system, and
   table state produce identical instance IDs and table changes.
 - **Accessible and testable:** controls have clear labels/tooltips, all states
@@ -188,10 +190,11 @@ value dialog.
 
 ### In scope
 
-- one loaded `SpatialData` object at a time;
+- one loaded, zarr-backed `SpatialData` object at a time;
 - one selected coordinate system;
 - one valid polygon Shapes element, with all rows forming one region;
-- one 2D labels element;
+- one 2D labels element whose `scale0.data` is a Dask array backed by the zarr
+  store;
 - one table linked to the labels element;
 - exact any-pixel-center-overlap membership;
 - assignment to one existing compatible `.obs` column or one newly created
@@ -210,6 +213,7 @@ value dialog.
 ### Non-goals
 
 - modifying labels pixels or Shapes geometry;
+- querying in-memory/NumPy-backed labels or lower-resolution pyramid levels;
 - creating missing table rows or a new linked table;
 - querying arbitrary, unregistered napari Shapes layers;
 - querying unsaved Shapes Annotation edits;
@@ -445,7 +449,10 @@ class SpatialLabelQueryResult:
     coordinate_system: str
     instance_ids: npt.NDArray[np.integer]
     inspected_pixel_count: int
-    inspected_chunk_count: int
+    candidate_chunk_count: int
+    omitted_chunk_count: int
+    covered_chunk_count: int
+    partial_chunk_count: int
     generation: int
 ```
 
@@ -462,56 +469,104 @@ separate operation.
    affine matrices from SpatialData, calculate
    `inverse(M_labels_to_cs) @ M_shapes_to_cs`, and transform the union into
    labels intrinsic `(x, y)` coordinates.
-5. Compute a clipped integer index-space bounding box. If it does not overlap
-   the label extent, return an empty result without reading label data.
-6. Identify only dask chunks, or bounded tiles for NumPy data, intersecting that
-   bounding box.
-7. Prepare the transformed geometry once with Shapely for repeated predicates.
-8. For each block, construct the intrinsic pixel-center coordinates. For array
-   row `r` and column `c`, evaluate Shapely coordinate `(x=c, y=r)`; there is no
-   implicit half-pixel offset.
-9. Evaluate the complete block mask with vectorized
-   `shapely.intersects_xy(region_in_labels, xx, yy)`. For point coordinates,
-   intersection with the polygon is equivalent to asking whether the polygon
-   covers the point: interior and boundary points are included, while points in
-   hole interiors are excluded.
-10. Read/inspect label values where that mask is true, collect unique positive
-    integer IDs, and drop background `0`.
-11. Merge and sort IDs deterministically before returning.
+5. Resolve `scale0.data` and require it to be a Dask array. Do not fall back to
+   another pyramid level and do not convert it to NumPy.
+6. Compute the clipped integer pixel-center bounding box. If it does not overlap
+   the label extent, return an empty result without constructing label-read
+   tasks.
+7. Inspect `scale0.data.chunks` and their cumulative array offsets. This is an
+   eager metadata-only planning step; it reads no label pixels.
+8. Plan directly against the original Dask chunk grid. Do not first construct a
+   sliced Dask crop and do not rechunk. For each storage-aligned Dask block,
+   calculate the local window intersecting the integer query bounds.
+9. Classify each candidate block by comparing the eager Shapely region with the
+   closed rectangle spanning that window's pixel centers:
+   - `outside`: the region is disjoint from the pixel-center rectangle; omit the
+     block from the executable graph, so its zarr chunk is not read;
+   - `covered`: the region covers the complete rectangle; query positive IDs
+     without allocating a polygon mask;
+   - `partial`: the region intersects but does not cover the rectangle; create
+     an exact pixel-center mask inside the block task.
+10. Convert only the `covered` and `partial` Dask blocks to delayed objects.
+    Create one lazy leaf task per selected block. No leaf task is executed while
+    the graph is being built.
+11. In a `covered` leaf task, receive the decompressed NumPy block from Dask,
+    select its planned local window, discard `0`, and return that block's sorted
+    `numpy.unique(...)` IDs.
+12. In a `partial` leaf task, receive the block, build broadcast coordinate
+    vectors—not full `xx` and `yy` meshgrid arrays—and evaluate:
 
-The intended core operation is therefore:
+    ```python
+    y = numpy.arange(global_y0, global_y1)[:, None]
+    x = numpy.arange(global_x0, global_x1)[None, :]
+    inside = shapely.intersects_xy(region_in_labels, x, y)
+    local_ids = numpy.unique(block_window[inside & (block_window > 0)])
+    ```
 
-```python
-region = shapely.union_all(shapes.geometry)
+    For point coordinates, intersection with the polygon is equivalent to asking
+    whether the polygon covers the point: interior and boundary points are
+    included, while points in hole interiors are excluded. There is no implicit
+    half-pixel offset.
+13. Combine the sorted leaf arrays through a balanced, bounded-fan-in delayed
+    tree. Each combine task concatenates at most `split_every` child arrays and
+    returns `numpy.unique(...)` of that compact input. Use `split_every=8` as the
+    initial default and make it benchmark-configurable.
+14. Call `.compute()` exactly once on the final delayed root from the background
+    worker. Return the root's already sorted positive IDs.
 
-shapes_to_labels = numpy.linalg.inv(labels_to_coordinate_system) @ shapes_to_coordinate_system
-region_in_labels = transform_shapely_geometry(region, shapes_to_labels)
-shapely.prepare(region_in_labels)
+The Dask graph shape is therefore:
 
-instance_ids: set[int] = set()
-for block_slice in blocks_intersecting(region_in_labels.bounds):
-    labels_block = read_labels_block(block_slice)
-    yy, xx = pixel_center_grids(block_slice)  # y=row index, x=column index
-    inside = shapely.intersects_xy(region_in_labels, xx, yy)
-    instance_ids.update(numpy.unique(labels_block[inside & (labels_block > 0)]))
-
-return numpy.asarray(sorted(instance_ids))
+```text
+selected zarr/Dask chunks
+        │
+        ├── covered chunk -> positive local unique IDs ─┐
+        ├── partial chunk -> exact mask -> local IDs ───┤
+        ├── partial chunk -> exact mask -> local IDs ───┤
+        └── covered chunk -> positive local unique IDs ─┘
+                                                        │
+                          bounded union tree, fan-in 8 ─┤
+                                                        │
+                                             sorted final IDs
 ```
 
-`transform_shapely_geometry(...)`, `blocks_intersecting(...)`, and
-`pixel_center_grids(...)` above are descriptive helper names rather than a
-required public API. The affine composition, integer-center convention, and
-`intersects_xy()` predicate are normative.
+Here, **bounded** refers only to the number of child ID arrays accepted by one
+combine task. It does not impose a limit on the total number of matched instance
+IDs. The final array remains naturally unbounded because it must contain every
+instance returned by the spatial query.
 
-For multiscale labels, query the authoritative highest-resolution/full-detail
-level (`scale0`) only. Lower-resolution pyramid levels may omit small instances
-or merge labels and must not determine membership.
+For example, 20 chunk-local ID arrays with fan-in 8 are combined as follows:
 
-SpatialData's current polygon query for raster elements may be used to derive a
-safe bounding-box crop, but its raster result must not be treated as an exact
-polygon mask: the raster query currently returns the polygon's bounding-box
-crop. The explicit `intersects_xy()` mask is required before collecting label
-IDs.
+```text
+8 chunk results -> union A ─┐
+8 chunk results -> union B ─┼-> final union
+4 chunk results -> union C ─┘
+```
+
+For 1,000 chunk results, the successive levels contain approximately 125, 16,
+2, and 1 union tasks. No task receives all 1,000 leaf arrays. Duplicate IDs are
+removed at every level, which reduces the data passed upward when the same
+labels instance spans several chunks. Independent branches can run in parallel.
+The initial fan-in of 8 is an engineering default, not part of query semantics;
+Slice 2 should benchmark alternatives such as 4, 8, 16, and 32 against task
+overhead, intermediate-array size, and peak memory.
+
+The Python loop is permitted only while building this lazy graph from chunk
+metadata. It must not call `.compute()`, read a zarr chunk, mutate a Python set,
+or accumulate eager block results. NumPy/Shapely work inside a Dask leaf task is
+expected: Dask arrays are executed as NumPy chunks on workers. The anti-pattern
+is client-side eager iteration, not chunk-local NumPy work within a lazy task.
+
+Pass the transformed geometry to the graph once as a shared delayed constant.
+Call `shapely.prepare(...)` before repeated predicates; leaf code should call it
+idempotently as well so a geometry deserialized by a non-local scheduler is
+prepared on that worker.
+
+SpatialData's polygon-query implementation may be consulted for coordinate and
+bounding-box semantics, but do not place its returned raster crop in this query
+graph. The current raster result is the polygon's bounding-box crop, not an
+exact polygon mask, and creating that intermediate collection conflicts with
+the direct original-chunk-grid plan. The explicit `intersects_xy()` mask is
+required inside partial leaf tasks before collecting label IDs.
 
 Do not use `rasterio.features.rasterize()` as the normative membership test.
 Its default boundary line-burning behavior is not identical to the documented
@@ -520,19 +575,66 @@ optimization if it can be proven bit-for-bit equivalent for exteriors, holes,
 boundaries, transforms, and chunk edges; `intersects_xy()` remains the reference
 implementation.
 
+Do not implement the query as either of the following:
+
+- `for block in blocks: block.compute(); ...`, because repeated compute calls
+  serialize scheduling and move eager orchestration to the client;
+- a full lazy boolean raster followed by boolean Dask indexing and
+  `dask.array.unique(...)`. Boolean indexing produces unknown chunk lengths, and
+  the installed Dask `unique` implementation performs local uniques followed by
+  one final concatenation/aggregate task rather than a bounded tree.
+
+### Investigation result
+
+The delayed leaf/tree design was compared locally with a full masked Dask array
+followed by `dask.array.unique` using the installed Dask 2026.1.1, Zarr 3.2.1,
+and Shapely 2.1.2 stack. The synthetic zarr-backed labels array was
+`8192 x 8192`, `uint32`, with `512 x 512` chunks. A polygon-with-hole query had
+225 chunks in its bounding box.
+
+The direct-grid planner classified 40 chunks as outside, 136 as fully covered,
+and 49 as partial. Both approaches returned the same 39,328 IDs. After cache
+warm-up, the delayed tree took approximately 0.29 seconds and exposed about 404
+graph tasks; the full-mask/`dask.array.unique` alternative took approximately
+1.17 seconds and exposed about 1,917 tasks. These numbers are an implementation
+direction, not a release performance guarantee. Representative production data,
+chunk shapes, polygon complexity, local/remote stores, and cold-cache behavior
+must be benchmarked in Slice 2 and at the release gate.
+
 ### Performance and execution
 
 - Run data access and spatial computation off the Qt main thread.
 - Never pass Qt/napari layer objects into the worker.
-- Do not compute the full labels array or a full-size polygon mask.
-- Keep peak memory proportional to the intersecting crop/chunk working set and
-  returned unique IDs, not to the complete labels image.
-- Deduplicate IDs incrementally to avoid storing one entry per selected pixel.
-- Support NumPy and dask-backed labels with the same result semantics.
+- Preserve the existing zarr-aligned `scale0` Dask chunks. Rechunking is not part
+  of a query and can cause extra reads, communication, and graph growth.
+- Do not compute or persist a full labels crop, full boolean mask, or masked
+  labels array.
+- A relevant compressed zarr chunk must necessarily be read and decompressed to
+  inspect its label values. “Out of core” means the complete labels element is
+  never loaded: only a bounded number of selected chunks and compact partial-ID
+  arrays may reside in RAM concurrently.
+- Keep masks chunk-local and allocate them only for partial chunks. Broadcasting
+  one 1D `x` vector and one 1D `y` vector into `intersects_xy()` avoids two full
+  floating-point coordinate grids; only the boolean output mask has block-window
+  shape.
+- Deduplicate at every leaf and combine level so pixel-count-sized intermediates
+  never leave a leaf task.
+- Use the threaded scheduler because zarr decoding, NumPy operations, and Shapely
+  vectorized predicates perform their main work outside the Python GIL. Cap
+  local query concurrency explicitly; begin with at most four concurrent leaf
+  tasks and tune against chunk size and a documented memory budget rather than
+  using an unbounded/default core count.
+- Submit one final root computation. Do not call `.persist()` on the labels crop
+  or partial masks.
 - Report indeterminate progress when total work is unknown; otherwise report
-  chunks completed/total.
-- Cancellation is cooperative between chunk reads. A cancelled job produces no
-  dialog and no mutation.
+  planned leaf tasks completed/total using scheduler diagnostics rather than
+  side effects inside leaf functions.
+- UI cancellation and stale-result invalidation are immediate and guarantee no
+  dialog or mutation. With the local threaded scheduler, already queued chunk
+  reads may finish in the background; do not claim hard I/O cancellation. If
+  hard cancellation is required after measurement, submit the same root graph
+  to a persistent `dask.distributed.Client` and cancel its future rather than
+  reverting to per-chunk `.compute()` calls.
 - Exceptions become actionable status feedback and are logged with technical
   context; they do not leave the widget in a running state.
 
@@ -653,9 +755,9 @@ The tooltip and success message must identify the table and resolved store path
 and make clear that the current shared table state is being written. A write
 failure shows an error and leaves the table dirty.
 
-For unbacked SpatialData, the in-memory annotation workflow remains available,
-but write/reload controls are disabled with an explanation that persistence
-requires a backed zarr store.
+Unbacked SpatialData is outside this feature's data contract. The widget keeps
+the query and mutation actions disabled and explains that Spatial Query requires
+a zarr-backed SpatialData object with Dask-backed `scale0` labels.
 
 ### Reload Table from zarr
 
@@ -693,11 +795,14 @@ The primary action remains disabled, with a concise status and full tooltip,
 when any of the following applies:
 
 - no SpatialData is loaded;
+- the selected SpatialData object is not backed by a zarr store;
 - no coordinate system is selected;
 - no eligible Shapes element is available or selected;
 - selected Shapes has unsaved edits in Shapes Annotation;
 - Shapes geometry is empty, invalid, unsupported, or cannot be unioned;
 - no eligible 2D labels element is available or selected;
+- the selected labels element has no `scale0`, or `scale0.data` is not a Dask
+  array with known 2D chunks;
 - Shapes or labels is unavailable in the chosen coordinate system;
 - their required transform is missing, unsupported, non-finite, or non-invertible;
 - no linked table exists or is selected;
@@ -796,11 +901,25 @@ component/service rather than imported from one feature widget into another.
 - identity, translation, scale, rotation, and composed affine transforms;
 - missing/non-invertible transform rejection;
 - invalid/empty/zero-area/unsupported source geometry rejection;
-- NumPy and dask arrays return the same sorted IDs;
+- unbacked SpatialData, NumPy labels, and missing/non-Dask `scale0` rejection;
 - chunk-boundary cases;
-- multiscale query uses `scale0` and does not compute the complete pyramid;
-- cancellation between chunks;
-- no full-array compute in large lazy fixtures.
+- multiscale query uses `scale0` and never touches lower pyramid levels;
+- eager planner reads no label pixels;
+- direct-grid planning preserves existing chunks and adds no rechunk or sliced
+  crop collection;
+- outside chunks have no executable leaf and are not read;
+- fully covered chunks skip Shapely mask allocation;
+- partial chunks use broadcast coordinate vectors and one chunk-local boolean
+  mask;
+- one final compute executes the complete graph; no leaf calls `.compute()`;
+- balanced union nodes accept no more than the configured fan-in;
+- no production path calls `dask.array.unique` or creates a boolean-indexed
+  Dask array with unknown chunk sizes;
+- worker concurrency is capped and measured peak memory remains within the
+  declared query budget;
+- cancellation/stale invalidation prevents dialogs and mutation even if local
+  queued reads wind down;
+- no full-array computation in large lazy fixtures.
 
 ### Table-domain tests
 
@@ -847,7 +966,7 @@ component/service rather than imported from one feature widget into another.
 - write enabled only for backed dirty table;
 - dirty reload write/discard/cancel branches;
 - successful reload refreshes columns and invalidates undo;
-- unbacked persistence explanation;
+- unbacked/non-Dask dataset rejection and explanation;
 - table-observation event refreshes Viewer and relevant widgets without loops;
 - keyboard behavior, accessible names, and long-name tooltips.
 
@@ -867,10 +986,12 @@ component/service rather than imported from one feature widget into another.
 
 Log structured diagnostic context for query start, cancellation, stale drop,
 success, failure, apply, undo, write, and reload. Include names/identities,
-coordinate system, generation, elapsed time, bounding-box/chunk counts, number of
-unique IDs, number of table rows updated/skipped/overwritten, and exception type.
-Do not log full annotation value lists, full instance-ID lists, or user data
-frames by default.
+coordinate system, generation, graph-build and compute elapsed time, integer
+bounds, Dask/Zarr chunk shape, outside/covered/partial/read chunk counts, graph
+task count, configured concurrency, number of unique IDs, number of table rows
+updated/skipped/overwritten, and exception type. Do not log full annotation value
+lists, full instance-ID lists, masks, label chunks, or user data frames by
+default.
 
 ## Implementation Slices
 
@@ -907,9 +1028,12 @@ Deliverables:
 - clipped bounding-box/chunk planning;
 - exact vectorized pixel-center masking with `shapely.intersects_xy()` as the
   reference implementation;
-- incremental unique positive label-ID collection;
-- NumPy, dask, and multiscale `scale0` support;
-- cooperative cancellation and diagnostics;
+- eager metadata-only outside/covered/partial planning on the original Dask
+  chunk grid;
+- lazy per-chunk local unique-ID tasks and a balanced configurable union tree;
+- zarr-backed Dask `scale0` support with no NumPy or lower-level fallback;
+- one root compute, capped threaded concurrency, cancellation/stale-result
+  semantics, and scheduler diagnostics;
 - geometry/query test matrix, including transformed holes and chunk boundaries.
 
 Exit criteria:
@@ -917,7 +1041,10 @@ Exit criteria:
 - query output matches an independent eager reference implementation on all
   fixtures;
 - no test path relies on bounding-box-only membership;
-- large lazy tests prove only intersecting work is computed;
+- graph inspection and read instrumentation prove that no per-block compute,
+  rechunk, full mask, boolean-indexed Dask array, or global Dask unique is used;
+- large lazy tests prove only selected zarr chunks are read and memory is bounded
+  by concurrency, chunk working space, partial ID arrays, and tree intermediates;
 - execution API is safe to call in a worker.
 
 ### Slice 3: Atomic table preparation, apply, and undo
@@ -1003,7 +1130,7 @@ Deliverables:
 - dirty/clean indicator and store-path feedback;
 - dirty reload write/discard/cancel behavior;
 - query/dialog/undo invalidation around reload;
-- backed and unbacked integration tests;
+- backed-zarr integration tests and unbacked-input rejection tests;
 - shared dirty-dataset close/replacement guard, or a separately tracked blocker
   ticket if the application lifecycle owner must land it first.
 
@@ -1055,6 +1182,7 @@ Completion additionally requires:
 - correct partial-table coverage reporting;
 - atomic apply/rollback and safe undo;
 - shared cross-widget dirty state and table events;
-- backed/unbacked persistence behavior and dirty reload protection;
+- backed-zarr persistence behavior, unbacked-input rejection, and dirty reload
+  protection;
 - accessible validation/status/error feedback;
 - passing repository test, lint, and formatting checks.
