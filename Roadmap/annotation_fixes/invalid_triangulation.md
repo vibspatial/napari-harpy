@@ -4,8 +4,9 @@
 
 Investigated and reproduced. Slice 1's passing native characterizations and
 reusable regression fixtures are implemented. Slice 2's prevalidated,
-transactional direct-polygon movement guard is also implemented. Deletion and
-the shared recovery/unsafe-session work remain in Slices 3 and 4.
+transactional direct-polygon movement guard and Slice 3's guarded polygon
+vertex deletion are also implemented. Slice 4's shared recovery and
+unsafe-session integration is specified but not yet implemented.
 
 ## Context
 
@@ -271,7 +272,8 @@ Harpy reads the cursor coordinate
                     preserve and report both failures
                     mark the annotation session as unsafe
                     block saving and further editing
-                    require the user to discard and reload the session
+                    require the user to discard the session
+                    reload only when a persisted source element exists
 ```
 
 For the reproduced drag, vertices 34 and 39 must therefore both receive the
@@ -804,7 +806,9 @@ geometric validation is not treated as proof that triangulation cannot fail.
 
 For a failure to restore the previous accepted state, the existing fail-loud
 policy applies: preserve both failures, mark the session unsafe, block saving
-and further editing, and require discard/reload.
+and further editing, and require explicit discard. Existing saved sessions
+reload their persisted source; new unsaved sessions are removed without a
+reload.
 
 Slices 1–4 apply this invariant to direct movement and deletion. The subsequent
 insertion slices extend the same invariant to `Mode.VERTEX_INSERT`.
@@ -975,8 +979,10 @@ If restoration fails, Harpy can no longer guarantee that `layer.data` is safe.
 It should fail loudly by preserving and reporting both the original candidate
 write failure and the restoration failure, marking the annotation session as
 unsafe, blocking saving and further editing, and requiring the user to discard
-and reload the session. It must not emit a successful completed-edit event or
-allow the possibly malformed candidate to be saved.
+the session. An existing saved session reloads its persisted source after
+discard; a new unsaved session is removed because it has no persisted source to
+reload. It must not emit a successful completed-edit event or allow the
+possibly malformed candidate to be saved.
 
 ### 4. Consider Edge-Only Rendering for Editable Polygons
 
@@ -1494,39 +1500,278 @@ general mutation transaction abstraction.
 
 ### Slice 4: Shared Transaction Recovery and Rendering Integration
 
+Status: specified; implementation pending.
+
 Generalize and harden the movement-local rollback introduced in Slice 2 into
 shared exception-safe transaction handling for accepted movement and deletion
-candidates.
+candidates. Slice 4 owns renderer-failure recovery and the unsafe-session
+fallback. It does not change the geometry acceptance policy established in
+Slices 2 and 3.
 
-- retain the movement row baseline or deletion layer snapshot until editing,
-  rebuilding, and triangulation all succeed;
-- catch edit, rebuild, and rendering exceptions;
-- restore coordinates plus features, styles, selection, mode, highlight, and
-  private vertex-cache consistency as appropriate;
-- do not emit a completed change for a failed transaction;
-- warn once and keep the session editable after successful restoration;
-- test continued movement and deletion after recovery;
-- force a restoration failure and assert that both errors are retained, the
-  session is marked unsafe, saving and editing are blocked, and discard/reload
-  is required.
+#### Scope and Ownership
 
-Force failures during both an accepted movement write and a valid
-row-length-changing deletion rebuild. Verify complete baseline restoration,
-including data, topology, features, styles, selection, mode, highlight, and
-private vertex-cache boundaries, followed by a successful later edit. These
-are recovery tests, not Slice 1 characterizations of the pre-fix partial state.
+Candidate construction and validation stay outside the transaction boundary:
 
-Coordinate this transaction path with any future edge-only primary polygon
-model:
+- `move_napari_polygon_vertex(...)` continues to construct, synchronize, and
+  validate movement candidates;
+- `delete_napari_polygon_vertex(...)` continues to construct and validate
+  shortened-row or whole-shape deletion outcomes;
+- a candidate rejected by either helper reaches no live write, emits no data
+  event, and requires no recovery;
+- `DELEGATE` interactions continue through napari unchanged;
+- vertex insertion, edge-only rendering, and save conversion remain outside
+  this slice.
 
-- avoid duplicate topology implementations;
-- ensure row rebuilds construct the same editable polygon model;
-- keep save conversion unchanged;
-- verify both filled and edge-only configurations where applicable;
-- retain recovery around all remaining mesh updates.
+Share only the exception/recovery state machine needed by guarded movement and
+deletion: attempt one accepted mutation, restore its retained baseline if the
+attempt fails, and mark the session unsafe if restoration also fails. Do not
+force movement and deletion into one snapshot representation and do not build a
+general-purpose layer transaction framework. Their mutation sizes and
+restoration requirements are deliberately different.
+
+#### Restorable Baselines
+
+Capture the relevant baseline before the first live mutation. A baseline must
+remain available until the candidate write or rebuild, triangulation, refresh,
+and required state restoration have all succeeded.
+
+For each accepted movement candidate, retain the lightweight state needed to
+return to the latest accepted point in the same drag:
+
+- the copied `last_valid_vertices` row;
+- the current moving coordinate and `_is_moving` value before the candidate is
+  attempted;
+- the selected rows and the press-established interaction state needed to
+  continue the same guarded drag;
+- the affected row index and cached topology already held by
+  `_PolygonVertexDragState`.
+
+Do not capture the full layer for every mouse move. A movement mutates one
+same-length row, and restoring that row through `_data_view.edit(...)` followed
+by refresh is sufficient to rebuild its mesh. Selection, moving state, and
+highlight must nevertheless remain usable after recovery.
+
+For deletion, capture one complete, restorable layer baseline because both
+shortened-row replacement and semantic-triangle removal rebuild row-aligned
+state. The baseline must contain deep copies of:
+
+- every data row and its shape type;
+- the complete features table, including source-row identity values;
+- per-row edge colors, face colors, edge widths, and z-indices;
+- layer opacity and current edge, face, and width draw defaults;
+- selected rows and active mode;
+- the affected polygon topology and the expected private vertex-cache
+  boundaries derived from the original row lengths.
+
+Capture the deletion baseline before emitting `ActionType.CHANGING`. If a
+complete baseline cannot be captured, reject the operation without emitting an
+event or attempting a rebuild.
+
+Do not repurpose `_ShapesAnnotationLayerSnapshot` for transaction recovery.
+That type is intentionally a hash-based, save-relevant dirty-state fingerprint
+and does not retain geometry or styles that can be restored. Introduce one
+focused deletion-recovery snapshot near the edit guard or its existing
+layer-state helpers instead.
+
+Private caches such as `_data_view._vertices_index` are derived state. Record
+their expected boundaries for verification, but rebuild them from restored
+public geometry rather than copying their private arrays back into the layer.
+
+#### Shared Transaction Outcome
+
+For an already-validated candidate, the guarded commit has three outcomes:
+
+1. **Commit succeeds.** The write or layer rebuild, triangulation, refresh, and
+   required state restoration all finish. Only then may the guard advance the
+   movement baseline or emit the deletion `CHANGED` event and completion
+   callback.
+2. **Commit fails and restoration succeeds.** Treat the candidate as rejected,
+   warn once for that gesture or one-shot deletion, emit no completed change
+   for it, and leave the session editable. The user may immediately attempt a
+   later movement or deletion.
+3. **Commit fails and restoration also fails.** Preserve both exceptions, mark
+   the annotation session unsafe before reporting them, block saving and all
+   further editing, and require an explicit discard action. Do not try a second
+   speculative repair.
+
+The intentional transaction boundary must catch exceptions raised by the live
+edit, bulk rebuild or removal, mesh/triangulation update, style/state
+restoration, and final refresh. Catching broad `Exception` is appropriate only
+at this boundary because napari and the active rendering backend may raise
+different exception types after partially mutating the layer.
+
+Restoration counts as successful only after the baseline has been written or
+rebuilt, the layer has refreshed, and the relevant structural invariants hold.
+In particular, the restored polygon must have its original valid topology and
+the deletion rebuild must have row-aligned data, shape types, features, styles,
+and private vertex-cache boundaries. Tests should assert the complete visible
+and structural baseline; production verification should remain focused on the
+invariants needed to declare the layer safe rather than comparing every field
+through a second generic framework.
+
+#### Movement Integration
+
+Replace the movement-specific nested `try`/restore block with the shared
+transaction outcome while retaining the Slice 2 movement contract:
+
+1. Start from `last_valid_vertices` and validate a synchronized candidate
+   before entering the transaction.
+2. Capture the per-candidate movement baseline immediately before setting the
+   candidate moving coordinate or calling `_data_view.edit(...)`.
+3. Attempt the one complete row write and `refresh(thumbnail=False)`.
+4. On success, and only on success, copy the candidate into
+   `last_valid_vertices`, set `has_accepted_move`, and update `_is_moving`.
+5. On failure, restore the retained row through the same edit-and-refresh path,
+   restore the pre-attempt moving and selection state, and recompute the
+   highlight as needed.
+
+A successful recovery rejects only the failed candidate. It must not erase an
+earlier accepted move, advance `last_valid_vertices`, or end the gesture. A
+later valid mouse move in the same gesture can still commit. On release:
+
+- emit no `CHANGED` if the gesture has no surviving accepted move;
+- emit one normal `CHANGED` if an earlier accepted move survives a later failed
+  candidate and successful restoration;
+- run the existing Harpy-owned release cleanup in either case.
+
+#### Deletion Integration
+
+Apply the same failure policy around both deletion commit variants:
+
+- shortened-row replacement through the Harpy-owned full layer rebuild;
+- semantic-triangle whole-shape removal, including all shifted row-aligned
+  state.
+
+For either variant:
+
+1. Validate the candidate and capture the complete deletion baseline.
+2. Emit the existing native-compatible `ActionType.CHANGING` payload.
+3. Attempt the replacement or removal, restore styles and interaction state,
+   and refresh the layer.
+4. Only after the complete commit succeeds, emit `ActionType.CHANGED` with the
+   same payload and call the delete-finished callback once.
+5. If any commit step raises, restore the complete deletion baseline under
+   blocked intermediate `data` and `features` events, refresh, and verify the
+   rebuilt cache boundaries.
+
+A deletion which fails after `CHANGING` was emitted cannot retract that
+pre-change notification. After successful restoration its public event stream
+therefore contains `CHANGING` but no `CHANGED`; this is distinct from a
+prevalidation rejection, which emits neither event. The failed deletion must
+not call the delete-finished callback. A later successful deletion emits its
+own complete `CHANGING`/`CHANGED` pair and callback normally.
+
+Restore the exact pre-attempt selection and mode after a failed whole-shape
+removal; do not apply the row-index remapping used by a successful removal.
+Restoring geometry must also restore the original features, identities, and
+styles rather than relying on whatever subset survived the failed operation.
+
+#### Unsafe-Session Integration
+
+The edit guard can detect a double failure, but the annotation widget owns the
+session and save controls. Add one narrow guard-to-widget callback for this
+terminal outcome. Keep unsafe state separate from the immutable locked save
+metadata and clear it only when the annotation session is cleared or a new
+session is opened.
+
+Before the combined error leaves the edit callback, the widget must:
+
+- mark the active annotation session unsafe;
+- set the annotation layer non-editable so delegated napari modes, drawing,
+  movement, deletion, and future insertion cannot mutate it further;
+- make annotation readiness non-actionable, disabling both **Save shapes** and
+  **Create holes**;
+- have the save and create-holes handlers consult the same readiness state, so
+  direct or already-queued invocation cannot bypass disabled buttons;
+- show a persistent error status explaining that the in-memory layer cannot be
+  trusted and must be discarded;
+- ensure normal drag/delete completion callbacks cannot replace that status
+  with the ordinary ready card.
+
+Then raise an `ExceptionGroup`, or an equivalent combined error which retains
+both the original application exception and the restoration exception. Marking
+the widget unsafe must happen before raising so the session remains blocked
+even when napari or psygnal catches and reports the exception.
+
+Do not attempt an automatic second row or layer rebuild after restoration
+fails. It may invoke the same failing renderer again and could destroy more of
+the only remaining diagnostic state.
+
+The required discard outcome depends on the session origin:
+
+- for an existing saved element, including an adopted primary layer, use the
+  existing discard path to remove the unsafe layer and reload the last saved
+  element from SpatialData;
+- for a newly created, never-saved layer, no persisted version exists to
+  reload, so discard removes the unsafe layer and the user starts a new
+  annotation session.
+
+Do not describe the latter as "reload." Reuse the existing session-origin and
+`reload_on_discard` behavior rather than introducing a second recovery flow.
+
+#### Slice 4 Test Matrix
+
+Adapt the narrow Slice 2 movement rollback test where useful and add only the
+coverage needed for the shared recovery and widget integration. Use
+deterministic, fail-once test seams so the attempted commit can fail after a
+partial mutation while restoration is still allowed to succeed. Do not depend
+on Bermuda or another backend producing a platform-specific failure.
+
+Required passing coverage is:
+
+- an accepted movement write or forced mesh/refresh failure after a possible
+  partial row mutation restores `last_valid_vertices`, moving state,
+  selection, and usable highlight state;
+- the failed movement does not advance its accepted baseline and emits no
+  completed event when no earlier accepted move exists;
+- an earlier accepted movement survives a later failed candidate and emits one
+  `CHANGED` on release after successful restoration;
+- a later valid move in the same gesture, and a subsequent guarded deletion,
+  can succeed after movement recovery;
+- a valid shortened-row deletion which fails during rebuild or refresh
+  restores every data row, shape type, feature and identity, row style,
+  opacity, current draw default, selection, and mode;
+- shortened-row restoration reconstructs correct private vertex-cache
+  boundaries and supports a correct later hit test and deletion;
+- a whole-shape removal failure restores the removed row and all originally
+  shifted feature, style, and selection rows without applying successful-delete
+  index remapping;
+- a failed deletion which restores successfully emits its initial `CHANGING`
+  but no `CHANGED` and no delete-finished callback, warns once, and permits a
+  later successful deletion;
+- representative movement and deletion restoration failures reach the same
+  unsafe-session mechanism and retain both the application and restoration
+  errors; do not duplicate the complete widget matrix for every possible
+  failure site;
+- an unsafe session makes the layer non-editable, disables Save shapes and
+  Create holes, prevents their handlers from mutating SpatialData or the layer,
+  and keeps the terminal status visible through interaction cleanup;
+- discarding an unsafe existing session reloads its last saved SpatialData
+  element, while discarding an unsafe new session removes it without claiming
+  that anything was reloaded;
+- opening a new session after discard clears unsafe state and restores ordinary
+  annotation readiness.
+
+These are recovery tests, not Slice 1 characterizations of napari's pre-fix
+partial state. Do not duplicate the complete field-preservation assertions for
+every injected exception; use one complete deletion-baseline assertion and
+narrow tests for the remaining transaction boundaries.
+
+#### Rendering and Future Edge-Only Compatibility
+
+Keep recovery around every live write which can currently rebuild a polygon
+mesh. Coordinate the transaction boundary with a future edge-only primary
+polygon model by keeping candidate topology in the existing geometry helpers
+and keeping save conversion unchanged. Do not implement an edge-only model,
+invent a second topology representation, or add speculative edge-only tests in
+Slice 4. If an edge-only configuration already exists when this slice is
+implemented, run the same transaction contract against it through the shared
+commit boundary rather than creating a parallel recovery path.
 
 At the end of Slice 4, direct movement and vertex deletion satisfy the polygon
-mutation safety invariant. Vertex insertion remains explicitly pending.
+mutation safety invariant across prevalidation, live rendering, successful
+recovery, and fail-loud unsafe-session handling. Vertex insertion remains
+explicitly pending for Slices 5–7.
 
 ### Slice 5: Vertex Insertion Regression Coverage and Widget Routing
 
@@ -1629,7 +1874,9 @@ The first delivery phase is complete when:
 - after a successful baseline restoration, the user can continue editing
   through both movement and deletion without discarding the session;
 - if baseline restoration itself fails, both errors are reported, the unsafe
-  session cannot be saved or edited further, and discard/reload is required;
+  session cannot be saved or edited further, and explicit discard is required;
+  existing saved sessions reload their persisted source, while new unsaved
+  sessions are removed without a reload;
 - no rejected or failed movement/deletion candidate is saved or emitted as a
   completed edit.
 
