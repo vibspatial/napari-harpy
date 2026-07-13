@@ -78,8 +78,9 @@ results, or confuse in-memory state with persisted state.
 - **Preview before annotation mutation:** spatial querying does not change the
   annotation column. The user reviews affected and overwritten counts before
   applying.
-- **No silent data loss:** overwriting values, replacing an ambiguous cache,
-  reloading a dirty table, and leaving a dirty dataset are explicit decisions.
+- **No silent data loss:** overwriting values, rebuilding a mismatched managed
+  cache, reloading a dirty table, and leaving a dirty dataset are reported
+  explicitly.
 - **One shared table state:** all Harpy widgets see the same in-memory AnnData
   and the same per-table dirty marker.
 - **Deterministic and testable:** identical geometry, transforms, canonical
@@ -177,7 +178,7 @@ Consequences:
 - overlapping polygons never duplicate a result;
 - every table instance is evaluated at most once.
 
-The UI must describe the rule as Canonical center inside annotation, with a
+The UI must describe the rule as Centroid inside annotation, with a
 tooltip explaining the boundary behavior. It must not describe the result as
 any-pixel overlap, full label containment, or percentage overlap.
 
@@ -266,6 +267,9 @@ Within the selected labels region, instance-key values must be non-missing,
 positive, integer-like, and unique. Booleans, fractional numbers, non-finite
 numbers, and strings that only resemble numbers are rejected rather than
 silently coerced. Duplicate instance IDs in another region are allowed.
+The selected-region row set must be non-empty, and obs_names used as row
+identities must be unique. An empty selection is a binding error: this feature
+does not create table rows.
 
 Canonical-center calculation uses the validated instance IDs from the selected
 table region as RasterAggregator's requested index. This avoids a separate
@@ -274,9 +278,17 @@ AnnData rows by instance ID; code must not assume that RasterAggregator returns
 the same row order as AnnData.
 
 If a requested table instance has no pixels in the selected labels element, its
-center is undefined. This is a table/labels binding inconsistency. Cache
-installation and the spatial query fail with an actionable error; incomplete
-or infinite center values must not be silently stored.
+aggregate count is zero and its temporary center is non-finite. This is a
+table/labels binding inconsistency. The adapter validates the complete requested
+result before installation and reports the missing-ID count plus a bounded
+preview of IDs. Cache installation and the spatial query fail; a non-finite
+center for a covered region row is never committed.
+
+Labels values that are absent from the selected table region are intentionally
+outside the operation. They are not requested from RasterAggregator, do not get
+centers, and are neither discovered nor reported. Validation therefore requires
+no global unique-label pass over the raster, although calculating the requested
+centers still scans all scale0 chunks lazily.
 
 ## Scope
 
@@ -319,8 +331,8 @@ or infinite center values must not be silently stored.
 - boolean combinations selected interactively across Shapes elements;
 - automatically writing to zarr after every cache or annotation change;
 - automatically recoloring labels;
-- treating raw out-of-band zarr mutations that bypass the required labels
-  revision contract as safely detectable;
+- detecting out-of-band labels pixel changes when dimensions, shape, dtype, and
+  table linkage all remain unchanged;
 - using an existing obsm["spatial"] array without verified canonical metadata.
 
 ## Canonical-Center Data Contract
@@ -351,8 +363,9 @@ The matrix:
 - must not be sparse.
 
 spatial_canonical is a reserved Harpy key. An existing array at that key without
-valid matching metadata is ambiguous user data and is never silently trusted or
-overwritten.
+valid matching metadata is never trusted. When the user explicitly requests
+canonical centers, the mismatch is reported, recalculation completes first, and
+the reserved pair is replaced only after a valid result is available.
 
 ### Metadata schema
 
@@ -391,12 +404,10 @@ A representative schema is:
                     "row_identity_digest": "sha256:...",
                 },
                 "source": {
-                    "store_identity": "...",
                     "element_path": "labels/nuclei",
-                    "content_revision": "...",
+                    "dims_yx": ["y", "x"],
                     "shape_yx": [50000, 70000],
                     "dtype": "uint32",
-                    "chunks_yx": [1024, 1024],
                 },
                 "generated_by": {
                     "package": "napari-harpy",
@@ -436,12 +447,15 @@ Metadata validation requires:
 - background value zero;
 - the supported pixel-center convention and algorithm version;
 - coverage of all current rows in the selected table region;
-- a matching labels content revision and source store/element identity;
+- matching source element, scale0 dimensions, shape, and dtype;
 - finite x/y coordinates on every covered row.
 
-Shape, dtype, chunks, and element path are useful diagnostics, but they do not
-prove that pixel contents are unchanged. They must not substitute for a content
-revision.
+Dimensions, shape, dtype, and table coverage form the structural cache
+signature. A mismatch is reported and triggers recalculation. Dask/zarr
+chunking is deliberately excluded: it affects execution and performance but not
+the mathematical center or the validity of cached coordinates. Live chunks are
+validated and inspected when calculation is required, but are not persisted or
+compared for cache reuse.
 
 generated_by and an optional generation timestamp are provenance only. A cache
 is not rejected merely because a newer napari-harpy package is running, unless
@@ -462,12 +476,22 @@ geometry into that region's labels-intrinsic frame.
 When a new spatial_canonical matrix is created, initialize all rows to NaN and
 fill the selected region's rows. When another region is later calculated, fill
 only that region and preserve valid existing region coordinates and metadata.
+NaN is a placeholder only for rows in table regions that have no valid region
+entry yet. Every row covered by a registered region entry must have finite x/y
+coordinates; a region is never registered with partial coverage.
 
 Coverage is complete only when every current table row in that region has one
-finite center. The row-identity digest is calculated from stable row identity
-and linkage values using a versioned canonical encoding. It detects membership
-or identity changes without storing a potentially enormous ID list in uns.
-Normal AnnData slicing/reordering must preserve obsm alignment; unsupported
+finite center. Each labels element has a separate row_identity_digest stored in
+its own regions[labels_name].coverage entry; there is no table-global digest.
+The digest is calculated from a domain/schema tag, the selected labels name,
+and the unordered set of (obs_name, normalized instance_id) bindings using a
+versioned canonical binary encoding and SHA-256. Canonically sorting the pairs
+before hashing makes normal AnnData row reordering irrelevant, while changing
+which instance is bound to an observation invalidates the region. Including the
+labels name domain-separates otherwise identical bindings in different regions.
+The digest avoids storing a potentially enormous binding list in uns.
+
+Normal AnnData slicing/reordering must preserve obsm alignment. Unsupported
 external mutations that break AnnData's alignment guarantees are outside the
 contract.
 
@@ -476,35 +500,32 @@ region/instance-key metadata must cause coverage revalidation. Semantic table
 events should invalidate affected region entries immediately rather than
 waiting until Run.
 
-### Labels content revision
+### Structural cache validity
 
-Reliable persisted cache reuse requires a stable labels content-revision token.
-Every supported Harpy operation that creates or changes a labels element must
-write or advance that token. The token identifies label-pixel content, not the
-element's coordinate transformation.
+Canonical metadata is authoritative for deciding whether coordinates can be
+reused. Validation compares it with the current labels element and linked table.
+It does not add Harpy-specific attributes to the SpatialData object.
 
-The selected region metadata snapshots the token used for center calculation.
-On reuse, it must equal the current labels token.
+A selected-region cache is structurally reusable when:
 
-If an existing labels element has no reliable content revision:
+- the live matrix and top-level metadata agree;
+- the source is the selected labels element at scale0;
+- dimensions, shape, and dtype agree;
+- the calculation semantics and algorithm version agree;
+- region_key, instance_key, selected-row count, and the selected region's
+  row-identity digest agree;
+- all selected-region x/y coordinates are finite.
 
-- a newly calculated cache can be reused safely for the current in-memory
-  labels identity and session;
-- it must not be treated as reliably reusable after reload/reopen solely from
-  shape, dtype, or chunk metadata;
-- the UI explains that persisted reuse requires labels revision metadata;
-- the implementation roadmap must add/backfill the revision contract before
-  declaring cross-session cache reuse production-ready.
+Changing a SpatialData coordinate transformation does not invalidate centers
+because their frame is labels intrinsic. The current transformations are
+validated and applied later when the annotation geometry is queried.
 
-Raw external writes that change zarr label chunks without advancing the
-revision cannot be detected without hashing/reading the full raster. Such writes
-violate the supported cache-coherency contract. A user-accessible Rebuild
-canonical centers action remains available as recovery.
-
-Changing only a SpatialData coordinate transformation does not invalidate
-canonical centers because the stored frame is labels intrinsic. It does
-invalidate an active query result whose geometry was transformed with the old
-transform.
+This contract cannot detect an out-of-band label-pixel edit that preserves the
+complete structural signature. Detecting that case would require reading or
+hashing the raster again and would defeat fast cache reuse. The explicit
+Recalculate centroids action described below is the user-facing recovery path;
+the core ensure operation also exposes the same forced-recalculation mode to
+non-UI callers.
 
 ### Cache states
 
@@ -513,9 +534,10 @@ The cache inspector returns one of these typed states for the selected region:
 - absent: neither usable matrix nor selected-region metadata exists;
 - partial: a valid matrix/registry exists, but the selected region is not yet
   covered;
-- valid: matrix, metadata, coverage, source revision, and finite values pass;
-- stale: the cache was once valid but a known source or coverage revision no
-  longer matches;
+- valid: matrix, metadata, structural source signature, table coverage, and
+  finite values pass;
+- stale: the pair is interpretable but its selected-region structural
+  source/coverage/algorithm signature no longer matches;
 - invalid: matrix/metadata is malformed, contradictory, unsupported, or only
   one half of the pair exists.
 
@@ -526,11 +548,12 @@ Run behavior:
   query;
 - stale: recalculate and atomically replace only the selected region, then
   query;
-- invalid: block automatic replacement and offer Rebuild canonical centers
-  with explicit confirmation that the reserved array/metadata will be replaced.
+- invalid: report the pair-wide mismatch, calculate the selected region, and
+  rebuild the managed matrix/metadata pair. Other region entries are preserved
+  only when they remain valid against the shared matrix and table.
 
 The widget shows the current state before Run, including First query will
-calculate canonical centers when appropriate.
+calculate centroids when appropriate.
 
 ### Atomic cache installation
 
@@ -539,7 +562,7 @@ inputs. The worker returns a compact result keyed by instance ID; it never
 mutates AnnData.
 
 After worker completion, the main-thread controller revalidates the request,
-table identity, linkage, row coverage, labels identity/revision, and cache
+table identity, linkage, row coverage, labels structural signature, and cache
 generation. It then installs or updates the matrix and metadata as one
 all-or-nothing table mutation.
 
@@ -574,7 +597,7 @@ Recommended control order:
 4. Linked table combo.
 5. Target column mode: Existing column or New column.
 6. Existing-column combo or new-column line edit.
-7. Canonical centers status.
+7. Centroid cache status and Recalculate centroids button.
 8. Run Spatial Query button.
 9. Query/action status and progress area with Cancel while running.
 10. Undo last annotation button.
@@ -629,31 +652,64 @@ An existing target column is compatible when it is:
 Numeric, boolean, datetime, mixed-object, and non-string categorical columns
 are not writable and must never be converted implicitly.
 
-### Canonical-center status
+### Centroid status
 
 The status area reports one of:
 
-- Ready: valid cached canonical centers will be reused;
+- Ready: valid cached centroids will be reused;
 - Not calculated: Run will calculate centers from scale0 first;
 - Partial: Run will calculate centers for this labels region;
 - Stale: Run will refresh centers for this labels region;
-- Invalid: canonical-center data needs an explicit rebuild;
-- Running: calculating canonical centers;
-- Running: querying canonical centers.
+- Invalid: Run will report the mismatch and rebuild centroid data;
+- Running: calculating centroids;
+- Running: querying centroids.
 
 Tooltips explain that the first calculation scans all scale0 chunks lazily and
 may take substantially longer than later queries. The UI must not promise that
 only chunks near the polygon will be read: center calculation is a global
 labels aggregation.
 
+### Recalculate centroids action
+
+Recalculate centroids is an explicit standalone action for refreshing the
+selected labels region when the user knows or suspects that label pixels have
+changed without a detectable structural change. It is user-facing terminology;
+internal code and metadata continue to use the spatial_canonical contract.
+
+The action is enabled when a supported labels element and a valid non-empty
+linked-table region are selected and no conflicting table/calculation operation
+is running. It does not require a valid Shapes selection or annotation target,
+does not perform a spatial query, and never changes an annotation column.
+
+On activation:
+
+1. capture the selected labels/table-region identities, structural signatures,
+   row-identity digest, current cache generation, and a new operation token;
+2. bypass valid-cache reuse and calculate all requested table-region centroids
+   lazily from scale0;
+3. validate that every requested table ID has exactly one finite result;
+4. revalidate the captured table, labels, binding, and cache generation on the
+   main thread;
+5. atomically replace only the selected region's current row positions and
+   metadata when the shared matrix/top-level contract is valid, preserving all
+   other valid regions;
+6. emit the shared table-state event, mark the table dirty, refresh the centroid
+   status, and report completion.
+
+If calculation is cancelled, fails, produces a missing/non-finite requested ID,
+or becomes stale before installation, the previous obsm/uns pair is preserved
+exactly, no mutation event is emitted, and dirty state is unchanged. A pair-wide
+invalid matrix/metadata state follows the existing rebuild rules, but is not
+replaced until a complete valid calculation result is available.
+
 ### Run and result flow
 
 1. The user configures a complete valid selection.
-2. Run Spatial Query becomes enabled unless cache state is invalid and rebuild
-   confirmation has not been obtained.
+2. Run Spatial Query becomes enabled for valid, missing, partial, stale, and
+   rebuildable-invalid cache states.
 3. Clicking Run captures an immutable request containing stable source
    identities, selected coordinate system, table linkage, target intent, cache
-   state, labels content revision, and a generation token.
+   state, structural signatures, and a generation token.
 4. If cache state is absent, partial, or stale, the worker calculates centers
    for all rows of the selected table region from scale0.
 5. The UI shows phase-specific progress and offers Cancel. Selection controls
@@ -662,12 +718,13 @@ labels aggregation.
    cached coordinates or the newly calculated coordinates.
 7. The worker returns instance IDs, diagnostics, and, when needed, a cache
    installation payload. It never mutates SpatialData, AnnData, or Qt state.
-8. The controller revalidates all captured identities and revisions.
+8. The controller revalidates all captured identities and structural
+   signatures.
 9. If a cache payload exists, install it atomically on the main thread and mark
    the table dirty before accepting the query result.
 10. Resolve returned IDs to current table rows using region_key and
     instance_key.
-11. If no canonical centers match, show No instance centers found in the
+11. If no centroids match, show No instance centroids found in the
     annotation and make no annotation-column changes.
 12. Otherwise open the Apply Spatial Annotation dialog.
 
@@ -681,9 +738,9 @@ The modal dialog contains:
 
 - annotation source name;
 - labels element, table, and target column;
-- inclusion rule: Canonical center inside annotation;
+- inclusion rule: Centroid inside annotation;
 - number of eligible instances in the selected table region;
-- number of canonical centers inside the annotation;
+- number of centroids inside the annotation;
 - number of matching rows currently missing a value;
 - number already equal to the proposed value;
 - number with a non-missing different value that would be overwritten;
@@ -779,21 +836,28 @@ calculation path.
 
 For a 2D scale0 labels Dask array:
 
-1. require integer dtype and known 2D shape/chunks;
-2. add a singleton z dimension lazily, without copying or rechunking the raster,
+1. select the rows for the requested labels region and reject an empty set;
+2. validate unique obs_names and non-missing, positive, unique integer-like
+   instance IDs within that region;
+3. require integer labels dtype and known 2D shape/chunks;
+4. add a singleton z dimension lazily, without copying or rechunking the raster,
    to satisfy RasterAggregator's z, y, x input contract;
-3. pass the selected table-region instance IDs as index;
-4. exclude background zero before aggregation;
-5. let RasterAggregator construct and execute its Dask aggregation;
-6. receive the compact per-instance z, y, x result;
-7. require z to be the expected singleton-plane value;
-8. drop z and reorder y, x to x, y;
-9. validate one finite result for every requested ID;
-10. join results back to table rows by instance ID.
+5. pass exactly the selected table-region instance IDs as index;
+6. exclude background zero before aggregation;
+7. let RasterAggregator construct and execute its Dask aggregation;
+8. receive the compact per-requested-instance z, y, x result;
+9. require z to be the expected singleton-plane value;
+10. drop z and reorder y, x to x, y;
+11. validate exactly one finite result for every requested ID; a zero-count or
+    non-finite result means that a table instance is absent from the raster and
+    is a binding error;
+12. join results back to table rows by instance ID, never by output order.
 
 Passing a known index avoids RasterAggregator's separate global unique-label
 discovery. It does not avoid scanning scale0: every labels chunk may contribute
 pixels to an instance, so center-of-mass calculation is a global aggregation.
+Raster IDs outside the requested table index do not produce output and are not
+validated; this is the intended table-defined query universe.
 
 RasterAggregator may currently use more than one full lazy pass, for example to
 calculate counts and coordinate moments. The product contract is out-of-core
@@ -812,8 +876,10 @@ Use a UI-independent worker result, conceptually:
         table_name
         instance_ids
         centers_xy
-        source_revision
+        source_signature
         coverage_digest
+        cache_action
+        mismatch_reasons
         diagnostics
         generation
 
@@ -852,7 +918,7 @@ Use typed, UI-independent contracts, for example:
         coordinate_system
         predicate = "canonical_center_inside"
         cache_generation
-        source_revision
+        source_signature
         generation
 
     SpatialCenterQueryResult:
@@ -932,13 +998,13 @@ queries against the same labels/table region should be snappy.
 ### Stale-result protection
 
 Every Run has a monotonically increasing generation token and captured source
-identities/revisions. Discard all worker output if, while it runs:
+identities/structural signatures. Discard all worker output if, while it runs:
 
 - the SpatialData object changes;
 - coordinate system, Shapes, labels, table, or target-column intent changes;
 - the Shapes element is written or replaced;
 - a relevant Shapes/labels transformation changes;
-- the labels element or content revision changes;
+- the labels element is replaced or its structural signature changes;
 - the table is reloaded/replaced or linkage/row coverage changes;
 - spatial_canonical is installed, rebuilt, or modified by another operation;
 - a newer query starts;
@@ -1019,6 +1085,8 @@ introduce a widget-local dirty truth.
 | Cancel center calculation | No accepted mutation | Unchanged |
 | Center calculation fails | No accepted mutation | Unchanged |
 | Install/extend/refresh/rebuild centers | obsm and uns | Dirty |
+| Successful Recalculate centroids | selected-region obsm and uns | Dirty |
+| Failed/cancelled Recalculate centroids | No accepted mutation | Unchanged |
 | Query returns no matching centers after cache install | No further mutation | Remains dirty |
 | Cancel Apply after cache install | No further mutation | Remains dirty |
 | Apply annotation is a no-op | No | Unchanged from current state |
@@ -1048,9 +1116,9 @@ The spatial annotation column and canonical cache do not get independent
 writers. The action and success message identify the table and resolved store
 path and state that the shared table state is being written.
 
-A successful write makes newly generated centers reusable after reload/reopen,
-provided labels content-revision validation succeeds. A failure shows an error
-and leaves the table dirty.
+A successful write makes newly generated centers reusable after reload/reopen
+when their stored structural metadata still matches the labels element and
+table. A failure shows an error and leaves the table dirty.
 
 Unbacked SpatialData is outside scope. Run and persistence actions remain
 disabled with an explanation that the feature requires zarr-backed SpatialData,
@@ -1109,7 +1177,6 @@ Run remains disabled, with concise status and a detailed tooltip, when:
 - no valid target mode/column is configured;
 - a new column name is empty, invalid, reserved, or colliding;
 - an existing target column has an incompatible dtype;
-- spatial_canonical is invalid/ambiguous and rebuild has not been confirmed;
 - a calculation/query is already running for the same request.
 
 Runtime outcomes are distinct:
@@ -1117,7 +1184,8 @@ Runtime outcomes are distinct:
 - no centers inside annotation: neutral information;
 - table instance absent from labels during center calculation: binding error;
 - stale cache detected: informational refresh state;
-- ambiguous/corrupt cache: explicit rebuild warning;
+- invalid/corrupt managed cache: mismatch report followed by recalculation and
+  replacement only after a valid result is available;
 - overwrite: mandatory confirmation warning;
 - cancellation or stale result: neutral/cancelled state;
 - Dask, zarr, transform, geometry, aggregation, persistence, or validation
@@ -1202,7 +1270,7 @@ The corresponding widget package is:
                 selectors, cache status, progress, persistence actions
 
             dialogs.py
-                rebuild confirmation
+                cache mismatch reporting
                 Apply Spatial Annotation dialog
 
             status_card.py
@@ -1253,11 +1321,18 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 - matrix without metadata and metadata without matrix are invalid;
 - wrong shape, row count, axes, dtype, method, scale, frame, or schema rejected;
 - linkage-key mismatch rejected;
-- source store/element/revision mismatch is stale;
+- source element, dimensions, shape, or dtype mismatch triggers a reported
+  refresh;
+- rechunking alone does not invalidate canonical centers;
 - transform-only changes do not stale intrinsic centers;
 - coverage digest and finite-coordinate validation;
 - multi-region incremental fill preserves other valid regions;
-- rebuild replacement requires confirmation for ambiguous data;
+- pair-wide mismatch rebuilds the managed pair only after recalculation
+  succeeds;
+- forced recalculation bypasses valid reuse, replaces only the selected region,
+  and preserves all other valid regions;
+- failed, cancelled, or stale forced recalculation preserves the prior pair
+  exactly;
 - cache installation rollback restores matrix/metadata exactly;
 - cache create/extend/refresh/rebuild marks shared dirty once;
 - cache parser never mutates during inspection.
@@ -1320,7 +1395,7 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 - worker never mutates AnnData or Qt;
 - cache payload installs only after main-thread revalidation;
 - result accepted only for unchanged request;
-- every selection/source/revision invalidation drops late results;
+- every selection/source-signature invalidation drops late results;
 - older run cannot supersede newer run;
 - cancellation prevents installation/dialog/mutation;
 - reload freezes and invalidates pending work;
@@ -1333,9 +1408,13 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 - default spatial_annotation existing/new behavior;
 - Run enablement/tooltips for every blocker;
 - dirty Shapes session blocker;
-- all canonical cache status states and phase text;
-- explicit ambiguous-cache rebuild confirmation;
-- result dialog contents and canonical predicate wording;
+- all centroid cache status states and phase text;
+- Recalculate centroids enablement is based on labels/table binding rather than
+  Shapes or annotation-target validity;
+- Recalculate centroids bypasses cache reuse, exposes progress/cancellation,
+  refreshes status on success, and never starts a query or annotation flow;
+- invalid-cache mismatch reporting and automatic rebuild state;
+- result dialog contents and centroid predicate wording;
 - live conflict recount and value validation;
 - mandatory overwrite warning and explicit action text;
 - no-result flow does not change annotation column;
@@ -1355,8 +1434,8 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 - cache is not on disk until Write Table State;
 - write persists matrix, metadata, annotation columns, missing values, and
   categorical metadata;
-- reopen/reload reuses cache when labels revision matches;
-- stale labels revision triggers refresh rather than reuse;
+- reopen/reload reuses cache when structural metadata still matches;
+- structural labels/table mismatch triggers refresh rather than reuse;
 - reload discards an unpersisted cache after confirmation;
 - write failure retains dirty state and usable in-memory cache;
 - reload validation failure preserves current table and dirty state;
@@ -1383,8 +1462,8 @@ Log structured diagnostic context for:
 
 - cache inspection state and reason;
 - center calculation start/cancel/stale-drop/success/failure;
-- source scale0 shape, dtype, chunks, content revision, requested instance
-  count, Dask task count, elapsed time, and peak/concurrency diagnostics;
+- source scale0 dimensions, shape, dtype, chunks, requested instance count,
+  Dask task count, elapsed time, and peak/concurrency diagnostics;
 - cache installation action, covered region/count, schema/algorithm version;
 - query start/cancel/stale-drop/success/failure;
 - coordinate system, transform identities, annotation bounds, eligible and
@@ -1400,67 +1479,110 @@ label chunks, polygons, or dataframes by default.
 Each slice ends with integrated tests, error handling, documentation, and
 reviewable behavior. A happy path alone does not complete a slice.
 
-### Slice 1: Canonical contracts, metadata schema, and labels revision
+### Slice 1: Canonical metadata, validation, and centroid construction
 
 Deliverables:
 
-- typed cache state, metadata, build request/result, query request/result, and
-  annotation preparation contracts;
+- typed cache state, mismatch report, metadata, and ensure/build result
+  contracts;
 - spatial_coordinates/spatial_canonical schema version 1;
-- parser, normalizer, non-mutating inspector, and stable error messages;
-- coverage identity-digest definition;
-- labels content-revision read/write contract and integration with supported
-  labels mutation paths;
-- fixtures for single/multi-region tables and every cache state;
-- metadata/cache unit tests.
+- strict parser/builder plus a non-mutating inspector;
+- structural labels signature covering source element, scale0 dimensions,
+  shape, and dtype; chunking is excluded from persisted metadata and cache
+  validity;
+- a table signature for each labels region covering region/instance keys,
+  selected-row count, and a deterministic row_identity_digest over the
+  unordered (obs_name, instance_id) bindings for that region; the canonical
+  digest input also includes the labels name and a schema/domain tag;
+- selected-region binding validation that rejects zero matching rows, duplicate
+  or missing obs_names, and missing, non-positive, non-integer-like, or
+  duplicate instance IDs without creating or deleting table rows;
+- scale0-only RasterAggregator adapter that lazily wraps 2D labels with a
+  singleton z axis, passes exactly the selected table-region instance IDs as
+  index, and converts returned z/y/x centers to x/y;
+- selective raster-membership validation from the requested aggregation result:
+  every requested ID must have exactly one finite center, missing requested IDs
+  raise before mutation, and raster IDs absent from the table are neither
+  calculated nor globally enumerated;
+- an ensure operation that:
+  - reuses a structurally valid selected-region cache without reading labels;
+  - calculates and creates spatial_canonical plus metadata when absent;
+  - accepts an explicit forced-recalculation mode that bypasses valid reuse;
+  - treats a selected region's row-identity digest mismatch as stale and
+    recalculates that complete region;
+  - when the shared matrix/top-level contract is valid, atomically replaces
+    only the current selected-region row positions and its region metadata;
+  - preserves coordinates and metadata for every other still-valid region;
+  - rebuilds the managed matrix and drops unsubstantiated region entries after
+    a pair-wide matrix/top-level mismatch;
+- multi-region matrix construction that initializes uncovered rows to NaN but
+  permits no NaN or inf in any region with a valid metadata entry;
+- calculation-before-replacement and rollback-safe table update behavior;
+- fixtures and tests for missing, reusable, partial, region-mismatched, and
+  pair-wide-invalid states.
 
 Exit criteria:
 
-- valid versus absent/partial/stale/invalid is deterministic;
-- structural metadata cannot masquerade as content freshness;
-- all invalid input fails before Dask work or table mutation;
+- one UI-independent operation can ensure valid canonical centers for a
+  selected labels/table region;
+- its forced mode recalculates a valid selected-region cache instead of reusing
+  it and retains the same validation and atomic-installation guarantees;
+- a valid cache is reused with zero labels-chunk reads;
+- missing or mismatched cache data is calculated from Dask-backed scale0
+  without loading the labels raster into RAM;
+- no global unique-label discovery is used: only selected table IDs are
+  requested, while all scale0 chunks may still be scanned lazily;
+- a table ID absent from the raster produces an actionable binding error and no
+  obsm/uns mutation; raster IDs absent from the table produce no center;
+- calculated output is joined to table rows by instance ID, not aggregator
+  order, and is finite for every selected-region row;
+- each region entry carries its own row-identity digest; row reordering alone
+  preserves it, while region membership or an obs-name-to-instance binding
+  change invalidates it and refreshes the complete selected region;
+- a valid shared matrix refresh changes only the selected region's current row
+  positions and metadata, leaving other valid regions byte-for-byte unchanged;
+- NaN occurs only in rows for regions without valid coverage metadata;
+- region-local refresh preserves other valid regions, while pair-wide rebuild
+  never preserves metadata that no longer describes the shared matrix;
+- no calculation failure leaves partially replaced obsm/uns state;
+- the structural-validation limitation for undetectable same-signature pixel
+  edits is documented;
+- no SpatialData-level Harpy revision attributes or affine snapshots are
+  introduced;
 - domain modules have no Qt dependency.
 
-### Slice 2: Lazy canonical-center calculation
+### Slice 2: Canonical calculation performance and async hardening
 
 Deliverables:
 
-- scale0-only Dask labels resolver;
-- lazy 2D-to-singleton-3D RasterAggregator adapter;
-- validated table-region index handling;
-- center-of-mass execution, x/y normalization, instance-ID join, and finite
-  output validation;
-- bounded concurrency, progress diagnostics, cancellation, and worker-safe API;
+- background-worker integration for the Slice 1 ensure operation;
+- bounded Dask concurrency, progress diagnostics, cancellation, and stale-result
+  protection;
 - representative zarr-backed correctness and memory tests;
 - upstream RasterAggregator optimizations if benchmarks show production limits.
 
 Exit criteria:
 
-- output matches an independent eager reference on test-sized fixtures;
-- no full labels computation, NumPy fallback, rechunk, or lower-scale read;
-- index-supplied execution avoids unique-label discovery;
 - large fixtures demonstrate bounded working memory under configured
   concurrency;
-- missing labels or invalid results never produce an installable payload.
+- cancellation/stale completion cannot replace table state;
+- first-build performance and resource use meet the declared product budget.
 
-### Slice 3: Atomic cache lifecycle and persistence payload
+### Slice 3: Shared cache state, events, and persistence
 
 Deliverables:
 
-- creation of NaN-initialized row-aligned matrix;
-- incremental multi-region fill and selected-region refresh/rebuild;
-- atomic matrix plus metadata installation with rollback;
-- shared dirty/revision changes and semantic table-state event;
-- explicit ambiguous-cache rebuild confirmation domain action;
+- shared dirty-state and semantic table-state event integration for cache
+  creation/refresh/rebuild;
 - persistence/reload support for spatial_canonical and metadata;
+- mismatch/recalculation feedback for controller and widget consumers;
 - cache lifecycle and backed-zarr tests.
 
 Exit criteria:
 
-- table consumers never observe half-installed matrix/metadata;
-- unrelated table regions and metadata are preserved;
 - successful install is dirty and round-trips through zarr;
-- reload/reopen reuse is allowed only with validated source revision.
+- reload/reopen reuses only structurally valid metadata;
+- all widgets observe the same current canonical table state.
 
 ### Slice 4: Vectorized centroid-containment query
 
@@ -1504,7 +1626,7 @@ Deliverables:
 
 - registered Spatial Query dock widget and plugin manifest entry;
 - coordinate system, Shapes, labels, table, target-column controls;
-- canonical-center status and rebuild interaction;
+- centroid cache status and explicit Recalculate centroids action;
 - dependent filtering with stable identity preservation;
 - default spatial_annotation behavior;
 - Shapes Annotation dirty-session blocker;
@@ -1514,6 +1636,8 @@ Exit criteria:
 
 - Run is enabled only for a complete valid/rebuild-authorized request;
 - first-run cost and cache reuse state are clear before execution;
+- Recalculate centroids is available from a valid labels/table selection even
+  when Shapes or annotation-target inputs are incomplete;
 - selection/inspection never mutates or dirties a table.
 
 ### Slice 7: Async calculate-query-review-apply flow
@@ -1521,6 +1645,9 @@ Exit criteria:
 Deliverables:
 
 - worker orchestration with generation tokens and two execution phases;
+- standalone Recalculate centroids orchestration through the forced ensure
+  mode, ending after cache installation rather than continuing into query or
+  annotation review;
 - progress, cancellation, cleanup, and error routing;
 - main-thread cache installation/revalidation;
 - no-result outcome;
@@ -1532,6 +1659,8 @@ Exit criteria:
 
 - napari remains responsive during global aggregation;
 - cancel/stale/error paths cannot install, open late dialogs, or annotate;
+- successful Recalculate centroids installs only the refreshed cache, marks the
+  shared table dirty, and opens no query/result dialog;
 - cache installation and annotation application are visibly distinct state
   changes;
 - users always see affected and overwrite counts before annotation mutation.
