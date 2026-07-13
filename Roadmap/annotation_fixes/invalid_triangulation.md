@@ -105,10 +105,9 @@ index 40 = repeated shell anchor after the third hole
 These are zero-based raw array indices. A UI that presents one-based vertex
 numbers would label them differently.
 
-Harpy already tracks these groups through `NapariPolygonTopology` and
-`sync_napari_polygon_anchor_vertex(...)`. The problem is not missing topology
-information. It is that synchronization currently occurs after napari's native
-move and retriangulation.
+Harpy already tracks these groups through `NapariPolygonTopology`. The problem
+in the recorded implementation was not missing topology information. It was
+that synchronization occurred after napari's native move and retriangulation.
 
 ## Exact Reproduction
 
@@ -1125,6 +1124,12 @@ a second accepted-row cache alongside `last_valid_vertices`.
 
 #### Candidate Construction and Encoding Integrity
 
+Keep the polygon-coordinate operation in the standalone
+`move_napari_polygon_vertex(...)` geometry helper. The edit guard derives the
+event coordinate and supplies the cached valid row, topology, and raw vertex
+index; the helper owns ordinary movement, alias synchronization, and complete
+candidate validation.
+
 For every `mouse_move` in `GUARD`:
 
 1. Derive the data-space coordinate exactly once with
@@ -1141,10 +1146,13 @@ For every `mouse_move` in `GUARD`:
      groups;
    - for an ordinary vertex, update only the selected raw index.
 4. Write the new coordinate to every member of that alias set in memory.
-5. Reparse the candidate and require its encoded topology to equal the cached
+5. Require the candidate to retain the starting row's implicit or explicit
+   closure form. A coordinate move can otherwise collide the first and last
+   coordinates and silently reinterpret an implicit row as an explicit ring.
+6. Reparse the candidate and require its encoded topology to equal the cached
    topology. This rejects coordinate collisions which would accidentally
    reinterpret an ordinary vertex as an anchor or separator.
-6. Decode the complete candidate through
+7. Decode the complete candidate through
    `napari_polygon_vertices_to_shapely_polygon(...)`; reject malformed,
    empty, zero-area, self-intersecting, or otherwise Shapely-invalid geometry.
 
@@ -1266,7 +1274,7 @@ framework.
 
 ### Slice 3: Guard Every Polygon Vertex Deletion
 
-Status: specified; not implemented.
+Status: implemented.
 
 Extend the existing `Mode.VERTEX_REMOVE` wrapper from hole-bearing polygons to
 all polygon rows owned by the annotation widget. Slice 3 owns hit
@@ -1306,6 +1314,13 @@ and does not invoke the delete-finished callback.
 
 #### Hole-Bearing Candidate Construction
 
+Keep all polygon-coordinate deletion semantics in the standalone
+`delete_napari_polygon_vertex(...)` geometry helper. The helper branches
+between hole-bearing and simple encodings and returns a validated
+`NapariPolygonVertexDeletion`. The edit guard consumes that outcome but owns
+only layer events, row replacement or removal, state preservation, and
+refresh. It must not duplicate either geometry branch.
+
 For a valid row whose cached topology contains hole-anchor groups:
 
 1. Pass the copied starting row, cached topology, and clicked raw index to
@@ -1313,10 +1328,11 @@ For a valid row whose cached topology contains hole-anchor groups:
 2. Let that helper handle ordinary shell and hole vertices, synchronized shell
    and hole anchors, separator-index shifts, and removal of an entire minimal
    hole.
-3. Treat the returned vertices and topology as an in-memory candidate only.
-   Require the candidate's parsed topology to equal the helper's returned
-   topology and decode the complete row through
-   `napari_polygon_vertices_to_shapely_polygon(...)` before any live mutation.
+3. Inside the helper, treat the returned vertices and topology as an in-memory
+   candidate only. Require the candidate's parsed topology to equal its
+   returned topology and decode the complete row through
+   `napari_polygon_vertices_to_shapely_polygon(...)` before returning it to the
+   edit guard for any live mutation.
 4. Reject any helper, topology, or Shapely error without emitting
    `ActionType.CHANGING`.
 
@@ -1327,7 +1343,8 @@ than converted implicitly into whole-shape removal.
 
 #### Simple-Polygon Candidate Construction
 
-Simple rows may be implicitly closed:
+The simple-polygon branch also lives in
+`delete_napari_polygon_vertex(...)`. Simple rows may be implicitly closed:
 
 ```text
 A, B, C, D
@@ -1371,8 +1388,9 @@ other invalid Shapely candidates before a live write.
 #### Semantic Triangle and Whole-Shape Removal
 
 If the starting simple polygon has exactly three semantic shell vertices,
-deleting any of them removes the complete shape row. Apply this rule to both
-representations:
+the helper returns a deletion outcome with no replacement vertices. The edit
+guard interprets that outcome by removing the complete shape row. Apply this
+rule to both representations:
 
 ```text
 A, B, C       # implicit triangle

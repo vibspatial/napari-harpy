@@ -146,37 +146,38 @@ def napari_polygon_vertices_to_topology(vertices: ArrayLike) -> NapariPolygonTop
 
 
 # Topology-preserving edit helpers for one napari polygon vertex row.
-def sync_napari_polygon_anchor_vertex(
+def move_napari_polygon_vertex(
     vertices: ArrayLike,
     topology: NapariPolygonTopology,
     moved_vertex_index: int,
     moved_coordinate: ArrayLike,
 ) -> np.ndarray:
-    """Return vertices with the moved anchor copied to its synchronized group.
+    """Return a synchronized and geometrically valid moved-vertex candidate.
 
     ``NapariPolygonTopology`` stores raw indices into the napari vertex row.
     For a one-hole row encoded as ``A B C D A E F G H E A``, the synchronized
     groups are ``(0, 4, 10)`` for the shell anchor copies and ``(5, 9)`` for
     the hole-anchor copies.
 
-    If napari moves one member of such a group, this helper writes the moved
-    coordinate to every index in that group. Moving shell-anchor index ``4`` to
-    ``A'`` therefore turns ``A B C D A' E F G H E A`` into
-    ``A' B C D A' E F G H E A'``. Moving an ordinary non-anchor vertex, such as
-    ``G`` at index ``7``, returns an unchanged copy.
+    Moving one member of such a group writes the proposed coordinate to every
+    alias. Moving shell-anchor index ``4`` to ``A'`` therefore turns
+    ``A B C D A E F G H E A`` into ``A' B C D A' E F G H E A'``. The first and
+    last coordinates of an explicitly closed simple polygon are treated as the
+    same semantic vertex. An ordinary vertex changes only at its own index.
 
     The topology is not returned because it stores indices, not coordinates.
-    Synchronizing a moved coordinate does not insert or remove vertices, so the
-    anchor-group indices remain unchanged.
+    Moving coordinates does not insert or remove vertices, so the anchor-group
+    indices must remain unchanged.
 
-    Topology groups are validated before synchronization so a vertex index
-    cannot belong to multiple groups or point outside the vertex row.
+    Both the starting row and moved candidate must match the supplied topology
+    and decode as valid Shapely polygons. Topology groups are also validated so
+    they cannot overlap or point outside the vertex row.
     """
     vertices = _coerce_vertices(vertices)
     moved_vertex_index = _coerce_vertex_index(moved_vertex_index, vertex_count=len(vertices))
     moved_coordinate = _coerce_moved_coordinate(moved_coordinate)
 
-    matched_group: tuple[int, ...] | None = None
+    alias_indices = (moved_vertex_index,)
     seen_indices: set[int] = set()
     for group in topology.synchronized_anchor_groups:
         normalized_group = _validated_anchor_group(group, vertex_count=len(vertices))
@@ -185,12 +186,27 @@ def sync_napari_polygon_anchor_vertex(
             raise ValueError("Polygon topology anchor groups must not overlap.")
         seen_indices.update(normalized_group)
         if moved_vertex_index in normalized_group:
-            matched_group = normalized_group
+            alias_indices = normalized_group
 
-    synchronized = vertices.copy()
-    if matched_group is not None:
-        synchronized[list(matched_group)] = moved_coordinate
-    return synchronized
+    parsed_topology = napari_polygon_vertices_to_topology(vertices)
+    if parsed_topology != topology:
+        raise ValueError("Polygon topology does not match the encoded vertex row.")
+    _ = napari_polygon_vertices_to_shapely_polygon(vertices)
+    explicitly_closed = bool(np.array_equal(vertices[0], vertices[-1]))
+
+    if not topology.synchronized_anchor_groups and moved_vertex_index in {0, len(vertices) - 1} and explicitly_closed:
+        alias_indices = (0, len(vertices) - 1)
+
+    moved_vertices = vertices.copy()
+    moved_vertices[list(alias_indices)] = moved_coordinate
+    moved_explicitly_closed = bool(np.array_equal(moved_vertices[0], moved_vertices[-1]))
+    if moved_explicitly_closed != explicitly_closed:
+        raise ValueError("Polygon move changed the row's closure encoding.")
+    moved_topology = napari_polygon_vertices_to_topology(moved_vertices)
+    if moved_topology != topology:
+        raise ValueError("Polygon move changed the encoded topology.")
+    _ = napari_polygon_vertices_to_shapely_polygon(moved_vertices)
+    return moved_vertices
 
 
 def insert_napari_polygon_vertex(

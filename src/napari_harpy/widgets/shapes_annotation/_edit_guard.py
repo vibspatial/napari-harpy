@@ -17,6 +17,7 @@ from napari_harpy._shapes_triangulation import ensure_shapes_triangulation_backe
 from napari_harpy.core.shapes_geometry import (
     NapariPolygonTopology,
     delete_napari_polygon_vertex,
+    move_napari_polygon_vertex,
     napari_polygon_vertices_to_shapely_polygon,
     napari_polygon_vertices_to_topology,
 )
@@ -634,6 +635,10 @@ class _AnnotationLayerEditGuard:
             layer.refresh(thumbnail=False)
         except Exception as application_error:  # noqa: BLE001 - transaction boundary
             try:
+                # Napari may have partially written the candidate before edit,
+                # triangulation, or refresh raised. Restore the cached accepted
+                # row so every encoded alias is synchronized and failed
+                # rendering never leaves malformed live polygon data behind.
                 self._restore_polygon_drag_vertices(layer, active_drag.row_index, baseline)
             except Exception as restoration_error:  # noqa: BLE001 - retain both failures
                 raise ExceptionGroup(
@@ -655,38 +660,18 @@ class _AnnotationLayerEditGuard:
     ) -> tuple[np.ndarray, np.ndarray]:
         """Build a synchronized, valid candidate without mutating the layer.
 
-        Apply the proposed coordinate to the moved vertex and every encoded
-        alias, including shell separators and hole-closing anchors. Reject the
-        candidate if this changes the recorded topology or produces invalid
-        polygon geometry.
+        Convert the event position to one data-space coordinate, then delegate
+        ordinary movement, alias synchronization, and geometry validation to
+        ``move_napari_polygon_vertex(...)``. Return the validated row together
+        with the coordinate needed for napari's interaction state.
         """
         moved_coordinate = np.asarray(layer.world_to_data(event.position), dtype=float)
-        vertices = active_drag.last_valid_vertices
-        if moved_coordinate.ndim != 1 or moved_coordinate.shape[0] != vertices.shape[1]:
-            raise ValueError("Polygon drag coordinate does not match the polygon dimensionality.")
-
-        moved_vertex_index = active_drag.moved_vertex_index
-        alias_indices = (moved_vertex_index,)
-        for group in active_drag.topology.synchronized_anchor_groups:
-            if moved_vertex_index in group:
-                alias_indices = group
-                break
-        else:
-            last_vertex_index = len(vertices) - 1
-            is_closed_simple_endpoint = (
-                not active_drag.topology.hole_anchor_groups
-                and moved_vertex_index in (0, last_vertex_index)
-                and np.array_equal(vertices[0], vertices[-1])
-            )
-            if is_closed_simple_endpoint:
-                alias_indices = (0, last_vertex_index)
-
-        candidate_vertices = vertices.copy()
-        candidate_vertices[list(alias_indices)] = moved_coordinate
-        candidate_topology = napari_polygon_vertices_to_topology(candidate_vertices)
-        if candidate_topology != active_drag.topology:
-            raise ValueError("Polygon drag candidate changed the encoded topology.")
-        _ = napari_polygon_vertices_to_shapely_polygon(candidate_vertices)
+        candidate_vertices = move_napari_polygon_vertex(
+            active_drag.last_valid_vertices,
+            active_drag.topology,
+            active_drag.moved_vertex_index,
+            moved_coordinate,
+        )
         return candidate_vertices, moved_coordinate
 
     def _restore_polygon_drag_vertices(

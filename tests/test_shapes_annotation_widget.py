@@ -30,6 +30,7 @@ from spatialdata.models import ShapesModel, TableModel
 from spatialdata.transformations import Identity
 
 import napari_harpy._app_state as app_state_module
+import napari_harpy.core.shapes_geometry as shapes_geometry_module
 import napari_harpy.widgets.shapes_annotation._edit_guard as shapes_annotation_edit_guard_module
 import napari_harpy.widgets.shapes_annotation._identity_feature_defaults as shapes_annotation_identity_defaults_module
 import napari_harpy.widgets.shapes_annotation.widget as shapes_annotation_widget_module
@@ -1892,14 +1893,14 @@ def test_annotation_layer_edit_guard_prevalidates_exact_vertex_39_regression_and
     layer.events.data.connect(lambda event: data_actions.append(event.action))
     monkeypatch.setattr(layer, "get_value", lambda position, world=True: (0, hit_vertex_index))
 
-    original_decode = shapes_annotation_edit_guard_module.napari_polygon_vertices_to_shapely_polygon
+    original_decode = shapes_geometry_module.napari_polygon_vertices_to_shapely_polygon
 
     def record_decoded_row(vertices: np.ndarray) -> Polygon:
         decoded_rows.append(np.asarray(vertices, dtype=float).copy())
         return original_decode(vertices)
 
     monkeypatch.setattr(
-        shapes_annotation_edit_guard_module,
+        shapes_geometry_module,
         "napari_polygon_vertices_to_shapely_polygon",
         record_decoded_row,
     )
